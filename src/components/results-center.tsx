@@ -28,7 +28,7 @@ import {
 import { useLiveRefresh } from "@/components/use-live-refresh";
 import { GeneratedArtifactsShelf } from "@/components/generated-artifacts-shelf";
 import { WorkspaceLibrary } from "@/components/workspace-library";
-import styles from "./daybook-workspaces.module.css";
+import styles from "./results-center.module.css";
 
 const RESULT_LIBRARY_KINDS = [
   "image",
@@ -271,7 +271,8 @@ export function ResultsCenter() {
     url.searchParams.set("run", key);
     window.history.pushState({}, "", url);
     setSelectedResultKey(key);
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    window.scrollTo({ top: 0, behavior: reduceMotion ? "instant" : "smooth" });
   }
 
   async function cancelAgentResult(result: PrimaryResult) {
@@ -296,262 +297,233 @@ export function ResultsCenter() {
   }
 
   return (
-    <div className={clsx("mx-auto max-w-[100rem] px-4 py-6 sm:px-6 lg:px-8", styles.daybook, styles.results)} aria-busy={state === "loading"} data-testid="results-workspace">
-      <section className="rounded-lg border border-line bg-surface p-5" data-daybook="hero">
-        <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
-          <div className="min-w-0">
-            <div className="flex items-center gap-3">
-              <span className="grid size-10 place-items-center rounded-md bg-primary text-primary-ink">
-                <FileText size={18} aria-hidden="true" />
-              </span>
-              <div>
-                <p className="text-xs font-semibold text-primary">Results</p>
-                <h1 className="mt-1 text-2xl font-semibold tracking-normal">Review completed work.</h1>
-              </div>
-            </div>
-            <p className="mt-4 max-w-4xl text-sm leading-6 text-muted">
-              Open a result to read the output first. Its plan, approvals, verification, and runtime evidence remain attached for deeper review.
-            </p>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <button type="button" onClick={() => void load()} disabled={state === "loading"} className="action-button">
-              {state === "loading" ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <RefreshCw size={14} aria-hidden="true" />}
-              Refresh
-            </button>
-            <Link href="/app/command" className="primary-button">
-              Start task
-              <ArrowRight size={14} aria-hidden="true" />
-            </Link>
-          </div>
+    <div className={styles.shell} aria-busy={state === "loading"} data-testid="results-workspace">
+      <header className={styles.header}>
+        <div className={styles.introduction}>
+          <h1>Results</h1>
+          <p>Review outputs, their current status, and the evidence behind them.</p>
+          <p className={styles.refreshTime}>
+            {lastRefresh ? `Updated ${lastRefresh}` : state === "loading" ? "Loading results" : "Update time unknown"}
+          </p>
         </div>
-
-        <div className="mt-5 grid gap-px overflow-hidden rounded-lg border border-line bg-line md:grid-cols-5" data-daybook="metrics">
-          <Metric
-            label="Agent answers"
-            value={resourceMetric(state, signedIn, data.runs, agentRuns.filter((run) => stringValue(run.status) === "completed").length.toString())}
-            tone={resourceTone(data.runs, "success")}
-          />
-          <Metric label="Workflows" value={resourceMetric(state, signedIn, data.workflows, workflowRuns.length.toString())} tone="neutral" />
-          <Metric
-            label="Waiting approval"
-            value={resourceMetric(state, signedIn, data.approvals, approvalItems.length.toString())}
-            tone={resourceTone(data.approvals, approvalItems.length ? "warning" : "success")}
-          />
-          <Metric
-            label="Evaluations"
-            value={resourceMetric(state, signedIn, data.evaluations, evaluationRuns.length.toString())}
-            tone={resourceTone(data.evaluations, evaluationRuns.length ? "success" : "neutral")}
-          />
-          <Metric label="Updated" value={lastRefresh || (state === "loading" ? "Loading" : "Unknown")} tone="neutral" />
+        <div className={styles.actions}>
+          <button type="button" onClick={() => void load()} disabled={state === "loading"} className={styles.button}>
+            {state === "loading" ? <Loader2 size={16} aria-hidden="true" /> : <RefreshCw size={16} aria-hidden="true" />}
+            Refresh
+          </button>
+          <Link href="/app/command" className={clsx(styles.button, styles.primaryButton)}>
+            Start task
+            <ArrowRight size={16} aria-hidden="true" />
+          </Link>
         </div>
-      </section>
+      </header>
 
       {state === "loading" && hasLoadedData ? (
-        <p className="mt-4 rounded-md border border-info/40 bg-info/10 px-4 py-3 text-sm" role="status">
+        <p className={styles.refreshNotice} role="status">
           Refreshing results. The last loaded values remain visible until the request finishes.
         </p>
       ) : null}
 
       {state === "loading" && !hasLoadedData ? (
-        <section className="mt-4 rounded-lg border border-line bg-surface p-6" role="status" aria-live="polite">
-          <div className="h-4 w-40 animate-pulse rounded bg-surface-raised" />
-          <div className="mt-4 h-24 animate-pulse rounded bg-surface-raised" />
-          <p className="mt-4 text-sm text-muted">Loading results and evidence.</p>
+        <section className={styles.loading} role="status" aria-live="polite">
+          <div className={styles.loadingTitle} aria-hidden="true" />
+          <div className={styles.loadingBody} aria-hidden="true" />
+          <p>Loading results and evidence.</p>
         </section>
       ) : null}
 
       {sourceErrors.length && signedIn ? (
-        <section className="mt-4 rounded-lg border border-warning/45 bg-warning/10 p-4" aria-labelledby="results-source-errors" role="alert">
-          <div className="flex items-start gap-3">
-            <AlertTriangle size={18} className="mt-0.5 shrink-0 text-warning" aria-hidden="true" />
-            <div className="min-w-0 flex-1">
-              <h2 id="results-source-errors" className="text-sm font-semibold">Some evidence is unavailable</h2>
-              <ul className="mt-2 space-y-1 text-sm leading-6 text-muted">
-                {sourceErrors.map(([label, message]) => <li key={label}><strong className="text-foreground">{label}:</strong> {message}</li>)}
-              </ul>
-              <button type="button" onClick={() => void load()} className="action-button mt-3">Retry unavailable sources</button>
-            </div>
+        <section className={clsx(styles.notice, styles.warningNotice)} aria-labelledby="results-source-errors" role="alert">
+          <AlertTriangle size={18} aria-hidden="true" />
+          <div>
+            <h2 id="results-source-errors">Some evidence is unavailable</h2>
+            <ul className={styles.sourceErrors}>
+              {sourceErrors.map(([label, message]) => <li key={label}><strong>{label}:</strong> {message}</li>)}
+            </ul>
+            <button type="button" onClick={() => void load()} className={styles.button}>Retry unavailable sources</button>
           </div>
         </section>
       ) : null}
 
       {!signedIn && state === "ready" ? (
-        <section className="mt-4 rounded-lg border border-warning/45 bg-warning/10 p-4">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <p className="text-sm font-semibold">Sign in to see production results</p>
-              <p className="mt-1 text-sm text-muted">Runs, workflows, approvals, and release evidence require an authenticated operator session.</p>
-            </div>
-            <Link href="/login" className="primary-button">Sign in</Link>
+        <section className={clsx(styles.notice, styles.warningNotice)}>
+          <ShieldCheck size={18} aria-hidden="true" />
+          <div>
+            <h2>Sign in to see production results</h2>
+            <p>Runs, workflows, approvals, and release evidence require an authenticated operator session.</p>
+            <Link href="/login" className={clsx(styles.button, styles.primaryButton)}>Sign in</Link>
           </div>
         </section>
       ) : null}
 
       {state === "error" ? (
-        <section className="mt-4 rounded-lg border border-danger/45 bg-danger/10 p-4" role="alert">
-          <div className="flex items-start gap-3">
-            <AlertTriangle size={18} className="mt-0.5 shrink-0 text-danger" aria-hidden="true" />
-            <div>
-              <h2 className="text-sm font-semibold">Results could not be loaded</h2>
-              <p className="mt-1 text-sm leading-6 text-muted">{error}</p>
-              <button type="button" onClick={() => void load()} className="action-button mt-3">Retry results</button>
-            </div>
+        <section className={clsx(styles.notice, styles.errorNotice)} role="alert">
+          <AlertTriangle size={18} aria-hidden="true" />
+          <div>
+            <h2>Results could not be loaded</h2>
+            <p>{error}</p>
+            <button type="button" onClick={() => void load()} className={styles.button}>Retry results</button>
           </div>
         </section>
       ) : null}
 
       {signedIn && state !== "error" && (state !== "loading" || hasLoadedData) ? (
         <>
-      <section className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)]" data-daybook="spread">
-        <PrimaryResultCard
-          result={primaryResult}
-          canceling={Boolean(cancelingRunId)}
-          onCancel={() => void cancelAgentResult(primaryResult)}
-        />
+          <div className={styles.resultsLayout}>
+            <PrimaryResultCard
+              result={primaryResult}
+              canceling={Boolean(cancelingRunId)}
+              onCancel={() => void cancelAgentResult(primaryResult)}
+            />
 
-        <section className="min-w-0 rounded-lg border border-line bg-surface p-4" data-daybook="panel">
-          <div className="mb-4 flex items-start justify-between gap-3">
-            <div>
-              <h2 className="text-sm font-semibold">What to do next</h2>
-              <p className="mt-1 text-xs leading-5 text-muted">Use status to decide whether you are done or blocked.</p>
+            <section className={styles.ledger} aria-labelledby="recent-results-title">
+              <div className={styles.sectionHeading}>
+                <h2 id="recent-results-title">Recent results</h2>
+                <p>Select a run to read its full output.</p>
+              </div>
+              <ResultPanel title="Workflow outcomes" description="Durable runs and their current step.">
+                <ResultRows
+                  rows={workflowRuns.map((run) => ({
+                    key: `workflow:${stringValue(run.id)}`,
+                    title: stringValue(run.goal, "Workflow"),
+                    status: stringValue(run.status, "unknown"),
+                    meta: workflowMeta(run),
+                    body: resultPreview(run.report || run.error),
+                  }))}
+                  empty={resourceError(data.workflows) ? "Workflow results are unavailable. Retry the source above." : "No workflow results found."}
+                  icon={Workflow}
+                  onSelect={selectResult}
+                  selectedKey={primaryResult.key}
+                />
+              </ResultPanel>
+              <ResultPanel title="Agent answers" description="Direct runs and their returned responses.">
+                <ResultRows
+                  rows={agentRuns.map((run) => ({
+                    key: `agent:${stringValue(run.id)}`,
+                    title: stringValue(run.prompt, "Agent run"),
+                    status: stringValue(run.status, "unknown"),
+                    meta: agentResultMeta(run),
+                    body: resultPreview(run.response || run.error),
+                  }))}
+                  empty={resourceError(data.runs) ? "Agent answers are unavailable. Retry the source above." : "No agent answers found."}
+                  icon={TerminalSquare}
+                  onSelect={selectResult}
+                  selectedKey={primaryResult.key}
+                />
+              </ResultPanel>
+            </section>
+          </div>
+
+          <section className={styles.approvals} aria-labelledby="result-blockers-title">
+            <div className={styles.sectionHeading}>
+              <h2 id="result-blockers-title">Blocked before result</h2>
+              <p>Resolve these requests before the outcome is final.</p>
             </div>
-            <StatusPill label={primaryResult.status} tone={primaryResult.tone} />
-          </div>
-          <div className="grid gap-3">
-            <NextStepRow
-              icon={CheckCircle2}
-              title="Completed"
-              body="Read the output here, then use the evidence links below if you need audit details."
-              active={primaryResult.tone === "success"}
-            />
-            <NextStepRow
-              icon={RefreshCw}
-              title="Active"
-              body="Open Activity to follow progress. A running or queued item is not a completed result."
-              active={["running", "queued", "pending", "waiting_clarification"].includes(primaryResult.status)}
-            />
-            <NextStepRow
-              icon={AlertTriangle}
-              title="Waiting approval"
-              body="Open Approvals, decide the request, then return after the workflow advances."
-              active={primaryResult.status === "waiting_approval" || approvalItems.length > 0}
-            />
-            <NextStepRow
-              icon={AlertTriangle}
-              title="Failed or blocked"
-              body="Open the source workspace, inspect the recorded error, and retry only after the cause is understood."
-              active={["failed", "blocked", "rejected"].includes(primaryResult.status)}
-            />
-            <NextStepRow
-              icon={TerminalSquare}
-              title="Canceled"
-              body="This run was stopped before completion. Start it again only if you still need the result."
-              active={["canceled", "cancelled"].includes(primaryResult.status)}
-            />
-            <NextStepRow
-              icon={TerminalSquare}
-              title="No output yet"
-              body="Start or continue a run from Run Agent. Results will appear here after execution."
-              active={primaryResult.kind === "empty"}
-            />
-          </div>
-        </section>
-      </section>
-
-      <section className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]" data-daybook="section-grid">
-        <ResultPanel title="Latest workflow outcomes" description="Durable runs, current step, and final report when available.">
-          <ResultRows
-            rows={workflowRuns.map((run) => ({
-              key: `workflow:${stringValue(run.id)}`,
-              title: stringValue(run.goal, "Workflow"),
-              status: stringValue(run.status, "unknown"),
-              meta: workflowMeta(run),
-              body: resultPreview(run.report || run.error),
-            }))}
-            empty="No workflow results found."
-            icon={Workflow}
-            onSelect={selectResult}
-          />
-        </ResultPanel>
-
-        <ResultPanel title="Agent answers" description="Direct agent runs and their returned responses.">
-          <ResultRows
-            rows={agentRuns.map((run) => ({
-              key: `agent:${stringValue(run.id)}`,
-              title: stringValue(run.prompt, "Agent run"),
-              status: stringValue(run.status, "unknown"),
-              meta: agentResultMeta(run),
-              body: resultPreview(run.response || run.error),
-            }))}
-            empty="No agent answers found."
-            icon={TerminalSquare}
-            onSelect={selectResult}
-          />
-        </ResultPanel>
-      </section>
-
-      <section className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]" data-daybook="section-grid">
-        <ResultPanel title="Blocked before result" description="These items must be approved, rejected, or resolved before the outcome is final.">
-          <ResultRows
-            rows={approvalItems.map((item) => ({
-              title: stringValue(item.title, "Approval"),
-              status: stringValue(item.status, "waiting"),
-              meta: `${stringValue(item.kind, "approval")} / risk ${stringValue(item.riskLevel, "n/a")}`,
-              body: resultPreview(item.reason || readPath(item, "record.error")),
-              href: "/app/approvals",
-            }))}
-            empty="No approval blockers are waiting."
-            icon={ShieldCheck}
-          />
-        </ResultPanel>
-
-        <ResultPanel title="Evidence trail" description="Open focused admin views for release and runtime evidence without slowing result loading.">
-          <div className="grid gap-3 md:grid-cols-3">
-            <EvidenceBox
-              label="Release"
-              value="Open release gate"
-              tone="neutral"
-              href="/app/evaluations"
-            />
-            <EvidenceBox
-              label="Evaluations"
-              value={resourceMetric(state, signedIn, data.evaluations, `${evaluationRuns.length} runs`)}
-              tone={resourceError(data.evaluations) ? "neutral" : evaluationRuns.some((run) => stringValue(run.status) === "failed") ? "danger" : evaluationRuns.length ? "success" : "neutral"}
-              href="/app/evaluations"
-            />
-            <EvidenceBox
-              label="Runtime"
-              value="Open monitoring"
-              tone="neutral"
-              href="/app/observability"
-            />
-          </div>
-          <div className="mt-4">
             <ResultRows
-              rows={evaluationRuns.slice(0, 4).map((run) => ({
-                title: stringValue(run.suite, "Evaluation suite"),
-                status: stringValue(run.status, "unknown"),
-                meta: formatResultTime(stringValue(run.completedAt || run.startedAt || run.createdAt)),
-                body: `Passed ${stringPath(run, "summary.passed", "0")} of ${stringPath(run, "summary.total", "0")} checks.`,
-                href: "/app/evaluations",
+              rows={approvalItems.map((item) => ({
+                title: stringValue(item.title, "Approval"),
+                status: stringValue(item.status, "waiting"),
+                meta: `${stringValue(item.kind, "approval")} / risk ${stringValue(item.riskLevel, "n/a")}`,
+                body: resultPreview(item.reason || readPath(item, "record.error")),
+                href: "/app/approvals",
               }))}
-              empty="No evaluation runs loaded."
-              icon={CheckCircle2}
+              empty={resourceError(data.approvals) ? "Approval state is unavailable. The source notice above has more detail." : "No approval blockers are waiting."}
+              icon={ShieldCheck}
             />
+          </section>
+
+          <div className={styles.sharedOutputs}>
+            <GeneratedArtifactsShelf refreshKey={lastRefresh} />
           </div>
-        </ResultPanel>
-      </section>
 
-      <GeneratedArtifactsShelf refreshKey={lastRefresh} />
+          <WorkspaceLibrary
+            title="Reusable outputs"
+            description="Images and transcripts remain attached to their source, stable citation, and relevant work."
+            kinds={RESULT_LIBRARY_KINDS}
+            compact
+            limit={12}
+            className={styles.library}
+          />
 
-      <WorkspaceLibrary
-        title="Reusable outputs"
-        description="Images and transcripts remain attached to their source, stable citation, and relevant work."
-        kinds={RESULT_LIBRARY_KINDS}
-        compact
-        limit={12}
-        className="mt-4"
-      />
+          <details className={styles.disclosure}>
+            <summary>Sources, verification, and runtime evidence</summary>
+            <div className={styles.disclosureBody}>
+              <p className={styles.contextDescription}>Source counts describe loaded records. A completed run still needs its verification and evidence reviewed.</p>
+              <dl className={styles.metrics}>
+                <Metric
+                  label="Completed agent runs"
+                  value={resourceMetric(state, signedIn, data.runs, agentRuns.filter((run) => stringValue(run.status) === "completed").length.toString())}
+                />
+                <Metric label="Workflows" value={resourceMetric(state, signedIn, data.workflows, workflowRuns.length.toString())} />
+                <Metric label="Waiting approval" value={resourceMetric(state, signedIn, data.approvals, approvalItems.length.toString())} />
+                <Metric label="Evaluations" value={resourceMetric(state, signedIn, data.evaluations, evaluationRuns.length.toString())} />
+              </dl>
+              <div className={styles.evidenceLinks}>
+                <EvidenceLink label="Release" value="Open release gate" href="/app/evaluations" />
+                <EvidenceLink
+                  label="Evaluations"
+                  value={resourceMetric(state, signedIn, data.evaluations, `${evaluationRuns.length} runs`)}
+                  href="/app/evaluations"
+                />
+                <EvidenceLink label="Runtime" value="Open monitoring" href="/app/observability" />
+              </div>
+              <ResultPanel title="Recent evaluations" description="Recorded checks and their exact run status.">
+                <ResultRows
+                  rows={evaluationRuns.slice(0, 4).map((run) => ({
+                    title: stringValue(run.suite, "Evaluation suite"),
+                    status: stringValue(run.status, "unknown"),
+                    meta: formatResultTime(stringValue(run.completedAt || run.startedAt || run.createdAt)),
+                    body: `Passed ${stringPath(run, "summary.passed", "0")} of ${stringPath(run, "summary.total", "0")} checks.`,
+                    href: "/app/evaluations",
+                  }))}
+                  empty={resourceError(data.evaluations) ? "Evaluation evidence is unavailable. Retry the source above." : "No evaluation runs loaded."}
+                  icon={CheckCircle2}
+                />
+              </ResultPanel>
+            </div>
+          </details>
+
+          <details className={styles.disclosure}>
+            <summary>Result status guide</summary>
+            <ul className={styles.statusGuide}>
+              <NextStepRow
+                icon={CheckCircle2}
+                title="Completed"
+                body="Read the output, then review its verification and evidence before relying on it."
+                active={primaryResult.status === "completed"}
+              />
+              <NextStepRow
+                icon={RefreshCw}
+                title="Active"
+                body="Open Activity to follow progress. A running or queued item is not a completed result."
+                active={["running", "queued", "pending", "waiting_clarification"].includes(primaryResult.status)}
+              />
+              <NextStepRow
+                icon={AlertTriangle}
+                title="Waiting approval"
+                body="Open Approvals, decide the request, then return after the workflow advances."
+                active={primaryResult.status === "waiting_approval" || approvalItems.length > 0}
+              />
+              <NextStepRow
+                icon={AlertTriangle}
+                title="Failed or blocked"
+                body="Open the source workspace, inspect the recorded error, and retry only after the cause is understood."
+                active={["failed", "blocked", "rejected"].includes(primaryResult.status)}
+              />
+              <NextStepRow
+                icon={TerminalSquare}
+                title="Canceled"
+                body="This run was stopped before completion. Start it again only if you still need the result."
+                active={["canceled", "cancelled"].includes(primaryResult.status)}
+              />
+              <NextStepRow
+                icon={TerminalSquare}
+                title="No output yet"
+                body="Start or continue a run from Run Agent. Results will appear here after execution."
+                active={primaryResult.kind === "empty"}
+              />
+            </ul>
+          </details>
         </>
       ) : null}
     </div>
@@ -573,41 +545,29 @@ function PrimaryResultCard({
       result.status.toLowerCase(),
     );
   return (
-    <section className="min-w-0 rounded-lg border border-line bg-surface p-4" data-daybook="panel">
-      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">Current result</p>
-          <h2 className="mt-2 text-lg font-semibold">{result.title}</h2>
-          <p className="mt-1 text-xs text-muted">{result.meta}</p>
-        </div>
+    <section className={styles.currentResult} aria-labelledby="current-result-title">
+      <div className={styles.resultHeading}>
+        <p className={styles.resultLabel}>Current result</p>
         <StatusPill label={result.status} tone={result.tone} />
+        <h2 id="current-result-title">{result.title}</h2>
+        <p className={styles.resultMeta}>{result.meta}</p>
       </div>
-      <div className="min-h-56 overflow-auto whitespace-pre-wrap rounded-md border border-line bg-background p-4 text-sm leading-6 text-muted">
-        {result.body}
-      </div>
-      <div className="mt-4 flex flex-wrap gap-2">
-        <Link href={result.href} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-line bg-background px-3 text-sm font-semibold transition hover:bg-surface-raised">
+      <div className={styles.resultBody}>{result.body}</div>
+      <div className={styles.actions}>
+        <Link href={result.href} className={styles.button}>
           {result.href.startsWith("/app/results?")
             ? "Permanent link to this result"
             : "Open source workspace"}
-          <ArrowRight size={14} aria-hidden="true" />
+          <ArrowRight size={16} aria-hidden="true" />
         </Link>
         {canCancel ? (
           <button
             type="button"
             onClick={onCancel}
             disabled={canceling}
-            className="action-button border-danger/50 text-danger"
+            className={clsx(styles.button, styles.cancelButton)}
           >
-            {canceling ? (
-              <Loader2
-                size={14}
-                className="animate-spin"
-                aria-hidden="true"
-              />
-            ) : (
-              <Square size={13} aria-hidden="true" />
-            )}
+            {canceling ? <Loader2 size={16} aria-hidden="true" /> : <Square size={16} aria-hidden="true" />}
             {canceling ? "Canceling run" : "Cancel run"}
           </button>
         ) : null}
@@ -618,27 +578,22 @@ function PrimaryResultCard({
 
 function NextStepRow({ icon: Icon, title, body, active }: { icon: typeof FileText; title: string; body: string; active: boolean }) {
   return (
-    <div className={clsx("rounded-md border p-3", active ? "border-primary/45 bg-primary/10" : "border-line bg-background")} data-daybook="result-step">
-      <div className="flex items-start gap-3">
-        <span className={clsx("grid size-8 place-items-center rounded-md", active ? "bg-primary text-primary-ink" : "bg-surface text-muted")}>
-          <Icon size={15} aria-hidden="true" />
-        </span>
-        <div>
-          <p className="text-sm font-semibold">{title}</p>
-          {active ? <span className="mt-1 inline-flex text-xs font-semibold text-primary">Current state</span> : null}
-          <p className="mt-1 text-xs leading-5 text-muted">{body}</p>
-        </div>
+    <li className={styles.guideRow}>
+      <Icon size={18} aria-hidden="true" />
+      <div>
+        <p className={styles.guideTitle}>{title}{active ? <span className={styles.currentState}>Current state</span> : null}</p>
+        <p>{body}</p>
       </div>
-    </div>
+    </li>
   );
 }
 
 function ResultPanel({ title, description, children }: { title: string; description: string; children: React.ReactNode }) {
   return (
-    <section className="min-w-0 rounded-lg border border-line bg-surface p-4" data-daybook="panel">
-      <div className="mb-4">
-        <h2 className="text-sm font-semibold">{title}</h2>
-        <p className="mt-1 text-xs leading-5 text-muted">{description}</p>
+    <section className={styles.resultPanel}>
+      <div className={styles.panelHeading}>
+        <h3>{title}</h3>
+        <p>{description}</p>
       </div>
       {children}
     </section>
@@ -650,6 +605,7 @@ function ResultRows({
   empty,
   icon: Icon,
   onSelect,
+  selectedKey,
 }: {
   rows: Array<{
     key?: string;
@@ -662,70 +618,73 @@ function ResultRows({
   empty: string;
   icon: typeof FileText;
   onSelect?: (key: string) => void;
+  selectedKey?: string;
 }) {
   if (!rows.length) {
-    return <div className="rounded-md border border-dashed border-line bg-background p-4 text-sm text-muted">{empty}</div>;
+    return <p className={styles.empty}>{empty}</p>;
   }
 
   return (
-    <div className="divide-y divide-line overflow-hidden rounded-md border border-line bg-background" data-daybook="list">
+    <ul className={styles.resultList}>
       {rows.slice(0, 8).map((row, index) => {
+        const selected = Boolean(row.key && row.key === selectedKey);
         const content = (
-          <div className="flex items-start gap-3 p-3">
-            <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-md bg-surface text-primary">
-              <Icon size={15} aria-hidden="true" />
+          <>
+            <Icon size={18} className={styles.rowIcon} aria-hidden="true" />
+            <span className={styles.rowCopy}>
+              <span className={styles.rowTitle}>{row.title}</span>
+              <span className={styles.rowStatus}>
+                <StatusPill label={row.status} tone={toneForStatus(row.status)} />
+                {selected ? <span className={styles.selectedLabel}>Selected</span> : null}
+              </span>
+              <span className={styles.rowMeta}>{row.meta}</span>
+              <span className={styles.rowPreview}>{row.body}</span>
             </span>
-            <div className="min-w-0 flex-1">
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-semibold">{row.title}</p>
-                  <p className="mt-1 truncate text-xs text-muted">{row.meta}</p>
-                </div>
-                <span className={clsx("shrink-0 rounded-md px-2 py-1 font-mono text-xs", pillTone(toneForStatus(row.status)))}>{row.status}</span>
-              </div>
-              <p className="mt-2 line-clamp-3 text-xs leading-5 text-muted">{row.body}</p>
-            </div>
-          </div>
+          </>
         );
-        return row.key && onSelect ? (
-          <button
-            key={row.key}
-            type="button"
-            onClick={() => onSelect(row.key!)}
-            className="block w-full text-left transition hover:bg-surface-raised"
-          >
-            {content}
-          </button>
-        ) : row.href ? (
-          <Link key={`${row.title}-${index}`} href={row.href} className="block transition hover:bg-surface-raised">
-            {content}
-          </Link>
-        ) : (
-          <div key={`${row.title}-${index}`}>{content}</div>
+        return (
+          <li key={row.key || `${row.title}-${index}`}>
+            {row.key && onSelect ? (
+              <button
+                type="button"
+                onClick={() => onSelect(row.key!)}
+                className={clsx(styles.resultRow, selected && styles.selectedRow)}
+                aria-pressed={selected}
+              >
+                {content}
+              </button>
+            ) : row.href ? (
+              <Link href={row.href} className={styles.resultRow}>
+                {content}
+              </Link>
+            ) : (
+              <div className={styles.resultRow}>{content}</div>
+            )}
+          </li>
         );
       })}
-    </div>
+    </ul>
   );
 }
 
-function EvidenceBox({ label, value, tone, href }: { label: string; value: string; tone: Tone; href: string }) {
+function EvidenceLink({ label, value, href }: { label: string; value: string; href: string }) {
   return (
-    <Link href={href} className="rounded-md border border-line bg-background p-3 transition hover:bg-surface-raised" data-daybook="evidence">
-      <p className="text-xs text-muted">{label}</p>
-      <p className={clsx("mt-3 font-mono text-sm", textTone(tone))}>{value}</p>
+    <Link href={href} className={styles.evidenceLink}>
+      <span>{label}</span>
+      <span>{value}<ArrowRight size={16} aria-hidden="true" /></span>
     </Link>
   );
 }
 
 function StatusPill({ label, tone }: { label: string; tone: Tone }) {
-  return <span className={clsx("inline-flex h-10 items-center rounded-md px-3 font-mono text-sm", pillTone(tone))}>{label}</span>;
+  return <span className={clsx(styles.status, styles[tone])}>{label}</span>;
 }
 
-function Metric({ label, value, tone }: { label: string; value: string; tone: Tone }) {
+function Metric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="bg-background p-3">
-      <p className="text-xs text-muted">{label}</p>
-      <p className={clsx("mt-3 font-mono text-xl", textTone(tone))}>{value}</p>
+    <div>
+      <dt>{label}</dt>
+      <dd>{value}</dd>
     </div>
   );
 }
@@ -970,39 +929,9 @@ function toneForStatus(value: unknown): Tone {
   return toneForResultStatus(value);
 }
 
-function textTone(tone: Tone) {
-  if (tone === "success") {
-    return "text-success";
-  }
-  if (tone === "warning") {
-    return "text-warning";
-  }
-  if (tone === "danger") {
-    return "text-danger";
-  }
-  return "text-foreground";
-}
-
-function pillTone(tone: Tone) {
-  if (tone === "success") {
-    return "bg-success/10 text-success";
-  }
-  if (tone === "warning") {
-    return "bg-warning/10 text-warning";
-  }
-  if (tone === "danger") {
-    return "bg-danger/10 text-danger";
-  }
-  return "bg-surface text-muted";
-}
-
 function resourceError(value: unknown) {
   const record = asRecord(value);
   return stringValue(record.error || record.message);
-}
-
-function resourceTone(value: unknown, tone: Tone): Tone {
-  return value && !resourceError(value) ? tone : "neutral";
 }
 
 function resourceMetric(
