@@ -78,16 +78,13 @@ export type TodayBriefLedger = {
 export type PersonalNotificationStatus = "unread" | "read" | "snoozed" | "dismissed" | "acted";
 export type PersonalNotificationUrgency = "due_soon" | "overdue";
 
-export type PersonalNotification = {
+type PersonalNotificationBase = {
   id: string;
   tenantId: string;
   actorId: string;
   title: string;
-  kind: "reminder";
-  sourceType: "today_item";
   sourceId: string;
   occurrenceKey: string;
-  urgency: PersonalNotificationUrgency;
   status: PersonalNotificationStatus;
   dueAt: string;
   snoozedUntil?: string;
@@ -95,6 +92,10 @@ export type PersonalNotification = {
   createdAt: string;
   updatedAt: string;
 };
+export type PersonalNotification = PersonalNotificationBase & (
+  | { kind: "reminder"; sourceType: "today_item"; urgency: PersonalNotificationUrgency }
+  | { kind: "responsibility_change"; sourceType: "responsibility_change"; urgency: "update" }
+);
 
 export type PersonalNotificationLedger = {
   notifications: PersonalNotification[];

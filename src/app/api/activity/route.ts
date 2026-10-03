@@ -22,6 +22,8 @@ async function GETHandler(request: Request) {
       actorId: context.actorId,
       role: context.role,
       canReadApprovals: canPerform(context.role, "manage.workflow"),
+      ...(context.source === "mobile" && (context.native?.clientContractVersion ?? 0) < 32
+        ? { includeResponsibilityChanges: false } : {}),
       requestActorBinding: canonicalRequestActorBindingFromSecurityContext(context),
     }, parseActivityQuery(new URL(request.url)));
     return Response.json(result, { headers: { "cache-control": "private, no-store" } });

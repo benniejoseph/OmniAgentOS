@@ -18,6 +18,9 @@ export const NATIVE_MUTATION_CAPABILITIES = [
   "markets.backtest.run",
   "settings.update",
   "companion.preferences.update",
+  "responsibilities.drafts.manage",
+  "responsibilities.lifecycle.manage",
+  "responsibilities.notifications.manage",
   "evidence.cancel",
   "push.registration.update",
   "push.delivery.acknowledge",
@@ -98,6 +101,8 @@ export function nativeMutationCapabilityPolicy(
 }
 
 function minimumVersion(capability: NativeMutationCapability) {
+  if (capability === "responsibilities.drafts.manage" || capability === "responsibilities.lifecycle.manage" ||
+    capability === "responsibilities.notifications.manage") return 32;
   if (capability === "companion.preferences.update") return 31;
   if (
     capability === "voice.session.manage" ||

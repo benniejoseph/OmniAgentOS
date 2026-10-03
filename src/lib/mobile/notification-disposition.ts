@@ -29,6 +29,7 @@ export const notificationDispositionSourceKindSchema = z.enum([
   "delegated_task",
   "scheduled_routine",
   "security_incident",
+  "responsibility_change",
 ]);
 
 export const notificationDispositionDeliveryKindSchema = z.enum([

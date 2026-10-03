@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import Link from "next/link";
 import {
   Bell,
   BellRing,
@@ -23,7 +24,10 @@ type NotificationStatus = "unread" | "read" | "snoozed" | "dismissed" | "acted";
 type PersonalNotification = {
   id: string;
   title: string;
-  urgency: "due_soon" | "overdue";
+  kind?: "reminder" | "responsibility_change";
+  sourceType?: "today_item" | "responsibility_change";
+  sourceId?: string;
+  urgency: "due_soon" | "overdue" | "update";
   status: NotificationStatus;
   dueAt: string;
   snoozedUntil?: string;
@@ -109,7 +113,7 @@ export function NotificationCenter() {
       }) as CenterPayload;
       if (controller.signal.aborted) return;
       const freshUnread = payload.notifications.filter((item) =>
-        item.status === "unread" && !knownUnreadRef.current.has(item.id)
+        item.kind !== "responsibility_change" && item.status === "unread" && !knownUnreadRef.current.has(item.id)
       );
       if (loadedOnceRef.current && desktopAlerts && typeof window !== "undefined" && window.Notification?.permission === "granted") {
         for (const item of freshUnread.slice(0, 3)) {
@@ -180,7 +184,7 @@ export function NotificationCenter() {
       }
       if (event.key !== "Tab" || !panel) return;
       const focusable = Array.from(panel.querySelectorAll<HTMLElement>(
-        'button:not([disabled]), input:not([disabled]), select:not([disabled]), summary, [tabindex]:not([tabindex="-1"])',
+        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), summary, [tabindex]:not([tabindex="-1"])',
       ));
       if (!focusable.length) return;
       const first = focusable[0];
@@ -201,6 +205,7 @@ export function NotificationCenter() {
   }, [closePanel, open]);
 
   async function act(item: PersonalNotification, action: "dismiss" | "snooze" | "complete") {
+    if (item.kind === "responsibility_change" && action !== "dismiss") return;
     setActingId(item.id);
     try {
       const payload = await readJson(`/api/notifications/${encodeURIComponent(item.id)}`, {
@@ -214,7 +219,7 @@ export function NotificationCenter() {
         notifications: current.notifications.map((candidate) => candidate.id === item.id ? notification : candidate),
         unreadCount: Math.max(0, current.unreadCount - (item.status === "unread" ? 1 : 0)),
       }));
-      setAnnouncement(action === "complete" ? "Reminder completed." : action === "snooze" ? "Reminder snoozed for 15 minutes." : "Reminder dismissed.");
+      setAnnouncement(item.kind === "responsibility_change" ? "Responsibility update dismissed." : action === "complete" ? "Reminder completed." : action === "snooze" ? "Reminder snoozed for 15 minutes." : "Reminder dismissed.");
     } catch (actionError) {
       setError(message(actionError));
     } finally {
@@ -341,11 +346,14 @@ export function NotificationCenter() {
                   <article key={item.id} className={clsx("notification-item", `is-${item.status}`, `is-${item.urgency}`)}>
                     <div className="notification-dot" aria-hidden="true" />
                     <div className="notification-copy">
-                      <div><strong>{item.title}</strong><span>{item.urgency === "overdue" ? "Overdue" : "Due soon"}</span></div>
-                      <p>{item.status === "snoozed" && item.snoozedUntil ? `Snoozed until ${formatTime(item.snoozedUntil)}` : `Due ${formatDue(item.dueAt)}`}</p>
+                      <div><strong>{item.title}</strong><span>{item.kind === "responsibility_change" ? "Material change" : item.urgency === "overdue" ? "Overdue" : "Due soon"}</span></div>
+                      <p>{item.kind === "responsibility_change" ? `Recorded ${formatDue(item.dueAt)}` : item.status === "snoozed" && item.snoozedUntil ? `Snoozed until ${formatTime(item.snoozedUntil)}` : `Due ${formatDue(item.dueAt)}`}</p>
                       <div className="notification-actions">
-                        <button type="button" onClick={() => void act(item, "complete")} disabled={actingId === item.id}><Check size={13} aria-hidden="true" /> Complete</button>
-                        <button type="button" onClick={() => void act(item, "snooze")} disabled={actingId === item.id}><Clock3 size={13} aria-hidden="true" /> 15m</button>
+                        {item.kind === "responsibility_change" ? item.sourceType === "responsibility_change" && /^responsibility:[a-f0-9]{64}$/.test(item.sourceId ?? "") &&
+                          <Link href={`/app/responsibilities/${encodeURIComponent(item.sourceId!)}`} onClick={() => setOpen(false)}>View responsibility</Link> : <>
+                          <button type="button" onClick={() => void act(item, "complete")} disabled={actingId === item.id}><Check size={13} aria-hidden="true" /> Complete</button>
+                          <button type="button" onClick={() => void act(item, "snooze")} disabled={actingId === item.id}><Clock3 size={13} aria-hidden="true" /> 15m</button>
+                        </>}
                         <button type="button" onClick={() => void act(item, "dismiss")} disabled={actingId === item.id}>Dismiss</button>
                       </div>
                     </div>

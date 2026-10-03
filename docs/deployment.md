@@ -2346,3 +2346,30 @@ Configure branch protection externally to require these exact checks:
 Also require the scheduled/manual `Production Smoke / production-smoke` result in the deployment promotion system. Repository code cannot enforce GitHub branch protection by itself.
 
 For common failures, see [troubleshooting.md](troubleshooting.md). Use [production-rollout.md](production-rollout.md) at promotion time.
+
+
+### Bounded Responsibility schema v216–v219
+
+The release adds `responsibility_drafts_v1`, `responsibility_observations_v1`,
+`responsibility_runtime_v1` and `responsibility_notifications_v1` in manifest
+order. Run them only through the dedicated migration job while application
+traffic/workers are held, and retain `db:verify` evidence for all four versions.
+New tables force tenant/actor isolation; the runtime transaction also acquires
+owner, pinned source, procedure and preference locks as required. Request paths
+never run migration DDL. The finite pilot executes only its saved governed
+Meeting read; notification delivery needs a separate explicit owner-inbox
+admission and never emits external push/email/provider effects.
+
+Serve contract v32 before distributing a v32 native client. V31 remains the
+immediately previous supported client; its existing operations keep their
+minimum versions. Responsibility mutations require v32, and notification reads,
+unread counts and bulk-read actions omit the new kind for older native clients.
+The v30 and v31 public documents remain byte-frozen; only v32 is generated.
+
+A rollback must first hold worker ticks and new Responsibility admissions.
+Preserve immutable usage, observations and delivery receipts. The prior v215
+application did not understand the new notification kind or runtime records;
+do not assume a prior binary can operate an activated pilot. Use a compatible
+rollback build, or follow the separately verified backup/restore procedure when
+an incompatible rollback is required. Never drop the new history tables or
+reset cumulative counters as an application rollback shortcut.

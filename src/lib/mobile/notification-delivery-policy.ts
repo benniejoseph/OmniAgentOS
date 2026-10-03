@@ -185,6 +185,13 @@ export function notificationDispositionCoordinates(input: {
   };
 }
 
+/** This classification describes a server-admitted change. The separate
+ * Responsibility admission and delivery store must still prove authority. */
+export function responsibilityChangeNotificationCandidate(input: ProactiveCandidateCoordinates): NotificationCandidateV1 {
+  if (input.sourceKind !== "responsibility_change") throw new Error("Responsibility notification source kind is invalid.");
+  return { ...candidateBase(input), kind: "responsibility_change" };
+}
+
 export function decideServerNotification(input: {
   candidate: NotificationCandidateV1;
   policy: NotificationDecisionPolicyInput;

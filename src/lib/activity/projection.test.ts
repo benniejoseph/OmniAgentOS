@@ -31,7 +31,7 @@ function receipt(overrides: Partial<BuildTerminalReceiptV1Input> = {}) {
   });
 }
 
-function notification(overrides: Partial<PersonalNotification> = {}): PersonalNotification {
+function notification(overrides: Partial<Extract<PersonalNotification, { kind: "reminder" }>> = {}): PersonalNotification {
   return {
     id: "notification-a", tenantId: "tenant-a", actorId: "owner-a", title: "PRIVATE_TITLE",
     kind: "reminder", sourceType: "today_item", sourceId: "today-a", occurrenceKey: "PRIVATE_OCCURRENCE",
@@ -40,6 +40,16 @@ function notification(overrides: Partial<PersonalNotification> = {}): PersonalNo
 }
 
 describe("Activity metadata projection", () => {
+  it("links a Responsibility update to its exact source without Today action or private prose", () => {
+    const sourceId = `responsibility:${"a".repeat(64)}`;
+    const item: PersonalNotification = { ...notification(), kind: "responsibility_change", sourceType: "responsibility_change", urgency: "update", sourceId };
+    const projected = projectActivityNotification(item);
+    expect(projected).toMatchObject({ group: "updates", workKey: sourceId, href: `/app/responsibilities/${encodeURIComponent(sourceId)}`,
+      sourceRef: { kind: "notification", id: item.id }, references: [{ kind: "notification", id: item.id }] });
+    expect(JSON.stringify(projected)).not.toContain("PRIVATE_");
+    expect(projectActivityNotification({ ...item, sourceId: "unbound" })).toBeUndefined();
+    expect(projectActivityNotification({ ...item, status: "acted" })).toBeUndefined();
+  });
   it("retains exact source identities and encoded links without projecting private run content", () => {
     const value = projectActivityRun(run({ id: "run:a/+", threadId: "thread:a/+" }));
     expect(value).toMatchObject({

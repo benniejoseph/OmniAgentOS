@@ -25,6 +25,7 @@ import {
   localComputerStopRequestSchema,
 } from "@/lib/local-computer/contracts";
 import { mobilePushReceiptRequestSchema } from "@/lib/mobile/push-contract";
+import { nativeResponsibilityContractSchemas } from "@/lib/mobile/responsibility-contracts";
 import { pluginManifestSchema } from "@/lib/plugins/contracts";
 import {
   MODEL_ASSIGNMENT_SCOPES,
@@ -33,10 +34,10 @@ import {
 import { voiceCommandInputSchema } from "@/lib/voice/command-input";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 31 as const;
-// v30 remains the byte-frozen rollback bridge. v31 adds owner-bound Companion
-// preference reads and explicit presentation-only mutation enrollment.
-export const NATIVE_API_PREVIOUS_VERSION = 30 as const;
+export const NATIVE_API_CURRENT_VERSION = 32 as const;
+// v31 remains the byte-frozen rollback bridge. v32 publishes exact-owner
+// Responsibility reads and separately enrolled draft, lifecycle and inbox controls.
+export const NATIVE_API_PREVIOUS_VERSION = 31 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -773,7 +774,13 @@ export type NativeOperation = Readonly<{
   mediaType?: "application/json" | "text/event-stream" | "multipart/form-data";
   responseMediaType?: "application/json" | "text/event-stream" | "audio/pcm";
   responseHeaders?: readonly NativeResponseHeader[];
+  successStatuses?: readonly (200 | 201)[];
+  errorStatuses?: readonly (400 | 401 | 403 | 404 | 409 | 413 | 415 | 503)[];
+  errorResponseSchema?: string;
+  pathParameters?: readonly NativePathParameter[];
   queryParameters?: readonly NativeQueryParameter[];
+  queryPolicy?: "exact";
+  requestBodyMaxBytes?: number;
   headerParameters?: readonly NativeHeaderParameter[];
   binaryResponse?: boolean;
 }>;
@@ -794,6 +801,15 @@ export type NativeQueryParameter = Readonly<{
   minimum?: number;
   maximum?: number;
   enumValues?: readonly string[];
+  defaultValue?: string | number;
+  description?: string;
+}>;
+
+export type NativePathParameter = Readonly<{
+  name: string;
+  minLength?: number;
+  maxLength?: number;
+  pattern?: string;
 }>;
 
 export type NativeHeaderParameter = Readonly<{
@@ -1668,6 +1684,69 @@ const v31Operations: readonly NativeOperation[] = [
     { headerParameters: [...companionOwnerHeaders, ...pluginMutationHeaders] }),
 ];
 
+const responsibilityReadOptions = {
+  queryPolicy: "exact",
+  errorResponseSchema: "NativeResponsibilityErrorResponse",
+  errorStatuses: [400, 401, 403, 409, 503],
+  responseHeaders: [{ name: "cache-control", description: "Private owner-scoped response; never stored.", constValue: "private, no-store" }],
+} as const satisfies Partial<NativeOperation>;
+const responsibilityDetailOptions = {
+  ...responsibilityReadOptions,
+  pathParameters: [{ name: "id", minLength: 79, maxLength: 79, pattern: "^responsibility:[a-f0-9]{64}$" }],
+  errorStatuses: [400, 401, 403, 404, 409, 503],
+} as const satisfies Partial<NativeOperation>;
+const responsibilityMutationOptions = {
+  ...responsibilityDetailOptions,
+  headerParameters: pluginMutationHeaders,
+  errorStatuses: [400, 401, 403, 404, 409, 413, 415, 503],
+} as const satisfies Partial<NativeOperation>;
+
+// These are the existing exact-owner web routes. A draft review grants no
+// execution or delivery authority; both admissions remain explicit controls.
+const v32Operations: readonly NativeOperation[] = [
+  ...v31Operations,
+  operation("responsibilities.list", "GET", "/api/responsibilities",
+    "Read a bounded recent list of the authenticated owner's Responsibility drafts.", "bearer", undefined, "NativeResponsibilityListResponse",
+    { ...responsibilityReadOptions, queryParameters: [queryParameter("limit", "integer", { minimum: 1, maximum: 100, defaultValue: 40,
+      description: "Canonical decimal integer from 1 through 100; duplicate and unknown query parameters are rejected." })] }),
+  operation("responsibilities.create", "POST", "/api/responsibilities",
+    "Create an inactive owner-bound draft with a durable replay receipt; does not activate checks or notifications.",
+    "bearer", "NativeResponsibilityCreateRequest", "NativeResponsibilityMutationResponse",
+    { ...responsibilityReadOptions, headerParameters: pluginMutationHeaders, requestBodyMaxBytes: 32_768,
+      successStatuses: [201, 200], errorStatuses: [400, 401, 403, 409, 413, 415, 503] }),
+  operation("responsibilities.get", "GET", "/api/responsibilities/{id}",
+    "Read an exact owned draft, optionally checking its non-activating review pins.", "bearer", undefined, "NativeResponsibilityReadResponse",
+    { ...responsibilityDetailOptions, queryParameters: [queryParameter("view", "string", { enumValues: ["review"] })] }),
+  operation("responsibilities.change", "PATCH", "/api/responsibilities/{id}",
+    "Update or review the exact draft revision and digests without activating execution or delivery.",
+    "bearer", "NativeResponsibilityChangeRequest", "NativeResponsibilityMutationResponse",
+    { ...responsibilityMutationOptions, requestBodyMaxBytes: 32_768 }),
+  operation("responsibilities.references", "GET", "/api/responsibilities/references",
+    "Read bounded authorized source, Work, procedure and Agent options; unavailable groups stay explicit and no authority is provisioned.",
+    "bearer", undefined, "NativeResponsibilityReferencesResponse", responsibilityReadOptions),
+  operation("responsibilities.lifecycle.get", "GET", "/api/responsibilities/{id}/lifecycle",
+    "Read the finite Meeting pilot's current lifecycle and bounded history, optionally previewing exact activation pins without activating.",
+    "bearer", undefined, "NativeResponsibilityLifecycleReadResponse",
+    { ...responsibilityDetailOptions, queryParameters: [queryParameter("view", "string", { enumValues: ["activation"] })] }),
+  operation("responsibilities.lifecycle.change", "POST", "/api/responsibilities/{id}/lifecycle",
+    "Explicitly activate, pause, resume or end the reviewed read-only Meeting pilot using exact revision, generation and replay identity.",
+    "bearer", "NativeResponsibilityLifecycleRequest", "NativeResponsibilityLifecycleMutationResponse",
+    { ...responsibilityMutationOptions, requestBodyMaxBytes: 4096 }),
+  operation("responsibilities.observations.list", "GET", "/api/responsibilities/{id}/observations",
+    "Read bounded authoritative observation receipts and the accepted baseline; clients cannot submit evidence or advance it.",
+    "bearer", undefined, "NativeResponsibilityObservationsResponse",
+    { ...responsibilityDetailOptions, queryParameters: [queryParameter("limit", "integer", { minimum: 1, maximum: 100, defaultValue: 25,
+      description: "Canonical decimal integer from 1 through 100; duplicate and unknown query parameters are rejected." })] }),
+  operation("responsibilities.notifications.get", "GET", "/api/responsibilities/{id}/notifications",
+    "Read the separate inbox admission and bounded candidate/delivery history, optionally previewing a non-activating enable request.",
+    "bearer", undefined, "NativeResponsibilityNotificationsReadResponse",
+    { ...responsibilityDetailOptions, queryParameters: [queryParameter("view", "string", { enumValues: ["enable"] })] }),
+  operation("responsibilities.notifications.change", "POST", "/api/responsibilities/{id}/notifications",
+    "Explicitly enable a reviewed finite owner-inbox admission or permanently stop it; never sends push, email or browser notifications.",
+    "bearer", "NativeResponsibilityNotificationControlRequest", "NativeResponsibilityNotificationsMutationResponse",
+    { ...responsibilityMutationOptions, requestBodyMaxBytes: 4096 }),
+];
+
 const nativeCompanionPreferencesResponseSchema = z.object({
   schemaVersion: z.literal(1), contract: z.literal(COMPANION_PREFERENCES_CONTRACT),
   snapshot: z.object({
@@ -1688,6 +1767,7 @@ const nativeCompanionPreferencesResponseSchema = z.object({
 }).strict();
 
 export const nativeContractSchemas = Object.freeze({
+  ...nativeResponsibilityContractSchemas,
   NativeCompanionPreferencesRequest: companionChangeSchema,
   NativeCompanionPreferencesResponse: nativeCompanionPreferencesResponseSchema,
   JsonObject: jsonObject,
@@ -1815,6 +1895,7 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 29) return v29Operations;
   if (version === 30) return v30Operations;
   if (version === 31) return v31Operations;
+  if (version === 32) return v32Operations;
   return undefined;
 }
 
@@ -1824,7 +1905,7 @@ export function nativeContractDiscovery() {
     contractId: NATIVE_API_CONTRACT_ID,
     currentVersion: NATIVE_API_CURRENT_VERSION,
     previousVersion: NATIVE_API_PREVIOUS_VERSION,
-    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [31, 30],
+    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [32, 31],
     versions: NATIVE_API_SUPPORTED_VERSIONS.map((version) => ({
       version,
       state: version === NATIVE_API_CURRENT_VERSION ? "current" as const : "previous" as const,
@@ -1862,6 +1943,12 @@ function operation(
     | "binaryResponse"
     | "responseMediaType"
     | "responseHeaders"
+    | "successStatuses"
+    | "errorStatuses"
+    | "errorResponseSchema"
+    | "pathParameters"
+    | "queryPolicy"
+    | "requestBodyMaxBytes"
   > = {},
 ): NativeOperation {
   return {

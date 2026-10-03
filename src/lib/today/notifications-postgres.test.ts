@@ -19,7 +19,7 @@ const dbMocks = vi.hoisted(() => {
   const transaction = vi.fn(
     (operation: (transactionSql: typeof sql) => unknown) => operation(sql),
   );
-  Object.assign(sql, { query, transaction });
+  Object.assign(sql, { query, transaction, transactionScoped: true });
   return {
     ensureDatabaseSchema: vi.fn(async () => undefined),
     getDatabaseTenantContext: vi.fn(() => undefined),
@@ -70,7 +70,9 @@ import {
   listNotifications,
   markAllNotificationsRead,
   updatePersonalNotification,
+  recordResponsibilityInboxNotificationWithSql,
 } from "@/lib/today/notifications";
+import { notificationMutationFromRequest, notificationSha256 } from "@/lib/today/notification-events";
 
 const authUserId = "11111111-1111-4111-8111-111111111111";
 const actorId = "notification-owner@example.test";
@@ -120,6 +122,46 @@ beforeEach(() => {
 });
 
 describe("Postgres personal notification owner reads", () => {
+  it("filters unsupported Responsibility notifications before the bounded list window", async () => {
+    await listNotifications(1, { tenantId: "tenant-a", actorId, requestActorBinding: binding, includeResponsibilityChanges: false });
+    const statement = dbMocks.statements[0];
+    expect(statement.params).toEqual(["tenant-a", canonicalActorId, actorId, false, 1]);
+    expect(statement.text.indexOf("kind <> 'responsibility_change'")).toBeGreaterThan(0);
+    expect(statement.text.indexOf("kind <> 'responsibility_change'")).toBeLessThan(statement.text.indexOf("LIMIT"));
+  });
+  it("does not acknowledge a new notification kind through an older client's exact-item request", async () => {
+    dbMocks.queryResponses.push([{ ...notificationRow("inbox-a", canonicalActorId), kind: "responsibility_change", source_type: "responsibility_change",
+      source_id: `responsibility:${"a".repeat(64)}`, occurrence_key: `responsibility-notification:${"b".repeat(64)}`, urgency: "update" }]);
+    const mutation = notificationMutationFromRequest(new Request("https://example.test/api/notifications/inbox-a", { headers: { "Idempotency-Key": "old-client-exact" } }),
+      { tenantId: "tenant-a", actorId, role: "operator", source: "session", auth: { userId: authUserId, email: actorId, sessionId: "fixture", tenantName: "Fixture" } }, "inbox-a");
+    expect(await updatePersonalNotification("inbox-a", "read", { tenantId: "tenant-a", actorId, requestActorBinding: binding, mutation, includeResponsibilityChanges: false })).toBeUndefined();
+    expect(dbMocks.sql).not.toHaveBeenCalled();
+  });
+  it("writes only the fixed Responsibility inbox variant and refuses mismatched persisted identity", async () => {
+    const responsibilityId = `responsibility:${"a".repeat(64)}`; const candidateId = `responsibility-notification:${"b".repeat(64)}`;
+    const input = { tenantId: "tenant-a", actorId: canonicalActorId, responsibilityId, candidateId, now: "2026-09-04T12:00:00.000Z" };
+    const id = `notification_${notificationSha256([input.tenantId, input.actorId, responsibilityId, candidateId]).slice(0, 48)}`;
+    const row = { ...notificationRow(id, canonicalActorId), kind: "responsibility_change", source_type: "responsibility_change", source_id: responsibilityId,
+      occurrence_key: candidateId, title: "Responsibility change", urgency: "update" };
+    dbMocks.rows.push(row);
+    expect(await recordResponsibilityInboxNotificationWithSql(dbMocks.getSql() as unknown as Parameters<typeof recordResponsibilityInboxNotificationWithSql>[0], input))
+      .toMatchObject({ id, kind: "responsibility_change", sourceId: responsibilityId, actorId: canonicalActorId });
+    dbMocks.rows[0] = { ...row, id: "notification-unrelated" };
+    await expect(recordResponsibilityInboxNotificationWithSql(dbMocks.getSql() as unknown as Parameters<typeof recordResponsibilityInboxNotificationWithSql>[0], input)).rejects.toThrow("does not match");
+    expect(dependencyMocks.updateTodayItem).not.toHaveBeenCalled();
+  });
+  it("binds canonical Responsibility actions to the current request and never completes or snoozes Today work", async () => {
+    const row = { ...notificationRow("inbox-a", canonicalActorId), kind: "responsibility_change", source_type: "responsibility_change",
+      source_id: `responsibility:${"a".repeat(64)}`, occurrence_key: `responsibility-notification:${"b".repeat(64)}`, urgency: "update" };
+    for (const action of ["complete", "snooze"] as const) {
+      dbMocks.queryResponses.push([row]);
+      const mutation = notificationMutationFromRequest(new Request("https://example.test/api/notifications/inbox-a", { headers: { "Idempotency-Key": `inbox-${action}` } }),
+        { tenantId: "tenant-a", actorId, role: "operator", source: "session", auth: { userId: authUserId, email: actorId, sessionId: "fixture", tenantName: "Fixture" } }, "inbox-a");
+      await expect(updatePersonalNotification("inbox-a", action, { tenantId: "tenant-a", actorId, requestActorBinding: binding, mutation })).rejects.toThrow("only read and dismiss");
+    }
+    expect(dbMocks.queries[0].params).toEqual(["inbox-a", "tenant-a", canonicalActorId, actorId]);
+    expect(dependencyMocks.updateTodayItem).not.toHaveBeenCalled(); expect(dbMocks.sql).not.toHaveBeenCalled();
+  });
   it("returns the first snooze effect without extending it on a lost-response retry", async () => {
     const notification = notificationRow("notification-a", actorId);
     const executionScope = {
@@ -223,6 +265,7 @@ describe("Postgres personal notification owner reads", () => {
       "tenant-a",
       canonicalActorId,
       actorId,
+      true,
       2,
     ]);
   });
@@ -254,6 +297,7 @@ describe("Postgres personal notification owner reads", () => {
       "tenant-a",
       actorId,
       actorId,
+      true,
       5,
     ]);
 
@@ -270,6 +314,7 @@ describe("Postgres personal notification owner reads", () => {
       "tenant-a",
       actorId,
       actorId,
+      true,
       5,
     ]);
   });
@@ -288,6 +333,7 @@ describe("Postgres personal notification owner reads", () => {
       "tenant-a",
       canonicalActorId,
       actorId,
+      true,
       60,
     ]);
 
@@ -307,6 +353,7 @@ describe("Postgres personal notification owner reads", () => {
       "tenant-a",
       actorId,
       actorId,
+      true,
       60,
     ]);
     expect(dependencyMocks.listTodayItems).not.toHaveBeenCalled();
@@ -325,6 +372,8 @@ function notificationRow(id: string, ownerActorId: string) {
     occurrence_key: "2026-09-04T12:30:00.000Z",
     urgency: "due_soon",
     status: "unread",
+    snoozed_until: null,
+    read_at: null,
     due_at: "2026-09-04T12:30:00.000Z",
     created_at: "2026-09-04T10:00:00.000Z",
     updated_at: "2026-09-04T12:00:00.000Z",

@@ -96,6 +96,15 @@ export function projectActivityApproval(
 
 export function projectActivityNotification(notification: PersonalNotification): ActivityItem | undefined {
   const at = date(notification.updatedAt);
+  if (notification.kind === "responsibility_change" && notification.sourceType === "responsibility_change") {
+    if (!activityId(notification.id) || !/^responsibility:[a-f0-9]{64}$/.test(notification.sourceId) || !at || !["unread", "read", "dismissed"].includes(notification.status)) return undefined;
+    const sourceRef: ActivityReference = { kind: "notification", id: notification.id };
+    return { id: `notification:${notification.id}`, group: notification.status === "unread" ? "updates" : "history",
+      workKey: notification.sourceId, source: "notifications", sourceRef, references: [sourceRef], title: "Responsibility change",
+      summary: notification.status === "unread" ? "A material change is available in your Responsibility."
+        : notification.status === "read" ? "This Responsibility update has been read." : "This Responsibility update was dismissed.",
+      status: notification.status, timestamp: { at, basis: "updated" }, href: `/app/responsibilities/${encodeURIComponent(notification.sourceId)}` };
+  }
   if (!activityId(notification.id) || !activityId(notification.sourceId) || !at ||
     notification.kind !== "reminder" || notification.sourceType !== "today_item" ||
     !["unread", "read", "snoozed", "dismissed", "acted"].includes(notification.status)) return undefined;

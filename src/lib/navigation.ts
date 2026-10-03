@@ -149,6 +149,12 @@ export const appNav: AppNavItem[] = [
     icon: Workflow,
   },
   {
+    href: "/app/responsibilities",
+    label: "Responsibilities",
+    description: "Review bounded follow-through, exact evidence, limits, and lifecycle.",
+    icon: CalendarDays,
+  },
+  {
     href: "/app/memory",
     label: "Memory",
     description: "What your second brain knows and remembers.",

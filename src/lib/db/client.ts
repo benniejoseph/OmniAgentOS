@@ -71,6 +71,14 @@ let maintenanceScopedSqlClient: SqlClient | null = null;
 let schemaReady: Promise<void> | null = null;
 let schemaMigrationReady: Promise<void> | null = null;
 const databaseScope = new AsyncLocalStorage<DatabaseScope>();
+type ManagedTransactionCapability = { active: boolean; scope: DatabaseScope | undefined; rollbackOnly?: { reason: unknown }; joined: boolean; inFlight: number };
+type JoinedTransactionContext = {
+  active: boolean; capability: ManagedTransactionCapability; sql: SqlClient; client: SqlClient;
+  tail: Promise<unknown>; pending: Set<Promise<unknown>>;
+};
+const managedTransactionCapabilities = new WeakMap<SqlClient, ManagedTransactionCapability>();
+const joinedTransactionContext = new AsyncLocalStorage<JoinedTransactionContext>();
+const joinedStatementDispatch = new AsyncLocalStorage<ManagedTransactionCapability>();
 
 const DEFAULT_SCHEMA_VERIFICATION_TIMEOUT_MS = 10_000;
 const MIN_SCHEMA_VERIFICATION_TIMEOUT_MS = 1_000;
@@ -301,6 +309,11 @@ export async function getVectorStoreStatus() {
 // automatically wrapped in a short transaction that sets omni.tenant_id
 // locally when a tenant context is active.
 export function getSql(): SqlClient {
+  const joined = joinedTransactionContext.getStore();
+  if (joined) {
+    assertJoinedTransactionScope(joined);
+    return joined.client;
+  }
   const scope = databaseScope.getStore();
   if (scope?.kind === "system") {
     if (hasMaintenanceDatabaseUrl()) {
@@ -323,6 +336,115 @@ export function getSql(): SqlClient {
     scopedSqlClient = createTenantScopedSqlClient(getRawPg(), false, getRawPg);
   }
   return scopedSqlClient;
+}
+
+/** Explicitly joins one manager-owned transaction for the closed responsibility
+ * Meeting-read pilot and its normal audit stores. This is not a general scoped
+ * store adapter: memory-access/other transaction-local scope installers fail.
+ * Nested
+ * callbacks share the outer commit; any failure makes that commit rollback-only.
+ * No provider effects, transaction controls, wider actor scope or system scope
+ * are introduced. Ordinary callers retain their existing transaction behavior.
+ */
+export async function runWithManagedDatabaseTransaction<T>(sql: SqlClient, operation: () => Promise<T>): Promise<T> {
+  const capability = managedTransactionCapabilities.get(sql);
+  if (!capability?.active || !sql.transactionScoped || capability.scope?.kind !== "tenant" || !capability.scope.tenantId || !capability.scope.actorIds.length) {
+    throw joinedTransactionError("A live managed actor transaction is required.");
+  }
+  if (joinedTransactionContext.getStore() || capability.joined || capability.inFlight) {
+    const error = joinedTransactionError("Transaction adoption requires an idle outer callback and cannot be nested.");
+    capability.rollbackOnly ??= { reason: error };
+    throw error;
+  }
+  const context: JoinedTransactionContext = { active: true, capability, sql, client: sql, tail: Promise.resolve(), pending: new Set() };
+  context.client = createJoinedTransactionClient(context);
+  capability.joined = true;
+  try {
+    return await joinedTransactionContext.run(context, async () => {
+      assertJoinedTransactionScope(context);
+      const result = await operation();
+      if (context.pending.size) throw joinedTransactionError("A joined transaction callback returned with outstanding work.", "DATABASE_RESERVATION_INFLIGHT");
+      if (capability.rollbackOnly) throw capability.rollbackOnly.reason;
+      return result;
+    });
+  } catch (error) {
+    capability.rollbackOnly ??= { reason: error };
+    throw error;
+  } finally {
+    context.active = false;
+    // Drain already-issued bounded statements and scope restoration before the
+    // manager can roll back/release. Queued work sees active=false and refuses
+    // to begin. The existing server and reservation deadlines remain in force.
+    await Promise.allSettled([...context.pending]);
+    capability.joined = false;
+  }
+}
+
+function createJoinedTransactionClient(context: JoinedTransactionContext): SqlClient {
+  const issue = (statement: string, operation: () => Promise<SqlRow[]>): Promise<SqlRow[]> => {
+    let scope: DatabaseScope;
+    try { scope = assertJoinedTransactionScope(context); assertJoinedStatement(statement); }
+    catch (error) { context.capability.rollbackOnly ??= { reason: error }; return Promise.reject(error); }
+    const pending = context.tail.then(async () => {
+      assertJoinedTransactionScope(context, scope);
+      return joinedStatementDispatch.run(context.capability, async () => {
+        try {
+          await applyDatabaseScope(context.sql, scope);
+          assertJoinedTransactionScope(context, scope);
+          return await operation();
+        } finally {
+          // Scope restoration belongs to the queued unit, so concurrent narrow
+          // readers cannot interleave SET LOCAL with one another's query.
+          await applyDatabaseScope(context.sql, context.capability.scope);
+        }
+      });
+    }).catch((error: unknown) => { context.capability.rollbackOnly ??= { reason: error }; throw error; });
+    context.tail = pending.catch(() => undefined);
+    trackJoinedOperation(context, pending);
+    return pending;
+  };
+  const client = ((strings: TemplateStringsArray, ...params: unknown[]) => issue(strings.join("?"), () => context.sql(strings, ...params))) as SqlClient;
+  client.query = (text, params) => issue(text, () => context.sql.query(text, params));
+  client.unsafe = (text, params) => issue(text, () => context.sql.unsafe(text, params));
+  client.transaction = (callback: unknown) => {
+    const pending = Promise.resolve().then(async () => {
+      assertJoinedTransactionScope(context);
+      if (typeof callback !== "function") throw joinedTransactionError("Database transactions require an async callback.");
+      const result = (callback as (sql: SqlClient) => unknown)(client);
+      return Array.isArray(result) ? await Promise.all(result) : await result;
+    }).catch((error: unknown) => { context.capability.rollbackOnly ??= { reason: error }; throw error; });
+    trackJoinedOperation(context, pending);
+    return pending;
+  };
+  Object.defineProperty(client, "transactionScoped", { value: true });
+  return client;
+}
+function trackJoinedOperation(context: JoinedTransactionContext, pending: Promise<unknown>) {
+  context.pending.add(pending);
+  void pending.then(() => context.pending.delete(pending), () => context.pending.delete(pending));
+}
+function assertJoinedTransactionScope(context: JoinedTransactionContext, captured = snapshotDatabaseScope(databaseScope.getStore())): DatabaseScope {
+  const outer = context.capability.scope;
+  if (context.capability.rollbackOnly) throw context.capability.rollbackOnly.reason;
+  if (!context.active || !context.capability.active) throw joinedTransactionError("This managed transaction context is no longer active.");
+  if (outer?.kind !== "tenant" || captured?.kind !== "tenant" || captured.tenantId !== outer.tenantId || !captured.actorIds.length || captured.actorIds.some((id) => !outer.actorIds.includes(id))) {
+    const error = joinedTransactionError("A joined transaction cannot widen or replace its tenant and actor scope.");
+    context.capability.rollbackOnly ??= { reason: error };
+    throw error;
+  }
+  return captured;
+}
+function joinedTransactionError(message: string, code = "DATABASE_TRANSACTION_CONTEXT_INVALID") { return Object.assign(new Error(message), { code }); }
+function assertJoinedStatement(statement: string) {
+  assertNotTransactionControlStatement(statement);
+  const executable = statement.slice(skipLeadingDatabaseSqlTrivia(statement));
+  // Existing memory scope callbacks set a transaction-local access GUC and
+  // then read. Statement-level serialization cannot isolate that multi-query
+  // protocol, so this pilot refuses every extra setting installer (including
+  // schema-qualified/quoted set_config calls) before it touches the connection.
+  if (!/^(?:select|insert|update|delete|with)\b/i.test(executable.trimStart()) || /\bset_config\b/i.test(executable)) {
+    throw joinedTransactionError("Extra transaction-local scope installers are unavailable in the responsibility audit context.", "DATABASE_TRANSACTION_EXTRA_SCOPE_UNSUPPORTED");
+  }
 }
 
 export function enterDatabaseTenantContext(tenantId?: string) {
@@ -1332,7 +1454,15 @@ function createTenantScopedSqlClient(
     const startedAt = performance.now();
     try {
       if (scopeAlreadyApplied) {
-        return await fn(pg);
+        const capability = managedTransactionCapabilities.get(scoped);
+        if (capability?.joined && joinedStatementDispatch.getStore() !== capability) {
+          const error = joinedTransactionError("Use the joined client while its scoped transaction context is active.");
+          capability.rollbackOnly ??= { reason: error };
+          throw error;
+        }
+        if (capability) capability.inFlight += 1;
+        try { return await fn(pg); }
+        finally { if (capability) capability.inFlight -= 1; }
       }
       const scope = snapshotDatabaseScope(databaseScope.getStore());
       const execute = (pool: AnyPg) =>
@@ -1395,6 +1525,12 @@ function createTenantScopedSqlClient(
   // Only callback transactions are safe here. Promise arrays begin executing
   // before pg.begin can apply tenant scope and therefore cannot be atomic.
   scoped.transaction = (queriesOrFn: unknown) => {
+    const parentCapability = managedTransactionCapabilities.get(scoped);
+    if (parentCapability?.joined) {
+      const error = joinedTransactionError("Use getSql().transaction() to join this active context.");
+      parentCapability.rollbackOnly ??= { reason: error };
+      return Promise.reject(error);
+    }
     const scope = snapshotDatabaseScope(databaseScope.getStore());
     if (typeof queriesOrFn !== "function") {
       throw new Error("Database transactions require an async callback.");
@@ -1406,8 +1542,18 @@ function createTenantScopedSqlClient(
       );
       return withReservedDatabaseTransaction(transactionPool, scope, async (tx) => {
         const txScoped = createTenantScopedSqlClient(tx, true);
-        const result = (queriesOrFn as (s: SqlClient) => unknown)(txScoped);
-        return Array.isArray(result) ? Promise.all(result) : result;
+        const capability: ManagedTransactionCapability = { active: true, scope, joined: false, inFlight: 0 };
+        managedTransactionCapabilities.set(txScoped, capability);
+        try {
+          const result = (queriesOrFn as (s: SqlClient) => unknown)(txScoped);
+          const settled = Array.isArray(result) ? await Promise.all(result) : await result;
+          if (capability.joined) capability.rollbackOnly ??= { reason: joinedTransactionError("The owner callback returned while an adopted transaction was active.", "DATABASE_RESERVATION_INFLIGHT") };
+          if (capability.rollbackOnly) throw capability.rollbackOnly.reason;
+          return settled;
+        } finally {
+          capability.active = false;
+          managedTransactionCapabilities.delete(txScoped);
+        }
       });
     })();
   };

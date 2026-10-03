@@ -6,6 +6,8 @@ const routeMocks = vi.hoisted(() => ({
   processAllTenantDurableSpecialistQueues: vi.fn(),
   processAllTenantWorkflowQueues: vi.fn(),
   processDueWorkflowSchedules: vi.fn(),
+  processDueResponsibilities: vi.fn(),
+  processDueResponsibilityNotifications: vi.fn(),
   processDueWorkflowSchedulesForTenant: vi.fn(),
   processPendingMemoryDeletionScrubs: vi.fn(),
   processPendingMemoryGraphRebuilds: vi.fn(),
@@ -37,6 +39,15 @@ const routeMocks = vi.hoisted(() => ({
   processAgentResumeQueue: vi.fn(),
   processDurableSpecialistQueue: vi.fn(),
   processBackgroundOperationQueue: vi.fn(),
+}));
+
+vi.mock("@/lib/responsibilities/scheduler", () => ({
+  processDueResponsibilities: routeMocks.processDueResponsibilities,
+  emptyResponsibilityScheduleSummary: () => ({ inspected: 0, enqueued: 0, reconciled: 0, blocked: 0, failed: 0 }),
+}));
+vi.mock("@/lib/responsibilities/notification-delivery", () => ({
+  processDueResponsibilityNotifications: routeMocks.processDueResponsibilityNotifications,
+  emptyResponsibilityNotificationSummary: () => ({ inspected: 0, delivered: 0, held: 0, closed: 0, failed: 0 }),
 }));
 
 vi.mock("@/lib/db/client", async (importOriginal) => ({
@@ -265,6 +276,8 @@ const emptySpecialistQueue = {
 };
 
 beforeEach(() => {
+  routeMocks.processDueResponsibilities.mockReset().mockResolvedValue({ inspected: 0, enqueued: 0, reconciled: 0, blocked: 0, failed: 0 });
+  routeMocks.processDueResponsibilityNotifications.mockReset().mockResolvedValue({ inspected: 0, delivered: 0, held: 0, closed: 0, failed: 0 });
   vi.stubEnv("OMNIAGENT_WORKER_PROTOCOL_VERSION", "1");
   routeMocks.authorizeRequest.mockReset().mockResolvedValue({
     tenantId: "system",
@@ -524,10 +537,31 @@ describe("dedicated worker heartbeat timing", () => {
       expect(response.status).toBe(200);
     }
     expect(routeMocks.processDueWorkflowSchedules).not.toHaveBeenCalled();
+    expect(routeMocks.processDueResponsibilities).not.toHaveBeenCalled();
+    expect(routeMocks.processDueResponsibilityNotifications).not.toHaveBeenCalled();
 
     const response = await POST(workerRequest({ startup: false, lane: "all" }));
     expect(response.status).toBe(200);
     expect(routeMocks.processDueWorkflowSchedules).toHaveBeenCalledOnce();
+    expect(routeMocks.processDueResponsibilities).toHaveBeenCalledOnce();
+    expect(routeMocks.processDueResponsibilityNotifications).toHaveBeenCalledWith({ limit: 5, deadlineAt: expect.any(Number) });
+    expect(routeMocks.processDueResponsibilities.mock.invocationCallOrder[0]).toBeLessThan(routeMocks.processAllTenantWorkflowQueues.mock.invocationCallOrder.at(-1)!);
+  });
+
+  it("keeps ordinary queue dispatch available after a responsibility discovery failure", async () => {
+    routeMocks.processDueResponsibilities.mockRejectedValue(new Error("responsibility discovery unavailable"));
+    const response = await POST(workerRequest({ startup: false, lane: "fast" }));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ responsibilitySchedulesError: "responsibility discovery unavailable" });
+    expect(routeMocks.processAllTenantWorkflowQueues).toHaveBeenCalledOnce();
+  });
+
+  it("keeps workflow dispatch independent of a failed in-app notification drain", async () => {
+    routeMocks.processDueResponsibilityNotifications.mockRejectedValue(new Error("in-app drain unavailable"));
+    const response = await POST(workerRequest({ startup: false, lane: "fast" }));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ responsibilityNotificationsError: "in-app drain unavailable" });
+    expect(routeMocks.processAllTenantWorkflowQueues).toHaveBeenCalledOnce();
   });
 
   it("reports a failed schedule pass and still dispatches queued work", async () => {

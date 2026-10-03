@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import postgres from "postgres";
+import { removeEmptyResponsibilityRuntimeForReplay } from "./helpers/responsibility-replay";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import {
   buildAgentRunIdentityPinV1,
@@ -6742,9 +6743,9 @@ databaseDescribe("Postgres schema integration", () => {
       expect(await systemScopeEnabledFor(admin, scopeProbeRole)).toBe(false);
       const oldReport = await isolationReport();
       expect(oldReport.status).toBe("degraded");
-      expect([...oldReport.summary.missingTables].sort()).toEqual(companionReplayTables);
+      expect([...oldReport.summary.missingTables].sort()).toEqual(additiveDraftReplayTables);
       expect([...oldReport.summary.missingPolicies].sort()).toEqual(
-        [...oldRunnerTenantWidePolicyTables, ...companionReplayTables].sort(),
+        [...oldRunnerTenantWidePolicyTables, ...additiveDraftReplayTables].sort(),
       );
 
       // A CHECK that matches neither catalog stops the migration, and what it
@@ -6816,11 +6817,11 @@ databaseDescribe("Postgres schema integration", () => {
     `;
     // Each one covers every command and role, as its restore below does.
     expect(restrictivePolicies.map(({ command, roles }) => ({ command, roles })))
-      .toEqual(Array(51).fill({ command: "*", roles: "{0}" }));
+      .toEqual(Array(63).fill({ command: "*", roles: "{0}" }));
     expect(restrictivePolicies.filter((policy) =>
-      companionReplayTables.includes(policy.table_name),
+      additiveDraftReplayTables.includes(policy.table_name),
     ).map(({ table_name, policy_name }) => ({ table_name, policy_name })))
-      .toEqual(companionReplayTables.map((tableName) => ({
+      .toEqual(additiveDraftReplayTables.map((tableName) => ({
         table_name: tableName,
         policy_name: `${tableName}_actor`,
       })));
@@ -9448,6 +9449,65 @@ databaseDescribe("Postgres schema integration", () => {
     }
     await expect(verifyMigratedDatabase()).resolves.toEqual(verified);
   });
+
+  test("responsibility drafts keep exact actor RLS, CAS, replay and atomic non-activating evidence", async () => {
+    await ensureDatabaseSchema();
+    const { changeResponsibility, listResponsibilities, readResponsibility, replayResponsibility } = await import("@/lib/responsibilities/store");
+    const { prepareResponsibilityChange, responsibilityId, reviewPreview } = await import("@/lib/responsibilities/state");
+    const { draftFixture, pinsFixture } = await import("@/lib/responsibilities/test-fixtures");
+    const draft = { ...draftFixture, cadence: { ...draftFixture.cadence!, startsAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 7 * 86_400_000).toISOString() } };
+    const owner = { tenantId: "responsibility-integration", actorId: "actor:22222222-2222-4222-8222-222222222222" };
+    const key = "integration-create";
+    const id = responsibilityId(owner, key);
+    const create = { action: "create" as const, expectedRevision: 0 as const, draft };
+    const pair = await Promise.all([changeResponsibility(owner, id, create, key), changeResponsibility(owner, id, create, key)]);
+    expect(pair.map((item) => item.replayed).sort()).toEqual([false, true]);
+    expect(pair[0].receipt).toEqual(pair[1].receipt);
+    expect(await readResponsibility({ ...owner, actorId: "other-owner" }, id)).toBeUndefined();
+    expect(await listResponsibilities({ ...owner, tenantId: "other-tenant" }, 10)).toEqual({ records: [], hasMore: false });
+    const updates = await Promise.allSettled(["first", "second"].map((purpose) => changeResponsibility(owner, id,
+      { action: "update", expectedRevision: 1, draft: { ...draft, purpose } }, `update-${purpose}`)));
+    expect(updates.filter((value) => value.status === "fulfilled")).toHaveLength(1);
+    expect((updates.find((value) => value.status === "rejected") as PromiseRejectedResult).reason).toMatchObject({ code: "responsibility_revision_conflict" });
+    const current = (await readResponsibility(owner, id))!;
+    expect(current.revision).toBe(2);
+    const replay = await replayResponsibility(owner, id, create, key);
+    expect(replay?.receipt.snapshot.revision).toBe(1);
+    expect(replay?.current.revision).toBe(2);
+    const preview = reviewPreview(current, pinsFixture);
+    const reviewed = await changeResponsibility(owner, id, { action: "review", expectedRevision: 2,
+      draftSha256: preview.draftSha256, reviewSha256: preview.reviewSha256 }, "integration-review", preview);
+    expect(reviewed.current.state).toBe("reviewed");
+    expect(reviewed.receipt).toMatchObject({ authorityEffect: "none", activationSupported: false });
+    expect(await admin`SELECT type, payload FROM omni_events WHERE id = ${reviewed.receipt.id}`).toEqual([
+      expect.objectContaining({ type: "responsibility.draft.reviewed", payload: expect.objectContaining({ authorityEffect: "none", scheduled: false, notificationCreated: false }) }),
+    ]);
+    await expect(admin`UPDATE omni_responsibility_mutations SET action = 'updated' WHERE id = ${reviewed.receipt.id}`).rejects.toMatchObject({ code: "23514" });
+    await expect(admin`DELETE FROM omni_responsibilities WHERE id = ${id}`).rejects.toMatchObject({ code: "23514" });
+    const uncommitted = prepareResponsibilityChange({ owner, id, mutation: { action: "update", expectedRevision: 3, draft }, key: "no-receipt", now: new Date().toISOString(), current: reviewed.current }).current;
+    await expect(admin.begin(async (transaction) => {
+      await transaction`UPDATE omni_responsibilities SET revision = ${uncommitted.revision}, state = ${uncommitted.state},
+        draft_sha256 = ${uncommitted.draftSha256}, snapshot = ${JSON.stringify(uncommitted)}::jsonb, updated_at = ${uncommitted.updatedAt}
+        WHERE id = ${id}`;
+    })).rejects.toMatchObject({ code: "23514" });
+    expect((await readResponsibility(owner, id))?.revision).toBe(3);
+
+    const draftReader = "responsibility_draft_integration_reader";
+    await dropDatabaseRole(admin, draftReader);
+    await admin.unsafe(`CREATE ROLE ${draftReader} NOLOGIN NOSUPERUSER NOBYPASSRLS`);
+    try {
+      await admin.unsafe(`GRANT USAGE ON SCHEMA public TO ${draftReader}`);
+      await admin.unsafe(`GRANT SELECT ON omni_responsibilities, omni_responsibility_mutations TO ${draftReader}`);
+      const readAs = (tenantId: string, actorId: string) => admin.begin(async (transaction) => {
+        await transaction.unsafe(`SET LOCAL ROLE ${draftReader}`);
+        await transaction`SELECT set_config('omni.tenant_id', ${tenantId}, true), set_config('omni.actor_scope_v1', ${JSON.stringify({ version: 1, tenantId, actorIds: [actorId] })}, true)`;
+        return transaction`SELECT id FROM omni_responsibilities WHERE id = ${id}`;
+      });
+      expect(await readAs(owner.tenantId, owner.actorId)).toEqual([{ id }]);
+      expect(await readAs(owner.tenantId, "other-owner")).toEqual([]);
+      expect(await readAs("other-tenant", owner.actorId)).toEqual([]);
+    } finally { await dropDatabaseRole(admin, draftReader); }
+  });
 });
 
 async function dropDatabaseRole(
@@ -9508,9 +9568,25 @@ const schemaConvergenceVersion = 208;
 const refreshRotationRetryVersion = 209;
 const oauthSyncBackoffVersion = 210;
 const companionPreferencesVersion = 215;
-const companionReplayTables: readonly string[] = [
+const responsibilityDraftsVersion = 216;
+const responsibilityObservationsVersion = 217;
+const responsibilityRuntimeVersion = 218;
+const responsibilityNotificationsVersion = 219;
+const additiveDraftReplayTables: readonly string[] = [
   "omni_companion_preference_mutations",
   "omni_companion_preferences",
+  "omni_responsibilities",
+  "omni_responsibility_baselines",
+  "omni_responsibility_budget_entries",
+  "omni_responsibility_changes",
+  "omni_responsibility_lifecycles",
+  "omni_responsibility_mutations",
+  "omni_responsibility_notification_admissions",
+  "omni_responsibility_notification_candidates",
+  "omni_responsibility_notification_receipts",
+  "omni_responsibility_observations",
+  "omni_responsibility_runtime_receipts",
+  "omni_responsibility_wakes",
 ];
 
 // A native client that attests an Android build.
@@ -9829,10 +9905,10 @@ function withoutScopeInitplans(expression: string) {
 }
 
 // Ledger-only verification probes keep the catalog intact. Historical replay
-// also removes v215's additive objects: its CREATE statements must encounter
+// also removes v215/v216 additive objects: their CREATE statements must encounter
 // the actual predecessor schema, not tables left behind after a ledger reset.
-// This is only for this suite's empty, disposable Companion tables. A later
-// migration or seeded Companion data requires an explicit fixture adaptation.
+// This is only for this suite's empty, disposable preference/draft tables.
+// A later migration or seeded data requires an explicit fixture adaptation.
 async function withMigrationsPendingFrom<T>(
   client: ReturnType<typeof postgres>,
   version: number,
@@ -9847,10 +9923,36 @@ async function withMigrationsPendingFrom<T>(
   expect(recorded.map((row) => row.version)).toContain(version);
   if (replay) {
     expect(recorded.map((row) => row.version)).toContain(companionPreferencesVersion);
-    expect(recorded.every((row) => row.version <= companionPreferencesVersion)).toBe(true);
+    expect(recorded.map((row) => row.version)).toContain(responsibilityDraftsVersion);
+    expect(recorded.map((row) => row.version)).toContain(responsibilityObservationsVersion);
+    expect(recorded.map((row) => row.version)).toContain(responsibilityRuntimeVersion);
+    expect(recorded.map((row) => row.version)).toContain(responsibilityNotificationsVersion);
+    expect(recorded.every((row) => row.version <= responsibilityNotificationsVersion)).toBe(true);
   }
   await client.begin(async (transaction) => {
     if (replay) {
+      await removeEmptyResponsibilityRuntimeForReplay(transaction);
+      expect(await transaction`
+        SELECT (SELECT count(*)::int FROM public.omni_responsibility_observations) AS observations,
+          (SELECT count(*)::int FROM public.omni_responsibility_baselines) AS baselines,
+          (SELECT count(*)::int FROM public.omni_responsibility_changes) AS changes
+      `).toEqual([{ observations: 0, baselines: 0, changes: 0 }]);
+      await transaction`DROP TABLE public.omni_responsibility_changes`;
+      await transaction`DROP TABLE public.omni_responsibility_baselines`;
+      await transaction`DROP TABLE public.omni_responsibility_observations`;
+      await transaction`DROP FUNCTION public.omni_require_responsibility_observation_commit_v1()`;
+      await transaction`DROP FUNCTION public.omni_protect_responsibility_changes_v1()`;
+      await transaction`DROP FUNCTION public.omni_protect_responsibility_baselines_v1()`;
+      await transaction`DROP FUNCTION public.omni_protect_responsibility_observations_v1()`;
+      expect(await transaction`
+        SELECT (SELECT count(*)::int FROM public.omni_responsibilities) AS drafts,
+          (SELECT count(*)::int FROM public.omni_responsibility_mutations) AS receipts
+      `).toEqual([{ drafts: 0, receipts: 0 }]);
+      await transaction`DROP TABLE public.omni_responsibility_mutations`;
+      await transaction`DROP TABLE public.omni_responsibilities`;
+      await transaction`DROP FUNCTION public.omni_require_responsibility_receipt_v1()`;
+      await transaction`DROP FUNCTION public.omni_protect_responsibility_mutations_v1()`;
+      await transaction`DROP FUNCTION public.omni_protect_responsibility_drafts_v1()`;
       expect(await transaction`
         SELECT
           (SELECT count(*)::int FROM public.omni_companion_preferences) AS preferences,
@@ -9870,9 +9972,9 @@ async function withMigrationsPendingFrom<T>(
     return await operation();
   } finally {
     for (const row of recorded) {
-      // A replay that stopped before v215 must restore its objects through the
+      // A replay that stopped before v215/v216/v217/v218/v219 must restore objects through the
       // unmodified migration, not mark absent tables as already migrated.
-      if (replay && row.version === companionPreferencesVersion) continue;
+      if (replay && (row.version === companionPreferencesVersion || row.version === responsibilityDraftsVersion || row.version === responsibilityObservationsVersion || row.version === responsibilityRuntimeVersion || row.version === responsibilityNotificationsVersion)) continue;
       await client`
         INSERT INTO omni_schema_version (version, name, checksum, applied_at)
         SELECT ${row.version}::int, ${row.name}::text, ${row.checksum}::text,
@@ -9884,7 +9986,7 @@ async function withMigrationsPendingFrom<T>(
     }
     if (replay) {
       const restored = await client`
-        SELECT version FROM omni_schema_version WHERE version = ${companionPreferencesVersion}
+        SELECT version FROM omni_schema_version WHERE version = ${responsibilityNotificationsVersion}
       `;
       if (!restored.length) await migrateWithFreshClient();
       expect(await client`
@@ -9894,6 +9996,25 @@ async function withMigrationsPendingFrom<T>(
           to_regprocedure('public.omni_protect_companion_preferences_v1()') IS NOT NULL AS preference_guard,
           to_regprocedure('public.omni_protect_companion_preference_mutations_v1()') IS NOT NULL AS receipt_guard
       `).toEqual([{ preferences: true, receipts: true, preference_guard: true, receipt_guard: true }]);
+      expect(await client`
+        SELECT to_regclass('public.omni_responsibilities') IS NOT NULL AS drafts,
+          to_regclass('public.omni_responsibility_mutations') IS NOT NULL AS receipts,
+          to_regprocedure('public.omni_protect_responsibility_drafts_v1()') IS NOT NULL AS draft_guard,
+          to_regprocedure('public.omni_protect_responsibility_mutations_v1()') IS NOT NULL AS receipt_guard,
+          to_regprocedure('public.omni_require_responsibility_receipt_v1()') IS NOT NULL AS atomic_guard
+      `).toEqual([{ drafts: true, receipts: true, draft_guard: true, receipt_guard: true, atomic_guard: true }]);
+      expect(await client`
+        SELECT to_regclass('public.omni_responsibility_observations') IS NOT NULL AS observations,
+          to_regclass('public.omni_responsibility_baselines') IS NOT NULL AS baselines,
+          to_regclass('public.omni_responsibility_changes') IS NOT NULL AS changes,
+          to_regprocedure('public.omni_require_responsibility_observation_commit_v1()') IS NOT NULL AS atomic_guard
+      `).toEqual([{ observations: true, baselines: true, changes: true, atomic_guard: true }]);
+      expect(await client`
+        SELECT to_regclass('public.omni_responsibility_notification_admissions') IS NOT NULL AS admissions,
+          to_regclass('public.omni_responsibility_notification_candidates') IS NOT NULL AS candidates,
+          to_regclass('public.omni_responsibility_notification_receipts') IS NOT NULL AS receipts,
+          to_regprocedure('public.omni_require_responsibility_notification_commit_v1()') IS NOT NULL AS atomic_guard
+      `).toEqual([{ admissions: true, candidates: true, receipts: true, atomic_guard: true }]);
     }
   }
 }
@@ -9998,7 +10119,10 @@ async function convergenceDdlDuring(
       VALUES (
         tg_tag,
         CASE
-          WHEN strpos(current_query(), '$policies$') > 0 THEN 'policies'
+          -- Other additive migrations can use the same local dollar tag.
+          -- Only v208's original policy block belongs to this convergence probe.
+          WHEN strpos(current_query(), '$policies$') > 0
+            AND strpos(current_query(), 'omni_ap2_payment_receipts') > 0 THEN 'policies'
           WHEN strpos(current_query(), '$constraints$') > 0 THEN 'constraints'
           WHEN strpos(
             current_query(),

@@ -19,6 +19,7 @@ import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
 import { listThreads } from "@/lib/threads/store";
 import { todayActorReadOrder } from "@/lib/today/actor-scope";
+import type { SqlClient } from "@/lib/db/sql-types";
 import { listTodayItems } from "@/lib/today/store";
 import { listWorkflowRunSummaries } from "@/lib/workflows/store";
 import type {
@@ -152,6 +153,25 @@ export async function getTodayPreferences(options: TodayPreferenceRequestOptions
     actorId: options.actorId,
     requestActorBinding: options.requestActorBinding,
   });
+}
+
+/** A delivery-boundary read: never creates defaults, locks the exact physical
+ * preference row, and refuses ambiguous canonical/legacy destinations. */
+export async function findTodayNotificationPreferencesWithSql(sql: SqlClient, options: TodayPreferenceRequestOptions): Promise<TodayPreferences | undefined> {
+  if (!sql.transactionScoped) throw new Error("Notification preferences require a managed transaction.");
+  const tenantId = normalizeTenantId(options.tenantId);
+  const [canonicalActorId, exactActorId] = todayActorReadOrder(options.actorId, options.requestActorBinding);
+  const rows = await sql`SELECT * FROM omni_today_preferences WHERE tenant_id = ${tenantId}
+    AND (actor_id = ${canonicalActorId} OR actor_id = ${exactActorId}) ORDER BY actor_id LIMIT 2 FOR SHARE`;
+  if (rows.length > 1) throw new Error("Today preferences resolved to multiple physical rows.");
+  if (!rows[0]) return undefined;
+  const row = rows[0];
+  if (typeof row.notifications_enabled !== "boolean" || typeof row.quiet_hours_enabled !== "boolean" || typeof row.timezone !== "string" ||
+    !/^([01]\d|2[0-3]):[0-5]\d$/.test(String(row.quiet_hours_start)) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(String(row.quiet_hours_end))) {
+    throw new Error("Stored notification preferences are invalid.");
+  }
+  new Intl.DateTimeFormat("en", { timeZone: row.timezone }).format(new Date(0));
+  return preferencesFromRow(row);
 }
 
 /** The timezone an actor keeps for Today, without creating their preferences. */

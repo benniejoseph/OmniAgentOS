@@ -159,6 +159,17 @@ export async function tickWorkflowRun(
     throw new Error("Workflow execution authority is missing.");
   }
 
+  if (detail.run.status === "paused" || detail.run.status === "waiting_approval" || detail.run.status === "running") {
+    await appendWorkflowEvent(detail.run.id, "workflow.tick.noop", { status: detail.run.status });
+    return getWorkflowRunDetail(runId, { tenantId: options.tenantId }) as Promise<WorkflowRunDetail>;
+  }
+  if (Object.hasOwn(detail.run.input.metadata ?? {}, "responsibilityRuntime") || executionAuthority?.executionScope.purpose === "responsibility.runtime.v1") {
+    // This reviewed deterministic lane must never fall through to model
+    // planning, generic approval continuation or an unconstrained procedure.
+    const { tickResponsibilityWorkflow } = await import("@/lib/responsibilities/runtime");
+    return tickResponsibilityWorkflow(detail, options);
+  }
+
   if (detail.run.status === "queued") {
     const specialistGate = await inspectWorkflowSpecialistDependencies(detail);
     if (specialistGate.state === "pending") {
@@ -196,15 +207,6 @@ export async function tickWorkflowRun(
       detail,
       executionAuthority?.executionScope,
     );
-  }
-
-  if (
-    detail.run.status === "paused" ||
-    detail.run.status === "waiting_approval" ||
-    detail.run.status === "running"
-  ) {
-    await appendWorkflowEvent(detail.run.id, "workflow.tick.noop", { status: detail.run.status });
-    return getWorkflowRunDetail(runId, { tenantId: options.tenantId }) as Promise<WorkflowRunDetail>;
   }
 
   const stepKey = nextStepKey(detail);

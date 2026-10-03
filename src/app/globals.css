@@ -376,10 +376,13 @@ summary:focus-visible,
 .notification-item.is-overdue .notification-copy > div:first-child > span { color: var(--danger); background: oklch(from var(--danger) l c h / .08); }
 .notification-copy > p { margin-top: .32rem; color: var(--muted); font-size: .75rem; }
 .notification-actions { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .75rem; }
-.notification-actions button { display: inline-flex; min-height: 2rem; align-items: center; gap: .28rem; border: 1px solid var(--line); border-radius: .4rem; padding: 0 .5rem; color: var(--muted); font-size: .75rem; font-weight: 720; transition: color 140ms ease, border-color 140ms ease, background 140ms ease; }
-.notification-actions button:first-child { border-color: oklch(from var(--primary) l c h / .28); color: var(--primary); background: oklch(from var(--primary) l c h / .06); }
-.notification-actions button:hover { border-color: oklch(from var(--primary) l c h / .35); color: var(--foreground); }
-.notification-actions button:disabled { opacity: .45; }
+.notification-actions :is(button, a) { display: inline-flex; min-height: 2rem; align-items: center; gap: .28rem; border: 1px solid var(--line); border-radius: .4rem; padding: 0 .5rem; color: var(--muted); font-size: .75rem; font-weight: 720; transition: color 140ms ease, border-color 140ms ease, background 140ms ease; }
+.notification-actions :is(button, a):first-child { border-color: oklch(from var(--primary) l c h / .28); color: var(--primary); background: oklch(from var(--primary) l c h / .06); }
+.notification-actions :is(button, a):hover { border-color: oklch(from var(--primary) l c h / .35); color: var(--foreground); }
+.notification-actions :is(button, a):disabled { opacity: .45; }
+@media (pointer: coarse) {
+  .notification-actions :is(button, a) { min-height: 2.75rem; }
+}
 .notification-empty { display: grid; min-height: 13rem; place-items: center; align-content: center; padding: 1rem; color: var(--muted); text-align: center; }
 .notification-empty svg { margin-bottom: .7rem; color: var(--primary); }
 .notification-empty strong { color: var(--foreground); font-size: .78rem; }

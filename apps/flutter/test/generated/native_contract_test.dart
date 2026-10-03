@@ -3,9 +3,11 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   test('retains current and previous contract compatibility', () {
-    expect(NativeContract.currentVersion, 31);
-    expect(NativeContract.previousVersion, 30);
-    expect(NativeContract.supportedVersions, [31, 30]);
+    expect(NativeContract.currentVersion, 32);
+    expect(NativeContract.previousVersion, 31);
+    expect(NativeContract.supportedVersions, [32, 31]);
+    expect(NativeContract.supports(30), isFalse);
+    expect(NativeContract.supports(33), isFalse);
     expect(
       NativePaths.workspacesTasksUpdate('project one', 'task/two'),
       '/api/projects/project%20one/tasks/task%2Ftwo',
@@ -69,6 +71,51 @@ void main() {
       NativePaths.agentsTasksCancel('execution/one'),
       '/api/agents/tasks/execution%2Fone/cancel',
     );
+  });
+
+  test('publishes all ten authoritative Responsibility paths with exact encoding', () {
+    for (final operation in [
+      'responsibilities.list',
+      'responsibilities.create',
+      'responsibilities.get',
+      'responsibilities.change',
+      'responsibilities.references',
+      'responsibilities.lifecycle.get',
+      'responsibilities.lifecycle.change',
+      'responsibilities.observations.list',
+      'responsibilities.notifications.get',
+      'responsibilities.notifications.change',
+    ]) {
+      expect(NativeContract.supportsOperation(operation), isTrue);
+    }
+    final id = 'responsibility:${List.filled(64, 'a').join()}';
+    final path = '/api/responsibilities/${Uri.encodeComponent(id)}';
+    expect(NativePaths.responsibilitiesList(), '/api/responsibilities');
+    expect(
+      NativePaths.responsibilitiesList(limit: 100),
+      '/api/responsibilities?limit=100',
+    );
+    expect(NativePaths.responsibilitiesCreate, '/api/responsibilities');
+    expect(NativePaths.responsibilitiesGet(id), path);
+    expect(NativePaths.responsibilitiesGet(id, view: 'review'), '$path?view=review');
+    expect(NativePaths.responsibilitiesChange(id), path);
+    expect(NativePaths.responsibilitiesReferences, '/api/responsibilities/references');
+    expect(
+      NativePaths.responsibilitiesLifecycleGet(id, view: 'activation'),
+      '$path/lifecycle?view=activation',
+    );
+    expect(NativePaths.responsibilitiesLifecycleChange(id), '$path/lifecycle');
+    expect(
+      NativePaths.responsibilitiesObservationsList(id, limit: 25),
+      '$path/observations?limit=25',
+    );
+    expect(
+      NativePaths.responsibilitiesNotificationsGet(id, view: 'enable'),
+      '$path/notifications?view=enable',
+    );
+    expect(NativePaths.responsibilitiesNotificationsChange(id), '$path/notifications');
+    expect(NativeContract.supportsOperation('responsibilities.observations.create'), isFalse);
+    expect(NativeContract.supportsOperation('responsibilities.notifications.send'), isFalse);
   });
 
   test('verifies advertised server compatibility with legacy fallback', () {

@@ -65,12 +65,14 @@ export async function listNotificationDispositions(input: {
   ownerActorId: string;
   limit?: number;
   before?: string;
+  includeResponsibilityChanges?: boolean;
 }) {
   if (!hasDatabaseUrl()) throw new NotificationDispositionUnavailableError();
   const tenantId = requiredText(input.tenantId, 240, "tenant");
   const ownerActorId = requiredText(input.ownerActorId, 320, "actor");
   const limit = Math.min(Math.max(Math.trunc(input.limit || 50), 1), 200);
   const before = input.before ? timestamp(input.before) : undefined;
+  const includeResponsibilityChanges = input.includeResponsibilityChanges !== false;
   return runWithDatabaseActorScope(tenantId, [ownerActorId], async () => {
     await ensureDatabaseSchema();
     const rows = before
@@ -78,6 +80,7 @@ export async function listNotificationDispositions(input: {
           SELECT * FROM omni_notification_dispositions
           WHERE tenant_id = ${tenantId}
             AND owner_actor_id = ${ownerActorId}
+            AND (${includeResponsibilityChanges} OR source_kind <> 'responsibility_change')
             AND updated_at < ${before}
           ORDER BY updated_at DESC, id COLLATE "C" DESC
           LIMIT ${limit}
@@ -86,6 +89,7 @@ export async function listNotificationDispositions(input: {
           SELECT * FROM omni_notification_dispositions
           WHERE tenant_id = ${tenantId}
             AND owner_actor_id = ${ownerActorId}
+            AND (${includeResponsibilityChanges} OR source_kind <> 'responsibility_change')
           ORDER BY updated_at DESC, id COLLATE "C" DESC
           LIMIT ${limit}
         `;

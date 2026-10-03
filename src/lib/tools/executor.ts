@@ -177,6 +177,7 @@ import {
   type ToolExecutionScopeBinding,
 } from "@/lib/tools/execution-scope";
 import { governedToolExecutionId } from "@/lib/tools/execution-id";
+import { assertResponsibilityToolDispatch, type ResponsibilityDispatchAdmission } from "@/lib/responsibilities/generation-fence";
 import {
   buildEffectReceiptV1,
   canonicalJsonSha256,
@@ -507,6 +508,7 @@ export async function executeGovernedTool({
   localComputerTaskAuthority,
   taskAuthorityReviewReason,
   checkpointBeforeEffect,
+  responsibilityAdmission,
 }: {
   toolId: string;
   input: Record<string, unknown>;
@@ -524,6 +526,8 @@ export async function executeGovernedTool({
   forceApproval?: boolean;
   /** Server-owned constraint checked against the current resolved tool contract. */
   requireReadOnly?: boolean;
+  /** Opaque short-lived admission for the exact read-only responsibility pilot. */
+  responsibilityAdmission?: ResponsibilityDispatchAdmission;
   /** Explicit owner/run boundary used only by stateful MCP transports. */
   mcpSessionScope?: McpSessionScope;
   /** Durable attribution inherited from the initiating run or request. */
@@ -623,6 +627,8 @@ export async function executeGovernedTool({
   if (!registeredTool) {
     return blockBeforePolicy({ reason: "Unknown tools are blocked by default." });
   }
+  await assertResponsibilityToolDispatch({ admission: responsibilityAdmission, tool: registeredTool, input, context, executionScope,
+    requireReadOnly, dryRun, approved, forceApproval, existingRecord, approvalGrantClaim, policyLeaseClaim });
   if (
     requireReadOnly &&
     (registeredTool.riskLevel !== 0 ||
@@ -2073,6 +2079,11 @@ export async function executeGovernedTool({
       });
     }
     abortSignal?.throwIfAborted();
+    // A queue claim or an earlier authority check cannot outlive its exact
+    // responsibility generation. Recheck at the final governed dispatch edge.
+    await assertResponsibilityToolDispatch({ admission: responsibilityAdmission, tool, input: preparedInput, context: toolRuntimeContext,
+      executionScope: scopedRequest.binding?.executionScope || executionScope, requireReadOnly, dryRun, approved, forceApproval,
+      existingRecord, approvalGrantClaim, policyLeaseClaim });
     toolStarted = true;
     let result: unknown;
     try {

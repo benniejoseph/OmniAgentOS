@@ -29,7 +29,7 @@ export const notificationDispositionEventPayloadSchema = z.object({
     sourceKind: z.enum([
       "tool_approval", "meeting", "customer_risk", "agent_run",
       "today_reminder", "delegated_task", "scheduled_routine",
-      "security_incident",
+      "security_incident", "responsibility_change",
     ]),
     occurrenceSha256: sha256Schema,
     candidateSha256: sha256Schema,

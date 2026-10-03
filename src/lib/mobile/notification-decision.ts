@@ -23,6 +23,7 @@ const notificationCandidateKindSchema = z.enum([
   "meeting",
   "routine_success",
   "informational",
+  "responsibility_change",
 ]);
 
 export const notificationCandidateV1Schema = z.discriminatedUnion("kind", [
@@ -42,6 +43,7 @@ export const notificationCandidateV1Schema = z.discriminatedUnion("kind", [
   }).strict(),
   candidateBase.extend({ kind: z.literal("routine_success") }).strict(),
   candidateBase.extend({ kind: z.literal("informational") }).strict(),
+  candidateBase.extend({ kind: z.literal("responsibility_change") }).strict(),
 ]);
 
 export type NotificationCandidateV1 = Readonly<
@@ -69,6 +71,7 @@ export const notificationDecisionReasonSchema = z.enum([
   "failure_not_actionable",
   "meeting_not_imminent",
   "not_worthy",
+  "material_change",
 ]);
 
 const decisionBodySchema = z.object({
@@ -204,7 +207,7 @@ type Classification = Readonly<{
   mustSend: boolean;
   critical: boolean;
   directReason: "approval_required" | "security_alert" | "actionable_failure" |
-    "meeting_imminent";
+    "meeting_imminent" | "material_change";
   suppressReason: "routine_success" | "failure_not_actionable" |
     "meeting_not_imminent" | "not_worthy";
 }>;
@@ -217,6 +220,8 @@ function classifyCandidate(
   switch (candidate.kind) {
     case "approval":
       return classification(true, false, "approval_required", "not_worthy");
+    case "responsibility_change":
+      return classification(true, false, "material_change", "not_worthy");
     case "security":
       return classification(
         true,
@@ -339,7 +344,9 @@ function expectedDecisionCoordinates(decision: {
         valid: true as const,
       };
     }
-    const reason = decision.candidateKind === "approval"
+    const reason = decision.candidateKind === "responsibility_change"
+      ? "material_change" as const
+      : decision.candidateKind === "approval"
       ? "approval_required" as const
       : decision.candidateKind === "security"
         ? "security_alert" as const
@@ -354,7 +361,7 @@ function expectedDecisionCoordinates(decision: {
       valid: true as const,
     };
   }
-  if (decision.candidateKind === "approval" || decision.candidateKind === "security") {
+  if (decision.candidateKind === "approval" || decision.candidateKind === "security" || decision.candidateKind === "responsibility_change") {
     return invalidDecisionCoordinates();
   }
   if (decision.candidateKind === "routine_success") {

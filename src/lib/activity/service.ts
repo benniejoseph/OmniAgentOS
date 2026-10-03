@@ -22,6 +22,7 @@ export type ActivityScope = {
   actorId: string;
   role: SecurityRole;
   canReadApprovals: boolean;
+  includeResponsibilityChanges?: boolean;
   requestActorBinding?: CanonicalRequestActorBindingV1;
 };
 type OwnerRead = { tenantId: string; actorId: string; requestActorBinding?: CanonicalRequestActorBindingV1 };
@@ -29,7 +30,7 @@ export type ActivityReadDependencies = {
   listRuns: (limit: number, scope: { tenantId: string }) => Promise<readonly AgentRunRecord[]>;
   getThread: (id: string, scope: OwnerRead) => Promise<Pick<ThreadRecord, "id" | "tenantId" | "actorId"> | null>;
   listApprovals: (limit: number, scope: { tenantId: string; actorId: string }) => Promise<{ items: readonly ApprovalQueueItem[] }>;
-  listNotifications: (limit: number, scope: OwnerRead) => Promise<readonly PersonalNotification[]>;
+  listNotifications: (limit: number, scope: OwnerRead & { includeResponsibilityChanges?: boolean }) => Promise<readonly PersonalNotification[]>;
 };
 
 // Keep the broad store graphs outside pure projection tests and restricted reads.
@@ -74,7 +75,8 @@ export async function getActivity(
     actorId: scope.actorId,
     ...(canonicalActorId ? { requestActorBinding: scope.requestActorBinding } : {}),
   };
-  const scopeDigest = hash({ tenant: scope.tenantId, actor: scope.actorId, owners: [...owners].sort(), role: scope.role, approvals: scope.canReadApprovals });
+  const scopeDigest = hash({ tenant: scope.tenantId, actor: scope.actorId, owners: [...owners].sort(), role: scope.role, approvals: scope.canReadApprovals,
+    responsibilityChanges: scope.includeResponsibilityChanges !== false });
   const cursor = query.cursor ? decodeCursor(query.cursor) : undefined;
   if (cursor && (cursor.scope !== scopeDigest || cursor.group !== query.group || cursor.limit !== query.limit)) throw staleCursor();
 
@@ -83,7 +85,10 @@ export async function getActivity(
     scope.canReadApprovals
       ? reads.listApprovals(ACTIVITY_SOURCE_LIMIT, { tenantId: scope.tenantId, actorId: scope.actorId })
       : Promise.resolve(undefined),
-    reads.listNotifications(ACTIVITY_SOURCE_LIMIT, ownerRead),
+    reads.listNotifications(ACTIVITY_SOURCE_LIMIT, {
+      ...ownerRead,
+      ...(scope.includeResponsibilityChanges === false ? { includeResponsibilityChanges: false } : {}),
+    }),
   ]);
   const coverage: ActivityResponse["coverage"] = {
     runs: failedCoverage(),
@@ -150,6 +155,7 @@ export async function getActivity(
   if (notificationRead.status === "fulfilled" && Array.isArray(notificationRead.value)) {
     let omitted = false;
     const records = notificationRead.value.slice(0, ACTIVITY_SOURCE_LIMIT).filter((item) => {
+      if (scope.includeResponsibilityChanges === false && item?.kind === "responsibility_change") return false;
       const owned = Boolean(item && item.tenantId === scope.tenantId && owners.has(item.actorId));
       if (!owned) omitted = true;
       return owned;

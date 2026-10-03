@@ -50,6 +50,10 @@ function validItem(value: unknown, group: ActivityFilter): value is ActivityItem
     !isRecord(value.timestamp) || !validTime(value.timestamp.at) || !member(value.timestamp.basis, ["started", "completed", "created", "updated"])) return false;
   if (value.origin !== undefined && (!isRecord(value.origin) || !text(value.origin.runId) || !internalHref(value.origin.href) ||
     (value.origin.threadId !== undefined && !text(value.origin.threadId)))) return false;
+  if (value.source === "notifications" && (value.workKey.startsWith("responsibility:") || value.href.startsWith("/app/responsibilities/"))) {
+    if (!/^responsibility:[a-f0-9]{64}$/.test(value.workKey) || value.sourceRef.kind !== "notification" ||
+      value.href !== `/app/responsibilities/${encodeURIComponent(value.workKey)}` || !member(value.status, ["unread", "read", "dismissed"])) return false;
+  }
   return value.canonicalStatus === undefined || validCanonicalStatus(value.canonicalStatus, value.source);
 }
 

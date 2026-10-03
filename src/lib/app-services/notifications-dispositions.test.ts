@@ -11,6 +11,23 @@ const context = {
 };
 
 describe("notification disposition application service", () => {
+  it.each([undefined, 30, 31, 32])("binds contract %s compatibility before the storage page limit", async (version) => {
+    const list = vi.fn(async () => [projection()]);
+    await listNotificationDispositionsService(createAppServiceCaller({ context: {
+      ...context, source: "mobile", native: { deviceId: "device", platform: "macos", clientContractVersion: version },
+    } }), { limit: 1 }, { list });
+    expect(list).toHaveBeenCalledWith({ tenantId: context.tenantId, ownerActorId: context.actorId,
+      limit: 1, before: undefined, ...((version ?? 0) < 32 ? { includeResponsibilityChanges: false } : {}) });
+  });
+  it("merges only the authenticated canonical/current-email pair before applying its result bound", async () => {
+    const userId = "11111111-1111-4111-8111-111111111111"; const email = "owner@example.test";
+    const current = { ...context, source: "session" as const, actorId: email, auth: { userId, email, sessionId: "session", tenantName: "Tenant" } };
+    const older = projection(); const newer = { ...older, dispositionId: `notification_disposition_${"2".repeat(48)}`, updatedAt: "2026-09-22T13:10:00.000Z" };
+    const list = vi.fn(async (input: { ownerActorId: string }) => input.ownerActorId === `actor:${userId}` ? [newer] : [older]);
+    const result = await listNotificationDispositionsService(createAppServiceCaller({ context: current }), { limit: 1 }, { list });
+    expect(list.mock.calls.map(([input]) => input.ownerActorId)).toEqual([`actor:${userId}`, email]);
+    expect(result.data.dispositions).toEqual([newer]);
+  });
   it("binds the read to the initiating actor and returns content-free metadata", async () => {
     const list = vi.fn(async () => [projection()]);
     const result = await listNotificationDispositionsService(
