@@ -125,8 +125,8 @@ Local focused runs passed 172 tests in nine files. One additional detail-route
 suite failed collection because the local shared installation could not resolve
 the existing `pptxgenjs` ESM entry; no assertion result is claimed for that suite.
 Targeted strict lint, CSS parsing and the 1,179-file minimum type-size check passed.
-An additional 15 shared-shell tests passed. Hosted full checks are required on
-the final head before merge.
+An additional 15 shared-shell tests passed. The final Inbox head also passed
+the hosted full suite before merge.
 
 Headless Chrome completed 66 checks with no failures or uncaught exceptions.
 Three settled light/dark/phone axe-core 4.11 scans reported no violations.
@@ -147,6 +147,13 @@ The final phone checks include hit testing and full control visibility above the
 dock at 200% text. Theme scans wait for the existing transition to settle.
 A fresh 82-check Today/Command/voice browser regression passed after these shared
 changes, including all nine accessibility scans and dialog focus recovery.
+
+PR [#15](https://github.com/benniejoseph/OmniAgentOS/pull/15) merged as
+`50245c9594f2e2fc5349093771955af7dd759544`. The first hosted run found a strict
+TypeScript narrowing issue in a new markup assertion; an explicit missing-node
+guard fixed it. Final head `e1e3e84e0b075b61c62be582603b0b99a24bd12a` passed
+full types, lint, coverage, integration, production build and budgets, audit,
+worker checks, secret scans and the Vercel preview.
 
 ## Results presentation — 3 October 2026
 
@@ -170,8 +177,43 @@ Back/Forward and unrelated query preservation, full output, pinned identity,
 artifact version links, Library rows, stale/fresh source failures, reduced-motion
 selection, keyboard focus, forced colors and 200% text. Layouts covered
 1440/768/720/390/320px with fine/coarse pointers. All mutation requests were
-blocked; only automatic web-vitals posts were attempted. Hosted checks on the
-final Results head remain required before merge.
+blocked; only automatic web-vitals posts were attempted.
+
+PR [#16](https://github.com/benniejoseph/OmniAgentOS/pull/16) merged as
+`0fe44c97346dfdda227fabe91269de29d8de0fc6`. Final implementation head
+`1a6b9c3abf94ef1a89b807351e032e876c7cb136` passed all hosted quality,
+integration, build/budget, audit, worker and secret-scan checks and its Vercel
+preview. These merges record repository acceptance, not production promotion.
+
+## Work overview and Plan/context presentation — 3 October 2026
+
+The Work shell, project list, Plan/context, task rows and project outputs now use
+a scoped canonical module. Compact counts and readable titles replace ornamental
+headers. Container-based list/detail layouts give narrow screens explicit Back
+controls, with focus and scroll restoration. Successful empty data remains
+distinct from unavailable or previously loaded data. Execution and App Builder
+controllers and their detailed internal presentation remain separate later work.
+
+Independent review found no changes to project/task authority, canonical WorkItem
+status, immutable Agent identity, mutation payloads, budgets, approval gates or
+idempotency. Seventeen existing tests across Work, execution refresh and Builder
+passed. Targeted lint, CSS parsing, minimum type-size checks and the narrow Work
+TypeScript dependency graph passed; the full hosted suite remains the merge gate.
+
+Headless Chrome passed 87 checks with four clean light/dark desktop/phone axe
+scans and no uncaught exceptions. Checks covered project/output selection,
+deep links, draft retention through refresh and view changes, exact output,
+failed/empty reads, narrow Back focus restoration, coarse targets, 320–1440px
+layouts, 200% text, reduced motion and forced colors. All mutations and external
+requests were blocked; no task, budget, reflection, execution or publish action
+was attempted. These fixtures validate the overview and Plan/context slice,
+not live execution or the unchanged nested Builder/Execution views.
+
+The harness now captures viewport screenshots and asserts pointer mode at each
+viewport: full-page screenshots reset Chrome's touch emulation on this host.
+Accessibility scans start at the top of the document to avoid measuring controls
+partly behind the sticky header at an arbitrary retained scroll position;
+separate interaction checks still verify control reachability and focus recovery.
 
 ## Remaining gates and scope
 
