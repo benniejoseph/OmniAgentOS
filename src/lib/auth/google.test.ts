@@ -58,6 +58,20 @@ describe("Google owner login", () => {
       exchangeGoogleOwnerCode("authorization-code", authorization.searchParams.get("state") || ""),
     ).resolves.toEqual({ email: "owner@example.com", name: "Owner" });
   });
+
+  it("roundtrips only an app destination inside the existing sealed state", async () => {
+    configure();
+    const destination = "/app/command?thread=22222222-2222-4222-8222-222222222222#reply";
+    for (const requested of [destination, "https://evil.test/app", "/app/%2e%2e/api"]) {
+      const authorization = new URL(createGoogleOwnerAuthorization(requested));
+      vi.spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(Response.json({ id_token: "verified-id-token" }))
+        .mockResolvedValueOnce(Response.json({ aud: "client-id", iss: "https://accounts.google.com", exp: Math.floor(Date.now() / 1_000) + 300,
+          nonce: authorization.searchParams.get("nonce"), email: "owner@example.com", email_verified: "true", name: "Owner" }));
+      const profile = await exchangeGoogleOwnerCode("authorization-code", authorization.searchParams.get("state") || "");
+      expect(profile).toEqual({ email: "owner@example.com", name: "Owner", ...(requested === destination ? { returnTo: destination } : {}) });
+    }
+  });
 });
 
 function configure() {

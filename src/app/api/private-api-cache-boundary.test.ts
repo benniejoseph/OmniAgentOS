@@ -4,7 +4,7 @@ import { GET as finishGoogleLogin } from "@/app/api/auth/google/callback/route";
 
 describe("unwrapped private API cache boundary", () => {
   it("keeps Google login state and callback redirects out of caches", async () => {
-    const authorization = await beginGoogleLogin();
+    const authorization = await beginGoogleLogin(new Request("https://asael.example/api/auth/google/authorize"));
     expect(authorization.headers.get("cache-control")).toBe("private, no-store");
 
     const callback = await finishGoogleLogin(

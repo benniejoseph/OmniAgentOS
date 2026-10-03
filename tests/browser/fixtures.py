@@ -64,6 +64,16 @@ class Fixtures:
             return route.continue_()
         self.reads.add(path)
         query = parse_qs(parsed.query)
+        if path == "/api/companion/preferences" and request.method == "GET" and not parsed.query:
+            return self.fulfill(route, {
+                "schemaVersion": 1, "contract": "asael-companion-preferences:1",
+                "snapshot": {"revision": 0, "persisted": False, "updatedAt": None,
+                             "preferences": {"intensity": "balanced", "visible": True, "motion": "full",
+                                             "defaultDestination": "assistant", "preferredThreadId": None}},
+                "home": {"state": "not_set", "preferredThreadId": None, "href": None,
+                         "fallbackHref": "/app/command"},
+                "destination": {"href": "/app/command", "state": "configured"},
+            })
         if path == "/api/threads":
             return self.fulfill(route, {"threads": [self.thread()]})
         if path == f"/api/threads/{THREAD_ID}":

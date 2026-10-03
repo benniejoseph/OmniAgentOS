@@ -118,7 +118,7 @@
 
 .headerIdentity {
   flex: 1 1 0;
-  min-width: 0;
+  min-width: 2.75rem;
 }
 
 .headerActions {
@@ -170,6 +170,10 @@
   border-color: var(--line);
   padding: 0.25rem 0.5rem calc(0.25rem + env(safe-area-inset-bottom, 0px));
   background: var(--background);
+  grid-template-columns: repeat(5, minmax(max-content, 1fr));
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-padding-inline: 0.5rem;
 }
 
 .mobileDock :global(a) {
@@ -178,7 +182,9 @@
   border-block-start: 3px solid transparent;
   border-radius: var(--radius-control);
   line-height: 1rem;
-  overflow-wrap: anywhere;
+  overflow-wrap: normal;
+  white-space: nowrap;
+  scroll-margin-inline: 0.5rem;
   transition:
     background-color var(--duration-control) var(--ease-standard),
     color var(--duration-control) var(--ease-standard);
@@ -257,6 +263,10 @@
 }
 
 @media (pointer: coarse) {
+  .headerIdentity {
+    min-width: 3rem;
+  }
+
   .homeLink,
   .sidebar :global(nav a),
   .sidebar :global(nav button),

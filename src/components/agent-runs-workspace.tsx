@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import dynamic from "next/dynamic";
-import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   ArrowDown,
@@ -57,6 +57,8 @@ import {
   privateCaptureAssetContentUrl,
 } from "@/components/media/private-media-preview";
 import { VoiceMode } from "@/components/voice/voice-mode";
+import { CompanionPresence } from "@/components/companion-presence";
+import { companionRunSnapshot, companionPendingWork, companionWork, createCompanionHomeGate, type CompanionWork } from "@/lib/companion/presentation";
 import {
   CommandComposerField,
   type CommandSlashAction,
@@ -164,6 +166,8 @@ type CommandProject = { id: string; title: string; status: string };
 type ThreadTurn = { id: string; role: "user" | "assistant"; content: string; createdAt: string; runId?: string };
 type RunMediaProjection = {
   runId: string;
+  companion?: CompanionWork;
+  companionScope?: string;
   artifacts: CommandMediaArtifact[];
   files: CommandFileArtifact[];
   fileState: CommandFileArtifactState;
@@ -499,6 +503,7 @@ export function AgentRunsWorkspace({
     status: sessionStatus,
     role,
   } = useWorkspaceSession();
+  const companionOwnerScope = JSON.stringify([session?.context?.tenantId, session?.context?.actorId]);
   const [goal, setGoal] = useState(initialGoal || "");
   const [mode, setMode] = useState<AgentMode>("orchestrate");
   const initialBuiltInAgent = initialAgentId
@@ -568,6 +573,11 @@ export function AgentRunsWorkspace({
   const [runFeedback, setRunFeedback] = useState<RunFeedback>();
   const [feedbackSaving, setFeedbackSaving] = useState(false);
   const [speechLoading, setSpeechLoading] = useState(false);
+  const [responseAudioPlaying, setResponseAudioPlaying] = useState(false);
+  const [homeSelecting, setHomeSelecting] = useState(false);
+  const homeSelectionRef = useRef<symbol | undefined>(undefined);
+  const homeActionsBlockedRef = useRef(false);
+  const [homeActionGate] = useState(createCompanionHomeGate);
   const [evidence, setEvidence] = useState<JsonRecord>({});
   const [evidenceState, setEvidenceState] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [workflowSyncError, setWorkflowSyncError] = useState<string>();
@@ -842,6 +852,11 @@ export function AgentRunsWorkspace({
       waitingApproval ||
       (activeAgentRunId && !agentRunTerminal && !clarificationRunId),
   );
+  useLayoutEffect(() => {
+    homeActionsBlockedRef.current = Boolean(loading || workflowInProgress || directRunInProgress || speechLoading);
+    if (homeActionsBlockedRef.current) homeActionGate.invalidate();
+  }, [directRunInProgress, homeActionGate, loading, speechLoading, workflowInProgress]);
+  useLayoutEffect(() => () => { homeActionGate.invalidate(); }, [companionOwnerScope, homeActionGate, role]);
   const conversationLocked = workflowInProgress || directRunInProgress;
   const workflowReport = stringPath(workflowRun, "run.result.report", "");
   const currentAssistantResponse = workflowReport || agentResponse;
@@ -1177,6 +1192,8 @@ export function AgentRunsWorkspace({
           if (disposed) return;
           setRunMediaProjection({
             runId: activeAgentRunId,
+            companion: companionRunSnapshot(payload.run, activeAgentRunId),
+            companionScope: companionOwnerScope,
             artifacts: projectCommandMediaArtifacts(payload),
             files: projectCommandFileArtifacts(payload),
             fileState: projectCommandFileArtifactState(payload),
@@ -1265,7 +1282,7 @@ export function AgentRunsWorkspace({
     };
     // The run id and terminal state own this polling lifecycle.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeAgentRunId, agentRunTerminal, loading]);
+  }, [activeAgentRunId, agentRunTerminal, companionOwnerScope, loading]);
 
   useEffect(() => {
     if (
@@ -1323,6 +1340,7 @@ export function AgentRunsWorkspace({
     const runId = activeAgentRunId ||
       (controller ? currentRunIdRef.current || streamRunIdRef.current : "");
     if (!controller && !runId) return;
+    homeActionGate.invalidate();
     setRunAnnouncement("Stopping the agent run.");
     agentRequestIdRef.current = "";
     controller?.abort();
@@ -1390,6 +1408,7 @@ export function AgentRunsWorkspace({
   ) {
     const sourceRunId = sourceRunIdOverride || activeAgentRunId;
     if (!sourceRunId || !correction.trim()) return;
+    homeActionGate.invalidate();
     setLoading("agent");
     setError(undefined);
     setRunAnnouncement("Creating a corrected trace from the selected checkpoint.");
@@ -1425,6 +1444,8 @@ export function AgentRunsWorkspace({
       setAgentResponse(response);
       setRunMediaProjection({
         runId,
+        companion: companionRunSnapshot(payload.run, runId),
+        companionScope: companionOwnerScope,
         artifacts: projectCommandMediaArtifacts(payload),
         files: projectCommandFileArtifacts(payload),
         fileState: projectCommandFileArtifactState(payload),
@@ -1976,6 +1997,7 @@ export function AgentRunsWorkspace({
       }
       return;
     }
+    homeActionGate.invalidate();
     setLoading("plan");
     setError(undefined);
     setRunAnnouncement("Generating a workflow plan.");
@@ -2055,6 +2077,7 @@ export function AgentRunsWorkspace({
       openTaskDetails("context");
       return;
     }
+    homeActionGate.invalidate();
     setLoading("workflow");
     setError(undefined);
     setAgentResponse("");
@@ -2366,6 +2389,7 @@ export function AgentRunsWorkspace({
     const resumeRunId = queueItem ? undefined : clarificationRunId || undefined;
     const controller = new AbortController();
     abortControllerRef.current = controller;
+    homeActionGate.invalidate();
     setLoading("agent");
     setError(undefined);
     setWorkflowPlan(undefined);
@@ -2641,14 +2665,17 @@ export function AgentRunsWorkspace({
       responseSpeechPlayerRef.current?.stop();
       responseSpeechPlayerRef.current = null;
       setSpeechLoading(false);
+      setResponseAudioPlaying(false);
       return;
     }
     if (!text.trim()) return;
+    homeActionGate.invalidate();
     const controller = new AbortController();
     const player = new StreamingPcmPlayer();
     responseSpeechControllerRef.current = controller;
     responseSpeechPlayerRef.current = player;
     setSpeechLoading(true);
+    setResponseAudioPlaying(false);
     try {
       await streamVersionedSpeech({
         text,
@@ -2658,6 +2685,9 @@ export function AgentRunsWorkspace({
       }, {
         player,
         signal: controller.signal,
+        onStarted: () => {
+          if (responseSpeechControllerRef.current === controller && !controller.signal.aborted) setResponseAudioPlaying(true);
+        },
       });
     } catch (speechError) {
       if (controller.signal.aborted) return;
@@ -2666,6 +2696,7 @@ export function AgentRunsWorkspace({
       if (responseSpeechControllerRef.current === controller) {
         responseSpeechControllerRef.current = null;
         setSpeechLoading(false);
+        setResponseAudioPlaying(false);
       }
       if (responseSpeechPlayerRef.current === player) {
         responseSpeechPlayerRef.current = null;
@@ -2752,6 +2783,8 @@ export function AgentRunsWorkspace({
       ) return;
       setRunMediaProjection({
         runId,
+        companion: companionRunSnapshot(payload.run, runId),
+        companionScope: companionOwnerScope,
         artifacts: projectCommandMediaArtifacts(payload),
         files: projectCommandFileArtifacts(payload),
         fileState: projectCommandFileArtifactState(payload),
@@ -2843,8 +2876,10 @@ export function AgentRunsWorkspace({
       restoreLatestRun?: boolean;
       preserveActivity?: boolean;
       initialSelection?: boolean;
+      canAdopt?: () => boolean;
     } = {},
   ) {
+    let adopted = false;
     const version = ++threadLoadVersionRef.current;
     threadLoadControllerRef.current?.abort();
     const controller = new AbortController();
@@ -2865,13 +2900,15 @@ export function AgentRunsWorkspace({
           `/api/runs/${encodeURIComponent(runId)}`,
           { signal },
         )),
-        isCurrent: () => threadLoadVersionRef.current === version,
+        isCurrent: () => threadLoadVersionRef.current === version && (options.canAdopt?.() ?? true),
         onThreadReady: (result, latestRunId) => {
+          const thread = asRecord(result.thread);
+          if (stringValue(thread.id) !== id) throw new Error("The conversation response did not match the selected conversation.");
           if (options.initialSelection && id === initialThreadId) {
             initialThreadLoadedRef.current = true;
           }
-          const thread = asRecord(result.thread);
           const loadedTurns = projectClientThreadTurns(readPath(result, "turns"));
+          adopted = true;
           setThreadId(stringValue(thread.id));
           const loadedProjectId = stringValue(thread.projectId);
           if (loadedProjectId) setSelectedProjectId(loadedProjectId);
@@ -2923,6 +2960,8 @@ export function AgentRunsWorkspace({
         onRunReady: (runPayload, latestRunId) => {
           setRunMediaProjection({
             runId: latestRunId,
+            companion: companionRunSnapshot(runPayload.run, latestRunId),
+            companionScope: companionOwnerScope,
             artifacts: projectCommandMediaArtifacts(runPayload),
             files: projectCommandFileArtifacts(runPayload),
             fileState: projectCommandFileArtifactState(runPayload),
@@ -2954,9 +2993,33 @@ export function AgentRunsWorkspace({
         },
         signal: controller.signal,
       });
+      return adopted && !controller.signal.aborted && threadLoadVersionRef.current === version && (options.canAdopt?.() ?? true);
     } catch (threadError) {
-      if (controller.signal.aborted || threadLoadVersionRef.current !== version) return;
+      if (controller.signal.aborted || threadLoadVersionRef.current !== version || options.canAdopt?.() === false) return false;
       setError(threadError instanceof Error ? threadError.message : "Conversation could not be loaded.");
+      return false;
+    }
+  }
+
+  async function openCompanionHome(id: string) {
+    if (homeSelectionRef.current || loading || workflowInProgress || directRunInProgress || speechLoading) return;
+    const token = Symbol("home-selection");
+    homeSelectionRef.current = token;
+    const actionEpoch = homeActionGate.capture();
+    setHomeSelecting(true);
+    try {
+      const canAdopt = () => !homeActionsBlockedRef.current && homeActionGate.current(actionEpoch);
+      const adopted = id === threadId || await loadThread(id, { canAdopt });
+      if (adopted && homeSelectionRef.current === token && canAdopt()) {
+        // The existing selection path retains the composer draft. Update only
+        // after adoption; a failed or superseded read never changes the URL.
+        window.history.replaceState(window.history.state, "", `/app/command?thread=${encodeURIComponent(id)}`);
+      }
+    } finally {
+      if (homeSelectionRef.current === token) {
+        homeSelectionRef.current = undefined;
+        setHomeSelecting(false);
+      }
     }
   }
 
@@ -3007,6 +3070,8 @@ export function AgentRunsWorkspace({
       setAgentResponse(response);
       setRunMediaProjection({
         runId: id,
+        companion: companionRunSnapshot(payload.run, id),
+        companionScope: companionOwnerScope,
         artifacts: projectCommandMediaArtifacts(payload),
         files: projectCommandFileArtifacts(payload),
         fileState: projectCommandFileArtifactState(payload),
@@ -3101,6 +3166,7 @@ export function AgentRunsWorkspace({
       setError(workflowPermission);
       return;
     }
+    homeActionGate.invalidate();
     setLoading("tick");
     setError(undefined);
     setRunAnnouncement("Processing queued workflow work.");
@@ -3344,6 +3410,25 @@ export function AgentRunsWorkspace({
                 </button>
               </div>
             </header>
+
+            <CompanionPresence
+              onOpenHome={(id) => void openCompanionHome(id)}
+              homeDisabledReason={homeSelecting ? "Opening your home conversation…"
+                : loading || workflowInProgress || directRunInProgress || speechLoading ? "Wait for the current action or playback before changing the home conversation." : undefined}
+              playbackActive={responseAudioPlaying}
+              speechPreparing={speechLoading && !responseAudioPlaying}
+              work={activeWorkflowId
+                ? companionWork({ runId: activeWorkflowId, status: workflowSyncError ? "reconnecting" : activeWorkflowStatus })
+                : waitingApproval ? companionWork({ runId: activeAgentRunId || runMediaProjection.runId, status: "waiting_approval" })
+                : clarificationRunId ? companionWork({ runId: clarificationRunId, status: "waiting_clarification" })
+                : directRunInProgress ? companionPendingWork(activeAgentRunId || undefined,
+                  runMediaProjection.companionScope === companionOwnerScope ? runMediaProjection.companion : undefined, loading === "agent")
+                : streamEvents.some((event) => event.type === "error") ? companionWork({ runId: runMediaProjection.runId, status: "failed" })
+                : streamEvents.some((event) => event.type === "canceled") ? companionWork({ runId: runMediaProjection.runId, status: "canceled" })
+                : runMediaProjection.companionScope === companionOwnerScope && runMediaProjection.companion
+                  ? runMediaProjection.companion
+                  : companionWork({ status: agentRunCompleted ? "completed" : undefined })}
+            />
 
             {conversationView === "map" ? (
               <ConversationCanvas
@@ -3627,6 +3712,7 @@ export function AgentRunsWorkspace({
               onAgent={() => void runAgent({ prepareContextAutomatically: true })}
               onQueue={() => void enqueuePrompt()}
               onVoiceConversationBound={setThreadId}
+              onVoiceOpen={() => homeActionGate.invalidate()}
               onVoiceTranscript={async (transcript, voiceConversationId, review) => {
                 const voiceGoal = transcript;
                 setThreadId(voiceConversationId);
@@ -5714,6 +5800,7 @@ function GoalStage({
   onAgent,
   onQueue,
   onVoiceConversationBound,
+  onVoiceOpen,
   onVoiceTranscript,
   onStop,
   onWorkflow,
@@ -5765,6 +5852,7 @@ function GoalStage({
   onAgent: () => void;
   onQueue: () => void;
   onVoiceConversationBound: (conversationId: string) => void;
+  onVoiceOpen: () => void;
   onVoiceTranscript: (
     transcript: string,
     conversationId: string,
@@ -5948,6 +6036,7 @@ function GoalStage({
 
             <div className={workspaceStyles.composerActions}>
               <VoiceMode
+                onOpen={onVoiceOpen}
                 disabled={draftLocked || contextLoading || Boolean(voiceDisabledReason)}
                 disabledReason={voiceDisabledReason}
                 agentName={preferredAgent?.name || "Asael"}

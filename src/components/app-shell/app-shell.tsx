@@ -307,6 +307,7 @@ export function AppShell({
               href={item.href}
               aria-label={item.label}
               aria-current={active ? "page" : undefined}
+              onFocus={(event) => event.currentTarget.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "instant" })}
               className={clsx(
                 "flex min-h-14 flex-col items-center justify-center gap-1 rounded-md px-1 text-xs font-semibold transition",
                 active ? "text-primary" : "text-muted hover:bg-surface-raised hover:text-foreground",

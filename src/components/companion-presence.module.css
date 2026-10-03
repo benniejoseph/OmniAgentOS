@@ -1,0 +1,27 @@
+.presence {
+  display: grid; grid-template-columns: 36px minmax(0, 1fr) auto; align-items: start; gap: 0.75rem;
+  min-width: 0; flex: 0 0 auto; padding: 0.75rem; border-block-end: 1px solid var(--line);
+  background: var(--surface); color: var(--foreground); overflow-wrap: anywhere;
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  font-size: 0.875rem; line-height: 1.25rem; container: companion-presence / inline-size;
+}
+.portrait { display: block; width: 36px; height: 36px; flex: 0 0 36px; overflow: hidden; border-radius: 0.5rem; }
+.image { display: block; width: 36px; height: 36px; object-fit: contain; }
+.copy, .actions { min-width: 0; }
+.status { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.5rem; margin: 0; font-weight: 500; }
+.name { color: var(--muted); font-weight: 400; }
+.detail, .caption, .identity { margin: 0.25rem 0 0; color: var(--muted); font-size: 0.8125rem; line-height: 1.25rem; }
+.identity code { color: var(--foreground); white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+.caption { margin-block-start: 0.5rem; }
+.actions { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: start; gap: 0.5rem; max-width: 20rem; }
+.actions .detail { flex-basis: 100%; }
+.link { display: inline-flex; align-items: center; justify-content: center; min-width: 0; min-height: 2.75rem; max-width: 100%; padding: 0.5rem 0.75rem; border: 1px solid var(--line-strong); border-radius: 0.5rem; background: var(--surface); color: var(--foreground); font: inherit; font-weight: 500; text-decoration: none; text-align: center; }
+.link:hover:not(:disabled) { background: var(--surface-raised); }
+.link:disabled { color: var(--muted); background: var(--surface-raised); opacity: 1; cursor: default; }
+.link:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; box-shadow: 0 0 0 3px var(--surface); }
+@container companion-presence (max-width: 40rem) { .copy, .actions { grid-column: 2 / -1; } .actions { justify-content: flex-start; max-width: none; } }
+@media (max-width: 48rem) { .presence { grid-template-columns: 36px minmax(0, 1fr); } .actions { grid-column: 2; justify-content: flex-start; max-width: none; } }
+@media (pointer: coarse) { .link { min-height: 3rem; } }
+@media (prefers-reduced-motion: reduce) { .presence, .image, .link { animation: none; transition: none; } }
+@media (prefers-contrast: more) { .detail, .caption, .name { color: var(--foreground); } .presence { border-color: var(--line-strong); } }
+@media (forced-colors: active) { .presence, .link { color: CanvasText; background: Canvas; border-color: CanvasText; } .detail, .caption, .name, .identity { color: CanvasText; } .link:focus-visible { outline-color: Highlight; box-shadow: 0 0 0 3px Canvas; } }

@@ -3,6 +3,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, AudioLines, Check, Loader2, Mic, RotateCcw, Send, ShieldCheck, Square, X } from "lucide-react";
 import { clsx } from "clsx";
+import { CompanionPresence } from "@/components/companion-presence";
+import { companionWork } from "@/lib/companion/presentation";
+import { requestCurrentMicrophone } from "./microphone-attempt";
 import { postApprovalDecision } from "@/components/approvals/approval-decision";
 import {
   applyRealtimeTranscriptEvent,
@@ -85,6 +88,7 @@ export function VoiceMode({
   conversationId,
   mode = "orchestrate",
   onConversationBound,
+  onOpen,
   onTranscript,
 }: {
   disabled?: boolean;
@@ -94,6 +98,8 @@ export function VoiceMode({
   conversationId?: string;
   mode?: AgentMode;
   onConversationBound: (conversationId: string) => void;
+  /** Presentation/navigation observer only; grants no device or action consent. */
+  onOpen?: () => void;
   onTranscript: (
     text: string,
     conversationId: string,
@@ -112,6 +118,9 @@ export function VoiceMode({
   const [approvalNote, setApprovalNote] = useState("");
   const [decisionMessage, setDecisionMessage] = useState("");
   const [announcement, setAnnouncement] = useState("Voice mode ready.");
+  const [microphoneOpen, setMicrophoneOpen] = useState(false);
+  const [replyAudioPlaying, setReplyAudioPlaying] = useState(false);
+  const microphoneObservationRef = useRef<(() => void) | undefined>(undefined);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const dialogRef = useRef<HTMLElement | null>(null);
   const primaryActionRef = useRef<HTMLButtonElement | null>(null);
@@ -169,6 +178,9 @@ export function VoiceMode({
   }, []);
 
   const stopMedia = useCallback(() => {
+    microphoneObservationRef.current?.();
+    microphoneObservationRef.current = undefined;
+    setMicrophoneOpen(false);
     if (meterFrameRef.current !== null) {
       window.cancelAnimationFrame(meterFrameRef.current);
       meterFrameRef.current = null;
@@ -182,6 +194,7 @@ export function VoiceMode({
   }, []);
 
   const stopSpeech = useCallback(() => {
+    setReplyAudioPlaying(false);
     speechActiveRef.current = false;
     echoGuard.replyEnded(Date.now());
     speechControllerRef.current?.abort();
@@ -262,12 +275,15 @@ export function VoiceMode({
     window.requestAnimationFrame(() => triggerRef.current?.focus());
   }, [reportSession, resetSession, stopSpeech, stopTransport]);
 
-  useEffect(() => () => {
-    mountedRef.current = false;
-    sessionTokenRef.current += 1;
-    void reportSession("canceled");
-    stopSpeech();
-    stopTransport();
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      sessionTokenRef.current += 1;
+      void reportSession("canceled");
+      stopSpeech();
+      stopTransport();
+    };
   }, [reportSession, stopSpeech, stopTransport]);
 
   useEffect(() => {
@@ -313,6 +329,14 @@ export function VoiceMode({
   }, [closeDialog, open]);
 
   function startMeter(stream: MediaStream) {
+    microphoneObservationRef.current?.();
+    const tracks = stream.getAudioTracks();
+    const updateMicrophone = () => {
+      if (mountedRef.current && streamRef.current === stream) setMicrophoneOpen(tracks.some((track) => track.readyState === "live" && track.enabled));
+    };
+    updateMicrophone();
+    tracks.forEach((track) => track.addEventListener("ended", updateMicrophone));
+    microphoneObservationRef.current = () => tracks.forEach((track) => track.removeEventListener("ended", updateMicrophone));
     try {
       const context = new AudioContext();
       const analyser = context.createAnalyser();
@@ -512,7 +536,9 @@ export function VoiceMode({
     try {
       let stream = streamRef.current;
       if (!stream || stream.getAudioTracks().every((track) => track.readyState === "ended")) {
-        stream = await requestMicrophone();
+        const acquired = await requestCurrentMicrophone(requestMicrophone, () => mountedRef.current && token === sessionTokenRef.current);
+        if (!acquired) return;
+        stream = acquired;
         streamRef.current = stream;
         startMeter(stream);
       }
@@ -576,6 +602,7 @@ export function VoiceMode({
       channel?.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
     }
     streamRef.current?.getAudioTracks().forEach((track) => { track.enabled = false; });
+    setMicrophoneOpen(false);
     // Review waits for every committed turn's final transcript, for as long
     // as one is likely to take.
     const deadline = Date.now() + 4_000;
@@ -644,8 +671,9 @@ export function VoiceMode({
     speechControllerRef.current = controller;
     speechPlayerRef.current = player;
     speechActiveRef.current = true;
+    setReplyAudioPlaying(false);
     setPhase("replying");
-    setAnnouncement(`${agentName} is replying. Speak at any time to interrupt.`);
+    setAnnouncement(`Preparing ${agentName}'s reply audio. Playback has not started.`);
     try {
       await streamVersionedSpeech({
         text: reply.text,
@@ -656,7 +684,8 @@ export function VoiceMode({
         player,
         signal: controller.signal,
         onStarted: () => {
-          if (token !== sessionTokenRef.current) return;
+          if (!mountedRef.current || token !== sessionTokenRef.current || speechControllerRef.current !== controller || controller.signal.aborted) return;
+          setReplyAudioPlaying(true);
           echoGuard.replyStarted(reply.text, Date.now());
           setPhase("replying");
           setAnnouncement(`${agentName} is speaking. Speak to interrupt.`);
@@ -670,6 +699,7 @@ export function VoiceMode({
       if (speechControllerRef.current === controller) {
         speechControllerRef.current = null;
         speechActiveRef.current = false;
+        setReplyAudioPlaying(false);
         echoGuard.replyEnded(Date.now());
       }
       if (speechPlayerRef.current === player) speechPlayerRef.current = null;
@@ -848,14 +878,14 @@ export function VoiceMode({
 
   const transcript = realtimeTranscriptText(transcriptState);
   const confidence = realtimeTranscriptConfidence(transcriptState);
-  const status = voiceStatus(phase, elapsedSeconds, error);
+  const status = voiceStatus(phase, elapsedSeconds, error, replyAudioPlaying);
 
   return (
     <>
       <button
         ref={triggerRef}
         type="button"
-        onClick={() => { resetSession(); setPhase("consent"); setOpen(true); }}
+        onClick={() => { onOpen?.(); resetSession(); setPhase("consent"); setOpen(true); }}
         disabled={disabled}
         title={disabledReason || (disabled ? "Voice mode is unavailable while work is active." : "Start realtime voice mode")}
         className={styles.trigger}
@@ -884,6 +914,12 @@ export function VoiceMode({
                 <X size={18} aria-hidden="true" />
               </button>
             </header>
+
+            <CompanionPresence showHome={false} microphoneActive={microphoneOpen} playbackActive={replyAudioPlaying}
+              speechPreparing={phase === "replying" && !replyAudioPlaying}
+              work={companionWork({ status: phase === "approval" ? "waiting_approval"
+                : phase === "review" ? "review" : phase === "reconnecting" ? "reconnecting"
+                : phase === "error" ? "failed" : ["sending", "waiting", "deciding"].includes(phase) ? "running" : undefined })} />
 
             {phase === "consent" ? (
               <div className={styles.consent}>
@@ -1085,7 +1121,7 @@ function microphoneErrorMessage(error: unknown) {
   return "The microphone could not be started. Nothing was sent.";
 }
 
-function voiceStatus(phase: VoicePhase, elapsedSeconds: number, error: string) {
+function voiceStatus(phase: VoicePhase, elapsedSeconds: number, error: string, replyAudioPlaying: boolean) {
   if (phase === "requesting") return { title: "Allow microphone access", detail: "The provider session starts only after permission is granted." };
   if (phase === "connecting") return { title: "Connecting", detail: "Opening a short-lived transcription-only connection." };
   if (phase === "listening") return { title: formatDuration(elapsedSeconds), detail: "Listening. Partial multilingual text appears below." };
@@ -1095,7 +1131,9 @@ function voiceStatus(phase: VoicePhase, elapsedSeconds: number, error: string) {
   if (phase === "review") return { title: "Review before sending", detail: error || "Edit the transcript. Nothing is sent to the Command API until you confirm." };
   if (phase === "sending") return { title: "Sending command", detail: "The reviewed text is being attributed to this conversation." };
   if (phase === "waiting") return { title: "Waiting for the result", detail: "The governed agent run is completing before speech playback starts." };
-  if (phase === "replying") return { title: "Speaking response", detail: "This is the exact agent result. Speak or use Interrupt reply to stop it." };
+  if (phase === "replying") return replyAudioPlaying
+    ? { title: "Speaking response", detail: "This is the exact agent result. Speak or use Interrupt reply to stop it." }
+    : { title: "Preparing response audio", detail: "Playback has not started. The reply remains available as text; interruption controls remain available." };
   if (phase === "approval") return { title: "Visible approval required", detail: "Review the exact action and target below. Voice confirmation is disabled." };
   if (phase === "deciding") return { title: "Recording your decision", detail: "The governed executor is persisting the visible approval decision." };
   if (phase === "resolved") return { title: "Decision recorded", detail: "The durable approval record is available in Activity." };
