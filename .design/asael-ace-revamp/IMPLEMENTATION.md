@@ -1076,3 +1076,62 @@ TypeScript. Evidence is in `ui-validation/accounts-final`,
 `meetings-accounts-final-unit.log` and `meetings-accounts-final-lint-types.log`.
 Hosted checks and the unchanged route budget remain required on the committed
 Accounts head.
+
+
+PR [#36](https://github.com/benniejoseph/OmniAgentOS/pull/36) merged as
+`7ae0b908539b54481ae107483b1158a182e291e2`. All ten hosted checks passed on
+`49c80d146ff2970e4803df0717c7390147f6316d`, including full quality, browser,
+PostgreSQL integration, production build and unchanged route budgets. This is
+repository acceptance; no production CRM operation or deployment was performed.
+
+## Web companion presence, entry and microphone truth — 4 October 2026
+
+Command and voice now show a compact ATLAS status tied to the existing run,
+microphone and playback controllers. Queued work remains labelled Queued,
+audio preparation does not claim playback, and Completed requires the exact
+canonical successful terminal receipt. Partial, canceled, failed, unavailable
+and approval states retain their distinctions. Late microphone permission results
+are stopped after disposal; opening the dialog still does not request the device.
+The approved contact sheet supplies a reviewed, reproducible 108px static crop
+rendered at 36px, with source/output checksums and provenance. It is not a final
+model, rig or clip. Failed/hidden portrait rendering leaves text and controls usable.
+
+Preference reads are bounded and owner-scoped. Home uses the existing conversation
+loader, keeps composer edits, respects current activity and changes the URL only
+after exact adoption. Login resolves the saved default destination with a bounded
+read and Today fallback; explicit safe app links win, including a validated return
+destination sealed inside the existing Google login state. Session and credential
+requests have deadlines, synchronous duplicate exclusion and disposal guards.
+The phone dock scrolls a keyboard-focused destination fully into view at 320px
+and 200% text without wrapping its label. The shared header retains its menu target.
+
+The external Chrome companion suite passed 73 assertions and eight scoped axe
+scans; the shared conversation/approval/shell suite passed 81 assertions and eight
+page-wide scans. Synthetic companion reads forwarded no application, OAuth,
+provider, microphone or playback effect. The shared suite retains its exact,
+wholly intercepted conversation and approval fixtures. Evidence is retained in
+`ui-validation/companion-presence-rerun` and `shared-shell-rerun`.
+Final focused validation passed 28 tests across seven files, strict lint and
+TypeScript (`companion-presence-source-final.log`). Hosted acceptance remains
+required on the committed head. Real devices, final ATLAS assets and cross-device continuity retain their
+separate acceptance gates.
+
+The first companion hosted quality run found an older private-cache test still
+calling Google authorization without its new Request argument. The test now
+uses the real route signature. The secret scanner also flagged an encoded
+negative URL fixture containing the word “secret”; these are noncredential test
+paths, now formatted one per line with neutral fixture names. No scan rule is
+disabled. Focused checks and TypeScript pass after both corrections
+(`access-presence-hosted-fix-validation.log`); the replacement head requires
+fresh hosted acceptance.
+
+The replacement companion build passed compilation but measured 1,156,946 bytes
+on Command against its unchanged 920,000-byte first-visit budget. The display
+adapter had imported the full run-authoring schema module. A compact JSON receipt
+boundary now preserves all terminal receipt shape, identity, count, verifier,
+legacy and disposition invariants without that runtime dependency. Seven
+differential tests compare it with the authoritative server schema, including
+1,540 disposition/mode/verification/reason combinations; all fourteen receipt
+and presentation cases, strict lint and focused TypeScript pass. The failed
+budget evidence is retained in `companion-presence-hosted-build-second.log`;
+the correction still requires its own exact-head hosted budget check.

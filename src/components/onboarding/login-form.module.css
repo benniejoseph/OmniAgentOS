@@ -1,0 +1,29 @@
+.form { display: grid; gap: 1.5rem; min-inline-size: 0; color: var(--foreground); font-size: .875rem; line-height: 1.25rem; --focus-surface: var(--background); }
+.form *, .form *::before, .form *::after { box-sizing: border-box; }
+.form :is(h1,p) { margin: 0; overflow-wrap: anywhere; }
+.form h1 { font-size: 1.75rem; line-height: 2.25rem; font-weight: 600; letter-spacing: -.02em; }
+.heading { display: grid; gap: .75rem; }
+.eyebrow { color: var(--accent); font-size: .8125rem; font-weight: 600; line-height: 1.25rem; }
+.support { color: var(--muted); font-size: .8125rem; line-height: 1.25rem; }
+.heading .support { font-size: 1rem; line-height: 1.625rem; }
+.icon { color: var(--accent); }
+.field { display: grid; gap: .5rem; min-inline-size: 0; }
+.field label { font-weight: 500; }
+.field input { min-inline-size: 0; inline-size: 100%; min-block-size: 2.75rem; border: 1px solid var(--line-strong); border-radius: .625rem; padding: .625rem .75rem; color: var(--foreground); background: var(--surface); font: inherit; font-size: 1rem; }
+.password { display: flex; align-items: stretch; min-inline-size: 0; gap: .5rem; }
+.password input { flex: 1; inline-size: 0; }
+.primary, .secondary, .reveal { display: inline-flex; align-items: center; justify-content: center; gap: .5rem; min-inline-size: 2.75rem; min-block-size: 2.75rem; max-inline-size: 100%; border: 1px solid var(--line-strong); border-radius: .625rem; padding: .625rem 1rem; color: var(--foreground); background: var(--surface); font: inherit; font-weight: 500; text-align: center; text-decoration: none; cursor: pointer; overflow-wrap: anywhere; }
+.primary { color: var(--primary-ink); background: var(--primary); border-color: var(--primary); }
+.primary:hover { background: var(--primary-hover); }
+.secondary:hover, .reveal:hover { background: var(--surface-raised); }
+.primary:active { background: var(--primary-pressed); }
+.reveal { flex: 0 0 auto; padding: .625rem; }
+.primary:disabled { cursor: not-allowed; color: var(--muted); background: var(--surface-raised); border-color: var(--line); }
+.form :is(a,button,input):focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; box-shadow: 0 0 0 3px var(--focus-surface); }
+.notice, .error { display: grid; gap: .75rem; padding: 1rem; border: 1px solid var(--line-strong); border-radius: .625rem; background: var(--surface); overflow-wrap: anywhere; --focus-surface: var(--surface); }
+.error { border-inline-start: 3px solid var(--danger); }
+.notice button { justify-self: start; }
+.divider { border-block-start: 1px solid var(--line); padding-block-start: 1.5rem; color: var(--muted); font-size: .8125rem; line-height: 1.25rem; }
+@media (max-width: 47.9375rem) { .form h1 { font-size: 1.5rem; line-height: 2rem; } }
+@media (pointer: coarse) { .form :is(input,button,a) { min-block-size: 3rem; } .reveal { min-inline-size: 3rem; } }
+@media (forced-colors: active) { .form :is(a,button,input) { border-color: ButtonText; } .form :is(a,button,input):focus-visible { outline-color: Highlight; } .error { border-inline-start-color: CanvasText; } }

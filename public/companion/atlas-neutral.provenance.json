@@ -1,0 +1,23 @@
+{
+  "source": ".design/asael-ace-revamp/references/atlas-selected.png",
+  "sourceProvenance": ".design/asael-ace-revamp/references/atlas-export.json",
+  "sourceSha256": "876591c5a2b739df99d6aab647554dc53bcab97d55bf0c3e0864e39e1c98c070",
+  "cropPixels": {
+    "left": 350,
+    "top": 830,
+    "right": 650,
+    "bottom": 1190
+  },
+  "outputPixels": [
+    108,
+    108
+  ],
+  "displayPixels": [
+    36,
+    36
+  ],
+  "outputSha256": "ba57f416b4a07f25a468f510f98ef680e0129ec502edad93a4f6777b6f87496e",
+  "method": "RGB crop, Lanczos resize 90x108, centered 9px horizontal padding sampled from crop top-left; PNG compression9",
+  "kind": "Static neutral head and neck from approved contact sheet; no model, rig, animation or additional pose",
+  "reviewRequired": "Inspect crop at native and 36px display size before release."
+}

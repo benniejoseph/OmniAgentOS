@@ -5,6 +5,7 @@ import {
   privateAccountPolicyForEmail,
 } from "@/lib/auth/private-account-policy";
 import { openJsonPayload, sealJsonPayload } from "@/lib/security/sealed-payload";
+import { safeCompanionReturn } from "@/lib/companion/return-path";
 
 const googleAuthorizeUrl = "https://accounts.google.com/o/oauth2/v2/auth";
 const googleTokenUrl = "https://oauth2.googleapis.com/token";
@@ -14,6 +15,7 @@ type LoginState = {
   verifier: string;
   nonce: string;
   expiresAt: number;
+  returnTo?: string;
 };
 
 export function googlePrivateLoginConfigured() {
@@ -24,7 +26,7 @@ export function googlePrivateLoginConfigured() {
   );
 }
 
-export function createGooglePrivateAuthorization() {
+export function createGooglePrivateAuthorization(returnTo?: string) {
   const clientId = process.env.GOOGLE_OAUTH_CLIENT_ID?.trim();
   if (
     !clientId ||
@@ -36,8 +38,9 @@ export function createGooglePrivateAuthorization() {
   const verifier = randomBytes(48).toString("base64url");
   const challenge = createHash("sha256").update(verifier).digest("base64url");
   const nonce = randomBytes(32).toString("base64url");
+  const destination = safeCompanionReturn(returnTo);
   const sealed = sealJsonPayload(
-    { verifier, nonce, expiresAt: Date.now() + 10 * 60_000 } satisfies LoginState,
+    { verifier, nonce, expiresAt: Date.now() + 10 * 60_000, ...(destination ? { returnTo: destination } : {}) } satisfies LoginState,
     "auth:google-owner",
   );
   const url = new URL(googleAuthorizeUrl);
@@ -98,7 +101,7 @@ export async function exchangeGooglePrivateCode(code: string, encodedState: stri
   ) {
     throw new Error("Google identity is not authorized for this private app.");
   }
-  return { email, name: String(claims.name || "Asael account") };
+  return { email, name: String(claims.name || "Asael account"), ...(state.returnTo ? { returnTo: state.returnTo } : {}) };
 }
 
 function openLoginState(encoded: string): LoginState {
@@ -107,6 +110,7 @@ function openLoginState(encoded: string): LoginState {
   if (!state.verifier || !state.nonce || state.expiresAt < Date.now()) {
     throw new Error("Google login state is invalid or expired.");
   }
+  if (state.returnTo !== undefined && safeCompanionReturn(state.returnTo) !== state.returnTo) throw new Error("Google login return destination is invalid.");
   return state;
 }
 
