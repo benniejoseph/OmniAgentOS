@@ -679,6 +679,64 @@ closing held video routes. Its raw evidence is retained. Explicitly settling hel
 routes before context closure produced the final clean 190-check run; application
 source did not change for that harness repair.
 
+PR [#27](https://github.com/benniejoseph/OmniAgentOS/pull/27) merged as
+`7f5dba36907ee7d032458997aeaec0150b8f5bda`. Implementation head
+`ace58363d3c1a459eecdcf30182979718463b179` passed all hosted quality,
+integration, build/budget, audit, worker, secret-scan and preview checks.
+
+## Memory semantic shadow collector — 3 October 2026
+
+The collector uses canonical responsive controls, flat job rows and complete,
+selectable job/conversation identities. Missing counts are unavailable; retained
+counts show their read state. The episode and conversation targets stay separate,
+and reaching them does not imply activation. Jobs expose their public status,
+stage and actual enriched/already-current/superseded outcome; completion is not
+described as a new enrichment for every episode.
+
+Collection retains its exact thread read, enqueue payload, write.memory authority,
+24-job target, 48-conversation bound and concurrency of four. Failed or unconfirmed
+attempts stop later batches while retaining valid receipts. Mounted request gates
+prevent duplicate starts and later batches after disposal. Polls use the existing
+visibility-aware reader, split into at most 100 IDs per request, and cannot update
+after their generation is invalidated. Missing, duplicate, unrelated or malformed
+job rows remain unconfirmed. A fresh explicit enqueue can reopen a terminal job
+under the same coalesced ID without allowing an obsolete poll to overwrite it.
+
+Overview reads have a dedicated error, abort/identity guards and a safe GET retry.
+Confirmed receipts remain independent of overview refresh success. The Memory
+view remounts its local state on tenant/actor change; same-scope refreshes preserve
+the view. The collector explains that leaving stops future local requests without
+claiming cancellation of already-sent server work. New files remain registered
+under the existing semantic-shadow lifecycle entry without extending its expiry.
+
+Independent implementation and contract review passed. Seventy-four focused tests
+passed, including seventeen new receipt/lifecycle regressions, existing collector
+and permission cases, route/actor/store checks and the lifecycle registry. One
+unchanged background-worker suite could not import the existing pptxgenjs ESM
+entry through the local dependency symlink; no assertion result is claimed for
+that suite locally. Its raw failure is retained for comparison with hosted CI.
+Strict targeted lint, the Memory/collector TypeScript graph, all 16 collector and
+101 parent CSS bindings, and the 1,191-file type-scale check passed.
+
+Headless Chrome passed 181 checks and six clean scoped axe scans, with sixteen
+viewport screenshots. Coverage includes unavailable/last-loaded/empty counts,
+partial and failed requests, malformed receipts, missing/unrelated job reads,
+exact job outcomes, duplicate-start prevention and disposal before later batches.
+A GET-only retry aborts and fences its predecessor; the harness records that
+cancellation without claiming delivery of the canceled response. A fresh terminal
+enqueue clears only its own obsolete read warning. Accepted receipts survive a
+failed overview refresh. Desktop and 320/390px phone layouts passed in both themes,
+including 44/48px controls, 200% text, reduced motion and forced colors.
+Representative desktop and phone screenshots were visually inspected.
+
+The final run wholly intercepted 24 exact enqueue POSTs and six job-status GETs.
+No real collection, provider/model work, job processing, activation or ranking
+effect ran. No unexpected write, external request, native popup/download or media
+attempt occurred. Held routes settled before clean browser shutdown. The denied
+role browser state was not exercised because the mounted synthetic session comes
+from SSR; permission wiring/event guards and existing permission/route tests were
+verified separately. Physical-device and screen-reader acceptance remain separate.
+
 ## Remaining gates and scope
 
 - Hosted build, route budgets and required repository checks on each new exact head.

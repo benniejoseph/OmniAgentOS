@@ -145,40 +145,6 @@
 .qualityMetrics article { display: grid; min-inline-size: 0; align-content: start; gap: .25rem; padding: 1rem; }
 .qualityMetrics span, .qualityMetrics small { color: var(--muted); font-size: .8125rem; line-height: 1.5385; }
 .qualityMetrics strong { font-size: 1rem; font-weight: 600; line-height: 1.5; font-variant-numeric: tabular-nums; }
-/* Collector exports are retained for its separate presentation migration. */
-.semanticLab { margin: 1rem; overflow: hidden; border: 1px solid color-mix(in oklab, var(--accent) 34%, var(--line)); border-radius: 1.3rem; background: var(--surface); }
-.semanticLabHeading { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: .75rem; border-bottom: 1px solid color-mix(in oklab, var(--accent) 18%, var(--line)); padding: 1rem; }
-.semanticLabIcon { display: grid; width: 2.7rem; height: 2.7rem; place-items: center; border: 1px solid color-mix(in oklab, var(--accent) 24%, var(--line)); border-radius: .9rem; color: var(--accent); background: var(--surface); box-shadow: 0 .6rem 1.5rem color-mix(in oklab, var(--accent) 10%, transparent); }
-.semanticLabHeading p { color: var(--accent); font-size: .75rem; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
-.semanticLabHeading h3 { margin-top: .12rem; font-family: inherit; font-size: 1.22rem; font-weight: 610; letter-spacing: -.025em; }
-.semanticLabHeading > div:nth-child(2) > span { display: block; max-width: 46rem; margin-top: .16rem; color: var(--muted); font-size: .75rem; line-height: 1.45; }
-.semanticLabState { display: inline-flex; min-height: 2.15rem; align-items: center; gap: .35rem; border: 1px solid var(--line); border-radius: 999px; padding: 0 .65rem; color: var(--muted); background: var(--surface); font-size: .75rem; font-weight: 720; white-space: nowrap; }
-.semanticLabState[data-active="true"] { border-color: color-mix(in oklab, var(--accent) 45%, var(--line)); color: var(--accent); }
-.semanticLabBody { display: grid; gap: .8rem; padding: 1rem; }
-.semanticLabProgress { display: grid; gap: .55rem; }
-.semanticLabProgress > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .55rem; }
-.semanticLabProgress span { display: flex; align-items: baseline; gap: .25rem; border: 1px solid color-mix(in oklab, var(--line) 76%, transparent); border-radius: .85rem; padding: .72rem .8rem; color: var(--muted); font-size: .75rem; font-variant-numeric: tabular-nums; background: color-mix(in oklab, var(--surface) 86%, transparent); }
-.semanticLabProgress strong { color: var(--foreground); font-family: inherit; font-size: 1.3rem; font-weight: 650; }
-.semanticLabProgress small { margin-left: auto; color: var(--muted); font-size: .75rem; }
-.semanticLabProgress progress { width: 100%; height: .38rem; overflow: hidden; appearance: none; border: 0; border-radius: 999px; background: var(--line); }
-.semanticLabProgress progress::-webkit-progress-bar { border-radius: 999px; background: var(--line); }
-.semanticLabProgress progress::-webkit-progress-value { border-radius: 999px; background: var(--accent); }
-.semanticLabProgress progress::-moz-progress-bar { border-radius: 999px; background: var(--accent); }
-.semanticLabAction { display: flex; align-items: center; justify-content: space-between; gap: 1rem; border: 1px solid var(--line); border-radius: 1rem; padding: .85rem; background: var(--surface); }
-.semanticLabAction > div { display: grid; gap: .2rem; }
-.semanticLabAction strong { font-size: .76rem; }
-.semanticLabAction span { max-width: 43rem; color: var(--muted); font-size: .75rem; line-height: 1.5; }
-.semanticLabAction button { display: inline-flex; min-height: 2.5rem; flex: 0 0 auto; align-items: center; justify-content: center; gap: .38rem; border: 1px solid transparent; border-radius: 999px; padding: 0 .85rem; color: var(--primary-ink); background: var(--accent); font-size: .75rem; font-weight: 760; }
-.semanticLabAction button:not(:disabled):hover { transform: translateY(-1px); box-shadow: 0 .55rem 1.4rem color-mix(in oklab, var(--accent) 20%, transparent); }
-.semanticLabAction button:disabled { cursor: default; opacity: .7; }
-.semanticLabJobs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); overflow: hidden; border: 1px solid var(--line); border-radius: .85rem; background: color-mix(in oklab, var(--surface) 88%, transparent); }
-.semanticLabJobs > div { display: grid; gap: .1rem; padding: .6rem .7rem; }
-.semanticLabJobs > div + div { border-left: 1px solid var(--line); }
-.semanticLabJobs dt { color: var(--muted); font-size: .75rem; font-weight: 680; text-transform: uppercase; }
-.semanticLabJobs dd { color: var(--foreground); font-family: inherit; font-size: 1rem; font-weight: 650; font-variant-numeric: tabular-nums; }
-.semanticLabJobs [data-attention="true"] dd { color: var(--warning); }
-.semanticLabBoundary { display: flex; align-items: flex-start; gap: .45rem; color: var(--muted); font-size: .75rem; line-height: 1.5; }
-.semanticLabBoundary svg { flex: 0 0 auto; margin-top: .08rem; color: var(--accent); }
 .reviewSectionHeading { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: .75rem; padding-block-end: 1rem; }
 .reviewSectionIcon { display: grid; min-block-size: 2.75rem; place-items: center; color: var(--muted); }
 .reviewSectionHeading > div:nth-child(2) p, .memoryReviewHeading p { color: var(--muted); font-size: .8125rem; line-height: 1.5385; }
@@ -386,8 +352,6 @@
   .workspaceGrid { gap: 1.5rem; }
   .memoryRow, .knowledgeRow { padding-inline: .5rem; }
   .rowFacts { gap: .5rem 1rem; }
-  .semanticLabAction { align-items: stretch; flex-direction: column; }
-  .semanticLabAction button { align-self: start; }
   .dialogLayer[open] { padding: .75rem; }
   .dialog { padding: 1rem; }
   .inspector > header, .inspectorTitle, .memoryMetadata, .lifecycle { padding: 1rem; }
@@ -395,9 +359,6 @@
   .forgetButton, .forgetPreview { margin-inline: 1rem; }
   .lifecycleHelp { margin-inline: 1rem !important; }
   .modalError { margin-inline: 1rem !important; }
-  .semanticLabHeading { grid-template-columns: auto minmax(0, 1fr); }
-  .semanticLabState { grid-column: 1 / -1; justify-self: start; }
-  .semanticLabProgress > div { grid-template-columns: 1fr; }
 }
 @media (max-width: 24rem) {
   .heroActions > button { flex: 1 1 8rem; }

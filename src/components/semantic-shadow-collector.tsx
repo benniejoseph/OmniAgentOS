@@ -1,441 +1,268 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  CheckCircle2,
-  FlaskConical,
-  LoaderCircle,
-  Play,
-  TriangleAlert,
-} from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { FlaskConical, Play, RefreshCw, TriangleAlert } from "lucide-react";
+import { permissionMessage, useWorkspaceSession } from "@/components/app-shell/session-context";
 import { startVisibleRefresh } from "@/lib/client/visible-refresh";
-import type { MemoryIntelligenceOverview } from "@/lib/memory/intelligence";
-import styles from "@/components/memory-intelligence-workspace.module.css";
+import {
+  collectSemanticShadowBatch,
+  createSemanticCollectionGate,
+  createSemanticPollGate,
+  isRecord,
+  isTerminalSemanticJob,
+  mergeSemanticShadowJobs,
+  parseSemanticEnqueueReceipt,
+  parseSemanticPoll,
+  parseSemanticThreadIds,
+  semanticShadowBatchSize,
+  semanticShadowReadState,
+  validSemanticShadowStats,
+  type SemanticEnqueueReceipt,
+  type SemanticShadowJob,
+  type SemanticShadowStats,
+} from "@/components/semantic-shadow-collector-state";
+import styles from "@/components/semantic-shadow-collector.module.css";
 
-type SemanticShadowStats = NonNullable<
-  MemoryIntelligenceOverview["semanticShadow"]
->;
-type SemanticShadowJobStatus =
-  | "queued"
-  | "running"
-  | "completed"
-  | "failed"
-  | "canceled";
+export { mergeSemanticShadowJobs, parseSemanticShadowJob, semanticShadowBatchSize } from "@/components/semantic-shadow-collector-state";
+export type { SemanticShadowJob } from "@/components/semantic-shadow-collector-state";
 
-export type SemanticShadowJob = {
-  id: string;
-  status: SemanticShadowJobStatus;
-  progress?: {
-    stage?: string;
-    outcome?: string;
-    shadowOnly: true;
-  };
-  failureCode?: string;
-  threadId?: string;
-};
-
-const terminalJobStatuses = new Set<SemanticShadowJobStatus>([
-  "completed",
-  "failed",
-  "canceled",
-]);
-const jobStatuses = new Set<SemanticShadowJobStatus>([
-  "queued",
-  "running",
-  "completed",
-  "failed",
-  "canceled",
-]);
-const maximumThreadsPerCollection = 48;
-const collectionConcurrency = 4;
-
-export function semanticShadowBatchSize(
-  stats: SemanticShadowStats | undefined,
-) {
-  if (!stats) return 0;
-  const episodeGap = Math.max(
-    0,
-    stats.minimumEpisodeTarget - stats.currentEpisodeCount,
-  );
-  const threadGap = Math.max(
-    0,
-    stats.minimumThreadTarget - stats.distinctThreadCount,
-  );
-  if (!episodeGap && !threadGap) return 0;
-  return Math.min(24, Math.max(episodeGap, threadGap * 2, 1));
-}
-
-export function parseSemanticShadowJob(
-  value: unknown,
-  threadId?: string,
-): SemanticShadowJob | undefined {
-  if (!isRecord(value)) return undefined;
-  const id = typeof value.id === "string" ? value.id.trim() : "";
-  const status = typeof value.status === "string" &&
-      jobStatuses.has(value.status as SemanticShadowJobStatus)
-    ? value.status as SemanticShadowJobStatus
-    : undefined;
-  if (!id || !status) return undefined;
-  const progress = isRecord(value.progress)
-    ? {
-        ...(typeof value.progress.stage === "string"
-          ? { stage: value.progress.stage }
-          : {}),
-        ...(typeof value.progress.outcome === "string"
-          ? { outcome: value.progress.outcome }
-          : {}),
-        shadowOnly: true as const,
-      }
-    : undefined;
-  return {
-    id,
-    status,
-    ...(progress ? { progress } : {}),
-    ...(typeof value.failureCode === "string"
-      ? { failureCode: value.failureCode }
-      : {}),
-    ...(threadId ? { threadId } : {}),
-  };
-}
-
-export function mergeSemanticShadowJobs(
-  current: readonly SemanticShadowJob[],
-  updates: readonly SemanticShadowJob[],
-) {
-  const merged = new Map(current.map((job) => [job.id, job]));
-  for (const update of updates) {
-    const previous = merged.get(update.id);
-    merged.set(update.id, {
-      ...previous,
-      ...update,
-      ...(update.threadId || !previous?.threadId
-        ? {}
-        : { threadId: previous.threadId }),
-    });
-  }
-  return [...merged.values()];
-}
-
-export function SemanticShadowCollector(props: {
-  semanticShadow?: MemoryIntelligenceOverview["semanticShadow"];
+type CollectorProps = {
+  semanticShadow?: SemanticShadowStats;
+  overviewLoading: boolean;
+  overviewError?: string;
   onProgressChanged: () => Promise<void>;
-}) {
-  const { semanticShadow, onProgressChanged } = props;
+};
+type JobRead = { confirmed: boolean; detail: string };
+
+export function SemanticShadowCollector(props: CollectorProps) {
+  const { session, status } = useWorkspaceSession();
+  const disabledReason = permissionMessage(session, status, "write.memory");
+  const scope = JSON.stringify([session?.context?.tenantId, session?.context?.actorId]);
+  return <Collector key={scope} {...props} disabledReason={disabledReason} />;
+}
+
+function Collector({ semanticShadow, overviewLoading, overviewError, onProgressChanged, disabledReason }: CollectorProps & { disabledReason?: string }) {
+  const [gate] = useState(createSemanticCollectionGate);
+  const [pollGate] = useState(createSemanticPollGate);
   const [collecting, setCollecting] = useState(false);
   const [jobs, setJobs] = useState<SemanticShadowJob[]>([]);
-  const [feedback, setFeedback] = useState<string>();
-  const completionSignatureRef = useRef("");
-  const batchSize = semanticShadowBatchSize(semanticShadow);
-  const activeJobs = jobs.filter((job) => !terminalJobStatuses.has(job.status));
-  const completedJobs = jobs.filter((job) => job.status === "completed");
-  const failedJobs = jobs.filter((job) =>
-    job.status === "failed" || job.status === "canceled"
-  );
-  const activeSignature = activeJobs
-    .map((job) => job.id)
-    .sort()
-    .join("|");
-  const collectionProgress = semanticShadow
-    ? Math.min(
-        100,
-        Math.round(
-          semanticShadow.currentEpisodeCount /
-            semanticShadow.minimumEpisodeTarget * 100,
-        ),
-      )
-    : 0;
-  const progressLabel = useMemo(() => {
-    if (activeJobs.length) {
-      const stage = activeJobs[0]?.progress?.stage;
-      return `${activeJobs.length} active${stage ? ` · ${startCase(stage)}` : ""}`;
+  const [receipts, setReceipts] = useState<SemanticEnqueueReceipt[]>([]);
+  const [feedback, setFeedback] = useState("");
+  const [jobReads, setJobReads] = useState<Record<string, JobRead>>({});
+  const [polling, setPolling] = useState(false);
+  const [unexpectedPollRows, setUnexpectedPollRows] = useState(false);
+  const [pollRevision, setPollRevision] = useState(0);
+  const [refreshError, setRefreshError] = useState("");
+  const permissionRef = useRef(disabledReason);
+  const completionSignature = useRef("");
+  const refreshRevision = useRef(0);
+
+  useLayoutEffect(() => { permissionRef.current = disabledReason; }, [disabledReason]);
+  useLayoutEffect(() => {
+    gate.mount();
+    return () => { gate.dispose(); pollGate.invalidate(); refreshRevision.current += 1; };
+  }, [gate, pollGate]);
+
+  const activeSignature = useMemo(() => jobs.filter((job) => !isTerminalSemanticJob(job)).map((job) => job.id).sort().join("|"), [jobs]);
+  const activeCount = jobs.filter((job) => !isTerminalSemanticJob(job)).length;
+  const completedCount = jobs.filter((job) => job.status === "completed").length;
+  const attentionCount = jobs.filter((job) => job.status === "failed" || job.status === "canceled").length;
+  const unconfirmedCount = jobs.filter((job) => jobReads[job.id]?.confirmed === false).length;
+  const pollError = unconfirmedCount ? `${unconfirmedCount} ${unconfirmedCount === 1 ? "job status remains" : "job statuses remain"} unconfirmed. Last confirmed statuses are retained.`
+    : unexpectedPollRows ? "The status response included unrecognized records. Only requested, verified jobs were updated." : "";
+  const readState = semanticShadowReadState(semanticShadow, overviewLoading, overviewError || refreshError);
+  const stats = validSemanticShadowStats(semanticShadow) ? semanticShadow : undefined;
+  const batchSize = semanticShadowBatchSize(stats);
+  const blocked = disabledReason || (collecting ? "A collection request is in progress." : undefined) ||
+    (readState !== "ready" ? "Refresh the collection counts before starting another batch." : undefined) ||
+    (!batchSize ? "The episode and conversation collection targets are met. Human review is still required." : undefined);
+
+  const refreshOverview = useCallback(async () => {
+    const revision = ++refreshRevision.current;
+    setRefreshError("");
+    try { await onProgressChanged(); }
+    catch {
+      if (gate.isMounted() && revision === refreshRevision.current) setRefreshError("Collection counts could not be refreshed. Confirmed job receipts are retained.");
     }
-    if (failedJobs.length) return `${failedJobs.length} need attention`;
-    if (completedJobs.length) return `${completedJobs.length} complete`;
-    return "Ready";
-  }, [activeJobs, completedJobs.length, failedJobs.length]);
+  }, [gate, onProgressChanged]);
 
   useEffect(() => {
-    if (!activeSignature) return;
-    const activeIds = activeSignature.split("|");
-    return startVisibleRefresh({
+    if (!activeSignature || collecting) return;
+    const ids = activeSignature.split("|");
+    const isLatestPoll = pollGate.begin();
+    const controller = new AbortController();
+    const isCurrent = () => !controller.signal.aborted && isLatestPoll() && gate.isMounted();
+    const stop = startVisibleRefresh({
       refreshOnStart: true,
       pollIntervalMs: 2_500,
       onRefresh: async () => {
-        const updates = await fetch(
-          `/api/operations/jobs?ids=${activeIds.map(encodeURIComponent).join(",")}`,
-          { cache: "no-store" },
-        ).then(async (response) => {
-          const body = await response.json().catch(() => ({})) as {
-            jobs?: unknown[];
-          };
-          return response.ok && Array.isArray(body.jobs)
-            ? body.jobs.map((job) => parseSemanticShadowJob(job))
-            : [];
-        }).catch(() => []);
-        const validUpdates: SemanticShadowJob[] = [];
-        for (const job of updates) {
-          if (job) validUpdates.push(job);
+        if (!isCurrent()) return;
+        setPolling(true);
+        const updates: SemanticShadowJob[] = [];
+        const reads: Record<string, JobRead> = {};
+        let unexpected = false;
+        // The batch endpoint accepts at most 100 IDs; local history has no server cursor.
+        for (let index = 0; index < ids.length; index += 100) {
+          if (!isCurrent()) return;
+          const requested = ids.slice(index, index + 100);
+          try {
+            const response = await fetch(`/api/operations/jobs?ids=${requested.map(encodeURIComponent).join(",")}`, { cache: "no-store", signal: controller.signal });
+            const body: unknown = await response.json();
+            if (!response.ok) throw new Error("Status read failed");
+            const result = parseSemanticPoll(body, requested);
+            updates.push(...result.jobs);
+            unexpected ||= result.unexpected;
+            result.jobs.forEach((job) => { reads[job.id] = { confirmed: true, detail: "Status confirmed by the latest read." }; });
+            result.unconfirmedIds.forEach((id) => { reads[id] = { confirmed: false, detail: "The latest read did not confirm this job. Showing its last confirmed status." }; });
+          } catch {
+            requested.forEach((id) => { reads[id] = { confirmed: false, detail: "Status could not be refreshed. Showing its last confirmed status." }; });
+          }
         }
-        if (validUpdates.length) {
-          setJobs((current) =>
-            mergeSemanticShadowJobs(current, validUpdates)
-          );
-        }
+        if (!isCurrent()) return;
+        setJobs((current) => mergeSemanticShadowJobs(current, updates));
+        setJobReads((current) => ({ ...current, ...reads }));
+        setUnexpectedPollRows(unexpected);
+        setPolling(false);
       },
     });
-  }, [activeSignature]);
+    return () => { controller.abort(); stop(); };
+  }, [activeSignature, collecting, gate, pollGate, pollRevision]);
 
+  const terminalSignature = !activeCount && jobs.length ? jobs.map((job) => `${job.id}:${job.status}:${job.progress?.outcome ?? ""}`).sort().join("|") : "";
   useEffect(() => {
-    if (!jobs.length || activeJobs.length || collecting) return;
-    const signature = jobs
-      .map((job) => `${job.id}:${job.status}`)
-      .sort()
-      .join("|");
-    if (completionSignatureRef.current === signature) return;
-    completionSignatureRef.current = signature;
-    const summary = failedJobs.length
-      ? `${completedJobs.length} shadow episodes completed; ${failedJobs.length} need attention. Safe retries cannot change active memory.`
-      : `${completedJobs.length} shadow episodes completed. Human adjudication is still required before activation can be considered.`;
+    if (collecting || !terminalSignature || terminalSignature === completionSignature.current) return;
     const timer = window.setTimeout(() => {
-      setFeedback(summary);
-      void onProgressChanged();
+      if (!gate.isMounted()) return;
+      completionSignature.current = terminalSignature;
+      void refreshOverview();
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [
-    activeJobs.length,
-    collecting,
-    completedJobs.length,
-    failedJobs.length,
-    jobs,
-    onProgressChanged,
-  ]);
+  }, [collecting, gate, refreshOverview, terminalSignature]);
 
   async function collectNextBatch() {
-    if (!batchSize || collecting) return;
+    if (blocked) return;
+    const token = gate.begin();
+    if (token === undefined) return;
+    pollGate.invalidate();
     setCollecting(true);
-    setFeedback("Checking recent conversations for sealed 12-turn episodes…");
+    setUnexpectedPollRows(false);
+    setReceipts([]);
+    setFeedback("Checking up to 48 recent conversations for complete 12-turn episodes.");
     try {
-      const threadResponse = await fetch("/api/threads?limit=100", {
-        cache: "no-store",
-      });
-      const threadBody = await threadResponse.json().catch(() => ({}));
-      if (!threadResponse.ok) {
-        throw new Error(errorMessage(threadBody, "Conversations could not be checked."));
-      }
-      const threadIds = parseThreadIds(threadBody).slice(
-        0,
-        maximumThreadsPerCollection,
-      );
+      const response = await fetch("/api/threads?limit=100", { cache: "no-store" });
+      const body: unknown = await response.json();
+      if (!gate.isCurrent(token)) return;
+      if (!response.ok) throw new Error(errorMessage(body, "Recent conversations could not be loaded. No collection requests were started."));
+      const threadIds = parseSemanticThreadIds(body);
+      if (!threadIds) throw new Error("The conversation list could not be verified. No collection requests were started.");
       if (!threadIds.length) {
-        setFeedback("No conversations are available for a shadow sample yet.");
+        setFeedback("No recent conversations were returned by this bounded read. No collection requests were started.");
         return;
       }
-
-      let inspectedCount = 0;
-      let eligibleEpisodeCount = 0;
-      let unavailableMessage = "";
-      const collectedJobs: SemanticShadowJob[] = [];
-      const collectedJobIds = new Set<string>();
-
-      for (
-        let index = 0;
-        index < threadIds.length && collectedJobs.length < batchSize;
-        index += collectionConcurrency
-      ) {
-        const remaining = batchSize - collectedJobs.length;
-        const candidates = threadIds.slice(
-          index,
-          index + Math.min(collectionConcurrency, remaining),
-        );
-        const responses = await Promise.all(candidates.map(enqueueThread));
-        inspectedCount += candidates.length;
-        for (const result of responses) {
-          if (!result) continue;
-          eligibleEpisodeCount += result.eligibleEpisodeCount;
-          if (result.unavailableMessage) {
-            unavailableMessage = result.unavailableMessage;
+      const result = await collectSemanticShadowBatch({
+        threadIds,
+        batchSize,
+        isCurrent: () => gate.isCurrent(token),
+        canContinue: () => !permissionRef.current,
+        enqueue: enqueueThread,
+        onBatch: (batch) => {
+          const confirmed = batch.flatMap((receipt) => receipt.jobs);
+          setReceipts((current) => [...current, ...batch]);
+          if (confirmed.length) {
+            completionSignature.current = "";
+            setJobs((current) => mergeSemanticShadowJobs(current, confirmed, "enqueue"));
+            setJobReads((current) => ({ ...current, ...Object.fromEntries(confirmed.map((job) => [job.id, { confirmed: true, detail: "Job receipt confirmed by the collection response." }])) }));
           }
-          for (const job of result.jobs) {
-            if (collectedJobIds.has(job.id)) continue;
-            collectedJobIds.add(job.id);
-            collectedJobs.push(job);
-          }
-        }
-        if (unavailableMessage) break;
-      }
-
-      if (collectedJobs.length) {
-        completionSignatureRef.current = "";
-        setJobs((current) =>
-          mergeSemanticShadowJobs(current, collectedJobs)
-        );
-        const distinctThreads = new Set(
-          collectedJobs.map((job) => job.threadId).filter(Boolean),
-        ).size;
-        setFeedback(
-          `Queued ${collectedJobs.length} evaluation-only ${collectedJobs.length === 1 ? "episode" : "episodes"} across ${distinctThreads} ${distinctThreads === 1 ? "conversation" : "conversations"}. They cannot affect answers or active memory.`,
-        );
-      } else if (unavailableMessage) {
-        setFeedback(unavailableMessage);
-      } else if (eligibleEpisodeCount) {
-        setFeedback(
-          `Checked ${inspectedCount} conversations. Their eligible episodes are already current or safely queued.`,
-        );
-        await onProgressChanged();
-      } else {
-        setFeedback(
-          `Checked ${inspectedCount} recent conversations. None has a complete new 12-turn episode yet.`,
-        );
-      }
+        },
+      });
+      if (!gate.isCurrent(token)) return;
+      const uncertain = result.receipts.filter((receipt) => receipt.issue).length;
+      const unconfigured = result.receipts.some((receipt) => receipt.status === "not_configured");
+      const waiting = result.receipts.length > 0 && result.receipts.every((receipt) => !receipt.issue && receipt.status === "waiting_for_sealed_episode");
+      const conversationLabel = result.inspected === 1 ? "conversation" : "conversations";
+      const receiptLabel = `${result.jobCount} job ${result.jobCount === 1 ? "receipt" : "receipts"}`;
+      setFeedback(uncertain
+        ? `Checked ${result.inspected} ${conversationLabel}. ${receiptLabel} confirmed; ${uncertain} request ${uncertain === 1 ? "outcome is" : "outcomes are"} unconfirmed or failed. Later requests were stopped.`
+        : unconfigured ? `Checked ${result.inspected} ${conversationLabel}. Choose a Memory model in Settings before collecting more episodes. ${receiptLabel} retained.`
+        : permissionRef.current ? `Collection stopped because workspace permissions are unavailable. ${receiptLabel} retained.`
+        : waiting ? `Checked ${result.inspected} recent ${conversationLabel}. None returned a complete new 12-turn episode.`
+        : `Checked ${result.inspected} ${conversationLabel}. ${receiptLabel} confirmed. Inspect the returned status and outcome below.`);
+      // This callback requests a GET refresh; only the overview props establish freshness.
+      void refreshOverview();
     } catch (error) {
-      setFeedback(
-        error instanceof Error
-          ? error.message
-          : "The shadow sample could not be queued.",
-      );
+      if (gate.isCurrent(token)) setFeedback(error instanceof Error ? error.message : "Collection could not be confirmed. Existing job receipts are retained.");
     } finally {
-      setCollecting(false);
+      if (gate.isCurrent(token)) { gate.finish(token); setCollecting(false); }
     }
   }
 
-  return (
-    <section className={styles.semanticLab} aria-labelledby="semantic-shadow-lab-title">
-      <header className={styles.semanticLabHeading}>
-        <div className={styles.semanticLabIcon}><FlaskConical size={19} /></div>
-        <div>
-          <p>Evaluation lane</p>
-          <h3 id="semantic-shadow-lab-title">Semantic shadow lab</h3>
-          <span>
-            Collect representative episode enrichments before a human judges
-            evidence, recall, compression and replay quality.
-          </span>
-        </div>
-        <span className={styles.semanticLabState} data-active={activeJobs.length > 0}>
-          {activeJobs.length ? <LoaderCircle size={13} className={styles.spin} /> : <FlaskConical size={13} />}
-          {progressLabel}
-        </span>
-      </header>
-      <div className={styles.semanticLabBody}>
-        <div className={styles.semanticLabProgress}>
-          <div>
-            <span><strong>{semanticShadow?.currentEpisodeCount ?? "—"}</strong> / {semanticShadow?.minimumEpisodeTarget ?? 24}<small>collected episodes</small></span>
-            <span><strong>{semanticShadow?.distinctThreadCount ?? "—"}</strong> / {semanticShadow?.minimumThreadTarget ?? 6}<small>distinct conversations</small></span>
-          </div>
-          <progress value={collectionProgress} max={100} aria-label="Semantic shadow episode collection progress" />
-        </div>
-        <div className={styles.semanticLabAction}>
-          <div>
-            <strong>{batchSize ? "Step 1 · Collect the next bounded batch" : "Collection target reached"}</strong>
-            <span>
-              Uses the Memory model selected in Settings. Collection is
-              shadow-only; it does not change ranking, answers or durable truth.
-            </span>
-          </div>
-          <button
-            type="button"
-            onClick={() => void collectNextBatch()}
-            disabled={collecting || !batchSize}
-          >
-            {collecting ? <LoaderCircle size={15} className={styles.spin} /> : batchSize ? <Play size={15} /> : <CheckCircle2 size={15} />}
-            {collecting ? "Checking conversations" : batchSize ? `Collect up to ${batchSize}` : "Target collected"}
-          </button>
-        </div>
-        {jobs.length ? (
-          <dl className={styles.semanticLabJobs}>
-            <div><dt>Active</dt><dd>{activeJobs.length}</dd></div>
-            <div><dt>Complete</dt><dd>{completedJobs.length}</dd></div>
-            <div data-attention={failedJobs.length > 0}><dt>Attention</dt><dd>{failedJobs.length}</dd></div>
-          </dl>
-        ) : null}
-        <p className={styles.semanticLabBoundary} aria-live="polite">
-          {failedJobs.length ? <TriangleAlert size={15} /> : <FlaskConical size={15} />}
-          {feedback || "After collection, human-reviewed cases across all ten scenario dimensions are still required. Passing the gate never activates memory automatically."}
-        </p>
-      </div>
+  const sourceMessage = readState === "loading" ? "Loading collection counts…"
+    : readState === "unavailable" ? "Collection counts are unavailable. Target completion has not been confirmed."
+    : overviewLoading ? "Refreshing collection counts. Showing last-loaded counts."
+    : readState === "stale" ? "Collection counts could not be refreshed. Showing last-loaded counts."
+    : batchSize ? "Collection counts are current for the last successful overview read."
+    : "Collection targets are met. Human review is still required.";
+  const terminalAnnouncement = terminalSignature ? `${completedCount} completed ${completedCount === 1 ? "job" : "jobs"}; ${attentionCount} failed or canceled. Completion does not mean every job produced a new enrichment.` : "";
+
+  return <section className={styles.collector} aria-labelledby="semantic-shadow-lab-title">
+    <header className={styles.heading}>
+      <div><p>Evaluation lane</p><h3 id="semantic-shadow-lab-title">Semantic shadow lab</h3><span>Collect bounded episode enrichments for human review. They cannot change live recall, answers or accepted memory.</span></div>
+      <button type="button" onClick={() => void refreshOverview()} disabled={overviewLoading}><RefreshCw size={16} aria-hidden="true" />Refresh collection counts</button>
+    </header>
+    <p className={styles.resourceState} role="status" aria-live="polite" data-state={readState}>{sourceMessage}</p>
+    {overviewError || refreshError ? <p className={styles.readError}><TriangleAlert size={16} aria-hidden="true" /><span>{overviewError || refreshError}</span></p> : null}
+    <dl className={styles.counts} aria-label="Collection counts">
+      <div><dt>Collected episodes</dt><dd>{stats ? `${stats.currentEpisodeCount} / ${stats.minimumEpisodeTarget}` : "Unavailable"}</dd></div>
+      <div><dt>Distinct conversations</dt><dd>{stats ? `${stats.distinctThreadCount} / ${stats.minimumThreadTarget}` : "Unavailable"}</dd></div>
+    </dl>
+    {stats ? <div className={styles.progress}><progress value={Math.min(100, stats.currentEpisodeCount / stats.minimumEpisodeTarget * 100)} max={100} aria-label="Semantic shadow episode collection progress" /><span>Episode target only; the conversation target must also be met.{readState === "stale" ? " Based on last-loaded counts." : ""}</span></div> : null}
+    <div className={styles.collectionAction}>
+      <div><strong>Collect the next bounded batch</strong><p>Uses the Memory model selected in Settings. Each conversation contributes at most one requested episode in this batch.</p><p id="semantic-collection-help">{blocked || `Requests up to ${batchSize} jobs from at most 48 recent conversations, four requests at a time.`}</p>{collecting ? <p>Leaving Reviews stops later local requests. Work already sent to the server is not canceled.</p> : null}</div>
+      <button className={styles.primaryButton} type="button" onClick={() => void collectNextBatch()} disabled={Boolean(blocked)} aria-describedby="semantic-collection-help"><Play size={16} aria-hidden="true" />{collecting ? "Checking conversations…" : batchSize ? `Collect up to ${batchSize}` : "Collect episodes"}</button>
+    </div>
+    <p className={styles.feedback} role="status" aria-live="polite">{feedback}</p>
+    {receipts.length ? <details className={styles.receipts}><summary>Latest collection responses ({receipts.length})</summary><ol>{receipts.map((receipt) => <li key={receipt.threadId}><span>Conversation ID</span><code>{receipt.threadId}</code><p>{receipt.issue || receiptLabel(receipt.status)}</p>{receipt.issue && receipt.status ? <p>Returned disposition: {receiptLabel(receipt.status)}</p> : null}</li>)}</ol></details> : null}
+    <section className={styles.jobSection} aria-labelledby="semantic-collection-jobs-title">
+      <header><div><h4 id="semantic-collection-jobs-title">Collection jobs</h4><p>{jobs.length ? `${activeCount} active · ${completedCount} completed · ${attentionCount} failed or canceled` : "Job receipts appear here after an explicit collection in this view."}</p></div><button type="button" disabled={!activeCount || collecting} aria-describedby="semantic-job-read-help" onClick={() => { pollGate.invalidate(); setPollRevision((revision) => revision + 1); }}><RefreshCw size={16} aria-hidden="true" />Refresh job statuses</button></header>
+      <p className={styles.resourceState} id="semantic-job-read-help">{collecting ? "Status reads resume after the collection requests finish." : activeCount ? polling ? "Checking active job statuses. Last confirmed statuses remain visible." : "Active jobs refresh while this page is visible." : jobs.length ? "All listed jobs have a confirmed terminal status." : "No collection job receipts have been returned in this view."}</p>
+      <p className={styles.pollNotice} role="status" aria-live="polite">{pollError}</p>
+      <p className={styles.srOnly} role="status" aria-live="polite">{terminalAnnouncement}</p>
+      <ol className={styles.jobs} aria-label="Collection jobs">{jobs.map((job, index) => <li key={job.id} data-job-id={job.id}>
+        <header><h5>Job {index + 1}</h5><span data-status={job.status}>{startCase(job.status)}</span></header>
+        <dl><div><dt>Job ID</dt><dd><code>{job.id}</code></dd></div><div><dt>Conversation ID</dt><dd>{job.threadId ? <code>{job.threadId}</code> : "Not reported"}</dd></div><div><dt>State</dt><dd>{startCase(job.status)}</dd></div><div><dt>Stage</dt><dd>{job.progress?.stage ? startCase(job.progress.stage) : "Not reported"}</dd></div><div><dt>Outcome</dt><dd>{job.progress?.outcome ? outcomeLabel(job.progress.outcome) : "Not reported"}</dd></div>{job.failureCode ? <div><dt>Failure code</dt><dd><code>{job.failureCode}</code></dd></div> : null}</dl>
+        <p className={styles.jobRead} data-confirmed={jobReads[job.id]?.confirmed !== false}>{jobReads[job.id]?.detail || "Last confirmed collection receipt."}</p>
+      </li>)}</ol>
     </section>
-  );
+    <p className={styles.boundary}><FlaskConical size={16} aria-hidden="true" /><span>Collection is evaluation-only. Human-reviewed evidence across all ten scenario dimensions is still required. Passing the gate never activates semantic memory automatically.</span></p>
+  </section>;
 }
 
-async function enqueueThread(threadId: string) {
-  try {
-    const response = await fetch(
-      `/api/threads/${encodeURIComponent(threadId)}`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          action: "enqueue_semantic_summaries",
-          limit: 1,
-        }),
-      },
-    );
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      return {
-        jobs: [],
-        eligibleEpisodeCount: 0,
-        unavailableMessage: errorMessage(
-          body,
-          "The semantic shadow sample could not be queued.",
-        ),
-      };
-    }
-    const record = isRecord(body) ? body : {};
-    const enrichment = isRecord(record.semanticEnrichment)
-      ? record.semanticEnrichment
-      : {};
-    const status = typeof enrichment.status === "string"
-      ? enrichment.status
-      : "";
-    const jobs = Array.isArray(record.jobs)
-      ? record.jobs
-          .map((job) => parseSemanticShadowJob(job, threadId))
-          .filter((job): job is SemanticShadowJob => Boolean(job))
-      : [];
-    return {
-      jobs,
-      eligibleEpisodeCount: safeCount(record.eligibleEpisodeCount),
-      unavailableMessage: status === "not_configured"
-        ? errorMessage(
-            record,
-            "Choose a Memory model in Settings before collecting semantic shadow samples.",
-          )
-        : "",
-    };
-  } catch {
-    return undefined;
-  }
-}
-
-function parseThreadIds(value: unknown) {
-  if (!isRecord(value) || !Array.isArray(value.threads)) return [];
-  return value.threads.flatMap((thread) => {
-    if (!isRecord(thread) || typeof thread.id !== "string") return [];
-    const id = thread.id.trim();
-    return id ? [id] : [];
+async function enqueueThread(threadId: string): Promise<SemanticEnqueueReceipt> {
+  const response = await fetch(`/api/threads/${encodeURIComponent(threadId)}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ action: "enqueue_semantic_summaries", limit: 1 }),
   });
+  const body: unknown = await response.json().catch(() => undefined);
+  return response.ok ? parseSemanticEnqueueReceipt(body, threadId) : {
+    threadId,
+    jobs: [],
+    issue: errorMessage(body, "The collection request failed. No job receipt was confirmed for this conversation."),
+  };
 }
 
 function errorMessage(value: unknown, fallback: string) {
-  return isRecord(value) && typeof value.message === "string"
-    ? value.message
-    : isRecord(value) && typeof value.error === "string"
-      ? value.error
-      : fallback;
+  return isRecord(value) && typeof value.message === "string" ? value.message : isRecord(value) && typeof value.error === "string" ? value.error : fallback;
 }
-
-function safeCount(value: unknown) {
-  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
-    ? value
-    : 0;
+function startCase(value: string) { return value.replaceAll("_", " ").replace(/\b\w/g, (match) => match.toUpperCase()); }
+function outcomeLabel(value: string) {
+  return value === "enriched" ? "Enriched (evaluation-only)" : value === "already_current" ? "Already current; no new enrichment" : value === "superseded" ? "Superseded; no enrichment applied" : "Not reported";
 }
-
-function startCase(value: string) {
-  return value.replaceAll("_", " ").replace(/\b\w/g, (match) =>
-    match.toUpperCase()
-  );
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+function receiptLabel(value?: string) {
+  return value === "not_configured" ? "Memory model is not configured."
+    : value === "waiting_for_sealed_episode" ? "Waiting for a complete 12-turn episode."
+    : value === "source_changed" ? "Episode source changed before collection."
+    : value === "up_to_date" ? "No additional job was queued; inspect any returned job receipt."
+    : value === "queued" ? "Job receipts returned; their current status is listed below."
+    : "Collection disposition was not confirmed.";
 }
