@@ -100,6 +100,7 @@ class MeetingFixtures(Fixtures):
         self.plans, self.defaults = defaultdict(deque), {}
         self.actions, self.calendar_plans = deque(), deque()
         self.held, self.requests, self.releases = {}, [], []
+        self.read_budgets = [{"scenario": "lifecycle", "start": 0, "limit": 300}]
         self.max_effects, self.max_calendar = max_effects, max_calendar
         self.calendar_count = 0
         self.leaving_for_assistant = False
@@ -153,10 +154,35 @@ class MeetingFixtures(Fixtures):
         for key in keys:
             self.defaults[key] = {"body": {"error": "Synthetic " + key + " unavailable."}, "status": 503}
 
+    def read_budget_report(self):
+        result = []
+        for index, budget in enumerate(self.read_budgets):
+            end = self.read_budgets[index + 1]["start"] if index + 1 < len(self.read_budgets) else len(self.requests)
+            counts = defaultdict(int)
+            for request in self.requests[budget["start"]:end]:
+                counts[request["key"]] += 1
+            result.append({**budget, "end": end, "used": end - budget["start"], "counts": dict(counts)})
+        return result
+
+    def begin_terminal_read_budget(self):
+        # This one-use checkpoint retains all earlier evidence and its original
+        # loop guard. The terminal scenario has one empty mount and one refresh:
+        # list/projects/entities/library twice, with no selected detail reads.
+        if len(self.read_budgets) != 1 or len(self.requests) > 300 or any(row["kind"] == "read_budget" for row in self.unexpected):
+            raise AssertionError("Terminal Meetings read budget cannot reset a used or failed checkpoint")
+        self.read_budgets.append({"scenario": "empty_and_read_disposal", "start": len(self.requests), "limit": 8})
+
     def serve(self, route, key, body):
-        if len(self.requests) >= 300:
-            return self.reject(route, "read_budget")
-        self.requests.append({"key": key, "method": route.request.method, "url": route.request.url})
+        budget = self.read_budget_report()[-1]
+        terminal_key_overflow = budget["scenario"] == "empty_and_read_disposal" and (
+            key not in ("list", "projects", "entities", "library") or budget["counts"].get(key, 0) >= 2)
+        if budget["used"] >= budget["limit"] or terminal_key_overflow:
+            detail = {**budget, "attemptedKey": key, "totalAcceptedReads": len(self.requests)}
+            try:
+                self.reject(route, "read_budget", detail)
+            finally:
+                raise AssertionError("Meetings read budget exceeded: " + json.dumps(detail, sort_keys=True))
+        self.requests.append({"key": key, "method": route.request.method, "url": route.request.url, "scenario": budget["scenario"]})
         plan = self.plans[key].popleft() if self.plans[key] else self.defaults.get(key, {})
         result = copy.deepcopy(body if plan.get("body") is None else plan["body"])
         if plan.get("hold"):

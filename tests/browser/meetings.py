@@ -526,6 +526,7 @@ def visual_checks(page, fixture, checks, coarse):
 
 
 def empty_and_read_disposal(page, fixture, checks, coarse):
+    fixture.begin_terminal_read_budget()
     fixture.list_ids = []
     navigate(page, fixture.origin, "/app/meetings")
     expect(workspace(page).get_by_text("No meetings were returned in this readable window.", exact=True)).to_be_visible()
@@ -534,6 +535,11 @@ def empty_and_read_disposal(page, fixture, checks, coarse):
     fixture.read_plan("list", hold="disposed-list", body={"error": "LATE_LIST_ERROR_MUST_NOT_APPEAR"}, status=503)
     button(page, "Refresh meetings").click()
     until(page, lambda: "disposed-list" in fixture.held, "Disposal list read was not held")
+    expected_reads = {"list": 2, "projects": 2, "entities": 2, "library": 2}
+    until(page, lambda: fixture.read_budget_report()[-1]["counts"] == expected_reads,
+          "Terminal Meetings reads did not match the empty mount and held refresh")
+    checks.check("Empty mount and disposal refresh use exactly eight bounded reads",
+                 fixture.read_budget_report()[-1]["counts"] == expected_reads, fixture.read_budget_report())
     fixture.leaving_for_assistant = True
     page.get_by_role("navigation", name="Everyday workspace navigation" if coarse else "Application navigation", exact=True).get_by_role("link", name="Assistant", exact=True).click()
     expect(page.locator('textarea[role="combobox"]')).to_be_visible(timeout=30_000)
@@ -584,7 +590,7 @@ def exercise(browser, origin, credentials, checks, coarse):
         checks.check(label + ": no unexpected request, popup, download or real effect", not fixture.unexpected, fixture.unexpected)
         checks.check(label + ": no uncaught browser errors", not errors, errors)
         return {"viewport": label, "scope": {key: scope[key] for key in ("tenantId", "actorId")}, "reads": fixture.requests, "writes": fixture.writes,
-                "releases": fixture.releases, "unexpected": fixture.unexpected, "errors": errors}
+                "readBudgets": fixture.read_budget_report(), "releases": fixture.releases, "unexpected": fixture.unexpected, "errors": errors}
     except Exception:
         if page is not None and not page.is_closed():
             page.screenshot(path=str(checks.output / f"{label}-failure.png"), full_page=False)
@@ -592,7 +598,7 @@ def exercise(browser, origin, credentials, checks, coarse):
         if fixture:
             (checks.output / f"{label}-failure-requests.json").write_text(json.dumps({"reads": fixture.requests,
                 "writes": fixture.writes, "held": list(fixture.held), "pendingActions": list(fixture.actions),
-                "unexpected": fixture.unexpected, "errors": errors}, indent=2))
+                "readBudgets": fixture.read_budget_report(), "unexpected": fixture.unexpected, "errors": errors}, indent=2))
         raise
     finally:
         if fixture:

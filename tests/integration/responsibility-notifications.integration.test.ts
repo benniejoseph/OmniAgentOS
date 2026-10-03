@@ -205,7 +205,10 @@ databaseDescribe("Responsibility in-app delivery under serving-role isolation", 
         WHERE datname = current_database() AND application_name = ${`responsibility-race:${operation}`}
           AND ${blocker}::int = ANY(pg_blocking_pids(pid))`;
       if (rows.length) {
-        expect(rows).toHaveLength(1); expect(rows[0].wait_event_type).toBe("Lock"); expect(Number(rows[0].pid)).not.toBe(blocker);
+        expect(rows).toHaveLength(1); expect(Number(rows[0].pid)).not.toBe(blocker);
+        // Activity fields and the lock-manager probe can describe adjacent
+        // instants. Require their complete evidence in the same bounded sample.
+        if (rows[0].wait_event_type !== "Lock") continue;
         return { pid: Number(rows[0].pid), query: String(rows[0].query) };
       }
     }
