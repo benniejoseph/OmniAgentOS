@@ -10,7 +10,6 @@ import {
   FileStack,
   FileText,
   HardDrive,
-  Library,
   Loader2,
   NotebookPen,
   Paperclip,
@@ -45,7 +44,7 @@ import {
   type OfflineCaptureOwner,
 } from "@/lib/capture/offline";
 import { googleWorkspaceCapabilitiesForScopes } from "@/lib/connectors/google-workspace-capabilities";
-import styles from "./daybook-workspaces.module.css";
+import styles from "./capture-workspace.module.css";
 
 type DocumentItem = {
   id: string;
@@ -99,6 +98,9 @@ type CaptureProcessingJob = CaptureJob & { assetId: string };
 
 type CaptureMode = "note" | "record" | "upload";
 type Notice = { tone: "success" | "warning" | "error"; text: string };
+type CaptureSource = "knowledge" | "assets" | "oauth" | "capabilities";
+type SourceReadState = { loaded: boolean; error?: string };
+const captureSources: readonly CaptureSource[] = ["knowledge", "assets", "oauth", "capabilities"];
 type CaptureBatchStatus =
   | "selected"
   | "uploading"
@@ -136,7 +138,12 @@ export function CaptureWorkspace() {
     "exact_v1" | "readable_v1"
   >();
   const [loadingWorkspace, setLoadingWorkspace] = useState(false);
-  const [loadError, setLoadError] = useState<string>();
+  const [sourceReads, setSourceReads] = useState<Record<CaptureSource, SourceReadState>>({
+    knowledge: { loaded: false },
+    assets: { loaded: false },
+    oauth: { loaded: false },
+    capabilities: { loaded: false },
+  });
   const [offlinePending, setOfflinePending] = useState(0);
   const [activeJob, setActiveJob] = useState<CaptureJob>();
   const [processingJobs, setProcessingJobs] = useState<CaptureProcessingJob[]>([]);
@@ -166,7 +173,6 @@ export function CaptureWorkspace() {
     const controller = new AbortController();
     workspaceLoadControllerRef.current = controller;
     setLoadingWorkspace(true);
-    setLoadError(undefined);
     setOauthReadContract(undefined);
     const results = await Promise.allSettled([
       fetch("/api/knowledge?limit=30", { cache: "no-store", signal: controller.signal }).then(async (response) => {
@@ -175,6 +181,7 @@ export function CaptureWorkspace() {
         if (controller.signal.aborted) return;
         setDocuments(Array.isArray(payload.documents) ? payload.documents : []);
         setKnowledgeStats(payload.stats);
+        setSourceReads((current) => ({ ...current, knowledge: { loaded: true } }));
       }),
       fetch("/api/capture?limit=100", { cache: "no-store", signal: controller.signal }).then(async (response) => {
         if (!response.ok) throw new Error("Original files could not be loaded.");
@@ -184,6 +191,7 @@ export function CaptureWorkspace() {
         setAssets(Array.isArray(payload.assets) ? payload.assets : []);
         setProcessingJobs(nextJobs);
         setBatchItems((current) => mergeCaptureBatchJobs(current, nextJobs));
+        setSourceReads((current) => ({ ...current, assets: { loaded: true } }));
       }),
       fetch("/api/oauth?ownerScope=readable", { cache: "no-store", signal: controller.signal }).then(async (response) => {
         if (!response.ok) throw new Error("Connected sources could not be loaded.");
@@ -198,6 +206,7 @@ export function CaptureWorkspace() {
         setOAuthProviders(Array.isArray(payload.providers) ? payload.providers : []);
         setOAuthGrants(Array.isArray(payload.grants) ? payload.grants : []);
         setOauthReadContract(payload.requestReadContracts?.oauthGrants);
+        setSourceReads((current) => ({ ...current, oauth: { loaded: true } }));
       }),
       fetch("/api/capabilities?view=settings", { cache: "no-store", signal: controller.signal }).then(async (response) => {
         if (!response.ok) throw new Error("Media capabilities could not be loaded.");
@@ -208,12 +217,23 @@ export function CaptureWorkspace() {
         if (controller.signal.aborted) return;
         setImageGenerationRoute(payload.imageGenerationRoute);
         setVideoGenerationRoute(payload.videoGenerationRoute);
+        setSourceReads((current) => ({ ...current, capabilities: { loaded: true } }));
       }),
     ]);
     if (controller.signal.aborted) return;
-    if (results.every((result) => result.status === "rejected")) {
-      setLoadError("Capture data is temporarily unavailable. Your unsaved draft has not been changed.");
-    }
+    setSourceReads((current) => {
+      const next = { ...current };
+      results.forEach((result, index) => {
+        const source = captureSources[index];
+        if (source && result.status === "rejected") {
+          next[source] = {
+            ...current[source],
+            error: result.reason instanceof Error ? result.reason.message : "This source could not be loaded.",
+          };
+        }
+      });
+      return next;
+    });
     setLoadingWorkspace(false);
   }, [session, status]);
 
@@ -226,20 +246,28 @@ export function CaptureWorkspace() {
           cache: "no-store",
           signal: controller.signal,
         });
-        const payload = await response.json().catch(() => ({})) as {
+        if (!response.ok) throw new Error("Originals and processing could not be refreshed.");
+        const payload = await response.json() as {
           assets?: CaptureAsset[];
           processingJobs?: CaptureProcessingJob[];
         };
-        if (!response.ok || controller.signal.aborted) return;
+        if (controller.signal.aborted) return;
         const nextJobs = Array.isArray(payload.processingJobs) ? payload.processingJobs : [];
         const activeIds = new Set(processingJobs.filter((job) => ["queued", "running"].includes(job.status)).map((job) => job.id));
         const finished = nextJobs.some((job) => activeIds.has(job.id) && ["completed", "failed", "canceled"].includes(job.status));
         setAssets(Array.isArray(payload.assets) ? payload.assets : []);
         setProcessingJobs(nextJobs);
         setBatchItems((current) => mergeCaptureBatchJobs(current, nextJobs));
+        setSourceReads((current) => ({ ...current, assets: { loaded: true } }));
         if (finished) void loadWorkspace();
       } catch {
         // The queue is durable. The next poll or full refresh can recover.
+        if (!controller.signal.aborted) {
+          setSourceReads((current) => ({
+            ...current,
+            assets: { ...current.assets, error: "Originals and processing could not be refreshed." },
+          }));
+        }
       }
     }, 2_000);
     return () => {
@@ -464,7 +492,7 @@ export function CaptureWorkspace() {
       if (payload.job) {
         completedJobRef.current = undefined;
         setActiveJob(payload.job);
-        setCaptureNotice({ tone: "success", text: `“${payload.capture?.title || payload.asset?.filename || "Capture"}” is stored and queued for indexing.` });
+        setCaptureNotice({ tone: "success", text: `“${payload.capture?.title || payload.asset?.filename || "Capture"}” is stored. ${jobLabel(payload.job.status)}.` });
       } else if (payload.asset) {
         setCaptureNotice({ tone: "warning", text: `Original file stored, but it was not indexed${payload.ingestion?.reason ? `: ${payload.ingestion.reason}` : "."}` });
       }
@@ -546,7 +574,7 @@ export function CaptureWorkspace() {
       setCaptureNotice({
         tone: accepted ? "success" : "error",
         text: accepted
-          ? `${accepted} file${accepted === 1 ? " is" : "s are"} safely stored or queued. Asael will build searchable cited passages, then prepare a source map for review.`
+          ? `${accepted} file${accepted === 1 ? " is" : "s are"} stored or saved on this device. Review each file’s indexing and sync status below.`
           : "None of the selected files could be queued. Review the file-level errors and retry.",
       });
       await loadWorkspace();
@@ -710,7 +738,10 @@ export function CaptureWorkspace() {
     }
   }
 
-  const activeSourceCount = oauthGrants
+  const loadError = !loadingWorkspace && captureSources.some((source) => sourceReads[source].error)
+    ? "Some Capture data could not be refreshed. Check the source status below, or refresh to retry. Your unsaved draft has not changed."
+    : undefined;
+  const activeSourceCount = sourceReads.oauth.loaded ? oauthGrants
     .filter((grant) => grant.provider === "google" && grant.status !== "revoked")
     .reduce((count, grant) => {
       const capabilities = googleWorkspaceCapabilitiesForScopes(grant.scopes);
@@ -718,31 +749,39 @@ export function CaptureWorkspace() {
         Number(capabilities.has("calendar.events.read")) +
         Number(capabilities.has("drive.read")) +
         Number(capabilities.has("photos.pick"));
-    }, 0);
+    }, 0) : undefined;
+  const activeProcessingCount = processingJobs.filter((job) => ["queued", "running"].includes(job.status)).length;
 
   return (
-    <div className={clsx("mx-auto w-full max-w-[120rem] px-4 py-6 sm:px-6 lg:px-8 lg:py-8 2xl:px-10", styles.daybook, styles.capture)}>
-      <header className="flex flex-col gap-5 border-b border-line pb-6 xl:flex-row xl:items-end xl:justify-between" data-daybook="hero">
+    <div className={styles.shell}>
+      <header className={styles.header}>
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">Capture</p>
-          <h1 className="mt-2 text-3xl font-semibold tracking-tight">Turn anything worth keeping into usable context.</h1>
-          <p className="mt-2 max-w-3xl text-sm leading-6 text-muted">Record conversations, preserve original files, connect Google, and index everything with provenance. Saved knowledge becomes selectable context in Command.</p>
+          <h1>Capture</h1>
+          <p>Save a note or original file, then follow its indexing status.</p>
         </div>
-        <div className="grid grid-cols-3 divide-x divide-line rounded-lg border border-line bg-surface" data-daybook="metrics">
-          <Metric value={knowledgeStats?.documents} label="Documents" />
-          <Metric value={knowledgeStats?.chunks} label="RAG chunks" />
-          <Metric value={activeSourceCount} label="Sources active" />
-        </div>
+        <button type="button" onClick={() => void loadWorkspace()} disabled={loadingWorkspace || status !== "ready"} className={styles.button}>
+          <RefreshCw size={16} className={loadingWorkspace ? styles.spinner : undefined} aria-hidden="true" />
+          {loadingWorkspace ? "Refreshing…" : "Refresh Capture"}
+        </button>
       </header>
+      <dl className={styles.summary} aria-label="Capture overview">
+        <Metric value={knowledgeStats?.documents} label="Documents" read={sourceReads.knowledge} refreshing={loadingWorkspace} />
+        <Metric value={knowledgeStats?.chunks} label="Indexed passages" read={sourceReads.knowledge} refreshing={loadingWorkspace} />
+        <Metric value={activeSourceCount} label="Active sources" read={sourceReads.oauth} refreshing={loadingWorkspace} />
+      </dl>
 
-      {loadError ? <p role="alert" className="mt-4 border-l-2 border-danger bg-danger/5 px-3 py-2 text-sm text-danger">{loadError}</p> : null}
-      {offlinePending ? <p className="mt-4 inline-flex items-center gap-2 rounded-full bg-warning/10 px-3 py-1.5 text-xs font-semibold text-warning"><HardDrive size={13} aria-hidden="true" />{offlinePending} offline capture{offlinePending === 1 ? "" : "s"} waiting to sync</p> : null}
+      {loadingWorkspace ? <p role="status" className={styles.readStatus}>Refreshing Capture data…</p> : null}
+      {loadError ? <p role="alert" className={clsx(styles.notice, styles.warning)}><CircleAlert size={16} aria-hidden="true" /><span>{loadError}</span></p> : null}
+      {offlinePending ? <p role="status" className={clsx(styles.notice, styles.warning)}><HardDrive size={16} aria-hidden="true" /><span>{offlinePending} offline capture{offlinePending === 1 ? "" : "s"} waiting to sync</span></p> : null}
 
-      <section className="grid gap-6 py-7 xl:grid-cols-[minmax(0,1.45fr)_minmax(20rem,.55fr)]" aria-labelledby="capture-composer-title" data-daybook="spread">
-        <form onSubmit={mode === "record" ? (event) => event.preventDefault() : submitCapture} className="min-w-0">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-            <div><h2 id="capture-composer-title" className="text-xl font-semibold tracking-tight">Capture something</h2><p className="mt-1 text-sm text-muted">Choose the shape of what you are saving. One clear workspace expands for each mode.</p></div>
-            <div className="inline-flex w-fit rounded-lg border border-line bg-surface p-1" role="tablist" aria-label="Capture type">
+      <section className={styles.intake} aria-labelledby="capture-composer-title">
+        <form onSubmit={mode === "record" ? (event) => event.preventDefault() : submitCapture} className={styles.form}>
+          <div className={styles.sectionHeader}>
+            <div>
+              <h2 id="capture-composer-title">New capture</h2>
+              <p>Choose how to add your source.</p>
+            </div>
+            <div className={styles.modeGroup} role="group" aria-label="Capture type">
               <ModeButton active={mode === "note"} onClick={() => setMode("note")} icon={NotebookPen} label="Note" />
               <ModeButton active={mode === "record"} onClick={() => setMode("record")} icon={AudioLines} label="Record" />
               <ModeButton active={mode === "upload"} onClick={() => setMode("upload")} icon={Upload} label="Upload" />
@@ -752,212 +791,294 @@ export function CaptureWorkspace() {
           {mode === "record" ? (
             <LongRecordingStudio disabledReason={captureBlocked} onJob={(job) => { completedJobRef.current = undefined; setActiveJob(job); }} onIndexed={loadWorkspace} />
           ) : (
-            <div className="mt-5 overflow-hidden rounded-xl border border-line bg-surface" data-daybook="editor">
+            <div className={styles.editor}>
               {mode === "note" ? (
-                <div className="p-5 sm:p-6">
-                  <label htmlFor="capture-content" className="text-xs font-semibold text-muted">Note</label>
-                  <textarea id="capture-content" value={content} onChange={(event) => setContent(event.target.value)} disabled={submitting} rows={10} placeholder="Write a thought, paste meeting notes, record a decision, or describe something you want Asael to remember…" className="mt-3 w-full resize-y bg-transparent text-lg leading-8 text-foreground outline-none placeholder:text-muted/60 disabled:opacity-60" />
-                  <button type="button" onClick={() => inputRef.current?.click()} className="mt-3 action-button"><Paperclip size={15} aria-hidden="true" />Attach a file instead</button>
+                <div className={styles.editorBody}>
+                  <label htmlFor="capture-content" className={styles.fieldLabel}>Note</label>
+                  <textarea
+                    id="capture-content"
+                    value={content}
+                    onChange={(event) => setContent(event.target.value)}
+                    disabled={submitting}
+                    rows={7}
+                    placeholder="Write a thought, paste meeting notes, or record a decision…"
+                    aria-describedby="capture-note-help"
+                    className={clsx(styles.input, styles.noteInput)}
+                  />
+                  <p id="capture-note-help" className={styles.supporting}>Pasted links are saved as note text. Your draft stays here until it is stored.</p>
+                  <button type="button" onClick={() => inputRef.current?.click()} className={styles.button}><Paperclip size={16} aria-hidden="true" />Attach a file instead</button>
                 </div>
               ) : (
-                <div className="p-5 sm:p-6">
+                <div className={styles.editorBody}>
                   <div
                     onDragEnter={(event) => { event.preventDefault(); setDragging(true); }}
                     onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; }}
                     onDragLeave={(event) => { if (event.currentTarget === event.target) setDragging(false); }}
                     onDrop={(event) => { event.preventDefault(); setDragging(false); chooseFiles([...event.dataTransfer.files]); }}
-                    className={clsx("flex min-h-52 flex-col items-center justify-center rounded-lg border border-dashed px-5 py-8 text-center transition-colors", dragging ? "border-primary bg-primary/5" : "border-line bg-background")}
-                    data-daybook="batch-dropzone"
+                    className={clsx(styles.dropzone, dragging && styles.dragging)}
                   >
-                    <span className="grid size-12 place-items-center rounded-lg bg-surface-raised text-primary"><FileStack size={23} aria-hidden="true" /></span>
-                    <p className="mt-3 font-semibold">Drop a document set here</p>
-                    <p className="mt-1 max-w-xl text-sm leading-6 text-muted">Add up to 50 files at once, 5 MB each. PDF, DOCX, TXT, Markdown, SRT and VTT transcripts are extracted, embedded, and linked to memory independently, so one failed file will not stop the batch.</p>
-                    <div className="mt-4 flex flex-wrap justify-center gap-2">
-                      <button type="button" onClick={() => inputRef.current?.click()} className="primary-button"><Paperclip size={15} aria-hidden="true" />Choose files</button>
-                      <button type="button" onClick={() => cameraInputRef.current?.click()} className="action-button"><ScanLine size={15} aria-hidden="true" />Scan with camera</button>
+                    <FileStack size={24} aria-hidden="true" />
+                    <p className={styles.itemTitle}>Drop files here</p>
+                    <p className={styles.supporting}>Up to 50 files, 5 MiB each. PDF, DOCX, TXT, Markdown, SRT and VTT files are processed independently.</p>
+                    <div className={styles.actions}>
+                      <button type="button" onClick={() => inputRef.current?.click()} className={styles.primaryButton}><Paperclip size={16} aria-hidden="true" />Choose files</button>
+                      <button type="button" onClick={() => cameraInputRef.current?.click()} className={styles.button}><ScanLine size={16} aria-hidden="true" />Scan with camera</button>
                     </div>
                   </div>
                   {batchItems.length ? (
-                    <div className="mt-5" data-daybook="batch-queue" aria-label="Document upload queue">
-                      <div className="flex flex-wrap items-end justify-between gap-3 border-b border-line pb-3">
-                        <div><p className="text-sm font-semibold">{batchItems.length} file{batchItems.length === 1 ? "" : "s"} in this batch</p><p className="mt-1 text-xs text-muted">{batchCounts.selected} ready · {batchCounts.processing} processing · {batchCounts.completed} indexed · {batchCounts.attention} need attention</p></div>
-                        <div className="flex gap-2">
-                          <button type="button" onClick={() => inputRef.current?.click()} className="action-button"><Upload size={14} aria-hidden="true" />Add more</button>
-                          {batchCounts.finished ? <button type="button" onClick={clearFinishedBatchItems} className="action-button">Clear finished</button> : null}
+                    <section className={styles.batch} aria-labelledby="capture-batch-title">
+                      <div className={styles.listHeader}>
+                        <div>
+                          <h3 id="capture-batch-title">{batchItems.length} file{batchItems.length === 1 ? "" : "s"} in this batch</h3>
+                          <p>{batchCounts.selected} ready · {batchCounts.processing} processing · {batchCounts.completed} indexed · {batchCounts.attention} need attention</p>
+                        </div>
+                        <div className={styles.actions}>
+                          <button type="button" onClick={() => inputRef.current?.click()} className={styles.button}><Upload size={16} aria-hidden="true" />Add more</button>
+                          {batchCounts.finished ? <button type="button" onClick={clearFinishedBatchItems} className={styles.button}>Clear finished</button> : null}
                         </div>
                       </div>
-                      <ul className="max-h-80 divide-y divide-line overflow-y-auto" aria-live="polite">
+                      <p className={styles.supporting}>Removing a row only hides it from this batch. Stored files and queued jobs remain.</p>
+                      <ul className={styles.batchList} aria-label="Document upload queue" aria-live="polite">
                         {batchItems.map((item) => (
-                          <li key={item.id} className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 py-3" data-daybook="batch-item">
-                            <span className={clsx("grid size-9 place-items-center rounded-md", batchStatusTone(item.status))}>{batchStatusIcon(item.status)}</span>
-                            <div className="min-w-0"><p className="truncate text-sm font-medium">{item.file.name}</p><p className="mt-0.5 text-xs text-muted">{formatBytes(item.file.size)} · {item.job ? captureJobStageLabel(item.job) : batchStatusLabel(item.status)}</p>{item.error ? <p className="mt-1 text-xs leading-5 text-danger">{item.error}</p> : null}</div>
+                          <li key={item.id} className={styles.batchRow}>
+                            <span className={clsx(styles.statusIcon, batchStatusTone(item.status))}>{batchStatusIcon(item.status)}</span>
+                            <div className={styles.rowContent}>
+                              <p className={styles.rowTitle}>{item.file.name}</p>
+                              <p className={styles.supporting}>{formatBytes(item.file.size)} · {item.job ? captureJobStageLabel(item.job) : batchStatusLabel(item.status)}</p>
+                              {item.error ? <p className={styles.errorText}>{item.error}</p> : null}
+                            </div>
                             {item.status === "failed" ? (
-                              <button type="button" onClick={() => retryBatchItem(item.id)} className="grid size-9 place-items-center rounded-md text-muted hover:bg-background hover:text-foreground" aria-label={`Retry ${item.file.name}`}><RefreshCw size={14} aria-hidden="true" /></button>
+                              <button type="button" onClick={() => retryBatchItem(item.id)} className={styles.iconButton} aria-label={`Retry ${item.file.name}`}><RefreshCw size={16} aria-hidden="true" /></button>
                             ) : ["selected", "completed", "offline", "stored"].includes(item.status) ? (
-                              <button type="button" onClick={() => removeBatchItem(item.id)} className="grid size-9 place-items-center rounded-md text-muted hover:bg-background hover:text-foreground" aria-label={`Remove ${item.file.name} from batch`}><X size={15} aria-hidden="true" /></button>
-                            ) : <span className="size-9" aria-hidden="true" />}
+                              <button type="button" onClick={() => removeBatchItem(item.id)} className={styles.iconButton} aria-label={`Remove ${item.file.name} from batch`}><X size={16} aria-hidden="true" /></button>
+                            ) : null}
                           </li>
                         ))}
                       </ul>
-                    </div>
+                    </section>
                   ) : null}
-                  <label className="mt-4 block text-xs font-semibold text-muted">Batch note <span className="font-normal">(optional · added to every file)</span><textarea value={content} onChange={(event) => setContent(event.target.value)} maxLength={20_000} rows={3} placeholder="Example: ICT course transcripts — preserve the lesson structure and trading terminology." className="mt-2 w-full resize-y rounded-lg border border-line bg-background px-3 py-3 text-sm leading-6 text-foreground outline-none focus:border-primary" /></label>
+                  <label className={styles.field}>
+                    <span>Batch note <span className={styles.supporting}>(optional · added to every file)</span></span>
+                    <textarea value={content} onChange={(event) => setContent(event.target.value)} maxLength={20_000} rows={3} placeholder="Add context to help interpret these files." className={styles.input} />
+                  </label>
                 </div>
               )}
 
-              <div className="grid gap-3 border-t border-line bg-background px-5 py-4 sm:grid-cols-2 sm:px-6">
-                <label className="text-xs font-semibold text-muted">Title<input value={title} onChange={(event) => setTitle(event.target.value)} disabled={mode === "upload" && batchItems.length > 1} maxLength={240} placeholder={mode === "upload" && batchItems.length > 1 ? "Each filename becomes its document title" : "Optional — created automatically when blank"} className="mt-2 w-full rounded-md border border-line bg-surface px-3 py-3 text-sm text-foreground outline-none focus:border-primary disabled:cursor-not-allowed disabled:opacity-60" /></label>
-                <label className="text-xs font-semibold text-muted">Tags <span className="font-normal">{mode === "upload" ? "(applied to the full batch)" : ""}</span><input value={tags} onChange={(event) => setTags(event.target.value)} placeholder={mode === "upload" ? "ict-course, transcript, trading" : "project, meeting, decision"} className="mt-2 w-full rounded-md border border-line bg-surface px-3 py-3 text-sm text-foreground outline-none focus:border-primary" /></label>
+              <div className={styles.fields}>
+                <label className={styles.field}>
+                  <span>Title</span>
+                  <input value={title} onChange={(event) => setTitle(event.target.value)} disabled={mode === "upload" && batchItems.length > 1} maxLength={240} placeholder={mode === "upload" && batchItems.length > 1 ? "Each filename becomes its document title" : "Optional — created when blank"} className={styles.input} />
+                  {mode === "upload" && batchItems.length > 1 ? <span className={styles.supporting}>Each file keeps its own title.</span> : null}
+                </label>
+                <label className={styles.field}>
+                  <span>Tags {mode === "upload" ? <span className={styles.supporting}>(applied to the full batch)</span> : null}</span>
+                  <input value={tags} onChange={(event) => setTags(event.target.value)} placeholder="project, meeting, decision" className={styles.input} />
+                </label>
               </div>
-              <div className="flex flex-col gap-3 border-t border-line px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
-                <p className="text-xs leading-5 text-muted">Private originals · source-aware extraction · RAG, memory and provenance built in the background</p>
-                <button type="submit" disabled={submitting || Boolean(captureBlocked)} title={captureBlocked} className="primary-button min-w-40">{submitting ? <Loader2 size={16} className="animate-spin" aria-hidden="true" /> : <CheckCircle2 size={16} aria-hidden="true" />}{submitting ? (mode === "upload" ? "Uploading batch…" : "Storing…") : mode === "upload" ? `Process ${batchCounts.selected} file${batchCounts.selected === 1 ? "" : "s"}` : "Store and index"}</button>
+              <div className={styles.submitRow}>
+                <p className={styles.supporting}>The original is stored before background indexing begins.</p>
+                <button type="submit" disabled={submitting || Boolean(captureBlocked)} aria-describedby={captureBlocked ? "capture-permission" : undefined} className={styles.primaryButton}>
+                  {submitting ? <Loader2 size={16} className={styles.spinner} aria-hidden="true" /> : <CheckCircle2 size={16} aria-hidden="true" />}
+                  {submitting ? (mode === "upload" ? "Uploading batch…" : "Storing…") : mode === "upload" ? `Process ${batchCounts.selected} file${batchCounts.selected === 1 ? "" : "s"}` : "Store and index"}
+                </button>
               </div>
             </div>
           )}
 
-          <input ref={inputRef} data-testid="capture-file-input" type="file" multiple className="sr-only" aria-label="Choose files to capture" onChange={(event) => chooseFiles([...(event.target.files || [])])} />
-          <input ref={cameraInputRef} type="file" className="sr-only" aria-label="Scan an image with the camera" accept="image/*" capture="environment" onChange={(event) => chooseFiles(event.target.files?.[0] ? [event.target.files[0]] : [])} />
-          {captureNotice ? <p role={captureNotice.tone === "error" ? "alert" : "status"} className={clsx("mt-3 text-sm leading-6", captureNotice.tone === "error" ? "text-danger" : captureNotice.tone === "warning" ? "text-warning" : "text-success")}>{captureNotice.text}</p> : null}
+          <input ref={inputRef} data-testid="capture-file-input" type="file" multiple className={styles.hiddenInput} tabIndex={-1} aria-label="Choose files to capture" onChange={(event) => chooseFiles([...(event.target.files || [])])} />
+          <input ref={cameraInputRef} type="file" className={styles.hiddenInput} tabIndex={-1} aria-label="Scan an image with the camera" accept="image/*" capture="environment" onChange={(event) => chooseFiles(event.target.files?.[0] ? [event.target.files[0]] : [])} />
+          {captureBlocked ? <p id="capture-permission" className={styles.permission}>{captureBlocked}</p> : null}
+          {captureNotice ? <p role={captureNotice.tone === "error" ? "alert" : "status"} className={clsx(styles.notice, captureNotice.tone === "error" ? styles.danger : captureNotice.tone === "warning" ? styles.warning : styles.success)}><span>{captureNotice.text}</span></p> : null}
         </form>
 
-        <aside className="border-t border-line pt-5 xl:border-l xl:border-t-0 xl:pl-6 xl:pt-0" aria-label="Capture processing status" data-daybook="rail">
-          <div className="flex items-center justify-between gap-3"><div><p className="text-sm font-semibold">Processing</p><p className="mt-1 text-xs text-muted">What happens after you save</p></div>{loadingWorkspace ? <Loader2 size={16} className="animate-spin text-muted" aria-label="Refreshing capture data" /> : null}</div>
-          <ol className="mt-4 space-y-4">
-            <FlowStep number="1" title="Preserve original" detail="Each file is stored independently before indexing." active={batchCounts.uploading > 0 || (!activeJob && !batchItems.length) || activeJob?.status === "queued"} />
-            <FlowStep number="2" title="Extract and understand" detail="Text, OCR, metadata and transcription are normalized." active={batchCounts.queued + batchCounts.running > 0 || activeJob?.status === "running"} />
-            <FlowStep number="3" title="Index and link" detail="RAG chunks, provenance, memory and graph links are created." active={batchCounts.completed > 0 || activeJob?.status === "completed"} />
-          </ol>
+        <aside className={styles.processing} aria-labelledby="capture-processing-title">
+          <div className={styles.sectionHeader}>
+            <div><h2 id="capture-processing-title">Processing</h2><p>Stored originals are kept if indexing needs attention.</p></div>
+          </div>
+          <SourceReadStatus read={sourceReads.assets} loading={loadingWorkspace} label="Originals and processing" />
           {durableQueue.length ? (
-            <section className="mt-5 overflow-hidden rounded-lg border border-line bg-background" aria-labelledby="durable-capture-queue-title" data-daybook="durable-queue">
-              <div className="flex items-center justify-between gap-3 border-b border-line px-3.5 py-3">
+            <section aria-labelledby="durable-capture-queue-title">
+              <div className={styles.listHeader}>
                 <div>
-                  <p id="durable-capture-queue-title" className="text-sm font-semibold">Durable document queue</p>
-                  <p className="mt-0.5 text-xs leading-5 text-muted">Safe to leave this page; progress resumes here.</p>
+                  <h3 id="durable-capture-queue-title">Recent document jobs</h3>
+                  <p>Up to 8 jobs shown. Queued work continues when you leave.</p>
                 </div>
-                <span className="rounded-full bg-primary/10 px-2 py-1 text-xs font-semibold tabular-nums text-primary">{processingJobs.filter((job) => ["queued", "running"].includes(job.status)).length} active</span>
+                <span className={styles.count}>{activeProcessingCount} active in the loaded queue</span>
               </div>
-              <ol className="max-h-72 divide-y divide-line overflow-y-auto" aria-live="polite">
+              <ol className={styles.jobList} aria-live="polite">
                 {durableQueue.map(({ job, asset }) => (
-                  <li key={job.id} className="px-3.5 py-3">
-                    <div className="flex items-start gap-2.5">
-                      <span className={clsx("mt-0.5 grid size-7 shrink-0 place-items-center rounded-full", captureJobTone(job.status))}>{captureJobIcon(job.status)}</span>
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-medium" title={asset.filename}>{asset.filename}</p>
-                        <p className="mt-0.5 text-xs leading-5 text-muted">{captureJobStageLabel(job)}{job.attempt && job.status !== "completed" ? ` · attempt ${job.attempt}` : ""}</p>
-                        {["queued", "running"].includes(job.status) ? (
-                          <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-line" role="progressbar" aria-label={`${asset.filename}: ${captureJobStageLabel(job)}`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={captureJobPercent(job)}>
-                            <div className="h-full rounded-full bg-primary transition-[width] duration-500" style={{ width: `${captureJobPercent(job)}%` }} />
-                          </div>
-                        ) : null}
-                        {job.status === "failed" && job.lastError ? <p className="mt-1 text-xs leading-5 text-danger">{job.lastError}</p> : null}
-                      </div>
+                  <li key={job.id} className={styles.jobRow}>
+                    <span className={clsx(styles.statusIcon, captureJobTone(job.status))}>{captureJobIcon(job.status)}</span>
+                    <div className={styles.rowContent}>
+                      <p className={styles.rowTitle}>{asset.filename}</p>
+                      <p className={styles.supporting}>{captureJobStageLabel(job)}{job.attempt && job.status !== "completed" ? ` · attempt ${job.attempt}` : ""}</p>
+                      {job.status === "failed" && job.lastError ? <p className={styles.errorText}>{job.lastError}</p> : null}
                     </div>
                   </li>
                 ))}
               </ol>
             </section>
-          ) : null}
+          ) : sourceReads.assets.loaded ? <p className={styles.empty}>{sourceReads.assets.error ? "No jobs were present in the last loaded view." : "No recent processing jobs in this view."}</p> : null}
           {batchItems.length ? (
-            <div className="mt-5 border-l-2 border-primary bg-primary/5 px-4 py-3" aria-live="polite">
-              <p className="flex items-center gap-2 text-sm font-semibold">{batchCounts.processing ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : <FileStack size={15} aria-hidden="true" />}Bulk document queue</p>
-              <p className="mt-1 text-xs leading-5 text-muted">{batchCounts.completed} indexed · {batchCounts.processing} processing · {batchCounts.selected} ready{batchCounts.offline ? ` · ${batchCounts.offline} waiting for connection` : ""}{batchCounts.attention ? ` · ${batchCounts.attention} need attention` : ""}</p>
-              <progress className="mt-3 block h-1.5 w-full overflow-hidden rounded-full" max={Math.max(batchItems.length, 1)} value={batchCounts.finished} aria-label={`${batchCounts.finished} of ${batchItems.length} files finished`} />
+            <div className={styles.processingSummary} aria-live="polite">
+              <h3>Current batch</h3>
+              <p>{batchCounts.completed} indexed · {batchCounts.processing} processing · {batchCounts.selected} ready{batchCounts.offline ? ` · ${batchCounts.offline} waiting for connection` : ""}{batchCounts.attention ? ` · ${batchCounts.attention} need attention` : ""}</p>
+              <progress className={styles.progress} max={Math.max(batchItems.length, 1)} value={batchCounts.finished} aria-label={`${batchCounts.finished} of ${batchItems.length} files finished`} />
             </div>
           ) : null}
           {activeJob ? (
-            <div className={clsx("mt-5 border-l-2 px-4 py-3", activeJob.status === "failed" ? "border-danger bg-danger/5" : activeJob.status === "completed" ? "border-success bg-success/5" : "border-primary bg-primary/5")}><p className="flex items-center gap-2 text-sm font-semibold">{activeJob.status === "failed" ? <CircleAlert size={15} /> : activeJob.status === "completed" ? <CheckCircle2 size={15} /> : <Loader2 size={15} className="animate-spin" />}{jobLabel(activeJob.status)}</p><p className="mt-1 text-xs leading-5 text-muted">{activeJob.lastError || jobDetail(activeJob)}</p>{activeJob.status === "running" ? <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-line"><div className="h-full w-2/3 animate-pulse rounded-full bg-primary" /></div> : null}</div>
-          ) : !batchItems.length ? <p className="mt-5 border-l-2 border-line pl-4 text-sm leading-6 text-muted">No active capture. Your latest job will appear here with honest queued, running, ready, or failed status.</p> : null}
-          <div className="mt-6 grid grid-cols-2 gap-x-4 gap-y-3 border-t border-line pt-5 text-xs">
-            <StatusFact icon={Database} label={`${knowledgeStats?.embedded || 0} embedded chunks`} />
-            <StatusFact icon={FileStack} label={`${assets.length} originals retained`} />
-            <StatusFact icon={Library} label="Command context ready" />
-            <StatusFact icon={Clock3} label="Background indexing" />
-          </div>
+            <div className={clsx(styles.processingSummary, captureJobTone(activeJob.status))} role="status">
+              <h3>{captureJobIcon(activeJob.status)}{jobLabel(activeJob.status)}</h3>
+              <p>{activeJob.lastError || jobDetail(activeJob)}</p>
+            </div>
+          ) : null}
+          <ul className={styles.facts}>
+            <StatusFact icon={Database} label={knowledgeStats?.embedded === undefined ? "Embedded passage count unavailable" : `${knowledgeStats.embedded} embedded passages${sourceReads.knowledge.error || loadingWorkspace ? " · last loaded" : ""}`} />
+            <StatusFact icon={FileStack} label={sourceReads.assets.loaded ? `${assets.length} originals in this view${sourceReads.assets.error || loadingWorkspace ? " · last loaded" : ""}` : "Original count unavailable"} />
+            <StatusFact icon={Clock3} label="Indexing runs in the background" />
+          </ul>
+          <SourceReadStatus read={sourceReads.knowledge} loading={loadingWorkspace} label="Knowledge index" />
         </aside>
       </section>
 
-      <ConnectedSources
-        providers={oauthProviders}
-        grants={oauthGrants}
-        requestReadContract={oauthReadContract}
-        disabledReason={captureBlocked}
-        loading={loadingWorkspace}
-        onRefresh={loadWorkspace}
-        onJob={(job) => { completedJobRef.current = undefined; setActiveJob(job); }}
-      />
+      <div className={styles.childSection}>
+        <SourceReadStatus read={sourceReads.oauth} loading={loadingWorkspace} label="Connected sources" />
+        <ConnectedSources
+          providers={oauthProviders}
+          grants={oauthGrants}
+          requestReadContract={oauthReadContract}
+          disabledReason={captureBlocked}
+          loading={loadingWorkspace}
+          onRefresh={loadWorkspace}
+          onJob={(job) => { completedJobRef.current = undefined; setActiveJob(job); }}
+        />
+      </div>
 
-      <VisualStudio assets={assets} imageRoute={imageGenerationRoute} videoRoute={videoGenerationRoute} disabledReason={visualBlocked} onJob={(job) => { completedJobRef.current = undefined; setActiveJob(job); }} onAssetsChanged={loadWorkspace} />
+      <div className={styles.childSection}>
+        <SourceReadStatus read={sourceReads.capabilities} loading={loadingWorkspace} label="Media capabilities" />
+        <VisualStudio assets={assets} imageRoute={imageGenerationRoute} videoRoute={videoGenerationRoute} disabledReason={visualBlocked} onJob={(job) => { completedJobRef.current = undefined; setActiveJob(job); }} onAssetsChanged={loadWorkspace} />
+      </div>
 
       <WorkspaceLibrary
         title="Everything in this workspace"
         description="Browse files, generated artifacts, images, recordings, transcripts, email, meetings, and connected sources in one versioned and cited view."
         limit={100}
         refreshKey={`${assets.length}:${knowledgeStats?.documents || 0}:${processingJobs[0]?.updatedAt || activeJob?.updatedAt || activeJob?.status || "idle"}`}
-        className="mt-7"
+        className={styles.library}
       />
 
-      <section className="border-t border-line pt-7" aria-labelledby="capture-library-title" data-daybook="section">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-          <div><p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">Source controls</p><h2 id="capture-library-title" className="mt-2 text-xl font-semibold tracking-tight">Manage originals and the knowledge index.</h2><p className="mt-2 text-sm leading-6 text-muted">These source-specific controls remain here for download, deletion, and indexing. The unified library above is the canonical browse and search view.</p></div>
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-            <label className="relative min-w-56"><span className="sr-only">Search captured knowledge</span><Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" aria-hidden="true" /><input value={libraryQuery} onChange={(event) => setLibraryQuery(event.target.value)} placeholder="Search this list" className="min-h-11 w-full rounded-md border border-line bg-surface pl-9 pr-3 text-sm outline-none focus:border-primary" /></label>
-            <label><span className="sr-only">Filter by source</span><select value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value)} className="min-h-11 rounded-md border border-line bg-surface px-3 text-sm text-foreground"><option value="all">All sources</option><option value="capture">Capture</option><option value="mail">Email</option><option value="drive">Drive</option><option value="calendar">Calendar</option><option value="photos">Photos</option></select></label>
-            <button
-              type="button"
-              onClick={() => void reindexAssets(reindexableAssets)}
-              disabled={!reindexableAssets.length || Boolean(captureBlocked)}
-              title={captureBlocked || (reindexableAssets.length ? "Refresh extraction, RAG, memory, and graph links for the shown originals." : "No shown originals need re-indexing.")}
-              className="action-button min-h-11 whitespace-nowrap disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {reindexingAssetIds.size ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : <RefreshCw size={15} aria-hidden="true" />}
-              {reindexingAssetIds.size
-                ? `Queueing ${reindexingAssetIds.size}`
-                : `Re-index ${reindexableAssets.length} shown`}
-            </button>
+      <section className={styles.sourceControls} aria-labelledby="capture-library-title">
+        <div className={styles.sectionHeader}>
+          <div>
+            <h2 id="capture-library-title">Originals and knowledge</h2>
+            <p>Download, re-index, or delete a source here. Browse across source types in the Library above.</p>
           </div>
         </div>
+        <div className={styles.toolbar}>
+          <label className={styles.field}>
+            <span>Search these sources</span>
+            <span className={styles.searchField}><Search size={16} aria-hidden="true" /><input value={libraryQuery} onChange={(event) => setLibraryQuery(event.target.value)} placeholder="Filename, title or source" className={styles.input} /></span>
+          </label>
+          <label className={styles.field}>
+            <span>Source type</span>
+            <select value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value)} className={styles.input}><option value="all">All sources</option><option value="capture">Capture</option><option value="mail">Email</option><option value="drive">Drive</option><option value="calendar">Calendar</option><option value="photos">Photos</option></select>
+          </label>
+          <button
+            type="button"
+            onClick={() => void reindexAssets(reindexableAssets)}
+            disabled={!reindexableAssets.length || Boolean(captureBlocked)}
+            aria-describedby="capture-reindex-help"
+            className={styles.button}
+          >
+            {reindexingAssetIds.size ? <Loader2 size={16} className={styles.spinner} aria-hidden="true" /> : <RefreshCw size={16} aria-hidden="true" />}
+            {reindexingAssetIds.size ? `Queueing ${reindexingAssetIds.size}` : `Re-index ${reindexableAssets.length} shown`}
+          </button>
+        </div>
+        <p id="capture-reindex-help" className={styles.supporting}>{captureBlocked || "Re-index up to 50 shown originals that you manage, support indexing, and have no active job in this view."}</p>
 
-        <div className="mt-5 grid gap-6 2xl:grid-cols-[minmax(22rem,.72fr)_minmax(0,1.28fr)]">
-          <div className="overflow-hidden rounded-xl border border-line bg-surface" data-daybook="panel">
-            <div className="flex items-center justify-between gap-3 border-b border-line bg-surface-raised px-4 py-3"><div><p className="text-sm font-semibold">Original files</p><p className="mt-0.5 text-xs text-muted">Private and retrievable · actions follow stored ownership</p></div><span className="text-xs text-muted">{filteredAssets.length}{filteredAssets.length !== assets.length ? ` / ${assets.length}` : ""}</span></div>
-            <div className="max-h-[32rem] divide-y divide-line overflow-y-auto">
-              {filteredAssets.length ? filteredAssets.map((asset) => (
-                <div key={asset.id} className="group px-4 py-3"><div className="flex items-start gap-3"><span className="mt-0.5 grid size-9 shrink-0 place-items-center rounded-md bg-background text-primary"><FileText size={16} aria-hidden="true" /></span><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{asset.filename}</p><p className="mt-1 truncate text-xs text-muted">{formatBytes(asset.byteCount)} · {asset.storageKind} · {formatTime(asset.updatedAt)}</p><p className={clsx("mt-1 text-xs font-semibold", asset.status === "failed" || asset.status === "unsupported" ? "text-warning" : asset.status === "indexed" ? "text-success" : "text-muted")}>{assetStatusLabel(asset, activelyProcessingAssetIds.has(asset.id))}</p>{asset.error ? <p className="mt-1 line-clamp-2 text-xs text-danger">{asset.error}</p> : null}{asset.manageable !== true ? <p className="mt-1 text-xs text-muted">Read only · indexing and management remain with its stored owner</p> : captureBlocked ? <p className="mt-1 text-xs text-muted">Read only in your current role</p> : null}</div><div className="flex shrink-0 gap-1">{asset.manageable === true && asset.indexable === true && !captureBlocked ? <button type="button" onClick={() => void reindexAssets([asset])} disabled={activelyProcessingAssetIds.has(asset.id) || reindexingAssetIds.has(asset.id)} className="grid size-9 place-items-center rounded-md text-muted hover:bg-background hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50" aria-label={`Re-index ${asset.filename}`}>{reindexingAssetIds.has(asset.id) ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}</button> : null}{asset.contentAvailable === true ? <a href={`/api/capture/assets/${encodeURIComponent(asset.id)}?content=1&download=1`} className="grid size-9 place-items-center rounded-md text-muted hover:bg-background hover:text-foreground" aria-label={`Download ${asset.filename}`}><Download size={14} /></a> : null}{asset.manageable === true && !captureBlocked ? <button type="button" onClick={() => void deleteAsset(asset.id)} disabled={deletingAsset === asset.id} className="grid size-9 place-items-center rounded-md text-muted hover:bg-danger/10 hover:text-danger" aria-label={`Delete ${asset.filename}`}>{deletingAsset === asset.id ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}</button> : null}</div></div></div>
-              )) : <p className="px-4 py-8 text-center text-sm text-muted">{assets.length ? "No original files match this filter." : "Uploaded and generated originals will appear here."}</p>}
+        <div className={styles.sourceLists}>
+          <section className={styles.sourceList} aria-labelledby="capture-originals-title">
+            <div className={styles.listHeader}>
+              <div>
+                <h3 id="capture-originals-title">Original files</h3>
+                <p>Up to 100 originals. Actions follow stored ownership.</p>
+              </div>
+              {sourceReads.assets.loaded ? <span className={styles.count}>{filteredAssets.length}{filteredAssets.length !== assets.length ? ` / ${assets.length}` : ""}{sourceReads.assets.error || loadingWorkspace ? " · last loaded" : ""}</span> : null}
             </div>
-          </div>
+            <SourceReadStatus read={sourceReads.assets} loading={loadingWorkspace} label="Original files" />
+            <ul className={styles.assetList}>
+              {filteredAssets.map((asset) => (
+                <li key={asset.id} className={styles.assetRow}>
+                  <div className={styles.rowContent}>
+                    <h4 className={styles.itemTitle}>{asset.filename}</h4>
+                    <p className={styles.supporting}>{formatBytes(asset.byteCount)} · {asset.storageKind} · Updated {formatTime(asset.updatedAt)}</p>
+                    <p className={clsx(styles.assetStatus, asset.status === "failed" || asset.status === "unsupported" ? styles.warningText : asset.status === "indexed" ? styles.successText : undefined)}>{assetStatusLabel(asset, activelyProcessingAssetIds.has(asset.id))}</p>
+                    {asset.error ? <p className={styles.errorText}>{asset.error}</p> : null}
+                    {asset.manageable !== true ? <p className={styles.supporting}>Read only · indexing and management remain with its stored owner</p> : captureBlocked ? <p className={styles.supporting}>Read only in your current role</p> : null}
+                    {asset.manageable === true && asset.indexable === true && activelyProcessingAssetIds.has(asset.id) ? <p className={styles.supporting}>Re-indexing is unavailable while this job is queued or running.</p> : null}
+                  </div>
+                  <div className={styles.assetActions}>
+                    {asset.manageable === true && asset.indexable === true && !captureBlocked ? <button type="button" onClick={() => void reindexAssets([asset])} disabled={activelyProcessingAssetIds.has(asset.id) || reindexingAssetIds.has(asset.id)} className={styles.button} aria-label={`Re-index ${asset.filename}`}>{reindexingAssetIds.has(asset.id) ? <Loader2 size={16} className={styles.spinner} aria-hidden="true" /> : <RefreshCw size={16} aria-hidden="true" />}Re-index</button> : null}
+                    {asset.contentAvailable === true ? <a href={`/api/capture/assets/${encodeURIComponent(asset.id)}?content=1&download=1`} className={styles.button} aria-label={`Download ${asset.filename}`}><Download size={16} aria-hidden="true" />Download</a> : null}
+                    {asset.manageable === true && !captureBlocked ? <button type="button" onClick={() => void deleteAsset(asset.id)} disabled={deletingAsset === asset.id} className={styles.button} aria-label={`Delete ${asset.filename}`}>{deletingAsset === asset.id ? <Loader2 size={16} className={styles.spinner} aria-hidden="true" /> : <Trash2 size={16} aria-hidden="true" />}{deletingAsset === asset.id ? "Deleting…" : "Delete"}</button> : null}
+                  </div>
+                </li>
+              ))}
+            </ul>
+            {sourceReads.assets.loaded && !filteredAssets.length ? <p className={styles.empty}>{assets.length ? "No original files match this filter." : sourceReads.assets.error ? "The last loaded view contained no original files." : "Uploaded and generated originals will appear here."}</p> : null}
+          </section>
 
-          <div className="overflow-hidden rounded-xl border border-line bg-surface" data-daybook="panel">
-            <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 border-b border-line bg-surface-raised px-4 py-3 text-xs font-semibold text-muted sm:grid-cols-[minmax(0,1.2fr)_minmax(10rem,.8fr)_auto]"><span>Knowledge</span><span className="hidden sm:block">Source</span><span>Index</span></div>
-            <div className="max-h-[32rem] divide-y divide-line overflow-y-auto">
-              {filteredDocuments.length ? filteredDocuments.map((document) => (
-                <div key={document.id} className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 px-4 py-3 sm:grid-cols-[minmax(0,1.2fr)_minmax(10rem,.8fr)_auto] sm:items-center"><div className="min-w-0"><p className="truncate text-sm font-medium">{document.title}</p><p className="mt-1 text-xs text-muted">Updated {formatTime(document.updatedAt)}</p></div><div className="hidden min-w-0 sm:block"><p className="truncate text-xs text-muted">{sourceLabel(document.source)}</p><p className="mt-1 text-xs text-muted">{documentSource(document.source)}</p></div><p className="whitespace-nowrap text-xs font-semibold text-success">{document.chunkCount} chunks</p></div>
-              )) : <p className="px-4 py-8 text-center text-sm text-muted">{documents.length ? "No documents match this filter." : "Captured knowledge will appear here after indexing."}</p>}
+          <section className={styles.sourceList} aria-labelledby="capture-knowledge-title">
+            <div className={styles.listHeader}>
+              <div><h3 id="capture-knowledge-title">Knowledge index</h3><p>Up to 30 documents in this source view.</p></div>
+              {sourceReads.knowledge.loaded ? <span className={styles.count}>{filteredDocuments.length}{filteredDocuments.length !== documents.length ? ` / ${documents.length}` : ""}{sourceReads.knowledge.error || loadingWorkspace ? " · last loaded" : ""}</span> : null}
             </div>
-          </div>
+            <SourceReadStatus read={sourceReads.knowledge} loading={loadingWorkspace} label="Knowledge index" />
+            <ul className={styles.documentList}>
+              {filteredDocuments.map((document) => (
+                <li key={document.id} className={styles.documentRow}>
+                  <h4 className={styles.itemTitle}>{document.title}</h4>
+                  <p className={styles.supporting}>Updated {formatTime(document.updatedAt)}</p>
+                  <dl className={styles.documentFacts}>
+                    <div><dt>Source</dt><dd>{sourceLabel(document.source)} · {documentSource(document.source)}</dd></div>
+                    <div><dt>Index</dt><dd>{document.chunkCount} passage{document.chunkCount === 1 ? "" : "s"}</dd></div>
+                  </dl>
+                </li>
+              ))}
+            </ul>
+            {sourceReads.knowledge.loaded && !filteredDocuments.length ? <p className={styles.empty}>{documents.length ? "No documents match this filter." : sourceReads.knowledge.error ? "The last loaded view contained no indexed documents." : "Captured knowledge will appear here after indexing."}</p> : null}
+          </section>
         </div>
       </section>
-
-      <div className="h-10" aria-hidden="true" />
     </div>
   );
 }
 
-function Metric({ value, label }: { value?: number; label: string }) {
-  return <div className="min-w-24 px-3 py-2.5 text-center"><p className="text-lg font-semibold tabular-nums">{value ?? "—"}</p><p className="text-xs font-medium text-muted">{label}</p></div>;
+function Metric({ value, label, read, refreshing }: { value?: number; label: string; read: SourceReadState; refreshing: boolean }) {
+  return (
+    <div>
+      <dt>{label}{read.loaded && (read.error || refreshing) ? " · last loaded" : ""}</dt>
+      <dd>{read.loaded && value !== undefined ? value : !read.loaded && refreshing ? "Loading…" : "Unavailable"}</dd>
+    </div>
+  );
 }
 
 function ModeButton({ active, onClick, icon: Icon, label }: { active: boolean; onClick: () => void; icon: typeof NotebookPen; label: string }) {
-  return <button type="button" role="tab" aria-selected={active} onClick={onClick} className={clsx("inline-flex min-h-10 items-center gap-2 rounded-md px-3 text-sm font-semibold transition", active ? "bg-background text-foreground shadow-sm" : "text-muted hover:text-foreground")}><Icon size={15} aria-hidden="true" />{label}</button>;
+  return <button type="button" aria-pressed={active} onClick={onClick} className={styles.modeButton}><Icon size={16} aria-hidden="true" />{label}</button>;
 }
 
-function FlowStep({ number, title, detail, active }: { number: string; title: string; detail: string; active?: boolean }) {
-  return <li className="flex gap-3"><span className={clsx("grid size-7 shrink-0 place-items-center rounded-full border text-xs font-semibold", active ? "border-primary bg-primary text-primary-ink" : "border-line bg-surface text-muted")}>{number}</span><div><p className="text-sm font-semibold">{title}</p><p className="mt-0.5 text-xs leading-5 text-muted">{detail}</p></div></li>;
+function SourceReadStatus({ read, loading, label }: { read: SourceReadState; loading: boolean; label: string }) {
+  if (!read.error && read.loaded && !loading) return null;
+  const text = loading
+    ? read.loaded ? `${label}: refreshing the last loaded view…` : `${label}: loading…`
+    : read.error
+      ? `${label}: ${read.loaded ? "refresh failed; showing the last loaded view." : "unavailable."} ${read.error}`
+      : `${label}: not loaded yet.`;
+  return <p className={clsx(styles.readStatus, read.error && !loading && styles.warningText)}>{text}</p>;
 }
 
 function StatusFact({ icon: Icon, label }: { icon: typeof Database; label: string }) {
-  return <span className="flex items-center gap-2 text-muted"><Icon size={14} className="shrink-0 text-primary" aria-hidden="true" />{label}</span>;
+  return <li><Icon size={16} aria-hidden="true" /><span>{label}</span></li>;
 }
 
 function batchStatusFromJob(job: CaptureJob): CaptureBatchStatus {
@@ -1023,17 +1144,16 @@ function batchStatusLabel(status: CaptureBatchStatus) {
 }
 
 function batchStatusTone(status: CaptureBatchStatus) {
-  if (status === "completed") return "bg-success/10 text-success";
-  if (status === "failed" || status === "stored") return "bg-warning/10 text-warning";
-  if (["uploading", "queued", "running"].includes(status)) return "bg-primary/10 text-primary";
-  return "bg-background text-muted";
+  if (status === "completed") return styles.success;
+  if (status === "failed" || status === "stored") return styles.warning;
+  return styles.neutral;
 }
 
 function batchStatusIcon(status: CaptureBatchStatus) {
   if (status === "completed") return <CheckCircle2 size={16} aria-hidden="true" />;
   if (status === "failed" || status === "stored") return <CircleAlert size={16} aria-hidden="true" />;
   if (status === "offline") return <HardDrive size={16} aria-hidden="true" />;
-  if (["uploading", "queued", "running"].includes(status)) return <Loader2 size={16} className="animate-spin" aria-hidden="true" />;
+  if (["uploading", "queued", "running"].includes(status)) return <Loader2 size={16} className={styles.spinner} aria-hidden="true" />;
   return <FileText size={16} aria-hidden="true" />;
 }
 
@@ -1055,7 +1175,7 @@ function jobLabel(status: CaptureJob["status"]) {
 }
 
 function jobDetail(job: CaptureJob) {
-  if (job.status === "completed") return "RAG chunks and linked memories are ready.";
+  if (job.status === "completed") return "Processing completed. Review the saved output and source details in Library.";
   if (job.status === "running") return `Background worker is processing this capture${job.attempt ? ` · attempt ${job.attempt}` : ""}.`;
   if (job.status === "queued") return "The original is safe. Processing will begin in the background.";
   return "The original remains safely stored.";
@@ -1065,12 +1185,12 @@ function captureJobStageLabel(job: CaptureJob) {
   if (job.status === "completed") {
     const chunks = Number(job.result?.chunkCount || 0);
     return chunks > 0
-      ? `Indexed · ${chunks} cited passage${chunks === 1 ? "" : "s"} · source map queued`
-      : "Indexed · source map queued";
+      ? `Indexed · ${chunks} cited passage${chunks === 1 ? "" : "s"}`
+      : "Indexing completed";
   }
   if (job.status === "failed") return "Processing needs attention";
   if (job.status === "canceled") return "Processing canceled";
-  const stage = typeof job.progress?.stage === "string" ? job.progress.stage : "queued";
+  const stage = typeof job.progress?.stage === "string" ? job.progress.stage : job.status === "running" ? "processing" : "queued";
   if (stage === "waiting") return "Waiting for private storage verification";
   if (stage === "reading") return "Opening the private original";
   if (stage === "extracting") return "Extracting transcript text and timecodes";
@@ -1080,48 +1200,28 @@ function captureJobStageLabel(job: CaptureJob) {
   if (stage === "entities") return "Linking named entities";
   if (stage === "memory") return "Applying the memory policy";
   if (stage === "graph") return "Finalizing the searchable index";
-  if (stage === "processing") return "Background worker starting";
-  return "Queued safely for background processing";
-}
-
-function captureJobPercent(job: CaptureJob) {
-  if (job.status === "completed") return 100;
-  if (job.status === "failed" || job.status === "canceled") return 100;
-  const stage = typeof job.progress?.stage === "string" ? job.progress.stage : "queued";
-  const percentages: Record<string, number> = {
-    queued: 4,
-    waiting: 7,
-    processing: 10,
-    reading: 16,
-    extracting: 28,
-    chunking: 40,
-    embedding: 54,
-    knowledge: 68,
-    entities: 77,
-    memory: 87,
-    graph: 95,
-  };
-  return percentages[stage] || 4;
+  if (stage === "processing" || job.status === "running") return "Processing in the background";
+  return "Queued for background processing";
 }
 
 function captureJobTone(status: CaptureJob["status"]) {
-  if (status === "completed") return "bg-success/10 text-success";
-  if (status === "failed" || status === "canceled") return "bg-danger/10 text-danger";
-  return "bg-primary/10 text-primary";
+  if (status === "completed") return styles.success;
+  if (status === "failed" || status === "canceled") return styles.danger;
+  return styles.neutral;
 }
 
 function captureJobIcon(status: CaptureJob["status"]) {
   if (status === "completed") return <CheckCircle2 size={14} aria-hidden="true" />;
   if (status === "failed" || status === "canceled") return <CircleAlert size={14} aria-hidden="true" />;
-  return <Loader2 size={14} className="animate-spin" aria-hidden="true" />;
+  return <Loader2 size={14} className={styles.spinner} aria-hidden="true" />;
 }
 
 function assetStatusLabel(asset: CaptureAsset, activelyProcessing = false) {
   if (asset.status === "indexed") return "Indexed and searchable";
   if (asset.status === "queued") {
     return activelyProcessing
-      ? "Stored · indexing queued"
-      : "Indexed result ready · refresh status";
+      ? "Stored · indexing queued or running"
+      : "Stored · indexing status needs refresh";
   }
   if (asset.status === "unsupported") return "Stored · not indexed";
   if (asset.status === "failed") return "Stored · processing failed";
@@ -1145,7 +1245,7 @@ function sourceLabel(source: string) {
   if (category === "photos") return "Google Photos";
   if (source.startsWith("capture:recording:")) return "Recorded conversation";
   if (source.startsWith("capture:asset:")) return "Captured file";
-  return source.replace(/^\w+:\/\//, "").slice(0, 100) || "Manual capture";
+  return source.replace(/^\w+:\/\//, "") || "Manual capture";
 }
 
 function captureForm(capture: Pick<OfflineCapture, "title" | "content" | "tags" | "file">) {

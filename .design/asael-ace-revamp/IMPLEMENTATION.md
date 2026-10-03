@@ -303,6 +303,42 @@ inspected without being followed. Accessibility claims cover the shared Library
 region, not the separate Capture studios or other page-family internals. Hosted
 acceptance remains required before merge.
 
+## Capture intake and source management presentation — 3 October 2026
+
+Capture now uses scoped canonical styling for its page frame, Note/Upload intake,
+processing summary and original/knowledge management. Mode buttons use complete
+native button semantics with pressed state. Long filenames, errors and source
+metadata wrap; stage labels replace inferred percentage bars. Local queue removal
+explicitly distinguishes clearing a row from canceling a job or deleting a file.
+Recording, Connected Sources and Visual Studio internals remain separate slices.
+
+Knowledge, originals/processing, connected accounts and capabilities have
+independent read-state evidence. Initial failures show unavailable rather than
+zero/empty; refresh failures retain and label existing records. Source recovery
+through polling clears the aggregate warning. A stored queued asset absent from
+the bounded job list requests a status refresh instead of claiming indexing is
+complete. Known queued/running work uses wording covering both states; the job
+rows retain their exact individual statuses.
+
+Independent review confirmed permission checks, tenant/actor outbox ownership,
+legacy claiming, stable upload/retry identities, 50-file/5 MiB/concurrency limits,
+draft reset timing, management guards, polling and child props remain intact.
+Thirty-five tests across batch, offline outbox, Capture and asset routes passed,
+as did targeted lint, the Capture TypeScript graph, CSS parsing and type-scale
+checks. Two review findings—aggregate warning recovery and queued-versus-active
+wording—were corrected before the final browser pass.
+
+Headless Chrome passed 122 checks with eight clean scoped axe scans for intake,
+processing, originals and knowledge management. Coverage includes shared-query
+text, exact filenames/download links, ownership restrictions, separate job states,
+initial partial/total failure, retained rows/counts/drafts, healthy poll recovery,
+successful empty reads, local accepted/empty/oversized file selection, responsive
+layouts, light/dark, 44/48px controls, 200% text, reduced motion and forced colors.
+The one accepted file remained an in-memory staged selection. No upload, save,
+management, recording, connector or provider mutation was attempted; API mutations
+and external requests were blocked, and download links were only inspected.
+Hosted acceptance remains required before merge.
+
 ## Remaining gates and scope
 
 - Hosted build, route budgets and required repository checks on each new exact head.
