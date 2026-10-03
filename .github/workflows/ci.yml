@@ -53,6 +53,9 @@ jobs:
           /tmp/asael-browser-venv/bin/python tests/browser/companion_preferences.py \
             --axe /tmp/asael-browser-tools/node_modules/axe-core/axe.min.js \
             --output test-results/browser/companion-preferences
+          /tmp/asael-browser-venv/bin/python tests/browser/meetings.py \
+            --axe /tmp/asael-browser-tools/node_modules/axe-core/axe.min.js \
+            --output test-results/browser/meetings
 
       - name: Browser evidence
         if: always()

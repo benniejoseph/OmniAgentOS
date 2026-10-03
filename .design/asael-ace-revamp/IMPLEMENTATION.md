@@ -983,6 +983,39 @@ The preceding hosted head passed quality, integration and browser checks but
 measured 884,298 bytes against the unchanged 800,000-byte Settings limit; the
 new exact head must pass the hosted budget before merge.
 
+PR [#34](https://github.com/benniejoseph/OmniAgentOS/pull/34) merged as
+`958474f6f31bc499c04a243f5db5e7dd041e5bba`. All ten hosted checks passed on
+`885d6a7a4b6cfdc3fe0939b1a2897035361f8449`, including full quality, browser,
+PostgreSQL integration, production build and the unchanged Settings route budget.
+The earlier budget failure is resolved on that exact head. This is repository
+acceptance; no production migration or deployment was performed.
+
+## Meetings list, detail and follow-up review — 4 October 2026
+
+The existing Meetings services now feed independently recoverable list, detail,
+commitment and optional-source views. Selection stays scoped to the owner and
+exact meeting; out-of-window detail, A→B→A responses and unmounted requests cannot
+replace it. Revision-bound edits retain drafts on conflicts. Accepted creation,
+media and follow-up receipts remain visible when their subsequent read fails.
+Follow-up review displays the exact proposal digest, source revision, owner,
+due date, policy, recipient and draft. The server additionally verifies a replayed
+follow-up against its stored recipient and exact draft without repeating the effect.
+Calendar polling/debounce and existing permission/consent boundaries are retained.
+
+The final external Chrome suite passed 73 assertions and six page-wide axe scans,
+covering desktop/phone themes, accessible editor names, transcript list semantics,
+long-content reflow, repeated unchanged media polls, conflicts, source failures,
+consent and disposal. Eleven desktop business effects plus thirteen Calendar
+requests, and one phone creation plus four Calendar requests, were fulfilled
+locally by exact synthetic fixtures. No live Calendar, media processing, WorkItem
+creation or message delivery occurred. Representative saved images were reviewed.
+The combined Meetings/Accounts focused run passed 52 tests; the applicable
+Meetings controller/replay TypeScript checks and strict lint passed. CI includes
+the maintained Meetings suite and captures overflow geometry without changing
+the existing overflow criterion. Evidence: `ui-validation/meetings-browser-review`,
+`meetings-accounts-final-unit.log` and `meetings-accounts-final-lint-types.log`.
+This slice still requires hosted checks on its committed head.
+
 ## Remaining gates and scope
 
 - Hosted build, route budgets and required repository checks on each new exact head.
