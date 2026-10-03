@@ -116,6 +116,8 @@ export const COMPLEXITY_REGISTRY: readonly ComplexityEntry[] = Object.freeze((
         "src/app/api/memory/semantic-shadow/route.ts",
         "src/app/api/memory/semantic-shadow/rank-probe/route.ts",
         "src/components/semantic-shadow-collector.tsx",
+        "src/components/semantic-shadow-collector.module.css",
+        "src/components/semantic-shadow-collector-state.ts",
         "src/components/semantic-shadow-review-queue.tsx",
         "src/components/semantic-shadow-review-queue.module.css",
         "scripts/check-semantic-memory-shadow.ts",

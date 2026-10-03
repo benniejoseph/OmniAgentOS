@@ -44,6 +44,7 @@ import type { MemoryTier } from "@/lib/memory/tier-policy";
 import type { MemoryRecord, MemoryType } from "@/lib/memory/types";
 import { SemanticShadowCollector } from "@/components/semantic-shadow-collector";
 import { SemanticShadowReviewQueue } from "@/components/semantic-shadow-review-queue";
+import { useWorkspaceSession } from "@/components/app-shell/session-context";
 import { startVisibleRefresh } from "@/lib/client/visible-refresh";
 import styles from "@/components/memory-intelligence-workspace.module.css";
 
@@ -141,6 +142,12 @@ const memoryTypes: Array<{ id: MemoryType; label: string; tier: MemoryTier }> = 
 ];
 
 export function MemoryIntelligenceWorkspace() {
+  const { session } = useWorkspaceSession();
+  const scope = JSON.stringify([session?.context?.tenantId, session?.context?.actorId]);
+  return <MemoryWorkspace key={scope} />;
+}
+
+function MemoryWorkspace() {
   const [view, setView] = useState<WorkspaceView>("memory");
   const [overview, setOverview] = useState<MemoryIntelligenceOverview>();
   const [memoryPage, setMemoryPage] = useState<Page<MemoryIndexItem>>(emptyPage);
@@ -166,6 +173,7 @@ export function MemoryIntelligenceWorkspace() {
   const [selectedMemory, setSelectedMemory] = useState<MemoryRecord>();
   const [detailLoading, setDetailLoading] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [overviewError, setOverviewError] = useState<string>();
   const [indexLoading, setIndexLoading] = useState(false);
   const [loadedIndexes, setLoadedIndexes] = useState({ memory: false, knowledge: false });
   const [indexErrors, setIndexErrors] = useState<Partial<Record<"memory" | "knowledge", string>>>({});
@@ -180,6 +188,7 @@ export function MemoryIntelligenceWorkspace() {
   const [universeRevision, setUniverseRevision] = useState(0);
   const [forgetPreview, setForgetPreview] = useState<ForgetPreview>();
   const [consent, setConsent] = useState<ConsentStatus>();
+  const overviewRequestRef = useRef<AbortController | null>(null);
   const indexRequestRef = useRef<AbortController | null>(null);
   const reviewsRequestRef = useRef<AbortController | null>(null);
   const cognitionReviewsRequestRef = useRef<AbortController | null>(null);
@@ -189,19 +198,27 @@ export function MemoryIntelligenceWorkspace() {
   const cognitionCompletionSignatureRef = useRef("");
 
   const loadOverview = useCallback(async () => {
+    overviewRequestRef.current?.abort();
+    const controller = new AbortController();
+    overviewRequestRef.current = controller;
     setLoading(true);
     try {
       const response = await fetch("/api/memory/intelligence?view=overview&limit=40", {
         cache: "no-store",
+        signal: controller.signal,
       });
       const body = await response.json();
+      if (controller.signal.aborted || overviewRequestRef.current !== controller) return;
       if (!response.ok) throw new Error(body.error || "Memory intelligence could not be loaded.");
       setOverview(body.overview as MemoryIntelligenceOverview);
+      setOverviewError(undefined);
       setError(undefined);
     } catch (loadError) {
+      if (controller.signal.aborted || overviewRequestRef.current !== controller) return;
+      setOverviewError(message(loadError));
       setError(message(loadError));
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted && overviewRequestRef.current === controller) setLoading(false);
     }
   }, []);
 
@@ -221,7 +238,10 @@ export function MemoryIntelligenceWorkspace() {
       void loadOverview();
       void loadConsent();
     }, 0);
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(timer);
+      overviewRequestRef.current?.abort();
+    };
   }, [loadOverview, loadConsent]);
 
   useEffect(() => {
@@ -977,6 +997,7 @@ export function MemoryIntelligenceWorkspace() {
                 cognitionReviewGroups={cognitionReviewGroups}
                 quality={overview?.quality}
                 overviewLoading={loading}
+                overviewError={overviewError}
                 semanticShadow={overview?.semanticShadow}
                 onSemanticShadowProgress={loadOverview}
                 loaded={reviewsLoaded}
@@ -1155,7 +1176,7 @@ function KnowledgeIndex(props: {
     />
     <CategoryRail active={props.category} onSelect={props.onCategory} items={props.overview?.knowledgeCategories} />
     {props.error ? <IndexUnavailable hasRecords={Boolean(props.page.items.length)} onRetry={props.onRetry} /> : null}
-    <ul className={`${styles.indexList} ${styles.knowledgeList}`} aria-label="Knowledge source index" aria-busy={props.loading}>
+    <ul className={styles.indexList} aria-label="Knowledge source index" aria-busy={props.loading}>
       {props.page.items.map((item) => <li key={item.id} className={styles.knowledgeRow}>
         <span className={styles.rowTitle}><strong>{item.title}</strong><small>{item.sourceLabel}{item.hasCanonicalLineage ? " · Canonical lineage" : ""}</small></span>
         <dl className={styles.rowFacts}>
@@ -1186,6 +1207,7 @@ function ReviewIndex(props: {
   cognitionReviewGroups: CognificationReviewGroup[];
   quality?: MemoryIntelligenceOverview["quality"];
   overviewLoading: boolean;
+  overviewError?: string;
   semanticShadow?: MemoryIntelligenceOverview["semanticShadow"];
   onSemanticShadowProgress: () => Promise<void>;
   loaded: boolean;
@@ -1351,7 +1373,12 @@ function ReviewIndex(props: {
       <summary>Quality signals and semantic evaluation</summary>
       <p>Semantic evaluation collects human evidence. Its proposals and rank probes do not change live recall or activate semantic memory.</p>
       <MemoryQualityMetrics quality={props.quality} semanticShadow={props.semanticShadow} loading={props.overviewLoading} />
-      <SemanticShadowCollector semanticShadow={props.semanticShadow} onProgressChanged={props.onSemanticShadowProgress} />
+      <SemanticShadowCollector
+        semanticShadow={props.semanticShadow}
+        overviewLoading={props.overviewLoading}
+        overviewError={props.overviewError}
+        onProgressChanged={props.onSemanticShadowProgress}
+      />
       <SemanticShadowReviewQueue onProgressChanged={props.onSemanticShadowProgress} />
     </details>
   </>;
