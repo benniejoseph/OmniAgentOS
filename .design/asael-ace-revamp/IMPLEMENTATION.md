@@ -380,7 +380,12 @@ inside Playwright, with its idempotency header and canonical response validated;
 it never reached the application server. All other action mutations and external
 requests were blocked. Approve, retry, execution and Build creation were not
 invoked, and Command links were inspected only. This verifies presentation and
-focus behavior, not a live workflow effect. Hosted checks remain required.
+focus behavior, not a live workflow effect.
+
+PR [#21](https://github.com/benniejoseph/OmniAgentOS/pull/21) merged as
+`88f526cf95df978789bfec74c0cd47a03966b1a9`. Implementation head
+`68e0632e96c6200e45c432dfb21a36663d93cf7e` passed all hosted quality,
+integration, build/budget, audit, worker, secret-scan and preview checks.
 
 ## Memory Reviews and semantic review bench — 3 October 2026
 
@@ -420,7 +425,50 @@ All API mutation and external requests were blocked. No review decision,
 projection, collection, rank probe or other action mutation was attempted. Axe
 coverage is limited to source-map reviews, conflicts/promotions and the semantic
 bench, excluding the separate collector, quality summary, steward and app shell.
-Hosted checks remain required before merge.
+PR [#22](https://github.com/benniejoseph/OmniAgentOS/pull/22) merged as
+`b4a5b3c2faab74af74f48dbb10928e145039de05`. Implementation head
+`fe32809bfe8aaaf7564161f361b4789b01682959` passed all hosted quality,
+integration, build/budget, audit, worker, secret-scan and preview checks.
+
+## Work Build studio — 3 October 2026
+
+Build now uses the canonical responsive controls and readable source, activity,
+checkpoint, repository and release views. Full paths, hashes, identities, errors
+and receipts remain inspectable. Pressed-button groups expose the existing
+local views. Initial read failure, successful empty workspace, unavailable
+preview and retained last-loaded tree/file/repository data have distinct states.
+
+File drafts survive search, Clear and snapshot refresh. A returned replacement
+session keeps the old file and draft visible but read-only, with both session
+identities and disabled Save/Delete; explicitly opening another file requires
+the existing discard confirmation. A snapshot revision fence prevents an older
+GET from overwriting a newer mutation or provider receipt. Snapshot refresh
+serializes user effects and rejects superseded responses before tree loading.
+Exact action payloads, idempotency, checkpoint verification, repository/release
+gates, SSE, provider polling and iframe sandbox remain unchanged.
+
+Independent review confirmed the revision fence and file-session binding and
+corrected the reachable wide-layout threshold. Targeted strict lint and the
+Builder TypeScript graph passed. Twelve focused component, contract, Agent
+request and repository-preview tests passed on the final implementation.
+
+The main headless Chrome run passed 152 of 153 checks and eight scoped axe
+scans. The remaining empty-session assertion had an insufficient rendering
+wait; a focused nine-check retry run passed after waiting for the exact GET,
+visible heading and enabled Create control, without an application change.
+Coverage includes 320–1920px, light/dark, 44/48px targets, full provenance,
+local drafts, failed reads, file-session replacement, guarded effects, 200%
+text, reduced motion and forced colors. Wide and phone screenshots were
+visually inspected.
+
+Exactly one background deployment-status POST was fulfilled entirely inside
+Playwright. Its exact action, session/deployment identities and UUID idempotency
+header were validated; its newer receipt survived a delayed older GET with no
+stale file/tree fetch. It never reached the application server or provider.
+All other action mutations and external requests were blocked. Save, Agent,
+commands, workspace creation, deployment and release were not invoked, and
+hosted links were inspected only. Real provider effects remain outside this
+presentation evidence.
 
 ## Remaining gates and scope
 
