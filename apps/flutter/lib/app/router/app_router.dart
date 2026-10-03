@@ -11,6 +11,8 @@ import '../../core/storage/secure_session_store.dart';
 import '../../core/sync/reconnect_coordinator.dart';
 import '../../features/ambient_voice/ambient_voice_consent.dart';
 import '../../features/ambient_voice/realtime_voice_controller.dart';
+import '../../features/activity/activity_providers.dart';
+import '../../features/activity/activity_view.dart';
 import '../../features/auth/application/biometric_session_lock_controller.dart';
 import '../../features/auth/application/session_controller.dart';
 import '../../features/auth/presentation/login_screen.dart';
@@ -79,6 +81,15 @@ String initialAppLocation(List<String> arguments) {
 }
 
 final appInitialLocationProvider = Provider<String>((_) => appHomePath());
+
+class ProviderBoundActivityRoute extends ConsumerWidget {
+  const ProviderBoundActivityRoute({super.key});
+  @override
+  Widget build(BuildContext context, WidgetRef ref) => ActivityView(
+    controller: ref.watch(activityControllerProvider.select((value) => value)),
+    onOpen: (location) => context.push(location),
+  );
+}
 
 @visibleForTesting
 bool isInboxLocation(Uri location) {
@@ -313,6 +324,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                                   state.uri.queryParameters['workItemId'],
                             ),
                     '/talk' => const ProviderBoundTalkRoute(),
+                    '/activity' => const ProviderBoundActivityRoute(),
                     '/capture' => CaptureView(
                       controller: ref.read(captureControllerProvider),
                     ),
@@ -516,17 +528,13 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                             path: ':key',
                             builder: (_, state) => usesMacosPresentation()
                                 ? MacosResultDetailView(
-                                    keyValue: Uri.decodeComponent(
-                                      state.pathParameters['key']!,
-                                    ),
+                                    keyValue: state.pathParameters['key']!,
                                     repository: ref.read(
                                       resultsRepositoryProvider,
                                     ),
                                   )
                                 : ResultDetailView(
-                                    keyValue: Uri.decodeComponent(
-                                      state.pathParameters['key']!,
-                                    ),
+                                    keyValue: state.pathParameters['key']!,
                                     repository: ref.read(
                                       resultsRepositoryProvider,
                                     ),
@@ -562,12 +570,16 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                                       inboxControllerProvider,
                                     ),
                                     focusApprovalId: state.pathParameters['id'],
+                                    focusApprovalKind:
+                                        state.uri.queryParameters['kind'],
                                   )
                                 : InboxView(
                                     controller: ref.read(
                                       inboxControllerProvider,
                                     ),
                                     focusApprovalId: state.pathParameters['id'],
+                                    focusApprovalKind:
+                                        state.uri.queryParameters['kind'],
                                   ),
                           ),
                         ]

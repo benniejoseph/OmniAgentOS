@@ -236,10 +236,14 @@ class _CreatedFileCard extends StatelessWidget {
                         ),
                       ),
                       const SizedBox(width: 4),
-                      Text(
-                        MaterialLocalizations.of(context)
-                            .formatShortDate(artifact.updatedAt.toLocal()),
-                        style: Theme.of(context).textTheme.labelSmall,
+                      Flexible(
+                        child: Text(
+                          MaterialLocalizations.of(context)
+                              .formatShortDate(artifact.updatedAt.toLocal()),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.labelSmall,
+                        ),
                       ),
                     ],
                   ),

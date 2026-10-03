@@ -84,10 +84,12 @@ class MacosStatusBadge extends StatelessWidget {
               Icon(icon, size: 13, color: foreground),
               const SizedBox(width: 5),
             ],
-            Text(
-              label,
-              style: Theme.of(context).textTheme.labelSmall
-                  ?.copyWith(color: foreground, fontWeight: FontWeight.w700),
+            Flexible(
+              child: Text(
+                label,
+                style: Theme.of(context).textTheme.labelSmall
+                    ?.copyWith(color: foreground, fontWeight: FontWeight.w700),
+              ),
             ),
           ],
         ),

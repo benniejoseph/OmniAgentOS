@@ -34,9 +34,9 @@ void main() {
       expect(theme.textTheme.bodyLarge?.fontSize, greaterThanOrEqualTo(14));
       expect(
         theme.filledButtonTheme.style?.minimumSize?.resolve({})?.height,
-        32,
+        44,
       );
-      expect(theme.iconButtonTheme.style?.minimumSize?.resolve({})?.height, 30);
+      expect(theme.iconButtonTheme.style?.minimumSize?.resolve({})?.height, 44);
       expect(
         theme.scrollbarTheme.thickness?.resolve({WidgetState.hovered}),
         greaterThan(theme.scrollbarTheme.thickness?.resolve({}) ?? 0),
@@ -88,7 +88,7 @@ void main() {
     );
 
     expect(fallback.canvas, AppTheme.lightBackground);
-    expect(fallback.focus, AppTheme.lightPrimary);
+    expect(fallback.focus, AppTheme.lightFocus);
   });
 }
 

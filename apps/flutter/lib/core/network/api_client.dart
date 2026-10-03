@@ -342,6 +342,20 @@ class ApiClient {
     Map<String, dynamic>? query,
   }) => _json(() => _dio.get<Object?>(path, queryParameters: query));
 
+  /// A cancellable live read through the same authenticated client, with no
+  /// offline fallback. Kept separate to preserve existing repository adapters.
+  Future<Map<String, dynamic>> getJsonFreshCancelable(
+    String path, {
+    Map<String, dynamic>? query,
+    required CancelToken cancelToken,
+  }) => _json(
+    () => _dio.get<Object?>(
+      path,
+      queryParameters: query,
+      cancelToken: cancelToken,
+    ),
+  );
+
   Future<Map<String, dynamic>> postJson(
     String path, {
     Map<String, dynamic>? data,

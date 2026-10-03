@@ -452,10 +452,19 @@ class InboxController extends ChangeNotifier {
   }
 }
 
+bool approvalMatchesFocus(ApprovalItem item, String? id, String? kind) =>
+    id != null && item.id == id && (kind == null || item.kind == kind);
+
 class InboxView extends StatelessWidget {
-  const InboxView({super.key, required this.controller, this.focusApprovalId});
+  const InboxView({
+    super.key,
+    required this.controller,
+    this.focusApprovalId,
+    this.focusApprovalKind,
+  });
   final InboxController controller;
   final String? focusApprovalId;
+  final String? focusApprovalKind;
   @override
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: controller,
@@ -463,8 +472,17 @@ class InboxView extends StatelessWidget {
       final q = controller.queue;
       final approvals = q == null ? const <ApprovalItem>[] : [...q.items]
         ..sort((left, right) {
-          if (left.id == focusApprovalId) return -1;
-          if (right.id == focusApprovalId) return 1;
+          final leftFocused = approvalMatchesFocus(
+            left,
+            focusApprovalId,
+            focusApprovalKind,
+          );
+          final rightFocused = approvalMatchesFocus(
+            right,
+            focusApprovalId,
+            focusApprovalKind,
+          );
+          if (leftFocused != rightFocused) return leftFocused ? -1 : 1;
           return 0;
         });
       final notifications = controller.notificationCenter;
@@ -493,6 +511,23 @@ class InboxView extends StatelessWidget {
                 ),
               ],
             ),
+            if (q != null &&
+                focusApprovalId != null &&
+                !q.items.any(
+                  (item) => approvalMatchesFocus(
+                    item,
+                    focusApprovalId,
+                    focusApprovalKind,
+                  ),
+                ))
+              const SliverToBoxAdapter(
+                child: Padding(
+                  padding: EdgeInsets.all(16),
+                  child: Text(
+                    'The requested approval is not in the current queue. Refresh to check its availability.',
+                  ),
+                ),
+              ),
             if (controller.hasLoadError || controller.actionError != null)
               SliverToBoxAdapter(
                 child: _InboxNotice(
@@ -638,7 +673,11 @@ class InboxView extends StatelessWidget {
                   itemBuilder: (_, i) => ApprovalCard(
                     item: approvals[i],
                     busy: controller.deciding.contains(approvals[i].id),
-                    focused: approvals[i].id == focusApprovalId,
+                    focused: approvalMatchesFocus(
+                      approvals[i],
+                      focusApprovalId,
+                      focusApprovalKind,
+                    ),
                     onDecision: (value) =>
                         controller.decide(approvals[i], value),
                   ),

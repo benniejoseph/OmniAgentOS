@@ -21,10 +21,12 @@ class AdaptiveShell extends StatelessWidget {
   );
   static final _workspaceBranches = destinationIndices(
     group: AppDestinationGroup.workspace,
+    primary: false,
     adaptiveVisible: true,
   );
   static final _automationBranches = destinationIndices(
     group: AppDestinationGroup.automation,
+    primary: false,
     adaptiveVisible: true,
   );
   static final _reviewBranches = destinationIndices(
@@ -35,7 +37,10 @@ class AdaptiveShell extends StatelessWidget {
     group: AppDestinationGroup.system,
     adaptiveVisible: true,
   );
-  static final _adaptiveBranches = destinationIndices(adaptiveVisible: true);
+  static final _adaptiveBranches = [
+    ..._everydayBranches,
+    ...destinationIndices(primary: false, adaptiveVisible: true),
+  ];
 
   void _select(int index) => navigationShell.goBranch(
     index,
@@ -90,7 +95,7 @@ class AdaptiveShell extends StatelessWidget {
                     active.label,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 14.5),
+                    style: const TextStyle(fontSize: 14),
                   ),
                   const SizedBox(height: 2),
                   Text(
@@ -99,7 +104,7 @@ class AdaptiveShell extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
                       color: colors.onSurfaceVariant,
-                      fontSize: 10.5,
+                      fontSize: 13,
                       fontWeight: FontWeight.w400,
                     ),
                   ),
@@ -116,16 +121,15 @@ class AdaptiveShell extends StatelessWidget {
           ),
           const SizedBox(width: 4),
         ],
-        shape: Border(
-          bottom: BorderSide(
-            color: colors.outlineVariant.withValues(alpha: .7),
-          ),
-        ),
+        shape: Border(bottom: BorderSide(color: colors.outlineVariant)),
       ),
       body: DaybookBackdrop(child: navigationShell),
-      bottomNavigationBar: _EverydayDock(
-        currentIndex: navigationShell.currentIndex,
-        onSelect: _select,
+      bottomNavigationBar: Builder(
+        builder: (context) => _EverydayDock(
+          currentIndex: navigationShell.currentIndex,
+          onSelect: _select,
+          onMore: Scaffold.of(context).openDrawer,
+        ),
       ),
     );
   }
@@ -162,11 +166,13 @@ class _DesktopSidebar extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return AnimatedContainer(
-      duration: const Duration(milliseconds: 180),
+      duration: MediaQuery.disableAnimationsOf(context)
+          ? Duration.zero
+          : const Duration(milliseconds: 180),
       curve: Curves.easeOutCubic,
       width: extended ? 244 : 76,
       decoration: BoxDecoration(
-        color: scheme.surface.withValues(alpha: .95),
+        color: scheme.surface,
         border: Border(right: BorderSide(color: scheme.outlineVariant)),
       ),
       child: SafeArea(
@@ -183,7 +189,14 @@ class _DesktopSidebar extends StatelessWidget {
                       padding: const EdgeInsets.fromLTRB(10, 14, 10, 20),
                       children: [
                         _DrawerGroup(
-                          label: 'Workspace',
+                          label: 'Workspaces',
+                          indices: AdaptiveShell._everydayBranches,
+                          currentIndex: currentIndex,
+                          onSelect: onSelect,
+                        ),
+                        const SizedBox(height: 16),
+                        _DrawerGroup(
+                          label: 'More',
                           indices: AdaptiveShell._workspaceBranches,
                           currentIndex: currentIndex,
                           onSelect: onSelect,
@@ -262,97 +275,104 @@ class _DesktopSidebar extends StatelessWidget {
 }
 
 class _EverydayDock extends StatelessWidget {
-  const _EverydayDock({required this.currentIndex, required this.onSelect});
-
+  const _EverydayDock({
+    required this.currentIndex,
+    required this.onSelect,
+    required this.onMore,
+  });
   final int currentIndex;
   final ValueChanged<int> onSelect;
+  final VoidCallback onMore;
 
   @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: scheme.surface.withValues(alpha: .97),
-        border: Border(top: BorderSide(color: scheme.outlineVariant)),
-        boxShadow: [
-          BoxShadow(
-            color: scheme.shadow.withValues(alpha: .16),
-            blurRadius: 28,
-            offset: const Offset(0, -8),
-          ),
-        ],
+  Widget build(BuildContext context) => DecoratedBox(
+    decoration: BoxDecoration(
+      color: Theme.of(context).colorScheme.surface,
+      border: Border(
+        top: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
       ),
-      child: SafeArea(
-        top: false,
-        minimum: const EdgeInsets.fromLTRB(4, 4, 4, 5),
-        child: SizedBox(
-          height: 58,
-          child: Row(
+    ),
+    child: SafeArea(
+      top: false,
+      minimum: const EdgeInsets.all(8),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final columns = constraints.maxWidth < 600 ? 3 : 6;
+          final width = (constraints.maxWidth - (columns - 1) * 8) / columns;
+          return Wrap(
+            spacing: 8,
+            runSpacing: 8,
             children: [
               for (final index in AdaptiveShell._everydayBranches)
-                Expanded(
+                SizedBox(
+                  width: width,
                   child: _DockDestination(
-                    destination: appDestinations[index],
+                    label: appDestinations[index].label,
+                    icon: currentIndex == index
+                        ? appDestinations[index].selectedIcon
+                        : appDestinations[index].icon,
                     selected: currentIndex == index,
                     onTap: () => onSelect(index),
                   ),
                 ),
+              SizedBox(
+                width: width,
+                child: _DockDestination(
+                  label: 'More',
+                  icon: Icons.more_horiz,
+                  selected: !AdaptiveShell._everydayBranches.contains(
+                    currentIndex,
+                  ),
+                  onTap: onMore,
+                ),
+              ),
             ],
-          ),
-        ),
+          );
+        },
       ),
-    );
-  }
+    ),
+  );
 }
 
 class _DockDestination extends StatelessWidget {
   const _DockDestination({
-    required this.destination,
+    required this.label,
+    required this.icon,
     required this.selected,
     required this.onTap,
   });
-
-  final AppDestination destination;
+  final String label;
+  final IconData icon;
   final bool selected;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final color = selected ? scheme.primary : scheme.onSurfaceVariant;
+    final theme = Theme.of(context);
     return Semantics(
       selected: selected,
-      button: true,
-      label: destination.label,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(12),
+      child: TextButton(
+        onPressed: onTap,
+        style: TextButton.styleFrom(
+          minimumSize: const Size(48, 64),
+          padding: const EdgeInsets.all(8),
+          backgroundColor: selected
+              ? theme.colorScheme.secondaryContainer
+              : theme.colorScheme.surface,
+          side: selected
+              ? BorderSide(color: theme.colorScheme.secondary, width: 3)
+              : BorderSide.none,
+        ),
         child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
+          mainAxisSize: MainAxisSize.min,
           children: [
-            AnimatedContainer(
-              duration: const Duration(milliseconds: 180),
-              width: selected ? 22 : 0,
-              height: 2,
-              margin: const EdgeInsets.only(bottom: 5),
-              decoration: BoxDecoration(
-                color: color,
-                borderRadius: BorderRadius.circular(99),
-              ),
-            ),
-            Icon(
-              selected ? destination.selectedIcon : destination.icon,
-              color: color,
-              size: 20,
-            ),
-            const SizedBox(height: 2),
+            Icon(icon, size: 20),
+            const SizedBox(height: 4),
             Text(
-              destination.label,
-              maxLines: 1,
-              style: TextStyle(
-                color: color,
-                fontSize: 10.5,
-                fontWeight: FontWeight.w600,
+              label,
+              textAlign: TextAlign.center,
+              style: theme.textTheme.labelMedium?.copyWith(
+                fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
               ),
             ),
           ],
@@ -395,7 +415,7 @@ class _WorkspaceDrawer extends StatelessWidget {
                         SizedBox(height: 4),
                         Text(
                           'Your second brain',
-                          style: TextStyle(fontSize: 11),
+                          style: TextStyle(fontSize: 13),
                         ),
                       ],
                     ),
@@ -414,7 +434,14 @@ class _WorkspaceDrawer extends StatelessWidget {
                 padding: const EdgeInsets.fromLTRB(10, 12, 10, 20),
                 children: [
                   _DrawerGroup(
-                    label: 'Workspace',
+                    label: 'Workspaces',
+                    indices: AdaptiveShell._everydayBranches,
+                    currentIndex: currentIndex,
+                    onSelect: (index) => _select(context, index),
+                  ),
+                  const SizedBox(height: 16),
+                  _DrawerGroup(
+                    label: 'More',
                     indices: AdaptiveShell._workspaceBranches,
                     currentIndex: currentIndex,
                     onSelect: (index) => _select(context, index),
@@ -459,8 +486,7 @@ class _WorkspaceDrawer extends StatelessWidget {
               width: double.infinity,
               padding: const EdgeInsets.fromLTRB(18, 12, 18, 14),
               decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.surface
-                    .withValues(alpha: .72),
+                color: Theme.of(context).colorScheme.surfaceContainerLow,
                 border: Border(
                   top: BorderSide(
                     color: Theme.of(context).colorScheme.outlineVariant,
@@ -478,7 +504,7 @@ class _WorkspaceDrawer extends StatelessWidget {
                   Expanded(
                     child: Text(
                       'Private workspace · This ${NativeClientInfo.platformLabel} device',
-                      style: const TextStyle(fontSize: 11.5),
+                      style: const TextStyle(fontSize: 13),
                     ),
                   ),
                 ],
@@ -514,7 +540,7 @@ class _DrawerGroup extends StatelessWidget {
           label,
           style: TextStyle(
             color: Theme.of(context).colorScheme.onSurfaceVariant,
-            fontSize: 11,
+            fontSize: 13,
             fontWeight: FontWeight.w600,
           ),
         ),
@@ -545,15 +571,13 @@ class _WorkspaceTile extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     return Padding(
       padding: const EdgeInsets.only(bottom: 3),
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: selected
-              ? scheme.primary.withValues(alpha: .12)
-              : Colors.transparent,
-          border: Border.all(
-            color: selected
-                ? scheme.primary.withValues(alpha: .42)
-                : Colors.transparent,
+      child: Material(
+        color: selected
+            ? scheme.primary.withValues(alpha: .12)
+            : Colors.transparent,
+        shape: RoundedRectangleBorder(
+          side: BorderSide(
+            color: selected ? scheme.outline : Colors.transparent,
           ),
           borderRadius: BorderRadius.circular(8),
         ),
@@ -569,7 +593,7 @@ class _WorkspaceTile extends StatelessWidget {
           ),
           title: Text(
             destination.label,
-            style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600),
+            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
           ),
           subtitle: Text(
             destination.description,
@@ -577,9 +601,9 @@ class _WorkspaceTile extends StatelessWidget {
             overflow: TextOverflow.ellipsis,
             style: TextStyle(
               color: selected
-                  ? scheme.onSurface.withValues(alpha: .78)
+                  ? scheme.onSurfaceVariant
                   : scheme.onSurfaceVariant,
-              fontSize: 10.5,
+              fontSize: 13,
             ),
           ),
           trailing: selected
@@ -616,13 +640,13 @@ class _UtilityTile extends StatelessWidget {
     leading: Icon(icon, size: 19),
     title: Text(
       label,
-      style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600),
+      style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
     ),
     subtitle: Text(
       description,
       maxLines: 1,
       overflow: TextOverflow.ellipsis,
-      style: const TextStyle(fontSize: 10.5),
+      style: const TextStyle(fontSize: 13),
     ),
     trailing: const Icon(Icons.arrow_outward_rounded, size: 16),
     onTap: onTap,
@@ -646,7 +670,7 @@ class _BrandMark extends StatelessWidget {
           children: [
             AsaelWordmark(compact: true),
             SizedBox(height: 4),
-            Text('Your second brain', style: TextStyle(fontSize: 11)),
+            Text('Your second brain', style: TextStyle(fontSize: 13)),
           ],
         ),
       ],

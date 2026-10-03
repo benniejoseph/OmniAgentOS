@@ -867,6 +867,45 @@ cross-platform plan: shell Capture/Voice utilities, broader conversation return
 behavior, native Activity, physical-device and assistive-technology review remain
 separate acceptance work. Source href checks do not claim a source action ran.
 
+## Native foundations, Activity and navigation — 3 October 2026
+
+Flutter now derives mobile and macOS themes from the canonical warm-light and
+graphite-dark palette, with platform typography and transitions retained.
+Controls keep a 44px desktop or 48px mobile minimum and grow with scaled text.
+Focus has a three-pixel border and opaque inner gap; high contrast strengthens
+secondary text and dividers, and reduced motion disables optional transitions.
+The old backdrop class names remain compatible but render flat opaque Material
+surfaces, allowing native ink feedback to remain visible.
+
+Native `/activity` consumes the same scoped v1 read contract through a cancellable
+authenticated fresh GET. Strict parsing binds source identities and verified
+outcome claims. Actor/role changes dispose pending requests, late responses cannot
+replace current rows, read failures retain labelled stale data, and access failures
+clear private rows. A stale cursor triggers one bounded first-page replacement.
+Phone and desktop navigation expose Assistant, Work, Activity, Memory and
+Capabilities, with all existing routes retained through More and the desktop
+host allowlist accepting Activity.
+
+Run source actions explicitly inspect their exact result. The actual Results
+router now decodes opaque path identities once, preserving literal percent/slash
+sequences. Approval links bind kind plus full ID, and the Mac inspector resets its
+decision draft when either changes. An absent requested approval cannot silently
+select a different item. No Activity action performs an execution mutation.
+
+Serial root unit/widget validation covers canonical theme/focus/target/reduced
+motion behavior, Activity parsing and read races, owner/role disposal, stale cursor
+recovery, retained failures, keyboard focus, all destinations, native host entry,
+actual encoded Results and approval routes, and existing Inbox/offline-client
+regressions. Layout checks cover 320/390/1440 widths at 200% text in both themes.
+The new drawer checks exposed hidden ink feedback; opaque Material surfaces and
+row Material boundaries correct it. Malformed-fixture typing and platform-override
+cleanup were corrected in the tests. Final targeted Flutter analysis reports no
+issues. External logs retain the failing attempts and final focused passes.
+
+This is local unit/widget evidence. Native conversation reopening, physical
+devices, screen readers, final native family migrations, packaging/signing and
+ATLAS renderer performance remain open gates in Phase 5.
+
 ## Remaining gates and scope
 
 - Hosted build, route budgets and required repository checks on each new exact head.
