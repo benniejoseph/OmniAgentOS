@@ -1027,3 +1027,12 @@ This slice still requires hosted checks on its committed head.
 Do not mark a complete page family or the complete revamp done from this slice.
 Production promotion remains a separate signed, paired release with the
 documented credentials and evidence gates.
+
+The first Meetings hosted build measured 925,421 bytes on both list and detail
+routes against the unchanged 800,000-byte budget. The client response validators
+now use the installed Zod Mini functional entry point with the same numeric,
+string, collection, optional/nullable, extension and receipt constraints. Its
+22 focused cases, strict lint and focused TypeScript check pass locally
+(`ui-validation/meetings-mini-verified.log`). Final size and acceptance require
+the new exact-commit hosted build; the earlier failed build is retained as
+`ui-validation/meetings-hosted-build-failure.log`.

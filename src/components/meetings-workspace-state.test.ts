@@ -44,6 +44,28 @@ describe("Meeting read contracts", () => {
     invalid.meeting.participants[0].recordingConsent = ["granted"] as never;
     expect(() => parseMeetingDetail(invalid, "meeting:test")).toThrow();
   });
+  it("retains numeric, string and collection bounds in the browser validator", () => {
+    for (const revision of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, NaN, Infinity]) {
+      expect(() => parseMeetingDetail(detail(meeting(revision)), "meeting:test")).toThrow();
+    }
+    expect(parseMeetingDetail(detail(meeting(Number.MAX_SAFE_INTEGER)), "meeting:test").meeting.revision).toBe(Number.MAX_SAFE_INTEGER);
+    for (const title of ["", "x".repeat(241)]) {
+      expect(() => parseMeetingDetail(detail({ ...meeting(), title }), "meeting:test")).toThrow();
+    }
+    expect(() => parseMeetingDetail(detail({ ...meeting(), meetingSha256: "A".repeat(64) }), "meeting:test")).toThrow();
+    expect(() => parseMeetingDetail(detail({ ...meeting(), participants: Array.from({ length: 251 }, () => meeting().participants[0]) }), "meeting:test")).toThrow();
+    expect(() => parseMeetingProposalReceipt({ commitment: { proposal: { ...proposal(), citations: [] }, resolution: null } }, proposal())).toThrow();
+  });
+  it("preserves response extensions while validating and copying known fields", () => {
+    const record = { ...meeting(), futureDetail: "retained", participants: [{ ...meeting().participants[0], futureConsent: "retained" }] };
+    const parsed = parseMeetingDetail({ ...detail(record), unrelatedEnvelope: true }, "meeting:test");
+    expect(parsed.meeting).toMatchObject({ futureDetail: "retained", participants: [{ futureConsent: "retained" }] });
+    expect(parsed).not.toHaveProperty("unrelatedEnvelope");
+    record.participants[0].displayName = "Changed after parse";
+    expect(parsed.meeting.participants[0].displayName).toBe("Owner");
+    expect(() => parseMeetingDetail(detail({ ...meeting(), actualStartAt: undefined } as never), "meeting:test")).toThrow();
+    expect(() => parseMeetingList({ meetings: [], context: { ...context, canWrite: "true" } })).toThrow();
+  });
   it("rejects unrelated linked-source evidence without discarding independent list results", () => {
     const invalid = { ...detail(), linkedSources: [{ linkId: "link:other", kind: "capture_asset", sourceId: "asset:other", mediaRole: "attachment", label: "Unrelated", revisionState: "exact", status: null, mediaType: null, durationMs: null, byteCount: null, updatedAt: null, transcript: null, transcriptTruncated: false, media: null, segments: [] }] };
     expect(() => parseMeetingDetail(invalid, "meeting:test")).toThrow("source identities");
