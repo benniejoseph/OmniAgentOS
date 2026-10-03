@@ -6684,7 +6684,11 @@ databaseDescribe("Postgres schema integration", () => {
         { statement: "function", tag: "CREATE FUNCTION", commands: 1 },
       ]);
       expect(await schemaCatalogSnapshot(admin)).toEqual(
-        withUnvalidatedChecks(fileCatalog, missingChecks),
+        // v214 validates check1; the renamed preexisting check2 is outside
+        // its 44 targets and remains deferred in this synthetic fixture.
+        withUnvalidatedChecks(fileCatalog, [{
+          tableName, constraintName: "omni_salesforce_record_heads_check2",
+        }]),
       );
       for (const { constraintName } of missingChecks) {
         await admin.unsafe(
@@ -6760,9 +6764,8 @@ databaseDescribe("Postgres schema integration", () => {
 
       const ddl = await convergenceDdlDuring(admin, migrateWithFreshClient);
 
-      expect(await schemaCatalogSnapshot(admin)).toEqual(
-        withUnvalidatedChecks(fileCatalog, missingChecks),
-      );
+      // The full runner also executes v214, which validates all 43 additions.
+      expect(await schemaCatalogSnapshot(admin)).toEqual(fileCatalog);
       expect(ddl).toEqual([
         { statement: "constraints", tag: "ALTER TABLE", commands: 51 },
         { statement: "function", tag: "CREATE FUNCTION", commands: 1 },
@@ -6779,7 +6782,8 @@ databaseDescribe("Postgres schema integration", () => {
       expect(report.status).toBe("passing");
       expect(report.summary.missingPolicies).toEqual([]);
 
-      // A later release validates the CHECKs this one adds.
+      // v214 has already validated all 43 additions; validate the historical
+      // list again to confirm this remains an idempotent catalog operation.
       for (const { tableName, constraintName } of missingChecks) {
         await admin.unsafe(
           `ALTER TABLE public.${tableName} VALIDATE CONSTRAINT ${constraintName}`,
@@ -7002,8 +7006,8 @@ databaseDescribe("Postgres schema integration", () => {
       WHERE conrelid = 'public.omni_mobile_sessions'::regclass
         AND conname = 'omni_mobile_sessions_refresh_rotation_check'
     `;
-    // Added without scanning the table, whose rows all lacked a key then.
-    expect(constraint).toEqual({ validated: false });
+    // v209 added this without a scan; v214 now validates its existing rows.
+    expect(constraint).toEqual({ validated: true });
     const [session] = await admin`
       SELECT id FROM omni_mobile_sessions
       WHERE refresh_rotation_key IS NOT NULL

@@ -330,6 +330,18 @@ export const COMPLEXITY_REGISTRY: readonly ComplexityEntry[] = Object.freeze((
       ],
     },
     {
+      id: "schema-v214-validation-preflight",
+      kind: "legacy",
+      owner: "platform",
+      summary:
+        "A read-only, count-only preflight checks the 44 deferred constraints before a database installs schema v214.",
+      exitMetric:
+        "Every supported database has schema v214 or later, retained release receipts show all 44 targets validated with zero violations, and no supported recovery point predates v214; then delete this preflight and its runbook/test references while retaining the ordered migrations.",
+      reviewedOn: "2026-10-03",
+      expiresOn: "2027-01-01",
+      paths: ["scripts/sql/schema-v214-preflight.sql"],
+    },
+    {
       id: "request-bound-migrations-retired",
       kind: "retired",
       owner: "platform",
