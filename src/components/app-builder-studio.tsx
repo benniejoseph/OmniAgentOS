@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
 import {
   Activity,
   AlertCircle,
@@ -56,9 +56,15 @@ type AgentEvent = { type?: string; runId?: string; text?: string; response?: str
 const commands = ["lint", "typecheck", "test", "build"] as const;
 
 export function AppBuilderStudio({ project }: { project: BuildProject }) {
-  const [snapshot, setSnapshot] = useState<SessionPayload>({ session: null, activity: [], checkpoints: [], verifications: [], repositoryBinding: null, repositoryWorkspace: null, deliveries: [], deployments: [], releases: [], github: { configured: false, missing: [] }, vercel: { configured: false, missing: [] }, previewUrl: null });
+  const [snapshot, setSnapshotState] = useState<SessionPayload>({ session: null, activity: [], checkpoints: [], verifications: [], repositoryBinding: null, repositoryWorkspace: null, deliveries: [], deployments: [], releases: [], github: { configured: false, missing: [] }, vercel: { configured: false, missing: [] }, previewUrl: null });
+  const snapshotRevisionRef = useRef(0);
+  const setSnapshot = useCallback((next: SetStateAction<SessionPayload>) => {
+    snapshotRevisionRef.current += 1;
+    setSnapshotState(next);
+  }, []);
   const [tree, setTree] = useState<TreeEntry[]>([]);
   const [file, setFile] = useState<BuilderFile>();
+  const [fileSessionId, setFileSessionId] = useState<string>();
   const [draft, setDraft] = useState("");
   const [view, setView] = useState<"preview" | "code">("preview");
   const [rail, setRail] = useState<"files" | "checkpoints" | "activity">("files");
@@ -78,9 +84,18 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
   const [productionConfirmation, setProductionConfirmation] = useState("");
   const [busy, setBusy] = useState("loading");
   const [error, setError] = useState<string>();
+  const [hasLoaded, setHasLoaded] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [sessionReadError, setSessionReadError] = useState<string>();
+  const [treeRead, setTreeRead] = useState<{ loaded: boolean; loading: boolean; error?: string }>({ loaded: false, loading: false });
+  const [fileRead, setFileRead] = useState<{ loading: boolean; path?: string; error?: string }>({ loading: false });
+  const [repositoryRead, setRepositoryRead] = useState<{ loaded: boolean; loading: boolean; error?: string }>({ loaded: false, loading: false });
+  const fileReadGeneration = useRef(0);
+  const treeReadGeneration = useRef(0);
   const session = snapshot.session;
   const ready = session?.status === "ready" || session?.status === "running";
   const dirty = Boolean(file && draft !== file.content);
+  const fileSessionMismatch = Boolean(file && session && fileSessionId !== session.id);
   const latestVerification = snapshot.verifications[0];
   const deliveryVerification = snapshot.verifications.find((verification) =>
     verification.status === "passed" &&
@@ -104,58 +119,114 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
   );
 
   const loadSession = useCallback(async () => {
-    const payload = await readJson<SessionPayload>(`/api/projects/${encodeURIComponent(project.id)}/builder`);
-    setSnapshot(payload);
-    return payload;
-  }, [project.id]);
+    try {
+      const payload = await readJson<SessionPayload>(`/api/projects/${encodeURIComponent(project.id)}/builder`);
+      setSnapshot(payload);
+      setHasLoaded(true);
+      setSessionReadError(undefined);
+      return payload;
+    } catch (loadError) {
+      setSessionReadError(message(loadError));
+      throw loadError;
+    }
+  }, [project.id, setSnapshot]);
 
   const loadFile = useCallback(async (target: BuilderSession, path: string) => {
-    const payload = await readJson<{ file: BuilderFile }>(`/api/projects/${encodeURIComponent(project.id)}/builder?view=file&sessionId=${encodeURIComponent(target.id)}&path=${encodeURIComponent(path)}`);
-    setFile(payload.file);
-    setDraft(payload.file.content);
+    const generation = ++fileReadGeneration.current;
+    setFileRead({ loading: true, path });
+    try {
+      const payload = await readJson<{ file: BuilderFile }>(`/api/projects/${encodeURIComponent(project.id)}/builder?view=file&sessionId=${encodeURIComponent(target.id)}&path=${encodeURIComponent(path)}`);
+      if (generation !== fileReadGeneration.current) return;
+      setFile(payload.file);
+      setFileSessionId(target.id);
+      setDraft(payload.file.content);
+      setFileRead({ loading: false, path });
+    } catch (loadError) {
+      if (generation !== fileReadGeneration.current) return;
+      setFileRead({ loading: false, path, error: message(loadError) });
+      throw loadError;
+    }
   }, [project.id]);
 
-  const loadTree = useCallback(async (target: BuilderSession, preferredPath?: string) => {
-    const payload = await readJson<{ entries: TreeEntry[] }>(`/api/projects/${encodeURIComponent(project.id)}/builder?view=tree&sessionId=${encodeURIComponent(target.id)}`);
-    setTree(payload.entries);
-    const paths = payload.entries.filter((entry) => entry.kind === "file").map((entry) => entry.path);
+  const loadTree = useCallback(async (target: BuilderSession, preferredPath?: string, retainOpenFile = false) => {
+    const generation = ++treeReadGeneration.current;
+    setTreeRead((current) => ({ ...current, loading: true }));
+    let entries: TreeEntry[];
+    try {
+      const payload = await readJson<{ entries: TreeEntry[] }>(`/api/projects/${encodeURIComponent(project.id)}/builder?view=tree&sessionId=${encodeURIComponent(target.id)}`);
+      if (generation !== treeReadGeneration.current) return;
+      entries = payload.entries;
+      setTree(entries);
+      setTreeRead({ loaded: true, loading: false });
+    } catch (loadError) {
+      if (generation !== treeReadGeneration.current) return;
+      setTreeRead((current) => ({ ...current, loading: false, error: message(loadError) }));
+      throw loadError;
+    }
+    // Refreshing or clearing a file search must not replace the open draft.
+    if (retainOpenFile && preferredPath) return;
+    const paths = entries.filter((entry) => entry.kind === "file").map((entry) => entry.path);
     const nextPath = preferredPath && paths.includes(preferredPath) ? preferredPath : paths.includes("app/page.tsx") ? "app/page.tsx" : paths[0];
     if (nextPath) await loadFile(target, nextPath);
   }, [loadFile, project.id]);
 
   const searchTree = useCallback(async (target: BuilderSession, query: string) => {
     const normalized = query.trim();
-    if (!normalized) return loadTree(target, file?.path);
-    const payload = await readJson<{ entries: TreeEntry[] }>(`/api/projects/${encodeURIComponent(project.id)}/builder?view=search&sessionId=${encodeURIComponent(target.id)}&query=${encodeURIComponent(normalized)}`);
-    setTree(payload.entries);
+    if (!normalized) return loadTree(target, file?.path, true);
+    const generation = ++treeReadGeneration.current;
+    setTreeRead((current) => ({ ...current, loading: true }));
+    try {
+      const payload = await readJson<{ entries: TreeEntry[] }>(`/api/projects/${encodeURIComponent(project.id)}/builder?view=search&sessionId=${encodeURIComponent(target.id)}&query=${encodeURIComponent(normalized)}`);
+      if (generation !== treeReadGeneration.current) return;
+      setTree(payload.entries);
+      setTreeRead({ loaded: true, loading: false });
+    } catch (loadError) {
+      if (generation !== treeReadGeneration.current) return;
+      setTreeRead((current) => ({ ...current, loading: false, error: message(loadError) }));
+      throw loadError;
+    }
   }, [file?.path, loadTree, project.id]);
 
   const loadRepositories = useCallback(async () => {
-    const payload = await readJson<{ repositories: BuilderRepository[] }>(`/api/projects/${encodeURIComponent(project.id)}/builder?view=github.repositories`);
-    setRepositories(payload.repositories);
-    setSelectedRepositoryId((current) => current || snapshot.repositoryBinding?.repositoryId || payload.repositories[0]?.repositoryId || "");
-    return payload.repositories;
+    setRepositoryRead((current) => ({ ...current, loading: true }));
+    try {
+      const payload = await readJson<{ repositories: BuilderRepository[] }>(`/api/projects/${encodeURIComponent(project.id)}/builder?view=github.repositories`);
+      setRepositories(payload.repositories);
+      setSelectedRepositoryId((current) => current || snapshot.repositoryBinding?.repositoryId || payload.repositories[0]?.repositoryId || "");
+      setRepositoryRead({ loaded: true, loading: false });
+      return payload.repositories;
+    } catch (loadError) {
+      setRepositoryRead((current) => ({ ...current, loading: false, error: message(loadError) }));
+      throw loadError;
+    }
   }, [project.id, snapshot.repositoryBinding?.repositoryId]);
 
   useEffect(() => {
     let active = true;
     async function initialize() {
+      let sessionLoaded = false;
       try {
         const payload = await readJson<SessionPayload>(`/api/projects/${encodeURIComponent(project.id)}/builder`);
         if (!active) return;
         setSnapshot(payload);
+        sessionLoaded = true;
+        setHasLoaded(true);
+        setSessionReadError(undefined);
         if (payload.session && (payload.session.status === "ready" || payload.session.status === "running")) {
           await loadTree(payload.session);
         }
       } catch (loadError) {
-        if (active) setError(message(loadError));
+        if (active) {
+          setError(message(loadError));
+          if (!sessionLoaded) setSessionReadError(message(loadError));
+        }
       } finally {
         if (active) setBusy("");
       }
     }
     void initialize();
     return () => { active = false; };
-  }, [loadTree, project.id]);
+  }, [loadTree, project.id, setSnapshot]);
 
   useEffect(() => {
     if (
@@ -180,7 +251,7 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
       }
     }, 4_500);
     return () => { active = false; window.clearTimeout(timer); };
-  }, [latestDeployment, project.id, session]);
+  }, [latestDeployment, project.id, session, setSnapshot]);
 
   useEffect(() => {
     if (!session || !currentRelease?.providerDeploymentId || !new Set<BuilderRelease["status"]>(["releasing", "building"]).has(currentRelease.status)) return;
@@ -202,7 +273,7 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
       }
     }, 4_500);
     return () => { active = false; window.clearTimeout(timer); };
-  }, [currentRelease, project.id, session]);
+  }, [currentRelease, project.id, session, setSnapshot]);
 
   async function createWorkspace() {
     setBusy("create");
@@ -219,7 +290,7 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
   }
 
   async function saveFile() {
-    if (!session || !file || !dirty) return;
+    if (!session || !file || !dirty || fileSessionMismatch) return;
     setBusy("save");
     setError(undefined);
     try {
@@ -234,7 +305,7 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
   }
 
   async function deleteFile() {
-    if (!session || !file || dirty) return;
+    if (!session || !file || dirty || fileSessionMismatch) return;
     if (!window.confirm(`Delete ${file.path} from this workspace? The deletion stays reviewable before GitHub delivery.`)) return;
     setBusy("delete");
     setError(undefined);
@@ -681,104 +752,151 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
 
   const files = useMemo(() => tree.filter((entry) => entry.kind === "file"), [tree]);
 
-  if (busy === "loading") return <section className={styles.loading}><Loader2 className="animate-spin" size={20} /><span>Opening the build studio…</span></section>;
+  async function refreshStudio() {
+    if (busy || refreshing) return;
+    const revision = snapshotRevisionRef.current;
+    setRefreshing(true);
+    setBusy("refresh");
+    try {
+      let payload: SessionPayload;
+      try {
+        payload = await readJson<SessionPayload>(`/api/projects/${encodeURIComponent(project.id)}/builder`);
+      } catch (loadError) {
+        if (revision !== snapshotRevisionRef.current) return;
+        setSessionReadError(message(loadError));
+        throw loadError;
+      }
+      // Provider receipts can arrive while this read is pending. A superseded
+      // refresh must replace neither that snapshot nor its source-file tree.
+      if (revision !== snapshotRevisionRef.current) return;
+      setSnapshot(payload);
+      setHasLoaded(true);
+      setSessionReadError(undefined);
+      if (payload.session && ["ready", "running"].includes(payload.session.status)) {
+        await loadTree(payload.session, file?.path, true);
+      }
+      setError(undefined);
+    } catch (loadError) {
+      setError(message(loadError));
+    } finally {
+      setRefreshing(false);
+      setBusy("");
+    }
+  }
+
+  if (busy === "loading") return <section className={styles.loading} role="status"><span>Loading Build studio…</span><div aria-hidden="true"><i /><i /><i /></div></section>;
+
+  if (!hasLoaded) return <section className={styles.empty} aria-labelledby="builder-unavailable-title"><AlertCircle aria-hidden="true" size={24} /><h3 id="builder-unavailable-title">Build studio unavailable</h3><p>The workspace could not be loaded. Retry to check its current state.</p>{error ? <p className={styles.error} role="alert">{error}</p> : null}<button type="button" onClick={() => void refreshStudio()} disabled={refreshing}>{refreshing ? "Loading…" : "Retry Build studio"}</button></section>;
 
   if (!session) return (
     <section className={styles.empty}>
-      <div className={styles.emptyMark}><WandSparkles size={28} /></div>
-      <p>Build mode</p>
-      <h3>Turn this project into a working app.</h3>
-      <span>Forge gets a private Next.js workspace with inspected file edits, fixed verification commands, and a live preview. The sandbox can reach the package registry only.</span>
-      <div className={styles.guardrails}><span><ShieldCheck size={14} /> Project-scoped</span><span><Code2 size={14} /> TypeScript starter</span><span><MonitorPlay size={14} /> Private preview</span></div>
-      <button type="button" onClick={() => void createWorkspace()} disabled={busy === "create" || project.status === "archived"}>{busy === "create" ? <Loader2 className="animate-spin" size={15} /> : <Play size={15} />} Create build workspace</button>
-      {error ? <p className={styles.error} role="alert"><AlertCircle size={14} /> {error}</p> : null}
+      <div className={styles.emptyMark}><WandSparkles aria-hidden="true" size={28} /></div>
+      <h3>Build workspace</h3>
+      <span>Create an isolated workspace for this project, then edit files, preview the app, and review verified changes before delivery.</span>
+      <div className={styles.guardrails}><span><ShieldCheck aria-hidden="true" size={14} /> Project-scoped</span><span><Code2 aria-hidden="true" size={14} /> TypeScript starter</span><span><MonitorPlay aria-hidden="true" size={14} /> Private preview</span></div>
+      <button type="button" onClick={() => void createWorkspace()} disabled={busy === "create" || project.status === "archived"}>{busy === "create" ? <Loader2 className={styles.spinner} size={15} /> : <Play aria-hidden="true" size={15} />} Create build workspace</button>
+      {project.status === "archived" ? <p className={styles.help}>Reopen the project before creating a build workspace.</p> : null}
+      {error ? <p className={styles.error} role="alert"><AlertCircle aria-hidden="true" size={14} /> {error}</p> : null}
     </section>
   );
 
   if (!ready) return (
     <section className={styles.empty}>
-      <div className={styles.emptyMark}><AlertCircle size={28} /></div>
+      <div className={styles.emptyMark}><AlertCircle aria-hidden="true" size={28} /></div>
       <p>Build workspace · {session.status}</p>
       <h3>{session.status === "failed" ? "The sandbox needs attention." : "The workspace is not running."}</h3>
       <span>{session.lastErrorCode ? `Provisioning receipt: ${session.lastErrorCode}` : "Its files and activity remain recorded."}</span>
+      <button type="button" onClick={() => void refreshStudio()} disabled={refreshing}>{refreshing ? "Refreshing…" : "Refresh workspace state"}</button>
       {error ? <p className={styles.error} role="alert">{error}</p> : null}
     </section>
   );
 
   return (
-    <section className={styles.studio} aria-busy={Boolean(busy)}>
+    <section className={styles.studio} aria-label="Build studio" aria-busy={Boolean(busy) || refreshing}>
       <header className={styles.studioHeader}>
-        <div><span className={styles.liveDot} /><div><strong>Build studio</strong><small>{repositoryWorkspaceCurrent && snapshot.repositoryWorkspace ? `${snapshot.repositoryWorkspace.repositoryFullName} · ${snapshot.repositoryWorkspace.baseSha.slice(0, 10)}` : session.templateId} · revision {session.revision}</small></div></div>
+        <div><Code2 aria-hidden="true" size={20} /><div><h3>Build studio</h3><small>{repositoryWorkspaceCurrent && snapshot.repositoryWorkspace ? `${snapshot.repositoryWorkspace.repositoryFullName} · ${snapshot.repositoryWorkspace.baseSha}` : session.templateId} · revision {session.revision}</small><small>Workspace {session.status} · recorded update {new Date(session.updatedAt).toLocaleString()}</small></div></div>
         <div className={styles.headerActions}>
-          <button type="button" onClick={() => void saveCheckpoint()} disabled={Boolean(busy) || dirty} title={dirty ? "Save the open file before sealing a checkpoint" : "Save a recoverable checkpoint"}><Save size={14} /> Checkpoint</button>
-          <button type="button" onClick={() => void runCommand("start_preview")} disabled={Boolean(busy)} title="Restart preview" aria-label="Restart live preview"><RefreshCw size={14} className={busy === "start_preview" ? "animate-spin" : undefined} /></button>
-          {snapshot.previewUrl ? <a href={snapshot.previewUrl} target="_blank" rel="noreferrer"><ExternalLink size={14} /> Open preview</a> : null}
-          <button type="button" onClick={() => { setDeployOpen(false); void toggleGithub(); }} aria-expanded={githubOpen} disabled={Boolean(busy) && busy !== "github.repositories"} title="Review and deliver this build through the private GitHub App"><GitBranch size={14} /> GitHub</button>
-          <button type="button" onClick={toggleDeploy} aria-expanded={deployOpen} disabled={Boolean(busy)} title="Create and verify a revision-bound Vercel preview"><Rocket size={14} /> Deploy</button>
+          <button type="button" onClick={() => void refreshStudio()} disabled={Boolean(busy) || refreshing}><RefreshCw aria-hidden="true" size={16} /> {refreshing ? "Refreshing…" : "Refresh snapshot"}</button>
+          <button type="button" onClick={() => void saveCheckpoint()} disabled={Boolean(busy) || dirty} title={dirty ? "Save the open file before sealing a checkpoint" : "Save a recoverable checkpoint"}><Save aria-hidden="true" size={14} /> Checkpoint</button>
+          <button type="button" onClick={() => void runCommand("start_preview")} disabled={Boolean(busy)} title="Restart preview" aria-label="Restart live preview"><RefreshCw aria-hidden="true" size={14} className={busy === "start_preview" ? styles.spinner : undefined} /> Restart preview</button>
+          {snapshot.previewUrl ? <a href={snapshot.previewUrl} target="_blank" rel="noreferrer"><ExternalLink aria-hidden="true" size={14} /> Open preview</a> : null}
+          <button type="button" onClick={() => { setDeployOpen(false); void toggleGithub(); }} aria-expanded={githubOpen} aria-controls="builder-github-delivery" disabled={Boolean(busy) && busy !== "github.repositories"} title="Review and deliver this build through the private GitHub App"><GitBranch aria-hidden="true" size={14} /> GitHub</button>
+          <button type="button" onClick={toggleDeploy} aria-expanded={deployOpen} aria-controls="builder-preview-delivery" disabled={Boolean(busy)} title="Create and verify a revision-bound Vercel preview"><Rocket aria-hidden="true" size={14} /> Deploy</button>
         </div>
       </header>
 
-      {error ? <div className={styles.errorBanner} role="alert"><AlertCircle size={15} /><span>{error}</span><button type="button" onClick={() => setError(undefined)}>Dismiss</button></div> : null}
+      {error ? <div className={styles.errorBanner} role="alert"><AlertCircle aria-hidden="true" size={15} /><span>{error}</span><button type="button" onClick={() => setError(undefined)}>Dismiss</button></div> : null}
 
-      {githubOpen ? <section className={styles.deliveryPanel} aria-label="GitHub delivery">
+      {sessionReadError ? <p className={styles.readNotice}>The snapshot could not be refreshed. The last loaded workspace and your drafts are retained.</p> : null}
+      {fileSessionMismatch ? <p id="builder-session-change" className={styles.readNotice} role="status">The workspace session changed. The retained file and draft belong to session <code>{fileSessionId || "unavailable"}</code>, not the current session <code>{session.id}</code>. Copy any unsaved text before opening a file from the current session. Editing, saving, and deleting the retained file are unavailable.</p> : null}
+      {refreshing ? <p className={styles.help} role="status">Refreshing the workspace snapshot…</p> : null}
+      {dirty ? <p className={styles.unsaved} role="status">Unsaved changes in <code>{file?.path}</code>. Save the file before creating a checkpoint, running checks, or requesting Agent work.</p> : null}
+      {busy ? <p className={styles.help} role="status">In progress: {eventLabel(busy)}.</p> : null}
+
+      {githubOpen ? <section id="builder-github-delivery" className={styles.deliveryPanel} aria-label="GitHub delivery">
         <header><div><span className={styles.deliveryKicker}>Source handoff</span><h3>Open a reviewable pull request</h3><p>Asael writes only to a new branch in one repository selected for the private GitHub App.</p></div><div className={styles.deliveryState} data-ready={snapshot.github.configured || undefined}><i />{snapshot.github.configured ? "GitHub App ready" : "Setup required"}</div></header>
-        {!snapshot.github.configured ? <div className={styles.githubSetup}><AlertCircle size={18} /><div><strong>Complete the private GitHub App connection</strong><p>Missing: {snapshot.github.missing.join(", ") || "application credentials"}. Grant selected-repository access with Contents and Pull requests write plus Checks read. Asael mints a short-lived token for the selected repository only.</p>{snapshot.github.installUrl ? <a href={snapshot.github.installUrl} target="_blank" rel="noreferrer">Install the GitHub App <ExternalLink size={13} /></a> : null}</div></div> : <>
+        {!snapshot.github.configured ? <div className={styles.githubSetup}><AlertCircle aria-hidden="true" size={18} /><div><strong>Complete the private GitHub App connection</strong><p>Missing: {snapshot.github.missing.join(", ") || "application credentials"}. Grant selected-repository access with Contents and Pull requests write plus Checks read. Asael mints a short-lived token for the selected repository only.</p>{snapshot.github.installUrl ? <a href={snapshot.github.installUrl} target="_blank" rel="noreferrer">Install the GitHub App <ExternalLink aria-hidden="true" size={13} /></a> : null}</div></div> : <>
           <div className={styles.deliveryFlow}>
-            <article data-ready={repositoryWorkspaceCurrent || undefined}><span>01</span><div><strong>Repository workspace</strong><small>{repositoryWorkspaceCurrent && snapshot.repositoryWorkspace ? `${snapshot.repositoryWorkspace.repositoryFullName} · ${snapshot.repositoryWorkspace.fileCount} files` : snapshot.repositoryBinding ? "Bound · open exact revision" : "Choose selected access"}</small></div><CheckCircle2 size={16} /></article><ChevronRight size={15} />
-            <article data-ready={Boolean(currentCheckpoint) || undefined}><span>02</span><div><strong>Sealed revision</strong><small>{currentCheckpoint ? currentCheckpoint.workspaceSha256.slice(0, 10) : "Checkpoint required"}</small></div><CheckCircle2 size={16} /></article><ChevronRight size={15} />
-            <article data-ready={Boolean(deliveryVerification) || undefined}><span>03</span><div><strong>Verification</strong><small>{deliveryVerification ? "Lint + typecheck passed" : "Passing Sentinel receipt required"}</small></div><CheckCircle2 size={16} /></article><ChevronRight size={15} />
-            <article data-ready={latestDelivery?.status === "pull_request_open" || undefined}><span>04</span><div><strong>Draft PR</strong><small>{latestDelivery?.status === "pull_request_open" ? `#${latestDelivery.pullRequestNumber}` : "Secret scan runs first"}</small></div><GitBranch size={16} /></article>
+            <article data-ready={repositoryWorkspaceCurrent || undefined}><span>01</span><div><strong>Repository workspace</strong><small>{repositoryWorkspaceCurrent && snapshot.repositoryWorkspace ? `${snapshot.repositoryWorkspace.repositoryFullName} · ${snapshot.repositoryWorkspace.fileCount} files` : snapshot.repositoryBinding ? "Bound · open exact revision" : "Choose selected access"}</small></div><CheckCircle2 aria-hidden="true" size={16} /></article><ChevronRight aria-hidden="true" size={15} />
+            <article data-ready={Boolean(currentCheckpoint) || undefined}><span>02</span><div><strong>Sealed revision</strong><small>{currentCheckpoint ? currentCheckpoint.workspaceSha256 : "Checkpoint required"}</small></div><CheckCircle2 aria-hidden="true" size={16} /></article><ChevronRight aria-hidden="true" size={15} />
+            <article data-ready={Boolean(deliveryVerification) || undefined}><span>03</span><div><strong>Verification</strong><small>{deliveryVerification ? "Lint + typecheck passed" : "Passing Sentinel receipt required"}</small></div><CheckCircle2 aria-hidden="true" size={16} /></article><ChevronRight aria-hidden="true" size={15} />
+            <article data-ready={latestDelivery?.status === "pull_request_open" || undefined}><span>04</span><div><strong>Draft PR</strong><small>{latestDelivery?.status === "pull_request_open" ? `#${latestDelivery.pullRequestNumber}` : "Secret scan runs first"}</small></div><GitBranch aria-hidden="true" size={16} /></article>
           </div>
           <div className={styles.deliveryGrid}>
             <section className={styles.repositoryCard}>
               <div><strong>Destination repository</strong><small>Only GitHub App-selected repositories are visible.</small></div>
               <label htmlFor={`builder-repository-${project.id}`}>Repository</label>
-              <div className={styles.repositorySelect}><select id={`builder-repository-${project.id}`} value={selectedRepositoryId || snapshot.repositoryBinding?.repositoryId || ""} onChange={(event) => setSelectedRepositoryId(event.currentTarget.value)} disabled={busy === "github.repositories"}>{repositories.map((repository) => <option value={repository.repositoryId} key={repository.repositoryId}>{repository.fullName} · {repository.private ? "private" : "public"}</option>)}</select><button type="button" onClick={() => void refreshRepositories()} disabled={Boolean(busy)} aria-label="Refresh repositories">{busy === "github.repositories" ? <Loader2 className="animate-spin" size={14} /> : <RefreshCw size={14} />}</button></div>
-              {snapshot.repositoryBinding ? <div className={styles.revisionReceipt}><span>Bound to <b>{snapshot.repositoryBinding.defaultBranch}</b></span><code>{snapshot.repositoryBinding.baseSha.slice(0, 12)}</code></div> : null}
-              <button type="button" className={styles.secondaryAction} onClick={() => void bindRepository()} disabled={!selectedRepositoryId || Boolean(busy)}>{busy === "github.bind" ? <Loader2 className="animate-spin" size={14} /> : <GitBranch size={14} />} {snapshot.repositoryBinding?.repositoryId === selectedRepositoryId ? "Refresh exact revision" : "Bind repository"}</button>
-              {snapshot.repositoryBinding ? <button type="button" className={styles.primaryAction} onClick={() => void checkoutRepository()} disabled={Boolean(busy) || repositoryWorkspaceCurrent}>{busy === "github.checkout" ? <Loader2 className="animate-spin" size={14} /> : <FolderGit2 size={14} />} {busy === "github.checkout" ? "Importing exact revision…" : repositoryWorkspaceCurrent ? "Repository open in workspace" : snapshot.repositoryWorkspace ? "Update workspace to bound revision" : "Open repository in workspace"}</button> : null}
+              <div className={styles.repositorySelect}><select id={`builder-repository-${project.id}`} value={selectedRepositoryId || snapshot.repositoryBinding?.repositoryId || ""} onChange={(event) => setSelectedRepositoryId(event.currentTarget.value)} disabled={busy === "github.repositories"}>{repositories.map((repository) => <option value={repository.repositoryId} key={repository.repositoryId}>{repository.fullName} · {repository.private ? "private" : "public"}</option>)}</select><button type="button" onClick={() => void refreshRepositories()} disabled={Boolean(busy)} aria-label="Refresh repositories">{busy === "github.repositories" ? <Loader2 className={styles.spinner} size={14} /> : <RefreshCw aria-hidden="true" size={14} />}</button></div>
+              {repositories.some((repository) => repository.repositoryId === (selectedRepositoryId || snapshot.repositoryBinding?.repositoryId)) ? <p className={styles.help}>Selected: {repositories.find((repository) => repository.repositoryId === (selectedRepositoryId || snapshot.repositoryBinding?.repositoryId))?.fullName}</p> : null}
+              {repositoryRead.loading ? <p className={styles.help}>Loading repositories…</p> : repositoryRead.error ? <p className={styles.readNotice}>{repositoryRead.loaded ? "Repository refresh failed; showing the last loaded list." : "Repositories unavailable."} {repositoryRead.error}</p> : repositoryRead.loaded && !repositories.length ? <p className={styles.help}>No repositories were returned for this connection.</p> : null}
+              {snapshot.repositoryBinding ? <div className={styles.revisionReceipt}><span>Bound to <b>{snapshot.repositoryBinding.defaultBranch}</b></span><code>{snapshot.repositoryBinding.baseSha}</code></div> : null}
+              <button type="button" className={styles.secondaryAction} onClick={() => void bindRepository()} disabled={!selectedRepositoryId || Boolean(busy)}>{busy === "github.bind" ? <Loader2 className={styles.spinner} size={14} /> : <GitBranch aria-hidden="true" size={14} />} {snapshot.repositoryBinding?.repositoryId === selectedRepositoryId ? "Refresh exact revision" : "Bind repository"}</button>
+              {snapshot.repositoryBinding ? <button type="button" className={styles.primaryAction} onClick={() => void checkoutRepository()} disabled={Boolean(busy) || repositoryWorkspaceCurrent}>{busy === "github.checkout" ? <Loader2 className={styles.spinner} size={14} /> : <FolderGit2 aria-hidden="true" size={14} />} {busy === "github.checkout" ? "Importing exact revision…" : repositoryWorkspaceCurrent ? "Repository open in workspace" : snapshot.repositoryWorkspace ? "Update workspace to bound revision" : "Open repository in workspace"}</button> : null}
             </section>
             <section className={styles.pullRequestCard}>
               <div><strong>Pull request</strong><small>A new branch is required; the default branch is never written directly.</small></div>
               <label htmlFor={`builder-branch-${project.id}`}>New branch</label><input id={`builder-branch-${project.id}`} value={branchName || suggestBranch(project.title, currentCheckpoint?.workspaceSha256)} onChange={(event) => setBranchName(event.currentTarget.value)} maxLength={120} placeholder="asael/my-app-a1b2c3d4" />
               <label htmlFor={`builder-pr-title-${project.id}`}>Title</label><input id={`builder-pr-title-${project.id}`} value={deliveryTitle} onChange={(event) => setDeliveryTitle(event.currentTarget.value)} maxLength={180} />
               <label htmlFor={`builder-pr-body-${project.id}`}>Review note <span>optional</span></label><textarea id={`builder-pr-body-${project.id}`} value={deliveryBody} onChange={(event) => setDeliveryBody(event.currentTarget.value)} maxLength={8_000} rows={3} placeholder="What changed and what should the reviewer inspect?" />
-              <button type="button" className={styles.primaryAction} onClick={() => void createPullRequest()} disabled={Boolean(busy) || !snapshot.repositoryBinding || !currentCheckpoint || !deliveryVerification || !deliveryTitle.trim()}>{busy === "github.deliver" ? <Loader2 className="animate-spin" size={14} /> : <GitBranch size={14} />} {busy === "github.deliver" ? "Scanning and delivering…" : "Secret-scan & open draft PR"}</button>
+              {!snapshot.repositoryBinding || !currentCheckpoint || !deliveryVerification || !deliveryTitle.trim() ? <p className={styles.help}>A bound repository, sealed checkpoint, passing verification and Sentinel review, and a title are required.</p> : null}
+              <button type="button" className={styles.primaryAction} onClick={() => void createPullRequest()} disabled={Boolean(busy) || !snapshot.repositoryBinding || !currentCheckpoint || !deliveryVerification || !deliveryTitle.trim()}>{busy === "github.deliver" ? <Loader2 className={styles.spinner} size={14} /> : <GitBranch aria-hidden="true" size={14} />} {busy === "github.deliver" ? "Scanning and delivering…" : "Secret-scan & open draft PR"}</button>
             </section>
           </div>
-          {snapshot.deliveries.length ? <div className={styles.deliveryLedger}>{snapshot.deliveries.slice(0, 4).map((delivery) => <article key={delivery.id} data-status={delivery.status}><i /><div><strong>{delivery.branchName}</strong><small>{delivery.status.replaceAll("_", " ")} · {new Date(delivery.updatedAt).toLocaleString()}</small></div><code>{delivery.commitSha?.slice(0, 10) || delivery.failureCode || "preparing"}</code>{delivery.pullRequestUrl ? <a href={delivery.pullRequestUrl} target="_blank" rel="noreferrer">Open PR #{delivery.pullRequestNumber} <ExternalLink size={12} /></a> : null}</article>)}</div> : null}
+          {snapshot.deliveries.length ? <div className={styles.deliveryLedger}>{snapshot.deliveries.slice(0, 4).map((delivery) => <article key={delivery.id} data-status={delivery.status}><i /><div><strong>{delivery.branchName}</strong><small>{delivery.status.replaceAll("_", " ")} · {new Date(delivery.updatedAt).toLocaleString()}</small>{delivery.failureCode ? <p className={styles.error}>{delivery.failureCode}</p> : null}</div><code>{delivery.commitSha || delivery.failureCode || "preparing"}</code>{delivery.pullRequestUrl ? <a href={delivery.pullRequestUrl} target="_blank" rel="noreferrer">Open PR #{delivery.pullRequestNumber} <ExternalLink aria-hidden="true" size={12} /></a> : null}</article>)}</div> : null}
         </>}
       </section> : null}
 
-      {deployOpen ? <section className={styles.deployPanel} aria-label="Vercel preview deployment">
+      {deployOpen ? <section id="builder-preview-delivery" className={styles.deployPanel} aria-label="Vercel preview deployment">
         <header>
-          <div><span className={styles.deliveryKicker}>Preview release desk</span><h3>Ship evidence before production</h3><p>One exact passing checkpoint becomes a Vercel preview. Build logs and static route smokes must both pass before Asael calls it ready.</p></div>
-          <div className={styles.deliveryState} data-ready={latestDeployment?.status === "ready" || undefined}><i />{latestDeployment ? deploymentStatusLabel(latestDeployment.status) : snapshot.vercel.configured ? "Ready to deploy" : "Setup required"}</div>
+          <div><span className={styles.deliveryKicker}>Preview release desk</span><h3>Preview deployment</h3><p>One exact passing checkpoint becomes a Vercel preview. Build logs and static route smokes must both pass before Asael calls it ready.</p></div>
+          <div className={styles.deliveryState} data-ready={latestDeployment?.status === "ready" || undefined}><i />{latestDeployment ? deploymentStatusLabel(latestDeployment.status) : snapshot.vercel.configured ? "Connection configured" : "Setup required"}</div>
         </header>
-        {!snapshot.vercel.configured ? <div className={styles.githubSetup}><AlertCircle size={18} /><div><strong>Complete the Vercel deployment connection</strong><p>Missing: {snapshot.vercel.missing.join(", ") || "deployment credentials"}. The access token stays in Asael&apos;s server environment and is never placed in the generated app, Agent context, build log, or memory.</p></div></div> : <>
+        {!snapshot.vercel.configured ? <div className={styles.githubSetup}><AlertCircle aria-hidden="true" size={18} /><div><strong>Complete the Vercel deployment connection</strong><p>Missing: {snapshot.vercel.missing.join(", ") || "deployment credentials"}. The access token stays in Asael&apos;s server environment and is never placed in the generated app, Agent context, build log, or memory.</p></div></div> : <>
           <div className={styles.previewFlow}>
-            <article data-ready={Boolean(currentCheckpoint) || undefined}><span>01</span><div><strong>Sealed source</strong><small>{currentCheckpoint ? currentCheckpoint.workspaceSha256.slice(0, 10) : "Checkpoint required"}</small></div><CheckCircle2 size={16} /></article>
-            <article data-ready={Boolean(deliveryVerification) || undefined}><span>02</span><div><strong>Verified</strong><small>{deliveryVerification ? "Deterministic checks passed" : "Passing evidence required"}</small></div><ShieldCheck size={16} /></article>
-            <article data-ready={Boolean(latestDeployment?.providerDeploymentId) || undefined}><span>03</span><div><strong>Vercel build</strong><small>{latestDeployment?.providerState || "Not queued"}</small></div><Rocket size={16} /></article>
-            <article data-ready={latestDeployment?.routeEvidence.status === "passed" || undefined}><span>04</span><div><strong>Routes</strong><small>{latestDeployment ? `${latestDeployment.routeEvidence.routes.filter((route) => route.status === "passed").length}/${latestDeployment.smokeRoutes.length} healthy` : "Static paths discovered"}</small></div><MonitorPlay size={16} /></article>
-            <article data-ready={latestDeployment?.logs.status === "captured" && latestDeployment.routeEvidence.status === "passed" || undefined}><span>05</span><div><strong>Readiness receipt</strong><small>{latestDeployment ? readinessEvidenceLabel(latestDeployment.browserEvidence) : "Build + routes bound"}</small></div><CheckCircle2 size={16} /></article>
+            <article data-ready={Boolean(currentCheckpoint) || undefined}><span>01</span><div><strong>Sealed source</strong><small>{currentCheckpoint ? currentCheckpoint.workspaceSha256 : "Checkpoint required"}</small></div><CheckCircle2 aria-hidden="true" size={16} /></article>
+            <article data-ready={Boolean(deliveryVerification) || undefined}><span>02</span><div><strong>Verified</strong><small>{deliveryVerification ? "Deterministic checks passed" : "Passing evidence required"}</small></div><ShieldCheck aria-hidden="true" size={16} /></article>
+            <article data-ready={Boolean(latestDeployment?.providerDeploymentId) || undefined}><span>03</span><div><strong>Vercel build</strong><small>{latestDeployment ? latestDeployment.providerState || "Provider state unavailable" : "No deployment recorded"}</small></div><Rocket aria-hidden="true" size={16} /></article>
+            <article data-ready={latestDeployment?.routeEvidence.status === "passed" || undefined}><span>04</span><div><strong>Routes</strong><small>{latestDeployment ? `${latestDeployment.routeEvidence.routes.filter((route) => route.status === "passed").length}/${latestDeployment.smokeRoutes.length} healthy` : "No preview evidence"}</small></div><MonitorPlay aria-hidden="true" size={16} /></article>
+            <article data-ready={latestDeployment?.logs.status === "captured" && latestDeployment.routeEvidence.status === "passed" || undefined}><span>05</span><div><strong>Readiness receipt</strong><small>{latestDeployment ? readinessEvidenceLabel(latestDeployment.browserEvidence) : "No readiness receipt"}</small></div><CheckCircle2 aria-hidden="true" size={16} /></article>
           </div>
           <div className={styles.deployGrid}>
             <section className={styles.previewLaunchCard}>
-              <div><strong>Exact candidate</strong><small>{matchingDelivery ? `Draft PR #${matchingDelivery.pullRequestNumber} · commit ${matchingDelivery.commitSha?.slice(0, 10)}` : "Current verified workspace · GitHub handoff can be attached later"}</small></div>
-              <div className={styles.releaseCoordinates}><span>Checkpoint</span><code>{currentCheckpoint?.workspaceSha256.slice(0, 16) || "not sealed"}</code><span>Verification</span><code>{deliveryVerification?.id.slice(-12) || "not passed"}</code></div>
-              <button type="button" className={styles.primaryAction} onClick={() => void createPreviewDeployment()} disabled={Boolean(busy) || !currentCheckpoint || !deliveryVerification || latestDeployment?.status === "preparing" || latestDeployment?.status === "queued" || latestDeployment?.status === "building" || latestDeployment?.status === "verifying"}>{busy === "vercel.deploy" ? <Loader2 className="animate-spin" size={14} /> : <Rocket size={14} />} {busy === "vercel.deploy" ? "Uploading exact source…" : "Create Vercel preview"}</button>
-              <small className={styles.productionHold}><ShieldCheck size={13} /> Production remains a separate explicit approval.</small>
+              <div><strong>Exact candidate</strong><small>{matchingDelivery ? `Draft PR #${matchingDelivery.pullRequestNumber} · commit ${matchingDelivery.commitSha || "unavailable"}` : "Current workspace · GitHub handoff can be attached later"}</small></div>
+              <div className={styles.releaseCoordinates}><span>Checkpoint ID</span><code>{currentCheckpoint?.id || "not sealed"}</code><span>Workspace SHA-256</span><code>{currentCheckpoint?.workspaceSha256 || "not sealed"}</code><span>Verification</span><code>{deliveryVerification?.id || "not passed"}</code></div>
+              <button type="button" className={styles.primaryAction} onClick={() => void createPreviewDeployment()} disabled={Boolean(busy) || !currentCheckpoint || !deliveryVerification || latestDeployment?.status === "preparing" || latestDeployment?.status === "queued" || latestDeployment?.status === "building" || latestDeployment?.status === "verifying"}>{busy === "vercel.deploy" ? <Loader2 className={styles.spinner} size={14} /> : <Rocket aria-hidden="true" size={14} />} {busy === "vercel.deploy" ? "Uploading exact source…" : "Create Vercel preview"}</button>
+              {!currentCheckpoint || !deliveryVerification ? <p className={styles.help}>Seal the current workspace and obtain passing checks plus Sentinel review before deploying this candidate.</p> : null}
+              <small className={styles.productionHold}><ShieldCheck aria-hidden="true" size={13} /> Production remains a separate explicit approval.</small>
             </section>
             <section className={styles.previewEvidenceCard}>
               <div><strong>Deployment evidence</strong><small>{latestDeployment ? new Date(latestDeployment.updatedAt).toLocaleString() : "No preview has been created yet."}</small></div>
               {latestDeployment ? <>
                 <div className={styles.evidenceMatrix}>
-                  <span data-status={latestDeployment.logs.status}><b>Build log</b><small>{latestDeployment.logs.status === "captured" ? `${latestDeployment.logs.eventCount} events · ${latestDeployment.logs.sha256?.slice(0, 10)}` : latestDeployment.logs.status}</small></span>
+                  <span data-status={latestDeployment.logs.status}><b>Build log</b><small>{latestDeployment.logs.status === "captured" ? `${latestDeployment.logs.eventCount} events · ${latestDeployment.logs.sha256 || "digest unavailable"}` : latestDeployment.logs.status}</small></span>
                   <span data-status={latestDeployment.routeEvidence.status}><b>Route smoke</b><small>{latestDeployment.routeEvidence.status} · {latestDeployment.routeEvidence.routes.length || latestDeployment.smokeRoutes.length} paths</small></span>
                   <span data-status={latestDeployment.browserEvidence.replacement?.status || "pending"}><b>Readiness receipt</b><small>{readinessEvidenceLabel(latestDeployment.browserEvidence)}</small></span>
                 </div>
-                <div className={styles.previewActions}>{latestDeployment.deploymentUrl ? <a href={latestDeployment.deploymentUrl} target="_blank" rel="noreferrer">Open exact preview <ExternalLink size={13} /></a> : null}{latestDeployment.status === "incomplete" ? <button type="button" onClick={() => void refreshPreviewDeployment(latestDeployment)} disabled={Boolean(busy)}>{busy === `vercel.refresh:${latestDeployment.id}` ? <Loader2 className="animate-spin" size={13} /> : <RefreshCw size={13} />} Retry evidence</button> : null}</div>
+                {latestDeployment.failureCode ? <p className={styles.error}>Deployment receipt: {latestDeployment.failureCode}</p> : null}
+                <div className={styles.previewActions}>{latestDeployment.deploymentUrl ? <a href={latestDeployment.deploymentUrl} target="_blank" rel="noreferrer">Open exact preview <ExternalLink aria-hidden="true" size={13} /></a> : null}{latestDeployment.status === "incomplete" ? <button type="button" onClick={() => void refreshPreviewDeployment(latestDeployment)} disabled={Boolean(busy)}>{busy === `vercel.refresh:${latestDeployment.id}` ? <Loader2 className={styles.spinner} size={13} /> : <RefreshCw aria-hidden="true" size={13} />} Retry evidence</button> : null}</div>
               </> : <p>Deploy a passing checkpoint to begin the asynchronous evidence trail.</p>}
             </section>
           </div>
@@ -787,53 +905,56 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
               <div><span className={styles.deliveryKicker}>Production gate</span><strong>Release only the reviewed preview</strong><small>A 15-minute receipt binds preview health, source digest, migration posture, and the exact rollback target.</small></div>
               <div className={styles.deliveryState} data-ready={currentRelease?.status === "healthy" || undefined}><i />{currentRelease ? releaseStatusLabel(currentRelease.status) : "Review required"}</div>
             </header>
+            {currentRelease?.failureCode ? <p className={styles.error}>Release receipt: {currentRelease.failureCode}</p> : null}
             {latestDeployment?.status !== "ready" ? <p>Complete preview evidence before preparing a production review.</p> : !currentRelease || currentRelease.status === "expired" || currentRelease.status === "failed" ? <div className={styles.productionEmpty}>
-              <div><ShieldCheck size={18} /><span><strong>{currentRelease?.status === "failed" ? "The last release failed safely" : currentRelease?.status === "expired" ? "The review window expired" : "Production has not been reviewed"}</strong><small>Prepare a fresh receipt from workspace {latestDeployment.workspaceSha256.slice(0, 12)}.</small></span></div>
-              <button type="button" className={styles.secondaryAction} onClick={() => void prepareProductionReview()} disabled={Boolean(busy)}>{busy === "release.review" ? <Loader2 className="animate-spin" size={14} /> : <ShieldCheck size={14} />} Prepare production review</button>
+              <div><ShieldCheck aria-hidden="true" size={18} /><span><strong>{currentRelease?.status === "failed" ? "The last release failed" : currentRelease?.status === "expired" ? "The review window expired" : "Production has not been reviewed"}</strong><small>Prepare a fresh receipt from workspace {latestDeployment.workspaceSha256}.</small></span></div>
+              <button type="button" className={styles.secondaryAction} onClick={() => void prepareProductionReview()} disabled={Boolean(busy)}>{busy === "release.review" ? <Loader2 className={styles.spinner} size={14} /> : <ShieldCheck aria-hidden="true" size={14} />} Prepare production review</button>
             </div> : <>
               <div className={styles.productionEvidence}>
-                <span data-ready><b>Preview proof</b><small>{currentRelease.previewEvidenceSha256.slice(0, 12)}</small></span>
+                <span data-ready><b>Preview proof</b><small>{currentRelease.previewEvidenceSha256}</small></span>
                 <span data-ready={currentRelease.migrationEvidence.status === "not_declared" || undefined}><b>Database changes</b><small>{currentRelease.migrationEvidence.status === "not_declared" ? "None declared" : `${currentRelease.migrationEvidence.fileCount} migration files · blocked`}</small></span>
-                <span data-ready><b>Rollback</b><small>{currentRelease.rollbackEvidence.status === "available" ? currentRelease.rollbackEvidence.providerDeploymentId?.slice(0, 15) : "First production release"}</small></span>
+                <span data-ready><b>Rollback</b><small>{currentRelease.rollbackEvidence.status === "available" ? currentRelease.rollbackEvidence.providerDeploymentId || "Target unavailable" : "First production release"}</small></span>
                 <span data-ready={currentRelease.status === "healthy" || undefined}><b>Production health</b><small>{currentRelease.status === "healthy" ? `${currentRelease.routeEvidence.routes.length} routes · build logs verified` : releaseStatusLabel(currentRelease.status)}</small></span>
               </div>
-              <div className={styles.releaseDigest}><span>Release receipt</span><code>{currentRelease.releaseDigest.slice(0, 24)}</code><small>{currentRelease.status === "review_pending" ? `Expires ${new Date(currentRelease.expiresAt).toLocaleTimeString()}` : currentRelease.providerState || "Receipt sealed"}</small></div>
+              <div className={styles.releaseDigest}><span>Release receipt</span><code>{currentRelease.releaseDigest}</code><small>{currentRelease.status === "review_pending" ? `Expires ${new Date(currentRelease.expiresAt).toLocaleTimeString()}` : currentRelease.providerState || "Receipt sealed"}</small></div>
               {currentRelease.status === "review_pending" || currentRelease.status === "releasing" && !currentRelease.providerDeploymentId ? <div className={styles.releaseConfirmation}>
                 <label htmlFor={`builder-production-confirmation-${project.id}`}>{currentRelease.status === "releasing" ? "Provider acknowledgement was interrupted. Resume the same idempotent receipt with " : "Type "}<code>RELEASE</code>{currentRelease.status === "review_pending" ? " to confirm this exact receipt" : null}</label>
-                <div><input id={`builder-production-confirmation-${project.id}`} value={productionConfirmation} onChange={(event) => setProductionConfirmation(event.currentTarget.value)} autoComplete="off" spellCheck={false} placeholder="RELEASE" /><button type="button" onClick={() => void releaseProduction(currentRelease)} disabled={Boolean(busy) || productionConfirmation !== "RELEASE" || currentRelease.migrationEvidence.status !== "not_declared"}>{busy === "release.production" ? <Loader2 className="animate-spin" size={14} /> : <Rocket size={14} />} Release to production</button></div>
-              </div> : currentRelease.status === "releasing" || currentRelease.status === "building" ? <div className={styles.productionProgress}><Loader2 className="animate-spin" size={16} /><span>Vercel is building the production deployment. Asael will verify it automatically.</span></div> : <div className={styles.previewActions}>{currentRelease.deploymentUrl ? <a href={currentRelease.deploymentUrl} target="_blank" rel="noreferrer">Open production <ExternalLink size={13} /></a> : null}{currentRelease.status === "incomplete" ? <button type="button" onClick={() => void refreshProductionRelease(currentRelease)} disabled={Boolean(busy)}>{busy === `release.refresh:${currentRelease.id}` ? <Loader2 className="animate-spin" size={13} /> : <RefreshCw size={13} />} Retry production evidence</button> : null}</div>}
+                <div><input id={`builder-production-confirmation-${project.id}`} value={productionConfirmation} onChange={(event) => setProductionConfirmation(event.currentTarget.value)} autoComplete="off" spellCheck={false} placeholder="RELEASE" /><button type="button" onClick={() => void releaseProduction(currentRelease)} disabled={Boolean(busy) || productionConfirmation !== "RELEASE" || currentRelease.migrationEvidence.status !== "not_declared"}>{busy === "release.production" ? <Loader2 className={styles.spinner} size={14} /> : <Rocket aria-hidden="true" size={14} />} Release to production</button></div>
+                {currentRelease.migrationEvidence.status !== "not_declared" ? <p className={styles.help}>Production release is blocked while database migration files are declared.</p> : null}
+              </div> : currentRelease.status === "releasing" || currentRelease.status === "building" ? <div className={styles.productionProgress}><Loader2 className={styles.spinner} size={16} /><span>Vercel is building the production deployment. Asael will verify it automatically.</span></div> : <div className={styles.previewActions}>{currentRelease.deploymentUrl ? <a href={currentRelease.deploymentUrl} target="_blank" rel="noreferrer">Open production <ExternalLink aria-hidden="true" size={13} /></a> : null}{currentRelease.status === "incomplete" ? <button type="button" onClick={() => void refreshProductionRelease(currentRelease)} disabled={Boolean(busy)}>{busy === `release.refresh:${currentRelease.id}` ? <Loader2 className={styles.spinner} size={13} /> : <RefreshCw aria-hidden="true" size={13} />} Retry production evidence</button> : null}</div>}
             </>}
           </section>
-          {snapshot.deployments.length ? <div className={styles.deploymentLedger}>{snapshot.deployments.slice(0, 5).map((deployment) => <article key={deployment.id} data-status={deployment.status}><i /><div><strong>{deploymentStatusLabel(deployment.status)}</strong><small>{deployment.commitSha ? `commit ${deployment.commitSha.slice(0, 10)}` : `workspace ${deployment.workspaceSha256.slice(0, 10)}`} · {new Date(deployment.updatedAt).toLocaleString()}</small></div><code>{deployment.providerDeploymentId?.slice(0, 14) || deployment.failureCode || "preparing"}</code>{deployment.deploymentUrl ? <a href={deployment.deploymentUrl} target="_blank" rel="noreferrer">Preview <ExternalLink size={12} /></a> : null}</article>)}</div> : null}
+          {snapshot.deployments.length ? <div className={styles.deploymentLedger}>{snapshot.deployments.slice(0, 5).map((deployment) => <article key={deployment.id} data-status={deployment.status}><i /><div><strong>{deploymentStatusLabel(deployment.status)}</strong><small>{deployment.commitSha ? `commit ${deployment.commitSha}` : `workspace ${deployment.workspaceSha256}`} · {new Date(deployment.updatedAt).toLocaleString()}</small>{deployment.failureCode ? <p className={styles.error}>{deployment.failureCode}</p> : null}</div><code>{deployment.providerDeploymentId || deployment.failureCode || "preparing"}</code>{deployment.deploymentUrl ? <a href={deployment.deploymentUrl} target="_blank" rel="noreferrer">Preview <ExternalLink aria-hidden="true" size={12} /></a> : null}</article>)}</div> : null}
         </>}
       </section> : null}
 
       <div className={styles.workspace}>
         <aside className={styles.fileRail}>
-          <div className={styles.railTabs} role="tablist"><button type="button" className={rail === "files" ? styles.selected : undefined} onClick={() => setRail("files")}><Files size={14} /> Files</button><button type="button" className={rail === "checkpoints" ? styles.selected : undefined} onClick={() => setRail("checkpoints")}><RotateCcw size={14} /> Restore</button><button type="button" className={rail === "activity" ? styles.selected : undefined} onClick={() => setRail("activity")}><Activity size={14} /> Activity</button></div>
-          {rail === "files" ? <><form className={styles.fileSearch} onSubmit={(event) => { event.preventDefault(); void searchTree(session, fileSearch); }}><Search size={13} /><input value={fileSearch} onChange={(event) => setFileSearch(event.currentTarget.value)} placeholder="Search source" aria-label="Search source files" /><button type="submit" disabled={fileSearch.trim().length === 1 || Boolean(busy)}>Find</button>{fileSearch ? <button type="button" onClick={() => { setFileSearch(""); void loadTree(session, file?.path); }}>Clear</button> : null}</form><div className={styles.fileList}>{files.length ? files.map((entry) => <button type="button" key={entry.path} className={file?.path === entry.path ? styles.selectedFile : undefined} onClick={() => { if (dirty && !window.confirm("Discard the unsaved file change?")) return; void loadFile(session, entry.path); setView("code"); }}><FileCode2 size={13} /><span>{entry.path}</span><small>{entry.size === undefined ? "Size unavailable" : formatBytes(entry.size)}</small></button>) : <p>No editable source matched.</p>}</div></> : rail === "checkpoints" ? <div className={styles.checkpointList}>{snapshot.checkpoints.length ? snapshot.checkpoints.map((checkpoint) => { const current = session.currentCheckpointId === checkpoint.id; return <article key={checkpoint.id} data-current={current || undefined}><div><i /><span>{current ? "Current seal" : checkpointReason(checkpoint.reason)}</span></div><strong>{checkpoint.label}</strong><small>{new Date(checkpoint.createdAt).toLocaleString()} · {checkpoint.fileCount} files</small><code>{checkpoint.workspaceSha256.slice(0, 12)}</code><button type="button" onClick={() => void restoreCheckpoint(checkpoint)} disabled={Boolean(busy) || dirty || current}>{busy === `restore:${checkpoint.id}` ? <Loader2 className="animate-spin" size={12} /> : <RotateCcw size={12} />} {current ? "Current" : "Restore"}</button></article>; }) : <p>No checkpoints yet. Save one before a risky change.</p>}</div> : <div className={styles.activityList}>{snapshot.activity.length ? snapshot.activity.map((item) => <article key={item.id}><i /><div><strong>{eventLabel(item.eventType)}</strong><small>{new Date(item.occurredAt).toLocaleString()}</small>{activityDetail(item)}</div></article>) : <p>No build activity yet.</p>}</div>}
+          <div className={styles.railTabs} role="group" aria-label="Build workspace browser"><button type="button" aria-pressed={rail === "files"} onClick={() => setRail("files")}><Files aria-hidden="true" size={14} /> Files</button><button type="button" aria-pressed={rail === "checkpoints"} onClick={() => setRail("checkpoints")}><RotateCcw aria-hidden="true" size={14} /> Restore</button><button type="button" aria-pressed={rail === "activity"} onClick={() => setRail("activity")}><Activity aria-hidden="true" size={14} /> Activity</button></div>
+          {rail === "files" ? <><form className={styles.fileSearch} onSubmit={(event) => { event.preventDefault(); void searchTree(session, fileSearch).catch((readError) => setError(message(readError))); }}><Search aria-hidden="true" size={13} /><input value={fileSearch} onChange={(event) => setFileSearch(event.currentTarget.value)} placeholder="Search source" aria-label="Search source files" /><button type="submit" disabled={fileSearch.trim().length === 1 || Boolean(busy)}>Find</button>{fileSearch ? <button type="button" onClick={() => { setFileSearch(""); void loadTree(session, file?.path, true).catch((readError) => setError(message(readError))); }}>Clear</button> : null}</form><p className={styles.help}>Use at least two characters to search, or clear the search to show the file tree.</p><div className={styles.fileReadStatus}>{treeRead.loading ? "Loading source files…" : treeRead.error ? `${treeRead.loaded ? "Source refresh failed; showing the last loaded files." : "Source files unavailable."} ${treeRead.error}` : null}</div><div className={styles.fileList} role="region" aria-label="Source files" tabIndex={0}>{files.length ? files.map((entry) => <button type="button" key={entry.path} aria-pressed={!fileSessionMismatch && file?.path === entry.path} disabled={Boolean(busy) || fileRead.loading} onClick={() => { if (dirty && !window.confirm("Discard the unsaved file change?")) return; void loadFile(session, entry.path).catch((readError) => setError(message(readError))); setView("code"); }}><FileCode2 aria-hidden="true" size={13} /><span>{entry.path}</span><small>{entry.size === undefined ? "Size unavailable" : formatBytes(entry.size)}</small></button>) : <p>{treeRead.loaded ? fileSearch.trim() ? "No editable source matched this search." : "No editable source files in the loaded workspace." : "Source files have not loaded."}</p>}</div></> : rail === "checkpoints" ? <div className={styles.checkpointList}>{snapshot.checkpoints.length ? snapshot.checkpoints.map((checkpoint) => { const current = session.currentCheckpointId === checkpoint.id; return <article key={checkpoint.id} data-current={current || undefined}><div><i /><span>{current ? "Current seal" : checkpointReason(checkpoint.reason)}</span></div><strong>{checkpoint.label}</strong><small>{new Date(checkpoint.createdAt).toLocaleString()} · {checkpoint.fileCount} files</small><code>{checkpoint.workspaceSha256}</code><button type="button" onClick={() => void restoreCheckpoint(checkpoint)} disabled={Boolean(busy) || dirty || current}>{busy === `restore:${checkpoint.id}` ? <Loader2 className={styles.spinner} size={12} /> : <RotateCcw aria-hidden="true" size={12} />} {current ? "Current" : "Restore"}</button></article>; }) : <p>No checkpoints yet. Save one before a risky change.</p>}</div> : <div className={styles.activityList}>{snapshot.activity.length ? snapshot.activity.map((item) => <article key={item.id}><i /><div><strong>{eventLabel(item.eventType)}</strong><small>{new Date(item.occurredAt).toLocaleString()}</small>{activityDetail(item)}</div></article>) : <p>No build activity yet.</p>}</div>}
         </aside>
 
         <div className={styles.canvas}>
-          <div className={styles.canvasTabs} role="tablist"><button type="button" className={view === "preview" ? styles.selected : undefined} onClick={() => setView("preview")}><MonitorPlay size={14} /> Preview</button><button type="button" className={view === "code" ? styles.selected : undefined} onClick={() => setView("code")}><Code2 size={14} /> Code{dirty ? <i /> : null}</button><span>{file?.path || "No file selected"}</span></div>
-          {view === "preview" ? <div className={styles.previewFrame}>{snapshot.previewUrl ? <iframe key={`${snapshot.previewUrl}:${previewGeneration}`} src={snapshot.previewUrl} title={`${project.title} live preview`} sandbox="allow-forms allow-modals allow-popups allow-same-origin allow-scripts" /> : <div><Loader2 className="animate-spin" /><span>Preview is waking up…</span></div>}</div> : <div className={styles.editor}><div><span>{file?.path}</span><small>{file ? `${formatBytes(file.size)} · ${file.sha256.slice(0, 10)}…` : ""}</small></div><textarea aria-label={`Edit ${file?.path || "file"}`} spellCheck={false} value={draft} onChange={(event) => setDraft(event.currentTarget.value)} disabled={!file} /><footer><span>{dirty ? "Unsaved change" : "Saved at exact revision"}</span><div className={styles.editorActions}><button type="button" className={styles.deleteAction} onClick={() => void deleteFile()} disabled={!file || dirty || Boolean(busy)}>{busy === "delete" ? <Loader2 className="animate-spin" size={13} /> : <Trash2 size={13} />} Delete</button><button type="button" onClick={() => void saveFile()} disabled={!dirty || busy === "save"}>{busy === "save" ? <Loader2 className="animate-spin" size={13} /> : <Save size={13} />} Save file</button></div></footer></div>}
-          <div className={styles.checks}><div><SquareTerminal size={14} /><span>Focused checks</span></div>{commands.map((command) => <button type="button" key={command} onClick={() => void runCommand(command)} disabled={Boolean(busy) || dirty}>{busy === command ? <Loader2 className="animate-spin" size={12} /> : <CheckCircle2 size={12} />} {command}</button>)}</div>
-          {commandOutput ? <pre className={styles.output}>{commandOutput}</pre> : null}
+          <div className={styles.canvasTabs} role="group" aria-label="Build canvas view"><button type="button" aria-pressed={view === "preview"} onClick={() => setView("preview")}><MonitorPlay aria-hidden="true" size={14} /> Preview</button><button type="button" aria-pressed={view === "code"} onClick={() => setView("code")}><Code2 aria-hidden="true" size={14} /> Code{dirty ? <span className={styles.unsavedLabel}> · unsaved</span> : null}</button><span>{file?.path || "No file selected"}</span></div>
+          {view === "preview" ? <div className={styles.previewFrame}>{snapshot.previewUrl ? <iframe key={`${snapshot.previewUrl}:${previewGeneration}`} src={snapshot.previewUrl} title={`${project.title} live preview`} sandbox="allow-forms allow-modals allow-popups allow-same-origin allow-scripts" /> : <div><MonitorPlay aria-hidden="true" size={24} /><span>No preview URL is available in this snapshot.</span><p>Restart preview to request a preview from the workspace.</p></div>}</div> : <div className={styles.editor}><div><span>{file?.path}</span><small>{file ? `${formatBytes(file.size)} · SHA-256 ${file.sha256}` : ""}</small></div><textarea aria-label={`Edit ${file?.path || "file"}`} spellCheck={false} value={draft} onChange={(event) => setDraft(event.currentTarget.value)} disabled={!file || fileRead.loading || Boolean(busy)} readOnly={fileSessionMismatch} aria-describedby={fileSessionMismatch ? "builder-session-change" : undefined} /><footer><span>{fileSessionMismatch ? dirty ? "Retained draft · previous session" : "Retained file · previous session" : dirty ? "Unsaved change" : file ? "Saved at the loaded revision" : "No file loaded"}</span><div className={styles.editorActions}><button type="button" className={styles.deleteAction} onClick={() => void deleteFile()} disabled={!file || dirty || Boolean(busy) || fileSessionMismatch}>{busy === "delete" ? <Loader2 className={styles.spinner} size={13} /> : <Trash2 aria-hidden="true" size={13} />} Delete</button><button type="button" onClick={() => void saveFile()} disabled={!dirty || Boolean(busy) || fileSessionMismatch}>{busy === "save" ? <Loader2 className={styles.spinner} size={13} /> : <Save aria-hidden="true" size={13} />} Save file</button></div></footer></div>}
+          {fileRead.loading || fileRead.error ? <p className={styles.readNotice}>{fileRead.loading ? `Opening ${fileRead.path}…` : `Could not open ${fileRead.path}. ${file ? `The previous file, ${file.path}, is retained.` : "No file is loaded."} ${fileRead.error}`}</p> : null}
+          <div className={styles.checks}><div><SquareTerminal aria-hidden="true" size={14} /><span>Focused checks</span></div>{commands.map((command) => <button type="button" key={command} onClick={() => void runCommand(command)} disabled={Boolean(busy) || dirty}>{busy === command ? <Loader2 className={styles.spinner} size={12} /> : <CheckCircle2 aria-hidden="true" size={12} />} {command}</button>)}</div>
+          {commandOutput ? <pre className={styles.output} role="region" aria-label="Build command output" tabIndex={0}>{commandOutput}</pre> : null}
         </div>
 
         <aside className={styles.forgeRail}>
-          <div className={styles.forgeIdentity}><span>F</span><div><strong>Forge</strong><small>Code builder · Settings model</small></div><i className={busy === "forge" ? styles.thinking : undefined} /></div>
+          <div className={styles.forgeIdentity}><span>F</span><div><strong>Forge</strong><small>Code builder · Settings model</small></div>{busy === "forge" ? <span className={styles.agentState}>Request in progress</span> : null}</div>
           <p>Describe a complete change. Forge can inspect this workspace, update SHA-fenced files, run focused checks, and refresh the preview.</p>
-          {agentOutput ? <div className={styles.agentOutput}>{agentOutput}</div> : <div className={styles.suggestion}><WandSparkles size={15} /><span>Try “Turn this starter into a personal research dashboard with a responsive mobile view.”</span></div>}
-          <form onSubmit={askForge}><label htmlFor={`forge-prompt-${project.id}`}>What should Forge build?</label><textarea id={`forge-prompt-${project.id}`} value={prompt} onChange={(event) => setPrompt(event.currentTarget.value)} rows={5} maxLength={4_000} placeholder="Describe the outcome, audience, and must-have behavior…" /><button type="submit" disabled={!prompt.trim() || Boolean(busy) || dirty}>{busy === "forge" ? <Loader2 className="animate-spin" size={14} /> : <Send size={14} />} {busy === "forge" ? "Forge is working" : dirty ? "Save file before Forge" : "Build with Forge"}</button></form>
+          {agentOutput ? <div className={styles.agentOutput} role="region" aria-label="Forge output" tabIndex={0}>{agentOutput}</div> : <div className={styles.suggestion}><WandSparkles aria-hidden="true" size={15} /><span>Try “Turn this starter into a personal research dashboard with a responsive mobile view.”</span></div>}
+          <form onSubmit={askForge}><label htmlFor={`forge-prompt-${project.id}`}>What should Forge build?</label><textarea id={`forge-prompt-${project.id}`} value={prompt} onChange={(event) => setPrompt(event.currentTarget.value)} rows={5} maxLength={4_000} placeholder="Describe the outcome, audience, and must-have behavior…" /><button type="submit" disabled={!prompt.trim() || Boolean(busy) || dirty}>{busy === "forge" ? <Loader2 className={styles.spinner} size={14} /> : <Send aria-hidden="true" size={14} />} {busy === "forge" ? "Forge is working" : dirty ? "Save file before Forge" : "Build with Forge"}</button></form>
           <section className={styles.sentinelCard}>
             <div><span>S</span><div><strong>Sentinel</strong><small>Independent verifier · Settings model</small></div>{latestVerification ? <i data-status={latestSentinelReview?.detail.verdict === "blocked" ? "failed" : latestVerification.status}>{latestSentinelReview?.detail.verdict === "passed" ? "passed" : latestSentinelReview?.detail.verdict === "blocked" ? "blocked" : latestVerification.status === "passed" ? "checks passed" : latestVerification.status}</i> : null}</div>
             <p>Seal this revision, run lint and typecheck, then ask Sentinel for a separate verdict bound to that exact checkpoint.</p>
-            {latestVerification ? <div className={styles.evidenceStrip}><span>{latestVerification.checks.filter((check) => check.status === "passed").length}/2 checks</span><span>{readinessEvidenceLabel(latestVerification.browserEvidence)}</span><code>{latestVerification.workspaceSha256.slice(0, 9)}</code></div> : null}
-            {sentinelOutput ? <div className={styles.sentinelOutput}>{sentinelOutput}</div> : null}
-            <button type="button" onClick={() => void verifyWithSentinel()} disabled={Boolean(busy) || dirty}>{busy === "sentinel" ? <Loader2 className="animate-spin" size={13} /> : <ShieldCheck size={13} />} {busy === "sentinel" ? "Verifying this revision" : dirty ? "Save file before review" : "Verify with Sentinel"}</button>
+            {latestVerification ? <div className={styles.evidenceStrip}><span>{latestVerification.checks.filter((check) => check.status === "passed").length}/2 checks</span><span>{readinessEvidenceLabel(latestVerification.browserEvidence)}</span><code>{latestVerification.workspaceSha256}</code></div> : null}
+            {sentinelOutput ? <div className={styles.sentinelOutput} role="region" aria-label="Sentinel output" tabIndex={0}>{sentinelOutput}</div> : null}
+            <button type="button" onClick={() => void verifyWithSentinel()} disabled={Boolean(busy) || dirty}>{busy === "sentinel" ? <Loader2 className={styles.spinner} size={13} /> : <ShieldCheck aria-hidden="true" size={13} />} {busy === "sentinel" ? "Verifying this revision" : dirty ? "Save file before review" : "Verify with Sentinel"}</button>
           </section>
-          <footer><ShieldCheck size={13} /><span>Mutations use governed tools. Consequential actions still pause for approval.</span></footer>
+          <footer><ShieldCheck aria-hidden="true" size={13} /><span>Mutations use governed tools. Consequential actions still pause for approval.</span></footer>
         </aside>
       </div>
     </section>
