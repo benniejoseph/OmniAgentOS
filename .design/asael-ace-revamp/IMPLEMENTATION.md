@@ -148,6 +148,31 @@ dock at 200% text. Theme scans wait for the existing transition to settle.
 A fresh 82-check Today/Command/voice browser regression passed after these shared
 changes, including all nine accessibility scans and dialog focus recovery.
 
+## Results presentation — 3 October 2026
+
+Results now uses its own scoped module with selected output and status first,
+a responsive selectable run list, and compact evidence/status disclosures.
+Long output and identifiers wrap; selection is marked visibly and with
+`aria-pressed`. Result selection respects reduced motion. Created files and
+the shared Library remain mounted with their existing controllers and scoped
+presentation overrides.
+
+Independent review found no changes to exact run cancellation/idempotency,
+permission-gated approval data, direct result lookup, history selection, stale
+data retention, polling or immutable Agent identity. All 16 tests in the
+timeline, artifact projection/shelf and Library groups passed, along with
+targeted lint, CSS parsing and minimum type-size checks.
+
+Headless Chrome completed 49 checks without failures or uncaught exceptions,
+including three clean light/dark/phone axe scans. Synthetic read fixtures
+covered direct Agent and omitted-workflow lookup, unknown linked results,
+Back/Forward and unrelated query preservation, full output, pinned identity,
+artifact version links, Library rows, stale/fresh source failures, reduced-motion
+selection, keyboard focus, forced colors and 200% text. Layouts covered
+1440/768/720/390/320px with fine/coarse pointers. All mutation requests were
+blocked; only automatic web-vitals posts were attempted. Hosted checks on the
+final Results head remain required before merge.
+
 ## Remaining gates and scope
 
 - Hosted build, route budgets and required repository checks on each new exact head.
