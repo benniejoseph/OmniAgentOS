@@ -29,6 +29,12 @@ function base(candidateId: string) {
 }
 
 describe("NotificationDecisionV1", () => {
+  it("keeps reviewed Responsibility material changes noncritical and quiet-hour aware", () => {
+    const candidate = { ...base("responsibility-change"), kind: "responsibility_change" as const };
+    expect(decide(candidate)).toMatchObject({ outcome: "send", reason: "material_change", mustSend: true, critical: false, decisionGrantsAuthority: false });
+    expect(decide(candidate, { quietHoursActive: true })).toMatchObject({ outcome: "defer", reason: "quiet_hours", bypassedQuietHours: false });
+    expect(decide(candidate, { cooldownActive: true })).toMatchObject({ outcome: "defer", reason: "cooldown_active" });
+  });
   it.each([
     [{ ...base("approval-one"), kind: "approval" as const }, "approval_required"],
     [{

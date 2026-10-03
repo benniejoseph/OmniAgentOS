@@ -18,7 +18,7 @@ import {
 } from "@/lib/mobile/contracts";
 
 describe("native API contracts", () => {
-  it("exposes owner-bound presentation preferences only in v31 with strict revision-bound input", () => {
+  it("exposes owner-bound presentation preferences from v31 with strict revision-bound input", () => {
     expect(nativeOperationsForVersion(30)?.some((item) => item.id.startsWith("companion."))).toBe(false);
     const operations = nativeOperationsForVersion(31)?.filter((item) => item.id.startsWith("companion."));
     expect(operations?.map((item) => item.id)).toEqual(["companion.preferences.get", "companion.preferences.update"]);
@@ -34,11 +34,75 @@ describe("native API contracts", () => {
     expect(schema.safeParse({ action: "save", expectedRevision: 0, preferences: { intensity: "quiet", visible: true, motion: "reduced", defaultDestination: "activity", preferredThreadId: null } }).success).toBe(true);
     expect(schema.safeParse({ action: "save", expectedRevision: 0, preferences: { intensity: "quiet" } }).success).toBe(false);
   });
+  it("publishes exactly ten typed Responsibility operations only from v32", () => {
+    expect(nativeOperationsForVersion(31)?.some((item) => item.id.startsWith("responsibilities."))).toBe(false);
+    const operations = nativeOperationsForVersion(32)!.filter((item) => item.id.startsWith("responsibilities."));
+    expect(operations.map(({ id, method, path, requestSchema, responseSchema }) => [id, method, path, requestSchema, responseSchema])).toEqual([
+      ["responsibilities.list", "GET", "/api/responsibilities", undefined, "NativeResponsibilityListResponse"],
+      ["responsibilities.create", "POST", "/api/responsibilities", "NativeResponsibilityCreateRequest", "NativeResponsibilityMutationResponse"],
+      ["responsibilities.get", "GET", "/api/responsibilities/{id}", undefined, "NativeResponsibilityReadResponse"],
+      ["responsibilities.change", "PATCH", "/api/responsibilities/{id}", "NativeResponsibilityChangeRequest", "NativeResponsibilityMutationResponse"],
+      ["responsibilities.references", "GET", "/api/responsibilities/references", undefined, "NativeResponsibilityReferencesResponse"],
+      ["responsibilities.lifecycle.get", "GET", "/api/responsibilities/{id}/lifecycle", undefined, "NativeResponsibilityLifecycleReadResponse"],
+      ["responsibilities.lifecycle.change", "POST", "/api/responsibilities/{id}/lifecycle", "NativeResponsibilityLifecycleRequest", "NativeResponsibilityLifecycleMutationResponse"],
+      ["responsibilities.observations.list", "GET", "/api/responsibilities/{id}/observations", undefined, "NativeResponsibilityObservationsResponse"],
+      ["responsibilities.notifications.get", "GET", "/api/responsibilities/{id}/notifications", undefined, "NativeResponsibilityNotificationsReadResponse"],
+      ["responsibilities.notifications.change", "POST", "/api/responsibilities/{id}/notifications", "NativeResponsibilityNotificationControlRequest", "NativeResponsibilityNotificationsMutationResponse"],
+    ]);
+    expect(Object.keys(nativeContractSchemas).filter((name) => name.startsWith("NativeResponsibility"))).toHaveLength(14);
+    for (const operation of operations) {
+      expect(operation).toMatchObject({ auth: "bearer", queryPolicy: "exact", errorResponseSchema: "NativeResponsibilityErrorResponse" });
+      expect(nativeContractSchemas[operation.responseSchema as keyof typeof nativeContractSchemas].safeParse({}).success).toBe(false);
+      expect(operation.responseSchema).not.toBe("JsonObject");
+      if (operation.method !== "GET") expect(operation.headerParameters).toEqual([{
+        name: "Idempotency-Key", required: true, minLength: 1, maxLength: 512, pattern: "^[A-Za-z0-9][A-Za-z0-9._:@/+~-]{0,511}$",
+      }]);
+    }
+    const error = nativeContractSchemas.NativeResponsibilityErrorResponse;
+    expect(error.safeParse({ error: "The draft changed.", code: "responsibility_revision_conflict", reload: true }).success).toBe(true);
+    expect(error.safeParse({ error: "Forbidden", message: "Native capability is held." }).success).toBe(true);
+    expect(error.safeParse({ error: { code: "responsibility_revision_conflict", message: "The draft changed." } }).success).toBe(false);
+  });
+
+  it("generates exact Responsibility paths, bounds and status schemas without changing older operation defaults", async () => {
+    const previous = JSON.parse(await readFile(new URL("../../../public/native-contracts/v31/openapi.json", import.meta.url), "utf8"));
+    const current = JSON.parse(await readFile(new URL("../../../public/native-contracts/v32/openapi.json", import.meta.url), "utf8"));
+    for (const operation of nativeOperationsForVersion(31)!) {
+      expect(current.paths[operation.path][operation.method.toLowerCase()], operation.id).toEqual(previous.paths[operation.path][operation.method.toLowerCase()]);
+    }
+    for (const operation of nativeOperationsForVersion(32)!.filter((item) => item.id.startsWith("responsibilities."))) {
+      const wire = current.paths[operation.path][operation.method.toLowerCase()];
+      expect(wire["x-asael-query-policy"]).toEqual({ unknownParameters: "reject", repeatedParameters: "reject" });
+      expect(Object.keys(wire.responses).sort()).toEqual([
+        ...(operation.successStatuses ?? [200]), ...operation.errorStatuses!,
+      ].map(String).sort());
+      for (const status of operation.successStatuses ?? [200]) {
+        expect(wire.responses[status].content["application/json"].schema).toEqual({ $ref: `#/components/schemas/${operation.responseSchema}` });
+      }
+      for (const status of operation.errorStatuses!) {
+        expect(wire.responses[status].content["application/json"].schema).toEqual({ $ref: "#/components/schemas/NativeResponsibilityErrorResponse" });
+      }
+      if (operation.path.includes("{id}")) expect(wire.parameters).toContainEqual({
+        name: "id", in: "path", required: true,
+        schema: { type: "string", minLength: 79, maxLength: 79, pattern: "^responsibility:[a-f0-9]{64}$" },
+      });
+      if (operation.method !== "GET") {
+        expect(wire.requestBody["x-asael-max-bytes"]).toBe(operation.path.endsWith("/lifecycle") || operation.path.endsWith("/notifications") ? 4096 : 32_768);
+        expect(wire.responses).toHaveProperty("413"); expect(wire.responses).toHaveProperty("415");
+      }
+    }
+    expect(Object.keys(current.paths["/api/responsibilities"].post.responses).sort()).toEqual(["200", "201", "400", "401", "403", "409", "413", "415", "503"]);
+    expect(current.paths["/api/responsibilities"].get.parameters).toContainEqual(expect.objectContaining({ name: "limit", schema: { type: "integer", minimum: 1, maximum: 100, default: 40 } }));
+    expect(current.paths["/api/responsibilities/{id}/observations"].get.parameters).toContainEqual(expect.objectContaining({ name: "limit", schema: { type: "integer", minimum: 1, maximum: 100, default: 25 } }));
+    for (const [path, view] of [["/api/responsibilities/{id}", "review"], ["/api/responsibilities/{id}/lifecycle", "activation"], ["/api/responsibilities/{id}/notifications", "enable"]]) {
+      expect(current.paths[path].get.parameters).toContainEqual({ name: "view", in: "query", required: false, schema: { type: "string", enum: [view] } });
+    }
+  });
   it("retains exactly the current and previous rollout versions", () => {
     // Tripwire: a native contract bump must be a deliberate, reviewed change.
     // The other tests follow these constants.
-    expect(NATIVE_API_CURRENT_VERSION).toBe(31);
-    expect(NATIVE_API_PREVIOUS_VERSION).toBe(30);
+    expect(NATIVE_API_CURRENT_VERSION).toBe(32);
+    expect(NATIVE_API_PREVIOUS_VERSION).toBe(31);
     expect(NATIVE_API_SUPPORTED_VERSIONS).toEqual([
       NATIVE_API_CURRENT_VERSION,
       NATIVE_API_PREVIOUS_VERSION,
@@ -275,6 +339,9 @@ describe("native API contracts", () => {
       ),
       30: added(),
       31: added("companion.preferences.get", "companion.preferences.update"),
+      32: added("responsibilities.list", "responsibilities.create", "responsibilities.get", "responsibilities.change",
+        "responsibilities.references", "responsibilities.lifecycle.get", "responsibilities.lifecycle.change",
+        "responsibilities.observations.list", "responsibilities.notifications.get", "responsibilities.notifications.change"),
     });
     // v20 and v23 changed only request and push schemas.
     expect(nativeOperationsForVersion(20)).toEqual(nativeOperationsForVersion(19));
@@ -513,38 +580,31 @@ describe("native API contracts", () => {
     });
   });
 
-  it("keeps v29 immutable while v30 adds only the task-authority command marker", async () => {
-    const [v29, v29Manifest, v30] = await Promise.all([
-      readFile(
-        new URL("../../../public/native-contracts/v29/openapi.json", import.meta.url),
-        "utf8",
-      ),
-      readFile(
-        new URL("../../../public/native-contracts/v29/manifest.json", import.meta.url),
-        "utf8",
-      ),
-      readFile(
-        new URL("../../../public/native-contracts/v30/openapi.json", import.meta.url),
-        "utf8",
-      ),
-    ]);
-    expect(sha256(v29)).toBe(
-      "4c05b72fb2533b5d001600ee843252b65012fef9ec62d38fc586a4d84ed1cf3a",
-    );
-    expect(sha256(v29Manifest)).toBe(
-      "f18dd634d6e319dae4de4b07e7bd7c161356817a9fc78b36357e64550bcc258d",
-    );
+  it("retains every published v30 and v31 document byte for byte", async () => {
+    const frozen = {
+      30: {
+        "openapi.json": "2abf9f964377dc8058e5cd1d1681ef795933d65b8a6b75fd8578d6c7e56069bc", // gitleaks:allow -- public frozen artifact SHA-256 integrity digest
+        "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9",
+        "fixtures.json": "fe8ce85e53bf3346b74e7b429b3b33d66076465b914aeef4c22c42c1163a1808",
+        "manifest.json": "ddf28e1a590542c09be88076c18c3a5eab0785058140276a97656d90e2d779d7",
+      },
+      31: {
+        "openapi.json": "66b51d623dfd13eed8f156cacbe775f34040523a719ba30a9688696b83e51c5b", // gitleaks:allow -- public frozen artifact SHA-256 integrity digest
+        "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9",
+        "fixtures.json": "e5f1d2cdd2f72999816522995a22d341ad88ec82a427d47fae127e0288fbf82a",
+        "manifest.json": "0fe915016137f93ee135ff627a6f437f3ee4baea66f0bc1ff9ff7d5e0565c6a7",
+      },
+    };
+    for (const [version, documents] of Object.entries(frozen)) {
+      for (const [name, digest] of Object.entries(documents)) {
+        const document = await readFile(new URL(`../../../public/native-contracts/v${version}/${name}`, import.meta.url), "utf8");
+        expect(sha256(document), `v${version}/${name}`).toBe(digest);
+      }
+    }
+  });
+
+  it("keeps the v29 to v30 operation surface unchanged while task authority remains version-gated", () => {
     expect(nativeOperationsForVersion(30)).toEqual(nativeOperationsForVersion(29));
-    const claimedCommand = (document: string) =>
-      JSON.parse(document).components.schemas.NativeLocalComputerClaimResponse
-        .properties.command.anyOf[0];
-    const previous = claimedCommand(v29);
-    const current = claimedCommand(v30);
-    expect(previous.properties).not.toHaveProperty("authority");
-    expect(current.properties.authority).toEqual({ type: "string", const: "task" });
-    expect(current.required).toEqual(previous.required);
-    const { authority: _authority, ...unchanged } = current.properties;
-    expect(unchanged).toEqual(previous.properties);
   });
 
   it("sends the task-authority marker only to a v30 client on a checked action", () => {

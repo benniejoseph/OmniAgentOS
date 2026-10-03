@@ -75,6 +75,14 @@ describe("Activity GET route", () => {
     expect(mocks.getActivity).toHaveBeenCalledWith(expect.objectContaining({ role: "viewer", canReadApprovals: false }), expect.anything());
   });
 
+  it.each([undefined, 30, 31, 32])("derives Responsibility coverage from authenticated native version %s, never query input", async (version) => {
+    mocks.authorizeRequest.mockResolvedValue({ ...context, source: "mobile", native: version === undefined ? undefined : { clientContractVersion: version } });
+    const response = await route.GET(new Request("https://example.test/api/activity?includeResponsibilityChanges=true&clientContractVersion=32"));
+    expect(response.status).toBe(200);
+    const passedScope = mocks.getActivity.mock.calls[0][0];
+    expect(passedScope.includeResponsibilityChanges).toBe(version === 32 ? undefined : false);
+  });
+
   it("does not read Activity when authorization fails and keeps the denial private", async () => {
     const denial = new Error("Forbidden");
     mocks.authorizeRequest.mockRejectedValue(denial);

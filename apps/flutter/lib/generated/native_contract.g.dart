@@ -3,9 +3,9 @@
 
 abstract final class NativeContract {
   static const id = 'asael.native-api';
-  static const currentVersion = 31;
-  static const previousVersion = 30;
-  static const supportedVersions = <int>[31, 30];
+  static const currentVersion = 32;
+  static const previousVersion = 31;
+  static const supportedVersions = <int>[32, 31];
   static const discoveryPath = '/api/mobile/contracts';
   static const operationIds = <String>{
     'auth.login',
@@ -156,6 +156,16 @@ abstract final class NativeContract {
     'voice.speech.stream',
     'companion.preferences.get',
     'companion.preferences.update',
+    'responsibilities.list',
+    'responsibilities.create',
+    'responsibilities.get',
+    'responsibilities.change',
+    'responsibilities.references',
+    'responsibilities.lifecycle.get',
+    'responsibilities.lifecycle.change',
+    'responsibilities.observations.list',
+    'responsibilities.notifications.get',
+    'responsibilities.notifications.change',
   };
 
   static bool supports(int version) => supportedVersions.contains(version);
@@ -431,6 +441,66 @@ abstract final class NativePaths {
   static const voiceSpeechStream = '/api/media/speech';
   static const companionPreferencesGet = '/api/companion/preferences';
   static const companionPreferencesUpdate = '/api/companion/preferences';
+  static String responsibilitiesList({int? limit}) {
+    final path = '/api/responsibilities';
+    final query = <String, String>{
+      if (limit != null) 'limit': limit.toString(),
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static const responsibilitiesCreate = '/api/responsibilities';
+  static String responsibilitiesGet(String id, {String? view}) {
+    final path = '/api/responsibilities/${Uri.encodeComponent(id)}';
+    final query = <String, String>{
+      'view': ?view,
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static String responsibilitiesChange(String id) => '/api/responsibilities/${Uri.encodeComponent(id)}';
+  static const responsibilitiesReferences = '/api/responsibilities/references';
+  static String responsibilitiesLifecycleGet(String id, {String? view}) {
+    final path = '/api/responsibilities/${Uri.encodeComponent(id)}/lifecycle';
+    final query = <String, String>{
+      'view': ?view,
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static String responsibilitiesLifecycleChange(String id) => '/api/responsibilities/${Uri.encodeComponent(id)}/lifecycle';
+  static String responsibilitiesObservationsList(String id, {int? limit}) {
+    final path = '/api/responsibilities/${Uri.encodeComponent(id)}/observations';
+    final query = <String, String>{
+      if (limit != null) 'limit': limit.toString(),
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static String responsibilitiesNotificationsGet(String id, {String? view}) {
+    final path = '/api/responsibilities/${Uri.encodeComponent(id)}/notifications';
+    final query = <String, String>{
+      'view': ?view,
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static String responsibilitiesNotificationsChange(String id) => '/api/responsibilities/${Uri.encodeComponent(id)}/notifications';
 }
 
 abstract final class NativeConversationEvents {

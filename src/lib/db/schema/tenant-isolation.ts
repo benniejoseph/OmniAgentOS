@@ -242,6 +242,18 @@ export const tenantPolicyTables = [
  * alone: another permissive policy would admit rows their policies refuse.
  */
 export const migrationScopedTenantTables = [
+  "omni_responsibilities",
+  "omni_responsibility_mutations",
+  "omni_responsibility_observations",
+  "omni_responsibility_baselines",
+  "omni_responsibility_changes",
+  "omni_responsibility_lifecycles",
+  "omni_responsibility_wakes",
+  "omni_responsibility_runtime_receipts",
+  "omni_responsibility_budget_entries",
+  "omni_responsibility_notification_admissions",
+  "omni_responsibility_notification_candidates",
+  "omni_responsibility_notification_receipts",
   "omni_companion_preferences",
   "omni_companion_preference_mutations",
   "omni_local_computer_commands",

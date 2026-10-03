@@ -17,10 +17,16 @@ describe("everyday workspace navigation", () => {
     const more = appNavGroups.find(({ label }) => label === "More")!;
     expect(more.collapsible).toBe(true);
     expect(more.items.map(({ href }) => href)).toEqual(expect.arrayContaining([
-      "/app", "/app/capture", "/app/approvals", "/app/results", "/app/workflows",
+      "/app", "/app/capture", "/app/approvals", "/app/results", "/app/workflows", "/app/responsibilities",
       "/app/connectors", "/app/meetings", "/app/accounts", "/app/markets",
       "/app/agents", "/app/payments", "/app/evaluations", "/app/observability",
       "/app/security", "/app/settings",
     ]));
+  });
+
+  it("exposes Responsibilities once in More and command search without replacing Work or Activity", () => {
+    expect(appNav.filter(({ href }) => href === "/app/responsibilities").map(({ label }) => label)).toEqual(["Responsibilities"]);
+    expect(appNavGroups.find(({ label }) => label === "More")?.items.some(({ href }) => href === "/app/responsibilities")).toBe(true);
+    expect(primaryNavItems.map(({ href }) => href)).toEqual(expect.arrayContaining(["/app/projects", "/app/activity"]));
   });
 });

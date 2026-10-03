@@ -271,6 +271,10 @@ def exercise(browser, origin, credentials, checks, coarse):
                 select_theme(page, theme, True); capture(page, checks, "payments-320-" + theme, True, purchase(page))
         before = root(page).evaluate("el=>parseFloat(getComputedStyle(el).fontSize)")
         page.evaluate("document.documentElement.style.fontSize='200%'"); settle(page)
+        # Wait for the rem-based workspace style to be recalculated before
+        # measuring reflow. Two animation frames can precede this style update
+        # on the hosted Chromium runner after the theme/axe sequence.
+        expect(root(page)).to_have_css("font-size", f"{before * 2:g}px", timeout=10_000)
         after = root(page).evaluate("el=>parseFloat(getComputedStyle(el).fontSize)")
         checks.check(name + ": reading text actually doubles", after >= before * 1.99, {"before": before, "after": after})
         capture(page, checks, "payments-" + name + "-text-200", coarse, purchase(page), axe=False)

@@ -56,6 +56,7 @@ export async function getNotificationCenter(options: {
   now?: Date;
   processDue?: boolean;
   requestActorBinding?: CanonicalRequestActorBindingV1;
+  includeResponsibilityChanges?: boolean;
 }) {
   const now = options.now || new Date();
   const ownerScope = { tenantId: options.tenantId, actorId: options.actorId };
@@ -71,6 +72,7 @@ export async function getNotificationCenter(options: {
       listNotifications(60, {
         ...ownerScope,
         requestActorBinding: options.requestActorBinding,
+        includeResponsibilityChanges: options.includeResponsibilityChanges,
       }),
     ]);
   } else {
@@ -80,7 +82,7 @@ export async function getNotificationCenter(options: {
       now,
       requestActorBinding: options.requestActorBinding,
     });
-    notifications = await listNotifications(60, ownerScope);
+    notifications = await listNotifications(60, { ...ownerScope, includeResponsibilityChanges: options.includeResponsibilityChanges });
   }
   return {
     generatedAt: now.toISOString(),
@@ -157,10 +159,12 @@ export async function listNotifications(
     tenantId?: string;
     actorId: string;
     requestActorBinding?: CanonicalRequestActorBindingV1;
+    includeResponsibilityChanges?: boolean;
   },
 ) {
   const tenantId = normalizeTenantId(options.tenantId);
   const actorId = safeText(options.actorId, 200);
+  const includeResponsibilityChanges = options.includeResponsibilityChanges !== false;
   const bounded = Math.min(Math.max(limit, 1), 200);
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
@@ -176,6 +180,7 @@ export async function listNotifications(
         SELECT * FROM omni_personal_notifications
         WHERE tenant_id = ${tenantId}
           AND (actor_id = ${canonicalActorId} OR actor_id = ${exactActorId})
+          AND (${includeResponsibilityChanges} OR kind <> 'responsibility_change')
       ), logical_occurrence_collision AS (
         SELECT 1
         FROM readable_notifications
@@ -206,7 +211,7 @@ export async function listNotifications(
   }
   const ledger = await readLedger();
   return ledger.notifications
-    .filter((item) => item.tenantId === tenantId && item.actorId === actorId)
+    .filter((item) => item.tenantId === tenantId && item.actorId === actorId && (includeResponsibilityChanges || item.kind !== "responsibility_change"))
     .sort(compareNotifications)
     .slice(0, bounded);
 }
@@ -221,6 +226,8 @@ export async function updatePersonalNotification(
     now?: Date;
     mutation?: NotificationMutationContext;
     onlyIfUnread?: boolean;
+    requestActorBinding?: CanonicalRequestActorBindingV1;
+    includeResponsibilityChanges?: boolean;
   },
 ) {
   const tenantId = normalizeTenantId(options.tenantId);
@@ -235,8 +242,12 @@ export async function updatePersonalNotification(
       actorId,
       sql,
       forUpdate: Boolean(sql),
+      requestActorBinding: options.requestActorBinding,
     });
-    if (!notification) return undefined;
+    if (!notification || (options.includeResponsibilityChanges === false && notification.kind === "responsibility_change")) return undefined;
+    if (notification.kind === "responsibility_change" && action !== "read" && action !== "dismiss") {
+      throw new Error("Responsibility updates support only read and dismiss; their work is managed at the source.");
+    }
     if (mutation && sql) {
       const prior = await priorNotificationMutation(
         notification,
@@ -244,23 +255,24 @@ export async function updatePersonalNotification(
         mutation,
         sql,
       );
-      if (prior) return prior;
+      if (prior) return notificationForRequest(prior, actorId);
     }
     if (action === "read" && options.onlyIfUnread && notification.status !== "unread") {
-      return notification;
+      return notificationForRequest(notification, actorId);
     }
 
     if (action === "complete") {
       const item = await updateTodayItem(
         notification.sourceId,
         { status: "done" },
-        { tenantId, actorId, sql },
+        { tenantId, actorId: notification.actorId, sql },
       );
       if (!item) {
         throw new Error("Notification source item was not found.");
       }
     }
-    const status: PersonalNotificationStatus = action === "complete"
+    const status: PersonalNotificationStatus = notification.kind === "responsibility_change" && notification.status === "dismissed"
+      ? "dismissed" : action === "complete"
       ? "acted"
       : action === "dismiss"
         ? "dismissed"
@@ -288,7 +300,7 @@ export async function updatePersonalNotification(
         sql,
       );
     }
-    return saved;
+    return notificationForRequest(saved, actorId);
   };
 
   if (hasDatabaseUrl()) {
@@ -308,10 +320,14 @@ export async function markAllNotificationsRead(options: {
   actorId: string;
   now?: Date;
   mutation?: NotificationMutationContext;
+  requestActorBinding?: CanonicalRequestActorBindingV1;
+  includeResponsibilityChanges?: boolean;
 }) {
   const tenantId = normalizeTenantId(options.tenantId);
   const actorId = safeText(options.actorId, 200);
+  const includeResponsibilityChanges = options.includeResponsibilityChanges !== false;
   const now = (options.now || new Date()).toISOString();
+  const [canonicalActorId, exactActorId] = todayActorReadOrder(options.actorId, options.requestActorBinding, actorId);
   const mutation = options.mutation
     ? exactNotificationMutation(
         options.mutation,
@@ -330,7 +346,8 @@ export async function markAllNotificationsRead(options: {
       const rows = await sql`
         UPDATE omni_personal_notifications
         SET status = 'read', read_at = ${now}, updated_at = ${now}
-        WHERE tenant_id = ${tenantId} AND actor_id = ${actorId} AND status = 'unread'
+        WHERE tenant_id = ${tenantId} AND (actor_id = ${canonicalActorId} OR actor_id = ${exactActorId}) AND status = 'unread'
+          AND (${includeResponsibilityChanges} OR kind <> 'responsibility_change')
         RETURNING *
       `;
       await appendNotificationBulkMutationEvent(
@@ -339,13 +356,13 @@ export async function markAllNotificationsRead(options: {
         mutation,
         sql,
       );
-      return rows.map(notificationFromRow);
+      return rows.map((row) => notificationForRequest(notificationFromRow(row), actorId));
     }) as Promise<PersonalNotification[]>;
   }
   const updated: PersonalNotification[] = [];
   await updateLedger((ledger) => ({
     notifications: ledger.notifications.map((item) => {
-      if (item.tenantId !== tenantId || item.actorId !== actorId || item.status !== "unread") return item;
+      if (item.tenantId !== tenantId || item.actorId !== actorId || item.status !== "unread" || (!includeResponsibilityChanges && item.kind === "responsibility_change")) return item;
       const next = { ...item, status: "read" as const, readAt: now, updatedAt: now };
       updated.push(next);
       return next;
@@ -368,13 +385,37 @@ export function isQuietHoursActive(preferences: TodayPreferences, now = new Date
     : current >= start || current < end;
 }
 
+/** The reviewed Responsibility writer supplies an already locked candidate.
+ * This ledger-only path never calls the Today reminder or mobile push producer. */
+export async function recordResponsibilityInboxNotificationWithSql(sql: NotificationSqlClient, input: {
+  tenantId: string; actorId: string; responsibilityId: string; candidateId: string; now: string;
+}) {
+  if (!sql.transactionScoped || !/^actor:[a-f0-9-]{36}$/.test(input.actorId) ||
+    !/^responsibility:[a-f0-9]{64}$/.test(input.responsibilityId) || !/^responsibility-notification:[a-f0-9]{64}$/.test(input.candidateId) ||
+    !Number.isFinite(Date.parse(input.now))) throw new Error("Responsibility inbox coordinates are invalid.");
+  const id = `notification_${notificationSha256([input.tenantId, input.actorId, input.responsibilityId, input.candidateId]).slice(0, 48)}`;
+  const rows = await sql`INSERT INTO omni_personal_notifications
+    (id,tenant_id,actor_id,title,kind,source_type,source_id,occurrence_key,urgency,status,due_at,snoozed_until,read_at,created_at,updated_at)
+    VALUES (${id},${input.tenantId},${input.actorId},'Responsibility change','responsibility_change','responsibility_change',${input.responsibilityId},${input.candidateId},'update','unread',${input.now},NULL,NULL,${input.now},${input.now})
+    ON CONFLICT (tenant_id,actor_id,source_type,source_id,occurrence_key) DO NOTHING RETURNING *`;
+  const existing = rows.length ? rows : await sql`SELECT * FROM omni_personal_notifications
+    WHERE tenant_id = ${input.tenantId} AND actor_id = ${input.actorId} AND source_type = 'responsibility_change'
+      AND source_id = ${input.responsibilityId} AND occurrence_key = ${input.candidateId} FOR UPDATE`;
+  if (existing.length !== 1) throw new Error("Responsibility inbox receipt is unavailable.");
+  const notification = notificationFromRow(existing[0]);
+  if (notification.id !== id || notification.tenantId !== input.tenantId || notification.actorId !== input.actorId ||
+    notification.kind !== "responsibility_change" || notification.sourceId !== input.responsibilityId ||
+    notification.occurrenceKey !== input.candidateId || notification.title !== "Responsibility change") throw new Error("Responsibility inbox receipt does not match its candidate.");
+  return notification;
+}
+
 async function upsertNotification(input: {
   tenantId: string;
   actorId: string;
   title: string;
   sourceId: string;
   occurrenceKey: string;
-  urgency: PersonalNotification["urgency"];
+  urgency: Extract<PersonalNotification, { kind: "reminder" }>["urgency"];
   dueAt: string;
   now: Date;
   quietHoursActive: boolean;
@@ -384,6 +425,7 @@ async function upsertNotification(input: {
   const apply = async (sql?: NotificationSqlClient) => {
     const existing = await findNotificationByOccurrence(input, sql, Boolean(sql));
     if (existing) {
+      if (existing.kind !== "reminder") throw new Error("Today reminder occurrence resolved to a different notification kind.");
       if (existing.status === "dismissed" || existing.status === "acted") {
         return { notification: existing, changed: false };
       }
@@ -488,6 +530,7 @@ async function decideTodayNotificationDelivery(input: {
   evaluatedAt: Date;
   sql: NotificationSqlClient;
 }) {
+  if (input.notification.kind !== "reminder") throw new Error("Only Today reminders can enter the reminder push path.");
   const cooldownActive = await todayPushCooldownActive(
     input.notification,
     input.evaluatedAt,
@@ -608,16 +651,19 @@ async function findNotification(id: string, options: {
   actorId: string;
   sql?: NotificationSqlClient;
   forUpdate?: boolean;
+  requestActorBinding?: CanonicalRequestActorBindingV1;
 }) {
   if (hasDatabaseUrl()) {
     if (!options.sql) await ensureDatabaseSchema();
     const sql = options.sql || getSql();
+    const [canonicalActorId, exactActorId] = todayActorReadOrder(options.actorId, options.requestActorBinding, options.actorId);
     const rows = await sql.query(
       `SELECT * FROM omni_personal_notifications
-       WHERE id = $1 AND tenant_id = $2 AND actor_id = $3
-       LIMIT 1${options.forUpdate ? " FOR UPDATE" : ""}`,
-      [id, options.tenantId, options.actorId],
+       WHERE id = $1 AND tenant_id = $2 AND (actor_id = $3 OR actor_id = $4)
+       LIMIT 2${options.forUpdate ? " FOR UPDATE" : ""}`,
+      [id, options.tenantId, canonicalActorId, exactActorId],
     );
+    if (rows.length > 1) throw new Error("Notification owner is ambiguous.");
     return rows[0] ? notificationFromRow(rows[0]) : undefined;
   }
   const ledger = await readLedger();
@@ -657,6 +703,15 @@ async function saveNotification(
   if (hasDatabaseUrl()) {
     if (!transactionSql) await ensureDatabaseSchema();
     const sql = transactionSql || getSql();
+    if (notification.kind === "responsibility_change") {
+      // Inbox delivery is immutable. Read/dismiss changes an existing row;
+      // it must not revisit the insert/admission path or reopen its candidate.
+      const rows = await sql`UPDATE omni_personal_notifications SET status = ${notification.status}, read_at = ${notification.readAt || null}, updated_at = ${notification.updatedAt}
+        WHERE id = ${notification.id} AND tenant_id = ${notification.tenantId} AND actor_id = ${notification.actorId}
+          AND kind = 'responsibility_change' AND source_type = 'responsibility_change' AND source_id = ${notification.sourceId} AND occurrence_key = ${notification.occurrenceKey} RETURNING *`;
+      if (rows.length !== 1) throw new Error("Responsibility inbox row changed.");
+      return notificationFromRow(rows[0]);
+    }
     const rows = await sql`
       INSERT INTO omni_personal_notifications (
         id, tenant_id, actor_id, title, kind, source_type, source_id,
@@ -812,8 +867,10 @@ async function appendNotificationMutationEvent(
   mutation: ReturnType<typeof exactNotificationMutation>,
   sql?: NotificationSqlClient,
 ) {
+  const requestActorId = mutation.executionScope.initiatingActorId;
+  if (!requestActorId) throw new Error("Notification mutation requires its authenticated request actor.");
   const payload = notificationMutationEventPayloadSchema.parse({
-    schemaVersion: NOTIFICATION_EVENT_SCHEMA_VERSION,
+    schemaVersion: notification.kind === "responsibility_change" ? 2 : NOTIFICATION_EVENT_SCHEMA_VERSION,
     notificationId: notification.id,
     sourceType: notification.sourceType,
     sourceId: notification.sourceId,
@@ -821,7 +878,7 @@ async function appendNotificationMutationEvent(
     status: notification.status,
     idempotencyKeySha256: notificationSha256({
       tenantId: notification.tenantId,
-      actorId: notification.actorId,
+      actorId: requestActorId,
       idempotencyKey: mutation.idempotencyKey,
     }),
     effect: {
@@ -834,7 +891,7 @@ async function appendNotificationMutationEvent(
   await appendScopedDomainEvent({
     id: notificationMutationEventId({
       tenantId: notification.tenantId,
-      actorId: notification.actorId,
+      actorId: requestActorId,
       idempotencyKey: mutation.idempotencyKey,
     }),
     streamId: `notification:${notification.id}`,
@@ -850,9 +907,11 @@ async function priorNotificationMutation(
   mutation: ReturnType<typeof exactNotificationMutation>,
   sql: NotificationSqlClient,
 ) {
+  const requestActorId = mutation.executionScope.initiatingActorId;
+  if (!requestActorId) throw new Error("Notification mutation requires its authenticated request actor.");
   const eventId = notificationMutationEventId({
     tenantId: notification.tenantId,
-    actorId: notification.actorId,
+    actorId: requestActorId,
     idempotencyKey: mutation.idempotencyKey,
   });
   const rows = await sql.query(
@@ -860,7 +919,7 @@ async function priorNotificationMutation(
      FROM omni_events
      WHERE id = $1 AND tenant_id = $2 AND actor_id = $3
      LIMIT 1`,
-    [eventId, notification.tenantId, notification.actorId],
+    [eventId, notification.tenantId, requestActorId],
   );
   if (!rows[0]) return undefined;
   const row = rows[0];
@@ -880,7 +939,7 @@ async function priorNotificationMutation(
   const persistedScope = parsePersistedExecutionScope(rawExecutionScope);
   const expectedKeySha256 = notificationSha256({
     tenantId: notification.tenantId,
-    actorId: notification.actorId,
+    actorId: requestActorId,
     idempotencyKey: mutation.idempotencyKey,
   });
   if (
@@ -925,16 +984,20 @@ function updateLedger(mutate: (ledger: PersonalNotificationLedger) => PersonalNo
 }
 
 function notificationFromRow(row: Record<string, unknown>): PersonalNotification {
+  const responsibility = row.kind === "responsibility_change" && row.source_type === "responsibility_change";
+  if (!responsibility && (row.kind !== "reminder" || row.source_type !== "today_item")) throw new Error("Stored notification kind is unsupported.");
+  if (responsibility && (row.urgency !== "update" || !["unread", "read", "dismissed"].includes(String(row.status)) || row.snoozed_until !== null)) {
+    throw new Error("Stored Responsibility notification state is invalid.");
+  }
   return {
     id: String(row.id),
     tenantId: String(row.tenant_id),
     actorId: String(row.actor_id),
     title: safeText(row.title, 280),
-    kind: "reminder",
-    sourceType: "today_item",
+    ...(responsibility ? { kind: "responsibility_change" as const, sourceType: "responsibility_change" as const, urgency: "update" as const }
+      : { kind: "reminder" as const, sourceType: "today_item" as const, urgency: String(row.urgency) === "overdue" ? "overdue" as const : "due_soon" as const }),
     sourceId: String(row.source_id),
     occurrenceKey: String(row.occurrence_key),
-    urgency: String(row.urgency) === "overdue" ? "overdue" : "due_soon",
     status: normalizeStatus(row.status),
     dueAt: dateValue(row.due_at),
     snoozedUntil: optionalDate(row.snoozed_until),

@@ -54,11 +54,14 @@ function approval(id = "approval-a", tenantId = scope.tenantId): ApprovalQueueIt
   } as unknown as ApprovalQueueItem;
 }
 function notification(overrides: Partial<PersonalNotification> = {}): PersonalNotification {
-  return {
+  const base = {
     id: "notification-a", tenantId: scope.tenantId, actorId: scope.actorId, title: "PRIVATE_TITLE",
-    kind: "reminder", sourceType: "today_item", sourceId: "today-a", occurrenceKey: "PRIVATE_OCCURRENCE",
-    urgency: "overdue", status: "unread", dueAt: at, createdAt: at, updatedAt: at, ...overrides,
+    sourceId: "today-a", occurrenceKey: "PRIVATE_OCCURRENCE",
+    status: "unread" as const, dueAt: at, createdAt: at, updatedAt: at,
   };
+  return overrides.kind === "responsibility_change"
+    ? { ...base, ...overrides, kind: "responsibility_change", sourceType: "responsibility_change", urgency: "update" }
+    : { ...base, ...overrides, kind: "reminder", sourceType: "today_item", urgency: overrides.urgency === "due_soon" ? "due_soon" : "overdue" };
 }
 function readers() {
   return {
@@ -103,6 +106,31 @@ describe("bounded Activity reads", () => {
     expect(result.coverage.approvals).toEqual({ state: "restricted", limit: 100, visibleCount: null, reason: "permission_required" });
     expect(result.coverage.runs).toMatchObject({ state: "ready", visibleCount: 0 });
     expect(result.state).toBe("partial");
+  });
+
+  it("excludes unsupported Responsibility notifications at the store boundary before limits and counts", async () => {
+    const reads = readers();
+    reads.listNotifications.mockResolvedValue([
+      notification({ kind: "responsibility_change", sourceType: "responsibility_change", sourceId: `responsibility:${"a".repeat(64)}`, urgency: "update" }),
+      notification({ id: "notification-reminder" }),
+    ]);
+    const result = await getActivity({ ...scope, includeResponsibilityChanges: false }, query, reads);
+    expect(reads.listNotifications).toHaveBeenCalledExactlyOnceWith(100, {
+      tenantId: scope.tenantId, actorId: scope.actorId, includeResponsibilityChanges: false,
+    });
+    expect(result.items.map((item) => item.id)).toEqual(["notification:notification-reminder"]);
+    expect(result.coverage.notifications).toMatchObject({ state: "ready", visibleCount: 1 });
+    expect(result.counts.updates).toBe(1);
+  });
+
+  it("binds cursor reuse to the supported Responsibility notification vocabulary", async () => {
+    const reads = readers();
+    reads.listRuns.mockResolvedValue([run({ id: "run-a" }), run({ id: "run-b" })]);
+    const first = await getActivity(scope, { ...query, limit: 1 }, reads);
+    expect(first.page.nextCursor).not.toBeNull();
+    await expect(getActivity({ ...scope, includeResponsibilityChanges: false }, {
+      ...query, limit: 1, cursor: first.page.nextCursor!,
+    }, reads)).rejects.toMatchObject(stale);
   });
 
   it("filters exact tenant and owner before looking up threads or projecting any metadata", async () => {

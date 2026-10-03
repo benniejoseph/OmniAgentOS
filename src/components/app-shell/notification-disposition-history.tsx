@@ -95,11 +95,12 @@ export function NotificationDispositionHistoryView({
             <article key={item.dispositionId} data-outcome={item.outcome}>
               <span className="notification-decision-icon" aria-hidden="true">{outcomeIcon(item.outcome)}</span>
               <div>
-                <header><strong>{outcomeLabel(item.outcome)}</strong><time>{formatDecisionTime(item.evaluatedAt)}</time></header>
+                <header><strong>{item.sourceKind === "responsibility_change" && item.outcome === "send" ? item.state === "terminal" ? "Recorded in your inbox" : "Delivery was held" : outcomeLabel(item.outcome)}</strong><time>{formatDecisionTime(item.evaluatedAt)}</time></header>
                 <p>{reasonCopy(item.reason, item.outcome)}</p>
                 <dl>
                   <div><dt>Source</dt><dd>{sourceLabel(item.sourceKind)}</dd></div>
                   <div><dt>State</dt><dd>{item.state === "terminal" ? "Finished" : "Waiting"}</dd></div>
+                  {item.sourceKind === "responsibility_change" ? <div><dt>Current delivery authority</dt><dd>Check the responsibility delivery receipts. Later pause, expiry or revocation can close this earlier pending decision.</dd></div> : null}
                   {item.dueAt ? <div><dt>Due</dt><dd>{formatDecisionTime(item.dueAt)}</dd></div> : null}
                   <div><dt>Decision receipt</dt><dd title={item.decisionReceiptSha256}>{shortDigest(item.decisionReceiptSha256)}</dd></div>
                   {item.deliveryBindingSha256 ? <div><dt>Delivery binding</dt><dd title={item.deliveryBindingSha256}>{shortDigest(item.deliveryBindingSha256)}</dd></div> : null}
@@ -130,6 +131,7 @@ function reasonCopy(reason: string, outcome: NotificationDispositionView["outcom
     security_alert: "A security warning met the alert policy.",
     actionable_failure: "A failed task needs a person to act.",
     meeting_imminent: "A meeting is close enough to need a reminder.",
+    material_change: "An explicitly enabled Responsibility recorded a material change for your in-app inbox.",
     critical_delivery: "A critical alert bypassed normal holding rules.",
     quiet_hours: "Quiet hours delayed a required alert.",
     cooldown_active: "A recent alert started a short cooldown.",

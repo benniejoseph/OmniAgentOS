@@ -44,12 +44,16 @@ export async function listNotificationDispositionsService(
     caller,
     getAppServiceOperationContract("app.notifications.dispositions.list"),
   );
-  const dispositions = await dependencies.list({
-    tenantId: caller.context.tenantId,
-    ownerActorId: caller.context.actorId,
-    limit: value.limit,
-    before: value.before,
-  });
+  const binding = canonicalRequestActorBindingFromSecurityContext(caller.context);
+  const owners = binding?.readableOwnerActorIds ?? [caller.context.actorId];
+  // Each read remains an exact actor query. Only the authenticated current
+  // email/canonical pair is merged, before applying the public result bound.
+  const rows: Awaited<ReturnType<typeof dependencies.list>>[number][] = [];
+  for (const ownerActorId of owners) {
+    rows.push(...await dependencies.list({ tenantId: caller.context.tenantId, ownerActorId, limit: value.limit, before: value.before, ...notificationCompatibility(caller) }));
+  }
+  const dispositions = [...new Map(rows.map((row) => [row.dispositionId, row])).values()]
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.dispositionId.localeCompare(a.dispositionId)).slice(0, value.limit);
   return completeAppServiceCall(authorized, {
     version: "notification-disposition-projection:1" as const,
     dispositions,
@@ -61,7 +65,7 @@ export async function updateNotificationService(caller: AppServiceCaller, input:
   const value = notificationUpdateSchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.notifications.update"));
   const notification = await updatePersonalNotification(value.notificationId, value.action, {
-    ...exactOwner(caller),
+    ...readOwner(caller),
     snoozeMinutes: value.minutes,
     mutation: mutationContext(caller),
   });
@@ -71,7 +75,7 @@ export async function updateNotificationService(caller: AppServiceCaller, input:
 export async function readAllNotificationsService(caller: AppServiceCaller, input: z.input<typeof notificationReadAllSchema>) {
   notificationReadAllSchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.notifications.read_all"));
-  const notifications = await markAllNotificationsRead({ ...exactOwner(caller), mutation: mutationContext(caller) });
+  const notifications = await markAllNotificationsRead({ ...readOwner(caller), mutation: mutationContext(caller) });
   return completeAppServiceCall(authorized, { notifications, updated: notifications.length }, { resourceCount: notifications.length });
 }
 
@@ -80,7 +84,14 @@ function exactOwner(caller: AppServiceCaller) {
 }
 
 function readOwner(caller: AppServiceCaller) {
-  return { ...exactOwner(caller), requestActorBinding: canonicalRequestActorBindingFromSecurityContext(caller.context) };
+  return { ...exactOwner(caller), requestActorBinding: canonicalRequestActorBindingFromSecurityContext(caller.context), ...notificationCompatibility(caller) };
+}
+
+// v31 and earlier have a closed notification vocabulary and reminder-only
+// controls. Filter at the storage boundary, before limits or bulk mutation.
+function notificationCompatibility(caller: AppServiceCaller) {
+  return caller.context.source === "mobile" && (caller.context.native?.clientContractVersion ?? 0) < 32
+    ? { includeResponsibilityChanges: false as const } : {};
 }
 
 function mutationContext(caller: AppServiceCaller) {

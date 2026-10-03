@@ -89,6 +89,14 @@ describe("notification inbox route", () => {
     expect(routeMocks.markAllNotificationsRead).toHaveBeenCalledWith({
       tenantId: "tenant-a",
       actorId,
+      requestActorBinding: {
+        version: 1,
+        kind: "auth_user",
+        authUserId,
+        canonicalActorId,
+        legacyOwnerActorIds: [actorId],
+        readableOwnerActorIds: [canonicalActorId, actorId],
+      },
       mutation: {
         idempotencyKey: "read-all-1",
         executionScope: expect.objectContaining({

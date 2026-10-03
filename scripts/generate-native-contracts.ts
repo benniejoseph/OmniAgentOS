@@ -19,17 +19,17 @@ const checkOnly = process.argv.includes("--check");
 // The previous contract and the one archive before it, byte for byte. When a
 // new contract ships, the oldest entry goes, and its directory with it.
 const frozenDocumentSha256ByVersion = Object.freeze({
-  29: Object.freeze({
-    "openapi.json": "4c05b72fb2533b5d001600ee843252b65012fef9ec62d38fc586a4d84ed1cf3a",
-    "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9",
-    "fixtures.json": "843a2e85f3dd70e806ee22787c9a151cb5c5284c08a46ae49bda2b51789300eb",
-    "manifest.json": "f18dd634d6e319dae4de4b07e7bd7c161356817a9fc78b36357e64550bcc258d",
-  }),
   30: Object.freeze({
     "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9",
     "fixtures.json": "fe8ce85e53bf3346b74e7b429b3b33d66076465b914aeef4c22c42c1163a1808",
     "manifest.json": "ddf28e1a590542c09be88076c18c3a5eab0785058140276a97656d90e2d779d7",
     "openapi.json": "2abf9f964377dc8058e5cd1d1681ef795933d65b8a6b75fd8578d6c7e56069bc", // gitleaks:allow -- public frozen artifact SHA-256 integrity digest
+  }),
+  31: Object.freeze({
+    "openapi.json": "66b51d623dfd13eed8f156cacbe775f34040523a719ba30a9688696b83e51c5b", // gitleaks:allow -- public frozen artifact SHA-256 integrity digest
+    "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9",
+    "fixtures.json": "e5f1d2cdd2f72999816522995a22d341ad88ec82a427d47fae127e0288fbf82a",
+    "manifest.json": "0fe915016137f93ee135ff627a6f437f3ee4baea66f0bc1ff9ff7d5e0565c6a7",
   }),
 });
 
@@ -222,16 +222,19 @@ async function retainFrozenContract(
 function openApiDocument(version: number, operations: readonly NativeOperation[]) {
   const paths: Record<string, Record<string, unknown>> = {};
   for (const operation of operations) {
-    const pathParameters = [...operation.path.matchAll(/\{([^}]+)\}/g)].map((match) => ({
-      name: match[1],
-      in: "path",
-      required: true,
-      schema: { type: "string", minLength: 1, maxLength: 200 },
-    }));
+    const pathParameters = [...operation.path.matchAll(/\{([^}]+)\}/g)].map((match) => {
+      const declared = operation.pathParameters?.find((parameter) => parameter.name === match[1]);
+      return {
+        name: match[1], in: "path", required: true,
+        schema: { type: "string", minLength: declared?.minLength ?? 1, maxLength: declared?.maxLength ?? 200,
+          ...(declared?.pattern !== undefined ? { pattern: declared.pattern } : {}) },
+      };
+    });
     const queryParameters = (operation.queryParameters || []).map((parameter) => ({
       name: parameter.name,
       in: "query",
       required: parameter.required || false,
+      ...(parameter.description !== undefined ? { description: parameter.description } : {}),
       schema: openApiQueryParameterSchema(parameter),
     }));
     const headerParameters = (operation.headerParameters || []).map((parameter) => ({
@@ -251,6 +254,7 @@ function openApiDocument(version: number, operations: readonly NativeOperation[]
     const requestBody = operation.requestSchema && operation.method !== "GET"
       ? {
           required: true,
+          ...(operation.requestBodyMaxBytes !== undefined ? { "x-asael-max-bytes": operation.requestBodyMaxBytes } : {}),
           content: {
             [mediaType === "text/event-stream" ? "application/json" : mediaType]: {
               schema: ref(operation.requestSchema),
@@ -266,8 +270,9 @@ function openApiDocument(version: number, operations: readonly NativeOperation[]
       ...(operation.auth === "bearer" ? { security: [{ bearerAuth: [] }] } : {}),
       ...(parameters.length ? { parameters } : {}),
       ...(requestBody ? { requestBody } : {}),
+      ...(operation.queryPolicy === "exact" ? { "x-asael-query-policy": { unknownParameters: "reject", repeatedParameters: "reject" } } : {}),
       responses: {
-        "200": {
+        ...Object.fromEntries((operation.successStatuses ?? [200]).map((status) => [String(status), {
           description: "Successful response.",
           ...(operation.responseHeaders?.length
             ? { headers: responseHeaders(operation.responseHeaders) }
@@ -286,11 +291,8 @@ function openApiDocument(version: number, operations: readonly NativeOperation[]
                 }
               : {}),
           },
-        },
-        "400": errorResponse(),
-        "401": errorResponse(),
-        "403": errorResponse(),
-        "409": errorResponse(),
+        }])),
+        ...Object.fromEntries((operation.errorStatuses ?? [400, 401, 403, 409]).map((status) => [String(status), errorResponse(operation.errorResponseSchema)])),
       },
     };
   }
@@ -330,10 +332,10 @@ function schemaDocument(name: string) {
   return component;
 }
 
-function errorResponse() {
+function errorResponse(schema = "NativeErrorResponse") {
   return {
     description: "Bounded error response.",
-    content: { "application/json": { schema: ref("NativeErrorResponse") } },
+    content: { "application/json": { schema: ref(schema) } },
   };
 }
 
@@ -420,6 +422,7 @@ function openApiQueryParameterSchema(parameter: NativeQueryParameter) {
       type: "integer",
       ...(parameter.minimum !== undefined ? { minimum: parameter.minimum } : {}),
       ...(parameter.maximum !== undefined ? { maximum: parameter.maximum } : {}),
+      ...(parameter.defaultValue !== undefined ? { default: parameter.defaultValue } : {}),
     };
   }
   return {
@@ -427,6 +430,7 @@ function openApiQueryParameterSchema(parameter: NativeQueryParameter) {
     ...(parameter.minLength !== undefined ? { minLength: parameter.minLength } : {}),
     ...(parameter.maxLength !== undefined ? { maxLength: parameter.maxLength } : {}),
     ...(parameter.enumValues?.length ? { enum: [...parameter.enumValues] } : {}),
+    ...(parameter.defaultValue !== undefined ? { default: parameter.defaultValue } : {}),
   };
 }
 

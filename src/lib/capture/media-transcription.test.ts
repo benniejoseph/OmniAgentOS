@@ -6,7 +6,8 @@ const mocks = vi.hoisted(() => ({
   usage: vi.fn(),
 }));
 
-vi.mock("@/lib/config", () => ({
+vi.mock("@/lib/config", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/config")>()),
   DIARIZATION_MODEL: "gpt-4o-transcribe-diarize",
   GOOGLE_TRANSCRIPTION_MODEL: "",
   TRANSCRIPTION_PROVIDER: "openai",

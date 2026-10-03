@@ -1297,5 +1297,33 @@
     "checksum": "e24b96868f0833a36f887f8fa57885d9a35fb002e25495f4fdafd1424b82d373",
     "file": "20261003100000_companion_preferences.sql",
     "sha256": "e24b96868f0833a36f887f8fa57885d9a35fb002e25495f4fdafd1424b82d373"
+  },
+  {
+    "version": 216,
+    "name": "responsibility_drafts_v1",
+    "checksum": "df0bcb3b346baef6b3742869a521dc799bd1ab2d999094ed3b61e57da20c72b8",
+    "file": "20261004100000_responsibility_drafts.sql",
+    "sha256": "df0bcb3b346baef6b3742869a521dc799bd1ab2d999094ed3b61e57da20c72b8"
+  },
+  {
+    "version": 217,
+    "name": "responsibility_observations_v1",
+    "checksum": "966d79c1f6c95a482584385b98fff975a678006405d3acd2db5442fd7eeb574a",
+    "file": "20261004103000_responsibility_observations.sql",
+    "sha256": "966d79c1f6c95a482584385b98fff975a678006405d3acd2db5442fd7eeb574a"
+  },
+  {
+    "version": 218,
+    "name": "responsibility_runtime_v1",
+    "checksum": "2ec2115d7349edf1260533a898d6df013169538d515d059f53cd3f649dc01be6",
+    "file": "20261004110000_responsibility_runtime.sql",
+    "sha256": "2ec2115d7349edf1260533a898d6df013169538d515d059f53cd3f649dc01be6"
+  },
+  {
+    "version": 219,
+    "name": "responsibility_notifications_v1",
+    "checksum": "b7781a7c49662c506457a340ef81b0f31ceb683587d8bff62391e246efbacaf2",
+    "file": "20261004113000_responsibility_notifications.sql",
+    "sha256": "b7781a7c49662c506457a340ef81b0f31ceb683587d8bff62391e246efbacaf2"
   }
 ]

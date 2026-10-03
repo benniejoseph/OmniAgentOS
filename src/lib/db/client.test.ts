@@ -1958,6 +1958,162 @@ describe("database pool acquisition", () => {
 
 type TransactionCommand = "BEGIN" | "COMMIT" | "ROLLBACK";
 
+describe("opt-in managed transaction context", () => {
+  async function isolated(work: (client: typeof import("@/lib/db/client"), pool: ReturnType<typeof createMockPoolClient>) => Promise<void>) {
+    const pool = createMockPoolClient([{ ok: true }]);
+    vi.doMock("postgres", () => ({ default: vi.fn(() => pool.pg) }));
+    vi.stubEnv("DATABASE_URL", "postgresql://runtime.invalid/asael");
+    vi.stubEnv("OMNIAGENT_DATABASE_POOL_MAX", "1");
+    vi.resetModules();
+    try { await work(await import("@/lib/db/client"), pool); }
+    finally { vi.doUnmock("postgres"); vi.unstubAllEnvs(); vi.resetModules(); }
+  }
+
+  it("uses one reservation for nested audited callbacks, serializes narrower reads, and restores scope", async () => isolated(async (client, pool) => {
+    let actorIds: string[] = []; const reads: string[][] = [];
+    pool.reserved.mockImplementation((parts: TemplateStringsArray, ...params: unknown[]) => {
+      const text = parts.join("?"); pool.statements.push({ text, params });
+      if (text.includes("set_config")) actorIds = JSON.parse(String(params[1])).actorIds;
+      else reads.push([...actorIds]);
+      return Promise.resolve([{ ok: true }]);
+    });
+    await client.runWithDatabaseActorScope("tenant-a", ["owner", "validated-alias"], () => client.getSql().transaction(async (sql: ReturnType<typeof client.getSql>) => {
+      await client.runWithManagedDatabaseTransaction(sql, async () => {
+        await Promise.all([
+          client.runWithDatabaseActorScope("tenant-a", ["owner"], () => client.getSql().transaction(async () => client.getSql()`SELECT 1`)),
+          client.runWithDatabaseActorScope("tenant-a", ["validated-alias"], () => client.getSql()`SELECT 2`),
+        ]);
+      });
+      await sql`SELECT 3`;
+    }));
+    expect(reads.slice(0, 2).sort()).toEqual([["owner"], ["validated-alias"]]);
+    expect(reads[2]).toEqual(["owner", "validated-alias"]);
+    expect(pool.pg.reserve).toHaveBeenCalledOnce(); expect(transactionCommands(pool.statements)).toEqual(["BEGIN", "COMMIT"]);
+    expect(pool.reserved.release).toHaveBeenCalledOnce();
+  }));
+
+  it("rejects widened actors, another tenant and system scope even when the inner error is caught", async () => isolated(async (client, pool) => {
+    for (const change of [
+      (work: () => Promise<unknown>) => client.runWithDatabaseActorScope("tenant-a", ["foreign"], work),
+      (work: () => Promise<unknown>) => client.runWithDatabaseActorScope("tenant-b", ["owner"], work),
+      (work: () => Promise<unknown>) => client.runWithDatabaseSystemScope("not an authority upgrade", work),
+    ]) {
+      await expect(client.runWithDatabaseActorScope("tenant-a", ["owner"], () => client.getSql().transaction((sql: ReturnType<typeof client.getSql>) =>
+        client.runWithManagedDatabaseTransaction(sql, async () => {
+          try { await change(async () => client.getSql()`SELECT 'forbidden'`); } catch { /* Cannot rescue the outer commit. */ }
+          return "caught";
+        })))).rejects.toMatchObject({ code: "DATABASE_TRANSACTION_CONTEXT_INVALID" });
+    }
+    expect(pool.statements.some(({ text }) => text.includes("forbidden"))).toBe(false);
+    expect(transactionCommands(pool.statements)).toEqual(["BEGIN", "ROLLBACK", "BEGIN", "ROLLBACK", "BEGIN", "ROLLBACK"]);
+  }));
+
+  it("propagates a caught nested callback failure to the owner transaction", async () => isolated(async (client, pool) => {
+    const failure = new Error("audit callback failed");
+    await expect(client.runWithDatabaseActorScope("tenant-a", ["owner"], () => client.getSql().transaction(async (sql: ReturnType<typeof client.getSql>) => {
+      try {
+        await client.runWithManagedDatabaseTransaction(sql, async () => {
+          try { await client.getSql().transaction(() => { throw failure; }); } catch { /* The callback cannot declare success. */ }
+        });
+      } catch { /* Nor can the owner suppress rollback-only. */ }
+      return "not committed";
+    }))).rejects.toBe(failure);
+    expect(transactionCommands(pool.statements)).toEqual(["BEGIN", "ROLLBACK"]);
+  }));
+
+  it("does not commit unawaited narrower work and rejects clients escaping the callback", async () => isolated(async (client, pool) => {
+    let escaped: ReturnType<typeof client.getSql> | undefined;
+    await expect(client.runWithDatabaseActorScope("tenant-a", ["owner"], () => client.getSql().transaction((sql: ReturnType<typeof client.getSql>) =>
+      client.runWithManagedDatabaseTransaction(sql, async () => {
+        escaped = client.getSql();
+        void escaped`SELECT 'unawaited'`.catch(() => undefined);
+      })))).rejects.toMatchObject({ code: "DATABASE_RESERVATION_INFLIGHT" });
+    await expect(escaped!`SELECT 'escaped'`).rejects.toMatchObject({ code: "DATABASE_RESERVATION_INFLIGHT" });
+    expect(pool.statements.some(({ text }) => text.includes("escaped"))).toBe(false);
+    expect(transactionCommands(pool.statements)).toEqual(["BEGIN", "ROLLBACK"]);
+  }));
+
+  it("accepts only a live manager-minted capability and preserves transaction-control rejection", async () => isolated(async (client, pool) => {
+    const fake = Object.assign(vi.fn(), { transactionScoped: true }) as unknown as ReturnType<typeof client.getSql>;
+    await expect(client.runWithManagedDatabaseTransaction(fake, async () => undefined)).rejects.toMatchObject({ code: "DATABASE_TRANSACTION_CONTEXT_INVALID" });
+    let expired: ReturnType<typeof client.getSql> | undefined;
+    await client.runWithDatabaseActorScope("tenant-a", ["owner"], () => client.getSql().transaction(async (sql: ReturnType<typeof client.getSql>) => { expired = sql; }));
+    await expect(client.runWithManagedDatabaseTransaction(expired!, async () => undefined)).rejects.toMatchObject({ code: "DATABASE_TRANSACTION_CONTEXT_INVALID" });
+    await expect(client.runWithDatabaseActorScope("tenant-a", ["owner"], () => client.getSql().transaction((sql: ReturnType<typeof client.getSql>) =>
+      client.runWithManagedDatabaseTransaction(sql, async () => client.getSql().unsafe("COMMIT"))))).rejects.toThrow("Transaction control is reserved");
+    expect(pool.pg.reserve).toHaveBeenCalledTimes(2); expect(transactionCommands(pool.statements)).toEqual(["BEGIN", "COMMIT", "BEGIN", "ROLLBACK"]);
+  }));
+
+  it("refuses the original raw client while joined scope serialization is active", async () => isolated(async (client, pool) => {
+    await expect(client.runWithDatabaseActorScope("tenant-a", ["owner"], () => client.getSql().transaction((sql: ReturnType<typeof client.getSql>) =>
+      client.runWithManagedDatabaseTransaction(sql, async () => {
+        await sql`SELECT 'raw-scope-bypass'`;
+      })))).rejects.toMatchObject({ code: "DATABASE_TRANSACTION_CONTEXT_INVALID" });
+    expect(pool.statements.some(({ text }) => text.includes("raw-scope-bypass"))).toBe(false);
+    expect(transactionCommands(pool.statements)).toEqual(["BEGIN", "ROLLBACK"]);
+  }));
+
+  it("rejects sibling adoptions of the same live SQL capability", async () => isolated(async (client, pool) => {
+    let release = () => undefined as void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    await expect(client.runWithDatabaseActorScope("tenant-a", ["owner"], () => client.getSql().transaction(async (sql: ReturnType<typeof client.getSql>) => {
+      const first = client.runWithManagedDatabaseTransaction(sql, async () => gate);
+      await expect(client.runWithManagedDatabaseTransaction(sql, async () => undefined)).rejects.toMatchObject({ code: "DATABASE_TRANSACTION_CONTEXT_INVALID" });
+      release(); await first;
+    }))).rejects.toMatchObject({ code: "DATABASE_TRANSACTION_CONTEXT_INVALID" });
+    expect(transactionCommands(pool.statements)).toEqual(["BEGIN", "ROLLBACK"]);
+  }));
+
+  it("rolls back an unawaited adoption waiting on non-SQL work before the owner can commit", async () => isolated(async (client, pool) => {
+    let release = () => undefined as void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let adoption: Promise<unknown> | undefined;
+    await expect(client.runWithDatabaseActorScope("tenant-a", ["owner"], () => client.getSql().transaction(async (sql: ReturnType<typeof client.getSql>) => {
+      adoption = client.runWithManagedDatabaseTransaction(sql, async () => {
+        await gate;
+        return client.getSql()`SELECT 'too-late'`;
+      });
+      void adoption.catch(() => undefined);
+    }))).rejects.toMatchObject({ code: "DATABASE_RESERVATION_INFLIGHT" });
+    release(); await expect(adoption).rejects.toMatchObject({ code: "DATABASE_RESERVATION_INFLIGHT" });
+    expect(pool.statements.some(({ text }) => text.includes("too-late"))).toBe(false);
+    expect(transactionCommands(pool.statements)).toEqual(["BEGIN", "ROLLBACK"]);
+  }));
+
+  it("retains rollback-only for falsy inner rejection reasons", async () => isolated(async (client, pool) => {
+    for (const reason of [undefined, null, false, 0, ""]) {
+      await expect(client.runWithDatabaseActorScope("tenant-a", ["owner"], () => client.getSql().transaction((sql: ReturnType<typeof client.getSql>) =>
+        client.runWithManagedDatabaseTransaction(sql, async () => {
+          try { await client.getSql().transaction(() => Promise.reject(reason)); } catch { /* Still poisoned, including undefined. */ }
+          return "not committed";
+        })))).rejects.toBe(reason);
+    }
+    expect(transactionCommands(pool.statements).filter((command) => command === "ROLLBACK")).toHaveLength(5);
+    expect(transactionCommands(pool.statements)).not.toContain("COMMIT");
+  }));
+
+  it("refuses extra local-scope installers only inside the adopted pilot context", async () => isolated(async (client, pool) => {
+    const statements = [
+      "SET LOCAL omni.memory_access_scope_v1 = '{}'",
+      "SELECT set_config('omni.memory_access_scope_v1', '{}', true)",
+      "SELECT pg_catalog.\"set_config\"($1, $2, true)",
+    ];
+    for (const statement of statements) {
+      await expect(client.runWithDatabaseActorScope("tenant-a", ["owner"], () => client.getSql().transaction((sql: ReturnType<typeof client.getSql>) =>
+        client.runWithManagedDatabaseTransaction(sql, async () => client.getSql().query(statement, ["omni.memory_access_scope_v1", "{}"])))))
+        .rejects.toMatchObject({ code: "DATABASE_TRANSACTION_EXTRA_SCOPE_UNSUPPORTED" });
+    }
+    expect(pool.statements.some(({ text }) => statements.includes(text))).toBe(false);
+    // The existing ordinary scoped store protocol remains available.
+    await client.runWithDatabaseActorScope("tenant-a", ["owner"], () => client.getSql().transaction(async (sql: ReturnType<typeof client.getSql>) => {
+      await sql.query(statements[1]);
+      await sql`SELECT 'ordinary-memory-read'`;
+    }));
+    expect(pool.statements.some(({ text }) => text === statements[1])).toBe(true);
+    expect(transactionCommands(pool.statements)).toEqual(["BEGIN", "ROLLBACK", "BEGIN", "ROLLBACK", "BEGIN", "ROLLBACK", "BEGIN", "COMMIT"]);
+  }));
+});
+
 function createMockPoolClient(
   resultRows: Record<string, unknown>[],
   controlFailures: Partial<Record<TransactionCommand, Error>> = {},

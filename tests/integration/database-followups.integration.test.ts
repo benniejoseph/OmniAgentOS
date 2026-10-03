@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 
 import postgres from "postgres";
+import { removeEmptyResponsibilityRuntimeForReplay } from "./helpers/responsibility-replay";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
 import { closeDatabaseClient, ensureDatabaseSchema } from "@/lib/db/client";
@@ -81,7 +82,29 @@ async function rollbackOnly(admin: ReturnType<typeof postgres>, operation: (tran
 async function prepareHistoricalReplay(transaction: Transaction, version: 213 | 214) {
   expect(await transaction`
     SELECT max(version)::int AS latest FROM public.omni_schema_version
-  `).toEqual([{ latest: 215 }]);
+  `).toEqual([{ latest: 219 }]);
+  await removeEmptyResponsibilityRuntimeForReplay(transaction);
+  expect(await transaction`
+    SELECT (SELECT count(*)::int FROM public.omni_responsibility_observations) AS observations,
+      (SELECT count(*)::int FROM public.omni_responsibility_baselines) AS baselines,
+      (SELECT count(*)::int FROM public.omni_responsibility_changes) AS changes
+  `).toEqual([{ observations: 0, baselines: 0, changes: 0 }]);
+  await transaction`DROP TABLE public.omni_responsibility_changes`;
+  await transaction`DROP TABLE public.omni_responsibility_baselines`;
+  await transaction`DROP TABLE public.omni_responsibility_observations`;
+  await transaction`DROP FUNCTION public.omni_require_responsibility_observation_commit_v1()`;
+  await transaction`DROP FUNCTION public.omni_protect_responsibility_changes_v1()`;
+  await transaction`DROP FUNCTION public.omni_protect_responsibility_baselines_v1()`;
+  await transaction`DROP FUNCTION public.omni_protect_responsibility_observations_v1()`;
+  expect(await transaction`
+    SELECT (SELECT count(*)::int FROM public.omni_responsibilities) AS drafts,
+      (SELECT count(*)::int FROM public.omni_responsibility_mutations) AS receipts
+  `).toEqual([{ drafts: 0, receipts: 0 }]);
+  await transaction`DROP TABLE public.omni_responsibility_mutations`;
+  await transaction`DROP TABLE public.omni_responsibilities`;
+  await transaction`DROP FUNCTION public.omni_require_responsibility_receipt_v1()`;
+  await transaction`DROP FUNCTION public.omni_protect_responsibility_mutations_v1()`;
+  await transaction`DROP FUNCTION public.omni_protect_responsibility_drafts_v1()`;
   expect(await transaction`
     SELECT
       (SELECT count(*)::int FROM public.omni_companion_preferences) AS preferences,

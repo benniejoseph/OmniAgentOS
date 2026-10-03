@@ -4,9 +4,10 @@ import argparse
 import json
 from pathlib import Path
 import time
+from urllib.parse import unquote, urlsplit
 from playwright.sync_api import expect, sync_playwright
 from run import Checks, REPO, navigate, preview, select_theme
-from content_search_fixtures import ContentSearchFixtures, MEMORY, CONNECTED_SOURCE, UNTRUSTED
+from content_search_fixtures import ContentSearchFixtures, MEMORY, LIBRARY, CONNECTED_SOURCE, UNTRUSTED
 
 
 def palette(page): return page.get_by_test_id("command-palette-dialog")
@@ -17,6 +18,19 @@ def until(page, predicate, label):
     deadline = time.monotonic() + 20
     while not predicate() and time.monotonic() < deadline: page.wait_for_timeout(25)
     if not predicate(): raise AssertionError(label)
+
+
+def open_exact_result(page, name, path, status):
+    # A first client navigation may compile a new Next route. Wait for its
+    # exact consumer read before starting the ordinary UI assertion deadline.
+    with page.expect_response(lambda response: response.request.method == "GET"
+                              and unquote(urlsplit(response.url).path) == path,
+                              timeout=20_000) as received:
+        palette(page).get_by_role("option", name=name, exact=True).click()
+    response = received.value
+    response.body()
+    if response.status != status:
+        raise AssertionError(f"Exact destination read {path} returned {response.status}, expected {status}")
 
 
 def exercise(browser, origin, credentials, checks, coarse):
@@ -75,16 +89,16 @@ def exercise(browser, origin, credentials, checks, coarse):
         expect(palette(page).get_by_role("option").filter(has_text="Settings").first).to_be_visible()
         checks.check(label + ": navigation stays available while content requests fail", True)
         fixture.mode = "ready"; search(page, "report")
-        palette(page).get_by_role("option", name="Report private memory Active private memory").click()
+        open_exact_result(page, "Report private memory Active private memory", "/api/content-search/memory/" + MEMORY, 200)
         expect(page.get_by_role("dialog", name="Memory details")).to_be_visible()
         expect(page.get_by_role("dialog", name="Memory details").get_by_role("heading", name="Exact private memory outside first page")).to_be_visible()
         checks.check(label + ": exact memory opens outside index without generic fallback", any(row["path"] == "/api/content-search/memory/" + MEMORY for row in fixture.requests))
         page.get_by_role("button", name="Close memory details", exact=True).click()
-        search(page, "report"); palette(page).get_by_role("option", name="Report project Project").click()
+        search(page, "report"); open_exact_result(page, "Report project Project", "/api/content-search/work/search", 404)
         expect(page.get_by_role("button", name="Retry exact result", exact=True)).to_be_visible()
         expect(page.get_by_text("This exact result was deleted or access was revoked.", exact=True)).to_be_visible()
         checks.check(label + ": exact Work result rechecks access without selecting a fallback", any(row["path"] == "/api/content-search/work/search" for row in fixture.requests))
-        search(page, "report"); palette(page).get_by_role("option", name="Report original file document · ready").click()
+        search(page, "report"); open_exact_result(page, "Report original file document · ready", "/api/library/" + LIBRARY, 404)
         expect(page.get_by_text("This exact result was deleted or access was revoked.", exact=True)).to_be_visible()
         checks.check(label + ": revoked exact Library result is visible as unavailable", True)
         fixture.hold_connected = True

@@ -2939,3 +2939,31 @@ source controls behind the original exact-owner mutation routes.
 | Unified workspace library read model | `src/lib/library/`, `src/lib/app-services/library.ts`, `src/app/api/library/` |
 | Customer Account 360 | `src/lib/customer-success/`, `src/lib/app-services/customer-accounts.ts`, `src/app/api/customer-accounts/` |
 | UI shell + workspaces | `src/components/`, `src/app/app/` |
+
+
+## Bounded ongoing responsibilities
+
+`src/lib/responsibilities/` owns versioned private drafts, immutable review pins,
+accepted observation baselines, finite checking lifecycle and a separate finite
+notification admission. `/api/responsibilities` authorizes the current canonical
+account and never accepts an owner chosen by a caller. Draft/review receipts
+have no activation authority. The initial read-only Meeting pilot pins the
+existing `app.meetings.show` tool and goes through the governed executor; it
+cannot dispatch an arbitrary procedure, model, approval or external effect.
+
+A checked managed transaction in `src/lib/db/client.ts` allows the existing
+scoped stores to join the runtime transaction without acquiring another pool
+connection. Context identity, lifetime and pending operations remain checked;
+any nested failure prevents the outer commit, including a caught or falsy thrown
+value. The runtime coordinates owner/source/procedure locks, cumulative budget
+reservations and generation checks before persisting each typed decision.
+Wakes and completed receipts never become new execution authority on their own.
+
+The separately reviewed notification admission consumes a finite allowance.
+Semantic change identities survive quiet-hour holds and retries. A confirmed
+delivery co-commits the actual private inbox record, notification disposition
+and immutable receipt. Explicit stop releases pending reservations and retains
+committed usage; existing read-only runtime records keep their original
+none-authority fields. Web and native v32 consume the same typed projections.
+Older native clients omit the new notification kind before limits, counts and
+bulk updates are evaluated. There is no external delivery in this contract.

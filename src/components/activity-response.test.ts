@@ -27,6 +27,16 @@ function response(): ActivityResponse {
 const withItem = (changed: unknown) => ({ ...response(), items: [changed] });
 
 describe("Activity response validation", () => {
+  it("binds a Responsibility notification destination to its exact source identity", () => {
+    const id = `responsibility:${"a".repeat(64)}`;
+    const notification = { ...item(), source: "notifications", workKey: id, canonicalStatus: undefined, status: "read",
+      sourceRef: { kind: "notification", id: "notification-a" }, references: [{ kind: "notification", id: "notification-a" }],
+      href: `/app/responsibilities/${encodeURIComponent(id)}` };
+    expect(validActivityResponse(withItem(notification), "all")).toBe(true);
+    for (const patch of [{ href: "/app" }, { href: `${notification.href}?different=1` }, { workKey: `responsibility:${"b".repeat(64)}` }, { status: "acted" }]) {
+      expect(validActivityResponse(withItem({ ...notification, ...patch }), "all")).toBe(false);
+    }
+  });
   it("accepts bounded legacy completion as unverified and a complete verified terminal projection", () => {
     expect(validActivityResponse(response(), "all")).toBe(true);
     const terminal = canonicalStatusForTerminalReceipt({

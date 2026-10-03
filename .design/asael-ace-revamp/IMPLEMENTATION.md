@@ -1322,3 +1322,80 @@ suite passed again. Evidence: `library-search-ephemeral-credentials.log`,
 `content-search-frozen-source-lazy/`, `settings-painted-theme-acceptance/`.
 The route budgets remain unchanged; the amended exact head requires a new
 hosted bundle and full-check receipt before merge.
+
+
+PR #40 merged as `099127426ecc5fc5800f2ae40c50b723cf37139b` after all 14
+hosted checks passed on exact head `66623b5f7e17d591746d45dacac40ea1e284bfa0`.
+The retained receipt is `builder-search-exact-head-hosted.json`. Full quality,
+build and unchanged route budgets, core and four family browser gates,
+integration, worker, audit and secret scans all passed. The merge does not
+promote production or complete native/device/asset acceptance.
+
+## Bounded responsibilities and native contract v32 — 4 October 2026
+
+The new owner-scoped domain separates saved drafts, reviewed pins, explicit
+finite read-only activation and independently reviewed owner-inbox delivery.
+The pilot runs only its exact saved `app.meetings.show` binding through the
+governed executor. Cumulative limits, due instants, expiry, canonical ownership,
+source/consent/Agent/procedure revisions and runtime generations are rechecked
+under coordinated locks. Nested managed transactions share one checked context;
+an inner failure poisons the outer commit even when caught. Observations retain
+accepted baseline identity and distinguish no change, material change and
+insufficient evidence. Failed observations never replace the accepted baseline.
+
+Migrations v216–v219 persist drafts, immutable observations, runtime reservations
+and notification admission/candidate/receipt records with forced tenant/actor
+scope. Delivery commits the exact inbox record, disposition and immutable receipt
+atomically. Quiet holds preserve the semantic change identity. Explicit stop
+permanently ends notification authority, releases reservations and retains
+committed usage/history; it does not reset a limit or end the checking runtime.
+No OS push, email, provider mutation or external send is introduced.
+
+The web list/detail exposes current bounds, references, review, lifecycle,
+observations and delivery history. One synchronous action slot spans draft,
+lifecycle and notification actions. An uncertain response can recover only the
+same frozen request/key; an accepted receipt survives a failed refresh. Narrow
+320px layouts at 200% text now wrap without clipping controls. The maintained
+Responsibilities browser suite joins the work-family CI gate.
+
+The expanded real PostgreSQL run passed 143 tests across ten suites at migration
+v219, using production serving-role behavior with no superuser/RLS bypass and a
+single-connection pool except the explicit two-connection race fixtures. Both
+orders of delivery-versus-stop and delivery-versus-preference changes use actual
+blocked PostgreSQL transactions. Replay, source revocation, duplicate checks,
+leases, cumulative limits, scope mismatch, receipt reciprocity and old-client
+bulk-read compatibility passed. Evidence: `responsibility-v219-broad-regression.log`.
+The web suite passed 91 assertions and 11 axe scans; evidence:
+`responsibilities-notification-reflow-final/`.
+
+Native v32 adds ten strict Responsibility operations and three distinct mutation
+capabilities, each with a v32 minimum and existing `manage.workflow` authority.
+Generated paths/schema/query/body/status metadata preserve v30 and v31 byte for
+byte; v29 is retired. Generation, strict lint and focused TypeScript passed;
+60 contract/auth/route checks and six generated Dart checks passed. Evidence:
+`native-v32-publication-validation.log` and `native-v32-publication-units.log`.
+Native Responsibility presentation remains a separate in-progress adaptation.
+The combined release scope additionally passes strict lint, TypeScript and
+414 focused tests across 48 files; evidence:
+`responsibility-exact-release-validation.log`. The integrated owner-facing pilot
+and target-device acceptance are not claimed by these isolated fixtures;
+exact-head hosted acceptance is still required.
+
+## Native Capture validation checkpoint — 4 October 2026
+
+The native Capture update now preserves exact original/processing identities,
+account UUID and API-scoped encrypted queues, reviewed finite legacy cleanup,
+and truthful Note/Record/Upload recovery. Private JSON/multipart/PATCH writes
+pin a freshly verified bootstrap and the exact token used for dispatch; owner,
+role or deployment replacement fences queued work before another frame.
+Recording uses a two-minute absolute limit with bounded cancellation/status
+recovery and retains unknown microphone state when shutdown cannot be confirmed.
+
+The analyzer and all 127 Capture/core transport/offline tests passed without
+framework exceptions. Tests cover account/API replacement before dispatch,
+401 replay identity checks, permission denial, stalled recording stop/cancel,
+encrypted legacy cleanup replacement/failure, response loss, source refresh
+failure and 320px/200% text. Validation found and fixed Material ink ancestry,
+provider-disposal notifications, and a fake-clock timer in the tests. Evidence:
+`native-capture-final-validation.log`. Physical microphone/device acceptance and
+the native feature release are still pending; no hardware success is inferred.

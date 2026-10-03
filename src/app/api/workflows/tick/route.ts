@@ -75,6 +75,8 @@ import { processDueMoltbookHeartbeats } from "@/lib/moltbook/store";
 import { processDueMoltbookAutonomyCycles } from "@/lib/moltbook/autonomy-runner";
 import { processProactiveAgentAdaptationProposalsForTenant } from "@/lib/agents/adaptation-proposals";
 import { processDailyAgentLearningCyclesForTenant } from "@/lib/agents/learning-service";
+import { emptyResponsibilityScheduleSummary, processDueResponsibilities } from "@/lib/responsibilities/scheduler";
+import { emptyResponsibilityNotificationSummary, processDueResponsibilityNotifications } from "@/lib/responsibilities/notification-delivery";
 
 export const runtime = "nodejs";
 // Workflow steps run gpt-5 planning/execution that can exceed 60s; 300s is the
@@ -456,6 +458,8 @@ async function POSTHandler(request: Request) {
           limit: parsed.data.limit || 5,
         })
       : undefined;
+    const responsibilitySchedules = await processDueResponsibilities({ context, limit: parsed.data.limit || 5, deadlineAt: Date.now() + 10_000 });
+    const responsibilityNotifications = await processDueResponsibilityNotifications({ context, limit: parsed.data.limit || 5, deadlineAt: Date.now() + 5_000 });
     const [queue, agentResumes, durableSpecialists, backgroundJobs, recoveredToolClaims] =
       await Promise.all([
       processWorkflowQueue({
@@ -595,6 +599,8 @@ async function POSTHandler(request: Request) {
     return Response.json({
       queue,
       workflowSchedules,
+      responsibilitySchedules,
+      responsibilityNotifications,
       agentResumes,
       durableSpecialists,
       backgroundJobs,
@@ -807,6 +813,10 @@ async function runAllTenantScheduledWork({
   // owners at half the budget so dispatch keeps the rest.
   let workflowSchedules = emptyWorkflowScheduleTotals();
   let workflowSchedulesError: string | undefined;
+  let responsibilitySchedules = emptyResponsibilityScheduleSummary();
+  let responsibilitySchedulesError: string | undefined;
+  let responsibilityNotifications = emptyResponsibilityNotificationSummary();
+  let responsibilityNotificationsError: string | undefined;
   if (runFast) {
     try {
       workflowSchedules = await processDueWorkflowSchedules({
@@ -822,6 +832,20 @@ async function runAllTenantScheduledWork({
         msg: "workflow_schedules_failed",
         error: workflowSchedulesError,
       }));
+    }
+  }
+  if (runFast && Date.now() < deadlineAt) {
+    try {
+      responsibilitySchedules = await processDueResponsibilities({ limit: 5, deadlineAt: Math.min(deadlineAt, Date.now() + 10_000) });
+    } catch (error) {
+      responsibilitySchedulesError = safeTenantMaintenanceError(error);
+    }
+  }
+  if (runFast && Date.now() < deadlineAt) {
+    try {
+      responsibilityNotifications = await processDueResponsibilityNotifications({ limit: 5, deadlineAt: Math.min(deadlineAt, Date.now() + 5_000) });
+    } catch (error) {
+      responsibilityNotificationsError = safeTenantMaintenanceError(error);
     }
   }
   const dispatchTenants = runFast || runBackground
@@ -1035,6 +1059,10 @@ async function runAllTenantScheduledWork({
     memoryDeletionScrubs,
     workflowSchedules,
     workflowSchedulesError,
+    responsibilitySchedules,
+    responsibilitySchedulesError,
+    responsibilityNotifications,
+    responsibilityNotificationsError,
     maintenanceTenantIds,
     nextTenantCursor,
     maintenance,
