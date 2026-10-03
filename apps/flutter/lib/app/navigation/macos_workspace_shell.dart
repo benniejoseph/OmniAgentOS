@@ -191,7 +191,7 @@ class _MacosSidebar extends StatelessWidget {
     final mac = MacosThemeColors.of(context);
     final scheme = Theme.of(context).colorScheme;
     final groups = <(String, AppDestinationGroup)>[
-      ('Workspaces', AppDestinationGroup.workspace),
+      ('More', AppDestinationGroup.workspace),
       ('Extend & automate', AppDestinationGroup.automation),
       ('Review', AppDestinationGroup.review),
       ('System', AppDestinationGroup.system),
@@ -233,8 +233,8 @@ class _MacosSidebar extends StatelessWidget {
             if (!collapsed)
               Padding(
                 padding: const EdgeInsets.fromLTRB(10, 10, 10, 6),
-                child: SizedBox(
-                  height: 34,
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(minHeight: 44),
                   child: TextField(
                     controller: searchController,
                     focusNode: searchFocus,
@@ -261,6 +261,14 @@ class _MacosSidebar extends StatelessWidget {
                     16,
                   ),
                   children: [
+                    _MacosDestinationGroup(
+                      label: 'Workspaces',
+                      primary: true,
+                      collapsed: collapsed,
+                      currentIndex: currentIndex,
+                      query: query,
+                      onSelect: onSelect,
+                    ),
                     for (final group in groups)
                       _MacosDestinationGroup(
                         label: group.$1,
@@ -333,7 +341,8 @@ class _MacosSidebar extends StatelessWidget {
 class _MacosDestinationGroup extends StatelessWidget {
   const _MacosDestinationGroup({
     required this.label,
-    required this.group,
+    this.group,
+    this.primary = false,
     required this.collapsed,
     required this.currentIndex,
     required this.query,
@@ -341,7 +350,8 @@ class _MacosDestinationGroup extends StatelessWidget {
   });
 
   final String label;
-  final AppDestinationGroup group;
+  final AppDestinationGroup? group;
+  final bool primary;
   final bool collapsed;
   final int currentIndex;
   final String query;
@@ -350,14 +360,15 @@ class _MacosDestinationGroup extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final normalized = query.trim().toLowerCase();
-    final indices = destinationIndices(group: group, macosVisible: true)
-        .where((index) {
-          if (normalized.isEmpty) return true;
-          final destination = appDestinations[index];
-          return destination.label.toLowerCase().contains(normalized) ||
-              destination.description.toLowerCase().contains(normalized);
-        })
-        .toList(growable: false);
+    final indices =
+        destinationIndices(group: group, primary: primary, macosVisible: true)
+            .where((index) {
+              if (normalized.isEmpty) return true;
+              final destination = appDestinations[index];
+              return destination.label.toLowerCase().contains(normalized) ||
+                  destination.description.toLowerCase().contains(normalized);
+            })
+            .toList(growable: false);
     if (indices.isEmpty) return const SizedBox.shrink();
 
     return Padding(
@@ -425,57 +436,55 @@ class _MacosDestinationTile extends StatelessWidget {
       size: 18,
       color: selected ? scheme.primary : scheme.onSurfaceVariant,
     );
-    final content = Material(
-      color: selected ? mac.selection : Colors.transparent,
-      borderRadius: BorderRadius.circular(8),
-      child: InkWell(
-        onTap: onTap,
-        mouseCursor: SystemMouseCursors.click,
-        borderRadius: BorderRadius.circular(8),
-        hoverColor: mac.hover,
-        focusColor: mac.focus.withValues(alpha: .16),
-        child: SizedBox(
-          height: 36,
-          child: collapsed
-              ? Center(child: icon)
-              : Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 9),
-                  child: Row(
-                    children: [
-                      icon,
-                      const SizedBox(width: 9),
-                      Expanded(
-                        child: Text(
-                          destination.label,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: 13,
-                            fontWeight: selected
-                                ? FontWeight.w600
-                                : FontWeight.w500,
-                            color: selected
-                                ? scheme.onSurface
-                                : scheme.onSurfaceVariant,
-                          ),
-                        ),
-                      ),
-                      if (shortcut != null)
-                        Text(
-                          shortcut!,
-                          style: Theme.of(context).textTheme.labelSmall
-                              ?.copyWith(
-                                color: scheme.onSurfaceVariant.withValues(
-                                  alpha: .72,
-                                ),
-                                fontWeight: FontWeight.w500,
-                              ),
-                        ),
-                    ],
-                  ),
-                ),
+    // Standard buttons inherit the shared opaque keyboard-focus ring.
+    final content = TextButton(
+      onPressed: onTap,
+      style: ButtonStyle(
+        minimumSize: const WidgetStatePropertyAll(Size(44, 44)),
+        padding: WidgetStatePropertyAll(
+          collapsed
+              ? EdgeInsets.zero
+              : const EdgeInsets.symmetric(horizontal: 9, vertical: 10),
+        ),
+        shape: WidgetStatePropertyAll(
+          RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+        ),
+        backgroundColor: WidgetStateProperty.resolveWith(
+          (states) => states.contains(WidgetState.hovered)
+              ? mac.hover
+              : selected
+              ? mac.selection
+              : Colors.transparent,
         ),
       ),
+      child: collapsed
+          ? Center(child: icon)
+          : Row(
+              children: [
+                icon,
+                const SizedBox(width: 9),
+                Expanded(
+                  child: Text(
+                    destination.label,
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                      color: selected
+                          ? scheme.onSurface
+                          : scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+                if (shortcut != null)
+                  Text(
+                    shortcut!,
+                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+              ],
+            ),
     );
 
     return Padding(
@@ -687,7 +696,7 @@ class _MacosCommandButton extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
                       color: scheme.onSurfaceVariant,
-                      fontSize: 12.5,
+                      fontSize: 13,
                     ),
                   ),
                 ),

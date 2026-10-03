@@ -84,7 +84,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Workspaces'), findsOneWidget);
-    expect(find.text('Projects'), findsOneWidget);
+    expect(find.text('Work'), findsOneWidget);
     expect(find.text('Capabilities'), findsOneWidget);
     expect(find.text('Automations'), findsNothing);
     expect(find.text('Connections'), findsNothing);
@@ -95,13 +95,13 @@ void main() {
       tester,
       path: '/today',
       label: 'Today',
-      hint: 'Open workspace with ⌘1',
+      hint: 'Open workspace',
       selected: true,
     );
 
-    await tester.tap(find.text('Projects'));
+    await tester.tap(find.text('Work'));
     await tester.pumpAndSettle();
-    expect(find.text('Body Projects'), findsOneWidget);
+    expect(find.text('Body Work'), findsOneWidget);
     expect(tester.takeException(), isNull);
     debugDefaultTargetPlatformOverride = null;
   });
@@ -137,25 +137,25 @@ void main() {
       tester,
       path: '/today',
       label: 'Today',
-      hint: 'Open workspace with ⌘1',
+      hint: 'Open workspace',
       selected: true,
     );
     _expectDestinationSemantics(
       tester,
       path: '/projects',
-      label: 'Projects',
-      hint: 'Open workspace with ⌘4',
+      label: 'Work',
+      hint: 'Open workspace with ⌘2',
       selected: false,
     );
 
     await tester.tap(projectsTile);
     await tester.pumpAndSettle();
-    expect(find.text('Body Projects'), findsOneWidget);
+    expect(find.text('Body Work'), findsOneWidget);
     _expectDestinationSemantics(
       tester,
       path: '/projects',
-      label: 'Projects',
-      hint: 'Open workspace with ⌘4',
+      label: 'Work',
+      hint: 'Open workspace with ⌘2',
       selected: true,
     );
     expect(tester.takeException(), isNull);

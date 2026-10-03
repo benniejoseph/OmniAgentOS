@@ -96,6 +96,104 @@ const _approvalQueue = ApprovalQueue(
 );
 
 void main() {
+  test('explicit approval focus binds both kind and full identity', () {
+    const tool = ApprovalItem(
+      id: 'shared/id%2F',
+      kind: 'tool',
+      title: 'Tool',
+      status: 'waiting_approval',
+      riskLevel: 1,
+      input: {},
+    );
+    const workflow = ApprovalItem(
+      id: 'shared/id%2F',
+      kind: 'workflow',
+      title: 'Workflow',
+      status: 'waiting_approval',
+      riskLevel: 1,
+      input: {},
+    );
+    expect(approvalMatchesFocus(tool, tool.id, 'workflow'), isFalse);
+    expect(approvalMatchesFocus(workflow, tool.id, 'workflow'), isTrue);
+    expect(approvalMatchesFocus(workflow, 'shared/id/', 'workflow'), isFalse);
+    expect(approvalMatchesFocus(tool, tool.id, 'unknown'), isFalse);
+    expect(
+      approvalMatchesFocus(tool, tool.id, null),
+      isTrue,
+      reason: 'Legacy ID-only links remain supported.',
+    );
+  });
+
+  testWidgets(
+    'same-ID approval kind switch resets the inspector draft without deciding',
+    (tester) async {
+      tester.view.physicalSize = const Size(1500, 1000);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      const queue = ApprovalQueue(
+        items: [
+          ApprovalItem(
+            id: 'shared/id%2F',
+            kind: 'tool',
+            title: 'Exact tool proposal',
+            status: 'waiting_approval',
+            riskLevel: 1,
+            input: {},
+          ),
+          ApprovalItem(
+            id: 'shared/id%2F',
+            kind: 'workflow',
+            title: 'Exact workflow proposal',
+            status: 'waiting_approval',
+            riskLevel: 1,
+            input: {},
+          ),
+        ],
+        tools: 1,
+        workflows: 1,
+        sloPolicies: 0,
+      );
+      final repository = _InboxRepository(
+        queue: queue,
+        center: _notificationCenter,
+      );
+      final controller = InboxController(repository)..queue = queue;
+      addTearDown(controller.dispose);
+      Widget view(String kind) => MaterialApp(
+        theme: MacosAppTheme.light(),
+        home: MacosInboxView(
+          controller: controller,
+          focusApprovalId: 'shared/id%2F',
+          focusApprovalKind: kind,
+        ),
+      );
+      await tester.pumpWidget(view('workflow'));
+      expect(find.text('Exact workflow proposal'), findsNWidgets(2));
+      expect(find.text('Exact tool proposal'), findsOneWidget);
+      await tester.enterText(
+        find.byKey(const Key('macos-approval-note')),
+        'Draft for the workflow only',
+      );
+      await tester.pumpWidget(view('tool'));
+      expect(find.text('Exact tool proposal'), findsNWidgets(2));
+      expect(
+        tester
+            .widget<TextField>(find.byKey(const Key('macos-approval-note')))
+            .controller!
+            .text,
+        isEmpty,
+      );
+      await tester.pumpWidget(view('slo_policy'));
+      expect(find.text('Select an approval'), findsOneWidget);
+      expect(find.textContaining('not in this view'), findsOneWidget);
+      expect(find.byKey(const Key('macos-approval-note')), findsNothing);
+      expect(repository.decisions, isEmpty);
+      expect(repository.notificationActions, isEmpty);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   testWidgets('fits the minimum Mac workspace viewport', (tester) async {
     tester.view.physicalSize = const Size(786, 700);
     tester.view.devicePixelRatio = 1;

@@ -16,10 +16,12 @@ class MacosInboxView extends StatefulWidget {
     super.key,
     required this.controller,
     this.focusApprovalId,
+    this.focusApprovalKind,
   });
 
   final InboxController controller;
   final String? focusApprovalId;
+  final String? focusApprovalKind;
 
   @override
   State<MacosInboxView> createState() => _MacosInboxViewState();
@@ -30,6 +32,7 @@ class _MacosInboxViewState extends State<MacosInboxView> {
       ? _InboxSection.notifications
       : _InboxSection.approvals;
   late String? _selectedApprovalId = widget.focusApprovalId;
+  late String? _selectedApprovalKind = widget.focusApprovalKind;
   String? _selectedNotificationId;
   String _notificationFilter = 'all';
   String _approvalFilter = 'all';
@@ -40,9 +43,11 @@ class _MacosInboxViewState extends State<MacosInboxView> {
   void didUpdateWidget(covariant MacosInboxView oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (widget.focusApprovalId != null &&
-        widget.focusApprovalId != oldWidget.focusApprovalId) {
+        (widget.focusApprovalId != oldWidget.focusApprovalId ||
+            widget.focusApprovalKind != oldWidget.focusApprovalKind)) {
       _section = _InboxSection.approvals;
       _selectedApprovalId = widget.focusApprovalId;
+      _selectedApprovalKind = widget.focusApprovalKind;
     }
   }
 
@@ -151,7 +156,10 @@ class _MacosInboxViewState extends State<MacosInboxView> {
                               ),
                   )
                 : _ApprovalInspector(
-                    key: ValueKey(selectedApproval?.id),
+                    key: ValueKey((
+                      selectedApproval?.kind,
+                      selectedApproval?.id,
+                    )),
                     item: selectedApproval,
                     busy:
                         selectedApproval != null &&
@@ -178,10 +186,17 @@ class _MacosInboxViewState extends State<MacosInboxView> {
               approvals: approvals,
               selectedNotificationId: selectedNotification?.id,
               selectedApprovalId: selectedApproval?.id,
+              selectedApprovalKind: selectedApproval?.kind,
+              requestedApprovalMissing:
+                  queue != null &&
+                  _selectedApprovalId != null &&
+                  selectedApproval == null,
               onSelectNotification: (item) =>
                   setState(() => _selectedNotificationId = item.id),
-              onSelectApproval: (item) =>
-                  setState(() => _selectedApprovalId = item.id),
+              onSelectApproval: (item) => setState(() {
+                _selectedApprovalId = item.id;
+                _selectedApprovalKind = item.kind;
+              }),
             ),
           ),
         ),
@@ -218,8 +233,17 @@ class _MacosInboxViewState extends State<MacosInboxView> {
       return matchesFilter && matchesSearch;
     }).toList();
     visible.sort((left, right) {
-      if (left.id == widget.focusApprovalId) return -1;
-      if (right.id == widget.focusApprovalId) return 1;
+      final leftFocused = approvalMatchesFocus(
+        left,
+        widget.focusApprovalId,
+        widget.focusApprovalKind,
+      );
+      final rightFocused = approvalMatchesFocus(
+        right,
+        widget.focusApprovalId,
+        widget.focusApprovalKind,
+      );
+      if (leftFocused != rightFocused) return leftFocused ? -1 : 1;
       final leftAt = left.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
       final rightAt = right.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
       return rightAt.compareTo(leftAt);
@@ -240,9 +264,15 @@ class _MacosInboxViewState extends State<MacosInboxView> {
   ApprovalItem? _selectedApproval(List<ApprovalItem> values) {
     if (values.isEmpty) return null;
     for (final item in values) {
-      if (item.id == _selectedApprovalId) return item;
+      if (approvalMatchesFocus(
+        item,
+        _selectedApprovalId,
+        _selectedApprovalKind,
+      )) {
+        return item;
+      }
     }
-    return values.first;
+    return _selectedApprovalId == null ? values.first : null;
   }
 
   void _moveSelection(
@@ -263,12 +293,19 @@ class _MacosInboxViewState extends State<MacosInboxView> {
     }
     if (approvals.isEmpty) return;
     final current = approvals.indexWhere(
-      (item) => item.id == _selectedApprovalId,
+      (item) => approvalMatchesFocus(
+        item,
+        _selectedApprovalId,
+        _selectedApprovalKind,
+      ),
     );
     final next = current < 0
         ? 0
         : (current + delta).clamp(0, approvals.length - 1);
-    setState(() => _selectedApprovalId = approvals[next].id);
+    setState(() {
+      _selectedApprovalId = approvals[next].id;
+      _selectedApprovalKind = approvals[next].kind;
+    });
   }
 
   Future<void> _showDispositionHistory(BuildContext context) =>
@@ -677,6 +714,8 @@ class _InboxBody extends StatelessWidget {
     required this.approvals,
     required this.selectedNotificationId,
     required this.selectedApprovalId,
+    required this.selectedApprovalKind,
+    required this.requestedApprovalMissing,
     required this.onSelectNotification,
     required this.onSelectApproval,
   });
@@ -689,6 +728,8 @@ class _InboxBody extends StatelessWidget {
   final List<ApprovalItem> approvals;
   final String? selectedNotificationId;
   final String? selectedApprovalId;
+  final String? selectedApprovalKind;
+  final bool requestedApprovalMissing;
   final ValueChanged<PersonalNotification> onSelectNotification;
   final ValueChanged<ApprovalItem> onSelectApproval;
 
@@ -712,6 +753,13 @@ class _InboxBody extends StatelessWidget {
 
     return Column(
       children: [
+        if (requestedApprovalMissing)
+          const Padding(
+            padding: EdgeInsets.all(16),
+            child: Text(
+              'The selected approval is not in this view. Refresh or change the filter to check its availability.',
+            ),
+          ),
         if (controller.hasLoadError || controller.actionError != null)
           _InboxNotice(
             stale: controller.hasData && controller.hasLoadError,
@@ -767,9 +815,15 @@ class _InboxBody extends StatelessWidget {
                     itemBuilder: (context, index) {
                       final item = approvals[index];
                       return _ApprovalRow(
-                        key: Key('macos-inbox-approval-${item.id}'),
+                        key: Key(
+                          'macos-inbox-approval-${item.kind}-${item.id}',
+                        ),
                         item: item,
-                        selected: item.id == selectedApprovalId,
+                        selected: approvalMatchesFocus(
+                          item,
+                          selectedApprovalId,
+                          selectedApprovalKind,
+                        ),
                         busy: controller.deciding.contains(item.id),
                         onTap: () => onSelectApproval(item),
                       );
