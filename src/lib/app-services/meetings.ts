@@ -19,10 +19,16 @@ import {
 } from "@/lib/meetings/commitment-contracts";
 import {
   createMeetingCommitmentProposal,
+  claimMeetingCommitmentResolution,
+  recordMeetingCommitmentResolutionPhase,
   getMeetingCommitmentView,
   listMeetingCommitmentViews,
   recordMeetingCommitmentResolution,
 } from "@/lib/meetings/commitment-store";
+import {
+  type MeetingResolutionDecision, type MeetingResolutionIntent,
+  type MeetingResolutionPhase, type MeetingResolutionReconciliation,
+} from "@/lib/meetings/commitment-resolution-intent";
 import {
   meetingDraftInputSchema,
   meetingRevisionSchema,
@@ -300,156 +306,135 @@ export async function proposeMeetingCommitmentService(
   });
 }
 
+export class MeetingCommitmentReconciliationRequiredError extends MeetingConflictError {
+  readonly reconciliationCode = "meeting_commitment_reconciliation_required";
+  constructor(readonly reconciliation?: MeetingResolutionReconciliation, legacy = false) {
+    super(legacy
+      ? "This accepted legacy resolution has no exact recipient decision receipt. Inspect its existing effects; it cannot accept a new recipient identity."
+      : "This resolution was already claimed and may have partial or uncertain effects. Refresh its phase receipts; no child action will run again automatically.");
+    this.name = "MeetingCommitmentReconciliationRequiredError";
+  }
+}
+
 export async function resolveMeetingCommitmentService(
   caller: AppServiceCaller,
   input: z.input<typeof meetingCommitmentResolveServiceInputSchema>,
 ) {
   const value = meetingCommitmentResolveServiceInputSchema.parse(input);
-  const authorized = authorizeAppServiceCall(
-    caller,
-    getAppServiceOperationContract("app.meetings.commitments.resolve"),
-  );
+  const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.meetings.commitments.resolve"));
   const access = await meetingAccess(caller, value.workspaceId, "write");
   requireMeetingWrite(access);
   const authority = mutationAuthority(caller, access, "meeting.commitment.resolve");
-  const view = await getMeetingCommitmentView(
-    authority,
-    value.meetingId,
-    value.proposalId,
-  );
+  const view = await getMeetingCommitmentView(authority, value.meetingId, value.proposalId);
   if (!view || view.proposal.proposalSha256 !== value.expectedProposalSha256) {
     throw new MeetingConflictError("The exact commitment proposal was not found.");
   }
-  if (view.resolution) {
-    const draft = await assertResolutionReplay(caller, authority, {
-      ...view,
-      resolution: view.resolution,
-    }, value);
-    return completeAppServiceCall(authorized, {
-      context: publicMeetingContext(access),
-      commitment: view,
-      ...(draft ? { draft } : {}),
-    });
-  }
-  if (value.decision === "dismissed") {
-    const resolution = dismissedResolution(view, authority.canonicalActorId);
-    const commitment = await recordMeetingCommitmentResolution({
-      authority,
-      proposal: view.proposal,
-      resolution,
-    });
-    return completeAppServiceCall(authorized, {
-      context: publicMeetingContext(access),
-      commitment,
-    });
-  }
-
-  const meeting = await getMeeting(authority, value.meetingId);
-  if (!meeting) throw new MeetingNotFoundError();
-  if (meeting.projectId !== view.proposal.projectId) {
-    throw new MeetingConflictError("The meeting project changed. Create a fresh proposal.");
-  }
-  const sources = await readMeetingLinkedSources(authority, meeting);
-  const media = findCommitmentMedia(sources, view.proposal.mediaRevisionId);
-  const actionItem = media.actionItems.find((item) =>
-    item.actionItemId === view.proposal.actionItemId
-  );
-  if (
-    media.outputSha256 !== view.proposal.mediaOutputSha256 ||
-    !actionItem ||
-    canonicalJsonSha256(actionItem) !== view.proposal.actionItemSha256
-  ) {
-    throw new MeetingConflictError("The commitment evidence changed. Create a fresh proposal.");
-  }
-  const selectedOwnerId = value.ownerParticipantId ||
-    view.proposal.ownership.participantId;
-  const selectedOwner = meeting.participants.find((participant) =>
-    participant.participantId === selectedOwnerId
-  );
-  if (!selectedOwner) {
+  const selectedOwnerId = value.decision === "confirmed"
+    ? value.ownerParticipantId || view.proposal.ownership.participantId : null;
+  if (value.decision === "confirmed" && !selectedOwnerId) {
     throw new MeetingConflictError("Confirm one current meeting participant as the owner.");
   }
-  const ownershipAuthority = selectedOwner.participantId ===
-      view.proposal.ownership.participantId &&
-      view.proposal.ownership.authority === "explicit_transcript"
-    ? "explicit_transcript" as const
-    : "user_confirmed" as const;
-  const selectedDueAt = value.dueAt === undefined
-    ? view.proposal.dueDate.dueAt
-    : value.dueAt
-      ? new Date(value.dueAt).toISOString()
-      : null;
-  const dueDateAuthority = selectedDueAt === null
-    ? null
-    : selectedDueAt === view.proposal.dueDate.dueAt &&
-        view.proposal.dueDate.authority === "explicit_transcript"
-      ? "explicit_transcript" as const
-      : "user_confirmed" as const;
-  const operationKey = commitmentOperationKey(view.proposal.proposalSha256);
-  const workResult = await createWorkItemService(
-    childCaller(caller, `${operationKey}:work`, view.proposal.projectId, "meeting.commitment.work_item"),
-    {
-      projectId: view.proposal.projectId,
-      title: commitmentWorkItemTitle(view),
-      detail: commitmentWorkItemDetail(meeting, view, selectedOwner.displayName),
-      priority: "medium",
-      agentId: "atlas",
-      ...(selectedDueAt ? { dueAt: selectedDueAt } : {}),
-    },
-  );
-  const workItem = workResult.data.workItem;
-  if (!workItem) {
-    throw new MeetingConflictError("The canonical WorkItem could not be created.");
+  const selectedDueAt = value.decision === "dismissed" ? null : value.dueAt === undefined
+    ? view.proposal.dueDate.dueAt : value.dueAt ? new Date(value.dueAt).toISOString() : null;
+  const request: MeetingResolutionDecision = value.decision === "dismissed" ? { decision: "dismissed" } : {
+    decision: "confirmed", ownerParticipantId: selectedOwnerId!, dueAt: selectedDueAt,
+    communication: value.communication ? { ...value.communication, connectionId: value.communication.connectionId || null } : null,
+  };
+  const claim = () => claimMeetingCommitmentResolution({ authority, proposal: view.proposal, request });
+  const replay = async (result: Awaited<ReturnType<typeof claim>>) => {
+    if (result.state === "incomplete") throw new MeetingCommitmentReconciliationRequiredError(result.view.reconciliation);
+    if (!result.view.resolution) throw new MeetingConflictError("The accepted resolution is unavailable.");
+    if (result.state === "legacy" && (result.view.resolution.draftId || value.decision === "confirmed" && value.communication)) {
+      throw new MeetingCommitmentReconciliationRequiredError(undefined, true);
+    }
+    const draft = await assertResolutionReplay(caller, authority, {
+      ...result.view, resolution: result.view.resolution,
+    }, value);
+    return completeAppServiceCall(authorized, { context: publicMeetingContext(access), commitment: result.view, ...(draft ? { draft } : {}) });
+  };
+  // Existing claims are reconciled before validating a new decision against
+  // mutable meeting state. Only the invocation that inserted a claim may act.
+  if (view.resolution || view.reconciliation) return replay(await claim());
+
+  const meeting = value.decision === "confirmed" ? await getMeeting(authority, value.meetingId) : undefined;
+  const selectedOwner = meeting?.participants.find((participant) => participant.participantId === selectedOwnerId);
+  if (value.decision === "confirmed") {
+    if (!meeting) throw new MeetingNotFoundError();
+    if (meeting.projectId !== view.proposal.projectId) throw new MeetingConflictError("The meeting project changed. Create a fresh proposal.");
+    if (!selectedOwner) throw new MeetingConflictError("Confirm one current meeting participant as the owner.");
+    const sources = await readMeetingLinkedSources(authority, meeting);
+    const media = findCommitmentMedia(sources, view.proposal.mediaRevisionId);
+    const action = media.actionItems.find((item) => item.actionItemId === view.proposal.actionItemId);
+    if (media.outputSha256 !== view.proposal.mediaOutputSha256 || !action || canonicalJsonSha256(action) !== view.proposal.actionItemSha256) {
+      throw new MeetingConflictError("The commitment evidence changed. Create a fresh proposal.");
+    }
+    if (value.communication) await eligibleCommitmentPolicy(caller, meeting, value.communication);
   }
-  const draft = value.communication
-    ? await createCommitmentDraft(
-        caller,
-        meeting,
-        value.communication,
-        `${operationKey}:draft`,
-      )
-    : null;
-  const savedMeeting = await attachCommitmentFollowUp({
-    authority,
-    meeting,
-    view,
-    ownerParticipantId: selectedOwner.participantId,
-    dueAt: selectedDueAt,
-    workItemId: workItem.id,
-    draftId: draft?.id || null,
-    operationKey,
-  });
-  const resolution = withMeetingCommitmentResolutionDigest({
-    schemaVersion: 1,
-    contractVersion: "p10.8-meeting-commitment-conversion:1",
-    resolutionId: meetingCommitmentResolutionId(view.proposal.proposalId),
-    proposalId: view.proposal.proposalId,
-    proposalSha256: view.proposal.proposalSha256,
-    decision: "confirmed",
-    ownerParticipantId: selectedOwner.participantId,
-    ownerDisplayName: selectedOwner.displayName,
-    ownershipAuthority,
-    dueAt: selectedDueAt,
-    dueDateAuthority,
-    workItemId: workItem.id,
-    draftId: draft?.id || null,
-    communicationPolicyId: value.communication?.policyId || null,
-    meetingRevisionId: savedMeeting.meetingRevisionId,
-    resolvedByActorId: authority.canonicalActorId,
-    resolvedAt: new Date().toISOString(),
-  });
-  const commitment = await recordMeetingCommitmentResolution({
-    authority,
-    proposal: view.proposal,
-    resolution,
-  });
-  return completeAppServiceCall(authorized, {
-    context: publicMeetingContext(access),
-    commitment,
-    workItem,
-    draft,
-    meeting: savedMeeting,
-  });
+  const claimed = await claim();
+  if (claimed.state !== "claimed") return replay(claimed);
+  const intent: MeetingResolutionIntent = claimed.intent;
+  let reconciliation = claimed.view.reconciliation;
+  const phase = async (name: MeetingResolutionPhase["phase"], resourceId?: string, evidenceSha256?: string) => {
+    reconciliation = await recordMeetingCommitmentResolutionPhase({ authority, intent, phase: name, resourceId, evidenceSha256 });
+  };
+  try {
+    if (value.decision === "dismissed") {
+      await phase("resolution_started");
+      const commitment = await recordMeetingCommitmentResolution({
+        authority, proposal: view.proposal, intent,
+        resolution: dismissedResolution(view, authority.canonicalActorId),
+      });
+      return completeAppServiceCall(authorized, { context: publicMeetingContext(access), commitment });
+    }
+    // Each phase is persisted before and after its child boundary. These are
+    // separate transactions; a missing acknowledgement is never replay authority.
+    const exactMeeting = meeting!, exactOwner = selectedOwner!;
+    const ownershipAuthority = exactOwner.participantId === view.proposal.ownership.participantId &&
+      view.proposal.ownership.authority === "explicit_transcript" ? "explicit_transcript" as const : "user_confirmed" as const;
+    const dueDateAuthority = selectedDueAt === null ? null : selectedDueAt === view.proposal.dueDate.dueAt &&
+      view.proposal.dueDate.authority === "explicit_transcript" ? "explicit_transcript" as const : "user_confirmed" as const;
+    const operationKey = commitmentOperationKey(view.proposal.proposalSha256);
+    await phase("work_started");
+    const workResult = await createWorkItemService(
+      childCaller(caller, `${operationKey}:work`, view.proposal.projectId, "meeting.commitment.work_item"),
+      { projectId: view.proposal.projectId, title: commitmentWorkItemTitle(view),
+        detail: commitmentWorkItemDetail(exactMeeting, view, exactOwner.displayName), priority: "medium", agentId: "atlas",
+        ...(selectedDueAt ? { dueAt: selectedDueAt } : {}), },
+    );
+    const workItem = workResult.data.workItem;
+    if (!workItem) throw new MeetingConflictError("The canonical WorkItem could not be created.");
+    await phase("work_completed", workItem.id, workResult.receipt.receiptSha256);
+    const draftResult = value.communication ? await (async () => {
+      await phase("draft_started");
+      const result = await createCommitmentDraft(caller, exactMeeting, value.communication!, `${operationKey}:draft`);
+      await phase("draft_completed", result.data.draft.id, result.receipt.receiptSha256);
+      return result;
+    })() : null;
+    const draft = draftResult?.data.draft || null;
+    await phase("meeting_started");
+    const savedMeeting = await attachCommitmentFollowUp({
+      authority, meeting: exactMeeting, view, ownerParticipantId: exactOwner.participantId,
+      dueAt: selectedDueAt, workItemId: workItem.id, draftId: draft?.id || null, operationKey,
+    });
+    await phase("meeting_completed", savedMeeting.meetingRevisionId, savedMeeting.meetingSha256);
+    const resolution = withMeetingCommitmentResolutionDigest({
+      schemaVersion: 1, contractVersion: "p10.8-meeting-commitment-conversion:1",
+      resolutionId: meetingCommitmentResolutionId(view.proposal.proposalId),
+      proposalId: view.proposal.proposalId, proposalSha256: view.proposal.proposalSha256,
+      decision: "confirmed", ownerParticipantId: exactOwner.participantId, ownerDisplayName: exactOwner.displayName,
+      ownershipAuthority, dueAt: selectedDueAt, dueDateAuthority, workItemId: workItem.id,
+      draftId: draft?.id || null, communicationPolicyId: value.communication?.policyId || null,
+      meetingRevisionId: savedMeeting.meetingRevisionId, resolvedByActorId: authority.canonicalActorId, resolvedAt: new Date().toISOString(),
+    });
+    await phase("resolution_started");
+    const commitment = await recordMeetingCommitmentResolution({ authority, proposal: view.proposal, resolution, intent });
+    return completeAppServiceCall(authorized, { context: publicMeetingContext(access), commitment, workItem, draft, meeting: savedMeeting });
+  } catch {
+    // Even the progress write may be uncertain. Preserve the last durable phase
+    // and return a bounded reconciliation-required error, never a retry promise.
+    await phase("interrupted").catch(() => undefined);
+    throw new MeetingCommitmentReconciliationRequiredError(reconciliation);
+  }
 }
 
 function findCommitmentMedia(
@@ -493,11 +478,10 @@ function childCaller(
   });
 }
 
-async function createCommitmentDraft(
+async function eligibleCommitmentPolicy(
   caller: AppServiceCaller,
   meeting: MeetingRevision,
   communication: z.output<typeof commitmentCommunicationSchema>,
-  idempotencyKey: string,
 ) {
   const recipient = meeting.participants.find((participant) =>
     participant.participantId === communication.recipientParticipantId
@@ -524,6 +508,16 @@ async function createCommitmentDraft(
       "The selected recipient does not have an eligible follow-up communication policy.",
     );
   }
+  return policy;
+}
+
+async function createCommitmentDraft(
+  caller: AppServiceCaller,
+  meeting: MeetingRevision,
+  communication: z.output<typeof commitmentCommunicationSchema>,
+  idempotencyKey: string,
+) {
+  const policy = await eligibleCommitmentPolicy(caller, meeting, communication);
   const result = await createCommunicationDraftService(
     childCaller(caller, idempotencyKey, meeting.projectId!, "meeting.commitment.draft"),
     {
@@ -535,7 +529,7 @@ async function createCommitmentDraft(
       body: communication.body,
     },
   );
-  return result.data.draft;
+  return result;
 }
 
 async function attachCommitmentFollowUp(input: {

@@ -2,6 +2,7 @@
 
 import copy
 import hashlib
+import json
 import re
 from collections import defaultdict, deque
 from urllib.parse import parse_qs, quote, unquote, urlsplit
@@ -15,7 +16,9 @@ OTHER = "meeting:browser-other"
 OUTSIDE = "meeting:outside-readable-window"
 CREATED = "meeting:browser-created"
 WORKSPACE = "workspace:browser-meetings"
-PROJECT = "project:browser-meetings"
+PROJECT = "66666666-6666-4666-8666-666666666666"
+KNOWN_WORK = "77777777-7777-4777-8777-777777777777"
+SHARED_MEETING_OWNER = "actor:88888888-8888-4888-8888-888888888888"
 OWNER = "participant:owner"
 GUEST = "participant:guest"
 RECORDING = "recording:browser-meeting"
@@ -122,6 +125,7 @@ class MeetingFixtures(Fixtures):
 
     def proposal(self, number, version=1):
         return {"proposal": {"proposalId": f"proposal:{number}", "proposalSha256": digest(f"proposal:{number}:{version}"),
+                "proposedByActorId": self.actor_id,
                 "meetingId": MAIN, "meetingRevisionId": self.records[MAIN]["meetingRevisionId"], "projectId": PROJECT,
                 "mediaRevisionId": MEDIA, "actionItemId": f"action:{number}", "title": f"Review action {number}, source version {version}.",
                 "citations": [citation()], "ownership": {"participantId": OWNER, "displayName": "Review owner", "authority": "explicit_transcript"},
@@ -189,6 +193,18 @@ class MeetingFixtures(Fixtures):
             body.update(ownerParticipantId=OWNER, dueAt=None, communication=communication)
         return body
 
+    def resolution_digest(self, proposal, body):
+        communication = copy.deepcopy(body.get("communication"))
+        if communication:
+            communication.update(connectionId=None, subject=communication["subject"].strip(), body=communication["body"].strip())
+        request = {"decision": "dismissed"} if body["decision"] == "dismissed" else {
+            "decision": "confirmed", "ownerParticipantId": body.get("ownerParticipantId") or proposal["ownership"]["participantId"],
+            "dueAt": body.get("dueAt", proposal["dueDate"]["dueAt"]), "communication": communication}
+        intent = {"schemaVersion": 1, "contract": "meeting-commitment-resolution-intent:1", "tenantId": self.tenant_id,
+                  "workspaceId": WORKSPACE, "meetingId": proposal["meetingId"], "proposalId": proposal["proposalId"],
+                  "proposalSha256": proposal["proposalSha256"], "ownerActorId": proposal["proposedByActorId"], "request": request}
+        return digest(json.dumps(intent, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
+
     def action_result(self, plan):
         kind, mode, body, identity = (plan[key] for key in ("kind", "mode", "body", "identity"))
         if mode == "conflict":
@@ -225,6 +241,17 @@ class MeetingFixtures(Fixtures):
             return {"context": self.context, "commitment": view}, 201
         view = copy.deepcopy(next(item for item in self.proposals if item["proposal"]["proposalId"] == body["proposalId"]))
         proposal = view["proposal"]
+        request_sha256 = self.resolution_digest(proposal, body)
+        if mode in ("lost_response", "reconciliation_pending"):
+            view["reconciliation"] = {"schemaVersion": 1, "requestSha256": request_sha256,
+                "decision": body["decision"], "state": "uncertain", "automaticRetryAllowed": False, "createdAt": STAMP,
+                "phases": [{"phase": "work_started", "at": STAMP, "resourceId": None, "evidenceSha256": None},
+                           {"phase": "work_completed", "at": STAMP, "resourceId": KNOWN_WORK, "evidenceSha256": digest("known-work")},
+                           {"phase": "interrupted", "at": STAMP, "resourceId": None, "evidenceSha256": None}]}
+            if mode == "reconciliation_pending":
+                view["reconciliation"].update(state="pending", phases=[])
+            self.proposals = [view if item["proposal"]["proposalId"] == proposal["proposalId"] else item for item in self.proposals]
+            return {"error": "An existing immutable decision requires inspection.", "code": "meeting_commitment_reconciliation_required", "reconciliation": view["reconciliation"]}, 409
         confirmed = body["decision"] == "confirmed"
         communication = body.get("communication")
         number = proposal["proposalId"].split(":")[-1]
@@ -239,6 +266,19 @@ class MeetingFixtures(Fixtures):
                       "communicationPolicyId": communication["policyId"] if communication else None,
                       "meetingRevisionId": f"{MAIN}:v{self.records[MAIN]['revision'] + 1}" if confirmed else None}
         view["resolution"] = resolution
+        phases = ["work_started", "work_completed"] if confirmed else []
+        if communication:
+            phases.extend(["draft_started", "draft_completed"])
+        if confirmed:
+            phases.extend(["meeting_started", "meeting_completed"])
+        phases.append("resolution_started")
+        resources = {"work_completed": resolution["workItemId"], "draft_completed": resolution["draftId"],
+                     "meeting_completed": resolution["meetingRevisionId"]}
+        view["reconciliation"] = {"schemaVersion": 1, "requestSha256": request_sha256,
+            "decision": body["decision"], "state": "resolved", "automaticRetryAllowed": False, "createdAt": STAMP,
+            "phases": [{"phase": phase, "at": STAMP, "resourceId": resources.get(phase),
+                        "evidenceSha256": digest(phase + ":" + proposal["proposalSha256"]) if phase.endswith("_completed") else None}
+                       for phase in phases]}
         result = {"commitment": view}
         if communication:
             result["draft"] = {"id": resolution["draftId"], "policyId": communication["policyId"], "recipient": EMAIL,
@@ -294,6 +334,8 @@ class MeetingFixtures(Fixtures):
         result, status = self.action_result(plan)
         self.writes.append({"kind": kind, "path": path, "body": body, "idempotency-key": key, "disposition": "synthetic_" + plan["mode"]})
         self.fail(*plan["after_fail"])
+        if plan["mode"] == "lost_response":
+            return route.abort("failed")
         if plan["hold"]:
             self.held[plan["hold"]] = (route, result, status)
             return

@@ -32,18 +32,30 @@ function context(
 describe("native mutation capability enrollment", () => {
   it("retains the Companion floor at v31 for both supported clients on every native platform", () => {
     for (const platform of ["android", "ios", "macos"] as const) {
-      for (const version of [31, 32]) expect(nativeMutationEnrollment(context(version, undefined, platform), "companion.preferences.update", asOf)).toEqual({ state: "active", minimumContractVersion: 31 });
-      for (const client of [context(30, undefined, platform), context(33, undefined, platform), context(31, "2026-01-01T00:00:00.000Z", platform), context(32, "2026-01-01T00:00:00.000Z", platform)]) {
+      for (const version of [32, 33]) expect(nativeMutationEnrollment(context(version, undefined, platform), "companion.preferences.update", asOf)).toEqual({ state: "active", minimumContractVersion: 31 });
+      for (const client of [context(31, undefined, platform), context(34, undefined, platform), context(32, "2026-01-01T00:00:00.000Z", platform), context(33, "2026-01-01T00:00:00.000Z", platform)]) {
         expect(nativeMutationEnrollment(client, "companion.preferences.update", asOf)).toMatchObject({ state: "held", minimumContractVersion: 31 });
       }
     }
   });
-  it("enrolls the three distinct Responsibility capabilities only for fresh v32 clients", () => {
+  it("enrolls the three distinct Responsibility capabilities on both supported clients at the v32 floor", () => {
     for (const platform of ["android", "ios", "macos"] as const) {
       for (const capability of ["responsibilities.drafts.manage", "responsibilities.lifecycle.manage", "responsibilities.notifications.manage"] as const) {
-        expect(nativeMutationEnrollment(context(32, undefined, platform), capability, asOf)).toEqual({ state: "active", minimumContractVersion: 32 });
-        for (const client of [context(31, undefined, platform), context(30, undefined, platform), context(33, undefined, platform), context(32, "2026-01-01T00:00:00.000Z", platform)]) {
+        for (const version of [32, 33]) expect(nativeMutationEnrollment(context(version, undefined, platform), capability, asOf)).toEqual({ state: "active", minimumContractVersion: 32 });
+        for (const client of [context(31, undefined, platform), context(30, undefined, platform), context(34, undefined, platform), context(32, "2026-01-01T00:00:00.000Z", platform), context(33, "2026-01-01T00:00:00.000Z", platform)]) {
           expect(nativeMutationEnrollment(client, capability, asOf)).toMatchObject({ state: "held", minimumContractVersion: 32 });
+        }
+        expect(nativeMutationEnrollment({ source: "session" }, capability, asOf).state).toBe("held");
+        expect(nativeMutationEnrollment({ source: "mobile" }, capability, asOf).state).toBe("held");
+      }
+    }
+  });
+  it("enrolls each scoped Meeting mutation only on a freshly attested v33 client", () => {
+    for (const platform of ["android", "ios", "macos"] as const) {
+      for (const capability of ["meetings.records.manage", "meetings.commitments.propose", "meetings.commitments.resolve"] as const) {
+        expect(nativeMutationEnrollment(context(33, undefined, platform), capability, asOf)).toEqual({ state: "active", minimumContractVersion: 33 });
+        for (const client of [context(32, undefined, platform), context(31, undefined, platform), context(34, undefined, platform), context(33, "2026-01-01T00:00:00.000Z", platform)]) {
+          expect(nativeMutationEnrollment(client, capability, asOf)).toMatchObject({ state: "held", minimumContractVersion: 33 });
         }
         expect(nativeMutationEnrollment({ source: "session" }, capability, asOf).state).toBe("held");
         expect(nativeMutationEnrollment({ source: "mobile" }, capability, asOf).state).toBe("held");

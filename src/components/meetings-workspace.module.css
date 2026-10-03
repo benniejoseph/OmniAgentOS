@@ -156,6 +156,12 @@
 .commitmentActions, .editorFooter { justify-content: flex-end; padding-block-start: 1rem; margin-block-start: 1rem; border-block-start: 1px solid var(--line); gap: .5rem; }
 .resolutionFacts strong, .entityList strong, .entityList small { display: block; }
 .resolutionFacts span { padding-block: .5rem; }
+.reconciliation { display: grid; gap: .75rem; margin-block-start: 1rem; padding: 1rem; border: 1px solid var(--line); border-radius: .625rem; }
+.reconciliation dl, .phaseList { display: grid; gap: .75rem; }
+.phaseList { padding-inline-start: 1.25rem; }
+.phaseList li { padding-block: .5rem; }
+.phaseList :where(strong, time, span) { display: block; }
+.phaseList :where(a) { display: inline-flex; align-items: center; min-block-size: 2.75rem; padding-block: .5rem; }
 .recordList > div, .followUpList > div { display: flex; gap: .75rem; justify-content: space-between; padding-block: .75rem; border-block-end: 1px solid var(--line); }
 .recordList p, .followUpList p { color: var(--muted); margin-block-start: .25rem; }
 .followUpList em { font-style: normal; color: var(--muted); font-size: .8125rem; }

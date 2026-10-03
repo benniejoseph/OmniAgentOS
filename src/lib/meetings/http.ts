@@ -1,4 +1,8 @@
-import { MeetingWriteDeniedError } from "@/lib/app-services/meetings";
+import {
+  MeetingCommitmentReconciliationRequiredError,
+  MeetingWriteDeniedError,
+} from "@/lib/app-services/meetings";
+import { meetingResolutionReconciliationSchema } from "@/lib/meetings/commitment-resolution-intent";
 import {
   MeetingConflictError,
   MeetingUnavailableError,
@@ -18,6 +22,22 @@ export function meetingFailureResponse(error: unknown, operation: string) {
   }
   if (error instanceof MeetingWriteDeniedError) {
     return Response.json({ error: error.message }, { status: 403, headers: privateNoStoreHeaders });
+  }
+  if (error instanceof MeetingCommitmentReconciliationRequiredError) {
+    const reconciliation = error.reconciliation === undefined
+      ? undefined
+      : meetingResolutionReconciliationSchema.safeParse(error.reconciliation);
+    if (reconciliation && !reconciliation.success) {
+      return Response.json(
+        { error: "Meeting resolution evidence is temporarily unavailable." },
+        { status: 503, headers: privateNoStoreHeaders },
+      );
+    }
+    return Response.json({
+      error: error.message,
+      code: error.reconciliationCode,
+      ...(reconciliation?.success ? { reconciliation: reconciliation.data } : {}),
+    }, { status: 409, headers: privateNoStoreHeaders });
   }
   if (error instanceof MeetingConflictError) {
     return Response.json({ error: error.message }, { status: 409, headers: privateNoStoreHeaders });

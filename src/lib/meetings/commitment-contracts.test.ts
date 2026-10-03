@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   meetingCommitmentProposalId,
+  meetingCommitmentViewSchema,
   meetingCommitmentResolutionId,
   withMeetingCommitmentProposalDigest,
   withMeetingCommitmentResolutionDigest,
@@ -124,4 +125,13 @@ describe("meeting commitment conversion contracts", () => {
       resolvedAt: "2026-09-08T12:05:00.000Z",
     })).toThrow(/Confirmed commitments require/);
   });
+  it("preserves readable legacy views and refuses invented resolved reconciliation", () => {
+    const value = { proposal: proposal(), resolution: null };
+    expect(meetingCommitmentViewSchema.safeParse(value).success).toBe(true);
+    const reconciliation = { schemaVersion: 1, requestSha256: "a".repeat(64), decision: "confirmed", state: "pending", automaticRetryAllowed: false,
+      createdAt: "2026-10-04T12:00:00.000Z", phases: [] };
+    expect(meetingCommitmentViewSchema.safeParse({ ...value, reconciliation }).success).toBe(true);
+    expect(meetingCommitmentViewSchema.safeParse({ ...value, reconciliation: { ...reconciliation, state: "resolved" } }).success).toBe(false);
+  });
+
 });

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { meetingResolutionReconciliationSchema } from "@/lib/meetings/commitment-resolution-intent";
 
 import { captureMediaCitationSchema } from "@/lib/capture/media-contracts";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
@@ -159,7 +160,13 @@ export const meetingCommitmentResolutionSchema = meetingCommitmentResolutionBody
 export const meetingCommitmentViewSchema = z.object({
   proposal: meetingCommitmentProposalSchema,
   resolution: meetingCommitmentResolutionSchema.nullable(),
-}).strict();
+  reconciliation: meetingResolutionReconciliationSchema.optional(),
+}).strict().superRefine((value, context) => {
+  if (value.reconciliation && ((value.reconciliation.state === "resolved") !== (value.resolution !== null) ||
+    value.resolution && value.reconciliation.decision !== value.resolution.decision)) {
+    context.addIssue({ code: "custom", message: "Reconciliation and accepted resolution disagree." });
+  }
+});
 
 export type MeetingCommitmentProposal = Readonly<
   z.infer<typeof meetingCommitmentProposalSchema>

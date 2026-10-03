@@ -82,7 +82,7 @@ async function rollbackOnly(admin: ReturnType<typeof postgres>, operation: (tran
 async function prepareHistoricalReplay(transaction: Transaction, version: 213 | 214) {
   expect(await transaction`
     SELECT max(version)::int AS latest FROM public.omni_schema_version
-  `).toEqual([{ latest: 219 }]);
+  `).toEqual([{ latest: 220 }]);
   await removeEmptyResponsibilityRuntimeForReplay(transaction);
   expect(await transaction`
     SELECT (SELECT count(*)::int FROM public.omni_responsibility_observations) AS observations,

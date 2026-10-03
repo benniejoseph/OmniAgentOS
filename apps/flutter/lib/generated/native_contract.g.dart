@@ -3,9 +3,9 @@
 
 abstract final class NativeContract {
   static const id = 'asael.native-api';
-  static const currentVersion = 32;
-  static const previousVersion = 31;
-  static const supportedVersions = <int>[32, 31];
+  static const currentVersion = 33;
+  static const previousVersion = 32;
+  static const supportedVersions = <int>[33, 32];
   static const discoveryPath = '/api/mobile/contracts';
   static const operationIds = <String>{
     'auth.login',
@@ -30,8 +30,6 @@ abstract final class NativeContract {
     'workspaces.create',
     'workspaces.update',
     'capture.create',
-    'meetings.list',
-    'meetings.get',
     'notifications.list',
     'notifications.acknowledge',
     'evidence.run',
@@ -166,6 +164,13 @@ abstract final class NativeContract {
     'responsibilities.observations.list',
     'responsibilities.notifications.get',
     'responsibilities.notifications.change',
+    'meetings.list',
+    'meetings.get',
+    'meetings.create',
+    'meetings.update',
+    'meetings.commitments.list',
+    'meetings.commitments.propose',
+    'meetings.commitments.resolve',
   };
 
   static bool supports(int version) => supportedVersions.contains(version);
@@ -211,8 +216,6 @@ abstract final class NativePaths {
   static const workspacesCreate = '/api/projects';
   static String workspacesUpdate(String id) => '/api/projects/${Uri.encodeComponent(id)}';
   static const captureCreate = '/api/capture';
-  static const meetingsList = '/api/meetings';
-  static String meetingsGet(String id) => '/api/meetings/${Uri.encodeComponent(id)}';
   static const notificationsList = '/api/notifications';
   static String notificationsAcknowledge(String id) => '/api/notifications/${Uri.encodeComponent(id)}';
   static String evidenceRun(String id) => '/api/runs/${Uri.encodeComponent(id)}';
@@ -501,6 +504,45 @@ abstract final class NativePaths {
     return '$path?$encoded';
   }
   static String responsibilitiesNotificationsChange(String id) => '/api/responsibilities/${Uri.encodeComponent(id)}/notifications';
+  static String meetingsList({String? workspaceId, String? status, int? limit}) {
+    final path = '/api/meetings';
+    final query = <String, String>{
+      'workspaceId': ?workspaceId,
+      'status': ?status,
+      if (limit != null) 'limit': limit.toString(),
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static String meetingsGet(String id, {String? workspaceId}) {
+    final path = '/api/meetings/${Uri.encodeComponent(id)}';
+    final query = <String, String>{
+      'workspaceId': ?workspaceId,
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static const meetingsCreate = '/api/meetings';
+  static String meetingsUpdate(String id) => '/api/meetings/${Uri.encodeComponent(id)}';
+  static String meetingsCommitmentsList(String id, {String? workspaceId}) {
+    final path = '/api/meetings/${Uri.encodeComponent(id)}/commitments';
+    final query = <String, String>{
+      'workspaceId': ?workspaceId,
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static String meetingsCommitmentsPropose(String id) => '/api/meetings/${Uri.encodeComponent(id)}/commitments';
+  static String meetingsCommitmentsResolve(String id) => '/api/meetings/${Uri.encodeComponent(id)}/commitments';
 }
 
 abstract final class NativeConversationEvents {

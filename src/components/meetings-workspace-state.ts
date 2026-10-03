@@ -66,7 +66,7 @@ export function assertMeetingCommitmentRead(received: readonly MeetingCommitment
     if (receipt.proposal.meetingId !== meetingId)
       continue;
     const latest = received.find((item) => item.proposal.proposalId === receipt.proposal.proposalId);
-    if (!latest || (latest.proposal.proposalSha256 === receipt.proposal.proposalSha256 && receipt.resolution && latest.resolution?.resolutionSha256 !== receipt.resolution.resolutionSha256))
+    if (!latest || (latest.proposal.proposalSha256 === receipt.proposal.proposalSha256 && (latest.proposal.proposedByActorId !== receipt.proposal.proposedByActorId || receipt.resolution && latest.resolution?.resolutionSha256 !== receipt.resolution.resolutionSha256)))
       throw new Error("The latest read has not confirmed the accepted commitment receipt. Its confirmed result is retained.");
   }
 }
@@ -131,7 +131,7 @@ export function parseMeetingResolutionReceipt(value: unknown, proposal: MeetingC
   const envelope = parse(readMeetingResolutionEnvelope, value, "Commitment decision");
   const data = envelope.commitment;
   const result = data.resolution;
-  if (data.proposal.proposalId !== proposal.proposalId || data.proposal.proposalSha256 !== proposal.proposalSha256 || !result || result.decision !== submitted.decision)
+  if (data.proposal.proposalId !== proposal.proposalId || data.proposal.proposalSha256 !== proposal.proposalSha256 || data.proposal.proposedByActorId !== proposal.proposedByActorId || !result || result.decision !== submitted.decision)
     throw new Error("The decision receipt does not match the submitted proposal.");
   if (submitted.decision === "confirmed" && (result.ownerParticipantId !== submitted.ownerParticipantId || result.dueAt !== (submitted.dueAt ?? null) || result.communicationPolicyId !== (submitted.communication?.policyId ?? null) || Boolean(result.draftId) !== Boolean(submitted.communication)))
     throw new Error("The decision receipt does not match the confirmed owner, due date or draft policy.");

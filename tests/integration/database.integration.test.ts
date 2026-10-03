@@ -6812,18 +6812,20 @@ databaseDescribe("Postgres schema integration", () => {
           ...migrationScopedTenantTables,
         ] as readonly string[]})
         AND NOT policy.polpermissive
-        AND policy.polname ~ '_actor$'
+        AND (policy.polname ~ '_actor$' OR (
+          relation.relname = ANY(${meetingResolutionReplayTables}) AND policy.polname ~ '_owner$'
+        ))
       ORDER BY relation.relname
     `;
     // Each one covers every command and role, as its restore below does.
     expect(restrictivePolicies.map(({ command, roles }) => ({ command, roles })))
-      .toEqual(Array(63).fill({ command: "*", roles: "{0}" }));
+      .toEqual(Array(65).fill({ command: "*", roles: "{0}" }));
     expect(restrictivePolicies.filter((policy) =>
       additiveDraftReplayTables.includes(policy.table_name),
     ).map(({ table_name, policy_name }) => ({ table_name, policy_name })))
       .toEqual(additiveDraftReplayTables.map((tableName) => ({
         table_name: tableName,
-        policy_name: `${tableName}_actor`,
+        policy_name: `${tableName}_${meetingResolutionReplayTables.includes(tableName) ? "owner" : "actor"}`,
       })));
     const catalog = await schemaCatalogSnapshot(admin);
     const dropped: typeof restrictivePolicies[number][] = [];
@@ -9572,9 +9574,15 @@ const responsibilityDraftsVersion = 216;
 const responsibilityObservationsVersion = 217;
 const responsibilityRuntimeVersion = 218;
 const responsibilityNotificationsVersion = 219;
+const meetingResolutionIntentsVersion = 220;
+const meetingResolutionReplayTables: readonly string[] = [
+  "omni_meeting_commitment_resolution_intents",
+  "omni_meeting_commitment_resolution_progress",
+];
 const additiveDraftReplayTables: readonly string[] = [
   "omni_companion_preference_mutations",
   "omni_companion_preferences",
+  ...meetingResolutionReplayTables,
   "omni_responsibilities",
   "omni_responsibility_baselines",
   "omni_responsibility_budget_entries",
@@ -9905,7 +9913,7 @@ function withoutScopeInitplans(expression: string) {
 }
 
 // Ledger-only verification probes keep the catalog intact. Historical replay
-// also removes v215/v216 additive objects: their CREATE statements must encounter
+// also removes v215–v220 additive objects: their CREATE statements must encounter
 // the actual predecessor schema, not tables left behind after a ledger reset.
 // This is only for this suite's empty, disposable preference/draft tables.
 // A later migration or seeded data requires an explicit fixture adaptation.
@@ -9927,7 +9935,8 @@ async function withMigrationsPendingFrom<T>(
     expect(recorded.map((row) => row.version)).toContain(responsibilityObservationsVersion);
     expect(recorded.map((row) => row.version)).toContain(responsibilityRuntimeVersion);
     expect(recorded.map((row) => row.version)).toContain(responsibilityNotificationsVersion);
-    expect(recorded.every((row) => row.version <= responsibilityNotificationsVersion)).toBe(true);
+    expect(recorded.map((row) => row.version)).toContain(meetingResolutionIntentsVersion);
+    expect(recorded.every((row) => row.version <= meetingResolutionIntentsVersion)).toBe(true);
   }
   await client.begin(async (transaction) => {
     if (replay) {
@@ -9972,9 +9981,9 @@ async function withMigrationsPendingFrom<T>(
     return await operation();
   } finally {
     for (const row of recorded) {
-      // A replay that stopped before v215/v216/v217/v218/v219 must restore objects through the
+      // A replay that stopped before v215–v220 must restore objects through the
       // unmodified migration, not mark absent tables as already migrated.
-      if (replay && (row.version === companionPreferencesVersion || row.version === responsibilityDraftsVersion || row.version === responsibilityObservationsVersion || row.version === responsibilityRuntimeVersion || row.version === responsibilityNotificationsVersion)) continue;
+      if (replay && (row.version === companionPreferencesVersion || row.version === responsibilityDraftsVersion || row.version === responsibilityObservationsVersion || row.version === responsibilityRuntimeVersion || row.version === responsibilityNotificationsVersion || row.version === meetingResolutionIntentsVersion)) continue;
       await client`
         INSERT INTO omni_schema_version (version, name, checksum, applied_at)
         SELECT ${row.version}::int, ${row.name}::text, ${row.checksum}::text,
@@ -9986,9 +9995,16 @@ async function withMigrationsPendingFrom<T>(
     }
     if (replay) {
       const restored = await client`
-        SELECT version FROM omni_schema_version WHERE version = ${responsibilityNotificationsVersion}
+        SELECT version FROM omni_schema_version WHERE version = ${meetingResolutionIntentsVersion}
       `;
       if (!restored.length) await migrateWithFreshClient();
+      expect(await client`
+        SELECT to_regclass('public.omni_meeting_commitment_resolution_intents') IS NOT NULL AS intents,
+          to_regclass('public.omni_meeting_commitment_resolution_progress') IS NOT NULL AS progress,
+          to_regprocedure('public.omni_admit_meeting_resolution_intent_v1()') IS NOT NULL AS intent_guard,
+          EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid = 'public.omni_meeting_commitment_resolutions'::regclass
+            AND tgname = 'omni_meeting_commitment_resolution_requires_intent') AS terminal_guard
+      `).toEqual([{ intents: true, progress: true, intent_guard: true, terminal_guard: true }]);
       expect(await client`
         SELECT
           to_regclass('public.omni_companion_preferences') IS NOT NULL AS preferences,

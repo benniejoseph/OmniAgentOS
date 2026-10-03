@@ -12,6 +12,7 @@ import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import { meetingFailureResponse } from "@/lib/meetings/http";
+import { privateMeetingResponse } from "@/lib/meetings/route-input";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
@@ -30,7 +31,7 @@ async function GETHandler(request: Request) {
       resourceType: "meeting",
     });
   } catch (error) {
-    return forbiddenResponse(error);
+    return privateMeetingResponse(forbiddenResponse(error));
   }
   const url = new URL(request.url);
   const parsed = meetingListServiceInputSchema.safeParse({
@@ -58,7 +59,7 @@ async function POSTHandler(request: Request) {
   try {
     body = await parseJsonBody(request, 250_000);
   } catch (error) {
-    return jsonBodyErrorResponse(error);
+    return privateMeetingResponse(jsonBodyErrorResponse(error));
   }
   const parsed = meetingCreateServiceInputSchema.safeParse(body);
   if (!parsed.success) return invalidRequest(parsed.error.flatten());
@@ -68,6 +69,7 @@ async function POSTHandler(request: Request) {
       request,
       action: "manage.workflow",
       resourceType: "meeting",
+      nativeMutationCapability: "meetings.records.manage",
       riskLevel: 2,
       metadata: {
         operation: "create",
@@ -76,7 +78,7 @@ async function POSTHandler(request: Request) {
       },
     });
   } catch (error) {
-    return forbiddenResponse(error);
+    return privateMeetingResponse(forbiddenResponse(error));
   }
   try {
     const result = await createMeetingService(

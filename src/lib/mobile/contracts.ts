@@ -26,6 +26,7 @@ import {
 } from "@/lib/local-computer/contracts";
 import { mobilePushReceiptRequestSchema } from "@/lib/mobile/push-contract";
 import { nativeResponsibilityContractSchemas } from "@/lib/mobile/responsibility-contracts";
+import { nativeMeetingContractSchemas } from "@/lib/mobile/meeting-contracts";
 import { pluginManifestSchema } from "@/lib/plugins/contracts";
 import {
   MODEL_ASSIGNMENT_SCOPES,
@@ -34,10 +35,10 @@ import {
 import { voiceCommandInputSchema } from "@/lib/voice/command-input";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 32 as const;
-// v31 remains the byte-frozen rollback bridge. v32 publishes exact-owner
-// Responsibility reads and separately enrolled draft, lifecycle and inbox controls.
-export const NATIVE_API_PREVIOUS_VERSION = 31 as const;
+export const NATIVE_API_CURRENT_VERSION = 33 as const;
+// v32 remains the byte-frozen rollback bridge. v33 publishes scoped Meeting
+// reads and separately enrolled records, proposals and exact decision controls.
+export const NATIVE_API_PREVIOUS_VERSION = 32 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -1747,6 +1748,59 @@ const v32Operations: readonly NativeOperation[] = [
     { ...responsibilityMutationOptions, requestBodyMaxBytes: 4096 }),
 ];
 
+const meetingReadOptions = {
+  errorResponseSchema: "NativeMeetingErrorResponse",
+  errorStatuses: [400, 401, 403, 404, 409, 503],
+  responseHeaders: [{ name: "cache-control", description: "Private scoped response; never stored.", constValue: "private, no-store" }],
+} as const satisfies Partial<NativeOperation>;
+const meetingDetailOptions = {
+  ...meetingReadOptions,
+  pathParameters: [{ name: "id", minLength: 44, maxLength: 44,
+    pattern: "^meeting:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }],
+} as const satisfies Partial<NativeOperation>;
+const meetingMutationOptions = {
+  ...meetingDetailOptions,
+  headerParameters: pluginMutationHeaders,
+  errorStatuses: [400, 401, 403, 404, 409, 413, 415, 503],
+} as const satisfies Partial<NativeOperation>;
+const meetingWorkspaceQuery = [queryParameter("workspaceId", "string", { minLength: 1, maxLength: 240 })];
+
+// The existing Meeting routes remain authoritative. The published read queries
+// describe supported fields; these legacy routes do not reject unknown or
+// repeated fields. Recording completion and Calendar sync remain unenrolled.
+const v33Operations: readonly NativeOperation[] = [
+  ...v32Operations.filter(({ id }) => id !== "meetings.list" && id !== "meetings.get"),
+  operation("meetings.list", "GET", "/api/meetings",
+    "Read up to 200 authorized Meeting revisions in the selected workspace.", "bearer", undefined, "NativeMeetingListResponse",
+    { ...meetingReadOptions, queryParameters: [...meetingWorkspaceQuery,
+      queryParameter("status", "string", { enumValues: ["scheduled", "in_progress", "completed", "cancelled"] }),
+      queryParameter("limit", "integer", { minimum: 1, maximum: 200, defaultValue: 100 })] }),
+  operation("meetings.get", "GET", "/api/meetings/{id}",
+    "Read one authorized Meeting revision with exact source availability and consent evidence.", "bearer", undefined, "NativeMeetingReadResponse",
+    { ...meetingDetailOptions, queryParameters: meetingWorkspaceQuery }),
+  operation("meetings.create", "POST", "/api/meetings",
+    "Create a scoped Meeting with a stable replay identity; grants no recording or external delivery authority.",
+    "bearer", "NativeMeetingCreateRequest", "NativeMeetingCreateResponse",
+    { ...meetingReadOptions, headerParameters: pluginMutationHeaders, requestBodyMaxBytes: 250_000,
+      successStatuses: [201], errorStatuses: [400, 401, 403, 404, 409, 413, 415, 503] }),
+  operation("meetings.update", "PATCH", "/api/meetings/{id}",
+    "Revise the exact scoped Meeting with its expected revision and replay identity.",
+    "bearer", "NativeMeetingUpdateRequest", "NativeMeetingUpdateResponse",
+    { ...meetingMutationOptions, requestBodyMaxBytes: 250_000 }),
+  operation("meetings.commitments.list", "GET", "/api/meetings/{id}/commitments",
+    "Read bounded exact proposals, accepted decisions and immutable partial progress without retry authority.",
+    "bearer", undefined, "NativeMeetingCommitmentsResponse",
+    { ...meetingDetailOptions, queryParameters: meetingWorkspaceQuery }),
+  operation("meetings.commitments.propose", "POST", "/api/meetings/{id}/commitments",
+    "Propose one exact media action for explicit owner review without creating Work or sending a message.",
+    "bearer", "NativeMeetingCommitmentProposeRequest", "NativeMeetingCommitmentProposeResponse",
+    { ...meetingMutationOptions, requestBodyMaxBytes: 50_000, successStatuses: [201] }),
+  operation("meetings.commitments.resolve", "PATCH", "/api/meetings/{id}/commitments",
+    "Admit one exact reviewed decision; partial progress remains inspectable and cannot authorize automatic retry.",
+    "bearer", "NativeMeetingCommitmentResolveRequest", "NativeMeetingCommitmentResolveResponse",
+    { ...meetingMutationOptions, requestBodyMaxBytes: 100_000 }),
+];
+
 const nativeCompanionPreferencesResponseSchema = z.object({
   schemaVersion: z.literal(1), contract: z.literal(COMPANION_PREFERENCES_CONTRACT),
   snapshot: z.object({
@@ -1768,6 +1822,7 @@ const nativeCompanionPreferencesResponseSchema = z.object({
 
 export const nativeContractSchemas = Object.freeze({
   ...nativeResponsibilityContractSchemas,
+  ...nativeMeetingContractSchemas,
   NativeCompanionPreferencesRequest: companionChangeSchema,
   NativeCompanionPreferencesResponse: nativeCompanionPreferencesResponseSchema,
   JsonObject: jsonObject,
@@ -1896,6 +1951,7 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 30) return v30Operations;
   if (version === 31) return v31Operations;
   if (version === 32) return v32Operations;
+  if (version === 33) return v33Operations;
   return undefined;
 }
 
@@ -1905,7 +1961,9 @@ export function nativeContractDiscovery() {
     contractId: NATIVE_API_CONTRACT_ID,
     currentVersion: NATIVE_API_CURRENT_VERSION,
     previousVersion: NATIVE_API_PREVIOUS_VERSION,
-    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [32, 31],
+    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [
+      typeof NATIVE_API_CURRENT_VERSION, typeof NATIVE_API_PREVIOUS_VERSION,
+    ],
     versions: NATIVE_API_SUPPORTED_VERSIONS.map((version) => ({
       version,
       state: version === NATIVE_API_CURRENT_VERSION ? "current" as const : "previous" as const,

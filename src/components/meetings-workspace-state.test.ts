@@ -15,7 +15,7 @@ function draft(): MeetingDraft {
   return { title: value.title, summary: value.summary, status: value.status, scheduledStartAt: value.scheduledStartAt, scheduledEndAt: value.scheduledEndAt, actualStartAt: null, actualEndAt: null, timezone: value.timezone, location: value.location, projectId: value.projectId, declaredAccessClass: value.declaredAccessClass, participants: value.participants, sourceLinks: [], entityLinks: [], decisions: [], commitments: [], followUps: [] };
 }
 function proposal(): MeetingCommitmentView["proposal"] {
-  return { proposalId: "proposal:test", proposalSha256: sha, meetingId: "meeting:test", meetingRevisionId: "meeting:test:v1", projectId: "project:test", mediaRevisionId: "recording:one:media:v1", actionItemId: "action:test", title: "Send the plan", citations: [{ turnId: "turn:one", segmentIndex: 0, startMilliseconds: 0, endMilliseconds: 1000, speakerLabel: "A", speakerParticipantId: "participant:one" }], ownership: { participantId: "participant:one", displayName: "Owner", authority: "explicit_transcript" }, dueDate: { dueAt: null, authority: "confirmation_required" } };
+  return { proposalId: "proposal:test", proposalSha256: sha, proposedByActorId: "actor:owner", meetingId: "meeting:test", meetingRevisionId: "meeting:test:v1", projectId: "project:test", mediaRevisionId: "recording:one:media:v1", actionItemId: "action:test", title: "Send the plan", citations: [{ turnId: "turn:one", segmentIndex: 0, startMilliseconds: 0, endMilliseconds: 1000, speakerLabel: "A", speakerParticipantId: "participant:one" }], ownership: { participantId: "participant:one", displayName: "Owner", authority: "explicit_transcript" }, dueDate: { dueAt: null, authority: "confirmation_required" } };
 }
 function confirmed(withDraft = false) {
   return { proposal: proposal(), resolution: { proposalId: "proposal:test", proposalSha256: sha, resolutionSha256: "b".repeat(64), decision: "confirmed" as const, ownerParticipantId: "participant:one", ownerDisplayName: "Owner", ownershipAuthority: "explicit_transcript" as const, dueAt: null, dueDateAuthority: null, workItemId: "work:test", draftId: withDraft ? "draft:test" : null, communicationPolicyId: withDraft ? "policy:test" : null, meetingRevisionId: "meeting:test:v2" } };
@@ -112,6 +112,7 @@ describe("Meeting mutation receipts", () => {
   it("accepts an exact decision and rejects a changed digest, owner or due date", () => {
     expect(parseMeetingResolutionReceipt({ commitment: confirmed() }, proposal(), submitted).commitment.resolution?.workItemId).toBe("work:test");
     expect(() => parseMeetingResolutionReceipt({ commitment: confirmed() }, { ...proposal(), proposalSha256: "c".repeat(64) }, submitted)).toThrow("proposal");
+    expect(() => parseMeetingResolutionReceipt({ commitment: confirmed() }, { ...proposal(), proposedByActorId: "actor:another-proposer" }, submitted)).toThrow("proposal");
     expect(() => parseMeetingResolutionReceipt({ commitment: confirmed() }, proposal(), { ...submitted, ownerParticipantId: "other" })).toThrow("owner");
     expect(() => parseMeetingResolutionReceipt({ commitment: confirmed() }, proposal(), { ...submitted, dueAt: stamp })).toThrow("due date");
   });
@@ -132,6 +133,7 @@ describe("Meeting mutation receipts", () => {
     expect(() => assertMeetingCommitmentRead([], [accepted], "meeting:test")).toThrow("retained");
     expect(() => assertMeetingCommitmentRead([{ proposal: proposal(), resolution: null }], [accepted], "meeting:test")).toThrow("retained");
     expect(() => assertMeetingCommitmentRead([accepted], [accepted], "meeting:test")).not.toThrow();
+    expect(() => assertMeetingCommitmentRead([{ ...accepted, proposal: { ...accepted.proposal, proposedByActorId: "actor:another-proposer" } }], [accepted], "meeting:test")).toThrow("retained");
     // A new immutable proposal version is reviewed with a new draft identity.
     expect(() => assertMeetingCommitmentRead([{ proposal: { ...proposal(), proposalSha256: "d".repeat(64) }, resolution: null }], [accepted], "meeting:test")).not.toThrow();
   });

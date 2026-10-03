@@ -1399,3 +1399,70 @@ failure and 320px/200% text. Validation found and fixed Material ink ancestry,
 provider-disposal notifications, and a fake-clock timer in the tests. Evidence:
 `native-capture-final-validation.log`. Physical microphone/device acceptance and
 the native feature release are still pending; no hardware success is inferred.
+
+
+## Responsibilities repository acceptance — 4 October 2026
+
+PR [#41](https://github.com/benniejoseph/OmniAgentOS/pull/41) merged as
+`1f9e3d0df29495284b54c9917235fcddf7043343` after all 16 hosted checks passed
+on exact head `c90de9d4d11c6e77ad6bde225c57a31084bbcc40`. This includes
+full quality and unchanged build budgets, integration, worker, native Flutter
+and macOS policy checks, core and four family browser jobs, audit, secret scans
+and preview. Receipts are retained in `responsibilities-exact-head-hosted.json`
+and `responsibilities-merge-receipt.json`.
+
+The final hosted pass exposed and corrected two timing boundaries. Search
+consumer checks now await the exact successful response body before asserting
+the newly opened Memory, Work or Library inspector. Markets restores focus
+after React commits the enabled action, preserving a focus choice made during
+the request. The focused Search pass has 56 assertions and seven axe scans;
+Markets has 100 assertions and fourteen scans. Evidence:
+`content-search-consumer-body-readiness/` and
+`markets-committed-focus-browser/`. These changes retain the original behavior
+assertions and performance budgets.
+
+The merge accepts this repository release. Native Responsibility presentation,
+the integrated owner-facing pilot, physical-device checks and production
+promotion remain separate acceptance gates.
+
+
+## Meeting decision recovery and native v33 candidate — 4 October 2026
+
+Migration v220 admits one immutable normalized decision under the exact
+proposal lock before any Work, unsent draft or Meeting child write. Only the
+first admitted caller executes children. Durable phase acknowledgements retain
+actual child identities; unfinished repeats return a bounded private
+reconciliation-required response with automatic retry disabled. Separate child
+transactions are exposed honestly as pending, partial or uncertain. There is no
+lease takeover, expiry-based replay or automatic continuation. Existing accepted
+legacy evidence remains readable without invented progress.
+
+The web review holds a local decision synchronously before dispatch, retains
+validated progress across failed reads, and binds accepted evidence to the
+proposal actor, including when a different actor owns the shared Meeting. Known
+Work links derive only from validated returned identities. The maintained
+Meetings browser pass has 96 assertions and eight axe scans; all effects were
+intercepted synthetic fixtures. Evidence: `meeting-web-shared-owner-browser/`.
+
+Native v33 publishes seven typed Meeting read/write operations and three
+capabilities with a v33 minimum. The server supports v33/v32, preserves published
+v31/v32 documents byte for byte and retires archived v30. Calendar sync, media
+completion and binary audio remain outside this enrollment. Pure app-service
+receipt schemas are extracted without changing serialization, avoiding the
+registry/auth import cycle. The legacy native list call uses the generated
+query-capable method; the separate native Meeting interface remains in progress.
+
+The combined release candidate passed strict lint, focused TypeScript, generated
+contract verification and 202 tests across sixteen files. Evidence:
+`meeting-v33-exact-release-validation.log`. Six generated Dart cases passed. At
+v220, 143 existing PostgreSQL cases passed across ten suites; the seven new
+serving-role decision-admission cases passed after correcting test-only grants
+and purpose scope. These are separate successful runs, retained as
+`meeting-resolution-v220-broad-regression.log` and
+`meeting-resolution-v220-serving-regression.log`.
+
+Hosted acceptance is still required. v220 requires paired application/schema
+promotion: a pre-v220 binary cannot insert a new terminal resolution without
+its admission record. The deployment guide records the compatibility and
+rollback boundary; these local results do not authorize or establish production
+promotion.

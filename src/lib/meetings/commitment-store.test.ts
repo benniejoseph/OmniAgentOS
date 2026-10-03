@@ -42,7 +42,11 @@ import {
   sha256Json,
   withCaptureMediaOutputDigest,
 } from "@/lib/capture/media-contracts";
-import { createMeetingCommitmentProposal } from "@/lib/meetings/commitment-store";
+import { createMeetingCommitmentProposal, claimMeetingCommitmentResolution,
+  recordMeetingCommitmentResolutionPhase, recordMeetingCommitmentResolution,
+} from "@/lib/meetings/commitment-store";
+import { withMeetingCommitmentProposalDigest, withMeetingCommitmentResolutionDigest, meetingCommitmentProposalId, meetingCommitmentResolutionId } from "@/lib/meetings/commitment-contracts";
+import { meetingResolutionIntentBody, meetingResolutionIntentSchema } from "@/lib/meetings/commitment-resolution-intent";
 import { buildMeetingRevision } from "@/lib/meetings/contracts";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 
@@ -156,6 +160,28 @@ const authority = {
   }),
 } as const;
 
+const proposalFixture = withMeetingCommitmentProposalDigest({
+  schemaVersion: 1, contractVersion: "p10.8-meeting-commitment-conversion:1",
+  proposalId: meetingCommitmentProposalId({ tenantId: authority.tenantId, workspaceId, meetingId, mediaRevisionId: media.mediaRevisionId, actionItemId: actionItem.actionItemId }),
+  tenantId: authority.tenantId, workspaceId, meetingId, meetingRevisionId: meeting.meetingRevisionId, meetingSha256: meeting.meetingSha256,
+  projectId: "project-1", sourceLinkId: "link:recording", recordingId: media.recordingId, mediaRevisionId: media.mediaRevisionId,
+  mediaOutputSha256: media.outputSha256, actionItemId: actionItem.actionItemId, actionItemSha256: sha256Json(actionItem),
+  title: actionItem.text, citations: actionItem.citations,
+  ownership: { participantId: participant.participantId, displayName: participant.displayName, authority: "explicit_transcript" },
+  dueDate: { dueAt: actionItem.dueAt, authority: "explicit_transcript" }, proposedByActorId: actorId, proposedAt: timestamp,
+});
+const decision = { decision: "confirmed" as const, ownerParticipantId: participant.participantId, dueAt: actionItem.dueAt, communication: null };
+const intentFixture = meetingResolutionIntentSchema.parse({
+  ...meetingResolutionIntentBody({ tenantId: authority.tenantId, workspaceId, meetingId,
+    proposalId: proposalFixture.proposalId, proposalSha256: proposalFixture.proposalSha256, ownerActorId: actorId, request: decision }),
+  createdAt: timestamp,
+});
+function proposalRow(withIntent = false) {
+  return { proposal_snapshot: proposalFixture, resolution_snapshot: null,
+    ...(withIntent ? { intent_snapshot: intentFixture, resolution_phases: [] } : {}),
+  };
+}
+
 beforeEach(() => {
   mocks.responses = [];
   mocks.queries = [];
@@ -216,4 +242,62 @@ describe("meeting commitment store", () => {
     })).rejects.toThrow(/Link this meeting to a project/);
     expect(mocks.queries).toHaveLength(0);
   });
+  it("commits exactly one decision under the proposal resolution lock before any child store", async () => {
+    mocks.responses.push([], [proposalRow()], [], [{ created_at: timestamp }], [{ effective_access_class: "owner_private" }], []);
+    const claim = await claimMeetingCommitmentResolution({ authority, proposal: proposalFixture, request: decision });
+    expect(claim.state).toBe("claimed");
+    expect(mocks.queries[0]).toMatchObject({ text: expect.stringContaining("pg_advisory_xact_lock"), values: [expect.stringContaining(`${proposalFixture.proposalId}:resolution`)] });
+    const write = mocks.queries.findIndex((query) => query.text.includes("INSERT INTO omni_meeting_commitment_resolution_intents"));
+    expect(write).toBeGreaterThan(0);
+    expect(mocks.queries[write].values).toContainEqual(intentFixture);
+    expect(mocks.queries.some((query) => /INSERT INTO omni_(project_tasks|message_drafts|meeting_commitment_resolutions)\b/.test(query.text))).toBe(false);
+    expect(mocks.event).toHaveBeenCalledWith(expect.objectContaining({ type: "meeting.commitment.resolution.claimed" }), expect.anything());
+  });
+
+  it("returns an existing incomplete claim without issuing a second admission", async () => {
+    mocks.responses.push([], [proposalRow(true)], [{ intent_snapshot: intentFixture }]);
+    const claim = await claimMeetingCommitmentResolution({ authority, proposal: proposalFixture, request: decision });
+    expect(claim).toMatchObject({ state: "incomplete", view: { reconciliation: { state: "pending", automaticRetryAllowed: false } } });
+    expect(mocks.queries.some((query) => query.text.includes("INSERT"))).toBe(false);
+  });
+
+  it("refuses changed owner decisions before writing phase or resolution evidence", async () => {
+    mocks.responses.push([], [proposalRow(true)], [{ intent_snapshot: intentFixture }]);
+    await expect(claimMeetingCommitmentResolution({ authority, proposal: proposalFixture,
+      request: { ...decision, ownerParticipantId: "participant:other" },
+    })).rejects.toThrow("different immutable resolution request");
+    expect(mocks.queries.some((query) => query.text.includes("INSERT"))).toBe(false);
+  });
+
+  it("rejects foreign tenant, workspace and actor claims before acquiring a connection", async () => {
+    for (const change of [{ tenantId: "foreign" }, { workspaceId: "workspace:foreign" }, { canonicalActorId: "actor:33333333-3333-4333-8333-333333333333" }]) {
+      await expect(claimMeetingCommitmentResolution({ authority: { ...authority, ...change }, proposal: proposalFixture, request: decision })).rejects.toThrow("exact proposal owner");
+    }
+    expect(mocks.queries).toHaveLength(0);
+  });
+
+  it("records before-effect evidence only after validating the existing owner intent", async () => {
+    mocks.responses.push([], [{ intent_snapshot: intentFixture }], [proposalRow(true)], [], [{ recorded_at: timestamp }], []);
+    const state = await recordMeetingCommitmentResolutionPhase({ authority, intent: intentFixture, phase: "work_started" });
+    expect(state).toMatchObject({ state: "uncertain", phases: [{ phase: "work_started", resourceId: null, evidenceSha256: null }] });
+    expect(mocks.queries.filter((query) => query.text.includes("INSERT"))).toHaveLength(1);
+  });
+
+  it("will not acknowledge a completion without its started phase", async () => {
+    mocks.responses.push([], [{ intent_snapshot: intentFixture }], [proposalRow(true)], []);
+    await expect(recordMeetingCommitmentResolutionPhase({ authority, intent: intentFixture, phase: "work_completed", resourceId: "task-one", evidenceSha256: "a".repeat(64) })).rejects.toThrow("do not permit");
+    expect(mocks.queries.some((query) => query.text.includes("INSERT"))).toBe(false);
+  });
+
+  it("refuses a final resolution without a matching durable decision claim", async () => {
+    const resolution = withMeetingCommitmentResolutionDigest({ schemaVersion: 1, contractVersion: "p10.8-meeting-commitment-conversion:1",
+      resolutionId: meetingCommitmentResolutionId(proposalFixture.proposalId), proposalId: proposalFixture.proposalId, proposalSha256: proposalFixture.proposalSha256,
+      decision: "confirmed", ownerParticipantId: participant.participantId, ownerDisplayName: participant.displayName, ownershipAuthority: "explicit_transcript",
+      dueAt: actionItem.dueAt, dueDateAuthority: "explicit_transcript", workItemId: "task-one", draftId: null, communicationPolicyId: null,
+      meetingRevisionId: `${meetingId}:v2`, resolvedByActorId: actorId, resolvedAt: timestamp });
+    mocks.responses.push([], [proposalRow()], []);
+    await expect(recordMeetingCommitmentResolution({ authority, proposal: proposalFixture, resolution, intent: intentFixture })).rejects.toThrow("decision was not claimed");
+    expect(mocks.queries.some((query) => query.text.includes("INSERT"))).toBe(false);
+  });
+
 });

@@ -26,6 +26,12 @@ import {
   type MeetingMutationAuthority,
   type MeetingReadAuthority,
 } from "@/lib/meetings/store";
+import {
+  assertMeetingResolutionPhaseOrder, meetingResolutionIntentBody,
+  meetingResolutionIntentSchema, meetingResolutionPhaseSchema, meetingResolutionReconciliation,
+  type MeetingResolutionDecision, type MeetingResolutionIntent, type MeetingResolutionPhase,
+  type MeetingResolutionReconciliation,
+} from "@/lib/meetings/commitment-resolution-intent";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
 type MeetingSql = ReturnType<typeof getSql>;
@@ -179,12 +185,23 @@ export async function listMeetingCommitmentViews(
     authority.readableActorIds,
     async () => {
       const rows = await getSql()`
-        SELECT proposal.proposal_snapshot, resolution.resolution_snapshot
+        SELECT proposal.proposal_snapshot, resolution.resolution_snapshot,
+          intent.intent_snapshot,
+          (SELECT jsonb_agg(progress.phase_snapshot ORDER BY progress.phase_order)
+           FROM omni_meeting_commitment_resolution_progress progress
+           WHERE progress.tenant_id = intent.tenant_id
+             AND progress.workspace_id = intent.workspace_id
+             AND progress.proposal_id = intent.proposal_id) AS resolution_phases
         FROM omni_meeting_commitment_proposals proposal
         LEFT JOIN omni_meeting_commitment_resolutions resolution
           ON resolution.tenant_id = proposal.tenant_id
          AND resolution.workspace_id = proposal.workspace_id
          AND resolution.proposal_id = proposal.proposal_id
+        LEFT JOIN omni_meeting_commitment_resolution_intents intent
+          ON intent.tenant_id = proposal.tenant_id
+         AND intent.workspace_id = proposal.workspace_id
+         AND intent.proposal_id = proposal.proposal_id
+         AND intent.owner_actor_id = ${authority.canonicalActorId}
         WHERE proposal.tenant_id = ${authority.tenantId}
           AND proposal.workspace_id = ${authority.workspaceId}
           AND proposal.meeting_id = ${meetingId}
@@ -214,6 +231,7 @@ export async function recordMeetingCommitmentResolution(input: {
   authority: MeetingMutationAuthority;
   proposal: MeetingCommitmentProposal;
   resolution: MeetingCommitmentResolution;
+  intent: MeetingResolutionIntent;
 }) {
   requireDatabase();
   await ensureDatabaseSchema();
@@ -247,12 +265,34 @@ export async function recordMeetingCommitmentResolution(input: {
       if (existing.proposal.proposalSha256 !== proposal.proposalSha256) {
         throw new MeetingConflictError("Commitment proposal evidence changed.");
       }
+      const claimed = await readResolutionIntent(sql, authority, proposal.proposalId);
+      if (!claimed || claimed.requestSha256 !== input.intent.requestSha256 ||
+        claimed.proposalSha256 !== proposal.proposalSha256 || claimed.request.decision !== resolution.decision ||
+        claimed.ownerActorId !== resolution.resolvedByActorId) {
+        throw new MeetingConflictError("The exact resolution decision was not claimed.");
+      }
+      if (claimed.request.decision === "confirmed" && (
+        claimed.request.ownerParticipantId !== resolution.ownerParticipantId ||
+        claimed.request.dueAt !== resolution.dueAt ||
+        (claimed.request.communication?.policyId || null) !== resolution.communicationPolicyId ||
+        Boolean(claimed.request.communication) !== Boolean(resolution.draftId)
+      )) throw new MeetingConflictError("The resolution differs from its immutable decision.");
       if (existing.resolution) {
         if (existing.resolution.resolutionSha256 !== resolution.resolutionSha256) {
           throw new MeetingConflictError("This commitment proposal is already resolved.");
         }
         return existing;
       }
+      const phases = await readResolutionPhases(sql, authority, proposal.proposalId);
+      if (phases.at(-1)?.phase !== "resolution_started") {
+        throw new MeetingConflictError("The exact child effects have not reached final resolution.");
+      }
+      const completed = (phase: MeetingResolutionPhase["phase"]) => phases.find((value) => value.phase === phase)?.resourceId;
+      if (resolution.decision === "confirmed" && (
+        completed("work_completed") !== resolution.workItemId ||
+        (completed("draft_completed") || null) !== resolution.draftId ||
+        completed("meeting_completed") !== resolution.meetingRevisionId
+      )) throw new MeetingConflictError("The resolution does not match the persisted child receipts.");
       const effectiveAccessClass = await meetingAccessClassForProposal(
         existing.proposal,
         sql,
@@ -295,7 +335,9 @@ export async function recordMeetingCommitmentResolution(input: {
           dueDateAuthority: resolution.dueDateAuthority,
         },
       }, { sql });
-      return meetingCommitmentViewSchema.parse({ proposal, resolution });
+      return meetingCommitmentViewSchema.parse({ proposal, resolution,
+        reconciliation: meetingResolutionReconciliation(claimed, phases, true),
+      });
     }) as Promise<MeetingCommitmentView>,
   );
 }
@@ -307,12 +349,23 @@ async function readProposalView(
   meetingId?: string,
 ) {
   const rows = await sql`
-    SELECT proposal.proposal_snapshot, resolution.resolution_snapshot
+    SELECT proposal.proposal_snapshot, resolution.resolution_snapshot,
+          intent.intent_snapshot,
+          (SELECT jsonb_agg(progress.phase_snapshot ORDER BY progress.phase_order)
+           FROM omni_meeting_commitment_resolution_progress progress
+           WHERE progress.tenant_id = intent.tenant_id
+             AND progress.workspace_id = intent.workspace_id
+             AND progress.proposal_id = intent.proposal_id) AS resolution_phases
     FROM omni_meeting_commitment_proposals proposal
     LEFT JOIN omni_meeting_commitment_resolutions resolution
       ON resolution.tenant_id = proposal.tenant_id
      AND resolution.workspace_id = proposal.workspace_id
      AND resolution.proposal_id = proposal.proposal_id
+    LEFT JOIN omni_meeting_commitment_resolution_intents intent
+      ON intent.tenant_id = proposal.tenant_id
+     AND intent.workspace_id = proposal.workspace_id
+     AND intent.proposal_id = proposal.proposal_id
+     AND intent.owner_actor_id = ${authority.canonicalActorId}
     WHERE proposal.tenant_id = ${authority.tenantId}
       AND proposal.workspace_id = ${authority.workspaceId}
       AND proposal.proposal_id = ${proposalId}
@@ -328,6 +381,12 @@ function viewFromRow(row: Record<string, unknown>) {
     resolution: row.resolution_snapshot
       ? meetingCommitmentResolutionSchema.parse(row.resolution_snapshot)
       : null,
+    ...(row.intent_snapshot ? {
+      reconciliation: meetingResolutionReconciliation(
+        meetingResolutionIntentSchema.parse(row.intent_snapshot),
+        parseResolutionPhases(row.resolution_phases), Boolean(row.resolution_snapshot),
+      ),
+    } : {}),
   });
 }
 
@@ -387,4 +446,156 @@ function timestamp(value: unknown) {
 
 function requireDatabase() {
   if (!hasDatabaseUrl()) throw new MeetingUnavailableError();
+}
+
+export type MeetingResolutionClaimResult =
+  | { state: "claimed" | "resolved" | "incomplete"; intent: MeetingResolutionIntent; view: MeetingCommitmentView }
+  | { state: "legacy"; view: MeetingCommitmentView };
+
+/** Commits the reviewed decision before entering any child store. It holds no
+ * connection while children execute and never grants takeover of an old claim. */
+export async function claimMeetingCommitmentResolution(input: {
+  authority: MeetingMutationAuthority;
+  proposal: MeetingCommitmentProposal;
+  request: MeetingResolutionDecision;
+}): Promise<MeetingResolutionClaimResult> {
+  requireDatabase();
+  await ensureDatabaseSchema();
+  const { authority, proposal } = input;
+  if (proposal.tenantId !== authority.tenantId || proposal.workspaceId !== authority.workspaceId ||
+    proposal.proposedByActorId !== authority.canonicalActorId) {
+    throw new MeetingConflictError("Resolution claim requires the exact proposal owner.");
+  }
+  const candidate = meetingResolutionIntentBody({
+    tenantId: authority.tenantId, workspaceId: authority.workspaceId,
+    meetingId: proposal.meetingId, proposalId: proposal.proposalId,
+    proposalSha256: proposal.proposalSha256, ownerActorId: authority.canonicalActorId,
+    request: input.request,
+  });
+  return runWithDatabaseActorScope(authority.tenantId, authority.readableActorIds,
+    () => getSql().transaction(async (sql: MeetingSql) => {
+      await sql`SELECT pg_advisory_xact_lock(hashtextextended(
+        ${`${authority.tenantId}:${authority.workspaceId}:${proposal.proposalId}:resolution`}, 0
+      ))`;
+      const view = await readProposalView(sql, authority, proposal.proposalId, proposal.meetingId);
+      if (!view || view.proposal.proposalSha256 !== proposal.proposalSha256) {
+        throw new MeetingConflictError("The exact commitment proposal was not found.");
+      }
+      const existing = await readResolutionIntent(sql, authority, proposal.proposalId);
+      if (existing) {
+        if (existing.requestSha256 !== candidate.requestSha256) {
+          throw new MeetingConflictError("This proposal is bound to a different immutable resolution request.");
+        }
+        return { state: view.resolution ? "resolved" as const : "incomplete" as const, intent: existing, view };
+      }
+      // Old accepted evidence is never relabeled as proof of an unrecorded
+      // recipient choice. Its read projection remains unchanged.
+      if (view.resolution) return { state: "legacy" as const, view };
+      const clock = await sql`SELECT clock_timestamp() AS created_at`;
+      const intent = meetingResolutionIntentSchema.parse({ ...candidate, createdAt: timestamp(clock[0]?.created_at) });
+      const accessClass = await meetingAccessClassForProposal(proposal, sql);
+      await sql`INSERT INTO omni_meeting_commitment_resolution_intents (
+        tenant_id, workspace_id, meeting_id, proposal_id, owner_actor_id,
+        project_id, effective_access_class, proposal_sha256, request_sha256,
+        intent_snapshot, created_at
+      ) VALUES (
+        ${authority.tenantId}, ${authority.workspaceId}, ${proposal.meetingId},
+        ${proposal.proposalId}, ${authority.canonicalActorId}, ${proposal.projectId},
+        ${accessClass}, ${proposal.proposalSha256}, ${intent.requestSha256},
+        ${intent}::JSONB, ${intent.createdAt}
+      )`;
+      await appendScopedDomainEvent({
+        id: `meeting-commitment-resolution-claimed:${intent.requestSha256}`,
+        streamId: proposal.meetingId, type: "meeting.commitment.resolution.claimed",
+        executionScope: authority.executionScope,
+        payload: { schemaVersion: 1, meetingId: proposal.meetingId, proposalId: proposal.proposalId,
+          proposalSha256: proposal.proposalSha256, requestSha256: intent.requestSha256,
+          decision: intent.request.decision, automaticRetryAllowed: false },
+      }, { sql });
+      return { state: "claimed" as const, intent,
+        view: meetingCommitmentViewSchema.parse({ ...view, reconciliation: meetingResolutionReconciliation(intent, [], false) }),
+      };
+    }) as Promise<MeetingResolutionClaimResult>,
+  );
+}
+
+export async function recordMeetingCommitmentResolutionPhase(input: {
+  authority: MeetingMutationAuthority;
+  intent: MeetingResolutionIntent;
+  phase: MeetingResolutionPhase["phase"];
+  resourceId?: string;
+  evidenceSha256?: string;
+}): Promise<MeetingResolutionReconciliation | undefined> {
+  requireDatabase();
+  await ensureDatabaseSchema();
+  const { authority } = input;
+  const intent = meetingResolutionIntentSchema.parse(input.intent);
+  if (intent.tenantId !== authority.tenantId || intent.workspaceId !== authority.workspaceId ||
+    intent.ownerActorId !== authority.canonicalActorId) throw new MeetingConflictError("Resolution phase scope is invalid.");
+  return runWithDatabaseActorScope(authority.tenantId, authority.readableActorIds,
+    () => getSql().transaction(async (sql: MeetingSql) => {
+      await sql`SELECT pg_advisory_xact_lock(hashtextextended(
+        ${`${authority.tenantId}:${authority.workspaceId}:${intent.proposalId}:resolution`}, 0
+      ))`;
+      const stored = await readResolutionIntent(sql, authority, intent.proposalId);
+      if (!stored || stored.requestSha256 !== intent.requestSha256) throw new MeetingConflictError("The exact resolution request is unavailable.");
+      const view = await readProposalView(sql, authority, intent.proposalId, intent.meetingId);
+      if (!view) throw new MeetingConflictError("The exact proposal is unavailable.");
+      if (view.resolution) return view.reconciliation;
+      const phases = await readResolutionPhases(sql, authority, intent.proposalId);
+      const existing = phases.find((phase) => phase.phase === input.phase);
+      if (existing) {
+        if (existing.resourceId !== (input.resourceId || null) || existing.evidenceSha256 !== (input.evidenceSha256 || null)) throw new MeetingConflictError("The phase is already bound to different evidence.");
+        return meetingResolutionReconciliation(stored, phases, false);
+      }
+      try { assertMeetingResolutionPhaseOrder(stored, phases, input.phase); }
+      catch { throw new MeetingConflictError("Resolution phases do not permit this transition."); }
+      const clock = await sql`SELECT clock_timestamp() AS recorded_at`;
+      const phase = meetingResolutionPhaseSchema.parse({
+        phase: input.phase, at: timestamp(clock[0]?.recorded_at),
+        resourceId: input.resourceId || null, evidenceSha256: input.evidenceSha256 || null,
+      });
+      await sql`INSERT INTO omni_meeting_commitment_resolution_progress (
+        tenant_id, workspace_id, meeting_id, proposal_id, owner_actor_id,
+        request_sha256, phase, phase_order, phase_snapshot, recorded_at
+      ) VALUES (
+        ${authority.tenantId}, ${authority.workspaceId}, ${intent.meetingId}, ${intent.proposalId},
+        ${authority.canonicalActorId}, ${intent.requestSha256}, ${phase.phase}, ${phases.length + 1},
+        ${phase}::JSONB, ${phase.at}
+      )`;
+      await appendScopedDomainEvent({
+        id: `meeting-commitment-resolution-phase:${intent.requestSha256}:${phase.phase}`,
+        streamId: intent.meetingId, type: "meeting.commitment.resolution.progress",
+        executionScope: authority.executionScope,
+        payload: { schemaVersion: 1, meetingId: intent.meetingId, proposalId: intent.proposalId,
+          requestSha256: intent.requestSha256, phase: phase.phase,
+          resourceId: phase.resourceId, evidenceSha256: phase.evidenceSha256, automaticRetryAllowed: false },
+      }, { sql });
+      return meetingResolutionReconciliation(stored, [...phases, phase], false);
+    }) as Promise<MeetingResolutionReconciliation | undefined>,
+  );
+}
+
+async function readResolutionIntent(sql: MeetingSql, authority: MeetingReadAuthority, proposalId: string) {
+  const rows = await sql`SELECT intent_snapshot
+    FROM omni_meeting_commitment_resolution_intents
+    WHERE tenant_id = ${authority.tenantId} AND workspace_id = ${authority.workspaceId}
+      AND proposal_id = ${proposalId} AND owner_actor_id = ${authority.canonicalActorId}
+    LIMIT 1`;
+  return rows[0] ? meetingResolutionIntentSchema.parse(rows[0].intent_snapshot) : undefined;
+}
+function parseResolutionPhases(value: unknown): MeetingResolutionPhase[] {
+  if (value == null) return [];
+  if (!Array.isArray(value) || value.length > 8) throw new MeetingConflictError("Resolution progress is invalid.");
+  const phases = value.map((phase) => meetingResolutionPhaseSchema.parse(phase));
+  if (new Set(phases.map((phase) => phase.phase)).size !== phases.length) throw new MeetingConflictError("Resolution progress is duplicated.");
+  return phases;
+}
+async function readResolutionPhases(sql: MeetingSql, authority: MeetingReadAuthority, proposalId: string) {
+  const rows = await sql`SELECT phase_snapshot
+    FROM omni_meeting_commitment_resolution_progress
+    WHERE tenant_id = ${authority.tenantId} AND workspace_id = ${authority.workspaceId}
+      AND proposal_id = ${proposalId} AND owner_actor_id = ${authority.canonicalActorId}
+    ORDER BY phase_order ASC LIMIT 8`;
+  return parseResolutionPhases(rows.map((row) => row.phase_snapshot));
 }
