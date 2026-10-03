@@ -470,6 +470,50 @@ commands, workspace creation, deployment and release were not invoked, and
 hosted links were inspected only. Real provider effects remain outside this
 presentation evidence.
 
+## Memory Universe — 3 October 2026
+
+Universe now pairs the canonical graph canvas with a keyboard-accessible,
+metadata-only selector and normal-flow detail inspector. The local selector
+pages through 40 loaded identities at a time; aggregate reads do not prefetch
+private labels or summaries. Explicit detail reads are bound to their selected
+identity and layer, reject mismatched receipts, and invalidate superseded
+responses. Close restores the selection origin. A refresh that removes the
+selected point restores focus only if the inspector still owns it; a newer
+user focus choice wins.
+
+Snapshot, selected-detail, renderer and rebuild states are distinct. Read retry
+and renderer retry do not rebuild data. Loaded versus drawn coverage, sampled
+connections and the 200-claim saturation boundary are explicit. Full selected
+identities, summaries, tags and provenance remain visible. Graph layout, weights,
+draw caps, active-view pause, exact rebuild payload and connected-fact entry are
+preserved. Decorative stars, orbital rings, glow and idle rotation were removed;
+canvas colors follow the app theme and reduced motion disables interpolation.
+
+Visual inspection found and corrected two renderer defects. Initial/Fit framing
+now fits a bounding sphere with the true limiting field of view, defers hidden
+one-pixel mounts and keeps the far plane consistent with zoom-out. Neutral edge
+geometry now shares the position buffer modified by filters, rather than a copy
+that stayed zeroed. Neutral links use stronger opacity in both themes.
+
+Independent static review passed. Twenty-six focused selection, camera,
+graph-route and graph-store tests passed, including tenant isolation. Final
+strict targeted lint, the Universe TypeScript graph, CSS parsing and type-scale
+checks passed.
+
+The main headless Chrome suite passed 105 checks and four clean scoped axe scans.
+It covers metadata-only pagination, stale selection/layer reads, rejected detail
+identities, source failure/empty/stale states, filters, focus recovery, long
+content, 320–1440px, both themes, 44/48px controls, 200% text and forced colors.
+A final eighteen-check renderer pass verified initial and explicit Fit framing
+on phone/desktop, theme updates, idle/reduced-motion stability, filter restoration,
+context-loss fallback and API-free renderer recovery. Wide, phone and canvas
+screenshots were visually inspected. Pixel framing checks exclude the canvas
+border, while still requiring an eight-pixel content margin.
+
+All action mutations and external requests were blocked; no rebuild, creation
+or provider action was attempted. These bounded headless fixtures do not certify
+physical-device GPU behavior, large-graph performance or screen-reader operation.
+
 ## Remaining gates and scope
 
 - Hosted build, route budgets and required repository checks on each new exact head.

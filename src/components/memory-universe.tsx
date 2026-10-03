@@ -2,19 +2,13 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  Activity,
   CircleAlert,
   Focus,
   GitBranch,
   Layers3,
-  LoaderCircle,
-  Maximize2,
-  MousePointer2,
   Plus,
   RefreshCw,
-  Rotate3D,
   ShieldCheck,
-  Sparkles,
   X,
   ZoomIn,
   ZoomOut,
@@ -27,6 +21,8 @@ import type {
   MemoryGraphEdgeRelation,
   MemoryGraphNodeKind,
 } from "@/lib/memory/types";
+import { createUniverseSelectionGuard, universeDetailForSelection } from "@/components/memory-universe-selection";
+import { universeSphereFitDistance } from "@/components/memory-universe-camera";
 import styles from "@/components/memory-universe.module.css";
 
 type GraphMode = "evidence" | "verified";
@@ -77,6 +73,7 @@ type GraphBuildHealth = {
 type UniversePayload = {
   version: "memory-universe:2";
   generatedAt: string;
+  disclosure: { labels: "explicit_node_selection"; summaries: "explicit_node_selection" };
   evidence: {
     nodes: EvidenceNode[];
     edges: EvidenceEdge[];
@@ -139,13 +136,13 @@ type UniverseSceneController = {
 };
 
 const evidenceColors: Record<MemoryGraphNodeKind, string> = {
-  concept: "#90ead0",
-  tag: "#ffd18a",
-  system: "#99c7ff",
-  workflow: "#d4b4ff",
-  tool: "#ff9fae",
-  memory: "#fff4c6",
-  trace: "#91a6c9",
+  concept: "--foreground",
+  tag: "--accent",
+  system: "--muted",
+  workflow: "--line-strong",
+  tool: "--foreground",
+  memory: "--accent",
+  trace: "--muted",
 };
 
 const evidenceLabels: Record<MemoryGraphNodeKind, string> = {
@@ -159,23 +156,23 @@ const evidenceLabels: Record<MemoryGraphNodeKind, string> = {
 };
 
 const entityColors: Record<EntityTypeId, string> = {
-  person: "#8cf0d0",
-  organization: "#7bb9ff",
-  account: "#82cfff",
-  project: "#d9b4ff",
-  work_item: "#f6b86b",
-  event: "#ff9cac",
-  meeting: "#f4d06f",
-  place: "#88dfed",
-  asset: "#bfceff",
-  decision: "#f3a0ff",
-  commitment: "#ffd18a",
-  preference: "#a8e69c",
-  risk: "#ff8f8f",
-  goal: "#8fe3b1",
-  product: "#90c7ff",
-  case: "#c2a8ff",
-  opportunity: "#ffbd8d",
+  person: "--foreground",
+  organization: "--muted",
+  account: "--line-strong",
+  project: "--accent",
+  work_item: "--foreground",
+  event: "--muted",
+  meeting: "--accent",
+  place: "--line-strong",
+  asset: "--foreground",
+  decision: "--accent",
+  commitment: "--foreground",
+  preference: "--muted",
+  risk: "--line-strong",
+  goal: "--accent",
+  product: "--foreground",
+  case: "--muted",
+  opportunity: "--line-strong",
 };
 
 const entityLabels: Record<EntityTypeId, string> = {
@@ -203,20 +200,37 @@ export function MemoryUniverse(props: {
   onAddConnectedFact?: () => void;
 }) {
   const mountRef = useRef<HTMLDivElement>(null);
+  const inspectorRef = useRef<HTMLElement>(null);
+  const inspectorHeadingRef = useRef<HTMLHeadingElement>(null);
+  const selectorHeadingRef = useRef<HTMLHeadingElement>(null);
+  const selectorButtonsRef = useRef(new Map<string, HTMLButtonElement>());
+  const selectionOriginRef = useRef<{ element: HTMLElement; id: string; page?: number } | null>(null);
+  const focusFrameRef = useRef(0);
+  const focusRevisionRef = useRef(0);
+  const [selectionGuard] = useState(createUniverseSelectionGuard);
   const sceneControllerRef = useRef<UniverseSceneController | null>(null);
-  const selectNodeRef = useRef<(id: string) => void>(() => undefined);
+  const selectNodeRef = useRef<(id: string, origin: HTMLElement) => void>(() => undefined);
   const [payload, setPayload] = useState<UniversePayload>();
   const [mode, setMode] = useState<GraphMode>("evidence");
   const [hiddenKinds, setHiddenKinds] = useState<Set<string>>(new Set());
   const [selectedId, setSelectedId] = useState<string>();
   const [detail, setDetail] = useState<SelectedDetail>();
   const [detailLoading, setDetailLoading] = useState(false);
-  const [error, setError] = useState<string>();
+  const [readLoading, setReadLoading] = useState(true);
+  const [readError, setReadError] = useState<string>();
+  const [detailError, setDetailError] = useState<string>();
+  const [sceneError, setSceneError] = useState<string>();
+  const [sceneReady, setSceneReady] = useState(false);
+  const [sceneKey, setSceneKey] = useState(0);
+  const [rebuildError, setRebuildError] = useState<string>();
+  const [rebuildNotice, setRebuildNotice] = useState<string>();
+  const [nodePage, setNodePage] = useState(0);
   const [reloadKey, setReloadKey] = useState(0);
   const [rebuilding, setRebuilding] = useState(false);
   const hiddenKindsRef = useRef(hiddenKinds);
   const activeRef = useRef(props.active);
   const selectedIdRef = useRef(selectedId);
+  const modeRef = useRef(mode);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -226,14 +240,65 @@ export function MemoryUniverse(props: {
     }).then(async (response) => {
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || "The universe could not be loaded.");
+      if (controller.signal.aborted) return;
+      if (body.version !== "memory-universe:2" || !Array.isArray(body.evidence?.nodes) || !Array.isArray(body.verified?.nodes)) {
+        throw new Error("The map returned an unsupported snapshot.");
+      }
       setPayload(body as UniversePayload);
-      setError(undefined);
+      setReadError(undefined);
+      setSceneError(undefined);
+      setSceneReady(false);
+      if (selectedIdRef.current && !body[modeRef.current].nodes.some((node: SceneNode) => node.id === selectedIdRef.current)) {
+        const focusedElement = document.activeElement;
+        const restoreFocus = document.hasFocus() && Boolean(inspectorRef.current?.contains(focusedElement));
+        const focusRevision = focusRevisionRef.current;
+        const prunedMode = modeRef.current;
+        const origin = selectionOriginRef.current;
+        selectionGuard.clear();
+        cancelAnimationFrame(focusFrameRef.current);
+        selectionOriginRef.current = null;
+        selectedIdRef.current = undefined;
+        setSelectedId(undefined);
+        setDetail(undefined);
+        setDetailError(undefined);
+        setDetailLoading(false);
+        if (restoreFocus) {
+          focusFrameRef.current = requestAnimationFrame(() => {
+            if (
+              controller.signal.aborted || selectedIdRef.current ||
+              modeRef.current !== prunedMode || !activeRef.current ||
+              focusRevisionRef.current !== focusRevision || !document.hasFocus() ||
+              (document.activeElement !== document.body && document.activeElement !== focusedElement)
+            ) return;
+            // A refresh replaces the canvas, so it is not a surviving origin.
+            const target = origin?.element.isConnected && !mountRef.current?.contains(origin.element)
+              ? origin.element
+              : selectorHeadingRef.current;
+            target?.focus({ preventScroll: true });
+            target?.scrollIntoView({ block: "nearest", behavior: "instant" });
+          });
+        }
+      }
     }).catch((loadError) => {
       if (controller.signal.aborted) return;
-      setError(message(loadError));
+      setReadError(message(loadError));
+    }).finally(() => {
+      if (!controller.signal.aborted) setReadLoading(false);
     });
     return () => controller.abort();
-  }, [reloadKey]);
+  }, [reloadKey, selectionGuard]);
+
+  useEffect(() => {
+    const markFocusChange = () => { focusRevisionRef.current += 1; };
+    document.addEventListener("focusin", markFocusChange, true);
+    document.addEventListener("pointerdown", markFocusChange, true);
+    return () => {
+      document.removeEventListener("focusin", markFocusChange, true);
+      document.removeEventListener("pointerdown", markFocusChange, true);
+      selectionGuard.clear();
+      cancelAnimationFrame(focusFrameRef.current);
+    };
+  }, [selectionGuard]);
 
   const graph = useMemo(() => {
     if (!payload) return { nodes: [] as SceneNode[], edges: [] as SceneEdge[] };
@@ -271,31 +336,45 @@ export function MemoryUniverse(props: {
     }));
   }, [mode, payload]);
 
-  async function selectNode(id: string) {
+  async function selectNode(id: string, origin?: HTMLElement, page?: number) {
+    if (!graph.nodes.some((node) => node.id === id)) return;
+    const request = selectionGuard.begin(mode, id);
+    selectedIdRef.current = id;
+    if (origin) selectionOriginRef.current = { element: origin, id, page };
     setSelectedId(id);
     setDetail(undefined);
+    setDetailError(undefined);
     setDetailLoading(true);
+    if (origin) {
+      cancelAnimationFrame(focusFrameRef.current);
+      focusFrameRef.current = requestAnimationFrame(() => {
+        if (!selectionGuard.isCurrent(request)) return;
+        inspectorHeadingRef.current?.focus({ preventScroll: true });
+        inspectorHeadingRef.current?.scrollIntoView({ block: "start", behavior: "instant" });
+      });
+    }
     const view = mode === "evidence" ? "universe_node" : "universe_entity";
     try {
       const response = await fetch(
         `/api/memory/graph?view=${view}&id=${encodeURIComponent(id)}`,
-        { cache: "no-store" },
+        { cache: "no-store", signal: request.controller.signal },
       );
       const body = await response.json();
+      if (!selectionGuard.isCurrent(request)) return;
       if (!response.ok) throw new Error(body.error || "Point details could not be loaded.");
-      setDetail((body.node || body.entity) as SelectedDetail);
+      setDetail(universeDetailForSelection(body, request) as SelectedDetail);
     } catch (detailError) {
-      setError(message(detailError));
+      if (selectionGuard.isCurrent(request)) setDetailError(message(detailError));
     } finally {
-      setDetailLoading(false);
+      if (selectionGuard.isCurrent(request)) setDetailLoading(false);
     }
   }
   useEffect(() => {
-    selectNodeRef.current = (id) => void selectNode(id);
+    selectNodeRef.current = (id, origin) => void selectNode(id, origin);
   });
 
   useEffect(() => {
-    if (!mountRef.current) return;
+    if (!mountRef.current || !payload || !graph.nodes.length) return;
     const mount = mountRef.current;
     let disposed = false;
     let animationFrame = 0;
@@ -311,12 +390,14 @@ export function MemoryUniverse(props: {
       const nodes = graph.nodes;
       const nodeById = new Map(nodes.map((node) => [node.id, node]));
       const scene = new THREE.Scene();
-      scene.fog = new THREE.FogExp2(0x06151c, 0.007);
+      let themeStyle = getComputedStyle(mount);
+      const sceneColor = (token: string) => new THREE.Color(resolveThemeColor(themeStyle, token));
+      scene.fog = new THREE.FogExp2(themeStyle.backgroundColor, 0.007);
       const camera = new THREE.PerspectiveCamera(46, 1, 0.05, 320);
       camera.position.set(0, 14, 42);
       renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
       renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
-      renderer.setClearColor(0x06151c, 1);
+      renderer.setClearColor(themeStyle.backgroundColor, 1);
       renderer.outputColorSpace = THREE.SRGBColorSpace;
       renderer.toneMapping = THREE.NoToneMapping;
       mount.replaceChildren(renderer.domElement);
@@ -324,14 +405,16 @@ export function MemoryUniverse(props: {
         "aria-label",
         mode === "evidence"
           ? "Interactive three-dimensional evidence map"
-          : "Interactive three-dimensional map of verified relationships",
+          : "Interactive three-dimensional map of explicit relationships",
       );
       renderer.domElement.setAttribute("role", "img");
       renderer.domElement.tabIndex = 0;
+      renderer.domElement.setAttribute("aria-describedby", "universe-canvas-help");
 
-      const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      const motionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+      let reducedMotion = motionQuery.matches;
       const controls = new OrbitControls(camera, renderer.domElement);
-      controls.enableDamping = true;
+      controls.enableDamping = !reducedMotion;
       controls.dampingFactor = 0.075;
       controls.enablePan = true;
       controls.enableRotate = true;
@@ -343,7 +426,6 @@ export function MemoryUniverse(props: {
       controls.minDistance = 2.5;
       controls.maxDistance = 120;
       controls.autoRotate = false;
-      controls.autoRotateSpeed = 0.32;
 
       const positions = layoutNodes(nodes, THREE);
       const graphBounds = new THREE.Box3();
@@ -355,8 +437,8 @@ export function MemoryUniverse(props: {
       const homePosition = new THREE.Vector3();
       const homeDirection = new THREE.Vector3(0, 0.43, 1).normalize();
 
-      // Keep a generous invisible hit target for accurate selection while the
-      // visible points use a purpose-built luminous shader.
+      // The visible point size and the generous pointer hit target share the
+      // same graph weight; keyboard selection uses the loaded metadata list.
       const hitGeometry = new THREE.IcosahedronGeometry(0.25, 1);
       const hitMaterial = new THREE.MeshBasicMaterial();
       hitMaterial.colorWrite = false;
@@ -378,7 +460,7 @@ export function MemoryUniverse(props: {
       pointGeometry.setAttribute("nodeSize", new THREE.BufferAttribute(pointSizes, 1));
       const pointMaterial = new THREE.ShaderMaterial({
         transparent: true,
-        blending: THREE.AdditiveBlending,
+        blending: THREE.NormalBlending,
         depthWrite: false,
         toneMapped: false,
         vertexColors: true,
@@ -399,11 +481,7 @@ export function MemoryUniverse(props: {
           void main() {
             float distanceFromCenter = distance(gl_PointCoord, vec2(0.5));
             if (distanceFromCenter > 0.5) discard;
-            float core = 1.0 - smoothstep(0.05, 0.2, distanceFromCenter);
-            float body = 1.0 - smoothstep(0.16, 0.36, distanceFromCenter);
-            float halo = 1.0 - smoothstep(0.24, 0.5, distanceFromCenter);
-            vec3 light = vColor * (1.05 + core * 0.8) + vec3(core * 0.28);
-            gl_FragColor = vec4(light, max(body * 0.96, halo * 0.42));
+            gl_FragColor = vec4(vColor, 1.0);
             #include <tonemapping_fragment>
             #include <colorspace_fragment>
           }
@@ -428,8 +506,7 @@ export function MemoryUniverse(props: {
           dummy.scale.setScalar(scale);
           dummy.updateMatrix();
           hitMesh.setMatrixAt(index, dummy.matrix);
-          const color = new THREE.Color(colorForKind(node.kind, mode));
-          if (node.id === currentHighlight) color.offsetHSL(0, 0.06, 0.18);
+          const color = sceneColor(node.id === currentHighlight ? "--accent" : colorTokenForKind(node.kind, mode));
           color.toArray(pointColors, index * 3);
           pointSizes[index] = scale;
         });
@@ -454,18 +531,22 @@ export function MemoryUniverse(props: {
       });
       const edgePoints = new Float32Array(edgeSegments.length * 6);
       const edgeColors: number[] = [];
+      const edgeColor = (edge: SceneEdge) => sceneColor("--line-strong").lerp(
+        sceneColor("--foreground"),
+        Math.min(0.72, 0.2 + edge.weight * 0.38),
+      );
       edgeSegments.forEach(({ edge }) => {
-        const intensity = Math.min(0.72, 0.2 + edge.weight * 0.38);
-        edgeColors.push(0.24, intensity + 0.18, intensity, 0.24, intensity + 0.18, intensity);
+        const color = edgeColor(edge);
+        edgeColors.push(color.r, color.g, color.b, color.r, color.g, color.b);
       });
       const edgeGeometry = new THREE.BufferGeometry();
-      edgeGeometry.setAttribute("position", new THREE.Float32BufferAttribute(edgePoints, 3));
+      edgeGeometry.setAttribute("position", new THREE.BufferAttribute(edgePoints, 3));
       edgeGeometry.setAttribute("color", new THREE.Float32BufferAttribute(edgeColors, 3));
       const edgeMaterial = new THREE.LineBasicMaterial({
         vertexColors: true,
         transparent: true,
-        opacity: mode === "evidence" ? 0.34 : 0.46,
-        blending: THREE.AdditiveBlending,
+        opacity: mode === "evidence" ? 0.8 : 0.9,
+        blending: THREE.NormalBlending,
         toneMapped: false,
       });
       edgeMaterial.fog = false;
@@ -474,29 +555,17 @@ export function MemoryUniverse(props: {
 
       let highlightGeometry = new THREE.BufferGeometry();
       const highlightMaterial = new THREE.LineBasicMaterial({
-        color: 0xb9ffe9,
+        color: sceneColor("--accent"),
         transparent: true,
         opacity: 0.82,
-        blending: THREE.AdditiveBlending,
+        blending: THREE.NormalBlending,
       });
       const highlightLines = new THREE.LineSegments(highlightGeometry, highlightMaterial);
       scene.add(highlightLines);
 
-      const glowGeometry = new THREE.SphereGeometry(0.34, 18, 18);
-      const glowMaterial = new THREE.MeshBasicMaterial({
-        color: 0xd8fff4,
-        transparent: true,
-        opacity: 0.2,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-      });
-      const glow = new THREE.Mesh(glowGeometry, glowMaterial);
-      glow.visible = false;
-      scene.add(glow);
-
       const selectionRingGeometry = new THREE.TorusGeometry(0.48, 0.024, 10, 48);
       const selectionRingMaterial = new THREE.MeshBasicMaterial({
-        color: 0x90ead0,
+        color: sceneColor("--accent"),
         transparent: true,
         opacity: 0.82,
       });
@@ -529,10 +598,8 @@ export function MemoryUniverse(props: {
       const setHighlight = (id?: string) => {
         currentHighlight = id;
         const position = id ? positions.get(id) : undefined;
-        glow.visible = Boolean(position);
         selectionRing.visible = Boolean(position && id === currentSelection);
         if (position) {
-          glow.position.copy(position);
           selectionRing.position.copy(position);
           selectionRing.lookAt(camera.position);
         }
@@ -550,7 +617,7 @@ export function MemoryUniverse(props: {
         highlightGeometry.dispose();
         highlightGeometry = nextHighlightGeometry;
         highlightLines.geometry = nextHighlightGeometry;
-        edgeMaterial.opacity = id ? 0.08 : mode === "evidence" ? 0.34 : 0.46;
+        edgeMaterial.opacity = id ? 0.08 : mode === "evidence" ? 0.8 : 0.9;
         setNodeInstances();
       };
 
@@ -561,9 +628,6 @@ export function MemoryUniverse(props: {
         setHighlight(currentHighlight);
       };
       setHiddenKinds(hiddenKindsRef.current);
-
-      const decorations = createObservatory(THREE, Math.max(kindMeta.length, 4));
-      scene.add(decorations.group);
 
       const raycaster = new THREE.Raycaster();
       const pointer = new THREE.Vector2();
@@ -592,7 +656,7 @@ export function MemoryUniverse(props: {
           event.clientY - pointerStart.y,
         ) > 5) return;
         const node = findHit(event);
-        if (node) selectNodeRef.current(node.id);
+        if (node && !currentHidden.has(node.kind)) selectNodeRef.current(node.id, renderer!.domElement);
       };
       renderer.domElement.addEventListener("pointerdown", onPointerDown);
       renderer.domElement.addEventListener("pointermove", onPointerMove);
@@ -608,24 +672,15 @@ export function MemoryUniverse(props: {
         toTarget: import("three").Vector3;
       };
       let cameraTransition: CameraTransition | undefined;
-      let controlsEngaged = false;
-      let lastInteractionAt = performance.now();
 
       const cancelCameraTransition = () => {
         cameraTransition = undefined;
-        lastInteractionAt = performance.now();
       };
       const onControlsStart = () => {
-        controlsEngaged = true;
         controls.autoRotate = false;
         cancelCameraTransition();
       };
-      const onControlsEnd = () => {
-        controlsEngaged = false;
-        lastInteractionAt = performance.now();
-      };
       controls.addEventListener("start", onControlsStart);
-      controls.addEventListener("end", onControlsEnd);
 
       const transitionCamera = (
         toPosition: import("three").Vector3,
@@ -651,23 +706,16 @@ export function MemoryUniverse(props: {
       };
 
       const updateHomePosition = () => {
-        const verticalHalfFov = THREE.MathUtils.degToRad(camera.fov * 0.5);
-        const horizontalHalfFov = Math.atan(Math.tan(verticalHalfFov) * camera.aspect);
-        const graphSize = graphBounds.isEmpty()
-          ? new THREE.Vector3(24, 12, 24)
-          : graphBounds.getSize(new THREE.Vector3());
-        const horizontalDistance = graphSize.x * 0.5 /
-          Math.tan(Math.max(horizontalHalfFov, THREE.MathUtils.degToRad(18)));
-        const projectedVerticalSpan = graphSize.y + graphSize.z * Math.abs(homeDirection.y);
-        const verticalDistance = projectedVerticalSpan * 0.5 /
-          Math.tan(Math.max(verticalHalfFov, THREE.MathUtils.degToRad(18)));
-        const distance = Math.max(
-          18,
-          horizontalDistance * 1.12,
-          verticalDistance * 1.12,
-        );
+        const paddedRadius = graphSphere.radius + 1;
+        const distance = Math.max(18, universeSphereFitDistance(
+          paddedRadius,
+          camera.getEffectiveFOV(),
+          camera.aspect,
+        ));
         homePosition.copy(homeTarget).add(homeDirection.clone().multiplyScalar(distance));
         controls.maxDistance = Math.max(120, distance * 2.8);
+        camera.far = Math.max(320, controls.maxDistance + paddedRadius * 2);
+        camera.updateProjectionMatrix();
       };
 
       const focusNode = (id?: string) => {
@@ -704,8 +752,10 @@ export function MemoryUniverse(props: {
       let initialFitComplete = false;
       const resize = () => {
         if (!renderer) return;
-        const width = Math.max(mount.clientWidth, 1);
-        const height = Math.max(mount.clientHeight, 1);
+        const width = mount.clientWidth;
+        const height = mount.clientHeight;
+        // A hidden parent can mount the renderer before it has real dimensions.
+        if (width <= 1 || height <= 1) return;
         camera.aspect = width / height;
         camera.updateProjectionMatrix();
         renderer.setSize(width, height, false);
@@ -722,8 +772,9 @@ export function MemoryUniverse(props: {
       resize();
 
       let rendering = false;
+      let contextLost = false;
       const draw = () => {
-        if (disposed || !renderer || !rendering) return;
+        if (disposed || !renderer || !rendering || contextLost) return;
         const now = performance.now();
         if (cameraTransition) {
           const progress = Math.min(1, (now - cameraTransition.startedAt) / cameraTransition.duration);
@@ -740,23 +791,16 @@ export function MemoryUniverse(props: {
           );
           if (progress >= 1) {
             cameraTransition = undefined;
-            lastInteractionAt = now;
           }
         }
-        controls.autoRotate = !reducedMotion &&
-          !controlsEngaged &&
-          !cameraTransition &&
-          now - lastInteractionAt > 4_000;
-        glow.scale.setScalar(1 + Math.sin(now * 0.0024) * 0.16);
-        selectionRing.rotation.z += reducedMotion ? 0 : 0.003;
+        controls.autoRotate = false;
         if (selectionRing.visible) selectionRing.lookAt(camera.position);
-        decorations.group.rotation.y += reducedMotion ? 0 : 0.00012;
         controls.update();
         renderer.render(scene, camera);
         animationFrame = requestAnimationFrame(draw);
       };
       const setActive = (nextActive: boolean) => {
-        if (nextActive && !rendering) {
+        if (nextActive && !rendering && !contextLost) {
           rendering = true;
           draw();
         } else if (!nextActive && rendering) {
@@ -771,8 +815,46 @@ export function MemoryUniverse(props: {
         fit,
         zoomBy,
       };
-      focusNode(selectedIdRef.current);
-      setActive(activeRef.current);
+      const updateTheme = () => {
+        themeStyle = getComputedStyle(mount);
+        renderer?.setClearColor(themeStyle.backgroundColor, 1);
+        scene.fog?.color.set(themeStyle.backgroundColor);
+        const colors = edgeGeometry.getAttribute("color");
+        edgeSegments.forEach(({ edge }, index) => {
+          const color = edgeColor(edge);
+          colors.setXYZ(index * 2, color.r, color.g, color.b);
+          colors.setXYZ(index * 2 + 1, color.r, color.g, color.b);
+        });
+        colors.needsUpdate = true;
+        highlightMaterial.color.copy(sceneColor("--accent"));
+        selectionRingMaterial.color.copy(sceneColor("--accent"));
+        setNodeInstances();
+      };
+      const themeObserver = new MutationObserver(updateTheme);
+      themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "class", "style"] });
+      const schemeQuery = window.matchMedia("(prefers-color-scheme: dark)");
+      const contrastQuery = window.matchMedia("(forced-colors: active)");
+      schemeQuery.addEventListener("change", updateTheme);
+      contrastQuery.addEventListener("change", updateTheme);
+      const updateMotion = () => {
+        reducedMotion = motionQuery.matches;
+        controls.enableDamping = !reducedMotion;
+        if (reducedMotion && cameraTransition) {
+          camera.position.copy(cameraTransition.toPosition);
+          controls.target.copy(cameraTransition.toTarget);
+          cameraTransition = undefined;
+          controls.update();
+        }
+      };
+      motionQuery.addEventListener("change", updateMotion);
+      const onContextLost = (event: Event) => {
+        event.preventDefault();
+        contextLost = true;
+        setActive(false);
+        setSceneReady(false);
+        setSceneError("The 3D renderer lost its context. You can still browse and inspect the loaded points.");
+      };
+      renderer.domElement.addEventListener("webglcontextlost", onContextLost);
 
       disposeScene = () => {
         cancelAnimationFrame(animationFrame);
@@ -782,7 +864,6 @@ export function MemoryUniverse(props: {
         renderer?.domElement.removeEventListener("pointerleave", onPointerLeave);
         renderer?.domElement.removeEventListener("pointerup", onPointerUp);
         controls.removeEventListener("start", onControlsStart);
-        controls.removeEventListener("end", onControlsEnd);
         controls.dispose();
         hitGeometry.dispose();
         hitMaterial.dispose();
@@ -792,17 +873,34 @@ export function MemoryUniverse(props: {
         edgeMaterial.dispose();
         highlightGeometry.dispose();
         highlightMaterial.dispose();
-        glowGeometry.dispose();
-        glowMaterial.dispose();
         selectionRingGeometry.dispose();
         selectionRingMaterial.dispose();
-        decorations.dispose();
+        themeObserver.disconnect();
+        schemeQuery.removeEventListener("change", updateTheme);
+        contrastQuery.removeEventListener("change", updateTheme);
+        motionQuery.removeEventListener("change", updateMotion);
+        renderer?.domElement.removeEventListener("webglcontextlost", onContextLost);
         renderer?.dispose();
         renderer?.domElement.remove();
         sceneControllerRef.current = null;
       };
+      focusNode(selectedIdRef.current);
+      setActive(activeRef.current);
+      setSceneReady(true);
+      setSceneError(undefined);
     }).catch((sceneError) => {
-      if (!disposed) setError(message(sceneError));
+      if (!disposed) {
+        cancelAnimationFrame(animationFrame);
+        resizeObserver?.disconnect();
+        setSceneReady(false);
+        setSceneError(message(sceneError));
+        if (disposeScene) disposeScene();
+        else {
+          renderer?.dispose();
+          renderer?.domElement.remove();
+          sceneControllerRef.current = null;
+        }
+      }
     });
 
     return () => {
@@ -811,7 +909,7 @@ export function MemoryUniverse(props: {
       resizeObserver?.disconnect();
       disposeScene?.();
     };
-  }, [graph, kindMeta.length, mode]);
+  }, [graph, mode, payload, sceneKey]);
 
   useEffect(() => {
     hiddenKindsRef.current = hiddenKinds;
@@ -828,10 +926,19 @@ export function MemoryUniverse(props: {
     sceneControllerRef.current?.setSelection(selectedId);
   }, [selectedId]);
 
-  const shownNodeCount = graph.nodes.filter(
+  const visibleNodes = useMemo(() => graph.nodes.filter(
     (node) => !hiddenKinds.has(node.kind),
-  ).length;
-  const graphStats = mode === "evidence" ? payload?.evidence.stats : payload?.verified.stats;
+  ), [graph.nodes, hiddenKinds]);
+  const pageCount = Math.max(1, Math.ceil(visibleNodes.length / 40));
+  const currentPage = Math.min(nodePage, pageCount - 1);
+  const pageNodes = visibleNodes.slice(currentPage * 40, (currentPage + 1) * 40);
+  const drawnEdgeCount = useMemo(() => {
+    const visibleIds = new Set(visibleNodes.map((node) => node.id));
+    return [...graph.edges]
+      .sort((left, right) => right.weight - left.weight || left.id.localeCompare(right.id))
+      .slice(0, mode === "evidence" ? 5_000 : 2_000)
+      .filter((edge) => visibleIds.has(edge.sourceNodeId) && visibleIds.has(edge.targetNodeId)).length;
+  }, [graph.edges, mode, visibleNodes]);
   const connections = useMemo(() => {
     if (!selectedId) return [];
     const nodeById = new Map(graph.nodes.map((node) => [node.id, node]));
@@ -841,7 +948,7 @@ export function MemoryUniverse(props: {
       const otherId = edge.sourceNodeId === selectedId
         ? edge.targetNodeId
         : edge.sourceNodeId;
-      return { relation: edge.relation, kind: nodeById.get(otherId)?.kind || "point" };
+      return { id: otherId, relation: edge.relation, kind: nodeById.get(otherId)?.kind || "point" };
     });
   }, [graph.edges, graph.nodes, selectedId]);
   const connectionTotal = selectedId
@@ -851,13 +958,20 @@ export function MemoryUniverse(props: {
     : 0;
 
   function changeMode(nextMode: GraphMode) {
+    if (nextMode === mode) return;
+    clearSelection(false);
+    modeRef.current = nextMode;
     setMode(nextMode);
     setHiddenKinds(new Set());
-    setSelectedId(undefined);
-    setDetail(undefined);
+    hiddenKindsRef.current = new Set();
+    setNodePage(0);
+    setSceneReady(false);
+    setSceneError(undefined);
   }
 
   function toggleKind(kind: string) {
+    if (!hiddenKinds.has(kind) && graph.nodes.find((node) => node.id === selectedId)?.kind === kind) clearSelection(false);
+    setNodePage(0);
     setHiddenKinds((current) => {
       const next = new Set(current);
       if (next.has(kind)) next.delete(kind);
@@ -866,9 +980,28 @@ export function MemoryUniverse(props: {
     });
   }
 
-  function clearSelection() {
+  function clearSelection(restoreFocus = true) {
+    selectionGuard.clear();
+    cancelAnimationFrame(focusFrameRef.current);
+    selectedIdRef.current = undefined;
     setSelectedId(undefined);
     setDetail(undefined);
+    setDetailError(undefined);
+    setDetailLoading(false);
+    const origin = selectionOriginRef.current;
+    selectionOriginRef.current = null;
+    if (!restoreFocus || !origin) return;
+    if (origin.page !== undefined) setNodePage(origin.page);
+    focusFrameRef.current = requestAnimationFrame(() => {
+      const target = origin.element.isConnected ? origin.element : selectorButtonsRef.current.get(origin.id) || selectorHeadingRef.current;
+      target?.focus({ preventScroll: true });
+      target?.scrollIntoView({ block: "nearest", behavior: "instant" });
+    });
+  }
+
+  function refreshMap() {
+    setReadLoading(true);
+    setReloadKey((current) => current + 1);
   }
 
   function fitView() {
@@ -880,7 +1013,10 @@ export function MemoryUniverse(props: {
   }
 
   async function rebuildGraph() {
+    if (rebuilding) return;
     setRebuilding(true);
+    setRebuildError(undefined);
+    setRebuildNotice(undefined);
     try {
       const response = await fetch("/api/memory/graph", {
         method: "POST",
@@ -889,191 +1025,127 @@ export function MemoryUniverse(props: {
       });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || "The evidence map could not be rebuilt.");
-      setReloadKey((current) => current + 1);
-      setError(undefined);
+      setRebuildNotice("Evidence map rebuild completed.");
+      refreshMap();
     } catch (rebuildError) {
-      setError(message(rebuildError));
+      setRebuildError(message(rebuildError));
     } finally {
       setRebuilding(false);
     }
   }
 
   const build = payload?.evidence.stats.latestBuild;
-  const health = buildHealth(build);
-  const verifiedEmpty = mode === "verified" && graph.edges.length === 0;
+  const health = payload ? buildHealth(build) : { label: readLoading ? "Loading build status…" : "Build status unavailable", tone: "calm" };
+  const explicitEmpty = mode === "verified" && graph.edges.length === 0;
 
   return (
     <section className={styles.shell} aria-labelledby="memory-universe-title">
       <header className={styles.header}>
         <div className={styles.heading}>
-          <p><Sparkles size={16} /> Memory observatory</p>
-          <h2 id="memory-universe-title">A universe with evidence at its center.</h2>
-          <span>Orbit the map, isolate a layer, and select any point to inspect what supports it.</span>
+          <p>Memory relationships</p>
+          <h2 id="memory-universe-title">Universe</h2>
+          <span>Explore connections, then select a point to inspect its evidence.</span>
         </div>
         <div className={styles.headerActions}>
-          <span className={`${styles.health} ${health.tone === "danger" ? styles.healthDanger : ""}`}>
-            <i /> {health.label}
-          </span>
-          <button type="button" onClick={() => void rebuildGraph()} disabled={rebuilding}>
-            {rebuilding ? <LoaderCircle size={17} className={styles.spin} /> : <RefreshCw size={17} />}
-            Rebuild map
+          <span className={`${styles.health} ${health.tone === "danger" ? styles.healthDanger : ""}`}>{health.label}</span>
+          <button type="button" onClick={refreshMap} disabled={readLoading}><RefreshCw size={17} aria-hidden="true" /> Refresh map</button>
+          <button type="button" onClick={() => void rebuildGraph()} disabled={rebuilding} aria-describedby="universe-rebuild-status">
+            <GitBranch size={17} aria-hidden="true" />{rebuilding ? "Rebuilding map…" : "Rebuild map"}
           </button>
-          <button type="button" onClick={fitView}><Focus size={17} /> Fit view</button>
         </div>
       </header>
+      <p id="universe-rebuild-status" className={styles.resourceStatus} role="status">{rebuilding ? "Rebuilding the evidence map. This may take a moment." : rebuildNotice || ""}</p>
+      <div className={styles.error} role="alert">{rebuildError ? <><CircleAlert size={18} aria-hidden="true" /><span>Rebuild failed. {rebuildError}</span></> : null}</div>
+      <div className={styles.error} role="alert">{readError ? <><CircleAlert size={18} aria-hidden="true" /><span>{readError} {payload ? "The last loaded snapshot is still available." : "The graph could not be checked."}</span><button type="button" onClick={refreshMap} disabled={readLoading}>Retry map read</button></> : null}</div>
+      <p className={styles.resourceStatus} role="status">{readLoading ? payload ? "Refreshing the map. Showing the last loaded snapshot." : "Loading the graph snapshot…" : payload && readError ? "Showing the last loaded snapshot." : ""}</p>
 
       <div className={styles.modeBar}>
-        <div className={styles.modeSwitch} role="tablist" aria-label="Universe data layer">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={mode === "evidence"}
-            className={mode === "evidence" ? styles.activeMode : undefined}
-            onClick={() => changeMode("evidence")}
-          >
-            <Layers3 size={17} /><span><strong>Evidence map</strong><small>Observed topic links</small></span>
+        <div className={styles.modeSwitch} role="group" aria-label="Universe data layer">
+          <button type="button" aria-pressed={mode === "evidence"} className={mode === "evidence" ? styles.activeMode : undefined} onClick={() => changeMode("evidence")} aria-label="Evidence map">
+            <Layers3 size={17} aria-hidden="true" /><span><strong>Evidence map</strong><small>Observed connections</small></span>
           </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={mode === "verified"}
-            className={mode === "verified" ? styles.activeMode : undefined}
-            onClick={() => changeMode("verified")}
-          >
-            <ShieldCheck size={17} /><span><strong>Verified relationships</strong><small>Explicit typed facts only</small></span>
+          <button type="button" aria-pressed={mode === "verified"} className={mode === "verified" ? styles.activeMode : undefined} onClick={() => changeMode("verified")} aria-label="Explicit relationships">
+            <ShieldCheck size={17} aria-hidden="true" /><span><strong>Explicit relationships</strong><small>Typed source claims</small></span>
           </button>
         </div>
-        <p className={styles.layerNote}>
-          {mode === "evidence"
-            ? "A line means two signals appeared together or were recalled together. It is a clue, not a fact."
-            : "Every line is an explicit relationship with source lineage. Asael does not invent missing links."}
-        </p>
+        <p className={styles.layerNote}>{mode === "evidence"
+          ? "A line means signals appeared together or were recalled together. It is a clue, not a fact."
+          : "Lines represent explicit source claims. They may include facts, procedures, opinions or predictions; a connection does not establish truth."}</p>
       </div>
+
+      {payload ? <>
+        <dl className={styles.counter} aria-label="Loaded graph coverage">
+          <div><dt>Points matching filters</dt><dd>{visibleNodes.length.toLocaleString()} of {graph.nodes.length.toLocaleString()} loaded</dd></div>
+          <div><dt>Drawn links</dt><dd>{sceneReady ? drawnEdgeCount.toLocaleString() : sceneError ? "Unavailable" : graph.nodes.length ? "Preparing…" : "0"} of {graph.edges.length.toLocaleString()} loaded</dd></div>
+          <div><dt>Snapshot generated</dt><dd>{formatDate(payload.generatedAt)}{readLoading || readError ? " · Last loaded" : ""}</dd></div>
+          {mode === "evidence" && build ? <div><dt>Latest build duration</dt><dd>{formatDuration(build.latencyMs)}</dd></div> : null}
+        </dl>
+        <p className={styles.coverageNote}>{mode === "evidence"
+          ? "This snapshot is bounded to 10,000 evidence points and 20,000 links. The canvas draws up to 5,000 of its strongest links; filters can hide more."
+          : "Explicit relationships use a sample of up to 200 claims. The canvas draws up to 2,000 loaded links; filters can hide more."}</p>
+        {mode === "verified" && payload.verified.stats.relationLimitSaturated ? <p className={styles.limitNotice} role="status">The 200-claim query limit was reached. Additional relationships may exist outside this snapshot.</p> : null}
+        {kindMeta.length ? <div className={styles.legend} role="group" aria-label="Graph filters">{kindMeta.map(({ kind, label, color, count }) => (
+          <button type="button" key={kind} className={hiddenKinds.has(kind) ? styles.hiddenKind : undefined} onClick={() => toggleKind(kind)} aria-pressed={!hiddenKinds.has(kind)} aria-label={label}>
+            <i style={{ background: color }} aria-hidden="true" />{label}<small>{count.toLocaleString()}</small><span>{hiddenKinds.has(kind) ? "Hidden" : "Shown"}</span>
+          </button>
+        ))}</div> : null}
+      </> : null}
 
       <div className={styles.stage}>
         <div ref={mountRef} className={styles.canvas} />
-        {!payload && !error ? (
-          <div className={styles.loading}>
-            <LoaderCircle size={24} className={styles.spin} />
-            Mapping the observatory…
-          </div>
-        ) : null}
-        {error ? <div className={styles.error}><CircleAlert size={20} /> {error}</div> : null}
-
-        {payload ? (
-          <div className={styles.counter}>
-            <Rotate3D size={17} />
-            <span><strong>{shownNodeCount.toLocaleString()}</strong> visible points</span>
-            <span><strong>{(graphStats?.edges || 0).toLocaleString()}</strong> links</span>
-            {mode === "evidence" && build ? (
-              <span><Activity size={14} /> {formatDuration(build.latencyMs)} build</span>
-            ) : null}
-          </div>
-        ) : null}
-
-        {payload && graph.nodes.length ? (
-          <>
-            <div className={styles.controlsHint}>
-              <MousePointer2 size={15} />
-              <span>Drag to orbit · Shift-drag to pan · Scroll to zoom</span>
-            </div>
-            <div className={styles.cameraControls} aria-label="Universe camera controls">
-              <button
-                type="button"
-                onClick={() => zoomView(0.72)}
-                aria-label="Zoom in"
-                title="Zoom in"
-              ><ZoomIn size={18} /></button>
-              <button
-                type="button"
-                onClick={() => zoomView(1.38)}
-                aria-label="Zoom out"
-                title="Zoom out"
-              ><ZoomOut size={18} /></button>
-              <button type="button" className={styles.fitControl} onClick={fitView}>
-                <Focus size={17} /> Fit
-              </button>
-            </div>
-          </>
-        ) : null}
-
-        {verifiedEmpty && payload ? (
-          <div className={styles.emptyVerified}>
-            <div><ShieldCheck size={24} /></div>
-            <p>Verified space is intentionally quiet</p>
-            <h3>No explicit relationships have been recorded yet.</h3>
-            <span>
-              {payload.verified.stats.nodes
-                ? `${payload.verified.stats.nodes} typed entities are indexed, but none are joined by a verified claim.`
-                : "Add a connected fact and Mnemosyne will index its entities and evidence-backed relationship."}
-            </span>
-            {props.onAddConnectedFact ? (
-              <button type="button" onClick={props.onAddConnectedFact}>
-                <Plus size={16} /> Add connected fact
-              </button>
-            ) : null}
-          </div>
-        ) : null}
-
-        <div className={styles.legend} aria-label="Graph filters">
-          {kindMeta.map(({ kind, label, color, count }) => (
-            <button
-              type="button"
-              key={kind}
-              className={hiddenKinds.has(kind) ? styles.hiddenKind : undefined}
-              onClick={() => toggleKind(kind)}
-              aria-pressed={!hiddenKinds.has(kind)}
-            >
-              <i style={{ background: color }} />
-              {label}
-              <small>{count.toLocaleString()}</small>
-            </button>
-          ))}
+        {!payload ? <div className={styles.stageState}>{readLoading ? "Loading the graph snapshot…" : "The graph is unavailable. Retry the map read above."}</div> : null}
+        {payload && graph.nodes.length > 0 && !sceneReady && !sceneError ? <div className={styles.stageState} role="status">Preparing the 3D view. Loaded points are available below.</div> : null}
+        {payload && !graph.nodes.length ? <div className={styles.stageState}><h3>{mode === "evidence" ? "No evidence points in this snapshot" : "No explicit entities in this snapshot"}</h3><p>{mode === "evidence" ? "Evidence points will appear after eligible memory and recall activity are indexed." : "Add a connected fact to record an explicit relationship."}</p></div> : null}
+      </div>
+      <div className={styles.error} role="alert">{sceneError ? <><CircleAlert size={18} aria-hidden="true" /><span>3D view unavailable. {sceneError} The loaded-point selector remains available.</span><button type="button" onClick={() => { setSceneReady(false); setSceneError(undefined); setSceneKey((current) => current + 1); }}>Retry graph rendering</button></> : null}</div>
+      <div className={styles.cameraBar}>
+        <p id="universe-canvas-help">Drag to rotate, Shift-drag to pan, or scroll to zoom. Use Browse loaded points below to inspect points with a keyboard.</p>
+        <div className={styles.cameraControls} role="group" aria-label="Universe camera controls">
+          <button type="button" onClick={() => zoomView(0.72)} aria-label="Zoom in" disabled={!sceneReady}><ZoomIn size={18} aria-hidden="true" /></button>
+          <button type="button" onClick={() => zoomView(1.38)} aria-label="Zoom out" disabled={!sceneReady}><ZoomOut size={18} aria-hidden="true" /></button>
+          <button type="button" onClick={fitView} disabled={!sceneReady}><Focus size={17} aria-hidden="true" /> Fit view</button>
         </div>
+      </div>
+      {explicitEmpty && payload ? <section className={styles.emptyExplicit} aria-label="Explicit relationship coverage">
+        <h3>No explicit links in this snapshot</h3>
+        <p>{payload.verified.stats.nodes ? `${payload.verified.stats.nodes.toLocaleString()} typed entities are loaded, but this snapshot contains no links between them.` : "Record a connected fact to index its entities and explicit relationship."}</p>
+        {props.onAddConnectedFact ? <button type="button" onClick={props.onAddConnectedFact}><Plus size={16} aria-hidden="true" /> Add connected fact</button> : null}
+      </section> : null}
 
-        {selectedId ? (
-          <aside className={styles.inspector} aria-live="polite">
-            <button
-              type="button"
-              className={styles.close}
-              onClick={clearSelection}
-              aria-label="Close point details"
-            ><X size={18} /></button>
-            {detailLoading ? (
-              <div className={styles.detailLoading}>
-                <LoaderCircle size={21} className={styles.spin} /> Inspecting point…
-              </div>
-            ) : detail ? (
-              <>
-                <p><i style={{ background: colorForKind(detail.kind, mode) }} /> {labelForKind(detail.kind, mode)}</p>
-                <h3>{detail.label}</h3>
-                <span>{detail.summary || (mode === "verified"
-                  ? "A typed entity created from explicit source evidence."
-                  : "This point groups related evidence and recall activity.")}</span>
-                <dl>
-                  <div><dt>Evidence sources</dt><dd>{detail.sourceCount}</dd></div>
-                  <div><dt>Direct links</dt><dd>{connectionTotal}</dd></div>
-                  {detail.weight !== undefined ? <div><dt>Signal weight</dt><dd>{Math.round(detail.weight * 100)}%</dd></div> : null}
-                  <div><dt>Last indexed</dt><dd>{formatDate(detail.updatedAt)}</dd></div>
-                </dl>
-                {connections.length ? (
-                  <section className={styles.connections}>
-                    <p><GitBranch size={15} /> Connected path</p>
-                    {connections.map((connection, index) => (
-                      <span key={`${connection.relation}:${connection.kind}:${index}`}>
-                        <i /> {startCase(connection.relation)} <small>→ {labelForKind(connection.kind, mode)}</small>
-                      </span>
-                    ))}
-                  </section>
-                ) : null}
-                {detail.tags?.length ? (
-                  <div className={styles.tags}>{detail.tags.map((tag) => <em key={tag}>{tag}</em>)}</div>
-                ) : null}
-              </>
-            ) : null}
-          </aside>
-        ) : null}
-        <div className={styles.cornerMark}><Maximize2 size={15} /> Three.js spatial index</div>
+      <div className={styles.explorer}>
+        <section className={styles.selector} aria-labelledby="universe-selector-title">
+          <header><h3 id="universe-selector-title" ref={selectorHeadingRef} tabIndex={-1}>Browse loaded points</h3><p id="universe-selection-note">Only opaque IDs, kinds and source counts are shown here. Labels and summaries load when you select a point.</p></header>
+          <p className={styles.selectorStatus} role="status">{payload ? visibleNodes.length ? `Showing ${currentPage * 40 + 1}–${currentPage * 40 + pageNodes.length} of ${visibleNodes.length.toLocaleString()} visible loaded points${readLoading || readError ? " · Last loaded" : ""}` : graph.nodes.length ? "All loaded points are hidden by filters." : "No points were returned in this snapshot." : readLoading ? "Loading point metadata…" : "Point metadata is unavailable."}</p>
+          <ol className={styles.pointList} aria-label="Loaded graph points" start={currentPage * 40 + 1}>{pageNodes.map((node, index) => (
+            <li key={node.id}>
+              <button type="button" ref={(element) => { if (element) selectorButtonsRef.current.set(node.id, element); else selectorButtonsRef.current.delete(node.id); }} aria-label={`Inspect point ${currentPage * 40 + index + 1}: ${labelForKind(node.kind, mode)}`} aria-pressed={selectedId === node.id} aria-describedby="universe-selection-note" onClick={(event) => void selectNode(node.id, event.currentTarget, currentPage)}>
+                <span><strong>Point {currentPage * 40 + index + 1} · {labelForKind(node.kind, mode)}</strong><small>{node.sourceCount.toLocaleString()} {node.sourceCount === 1 ? "source" : "sources"}</small></span>
+                <code>{node.id}</code>
+              </button>
+            </li>
+          ))}</ol>
+          {payload && visibleNodes.length > 40 ? <nav className={styles.pagination} aria-label="Loaded point pages"><button type="button" onClick={() => setNodePage(currentPage - 1)} disabled={currentPage === 0}>Previous points</button><span>Page {currentPage + 1} of {pageCount}</span><button type="button" onClick={() => setNodePage(currentPage + 1)} disabled={currentPage >= pageCount - 1}>Next points</button></nav> : null}
+        </section>
+
+        {selectedId ? <aside ref={inspectorRef} className={styles.inspector} aria-labelledby="universe-point-details-title">
+          <header><h3 id="universe-point-details-title" ref={inspectorHeadingRef} tabIndex={-1}>Point details</h3><button type="button" className={styles.close} onClick={() => clearSelection()} aria-label="Close point details"><X size={18} aria-hidden="true" /></button></header>
+          <p className={styles.selectedIdentity}><code>{selectedId}</code></p>
+          <p className={styles.detailStatus} role="status">{detailLoading ? "Loading the selected point…" : detail ? "Selected point details loaded." : ""}</p>
+          <div className={styles.error} role="alert">{detailError ? <><CircleAlert size={18} aria-hidden="true" /><span>{detailError}</span><button type="button" onClick={() => void selectNode(selectedId)} disabled={detailLoading}>Retry point details</button></> : null}</div>
+          {detail ? <>
+            <p className={styles.detailKind}>{labelForKind(detail.kind, mode)}{detail.state ? ` · ${startCase(detail.state)}` : ""}</p>
+            <h4>{detail.label}</h4>
+            <p className={styles.detailSummary}>{detail.summary || "No summary was returned for this point."}</p>
+            <dl>
+              <div><dt>Evidence sources</dt><dd>{detail.sourceCount.toLocaleString()}</dd></div>
+              <div><dt>Direct links in loaded snapshot</dt><dd>{connectionTotal.toLocaleString()}</dd></div>
+              {detail.weight !== undefined ? <div><dt>Signal weight</dt><dd>{detail.weight.toLocaleString()}</dd></div> : null}
+              <div><dt>Last indexed</dt><dd>{formatDate(detail.updatedAt)}</dd></div>
+            </dl>
+            {connections.length ? <section className={styles.connections} aria-label="Loaded connections"><h5>Connections in this snapshot</h5><p>Showing {connections.length} of {connectionTotal.toLocaleString()} loaded connections. Other connections may exist outside this sample.</p><ul>{connections.map((connection, index) => <li key={`${connection.id}:${connection.relation}:${index}`}><strong>{startCase(connection.relation)} → {labelForKind(connection.kind, mode)}</strong><code>{connection.id}</code></li>)}</ul></section> : null}
+            {detail.tags?.length ? <div className={styles.tags} aria-label="Point tags">{detail.tags.map((tag) => <span key={tag}>{tag}</span>)}</div> : null}
+          </> : null}
+        </aside> : <div className={styles.inspectorEmpty}><h3>Inspect a point</h3><p>Select a loaded point or a point on the canvas to read its label, summary and available connections.</p></div>}
       </div>
     </section>
   );
@@ -1112,84 +1184,23 @@ function layoutNodes(
   return positions;
 }
 
-function createObservatory(
-  THREE: typeof import("three"),
-  ringCount: number,
-) {
-  const group = new THREE.Group();
-  const resources: Array<{ dispose: () => void }> = [];
-  const coreGeometry = new THREE.SphereGeometry(0.9, 28, 28);
-  const coreMaterial = new THREE.MeshBasicMaterial({
-    color: 0x8df0d1,
-    transparent: true,
-    opacity: 0.38,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false,
-    toneMapped: false,
-  });
-  const core = new THREE.Mesh(coreGeometry, coreMaterial);
-  group.add(core);
-  resources.push(coreGeometry, coreMaterial);
-
-  for (let index = 0; index < Math.min(ringCount + 1, 10); index += 1) {
-    const radius = index === 0
-      ? 5.4
-      : 12.5 + index * Math.min(1.85, 10.5 / Math.max(ringCount, 1));
-    const curve = new THREE.EllipseCurve(0, 0, radius, radius * (0.93 + index % 2 * 0.035));
-    const ringGeometry = new THREE.BufferGeometry().setFromPoints(
-      curve.getPoints(160).map((point) => new THREE.Vector3(point.x, 0, point.y)),
-    );
-    const ringMaterial = new THREE.LineBasicMaterial({
-      color: index % 2 ? 0x4d8492 : 0x3f806f,
-      transparent: true,
-      opacity: index === 0 ? 0.32 : 0.2,
-      blending: THREE.AdditiveBlending,
-      toneMapped: false,
-    });
-    const ring = new THREE.LineLoop(ringGeometry, ringMaterial);
-    ring.rotation.z = (index % 2 ? -1 : 1) * (0.035 + index * 0.008);
-    group.add(ring);
-    resources.push(ringGeometry, ringMaterial);
-  }
-
-  const starPositions: number[] = [];
-  for (let index = 0; index < 1_250; index += 1) {
-    const radius = 28 + seeded(`star:${index}`) * 48;
-    const theta = seeded(`theta:${index}`) * Math.PI * 2;
-    const phi = Math.acos(1 - 2 * seeded(`phi:${index}`));
-    starPositions.push(
-      radius * Math.sin(phi) * Math.cos(theta),
-      radius * Math.cos(phi),
-      radius * Math.sin(phi) * Math.sin(theta),
-    );
-  }
-  const starGeometry = new THREE.BufferGeometry();
-  starGeometry.setAttribute("position", new THREE.Float32BufferAttribute(starPositions, 3));
-  const starMaterial = new THREE.PointsMaterial({
-    color: 0xa7e7d6,
-    size: 0.09,
-    transparent: true,
-    opacity: 0.68,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false,
-    toneMapped: false,
-  });
-  group.add(new THREE.Points(starGeometry, starMaterial));
-  resources.push(starGeometry, starMaterial);
-  return {
-    group,
-    dispose: () => resources.forEach((resource) => resource.dispose()),
-  };
-}
-
-function colorForKind(kind: string, mode: GraphMode) {
+function colorTokenForKind(kind: string, mode: GraphMode) {
   if (mode === "evidence" && kind in evidenceColors) {
     return evidenceColors[kind as MemoryGraphNodeKind];
   }
   if (mode === "verified" && kind in entityColors) {
     return entityColors[kind as EntityTypeId];
   }
-  return "#a8beb9";
+  return "--muted";
+}
+
+function colorForKind(kind: string, mode: GraphMode) {
+  return `var(${colorTokenForKind(kind, mode)})`;
+}
+
+function resolveThemeColor(style: CSSStyleDeclaration, token: string) {
+  const value = style.getPropertyValue(token).trim();
+  return /^(#|rgb|hsl)/.test(value) ? value : style.color;
 }
 
 function labelForKind(kind: string, mode: GraphMode) {
@@ -1203,11 +1214,11 @@ function labelForKind(kind: string, mode: GraphMode) {
 }
 
 function buildHealth(build?: GraphBuildHealth | null) {
-  if (!build) return { label: "Not built yet", tone: "danger" as const };
-  if (build.status === "failed") return { label: "Map needs repair", tone: "danger" as const };
+  if (!build) return { label: "No evidence build recorded", tone: "calm" as const };
+  if (build.status === "failed") return { label: "Latest evidence build failed", tone: "danger" as const };
   const age = Date.now() - new Date(build.createdAt).getTime();
-  if (age > 86_400_000) return { label: "Map ready · refresh available", tone: "calm" as const };
-  return { label: "Map current", tone: "calm" as const };
+  if (age > 86_400_000) return { label: "Evidence build over a day old", tone: "calm" as const };
+  return { label: "Evidence build completed", tone: "calm" as const };
 }
 
 function formatDuration(milliseconds: number) {
