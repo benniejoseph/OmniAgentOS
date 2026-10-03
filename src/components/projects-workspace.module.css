@@ -315,28 +315,9 @@
 .loading > span:last-child { min-height: 9rem; }
 .backButton { display: none; margin-block-end: 1rem; }
 
-/* Keep the shared widgets and their controllers, and align their embedded presentation. */
-.shell .library { margin-block-start: 2rem; border: 0; border-block-start: 1px solid var(--line); border-radius: 0; padding: 1.5rem 0 0; overflow: visible; background: var(--background); box-shadow: none; }
-.shell .library::before { display: none; }
-.shell .library header { min-height: 0; padding: 0 0 1rem; }
-.shell .library header > div:first-child > p:first-child { display: none; }
-.shell .library header h2 + span { min-width: 0; height: auto; border: 0; border-radius: 0; padding: 0; color: var(--muted); background: transparent; font-size: 0.8125rem; font-weight: 500; }
-.shell .library header label { text-transform: none; letter-spacing: normal; font-weight: 500; }
-.shell .library header label > span:first-child { position: static; width: auto; height: auto; overflow: visible; clip-path: none; white-space: normal; }
-.shell .library header label > span:last-child { min-height: 2.75rem; height: auto; border-color: var(--line-strong); border-radius: var(--radius-control); }
-.shell .library header label > span:focus-within { box-shadow: none; }
-.shell .library header select { height: auto; border-radius: var(--radius-control); padding-block: 0.625rem; }
-.shell .library :is(h2, h3, strong) { font-family: inherit; font-weight: 600; letter-spacing: normal; }
-.shell .library h2 { font-size: 1.25rem; line-height: 1.75rem; }
-.shell .library :is(small, label, code) { font-size: 0.8125rem; line-height: 1.25rem; }
-.shell .library :is(button, a, input, select) { min-height: 2.75rem; font-size: 0.875rem; line-height: 1.25rem; }
-.shell .library :is(button, input, select) { border-color: var(--line-strong); }
-.shell .library :is(button, a):disabled { color: var(--muted); opacity: 1; }
-.shell .library :is(h3, strong, code),
-.shell .library article p { overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
-.shell .library article > div:last-child { font-size: 0.8125rem; line-height: 1.25rem; }
-.shell .library article > div:last-child > span { white-space: normal; }
-.shell .library :is(button, a, input, select):focus-visible,
+.library { margin-block-start: 2rem; }
+
+/* Shared-memory controllers retain their existing embedded presentation. */
 .shell .sharedMemory :is(button, a, input, textarea):focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; box-shadow: 0 0 0 3px var(--background); transition: none; }
 .shell .sharedMemory { margin-block-start: 2rem; }
 .sharedMemory :global(.project-artifact-ledger) { margin: 0; border-block-start: 1px solid var(--line); padding-block-start: 1.5rem; }
@@ -412,7 +393,7 @@
   .createForm textarea,
   .reflection textarea,
   .addTask input { min-height: 3rem; }
-  .shell :is(.button, .primaryButton, .templatePublish > button, .templateActions > button, .createForm > button, .error > button, .toolbar > button, .viewNavigation > button, .viewNavigation > a, .taskState, .library button, .library a, .library input, .library select, .sharedMemory button, .sharedMemory a, .sharedMemory input, .sharedMemory textarea) { min-height: 3rem; }
+  .shell :is(.button, .primaryButton, .templatePublish > button, .templateActions > button, .createForm > button, .error > button, .toolbar > button, .viewNavigation > button, .viewNavigation > a, .taskState, .sharedMemory button, .sharedMemory a, .sharedMemory input, .sharedMemory textarea) { min-height: 3rem; }
   .taskState { width: 3rem; }
   .task { grid-template-columns: 3rem 1.25rem minmax(0, 1fr) minmax(5rem, 7.5rem) minmax(4.5rem, auto); }
   @container project-detail (max-width: 43.999rem) { .task { grid-template-columns: 3rem minmax(0, 1fr); } }
