@@ -22,10 +22,10 @@ describe("eval runner configuration", () => {
   it("defaults to the golden tasks on a local server", () => {
     expect(evalConfig({})).toEqual({
       baseUrl: "http://localhost:3000",
+      origin: "http://localhost:3000",
       minPassRate: 0.8,
       requestTimeoutMs: 60_000,
       tasksFile: path.resolve("evals/golden-tasks.json"),
-      internalAuth: undefined,
       tenantId: undefined,
       actorId: undefined,
       agentId: undefined,
@@ -33,9 +33,9 @@ describe("eval runner configuration", () => {
     });
   });
 
-  it("reads a replay corpus as a workspace owner on a pinned model", () => {
+  it("reads a replay corpus with expected owner assertions and a pinned model", () => {
     expect(evalConfig({
-      BASE_URL: "https://candidate.asael.test",
+      BASE_URL: "https://omniagent-candidate-benniejosephs-projects.vercel.app",
       MIN_PASS_RATE: "0.9",
       EVAL_REQUEST_TIMEOUT_MS: "900000",
       EVAL_TASKS_FILE: "artifacts/ledger-replay.json",
@@ -45,11 +45,11 @@ describe("eval runner configuration", () => {
       EVAL_AGENT_ID: " replay-reader ",
       EVAL_MODEL_SELECTION: JSON.stringify(SELECTION),
     })).toEqual({
-      baseUrl: "https://candidate.asael.test",
+      baseUrl: "https://omniagent-candidate-benniejosephs-projects.vercel.app",
+      origin: "https://asael.bennierichard.com",
       minPassRate: 0.9,
       requestTimeoutMs: 300_000,
       tasksFile: path.resolve("artifacts/ledger-replay.json"),
-      internalAuth: "internal-secret",
       tenantId: "tenant-a",
       actorId: "owner-a",
       agentId: "replay-reader",
@@ -61,8 +61,7 @@ describe("eval runner configuration", () => {
     [{ MIN_PASS_RATE: "1.5" }, /MIN_PASS_RATE/],
     [{ MIN_PASS_RATE: "-0.1" }, /MIN_PASS_RATE/],
     [{ MIN_PASS_RATE: "most" }, /MIN_PASS_RATE/],
-    [{ EVAL_TENANT_ID: "tenant-a" }, /SMOKE_INTERNAL_AUTH_SECRET/],
-    [{ EVAL_ACTOR_ID: "owner-a" }, /SMOKE_INTERNAL_AUTH_SECRET/],
+    [{ BASE_URL: "https://example.com" }, /approved Asael operator target/],
     [{ EVAL_AGENT_ID: "bad agent id" }, /EVAL_AGENT_ID/],
     [{ EVAL_MODEL_SELECTION: "{not json" }, /JSON object/],
     [{ EVAL_MODEL_SELECTION: "null" }, /JSON object/],
@@ -91,7 +90,7 @@ describe("eval runner requests", () => {
       .toEqual({ mode: "research", messages: [{ role: "user", content: "Summarize my notes." }] });
   });
 
-  it("sends the workspace headers only with internal auth", () => {
+  it("never constructs internal identity headers from expected owner assertions", () => {
     const init = agentRequestInit(task, evalConfig({
       SMOKE_INTERNAL_AUTH_SECRET: "internal-secret",
       EVAL_TENANT_ID: "tenant-a",
@@ -103,10 +102,6 @@ describe("eval runner requests", () => {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-omni-internal-auth": "internal-secret",
-        "x-omni-user-role": "operator",
-        "x-omni-tenant-id": "tenant-a",
-        "x-omni-user-id": "owner-a",
       },
       body: JSON.stringify({
         mode: "research",
@@ -117,8 +112,6 @@ describe("eval runner requests", () => {
     expect(agentRequestInit(task, evalConfig({ SMOKE_INTERNAL_AUTH_SECRET: "internal-secret" })).headers)
       .toEqual({
         "content-type": "application/json",
-        "x-omni-internal-auth": "internal-secret",
-        "x-omni-user-role": "operator",
       });
     expect(agentRequestInit({ ...task, mode: undefined }, evalConfig({}))).toEqual({
       method: "POST",
