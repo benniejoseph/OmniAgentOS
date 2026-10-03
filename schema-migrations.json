@@ -1276,5 +1276,19 @@
     "checksum": "35fa5330f5f0577af4af9f95b5998954d7db829bff4e40c13e14a21461f67898",
     "file": "20261001120000_operation_job_quarantine.sql",
     "sha256": "35fa5330f5f0577af4af9f95b5998954d7db829bff4e40c13e14a21461f67898"
+  },
+  {
+    "version": 213,
+    "name": "source_validator_restore_qualification_v1",
+    "checksum": "0540f57f5a92f5dd02b2d3289537a3bd26104f2c945f4280464bf06c084c3a65",
+    "file": "20261003090000_source_validator_restore_qualification.sql",
+    "sha256": "0540f57f5a92f5dd02b2d3289537a3bd26104f2c945f4280464bf06c084c3a65"
+  },
+  {
+    "version": 214,
+    "name": "deferred_constraint_validation_v1",
+    "checksum": "c5aa4b4689b0c80e509f86e3c44512ea70c6ccf6f3d4ae57a369d432469fd9b4",
+    "file": "20261003093000_deferred_constraint_validation.sql",
+    "sha256": "c5aa4b4689b0c80e509f86e3c44512ea70c6ccf6f3d4ae57a369d432469fd9b4"
   }
 ]

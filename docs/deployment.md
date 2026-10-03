@@ -393,6 +393,107 @@ cancels its job.
   rolls back. See
   [troubleshooting.md](troubleshooting.md#schema-startup-fails).
 
+### Restore-safe source validators and deferred checks (v213–v214)
+
+Migration `20261003090000_source_validator_restore_qualification.sql` installs
+v213 (`source_validator_restore_qualification_v1`) after the exact v212
+predecessor. It qualifies helper calls with `public.` inside three v37
+SQL-language validators: `omni_source_id_array_is_canonical`,
+`omni_jsonb_safe_integer_value`, and `omni_evidence_locator_v1_is_allowlisted`.
+Their input/output signatures, immutable validation semantics, owner, and
+existing grants remain intact. It neither sets a function-wide search path nor
+changes the historical migration. An absent validator or unexpected function
+attributes stop the migration rather than creating a different contract.
+
+`pg_restore` empties its caller search path while copying data. Before v213,
+populated source/evidence CHECKs could then fail to resolve these nested helper
+calls. Backups made after v213 support an ordinary `pg_dump`/`pg_restore` round
+trip for these validators. Keep `db:restore-drill`'s temporary, section-scoped
+search-path workaround: older archives still contain the old definitions, and
+the drill restores their original settings after loading them. This fix does
+not imply that an untested backup is valid.
+
+Migration `20261003093000_deferred_constraint_validation.sql` installs v214
+(`deferred_constraint_validation_v1`) after the exact v213 predecessor. Its
+closed target set contains **44 checks**: the 43 v208 additions and v209's
+`omni_mobile_sessions_refresh_rotation_check`. It excludes the eight v208
+renames and the later v210/v212 deferred checks. Target count is not pending
+count: a database built from the SQL files can already have the 43 v208 checks
+validated. v214 verifies every target's schema, table, type, inheritance scope,
+and exact definition, then validates only those still `NOT VALID`.
+
+Run this count-only preflight with the migration/maintenance connection before
+scheduling promotion; do not use the application runtime role:
+
+```sh
+psql "$MIGRATION_DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+  -f scripts/sql/schema-v214-preflight.sql
+```
+
+The script opens one read-only repeatable-read snapshot and emits only table
+name, constraint name, current validation flag, and violating-row count for
+each target. A row violates a CHECK only when its expression is false; NULL is
+not counted as a violation. Missing/drifted constraints and incomplete RLS
+visibility fail closed. The caller needs SELECT on the target tables and
+BYPASSRLS (or superuser); the query sets `row_security = off` and never enables
+application execution authority. It times out after five minutes per statement
+and waits at most five seconds for locks. Counts scan existing rows, including
+already-valid targets, so budget this read load. No row contents or identities
+are printed, and no constraint, row, or migration marker is changed.
+
+Promotion requirements:
+
+1. Retain an encrypted backup and a successful isolated restore receipt. Run
+   the preflight against the intended database and retain all 44 results.
+   Every violation count must be zero; record separately how many targets are
+   still pending. A preflight is advisory, since writes can occur afterwards.
+2. Apply the ordered migrations with the existing bounded migration runner,
+   then run `npm run db:verify`. v214 performs the authoritative row scan under
+   PostgreSQL's `SHARE UPDATE EXCLUSIVE` validation locks. Ordinary reads and
+   writes can continue, but concurrent schema changes and some maintenance
+   operations may contend; all acquired locks last until the migration
+   transaction commits. This describes the intended upgrade from v212. A
+   database still before v208 also runs earlier ADD CONSTRAINT statements in
+   the same transaction and retains their stronger locks during validation.
+   Use a measured maintenance window for large tables and historical upgrades.
+3. Missing or changed definitions stop with `55000`; an invalid existing row
+   stops with `23514`. The migration rolls back every validation and marker in
+   its transaction. It never repairs or deletes a row. Investigate any failure
+   separately and rerun the preflight; do not disable a constraint to promote.
+4. Re-run the preflight and confirm all 44 targets are validated with zero
+   violations, then retain normal paired-release and tenant-isolation evidence.
+   Historical validation does not grant new tenant or actor permissions.
+
+Until both versions are installed, the new application release fails schema
+readiness. Older application artifacts can continue using the additive schema;
+rollback leaves the qualified functions and validated checks in place. There
+is no automatic schema downgrade.
+
+The focused integration file covers empty caller search paths, preservation of
+function identities/ACLs, all 44 already-valid and deferred cases, catalog
+drift/missing targets, and rollback on invalid synthetic data. Its
+plain-restore case creates a uniquely named database on the explicitly selected
+**isolated integration server**, dumps synthetic evidence, and uses an
+unmodified `pg_restore --exit-on-error`; it then drops only that database.
+Enable that case with matching PostgreSQL client tools:
+
+```sh
+OMNIAGENT_INTEGRATION_DATABASE_RESET=true \
+OMNIAGENT_INTEGRATION_PG_BIN=/path/to/postgresql-17/bin \
+npm run test:integration -- tests/integration/database-followups.integration.test.ts
+```
+
+`DATABASE_URL` must point to the disposable test database; the integration lane
+resets its public schema. The test account needs database-creation privileges
+for the temporary restore destination. It never reads a production backup or
+production credentials. The required CI integration job sets
+`OMNIAGENT_INTEGRATION_PG_CONTAINER` to its existing, digest-pinned PG17 service
+container ID. The test streams the archive through that container's unmodified
+`pg_dump` and `pg_restore` using `docker exec`; no host package installation or
+schema workaround is needed. CI fails if no toolchain is configured. Locally,
+without either explicit toolchain, only the plain-restore case is skipped; the
+other focused database assertions still run.
+
 ### Injection canary
 
 This release needs no migration. The agent loop plants a per-tenant context

@@ -173,6 +173,8 @@ jobs:
         env:
           DATABASE_URL: postgres://omniagent:local-integration-only@127.0.0.1:5432/omniagent_test
           OMNIAGENT_INTEGRATION_DATABASE_RESET: "true"
+          # Use the pinned PG17 service's matching dump/restore binaries.
+          OMNIAGENT_INTEGRATION_PG_CONTAINER: ${{ job.services.postgres.id }}
         run: npm run test:integration
 
   worker:
