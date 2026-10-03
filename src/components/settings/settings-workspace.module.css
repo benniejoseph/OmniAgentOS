@@ -151,3 +151,29 @@
 }
 @media (max-width: 36rem) { .heroTitle { font-size: 4.3rem; } .summaryPair { display: block; } .summaryCard + .summaryCard { margin-top: .7rem; } }
 @media (prefers-reduced-motion: reduce) { .navItem::before, .providerRow, .routeRow, .overviewRow { transition: none; } }
+
+/* General is an independent preference surface; advanced sections retain their current frame. */
+.generalShell {
+  width: 100%; max-width: 90rem; min-width: 0; margin-inline: auto; padding: 1.5rem 1rem 3rem;
+  color: var(--foreground); background: var(--background);
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  font-size: 0.875rem; line-height: 1.25rem; overflow-wrap: anywhere;
+}
+.generalHeader { padding-block-end: 1.5rem; border-block-end: 1px solid var(--line); }
+.generalHeader h1 { font-size: 1.5rem; line-height: 2rem; font-weight: 600; letter-spacing: -0.02em; }
+.generalHeader p { max-width: 70ch; margin-block-start: 0.5rem; color: var(--muted); }
+.generalLayout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1.5rem; margin-block-start: 1.5rem; }
+.generalNavigation { display: flex; flex-wrap: wrap; gap: 0.75rem; align-content: start; min-width: 0; }
+.generalNavItem { display: flex; align-items: center; gap: 0.5rem; min-width: 0; min-height: 2.75rem; max-width: 100%; border: 1px solid var(--line-strong); border-radius: 0.625rem; padding: 0.5rem 0.75rem; text-align: start; color: var(--foreground); background: var(--surface); font: inherit; cursor: pointer; }
+.generalNavItem svg { flex-shrink: 0; }
+.generalNavItem > span { min-width: 0; }
+.generalNavItem > span > span:last-child { font-size: 0.8125rem; line-height: 1.25rem; }
+.generalNavItem:hover { background: var(--surface-raised); }
+.generalNavItem[aria-current="page"] { border-inline-start: 3px solid var(--accent); background: var(--accent-surface); font-weight: 600; }
+.generalNavItem:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; box-shadow: 0 0 0 3px var(--background); }
+@media (min-width: 48rem) { .generalShell { padding-inline: 1.5rem; } .generalHeader h1 { font-size: 1.75rem; line-height: 2.25rem; } }
+@media (min-width: 64rem) { .generalShell { padding-inline: 2rem; } }
+@media (min-width: 80rem) { .generalLayout { grid-template-columns: 13rem minmax(0, 1fr); gap: 2rem; } .generalNavigation { display: grid; } }
+@media (pointer: coarse) { .generalNavItem { min-height: 3rem; } }
+@media (prefers-contrast: more) { .generalShell { --muted: var(--foreground); --line: var(--line-strong); } }
+@media (forced-colors: active) { .generalShell { --background: Canvas; --surface: Canvas; --surface-raised: Canvas; --foreground: CanvasText; --muted: CanvasText; --line: CanvasText; --line-strong: ButtonText; --accent: Highlight; --accent-surface: Canvas; --focus: Highlight; } }

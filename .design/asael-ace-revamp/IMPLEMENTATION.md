@@ -906,6 +906,47 @@ This is local unit/widget evidence. Native conversation reopening, physical
 devices, screen readers, final native family migrations, packaging/signing and
 ATLAS renderer performance remain open gates in Phase 5.
 
+## Scoped Companion preferences and General settings — 3 October 2026
+
+The authenticated Companion preference contract persists presentation intensity,
+visibility, motion, default destination and an optional owned home conversation.
+Unsaved defaults are read-only. Versioned saves/reset use an exact idempotency key,
+compare-and-swap revision and immutable receipt. An older replay receipt stays
+distinct from the newer current snapshot. Changed home targets require current
+ownership; deletion or unavailable access preserves the saved identity and revision
+while exposing a safe Assistant fallback. Preferences grant no execution authority.
+
+Migration v215 adds owner-scoped PostgreSQL policies and atomic durable receipts.
+The development file ledger locks and replaces atomically without repairing bad
+data on reads. Production without database storage fails closed. Native mutation
+compatibility remains a later explicit enrollment step.
+
+Settings opens General independently of advanced configuration availability.
+Local category changes preserve drafts. A synchronous single-write slot freezes
+the exact submitted body/key/revision, allows separate subsequent draft edits,
+and retains both accepted receipts and uncertain submissions across failed reads.
+Conflicts require explicit draft rebase; reset/discard restore focus. Owned home
+selection is bounded and excludes unsupported or unverified identities. The static
+writing preview performs no execution or audio, and device reduced motion is a
+floor.
+
+Serial root validation passed 120 backend/RBAC/migration unit cases, 28 UI/state
+cases, strict focused lint/types and six integration cases in a disposable
+PostgreSQL 17 cluster with all 215 migrations. The temporary cluster was stopped
+and deleted after validation. The maintained browser suite passed 82 assertions
+and nine scoped axe scans over desktop/phone themes, home selection, narrow width,
+200% text and forced colors. Seven exact synthetic PATCH attempts per viewport
+exercise held/uncertain/replayed/conflicting saves, reset and disposal; real
+isolated GETs still report unsaved defaults before and after. No unexpected write,
+external action or uncaught browser error occurred. Representative saved viewport
+images were visually inspected. A first 320px measurement raced viewport layout;
+the harness now waits two animation frames and records overflow diagnostics.
+
+Evidence is in `ui-validation/companion-preferences-rerun` and adjacent backend,
+integration and UI logs under the external release record. CI runs the browser
+suite serially. Presence/default-entry adoption, native preferences and final
+ATLAS assets/renderer proof remain separate work; this does not close task 2.6.
+
 ## Remaining gates and scope
 
 - Hosted build, route budgets and required repository checks on each new exact head.

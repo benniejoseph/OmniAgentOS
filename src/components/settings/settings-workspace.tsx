@@ -30,6 +30,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { PersonalDataControls } from "@/components/settings/personal-data-controls";
+import { CompanionPreferences } from "@/components/companion-preferences";
 import { PushCanaryPanel } from "@/components/settings/push-canary-panel";
 import { TrashRecoveryControls } from "@/components/settings/trash-recovery-controls";
 import { AgentGrantSettingsPanel } from "@/components/agents/agent-grant-editor";
@@ -53,7 +54,7 @@ import {
   type SettingsSnapshot,
 } from "@/lib/settings/types";
 
-type SettingsSection = "overview" | "providers" | "models" | "agents" | "api" | "data";
+type SettingsSection = "general" | "overview" | "providers" | "models" | "agents" | "api" | "data";
 type ProviderDraft = {
   provider: SettingsModelProvider;
   label: string;
@@ -66,6 +67,7 @@ const sections: Array<{
   description: string;
   icon: typeof Settings2;
 }> = [
+  { id: "general", label: "General", description: "Companion and home", icon: Settings2 },
   { id: "overview", label: "Workspace", description: "Readiness and defaults", icon: Settings2 },
   { id: "providers", label: "AI providers", description: "Credentials and catalogs", icon: Cloud },
   { id: "models", label: "Model routing", description: "Assign work by role", icon: BrainCircuit },
@@ -216,7 +218,7 @@ export function mcpContinuityMetadata(config: Pick<
 
 export function SettingsWorkspace() {
   const { session, status: sessionStatus } = useWorkspaceSession();
-  const [section, setSection] = useState<SettingsSection>("overview");
+  const [section, setSection] = useState<SettingsSection>("general");
   const [snapshot, setSnapshot] = useState<SettingsSnapshot>();
   const [loading, setLoading] = useState(true);
   const [snapshotFresh, setSnapshotFresh] = useState(false);
@@ -391,8 +393,8 @@ export function SettingsWorkspace() {
   ).length || 0;
 
   return (
-    <div className={clsx("workspace-enter mx-auto w-full max-w-[112rem] px-4 pb-16 pt-5 sm:px-6 lg:px-8", styles.shell)}>
-      <header className={clsx("border-b border-line pb-6", styles.hero)}>
+    <div className={section === "general" ? styles.generalShell : clsx("workspace-enter mx-auto w-full max-w-[112rem] px-4 pb-16 pt-5 sm:px-6 lg:px-8", styles.shell)}>
+      {section === "general" ? <header className={styles.generalHeader}><h1>Settings</h1><p>General preferences for your account. Advanced workspace controls remain available below.</p></header> : <header className={clsx("border-b border-line pb-6", styles.hero)}>
         <div className={clsx("flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between", styles.heroLayout)}>
           <div className={styles.heroIntro}>
             <p className="text-xs font-bold uppercase tracking-[0.2em] text-primary">Control plane</p>
@@ -407,17 +409,17 @@ export function SettingsWorkspace() {
             <HeaderMetric label="Lifecycle" value={loading ? "—" : deprecatedModels ? String(deprecatedModels) : "Clear"} detail={deprecatedModels ? "need review" : "no alerts"} warning={deprecatedModels > 0} />
           </div>
         </div>
-      </header>
+      </header>}
 
-      {error ? (
+      {error && section !== "general" ? (
         <div role="alert" className={clsx("mt-4 flex items-start justify-between gap-4 border-l-2 border-danger bg-danger/5 px-4 py-3 text-sm text-danger", styles.error)}>
           <span className="flex items-start gap-2"><AlertCircle className="mt-0.5 size-4 shrink-0" />{error}</span>
           <button type="button" onClick={() => setError(undefined)} aria-label="Dismiss error"><X size={16} /></button>
         </div>
       ) : null}
 
-      <div className={clsx("mt-6 grid gap-8 xl:grid-cols-[16rem_minmax(0,1fr)]", styles.layout)}>
-        <nav aria-label="Settings categories" className={clsx("-mx-4 flex gap-1 overflow-x-auto border-y border-line px-4 py-2 xl:sticky xl:top-5 xl:mx-0 xl:block xl:self-start xl:overflow-visible xl:border-0 xl:p-0", styles.sidebar)}>
+      <div className={section === "general" ? styles.generalLayout : clsx("mt-6 grid gap-8 xl:grid-cols-[16rem_minmax(0,1fr)]", styles.layout)}>
+        <nav aria-label="Settings categories" className={section === "general" ? styles.generalNavigation : clsx("-mx-4 flex gap-1 overflow-x-auto border-y border-line px-4 py-2 xl:sticky xl:top-5 xl:mx-0 xl:block xl:self-start xl:overflow-visible xl:border-0 xl:p-0", styles.sidebar)}>
           {sections.map((item) => {
             const Icon = item.icon;
             return (
@@ -425,7 +427,7 @@ export function SettingsWorkspace() {
                 key={item.id}
                 type="button"
                 onClick={() => setSection(item.id)}
-                className={clsx(
+                className={section === "general" ? styles.generalNavItem : clsx(
                   "group flex min-w-[10rem] items-center gap-3 rounded-md px-3 py-3 text-left transition xl:mb-1 xl:w-full",
                   section === item.id ? "bg-primary/10 text-foreground" : "text-muted hover:bg-surface-raised hover:text-foreground",
                   styles.navItem,
@@ -444,8 +446,9 @@ export function SettingsWorkspace() {
           })}
         </nav>
 
-        <main className={clsx("min-w-0", styles.content)}>
-          {loading ? <SettingsLoading /> : null}
+        <div className={clsx("min-w-0", styles.content)}>
+          <div hidden={section !== "general"}><CompanionPreferences /></div>
+          {loading && section !== "general" ? <SettingsLoading /> : null}
           {!loading && snapshot && section === "overview" ? (
             <OverviewSection snapshot={snapshot} onNavigate={setSection} />
           ) : null}
@@ -547,7 +550,7 @@ export function SettingsWorkspace() {
           {!loading && snapshot && section === "data" ? (
             <DataSection snapshot={snapshot} />
           ) : null}
-        </main>
+        </div>
       </div>
 
       {providerDraft ? (

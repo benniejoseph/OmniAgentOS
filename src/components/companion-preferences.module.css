@@ -1,0 +1,89 @@
+.shell {
+  container: companion / inline-size;
+  min-width: 0;
+  color: var(--foreground);
+  background: var(--background);
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  overflow-wrap: anywhere;
+  --focus-surface: var(--background);
+}
+.shell :where(button, input, select, summary, a):focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 3px;
+  box-shadow: 0 0 0 3px var(--focus-surface);
+}
+.shell h2 { font-size: 1.25rem; line-height: 1.75rem; letter-spacing: -0.01em; font-weight: 600; }
+.shell :where(h3, h4) { font-size: 1rem; line-height: 1.5rem; font-weight: 600; }
+.header { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 1rem; margin-block-end: 1rem; }
+.header > div:first-child { flex: 1 1 18rem; min-width: 0; }
+.header p { margin-block-start: 0.5rem; max-width: 65ch; color: var(--muted); }
+.support { font-size: 0.8125rem; line-height: 1.25rem; color: var(--muted); }
+.layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1.5rem; margin-block: 1.5rem; }
+.form { display: grid; gap: 1.5rem; min-width: 0; }
+.fieldset, .threadList { min-width: 0; border: 0; padding: 0; }
+.fieldset legend { font-weight: 500; margin-block-end: 0.5rem; padding: 0; }
+.fieldset .support { margin-block-start: 0.5rem; max-width: 68ch; }
+.options, .actions { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; }
+.choice { display: flex; align-items: center; gap: 0.5rem; min-width: 0; min-height: 2.75rem; border: 1px solid var(--line-strong); border-radius: 0.625rem; padding: 0.5rem 0.75rem; color: var(--foreground); background: var(--surface); cursor: pointer; --focus-surface: var(--surface); }
+.choice:has(:checked) { border-color: var(--accent); background: var(--accent-surface); --focus-surface: var(--accent-surface); font-weight: 500; }
+.choice:has(:disabled) { background: var(--surface-raised); color: var(--muted); --focus-surface: var(--surface-raised); cursor: default; }
+.choice input, .threadChoice input { width: 1.125rem; height: 1.125rem; flex: 0 0 1.125rem; margin: 0.25rem; accent-color: var(--accent); }
+.field { display: grid; min-width: 0; gap: 0.5rem; font-weight: 500; }
+.field :where(input, select) { width: 100%; min-width: 0; min-height: 2.75rem; border: 1px solid var(--line-strong); border-radius: 0.625rem; padding: 0.5rem 0.75rem; color: var(--foreground); background: var(--surface); font: inherit; font-weight: 400; }
+.field :where(input, select):disabled { color: var(--muted); background: var(--surface-raised); opacity: 1; }
+.preview { border-inline-start: 3px solid var(--line); padding-inline-start: 1rem; min-width: 0; align-self: start; }
+.reading { margin-block: 1rem; max-width: 65ch; font-size: 1rem; line-height: 1.625rem; }
+.metadata { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.25rem; min-width: 0; margin-block: 1rem; font-size: 0.8125rem; line-height: 1.25rem; }
+.metadata dt { color: var(--muted); }
+.metadata dd { min-width: 0; margin: 0 0 0.5rem; }
+.shell code { display: inline; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-geist-mono), ui-monospace, monospace; font-size: 0.8125rem; line-height: 1.25rem; }
+.button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem;
+  min-width: 0; max-width: 100%; min-height: 2.75rem; border: 1px solid var(--line-strong);
+  border-radius: 0.625rem; padding: 0.5rem 0.75rem; color: var(--foreground); background: var(--surface);
+  font: inherit; font-weight: 500; white-space: normal; text-align: center; cursor: pointer;
+  transition: background-color var(--duration-control) var(--ease-standard);
+}
+.button:hover:not(:disabled) { background: var(--surface-raised); }
+.button:active:not(:disabled) { background: var(--surface-overlay); }
+.primaryButton { color: var(--primary-ink); background: var(--primary); border-color: var(--primary); }
+.primaryButton:hover:not(:disabled) { background: var(--primary-hover); }
+.primaryButton:active:not(:disabled) { background: var(--primary-pressed); }
+.button:disabled { color: var(--muted); background: var(--surface-raised); border-color: var(--line-strong); opacity: 1; cursor: default; }
+.homeSection, .saveArea { min-width: 0; border-block-start: 1px solid var(--line); padding-block: 1.5rem; }
+.homeSection > .support { margin-block-start: 0.5rem; max-width: 70ch; }
+.threadTitle { display: block; font-size: 0.875rem; margin-block-end: 0.25rem; }
+.picker { margin-block-start: 1.5rem; border-block: 1px solid var(--line); padding-block: 1rem; }
+.search { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 0.75rem; margin-block: 1rem; }
+.search .field { flex: 1 1 18rem; }
+.threadList { margin-block: 1rem; }
+.threadList legend { margin-block-end: 0.5rem; }
+.threadChoice { display: flex; align-items: flex-start; gap: 0.75rem; min-width: 0; min-height: 2.75rem; border-block-start: 1px solid var(--line); padding: 0.75rem; cursor: pointer; }
+.threadChoice > span { display: grid; gap: 0.25rem; min-width: 0; }
+.threadChoice strong { font-size: 0.875rem; line-height: 1.25rem; font-weight: 500; }
+.threadChoice:has(:checked) { background: var(--accent-surface); --focus-surface: var(--accent-surface); border-inline-start: 3px solid var(--accent); }
+.threadChoice:has(:disabled) { color: var(--muted); cursor: default; }
+.error, .notice, .confirmation, .pending { margin-block: 1rem; border-inline-start: 3px solid var(--warning); padding: 0.75rem 1rem; }
+.error { border-color: var(--danger); color: var(--danger); }
+.notice p, .confirmation p, .pending p { margin-block: 0.5rem; }
+.notice .button { margin-block-start: 0.75rem; }
+.empty { margin-block: 1.5rem; color: var(--muted); }
+.saveArea > .support { margin-block-end: 0.75rem; }
+.confirmation .actions { margin-block-start: 1rem; }
+.details { padding-block: 0.75rem; border-block-start: 1px solid var(--line); }
+.details summary { display: list-item; min-height: 2.75rem; padding-block: 0.75rem; font-weight: 500; cursor: pointer; }
+.details > .support { margin-block: 0.5rem; }
+@container companion (min-width: 44rem) {
+  .layout { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 2rem; }
+  .metadata { grid-template-columns: minmax(7rem, 0.35fr) minmax(0, 1fr); gap: 0.5rem 1rem; }
+  .metadata dd { margin: 0; }
+}
+@media (max-width: 47.99rem) { .field :where(input, select) { font-size: 1rem; line-height: 1.5rem; } }
+@media (pointer: coarse) { .button, .choice, .threadChoice, .field :where(input, select), .details summary { min-height: 3rem; } }
+@media (prefers-reduced-motion: reduce) { .button { transition: none; } }
+@media (prefers-contrast: more) { .shell { --muted: var(--foreground); --line: var(--line-strong); } }
+@media (forced-colors: active) {
+  .shell { --background: Canvas; --surface: Canvas; --surface-raised: Canvas; --surface-overlay: Canvas; --foreground: CanvasText; --muted: CanvasText; --line: CanvasText; --line-strong: ButtonText; --primary: ButtonFace; --primary-ink: ButtonText; --primary-hover: ButtonFace; --primary-pressed: ButtonFace; --accent: Highlight; --accent-surface: Canvas; --focus: Highlight; --warning: CanvasText; --danger: CanvasText; }
+}

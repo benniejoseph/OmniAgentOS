@@ -1290,5 +1290,12 @@
     "checksum": "c5aa4b4689b0c80e509f86e3c44512ea70c6ccf6f3d4ae57a369d432469fd9b4",
     "file": "20261003093000_deferred_constraint_validation.sql",
     "sha256": "c5aa4b4689b0c80e509f86e3c44512ea70c6ccf6f3d4ae57a369d432469fd9b4"
+  },
+  {
+    "version": 215,
+    "name": "companion_preferences_v1",
+    "checksum": "e24b96868f0833a36f887f8fa57885d9a35fb002e25495f4fdafd1424b82d373",
+    "file": "20261003100000_companion_preferences.sql",
+    "sha256": "e24b96868f0833a36f887f8fa57885d9a35fb002e25495f4fdafd1424b82d373"
   }
 ]
