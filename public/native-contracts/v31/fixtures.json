@@ -8,7 +8,7 @@
       "platform": "macos",
       "appVersion": "1.0.0",
       "buildNumber": 2,
-      "clientContractVersion": 28
+      "clientContractVersion": 31
     }
   },
   "refreshRequest": {
@@ -18,7 +18,7 @@
       "platform": "macos",
       "appVersion": "1.0.0",
       "buildNumber": 2,
-      "clientContractVersion": 28
+      "clientContractVersion": 31
     }
   },
   "conversationRequest": {
@@ -75,5 +75,35 @@
       "type": "done",
       "response": "Here is what needs attention."
     }
-  ]
+  ],
+  "realtimeVoiceSessionStartRequest": {
+    "providerConsent": true,
+    "audioRetention": "not_stored_by_asael",
+    "mode": "orchestrate",
+    "language": "en",
+    "reconnectAttempt": 0
+  },
+  "realtimeVoiceSessionFinishRequest": {
+    "sessionId": "33333333-3333-4333-8333-333333333333",
+    "conversationId": "22222222-2222-4222-8222-222222222222",
+    "outcome": "sent",
+    "durationMilliseconds": 12500,
+    "turnCount": 2,
+    "reconnectCount": 0,
+    "transcriptCharacters": 84,
+    "confidenceBand": "high",
+    "confidenceMean": 0.92,
+    "confidenceMinimum": 0.71,
+    "confidenceSampleCount": 12,
+    "reviewRequired": false,
+    "reviewAttested": true
+  },
+  "speechStreamRequest": {
+    "text": "Here is what needs attention.",
+    "agentId": "asael",
+    "threadId": "22222222-2222-4222-8222-222222222222",
+    "runId": "run-fixture",
+    "voiceProfileVersion": "asael-voice:1",
+    "audioRetention": "not_stored_by_asael"
+  }
 }

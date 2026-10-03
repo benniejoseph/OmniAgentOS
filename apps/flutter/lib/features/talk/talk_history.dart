@@ -255,7 +255,25 @@ mixin TalkHistoryControllerMixin on ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> openThread(String requestedId) async {
+  /// Action admission invalidates a read even when the action returns to idle
+  /// before its response arrives. It does not cancel any server work.
+  void invalidateThreadRead() {
+    _threadLoadGeneration += 1;
+    if (openingThreadId != null) {
+      openingThreadId = null;
+      threadState = threadId == null
+          ? TalkThreadState.idle
+          : TalkThreadState.stale;
+      memoryContextState = threadId == null
+          ? TalkMemoryContextState.idle
+          : TalkMemoryContextState.stale;
+    }
+  }
+
+  Future<bool> openThread(
+    String requestedId, {
+    bool Function()? canAdopt,
+  }) async {
     final repository = talkHistoryRepository;
     final id = safeTalkHistoryId(requestedId);
     if (!conversationHistorySupported ||
@@ -263,7 +281,7 @@ mixin TalkHistoryControllerMixin on ChangeNotifier {
         id.isEmpty ||
         historyInteractionBusy ||
         _historyDisposed) {
-      return;
+      return false;
     }
     final generation = ++_threadLoadGeneration;
     final refreshingCurrent = threadId == id;
@@ -286,7 +304,12 @@ mixin TalkHistoryControllerMixin on ChangeNotifier {
         throw const FormatException('Conversation identity did not match.');
       }
       final memories = await memoriesFuture;
-      if (_historyDisposed || generation != _threadLoadGeneration) return;
+      if (_historyDisposed || generation != _threadLoadGeneration) return false;
+      if (historyInteractionBusy || canAdopt?.call() == false) {
+        invalidateThreadRead();
+        notifyListeners();
+        return false;
+      }
       threadId = id;
       openingThreadId = null;
       failedThreadId = null;
@@ -301,8 +324,10 @@ mixin TalkHistoryControllerMixin on ChangeNotifier {
           ? TalkMemoryContextState.empty
           : TalkMemoryContextState.ready;
       _upsertRecentThread(detail.thread);
+      notifyListeners();
+      return true;
     } catch (_) {
-      if (_historyDisposed || generation != _threadLoadGeneration) return;
+      if (_historyDisposed || generation != _threadLoadGeneration) return false;
       openingThreadId = null;
       failedThreadId = id;
       threadState = refreshingCurrent
@@ -313,6 +338,7 @@ mixin TalkHistoryControllerMixin on ChangeNotifier {
           : TalkMemoryContextState.idle;
     }
     notifyListeners();
+    return false;
   }
 
   Future<void> retryOpenThread() async {
@@ -341,6 +367,7 @@ mixin TalkHistoryControllerMixin on ChangeNotifier {
   String? adoptConversationThreadId(Object? value) {
     final id = safeTalkHistoryId(value);
     if (id.isEmpty) return null;
+    invalidateThreadRead();
     threadId = id;
     openingThreadId = null;
     failedThreadId = null;

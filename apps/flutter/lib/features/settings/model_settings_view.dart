@@ -9,6 +9,7 @@ import '../../core/platform/desktop_host_bridge.dart';
 import '../../core/platform/local_computer_bridge.dart';
 import '../../generated/native_contract.g.dart';
 import '../computer_use/local_computer.dart';
+import '../companion/companion_settings.dart';
 
 typedef Json = Map<String, dynamic>;
 
@@ -297,6 +298,8 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
                         const SizedBox(height: 12),
                         _SettingsError(error: error!, retry: _load),
                       ],
+                      const SizedBox(height: 24),
+                      const CompanionSettingsSection(),
                       if (loading && snapshot == null)
                         const Padding(
                           padding: EdgeInsets.all(48),
@@ -730,7 +733,7 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
           if (error != null)
             _MacSettingsErrorBanner(error: error!, retry: _load),
           Expanded(
-            child: loading && snapshot == null
+            child: loading && snapshot == null && macosSection != 0
                 ? const MacosLoadingList(rows: 8)
                 : Row(
                     children: [
@@ -772,6 +775,8 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
     key: const ValueKey('macos-settings-general'),
     padding: const EdgeInsets.all(22),
     children: [
+      const CompanionSettingsSection(),
+      const SizedBox(height: 24),
       const MacosSectionHeader(
         title: 'Workspace foundation',
         description: 'Authentication, storage, and credential boundaries for this private workspace.',

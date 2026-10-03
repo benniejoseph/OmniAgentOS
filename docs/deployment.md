@@ -36,28 +36,29 @@ Set these through the platform secret/configuration store, never in source contr
 - `NEXT_PUBLIC_APP_URL`: canonical HTTPS origin. Set it to exactly `https://asael.bennierichard.com`. It is public and build-inlined, not a secret.
 - `OMNIAGENT_NATIVE_MIN_ANDROID_VERSION`, `OMNIAGENT_NATIVE_MIN_IOS_VERSION`, and `OMNIAGENT_NATIVE_MIN_MACOS_VERSION`: optional stable `major.minor.patch` minimums for native compatibility telemetry. An absent or empty value defaults to `1.0.0`; a malformed configured value invalidates the policy and holds adoption unavailable. These settings do not authorize Agent enrollment.
 
-Native contract artifacts are committed immutable release inputs. Production
-advertises v30 as current and deliberately retains v29 as the one
-rollback-compatible previous version. V28 remains the one immutable archive
+Native contract artifacts are committed immutable release inputs. This release
+advertises v31 as current and deliberately retains v30 as the one
+rollback-compatible previous version. V29 remains the one immutable archive
 and is not advertised by current discovery. Older versions are deleted: each
 new contract deletes the oldest archive, and a unit test holds
-`public/native-contracts/` to these three versions. Do not retire v29 until
-the v30 rollback window closes. A published version is never regenerated in
-place. Run
-`npm run check:native-contracts` before a native-contract release; the check
-fails if the generated OpenAPI, event schema, fixtures, integrity manifests,
-Dart SDK, or frozen v28-v29 document hashes drift. A Vercel deployment never
-deletes an archive; only a contract release does. V25/v20 was the 2026-09-22
-adaptive-runtime compatibility pair; v27/v26 was the governed local-command
-release pair; v28/v27 was the scoped model-selection release pair; v29/v28 was
-the native Ambient Command voice release pair; v30/v29 is the current
-task-authority target-check and reviewed voice declaration release pair.
+`public/native-contracts/` to these three versions. Do not retire v30 until
+the v31 rollback window closes. A published version is never regenerated in
+place. Run `npm run check:native-contracts` before a native-contract release;
+the check fails if the generated OpenAPI, event schema, fixtures, integrity
+manifests, Dart SDK, or frozen v29-v30 document hashes drift. A Vercel deployment
+never deletes an archive; only a contract release does. V25/v20 was the
+2026-09-22 adaptive-runtime compatibility pair; v27/v26 was the governed
+local-command pair; v28/v27 added scoped model selection; v29/v28 added native
+Ambient Command voice; v30/v29 added task-authority target checks and reviewed
+voice declarations. V31/v30 adds owner-bound Companion preferences and the
+explicitly enrolled native preference mutation.
 
-Advertising v30/v29 stops supporting v28, so a v28 client receives
-`upgrade_required` and its native mutations are held. Deploy the v30 server
-before installing a v30 native build: a v30 client fails bootstrap against a
-server that advertises only v29/v28. The installed v29 client keeps working
-against a v30 server through the rollback window.
+Advertising v31/v30 stops supporting v29, so a v29 client receives
+`upgrade_required` and its native mutations are held. Deploy the v31 server
+before installing a v31 native build: a v31 client fails bootstrap against a
+server that advertises only v30/v29. The installed v30 client keeps working
+against a v31 server through the rollback window. A repository merge does not
+establish that this pair has been promoted to production.
 
 ### Memory forget lineage closure (v207)
 

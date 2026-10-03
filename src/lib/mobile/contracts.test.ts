@@ -18,11 +18,27 @@ import {
 } from "@/lib/mobile/contracts";
 
 describe("native API contracts", () => {
+  it("exposes owner-bound presentation preferences only in v31 with strict revision-bound input", () => {
+    expect(nativeOperationsForVersion(30)?.some((item) => item.id.startsWith("companion."))).toBe(false);
+    const operations = nativeOperationsForVersion(31)?.filter((item) => item.id.startsWith("companion."));
+    expect(operations?.map((item) => item.id)).toEqual(["companion.preferences.get", "companion.preferences.update"]);
+    for (const operation of operations ?? []) {
+      expect(operation.path).toBe("/api/companion/preferences");
+      expect(operation.headerParameters).toContainEqual(expect.objectContaining({ name: "x-asael-companion-owner-sha256", required: true, pattern: "^[a-f0-9]{64}$" }));
+    }
+    expect(operations?.[1].headerParameters).toContainEqual(expect.objectContaining({ name: "Idempotency-Key", required: true }));
+    const schema = nativeContractSchemas.NativeCompanionPreferencesRequest;
+    expect(schema.safeParse({ action: "reset", expectedRevision: 3 }).success).toBe(true);
+    expect(schema.safeParse({ action: "reset" }).success).toBe(false);
+    expect(schema.safeParse({ action: "reset", expectedRevision: 3, actorId: "other" }).success).toBe(false);
+    expect(schema.safeParse({ action: "save", expectedRevision: 0, preferences: { intensity: "quiet", visible: true, motion: "reduced", defaultDestination: "activity", preferredThreadId: null } }).success).toBe(true);
+    expect(schema.safeParse({ action: "save", expectedRevision: 0, preferences: { intensity: "quiet" } }).success).toBe(false);
+  });
   it("retains exactly the current and previous rollout versions", () => {
     // Tripwire: a native contract bump must be a deliberate, reviewed change.
     // The other tests follow these constants.
-    expect(NATIVE_API_CURRENT_VERSION).toBe(30);
-    expect(NATIVE_API_PREVIOUS_VERSION).toBe(29);
+    expect(NATIVE_API_CURRENT_VERSION).toBe(31);
+    expect(NATIVE_API_PREVIOUS_VERSION).toBe(30);
     expect(NATIVE_API_SUPPORTED_VERSIONS).toEqual([
       NATIVE_API_CURRENT_VERSION,
       NATIVE_API_PREVIOUS_VERSION,
@@ -258,6 +274,7 @@ describe("native API contracts", () => {
         "voice.speech.stream",
       ),
       30: added(),
+      31: added("companion.preferences.get", "companion.preferences.update"),
     });
     // v20 and v23 changed only request and push schemas.
     expect(nativeOperationsForVersion(20)).toEqual(nativeOperationsForVersion(19));

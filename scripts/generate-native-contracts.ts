@@ -19,17 +19,17 @@ const checkOnly = process.argv.includes("--check");
 // The previous contract and the one archive before it, byte for byte. When a
 // new contract ships, the oldest entry goes, and its directory with it.
 const frozenDocumentSha256ByVersion = Object.freeze({
-  28: Object.freeze({
-    "openapi.json": "267bab2002c64f600153de2795eb43958e9273c9761694d6e9b53951aeefec6c",
-    "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9",
-    "fixtures.json": "0a1f493aff026d2b5ffc3c445e9ec45365b471b3a3c5a0fcb065689a460a9a0f",
-    "manifest.json": "f3ba0654e8fb84bde0477129283750f1a099131b1a68bf53a939a42f0dbc256a",
-  }),
   29: Object.freeze({
     "openapi.json": "4c05b72fb2533b5d001600ee843252b65012fef9ec62d38fc586a4d84ed1cf3a",
     "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9",
     "fixtures.json": "843a2e85f3dd70e806ee22787c9a151cb5c5284c08a46ae49bda2b51789300eb",
     "manifest.json": "f18dd634d6e319dae4de4b07e7bd7c161356817a9fc78b36357e64550bcc258d",
+  }),
+  30: Object.freeze({
+    "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9",
+    "fixtures.json": "fe8ce85e53bf3346b74e7b429b3b33d66076465b914aeef4c22c42c1163a1808",
+    "manifest.json": "ddf28e1a590542c09be88076c18c3a5eab0785058140276a97656d90e2d779d7",
+    "openapi.json": "2abf9f964377dc8058e5cd1d1681ef795933d65b8a6b75fd8578d6c7e56069bc", // gitleaks:allow -- public frozen artifact SHA-256 integrity digest
   }),
 });
 

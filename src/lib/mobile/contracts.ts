@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { COMPANION_PREFERENCES_CONTRACT, companionChangeSchema, companionPreferencesSchema, companionThreadIdSchema } from "@/lib/companion/contracts";
 import { agentDailyLearningStatusV1Schema } from "@/lib/agents/learning-contracts";
 import {
   promptQueueCreateRequestSchema,
@@ -32,11 +33,10 @@ import {
 import { voiceCommandInputSchema } from "@/lib/voice/command-input";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 30 as const;
-// v29 remains the byte-frozen rollback bridge while v30 marks the local
-// computer commands that run on This Mac task authority alone and lets native
-// commands declare their reviewed realtime voice input.
-export const NATIVE_API_PREVIOUS_VERSION = 29 as const;
+export const NATIVE_API_CURRENT_VERSION = 31 as const;
+// v30 remains the byte-frozen rollback bridge. v31 adds owner-bound Companion
+// preference reads and explicit presentation-only mutation enrollment.
+export const NATIVE_API_PREVIOUS_VERSION = 30 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -1652,7 +1652,44 @@ const v29Operations: readonly NativeOperation[] = [
 // surface is added.
 const v30Operations: readonly NativeOperation[] = [...v29Operations];
 
+const companionOwnerHeaders = [{
+  name: "x-asael-companion-owner-sha256", required: true,
+  minLength: 64, maxLength: 64, pattern: "^[a-f0-9]{64}$",
+}] as const satisfies readonly NativeHeaderParameter[];
+
+const v31Operations: readonly NativeOperation[] = [
+  ...v30Operations,
+  operation("companion.preferences.get", "GET", "/api/companion/preferences",
+    "Read presentation preferences for the authenticated owner bound by the request digest.",
+    "bearer", undefined, "NativeCompanionPreferencesResponse", { headerParameters: companionOwnerHeaders }),
+  operation("companion.preferences.update", "PATCH", "/api/companion/preferences",
+    "Save or reset the exact owner's presentation preferences with a revision and replayable receipt; grants no execution authority.",
+    "bearer", "NativeCompanionPreferencesRequest", "NativeCompanionPreferencesResponse",
+    { headerParameters: [...companionOwnerHeaders, ...pluginMutationHeaders] }),
+];
+
+const nativeCompanionPreferencesResponseSchema = z.object({
+  schemaVersion: z.literal(1), contract: z.literal(COMPANION_PREFERENCES_CONTRACT),
+  snapshot: z.object({
+    revision: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER), persisted: z.boolean(),
+    updatedAt: isoDateTime.nullable(), preferences: companionPreferencesSchema,
+  }).strict(),
+  home: z.object({
+    state: z.enum(["not_set", "available", "unavailable", "unconfirmed"]),
+    preferredThreadId: companionThreadIdSchema.nullable(), href: z.string().min(1).max(4096).nullable(),
+    fallbackHref: z.literal("/app/command"),
+  }).strict(),
+  destination: z.object({ href: z.string().min(1).max(4096), state: z.enum(["configured", "fallback"]) }).strict(),
+  mutation: z.object({
+    outcome: z.enum(["saved", "replayed"]), receiptId: z.string().regex(/^companion:[a-f0-9]{64}$/),
+    revision: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER), savedAt: isoDateTime,
+    preferences: companionPreferencesSchema,
+  }).strict().optional(),
+}).strict();
+
 export const nativeContractSchemas = Object.freeze({
+  NativeCompanionPreferencesRequest: companionChangeSchema,
+  NativeCompanionPreferencesResponse: nativeCompanionPreferencesResponseSchema,
   JsonObject: jsonObject,
   NativeClientAttestation: nativeClientAttestationSchema,
   NativeDevice: nativeDeviceSchema,
@@ -1777,6 +1814,7 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 28) return v28Operations;
   if (version === 29) return v29Operations;
   if (version === 30) return v30Operations;
+  if (version === 31) return v31Operations;
   return undefined;
 }
 
@@ -1786,7 +1824,7 @@ export function nativeContractDiscovery() {
     contractId: NATIVE_API_CONTRACT_ID,
     currentVersion: NATIVE_API_CURRENT_VERSION,
     previousVersion: NATIVE_API_PREVIOUS_VERSION,
-    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [30, 29],
+    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [31, 30],
     versions: NATIVE_API_SUPPORTED_VERSIONS.map((version) => ({
       version,
       state: version === NATIVE_API_CURRENT_VERSION ? "current" as const : "previous" as const,

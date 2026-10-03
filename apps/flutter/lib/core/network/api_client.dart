@@ -347,12 +347,14 @@ class ApiClient {
   Future<Map<String, dynamic>> getJsonFreshCancelable(
     String path, {
     Map<String, dynamic>? query,
+    Map<String, dynamic>? headers,
     required CancelToken cancelToken,
   }) => _json(
     () => _dio.get<Object?>(
       path,
       queryParameters: query,
       cancelToken: cancelToken,
+      options: Options(headers: headers),
     ),
   );
 

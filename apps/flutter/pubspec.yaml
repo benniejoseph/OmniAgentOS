@@ -50,5 +50,7 @@ dependency_overrides:
 flutter:
   uses-material-design: true
   assets:
+    - assets/companion/atlas-neutral.png
+    - assets/companion/atlas-neutral.provenance.json
     - assets/brand/asael-mark.png
     - assets/mascot/asael-orbit.json

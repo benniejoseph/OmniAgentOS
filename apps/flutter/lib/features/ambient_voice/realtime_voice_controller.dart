@@ -16,6 +16,7 @@ import '../../core/network/api_client.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/storage/secure_session_store.dart';
 import '../../generated/native_contract.g.dart';
+import '../companion/microphone_observation.dart';
 
 const _audioRetention = 'not_stored_by_asael';
 const _transcriptRetention = 'command_draft_until_sent';
@@ -190,6 +191,7 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
   RTCPeerConnection? _peer;
   RTCDataChannel? _dataChannel;
   MediaStream? _microphoneStream;
+  final _microphoneObservation = CompanionMicrophoneObservation();
   Timer? _reconnectTimer;
   Timer? _maximumSessionTimer;
   Timer? _levelTimer;
@@ -207,6 +209,11 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
   String? get providerErrorCode => _providerErrorCode;
   double get level => _level;
   bool get microphoneEnabled => _microphoneEnabled;
+  bool get microphoneActive =>
+      !_disposed &&
+      _microphoneStream != null &&
+      _microphoneEnabled &&
+      _microphoneObservation.active;
   bool get isSpeechPlaying => _speechPlaying;
   bool get isListening => const {
     AmbientRealtimeVoicePhase.connecting,
@@ -290,6 +297,7 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
         return;
       }
       _microphoneStream = stream;
+      _microphoneObservation.bind(stream.getAudioTracks(), _notify);
       _microphoneEnabled = true;
       _setPhase(AmbientRealtimeVoicePhase.connecting, 'Getting ready…');
       final credential = await _issueSession(
@@ -1176,6 +1184,7 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
     if (stopMicrophone) {
       final stream = _microphoneStream;
       _microphoneStream = null;
+      _microphoneObservation.release();
       if (stream != null) await _stopMediaStream(stream);
       _microphoneEnabled = false;
     }
@@ -1277,6 +1286,7 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
     _providerCancel?.cancel('voice_controller_disposed');
     _speechCancel?.cancel('voice_controller_disposed');
     _microphoneStream = null;
+    _microphoneObservation.release();
     _dataChannel = null;
     _peer = null;
     _speechFile = null;

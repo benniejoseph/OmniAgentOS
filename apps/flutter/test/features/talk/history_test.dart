@@ -1,8 +1,13 @@
 import 'dart:typed_data';
+import 'dart:async';
 
 import 'package:asael/features/talk/talk.dart';
+import 'package:asael/features/companion/companion_controller.dart';
+import 'package:asael/features/companion/companion_models.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import '../companion/companion_fixtures.dart';
 
 const _threadA = '11111111-1111-4111-8111-111111111111';
 const _threadB = '22222222-2222-4222-8222-222222222222';
@@ -11,6 +16,7 @@ class _HistoryRepository implements TalkRepository, TalkHistoryRepository {
   bool failList = false;
   bool failDetail = false;
   bool failMemory = false;
+  Completer<TalkThreadDetail>? heldDetail;
   final sentThreadIds = <String?>[];
   final openedThreadIds = <String>[];
   final memoryThreadIds = <String>[];
@@ -39,6 +45,7 @@ class _HistoryRepository implements TalkRepository, TalkHistoryRepository {
   @override
   Future<TalkThreadDetail> getThread(String threadId) async {
     openedThreadIds.add(threadId);
+    if (heldDetail != null) return heldDetail!.future;
     if (failDetail) throw StateError('offline');
     final thread = threads.singleWhere((item) => item.id == threadId);
     return TalkThreadDetail(
@@ -122,6 +129,116 @@ class _VoiceRecorder implements VoiceDraftRecorder {
 }
 
 void main() {
+  test(
+    'late history read cannot adopt after an intervening completed send',
+    () async {
+      final repository = _HistoryRepository();
+      final controller = TalkController(repository);
+      addTearDown(controller.dispose);
+      await controller.openThread(_threadA);
+      repository.heldDetail = Completer<TalkThreadDetail>();
+      final pending = controller.openThread(_threadB);
+      await controller.send('Retained current work');
+      repository.heldDetail!.complete(
+        TalkThreadDetail(thread: repository.threads.last, turns: const []),
+      );
+      expect(await pending, false);
+      expect(controller.threadId, _threadA);
+      expect(repository.sentThreadIds.last, _threadA);
+      expect(
+        controller.messages.any(
+          (message) => message.text == 'Retained current work',
+        ),
+        true,
+      );
+    },
+  );
+
+  test('late history adoption requires the view admission guard and rejects disposal', () async {
+    final repository = _HistoryRepository();
+    final controller = TalkController(repository);
+    repository.heldDetail = Completer<TalkThreadDetail>();
+    var permitted = true;
+    final pending = controller.openThread(_threadA, canAdopt: () => permitted);
+    permitted = false;
+    repository.heldDetail!.complete(
+      TalkThreadDetail(thread: repository.threads.first, turns: const []),
+    );
+    expect(await pending, false);
+    expect(controller.threadId, isNull);
+    repository.heldDetail = Completer<TalkThreadDetail>();
+    final disposed = controller.openThread(_threadB);
+    controller.dispose();
+    repository.heldDetail!.complete(
+      TalkThreadDetail(thread: repository.threads.last, turns: const []),
+    );
+    expect(await disposed, false);
+  });
+
+  testWidgets(
+    'Home uses exact owned history read and retains composer edits made while loading',
+    (tester) async {
+      tester.view.physicalSize = const Size(1100, 1100);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final repository = _HistoryRepository();
+      final controller = TalkController(repository);
+      final preferenceRepository = FakeCompanionRepository()
+        ..response = CompanionResponse.fromJson(
+          companionFixture(
+            revision: 1,
+            preferences: const CompanionPreferences(
+              preferredThreadId: _threadB,
+            ),
+          ),
+        );
+      final preferences = CompanionController(preferenceRepository);
+      addTearDown(preferences.dispose);
+      addTearDown(controller.dispose);
+      await controller.openThread(_threadA);
+      await preferences.refresh();
+      final adopted = <String>[];
+      await tester.pumpWidget(
+        MaterialApp(
+          home: TalkView(
+            controller: controller,
+            companionController: preferences,
+            voiceRecorder: _VoiceRecorder(),
+            onThreadAdopted: adopted.add,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final composer = find.descendant(
+        of: find.byType(TalkCommandComposer),
+        matching: find.byType(EditableText),
+      );
+      expect(composer, findsOneWidget);
+      await tester.enterText(composer, 'Unsent draft');
+      repository.heldDetail = Completer<TalkThreadDetail>();
+      await tester.tap(find.text('Open home conversation'));
+      await tester.pump();
+      await tester.enterText(composer, 'Edited while home loads');
+      expect(
+        tester.widget<EditableText>(composer).controller.text,
+        'Edited while home loads',
+      );
+      repository.heldDetail!.complete(
+        TalkThreadDetail(thread: repository.threads.last, turns: const []),
+      );
+      await tester.pumpAndSettle();
+      expect(controller.threadId, _threadB);
+      expect(adopted, [_threadB]);
+      expect(repository.sentThreadIds, isEmpty);
+      expect(
+        tester.widget<EditableText>(composer).controller.text,
+        'Edited while home loads',
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   test('parses only bounded public conversation turns', () {
     final detail = TalkThreadDetail.fromJson({
       'thread': {

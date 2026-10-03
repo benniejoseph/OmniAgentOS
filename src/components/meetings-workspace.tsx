@@ -25,7 +25,7 @@ import {
   X,
 } from "lucide-react";
 import Link from "next/link";
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { permissionMessage, useWorkspaceSession } from "@/components/app-shell/session-context";
 import { assertMeetingCommitmentRead, createMeetingRequestGate, freezeMeetingSubmission, startMeetingMediaReads, meetingCalendarReceipt, parseMeetingCommitments, parseMeetingDetail, parseMeetingList, parseMeetingMediaReceipt, parseMeetingMutation, parseMeetingProposalReceipt, parseMeetingResolutionReceipt, parseMeetingOptions, type MeetingReadState } from "./meetings-workspace-state";
@@ -283,8 +283,18 @@ function ScopedMeetingsWorkspace({ initialMeetingId }: { initialMeetingId?: stri
   const editorHeading = useRef<HTMLHeadingElement>(null);
   const pageHeading = useRef<HTMLHeadingElement>(null);
   const receiptElement = useRef<HTMLDivElement>(null);
+  const receiptFocusOrigin = useRef<Element | null | undefined>(undefined);
   const editorOpen = useRef(false);
   const focusFrame = useRef<number | undefined>(undefined);
+
+  // A response can settle before React commits the receipt/editor replacement.
+  // Focus only after that commit, and preserve a user's intervening focus move.
+  useLayoutEffect(() => {
+    const origin = receiptFocusOrigin.current;
+    if (origin === undefined || !receiptElement.current || gate.isWriting()) return;
+    receiptFocusOrigin.current = undefined;
+    if (document.activeElement === origin || document.activeElement === document.body) receiptElement.current.focus();
+  });
 
   const read = useCallback(async (channel: ReadChannel, path: string, apply: (body: Record<string, unknown>) => void, signal?: AbortSignal) => {
     const request = gate.beginRead(channel);
@@ -426,6 +436,7 @@ function ScopedMeetingsWorkspace({ initialMeetingId }: { initialMeetingId?: stri
     const action = gate.beginWrite();
     if (!action) return;
     const origin = document.activeElement;
+    receiptFocusOrigin.current = undefined;
     setBusy(label);
     setError(undefined);
     let accepted = false;
@@ -434,6 +445,7 @@ function ScopedMeetingsWorkspace({ initialMeetingId }: { initialMeetingId?: stri
       if (!action.current()) return;
       const feedback = accept(body);
       accepted = true;
+      receiptFocusOrigin.current = origin;
       setReceipt(feedback);
       setAnnouncement(feedback);
     } catch (failure) {
@@ -445,9 +457,6 @@ function ScopedMeetingsWorkspace({ initialMeetingId }: { initialMeetingId?: stri
         if (accepted) {
           after?.();
           refresh();
-          focusFrame.current = window.requestAnimationFrame(() => {
-            if (!gate.isWriting() && (document.activeElement === origin || document.activeElement === document.body)) receiptElement.current?.focus();
-          });
         }
       }
     }

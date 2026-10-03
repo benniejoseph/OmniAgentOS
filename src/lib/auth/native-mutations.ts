@@ -17,6 +17,7 @@ export const NATIVE_MUTATION_CAPABILITIES = [
   "markets.update",
   "markets.backtest.run",
   "settings.update",
+  "companion.preferences.update",
   "evidence.cancel",
   "push.registration.update",
   "push.delivery.acknowledge",
@@ -97,6 +98,7 @@ export function nativeMutationCapabilityPolicy(
 }
 
 function minimumVersion(capability: NativeMutationCapability) {
+  if (capability === "companion.preferences.update") return 31;
   if (
     capability === "voice.session.manage" ||
     capability === "voice.speech.stream"

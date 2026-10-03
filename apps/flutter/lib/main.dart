@@ -23,6 +23,9 @@ Future<void> main(List<String> arguments) async {
         appInitialLocationProvider.overrideWithValue(
           initialAppLocation(arguments),
         ),
+        appExplicitInitialLocationProvider.overrideWithValue(
+          hasExplicitInitialAppLocation(arguments),
+        ),
         localComputerWindowContextProvider.overrideWithValue(windowContext),
         primaryNativeRuntimeProvider.overrideWithValue(
           windowContext.role == LocalComputerWindowRole.primary,

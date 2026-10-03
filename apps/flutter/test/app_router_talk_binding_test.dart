@@ -13,6 +13,7 @@ import 'package:asael/features/agents/agent_council.dart';
 import 'package:asael/features/agents/agents.dart' hide Json;
 import 'package:asael/features/agents/agents_providers.dart';
 import 'package:asael/features/computer_use/local_computer.dart';
+import 'package:asael/features/companion/companion_providers.dart';
 import 'package:asael/features/talk/talk.dart';
 import 'package:asael/features/talk/talk_providers.dart';
 import 'package:flutter/material.dart';
@@ -21,9 +22,29 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'features/agents/agent_council_fixture.dart';
+import 'features/companion/companion_fixtures.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  test('explicit owned thread entry is preserved and unsafe routes never become return paths', () {
+    const id = '11111111-1111-4111-8111-111111111111';
+    expect(
+      initialAppLocation(['--asael-route=/talk?thread=$id']),
+      '/talk?thread=$id',
+    );
+    expect(hasExplicitInitialAppLocation(['--asael-route=/today']), true);
+    expect(hasExplicitInitialAppLocation([]), false);
+    for (final route in [
+      '/talk?thread=foreign',
+      '/talk?thread=$id&thread=$id',
+      '/talk?thread=$id&next=https://evil.invalid',
+      '//evil.invalid/talk',
+      '/talk/../settings',
+    ]) {
+      expect(isSafeInitialAppLocation(route), false);
+    }
+  });
 
   testWidgets('Ambient Command asks each signed-in owner for their own '
       'agreement', (tester) async {
@@ -31,6 +52,9 @@ void main() {
     final store = SecureSessionStore.withStorage(_MemoryValues());
     final container = ProviderContainer(
       overrides: [
+        companionRepositoryProvider.overrideWith(
+          (_) => FakeCompanionRepository(),
+        ),
         sessionControllerProvider.overrideWith(() {
           sessions = _TestSessionController(
             Completer<AppSession?>()..complete(_ownerA),
@@ -87,6 +111,9 @@ void main() {
   ) async {
     final container = ProviderContainer(
       overrides: [
+        companionRepositoryProvider.overrideWith(
+          (_) => FakeCompanionRepository(),
+        ),
         sessionControllerProvider.overrideWith(
           () => _TestSessionController(
             Completer<AppSession?>()..complete(_ownerA),
@@ -136,7 +163,7 @@ void main() {
   });
 
   testWidgets(
-    'routed Conversation submits through the live owner-scoped controller',
+    'routed Conversation never submits a prior owner draft through a replacement controller',
     (tester) async {
       final bootstrap = Completer<AppSession?>();
       final firstRepository = _RecordingTalkRepository();
@@ -144,6 +171,9 @@ void main() {
       late _TestSessionController sessions;
       final container = ProviderContainer(
         overrides: [
+          companionRepositoryProvider.overrideWith(
+            (_) => FakeCompanionRepository(),
+          ),
           sessionControllerProvider.overrideWith(() {
             sessions = _TestSessionController(bootstrap);
             return sessions;
@@ -209,13 +239,14 @@ void main() {
       await tester.tap(find.byTooltip('Send message'));
 
       expect(firstRepository.messages, isEmpty);
-      expect(liveRepository.messages, ['Open my XAUUSD chart']);
+      expect(liveRepository.messages, isEmpty);
 
       await tester.pump();
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
 
       final liveView = tester.widget<TalkView>(find.byType(TalkView));
+      expect(find.text('Open my XAUUSD chart'), findsNothing);
       expect(identical(liveView.controller, firstController), isFalse);
       expect(
         identical(liveView.controller, container.read(talkControllerProvider)),
@@ -240,6 +271,9 @@ void main() {
       final talkRepository = _RecordingTalkRepository();
       final container = ProviderContainer(
         overrides: [
+          companionRepositoryProvider.overrideWith(
+            (_) => FakeCompanionRepository(),
+          ),
           sessionControllerProvider.overrideWith(
             () => _TestSessionController(bootstrap),
           ),
@@ -320,6 +354,9 @@ void main() {
     );
     final container = ProviderContainer(
       overrides: [
+        companionRepositoryProvider.overrideWith(
+          (_) => FakeCompanionRepository(),
+        ),
         sessionControllerProvider.overrideWith(
           () => _TestSessionController(bootstrap),
         ),
