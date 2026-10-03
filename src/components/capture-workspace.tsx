@@ -960,8 +960,18 @@ export function CaptureWorkspace() {
       </div>
 
       <div className={styles.childSection}>
-        <SourceReadStatus read={sourceReads.capabilities} loading={loadingWorkspace} label="Media capabilities" />
-        <VisualStudio assets={assets} imageRoute={imageGenerationRoute} videoRoute={videoGenerationRoute} disabledReason={visualBlocked} onJob={(job) => { completedJobRef.current = undefined; setActiveJob(job); }} onAssetsChanged={loadWorkspace} />
+        <VisualStudio
+          assets={assets}
+          assetsRead={sourceReads.assets}
+          capabilitiesRead={sourceReads.capabilities}
+          loading={loadingWorkspace}
+          imageRoute={imageGenerationRoute}
+          videoRoute={videoGenerationRoute}
+          disabledReason={visualBlocked}
+          saveDisabledReason={captureBlocked}
+          onJob={(job) => { completedJobRef.current = undefined; setActiveJob(job); }}
+          onAssetsChanged={loadWorkspace}
+        />
       </div>
 
       <WorkspaceLibrary
