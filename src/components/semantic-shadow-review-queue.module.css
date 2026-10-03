@@ -9,7 +9,7 @@
 .heading p { color: var(--muted); font-size: .8125rem; line-height: 1.5385; }
 .heading h3 { font-size: 1.25rem; font-weight: 600; line-height: 1.4; letter-spacing: -.01em; }
 .heading > div:nth-child(2) > span { display: block; max-inline-size: 70ch; padding-block-start: .25rem; color: var(--muted); }
-.heading > button, .probeControls button, .submitBar button { display: inline-flex; min-block-size: 2.75rem; align-items: center; justify-content: center; gap: .5rem; border: 1px solid var(--line-strong); border-radius: var(--radius-control); padding: .5rem .75rem; color: var(--foreground); background: var(--surface); font-size: .875rem; font-weight: 500; line-height: 1.4286; }
+.heading > button, .probeControls button, .submitBar button, .detailReadState > button { display: inline-flex; min-block-size: 2.75rem; align-items: center; justify-content: center; gap: .5rem; border: 1px solid var(--line-strong); border-radius: var(--radius-control); padding: .5rem .75rem; color: var(--foreground); background: var(--surface); font-size: .875rem; font-weight: 500; line-height: 1.4286; }
 .gateStrip { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(10rem, 100%), 1fr)); border-block: 1px solid var(--line); }
 .gateStrip > div { display: grid; min-inline-size: 0; align-content: start; gap: .25rem; padding: 1rem .5rem; }
 .gateStrip strong { font-size: 1rem; font-weight: 600; line-height: 1.5; font-variant-numeric: tabular-nums; }
@@ -41,6 +41,10 @@
 .queueEmpty strong { color: var(--foreground); font-size: 1rem; font-weight: 600; line-height: 1.5; }
 .queueEmpty span, .queueLoading { font-size: .875rem; line-height: 1.4286; }
 .reviewPane { min-inline-size: 0; }
+.detailReadState { display: flex; flex-wrap: wrap; align-items: start; gap: .75rem; padding: 1rem; border-block-end: 1px solid var(--line); }
+.detailReadState > p { min-inline-size: 0; flex: 1 1 20rem; color: var(--muted); font-size: .8125rem; line-height: 1.5385; }
+.detailReadState > p:empty { flex-basis: 0; }
+.detailReadState:has(> p:only-child:empty) { border: 0; padding: 0; }
 .detailLoading, .detailEmpty { display: grid; min-block-size: 12rem; align-content: center; justify-items: start; gap: .5rem; padding: 1.5rem 1rem; color: var(--muted); font-size: .875rem; line-height: 1.4286; }
 .detailEmpty strong { color: var(--foreground); font-size: 1rem; font-weight: 600; line-height: 1.5; }
 .detailHeading { display: flex; flex-wrap: wrap; align-items: start; justify-content: space-between; gap: .5rem 1rem; border-block-end: 1px solid var(--line); padding: 1rem; }
@@ -117,6 +121,7 @@
 .submitBar span { color: var(--muted); font-size: .8125rem; line-height: 1.5385; }
 .submitBar button { border-color: var(--primary); color: var(--primary-ink); background: var(--primary); }
 .reviewBench button:disabled { opacity: 1; cursor: not-allowed; border-color: var(--line-strong); color: var(--muted); background: var(--surface-raised); }
+.reviewBench :is(input, select):disabled, .semanticPanel fieldset:disabled label { color: var(--muted); cursor: not-allowed; }
 .boundary { display: flex; align-items: start; gap: .5rem; border-block-start: 1px solid var(--line); padding: 1rem .5rem; color: var(--muted); font-size: .8125rem; line-height: 1.5385; }
 .boundary svg { margin-block-start: .125rem; }
 .reviewBench :is(button, input, select, summary, [tabindex="0"]):focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; box-shadow: 0 0 0 3px var(--focus-surface); }
@@ -131,13 +136,13 @@
   .sourcePanel { border-block-end: 0; border-inline-end: 1px solid var(--line); }
 }
 @media (hover: hover) {
-  .heading > button:not(:disabled):hover, .probeControls button:not(:disabled):hover, .queue button:not(:disabled):hover { background: var(--surface-raised); }
+  .heading > button:not(:disabled):hover, .probeControls button:not(:disabled):hover, .queue button:not(:disabled):hover, .detailReadState > button:not(:disabled):hover { background: var(--surface-raised); }
   .reviewBench .submitBar button:not(:disabled):hover { color: var(--primary-ink); background: var(--primary-hover); }
 }
-.heading > button:not(:disabled):active, .probeControls button:not(:disabled):active { background: var(--surface-overlay); }
+.heading > button:not(:disabled):active, .probeControls button:not(:disabled):active, .detailReadState > button:not(:disabled):active { background: var(--surface-overlay); }
 .submitBar button:not(:disabled):active { background: var(--primary-pressed); }
 @media (pointer: coarse) {
-  .heading > button, .probeControls button, .submitBar button, .semanticPanel fieldset label, .attestation, .probeAttestation, .evaluationIdentity > summary, .reviewBench .scoreGrid input, .reviewBench .scoreGrid select, .reviewBench .probeControls input { min-block-size: 3rem; }
+  .heading > button, .probeControls button, .submitBar button, .detailReadState > button, .semanticPanel fieldset label, .attestation, .probeAttestation, .evaluationIdentity > summary, .reviewBench .scoreGrid input, .reviewBench .scoreGrid select, .reviewBench .probeControls input { min-block-size: 3rem; }
 }
 @media (prefers-reduced-motion: reduce) {
   .reviewBench *, .reviewBench *::before, .reviewBench *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
