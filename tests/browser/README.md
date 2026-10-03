@@ -62,3 +62,15 @@ no application writes. Desktop and phone each receive light/dark screenshots and
 axe scans; CI runs this suite serially after the semantic review suite. Source href
 assertions preserve identities but do not by themselves prove a destination's
 domain action or native conversation continuity.
+
+`companion_preferences.py` checks General settings independently of advanced
+configuration availability. It reads real isolated defaults before and after
+fixtures; seven exact synthetic PATCH attempts per viewport exercise held saves,
+uncertain same-key retries, older replay receipts, newer snapshots, revision
+conflicts, owned home selection, deleted-home fallback, reset and disposal. Drafts
+survive local section changes and follow-up read failures. Nine scoped axe scans
+cover desktop/phone themes, the owned-thread picker, 320px, 200% text and forced
+colors. Viewport changes settle for two animation frames before reflow sampling.
+No real preference is saved and previews request no audio or execution. Durable
+persistence is covered separately by PostgreSQL integration tests; native
+adoption and final ATLAS rendering retain their own gates.

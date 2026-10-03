@@ -21,6 +21,16 @@ function policy(
 }
 
 describe("tenant isolation policy evidence", () => {
+  it("fails Companion evidence when either exact restrictive actor policy is absent or permissive", () => {
+    for (const tableName of ["omni_companion_preferences", "omni_companion_preference_mutations"]) {
+      const tenant = policy(tableName, "omni_tenant_isolation");
+      const actor = `${tableName}_actor`;
+      expect(hasExpectedTenantIsolationPolicy(tableName, [tenant, policy(tableName, actor, { permissive: false })])).toBe(true);
+      expect(hasExpectedTenantIsolationPolicy(tableName, [tenant])).toBe(false);
+      expect(hasExpectedTenantIsolationPolicy(tableName, [tenant, policy(tableName, actor)])).toBe(false);
+      expect(hasExpectedTenantIsolationPolicy(tableName, [tenant, policy(tableName, actor, { permissive: false, command: "r" })])).toBe(false);
+    }
+  });
   it("recognizes the policy contracts used by tenant and actor-scoped tables", () => {
     expect(expectedTenantIsolationPolicyName("omni_memories"))
       .toBe("omni_tenant_isolation");

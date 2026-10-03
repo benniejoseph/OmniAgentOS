@@ -75,6 +75,28 @@ async function rollbackOnly(admin: ReturnType<typeof postgres>, operation: (tran
   })).rejects.toBe(rollback);
 }
 
+// These historical fixtures always roll back. Remove the exact later additive
+// schema together with its ledger so the target migration sees its predecessor.
+// Never make production CREATE statements idempotent to accommodate a fixture.
+async function prepareHistoricalReplay(transaction: Transaction, version: 213 | 214) {
+  expect(await transaction`
+    SELECT max(version)::int AS latest FROM public.omni_schema_version
+  `).toEqual([{ latest: 215 }]);
+  expect(await transaction`
+    SELECT
+      (SELECT count(*)::int FROM public.omni_companion_preferences) AS preferences,
+      (SELECT count(*)::int FROM public.omni_companion_preference_mutations) AS receipts
+  `).toEqual([{ preferences: 0, receipts: 0 }]);
+  await transaction`DROP TABLE public.omni_companion_preference_mutations`;
+  await transaction`DROP TABLE public.omni_companion_preferences`;
+  await transaction`DROP FUNCTION public.omni_protect_companion_preference_mutations_v1()`;
+  await transaction`DROP FUNCTION public.omni_protect_companion_preferences_v1()`;
+  await transaction`DELETE FROM public.omni_schema_version WHERE version >= ${version}`;
+  expect(await transaction`
+    SELECT max(version)::int AS latest FROM public.omni_schema_version
+  `).toEqual([{ latest: version - 1 }]);
+}
+
 function runPostgresTool(
   tool: "pg_dump" | "pg_restore",
   args: string[],
@@ -134,7 +156,7 @@ databaseDescribe("Postgres restore and deferred validation follow-ups", () => {
       // A non-default ACL must survive CREATE OR REPLACE too.
       await transaction.unsafe(`REVOKE EXECUTE ON FUNCTION ${signatures[0]} FROM PUBLIC`);
       const before = await functionAttributes(transaction);
-      await transaction`DELETE FROM public.omni_schema_version WHERE version >= 213`;
+      await prepareHistoricalReplay(transaction, 213);
       await apply(transaction, 213);
       expect(await functionAttributes(transaction)).toEqual(before);
     });
@@ -198,7 +220,7 @@ databaseDescribe("Postgres restore and deferred validation follow-ups", () => {
     expect(before).toHaveLength(44);
     expect(before.every((target) => target.convalidated)).toBe(true);
     await rollbackOnly(admin, async (transaction) => {
-      await transaction`DELETE FROM public.omni_schema_version WHERE version = 214`;
+      await prepareHistoricalReplay(transaction, 214);
       await apply(transaction, 214);
       expect(await targetStates(transaction)).toEqual(before);
       expect(await transaction`
@@ -215,7 +237,7 @@ databaseDescribe("Postgres restore and deferred validation follow-ups", () => {
         await transaction.unsafe(`ALTER TABLE public.${table} ADD CONSTRAINT ${name} ${fixtureDefinition(name, definition)} NOT VALID`);
       }
       expect((await targetStates(transaction)).every((target) => !target.convalidated)).toBe(true);
-      await transaction`DELETE FROM public.omni_schema_version WHERE version = 214`;
+      await prepareHistoricalReplay(transaction, 214);
       await apply(transaction, 214);
       expect((await targetStates(transaction)).every((target) => target.convalidated)).toBe(true);
       const later = await transaction`
@@ -233,20 +255,23 @@ databaseDescribe("Postgres restore and deferred validation follow-ups", () => {
   test.each(["missing", "drifted"])("v214 rejects a %s target and rolls back its ledger", async (variant) => {
     const before = await targetStates(admin);
     await expect(admin.begin(async (transaction) => {
-      await transaction`DELETE FROM public.omni_schema_version WHERE version = 214`;
+      await prepareHistoricalReplay(transaction, 214);
       await transaction`ALTER TABLE public.omni_model_assignments DROP CONSTRAINT omni_model_assignments_revision_check`;
       if (variant === "drifted") {
         await transaction`ALTER TABLE public.omni_model_assignments ADD CONSTRAINT omni_model_assignments_revision_check CHECK (assignment_revision >= 0)`;
       }
       await apply(transaction, 214);
-    })).rejects.toMatchObject({ cause: { code: "55000" } });
+    })).rejects.toMatchObject({ cause: {
+      code: "55000",
+      message: "Validation target omni_model_assignments.omni_model_assignments_revision_check is missing or differs from its recorded definition",
+    } });
     expect(await targetStates(admin)).toEqual(before);
     expect(await admin`SELECT version FROM public.omni_schema_version WHERE version = 214`).toHaveLength(1);
   });
 
   test("v214 fails on an invalid legacy row without repairing it or retaining partial validation", async () => {
     await rollbackOnly(admin, async (transaction) => {
-      await transaction`DELETE FROM public.omni_schema_version WHERE version = 214`;
+      await prepareHistoricalReplay(transaction, 214);
       for (const { table, name, definition } of targets) {
         await transaction.unsafe(`ALTER TABLE public.${table} DROP CONSTRAINT ${name}`);
         if (name === "omni_model_assignments_revision_check") {

@@ -118,6 +118,11 @@ export const rbacRules: RbacRule[] = [
     roles: ["viewer", "operator", "admin", "system"],
   },
   {
+    action: "manage.own_preferences",
+    description: "Change only the caller's own Companion presentation and default-conversation preferences.",
+    roles: ["viewer", "operator", "admin", "system"],
+  },
+  {
     action: "manage.identity",
     description: "Create users, assign tenant roles, and administer the identity control plane.",
     roles: ["admin", "system"],

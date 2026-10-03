@@ -33,6 +33,15 @@ describe("RBAC rules", () => {
     expect(canPerform("system", "not.a.real.action")).toBe(false);
   });
 
+  it("lets each role change its own presentation preferences without granting execution or identity management", () => {
+    for (const role of ["viewer", "operator", "admin", "system"] as const) {
+      expect(canPerform(role, "manage.own_preferences")).toBe(true);
+    }
+    expect(canPerform("viewer", "run.agent")).toBe(false);
+    expect(canPerform("viewer", "execute.tool")).toBe(false);
+    expect(canPerform("viewer", "manage.identity")).toBe(false);
+  });
+
   it("reserves controlled security maintenance for the system role", () => {
     expect(canPerform("admin", "manage.security")).toBe(false);
     expect(canPerform("system", "manage.security")).toBe(true);

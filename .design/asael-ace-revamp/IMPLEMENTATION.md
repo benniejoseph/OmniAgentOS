@@ -906,6 +906,83 @@ This is local unit/widget evidence. Native conversation reopening, physical
 devices, screen readers, final native family migrations, packaging/signing and
 ATLAS renderer performance remain open gates in Phase 5.
 
+## Scoped Companion preferences and General settings — 3 October 2026
+
+The authenticated Companion preference contract persists presentation intensity,
+visibility, motion, default destination and an optional owned home conversation.
+Unsaved defaults are read-only. Versioned saves/reset use an exact idempotency key,
+compare-and-swap revision and immutable receipt. An older replay receipt stays
+distinct from the newer current snapshot. Changed home targets require current
+ownership; deletion or unavailable access preserves the saved identity and revision
+while exposing a safe Assistant fallback. Preferences grant no execution authority.
+
+Migration v215 adds owner-scoped PostgreSQL policies and atomic durable receipts.
+The development file ledger locks and replaces atomically without repairing bad
+data on reads. Production without database storage fails closed. Native mutation
+compatibility remains a later explicit enrollment step.
+
+Settings opens General independently of advanced configuration availability.
+Local category changes preserve drafts. A synchronous single-write slot freezes
+the exact submitted body/key/revision, allows separate subsequent draft edits,
+and retains both accepted receipts and uncertain submissions across failed reads.
+Conflicts require explicit draft rebase; reset/discard restore focus. Owned home
+selection is bounded and excludes unsupported or unverified identities. The static
+writing preview performs no execution or audio, and device reduced motion is a
+floor.
+
+Advanced Settings controllers now load only after an advanced category is opened,
+then remain mounted across local category changes. General opens without reading
+advanced configuration and retains its own draft. This addresses the hosted
+Settings entry budget failure without changing the 800,000-byte limit; the next
+exact-head build supplies the production measurement. The isolation health
+report now requires both exact restrictive Companion actor policies in addition
+to the tenant policies.
+
+Serial root validation passed 120 backend/RBAC/migration unit cases, 28 UI/state
+cases, strict focused lint/types and six integration cases in a disposable
+PostgreSQL 17 cluster with all 215 migrations. The temporary cluster was stopped
+and deleted after validation. The maintained browser suite passed 82 assertions
+and nine scoped axe scans over desktop/phone themes, home selection, narrow width,
+200% text and forced colors. Seven exact synthetic PATCH attempts per viewport
+exercise held/uncertain/replayed/conflicting saves, reset and disposal; real
+isolated GETs still report unsaved defaults before and after. No unexpected write,
+external action or uncaught browser error occurred. Representative saved viewport
+images were visually inspected. A first 320px measurement raced viewport layout;
+the harness now waits two animation frames and records overflow diagnostics.
+
+Evidence is in `ui-validation/companion-preferences-rerun` and adjacent backend,
+integration and UI logs under the external release record. CI runs the browser
+suite serially. Presence/default-entry adoption, native preferences and final
+ATLAS assets/renderer proof remain separate work; this does not close task 2.6.
+
+The release-fix browser rerun passed 84 assertions and nine scoped axe scans,
+including the lazy General entry and retained category drafts. Eight isolation
+policy unit cases pass. Historical migration fixtures now remove the exact empty
+v215 schema alongside its ledger before replay, restore through the unchanged
+migration runner, and assert the intended missing/drifted constraint error.
+All three affected PostgreSQL files passed together: 94 cases, with the existing
+pgvector-specific case skipped on the local Homebrew cluster. Hosted integration
+retains that extension check. The disposable cluster used a one-connection test
+pool and sufficient lock slots for schema teardown; an unchanged local copy of
+the installed presentation dependency resolved the external-volume path issue.
+Production schema and application dependencies were unchanged. Final focused
+lint and TypeScript checks passed. Evidence is in
+`ui-validation/companion-settings-lazy-entry`, `companion-replay-integration-final.log`
+and `companion-release-fix-lint-types.log`.
+
+The next Settings budget correction separates browser-safe Companion values and
+public-response guards from the unchanged authoritative server Zod schemas.
+Ten differential cases cover all enum combinations, strict/missing fields,
+UUID variants, ISO calendar/offset forms, safe-integer revisions and detached
+projections. Together with state, service and Settings cases, 53 focused tests
+pass; strict lint, focused TypeScript and native artifact consistency pass.
+The final browser rerun again passed 84 assertions and nine axe scans with no
+unexpected effects or uncaught errors. Evidence is retained in
+`ui-validation/companion-browser-contract-final` and its adjacent unit/lint logs.
+The preceding hosted head passed quality, integration and browser checks but
+measured 884,298 bytes against the unchanged 800,000-byte Settings limit; the
+new exact head must pass the hosted budget before merge.
+
 ## Remaining gates and scope
 
 - Hosted build, route budgets and required repository checks on each new exact head.

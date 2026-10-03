@@ -88,6 +88,8 @@ const ACTOR_SCOPE_POLICY_TABLES = new Set([
  */
 const RESTRICTIVE_ACTOR_POLICIES = new Map<string, string>([
   ...[
+    "omni_companion_preferences",
+    "omni_companion_preference_mutations",
     "omni_a2a_exchanges",
     "omni_a2a_peer_rollouts",
     "omni_a2a_safety_reservations",

@@ -9,7 +9,9 @@ import {
   settingsLoadMayClearLoading,
   settingsLoadNeedsVerificationWarning,
   settingsRequestResultIsCurrent,
-} from "@/components/settings/settings-workspace";
+} from "@/components/settings/settings-advanced-workspace";
+import { SettingsWorkspace } from "@/components/settings/settings-workspace";
+import { WorkspaceSessionProvider } from "@/components/app-shell/session-context";
 import type { RequestMcpExportConfiguration } from "@/lib/settings/types";
 
 const editableGate = {
@@ -61,6 +63,19 @@ const retainedConfig: RequestMcpExportConfiguration = {
   updatedAt: "2026-09-05T01:00:00.000Z",
   manageable: false,
 };
+
+describe("Settings General integration", () => {
+  it("offers Companion independently of advanced settings readiness and preserves all advanced destinations", () => {
+    const html = renderToStaticMarkup(createElement(WorkspaceSessionProvider, {
+      initialSession: { authEnabled: true, authenticated: true, context: { tenantId: "tenant-a", actorId: "actor-a", role: "viewer" } },
+    } as Parameters<typeof WorkspaceSessionProvider>[0], createElement(SettingsWorkspace)));
+    expect(html).toContain("Companion preferences");
+    expect(html).toContain("Preferences have not been loaded.");
+    expect(html).not.toContain("defaults have not been saved");
+    for (const label of ["General", "Workspace", "AI providers", "Model routing", "Agent control", "API &amp; MCP", "Data &amp; privacy"]) expect(html).toContain(label);
+    expect(html).not.toContain("Save preferences");
+  });
+});
 
 describe("Settings MCP configuration gate", () => {
   it("allows editing only for a fresh acknowledged manageable policy", () => {
