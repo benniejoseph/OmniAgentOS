@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useId, useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type RefObject } from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -79,7 +79,7 @@ const allKinds: readonly WorkspaceLibraryKind[] = [
 
 export function WorkspaceLibrary({
   title = "Workspace library",
-  description = "Every source and output stays versioned, searchable, cited, and linked to the work it supports.",
+  description = "Find sources and outputs, inspect their versions, and open the work they support.",
   kinds,
   projectId,
   compact = false,
@@ -107,11 +107,15 @@ export function WorkspaceLibrary({
     countsAreLowerBound: false,
   });
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
+  const [hasLoaded, setHasLoaded] = useState(false);
   const [error, setError] = useState<string>();
   const [reloadNonce, setReloadNonce] = useState(0);
   const [view, setView] = useState<LibraryView>("list");
   const [selectedId, setSelectedId] = useState<string>();
   const [copiedCitation, setCopiedCitation] = useState<string>();
+  const [clipboardNotice, setClipboardNotice] = useState("");
+  const inspectorRef = useRef<HTMLDivElement>(null);
+  const selectionFrameRef = useRef<number | undefined>(undefined);
   const effectiveProjectId = projectId || urlProjectId;
   const requestHref = useMemo(() => workspaceLibraryQueryHref({
     query,
@@ -161,6 +165,7 @@ export function WorkspaceLibrary({
           countsAreLowerBound: Boolean(body.countsAreLowerBound),
         });
         setDisplayedOffset(offset);
+        setHasLoaded(true);
         setError(undefined);
         setState("ready");
       } catch (loadError) {
@@ -175,13 +180,40 @@ export function WorkspaceLibrary({
     };
   }, [offset, query, refreshKey, reloadNonce, requestHref]);
 
-  const shownKinds = availableKinds.filter((candidate) =>
+  const shownKinds = hasLoaded ? availableKinds.filter((candidate) =>
     payload.countsByKind[candidate] || candidate === kind,
-  );
+  ) : [];
   const selectedItem = payload.items.find((item) => item.id === selectedId)
     || payload.items[0];
   const visibleStart = payload.items.length ? displayedOffset + 1 : 0;
-  const visibleEnd = displayedOffset + payload.items.length;
+  const visibleEnd = payload.items.length ? displayedOffset + payload.items.length : 0;
+  const countLabel = hasLoaded
+    ? `${payload.total}${payload.totalIsLowerBound ? "+" : ""} assets${state !== "ready" ? " · Last loaded" : ""}`
+    : state === "error" ? "Count unavailable" : "Loading assets…";
+  const rangeLabel = hasLoaded
+    ? `${state !== "ready" ? "Last loaded: " : ""}${visibleStart}–${visibleEnd} of ${payload.total}${payload.totalIsLowerBound ? "+" : ""}`
+    : state === "error" ? "Assets could not be checked." : "Loading assets…";
+
+  useEffect(() => () => {
+    if (selectionFrameRef.current !== undefined) {
+      window.cancelAnimationFrame(selectionFrameRef.current);
+    }
+  }, []);
+
+  function selectItem(id: string) {
+    setSelectedId(id);
+    if (selectionFrameRef.current !== undefined) {
+      window.cancelAnimationFrame(selectionFrameRef.current);
+    }
+    selectionFrameRef.current = window.requestAnimationFrame(() => {
+      selectionFrameRef.current = undefined;
+      const inspector = inspectorRef.current;
+      if (!inspector || !inspector.getClientRects().length || inspector.dataset.libraryItemId !== id) return;
+      inspector.scrollTop = 0;
+      inspector.focus({ preventScroll: true });
+      inspector.scrollIntoView({ block: "nearest", behavior: "instant" });
+    });
+  }
 
   function changeQuery(nextQuery: string) {
     setQuery(nextQuery);
@@ -231,11 +263,15 @@ export function WorkspaceLibrary({
   }
 
   async function copyCitation(reference: string) {
+    setCopiedCitation(undefined);
+    setClipboardNotice("");
     try {
       await navigator.clipboard.writeText(reference);
       setCopiedCitation(reference);
+      setClipboardNotice("Citation copied.");
     } catch {
       setCopiedCitation(undefined);
+      setClipboardNotice("Citation could not be copied. Select the citation text and copy it manually.");
     }
   }
 
@@ -248,14 +284,9 @@ export function WorkspaceLibrary({
     >
       <header className={styles.header}>
         <div className={styles.titleBlock}>
-          <p className={styles.eyebrow}><Library size={14} aria-hidden="true" /> Unified library</p>
           <div className={styles.titleLine}>
             <h2 id={headingId}>{title}</h2>
-            <span className={styles.total} aria-live="polite">
-              {state === "loading" && !payload.items.length
-                ? "—"
-                : `${payload.total}${payload.totalIsLowerBound ? "+" : ""}`}
-            </span>
+            <span className={styles.total}>{countLabel}</span>
           </div>
           <p className={styles.description}>{description}</p>
         </div>
@@ -317,6 +348,7 @@ export function WorkspaceLibrary({
           </button>
         </div>
       ) : null}
+      <p className={styles.clipboardNotice} role="status">{clipboardNotice}</p>
 
       {compact ? (
         <CompactLibrary
@@ -331,7 +363,7 @@ export function WorkspaceLibrary({
           <nav className={styles.collectionRail} aria-label="Library collections">
             <div className={styles.railHeading}>
               <span>Collections</span>
-              <small>{shownKinds.length || availableKinds.length}</small>
+              {hasLoaded && state !== "ready" ? <small>Last loaded</small> : null}
             </div>
             <button
               type="button"
@@ -341,7 +373,7 @@ export function WorkspaceLibrary({
             >
               <span className={styles.collectionIcon}><Files size={16} aria-hidden="true" /></span>
               <span><strong>All assets</strong><small>Every readable source</small></span>
-              <b>{kind === "all" ? `${payload.total}${payload.totalIsLowerBound ? "+" : ""}` : ""}</b>
+              <b>{hasLoaded && kind === "all" ? `${payload.total}${payload.totalIsLowerBound ? "+" : ""}` : ""}</b>
             </button>
             {shownKinds.map((candidate) => (
               <button
@@ -368,7 +400,7 @@ export function WorkspaceLibrary({
               <div>
                 <p>Recently updated</p>
                 <span aria-live="polite">
-                  {visibleStart}–{visibleEnd} of {payload.total}{payload.totalIsLowerBound ? "+" : ""}
+                  {rangeLabel}
                 </span>
               </div>
               {state === "loading" && payload.items.length ? (
@@ -387,24 +419,22 @@ export function WorkspaceLibrary({
                       item={item}
                       ordinal={displayedOffset + index + 1}
                       selected={selectedItem?.id === item.id}
-                      onSelect={() => setSelectedId(item.id)}
+                      onSelect={() => selectItem(item.id)}
                       copiedCitation={copiedCitation}
                       onCopy={(reference) => void copyCitation(reference)}
-                      style={{ animationDelay: `${Math.min(index, 8) * 28}ms` }}
                     />
                   ))}
                 </div>
               ) : (
                 <div className={styles.assetGrid} role="list" aria-label="Library assets">
-                  {payload.items.map((item, index) => (
+                  {payload.items.map((item) => (
                     <WorkspaceLibraryTile
                       key={item.id}
                       item={item}
                       selected={selectedItem?.id === item.id}
-                      onSelect={() => setSelectedId(item.id)}
+                      onSelect={() => selectItem(item.id)}
                       copiedCitation={copiedCitation}
                       onCopy={(reference) => void copyCitation(reference)}
-                      style={{ animationDelay: `${Math.min(index, 8) * 35}ms` }}
                     />
                   ))}
                 </div>
@@ -418,7 +448,7 @@ export function WorkspaceLibrary({
 
             {payload.items.length && (offset > 0 || offsetHistory.length > 0 || payload.nextOffset !== null) ? (
               <div className={styles.pager} aria-label="Library pages">
-                <span>Showing {visibleStart}–{visibleEnd}</span>
+                <span>{state !== "ready" ? "Last loaded: " : "Showing "}{visibleStart}–{visibleEnd}</span>
                 <div>
                   <button
                     type="button"
@@ -441,6 +471,7 @@ export function WorkspaceLibrary({
 
           <WorkspaceLibraryInspector
             item={selectedItem}
+            inspectorRef={inspectorRef}
             copiedCitation={copiedCitation}
             onCopy={(reference) => void copyCitation(reference)}
           />
@@ -505,7 +536,6 @@ function WorkspaceLibraryRow({
   onSelect,
   copiedCitation,
   onCopy,
-  style,
 }: {
   item: WorkspaceLibraryItem;
   ordinal: number;
@@ -513,7 +543,6 @@ function WorkspaceLibraryRow({
   onSelect: () => void;
   copiedCitation?: string;
   onCopy: (reference: string) => void;
-  style: CSSProperties;
 }) {
   return (
     <article
@@ -521,7 +550,6 @@ function WorkspaceLibraryRow({
       role="listitem"
       data-library-kind={item.kind}
       data-status={item.status}
-      style={style}
     >
       <button type="button" onClick={onSelect} aria-pressed={selected} aria-label={`Show details for ${item.title}`}>
         <span className={styles.ordinal}>{String(ordinal).padStart(2, "0")}</span>
@@ -549,21 +577,18 @@ function WorkspaceLibraryTile({
   onSelect,
   copiedCitation,
   onCopy,
-  style,
 }: {
   item: WorkspaceLibraryItem;
   selected: boolean;
   onSelect: () => void;
   copiedCitation?: string;
   onCopy: (reference: string) => void;
-  style: CSSProperties;
 }) {
   return (
     <article
       className={clsx(styles.assetTile, selected && styles.selectedAsset)}
       role="listitem"
       data-status={item.status}
-      style={style}
     >
       <button type="button" onClick={onSelect} aria-pressed={selected} aria-label={`Show details for ${item.title}`}>
         <span className={styles.tileTop}>
@@ -632,10 +657,12 @@ function MobileLibraryDetails({
 
 function WorkspaceLibraryInspector({
   item,
+  inspectorRef,
   copiedCitation,
   onCopy,
 }: {
   item?: WorkspaceLibraryItem;
+  inspectorRef: RefObject<HTMLDivElement | null>;
   copiedCitation?: string;
   onCopy: (reference: string) => void;
 }) {
@@ -654,7 +681,15 @@ function WorkspaceLibraryInspector({
   const relatedLinks = item.links.filter((link) => link.kind !== "source");
   return (
     <aside className={styles.inspector} aria-label="Quick look">
-      <div key={item.id} className={styles.inspectorContent}>
+      <div
+        key={item.id}
+        ref={inspectorRef}
+        className={styles.inspectorContent}
+        data-library-item-id={item.id}
+        role="region"
+        aria-label={`Details for ${item.title}`}
+        tabIndex={0}
+      >
         <div className={styles.inspectorTop}>
           <span className={styles.inspectorGlyph} data-kind={item.kind}>{iconForKind(item.kind, 22)}</span>
           <span className={styles.statusFact} data-status={item.status}>{statusIcon(item.status)} {statusLabel(item.status)}</span>

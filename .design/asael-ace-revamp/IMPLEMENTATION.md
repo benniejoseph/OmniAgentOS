@@ -215,6 +215,11 @@ Accessibility scans start at the top of the document to avoid measuring controls
 partly behind the sticky header at an arbitrary retained scroll position;
 separate interaction checks still verify control reachability and focus recovery.
 
+PR [#17](https://github.com/benniejoseph/OmniAgentOS/pull/17) merged as
+`a327f7fa6918eacdae5fe874de64af5bfd284a7a`. Implementation head
+`1e590469d788dce693c0c881845777ac430c4a6f` passed the complete hosted quality,
+integration, build/budget, audit, worker and secret-scan checks and its preview.
+
 ## Memory index, Knowledge and inspector presentation — 3 October 2026
 
 The active Memory intelligence page now has a compact heading/search, selectable
@@ -253,7 +258,50 @@ surface grow around long content. Both the top and bottom of long inspectors
 were scanned in each theme. Native-dialog focus checks distinguish Chrome's own
 toolbar from application background content; no inert background element receives
 focus. This is synthetic presentation evidence, not a live memory mutation,
-physical-device or screen-reader certification. Hosted acceptance remains required.
+physical-device or screen-reader certification.
+
+PR [#18](https://github.com/benniejoseph/OmniAgentOS/pull/18) merged as
+`82c2ff93778e98909b1681da5d5a43bb2bb691bc`. Implementation head
+`bbd27eae7411d4e658f010c896c3a31e9842d107` passed the complete hosted quality,
+integration, build/budget, audit, worker and secret-scan checks and its preview.
+Work and Memory acceptance does not promote production or complete their
+deeper Execution, Builder, Reviews and Universe presentation work.
+
+## Shared Library presentation — 3 October 2026
+
+The shared Library now uses canonical typography, tokens, control sizes and
+static loading geometry. Its layout responds to its own container width in the
+full Capture browser and compact Work/Results embeds. Complete titles, source
+metadata, immutable citations and version detail wrap instead of truncating.
+Redundant Library descendant overrides were removed from Work and Results,
+retaining only embedding margins. Initial errors do not invent zero counts;
+failed refreshes retain and label the last loaded rows, counts and ranges.
+Clipboard success is announced only after the write promise resolves, with a
+separate failure message and selectable citation text.
+
+Independent review confirmed the query/project/offset contracts, abort/debounce,
+compact URL behavior, lower-bound markers, immutable source/version identity
+and canonical links remain intact. Review found that wide selection could leave
+the inspector offscreen on long ledgers. Its detail region is now bounded and
+keyboard-scrollable; explicit desktop selection brings it into view. Short
+windows use inline details, and initial loads/refreshes do not steal focus.
+
+Eighteen focused tests across component helpers, library contracts/store and its
+route passed. Targeted lint, the Library TypeScript graph, CSS parsing and type
+scale checks passed. The final browser pass completed 171 checks with 12 clean
+Library-scoped axe scans across Capture, Work and Results. Nine additional checks
+passed for selection at the end of a 40-row ledger, keyboard scrolling and short
+desktop windows. Other checks cover list/grid, exact long citations, metadata-only
+versions, variable server offsets, history, full URL preservation, compact URL
+immutability, initial/empty/stale reads, deferred/rejected clipboard promises,
+320/390/768/1440px, fine/coarse pointers, 200% text, reduced motion and forced colors.
+
+Browser fixtures used normal synthetic authentication and explicit read responses.
+All API mutations and external requests were blocked; only automatic telemetry
+posts were attempted. Clipboard writes were stubbed, and original-file links were
+inspected without being followed. Accessibility claims cover the shared Library
+region, not the separate Capture studios or other page-family internals. Hosted
+acceptance remains required before merge.
 
 ## Remaining gates and scope
 

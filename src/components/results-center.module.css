@@ -477,54 +477,7 @@ a.resultRow .rowTitle {
   letter-spacing: -0.01em;
 }
 
-.shell .library {
-  min-width: 0;
-  margin-block: 1.5rem;
-  overflow: visible;
-  background: var(--surface);
-  --focus-surface: var(--surface);
-}
-
-.shell .library :is(h2, h3, strong) {
-  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
-}
-
-.shell .library h2 {
-  font-size: 1.25rem;
-  font-weight: 600;
-  line-height: 1.75rem;
-  letter-spacing: -0.01em;
-}
-
-.shell .library h3 {
-  overflow: visible;
-  text-overflow: clip;
-  white-space: normal;
-  font-size: 1rem;
-  font-weight: 600;
-  line-height: 1.5rem;
-  letter-spacing: normal;
-}
-
-.shell .library code {
-  max-width: 100%;
-  overflow: visible;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.shell .library :is(button, a, input, select) {
-  min-height: 2.75rem;
-  font-size: 0.875rem;
-  line-height: 1.25rem;
-}
-
-.shell .library :is(button, a, input, select):focus-visible {
-  outline: 3px solid var(--focus);
-  outline-offset: 3px;
-  box-shadow: 0 0 0 3px var(--focus-surface);
-  transition: none;
-}
+.library { margin-block: 1.5rem; }
 
 .disclosure {
   min-width: 0;
@@ -701,10 +654,6 @@ a.resultRow .rowTitle {
     font-size: 1.5rem;
     line-height: 2rem;
   }
-
-  .shell .library :is(input, select) {
-    font-size: 1rem;
-  }
 }
 
 @media (pointer: coarse) {
@@ -712,7 +661,6 @@ a.resultRow .rowTitle {
   .resultRow,
   .evidenceLink,
   .disclosure > summary,
-  .shell .library :is(button, a, input, select),
   .shell .sharedOutputs :is(button, a) {
     min-height: 3rem;
   }
@@ -770,8 +718,7 @@ a.resultRow .rowTitle {
     border-inline-start-color: Highlight;
   }
 
-  .shell :where(button, a, summary, input, select):focus-visible,
-  .shell .library :is(button, a, input, select):focus-visible {
+  .shell :where(button, a, summary, input, select):focus-visible {
     outline-color: Highlight;
     box-shadow: none;
   }
