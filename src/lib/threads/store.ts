@@ -1,3 +1,4 @@
+import { contentSearchQuerySchema, searchDate, searchLikePattern, searchPage, type SearchPosition } from "@/lib/content-search/contracts";
 import { randomUUID } from "node:crypto";
 import { ensureDatabaseSchema, getDatabaseTenantContext, getSql, hasDatabaseUrl } from "@/lib/db/client";
 import type { AgentMode, ChatRole } from "@/lib/orchestration/types";
@@ -182,6 +183,44 @@ export async function listThreads(
       ? projectThreadForRequest(thread, actorId)
       : thread
     );
+}
+
+/** Bounded title-only read. The cursor never substitutes for the current owner predicate. */
+export async function searchOwnedThreadsPage(input: {
+  tenantId: string; actorId: string; requestActorBinding?: CanonicalRequestActorBindingV1;
+  query: string; limit: number; after?: SearchPosition;
+}) {
+  const query = contentSearchQuerySchema.parse(input.query);
+  if (!input.tenantId.trim() || !input.actorId.trim() || input.actorId !== input.actorId.trim()) {
+    throw new Error("Conversation search requires an exact owner.");
+  }
+  const limit = Math.min(20, Math.max(1, Math.trunc(input.limit)));
+  const [canonicalActorId, exactActorId] = threadActorReadOrder(input.actorId, input.requestActorBinding);
+  const uuidPattern = "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$";
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT id, title, updated_at,
+        to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_updated_at FROM omni_threads
+      WHERE tenant_id = ${input.tenantId}
+        AND actor_id IN (${canonicalActorId}, ${exactActorId})
+        AND id ~ ${uuidPattern}
+        AND title ILIKE ${searchLikePattern(query)}
+        AND (${input.after?.updatedAt ?? null}::text::timestamptz IS NULL
+          OR updated_at < ${input.after?.updatedAt ?? null}::text::timestamptz
+          OR (updated_at = ${input.after?.updatedAt ?? null}::text::timestamptz AND id COLLATE "C" > ${input.after?.id ?? ""} COLLATE "C"))
+      ORDER BY updated_at DESC, id COLLATE "C" ASC LIMIT ${limit + 1}
+    `;
+    return searchPage(rows.map((row) => ({ id: String(row.id), title: String(row.title), updatedAt: row.cursor_updated_at ? String(row.cursor_updated_at) : searchDate(row.updated_at) })), limit);
+  }
+  const ledger = await readLedger();
+  return searchPage(ledger.threads.filter((thread) => thread.tenantId === input.tenantId &&
+    [canonicalActorId, exactActorId].includes(thread.actorId) && new RegExp(uuidPattern).test(thread.id) &&
+    thread.title.toLocaleLowerCase().includes(query.toLocaleLowerCase()) &&
+    (!input.after || thread.updatedAt < input.after.updatedAt ||
+      (thread.updatedAt === input.after.updatedAt && thread.id > input.after.id)))
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id))
+    .slice(0, limit + 1).map(({ id, title, updatedAt }) => ({ id, title, updatedAt })), limit);
 }
 
 export async function appendThreadTurn(input: {

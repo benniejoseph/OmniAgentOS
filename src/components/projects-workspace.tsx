@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import { useContentSearchLocation } from "@/components/app-shell/content-search-location";
 import {
   Archive,
   AlertTriangle,
@@ -35,7 +36,8 @@ import {
 } from "lucide-react";
 import { clsx } from "clsx";
 import { arsenalAgents } from "@/lib/agents/arsenal";
-import { useWorkspaceSession } from "@/components/app-shell/session-context";
+import { canPerform, useWorkspaceSession } from "@/components/app-shell/session-context";
+import { workspaceOwnerScope } from "@/components/app-shell/workspace-owner-scope";
 import { WorkspaceLibrary } from "@/components/workspace-library";
 import { ProjectSharedMemory } from "@/components/project-shared-memory";
 import { AppBuilderStudio } from "@/components/app-builder-studio";
@@ -157,8 +159,23 @@ type WorkspaceTemplate = {
   };
 };
 
-export function ProjectsWorkspace({ initialView = "overview" }: { initialView?: "overview" | "execution" | "build" }) {
-  const { session, status: sessionStatus } = useWorkspaceSession();
+export function ProjectsWorkspace({ initialView = "overview", deployment = "local" }: { initialView?: "overview" | "execution" | "build"; deployment?: string }) {
+  const { session, role } = useWorkspaceSession();
+  const ownerScopeKey = workspaceOwnerScope(session, role, deployment);
+  const scope = JSON.stringify([deployment, session?.user?.id, session?.context?.tenantId, session?.context?.actorId, role]);
+  return <ProjectsWorkspaceContent key={scope} initialView={initialView} ownerScopeKey={ownerScopeKey} />;
+}
+
+function ProjectsWorkspaceContent({ initialView, ownerScopeKey }: { initialView: "overview" | "execution" | "build"; ownerScopeKey: string }) {
+  const { session, status: sessionStatus, role } = useWorkspaceSession();
+  const searchLocation = useContentSearchLocation();
+  const requestedSearch = new URLSearchParams(searchLocation.split("?")[1]);
+  const requestedSearchProject = requestedSearch.get("fromSearch") === "1" ? requestedSearch.get("project") || "" : "";
+  const requestedSearchTask = requestedSearch.get("fromSearch") === "1" ? requestedSearch.get("task") || "" : "";
+  const exactReadRef = useRef<AbortController | null>(null);
+  const [searchOpened, setSearchOpened] = useState<{ owner: string; projectId: string; taskId: string }>();
+  const [searchError, setSearchError] = useState<string>();
+  const searchOwner = sessionStatus === "ready" ? ownerScopeKey : "";
   const [projects, setProjects] = useState<Project[]>([]);
   const [templates, setTemplates] = useState<WorkspaceTemplate[]>([]);
   const [selectedId, setSelectedId] = useState("");
@@ -203,7 +220,9 @@ export function ProjectsWorkspace({ initialView = "overview" }: { initialView?: 
   const artifactListScrollRef = useRef(0);
   const templateMutationKeysRef = useRef(new Map<string, string>());
   const available = Boolean(session && (!session.authEnabled || session.authenticated));
-  const selected = projects.find((project) => project.id === selectedId) || projects[0];
+  const searchOpening = Boolean(requestedSearchProject && (!searchOpened || searchOpened.owner !== searchOwner ||
+    searchOpened.projectId !== requestedSearchProject || searchOpened.taskId !== requestedSearchTask));
+  const selected = searchOpening ? undefined : projects.find((project) => project.id === selectedId) || projects[0];
   const hasExecutionDraft = Boolean(executionDraft && selected && executionDraft.projectId === selected.id);
   const autonomyMode = hasExecutionDraft ? executionDraft!.autonomyMode : selected?.autonomyMode === "autonomous" ? "autonomous" : "supervised";
   const taskBudget = hasExecutionDraft ? executionDraft!.taskBudget : selected?.taskBudget || 12;
@@ -233,13 +252,17 @@ export function ProjectsWorkspace({ initialView = "overview" }: { initialView?: 
       if (controller.signal.aborted) return;
       const next = normalizeProjects(payload.projects);
       if (!next) throw new Error("Projects returned an invalid canonical WorkItem projection.");
-      setProjects(next);
+      setProjects((current) => {
+        const exact = current.find((project) => project.id === requestedSearchProject);
+        return exact ? [exact, ...next.filter((project) => project.id !== exact.id)] : next;
+      });
       setHasLoaded(true);
       setTemplates(templatePayload.templates as WorkspaceTemplate[]);
       const requestedProjectId = new URL(window.location.href).searchParams.get("project") || "";
       const requestedArtifactId = new URL(window.location.href).searchParams.get("artifact") || "";
       setSelectedId((current) =>
-        requestedProjectId && next.some((item) => item.id === requestedProjectId)
+        current === requestedSearchProject && requestedSearchProject ? current
+          : requestedProjectId && next.some((item) => item.id === requestedProjectId)
           ? requestedProjectId
           : current && next.some((item) => item.id === current)
             ? current
@@ -262,6 +285,42 @@ export function ProjectsWorkspace({ initialView = "overview" }: { initialView?: 
       if (!controller.signal.aborted) setLoading(false);
     }
   }
+
+  useEffect(() => {
+    exactReadRef.current?.abort();
+    if (!searchOwner || !requestedSearchProject) return;
+    const controller = new AbortController();
+    exactReadRef.current = controller;
+    const timer = window.setTimeout(async () => {
+      setSearchError(undefined);
+      setSearchOpened(undefined);
+      try {
+        const href = `/api/content-search/work/${encodeURIComponent(requestedSearchProject)}${requestedSearchTask ? `?task=${encodeURIComponent(requestedSearchTask)}` : ""}`;
+        const body = await readJson(href, { signal: controller.signal });
+        const project = normalizeProjects([body.project])?.[0];
+        if (!project || project.id !== requestedSearchProject || (requestedSearchTask && !project.tasks.some((task) => task.id === requestedSearchTask))) {
+          throw new Error("Work returned a different project or task.");
+        }
+        if (controller.signal.aborted) return;
+        setProjects((current) => [project, ...current.filter((item) => item.id !== project.id)]);
+        setSelectedId(project.id);
+        setProjectDetailOpen(true);
+        setWorkspaceView("overview");
+        setSearchOpened({ owner: searchOwner, projectId: project.id, taskId: requestedSearchTask });
+      } catch (error) { if (!controller.signal.aborted) setSearchError(message(error)); }
+    }, 0);
+    return () => { window.clearTimeout(timer); controller.abort(); };
+  }, [requestedSearchProject, requestedSearchTask, searchOwner]);
+
+  useEffect(() => {
+    if (!searchOpened || searchOpened.owner !== searchOwner) return;
+    const frame = window.requestAnimationFrame(() => {
+      const target = searchOpened.taskId ? document.getElementById(`project-task-${searchOpened.taskId}`) : projectHeadingRef.current;
+      target?.focus({ preventScroll: true });
+      target?.scrollIntoView({ block: "center", behavior: "instant" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [searchOpened, searchOwner]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void load(), 0);
@@ -616,6 +675,8 @@ export function ProjectsWorkspace({ initialView = "overview" }: { initialView?: 
         <button type="submit" disabled={creating || !title.trim() || !objective.trim()}>{creating ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <ArrowRight size={14} aria-hidden="true" />} Create</button>
       </form> : null}
 
+      {searchOpening && !searchError ? <p role="status">Checking the exact Work result…</p> : null}
+      {searchError ? <div className={styles.error} role="alert"><span>{searchError}</span><button type="button" onClick={() => window.location.reload()}>Retry exact result</button></div> : null}
       {error ? <div className={styles.error} role="alert"><span>{error}</span><button type="button" onClick={() => { setError(undefined); void load(); }}>Retry</button></div> : null}
 
       <div className={styles.workspace} data-project-panel={projectDetailOpen ? "detail" : "list"}>
@@ -692,7 +753,7 @@ export function ProjectsWorkspace({ initialView = "overview" }: { initialView?: 
                 const canonicalState = task.workItem.status.status;
                 const workflowStatus = workItemWorkflowStatus(task);
                 const dependencyNames = (task.dependsOn || []).map((id) => selected.tasks.find((item) => item.id === id)?.title).filter(Boolean);
-                return <article key={task.id} className={styles.task} data-status={canonicalState} role="listitem">
+                return <article key={task.id} id={`project-task-${task.id}`} tabIndex={-1} className={styles.task} data-status={canonicalState} role="listitem">
                   <button type="button" className={styles.taskState} onClick={() => void moveTask(task)} disabled={actingId === task.id || selected.status !== "active" || ["running", "waiting_approval"].includes(selected.executionStatus)} aria-label={`${canonicalTaskAction(canonicalState)} ${task.title}`} aria-describedby={selected.status !== "active" || ["running", "waiting_approval"].includes(selected.executionStatus) ? "project-task-state-help" : undefined}>
                     {taskIsClosed(task) ? <Check size={14} aria-hidden="true" /> : canonicalState === "running" ? <Pause size={13} aria-hidden="true" /> : <Circle size={14} aria-hidden="true" />}
                   </button>
@@ -704,7 +765,13 @@ export function ProjectsWorkspace({ initialView = "overview" }: { initialView?: 
               }) : <div className={styles.emptyState} role="listitem"><Target size={22} aria-hidden="true" /><h3>No plan yet</h3><p>Let Atlas decompose the outcome or add the first task yourself.</p></div>}
             </div>
 
-            {selected.status === "active" ? <form className={styles.addTask} onSubmit={addTask}><label htmlFor="project-task-title">Add project task</label><div><input id="project-task-title" value={taskTitle} onChange={(event) => setTaskTitle(event.currentTarget.value)} placeholder="Describe the next task" maxLength={240} /><button type="submit" className={styles.button} disabled={addingTask || !taskTitle.trim()}>{addingTask ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <Plus size={14} aria-hidden="true" />} {addingTask ? "Adding…" : "Add task"}</button></div></form> : null}</> : workspaceView === "execution" ? <ProjectExecutionBoard project={selected} actingId={actingId} executionBusy={executionBusy} onMoveTask={moveTask} onExecute={executeProject} /> : <AppBuilderStudio key={selected.id} project={selected} />}
+            {selected.status === "active" ? <form className={styles.addTask} onSubmit={addTask}><label htmlFor="project-task-title">Add project task</label><div><input id="project-task-title" value={taskTitle} onChange={(event) => setTaskTitle(event.currentTarget.value)} placeholder="Describe the next task" maxLength={240} /><button type="submit" className={styles.button} disabled={addingTask || !taskTitle.trim()}>{addingTask ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <Plus size={14} aria-hidden="true" />} {addingTask ? "Adding…" : "Add task"}</button></div></form> : null}</> : workspaceView === "execution" ? <ProjectExecutionBoard project={selected} actingId={actingId} executionBusy={executionBusy} onMoveTask={moveTask} onExecute={executeProject} />  : null}
+            <div hidden={workspaceView !== "build"} inert={workspaceView !== "build"}>
+              <AppBuilderStudio key={selected.id} project={selected} ownerScopeKey={ownerScopeKey}
+                accessReady={sessionStatus === "ready" && Boolean(ownerScopeKey)}
+                canManage={canPerform(role, "execute.tool")} active={workspaceView === "build"}
+                artifact={selectedArtifactId && selectedArtifact?.id === selectedArtifactId ? { id: selectedArtifact.id, title: selectedArtifact.title } : undefined} />
+            </div>
 
             {workspaceView === "overview" ? <><section className={styles.artifactLedger} aria-label="Project outputs and reviewed outcomes">
               <div className={styles.sectionHeading}><h3>Outputs & evidence</h3><span>{canonicalArtifactCount} artifact{canonicalArtifactCount === 1 ? "" : "s"} linked to work items</span></div>

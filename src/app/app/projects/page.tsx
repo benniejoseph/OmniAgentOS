@@ -9,5 +9,5 @@ export default async function ProjectsPage({
 }) {
   const query = await searchParams;
   const initialView = query.view === "execution" ? "execution" : query.view === "build" ? "build" : "overview";
-  return <ProjectsWorkspace initialView={initialView} />;
+  return <ProjectsWorkspace initialView={initialView} deployment={process.env.VERCEL_DEPLOYMENT_ID ?? process.env.VERCEL_GIT_COMMIT_SHA ?? "local"} />;
 }

@@ -79,6 +79,9 @@ def capture(page, checks, name, coarse, target=None, axe=True):
     })""", 48 if coarse else 44)
     checks.check(name + ": control targets", not short, short)
     if axe:
+        # Force a painted viewport after the theme token swap before axe samples
+        # foreground/background layers. Geometry/style reads alone can precede it.
+        page.screenshot(path=str(checks.output / (name + "-audit-viewport.png")), full_page=False)
         if not page.evaluate("Boolean(window.axe)"): page.add_script_tag(path=str(checks.axe))
         result = page.evaluate("""async()=>{const r=await axe.run({exclude:[['nextjs-portal']]},{runOnly:{type:'tag',values:['wcag2a','wcag2aa','wcag21a','wcag21aa','wcag22aa']}});return {violations:r.violations.map(v=>({id:v.id,impact:v.impact,nodes:v.nodes.map(n=>({target:n.target,summary:n.failureSummary}))})),incomplete:r.incomplete.map(v=>v.id),passes:r.passes.length};}""")
         (checks.output / (name + "-axe.json")).write_text(json.dumps(result, indent=2))

@@ -12,6 +12,7 @@ import {
   createProjectTasks,
   getProject,
   getOwnedProject,
+  getOwnedProjectTask,
   listProjectArtifacts,
   listProjectCollections,
   listProjects,
@@ -154,6 +155,14 @@ export async function showProjectService(
       artifacts,
     },
   });
+}
+
+export async function showProjectTaskService(caller: AppServiceCaller, input: { projectId: string; taskId: string }) {
+  const value = z.object({ projectId: z.string().trim().min(1).max(200), taskId: z.string().trim().min(1).max(200) }).strict().parse(input);
+  const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.show"));
+  const task = await getOwnedProjectTask(value.projectId, value.taskId, readOwner(caller));
+  const projected = task ? await withCanonicalProjectTasks(caller.context.tenantId, [task]) : [];
+  return completeAppServiceCall(authorized, { task: projected[0] ?? null }, { resourceCount: projected.length });
 }
 
 export async function createProjectService(

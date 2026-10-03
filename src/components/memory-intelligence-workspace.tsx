@@ -46,6 +46,8 @@ import { SemanticShadowCollector } from "@/components/semantic-shadow-collector"
 import { SemanticShadowReviewQueue } from "@/components/semantic-shadow-review-queue";
 import { useWorkspaceSession } from "@/components/app-shell/session-context";
 import { startVisibleRefresh } from "@/lib/client/visible-refresh";
+import { workspaceOwnerScope } from "@/components/app-shell/workspace-owner-scope";
+import { useContentSearchLocation } from "@/components/app-shell/content-search-location";
 import styles from "@/components/memory-intelligence-workspace.module.css";
 
 const MemoryUniverse = dynamic(
@@ -142,12 +144,14 @@ const memoryTypes: Array<{ id: MemoryType; label: string; tier: MemoryTier }> = 
 ];
 
 export function MemoryIntelligenceWorkspace() {
-  const { session } = useWorkspaceSession();
-  const scope = JSON.stringify([session?.context?.tenantId, session?.context?.actorId]);
-  return <MemoryWorkspace key={scope} />;
+  const { session, status, role } = useWorkspaceSession();
+  const scope = JSON.stringify([session?.user?.id, session?.context?.tenantId, session?.context?.actorId, role, status, session?.authenticated]);
+  return <MemoryWorkspace key={scope} searchAvailable={status === "ready" && Boolean(workspaceOwnerScope(session, role))} />;
 }
 
-function MemoryWorkspace() {
+function MemoryWorkspace({ searchAvailable }: { searchAvailable: boolean }) {
+  const searchLocation = useContentSearchLocation();
+  const searchMemoryId = searchAvailable ? new URLSearchParams(searchLocation.split("?")[1]).get("memory") : null;
   const [view, setView] = useState<WorkspaceView>("memory");
   const [overview, setOverview] = useState<MemoryIntelligenceOverview>();
   const [memoryPage, setMemoryPage] = useState<Page<MemoryIndexItem>>(emptyPage);
@@ -487,6 +491,16 @@ function MemoryWorkspace() {
   }, [cognitionJobs, loadCognitionReviews, loadOverview, view]);
 
   useEffect(() => {
+    if (!searchMemoryId) return;
+    const timer = window.setTimeout(() => {
+      setView("memory");
+      setSelectedMemory(undefined);
+      setSelectedMemoryId(searchMemoryId);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [searchMemoryId]);
+
+  useEffect(() => {
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
       setForgetPreview(undefined);
@@ -495,12 +509,14 @@ function MemoryWorkspace() {
         return;
       }
       setDetailLoading(true);
-      void fetch(`/api/memory/${encodeURIComponent(selectedMemoryId)}`, {
+      void fetch(`${searchMemoryId === selectedMemoryId ? "/api/content-search/memory" : "/api/memory"}/${encodeURIComponent(selectedMemoryId)}`, {
         cache: "no-store",
         signal: controller.signal,
       }).then(async (response) => {
         const body = await response.json();
         if (!response.ok) throw new Error(body.error || "Memory details could not be loaded.");
+        if (controller.signal.aborted) return;
+        if (!body.memory || body.memory.id !== selectedMemoryId) throw new Error("Memory returned a different claim.");
         setSelectedMemory(body.memory as MemoryRecord);
       }).catch((detailError) => {
         if (!controller.signal.aborted) setError(message(detailError));
@@ -512,7 +528,7 @@ function MemoryWorkspace() {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [selectedMemoryId]);
+  }, [selectedMemoryId, searchMemoryId]);
 
   const embeddingCoverage = overview?.summary.knowledgeChunks
     ? Math.round(overview.summary.embeddedChunks / overview.summary.knowledgeChunks * 100)

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { captureActorReadOrder } from "@/lib/capture/actor-scope";
 import type { CaptureAsset, CaptureRecording } from "@/lib/capture/types";
 import { ensureDatabaseSchema, getSql, hasDatabaseUrl } from "@/lib/db/client";
+import { withCurrentLibrarySources } from "@/lib/library/current-sources";
 import {
   parseWorkspaceLibraryItem,
   type WorkspaceLibraryItem,
@@ -22,6 +23,8 @@ export type WorkspaceLibraryQuery = Readonly<{
   actorId: string;
   requestActorBinding?: CanonicalRequestActorBindingV1;
   query?: string;
+  /** Internal read coverage, applied before candidate windows and pagination. */
+  sourceAuthorities?: readonly WorkspaceLibraryItem["sourceAuthority"][];
   kinds?: readonly WorkspaceLibraryKind[];
   projectId?: string;
   limit?: number;
@@ -71,6 +74,7 @@ export async function listWorkspaceLibrary(
   const kinds = query.kinds.length ? new Set(query.kinds) : undefined;
   const searchTerms = tokenize(query.query);
   const facetCandidates = batch.items
+    .filter((item) => query.sourceAuthorities.includes(item.sourceAuthority))
     .filter((item) => !query.projectId || item.links.some(
       (link) => link.kind === "project" && link.id === query.projectId,
     ))
@@ -261,7 +265,9 @@ async function getDatabaseWorkspaceLibraryItem(
         missionArtifactLibraryItem,
       );
     case "source_item":
-      rows = await sql`
+      rows = await withCurrentLibrarySources(sql, {
+        tenantId: input.tenantId, canonicalActorId, exactActorId,
+      })`
         SELECT source_item.id, source_item.tenant_id,
           source_item.owner_actor_id, source_item.workspace_id,
           source_item.project_id, source_item.mission_id,
@@ -274,7 +280,7 @@ async function getDatabaseWorkspaceLibraryItem(
           document.id AS knowledge_document_id_joined,
           document.title AS knowledge_title,
           COALESCE(revision_count.version_count, 1)::integer AS version_count
-        FROM omni_source_items source_item
+        FROM library_current_sources source_item
         JOIN omni_source_revisions revision
           ON revision.tenant_id = source_item.tenant_id
           AND revision.source_item_id = source_item.id
@@ -427,7 +433,7 @@ async function listDatabaseLibraryCandidates(
     input.actorId,
   );
   const candidateLimit = libraryCandidateLimit(input);
-  const searchPattern = `%${input.query}%`;
+  const searchPattern = `%${input.query.replace(/[\\%_]/g, "\\$&")}%`;
   const scopedSql = getSql();
 
   // Keep the complete read model on one request-scoped database reservation.
@@ -437,7 +443,10 @@ async function listDatabaseLibraryCandidates(
     // Resolve narrow, independently bounded id windows before hydrating rows.
     // This preserves index-friendly ordering and prevents large file bodies,
     // transcripts, or generated payloads from entering a global sort.
-    const resultRows = await sql`
+    const resultRows = await withCurrentLibrarySources(sql, {
+      tenantId: input.tenantId, canonicalActorId, exactActorId,
+      enabled: input.sourceAuthorities.includes("source_item"),
+    })`
       WITH capture_result_ids AS MATERIALIZED (
         SELECT asset.tenant_id, asset.id
         FROM omni_capture_assets asset
@@ -445,6 +454,7 @@ async function listDatabaseLibraryCandidates(
           ON document.tenant_id = asset.tenant_id
           AND document.id = asset.knowledge_document_id
         WHERE asset.tenant_id = ${input.tenantId}
+          AND ${input.sourceAuthorities.includes("capture_asset")}
           AND asset.actor_id IN (${canonicalActorId}, ${exactActorId})
           AND COALESCE(asset.metadata->>'internalKind', '') = ''
           AND ${input.projectId || ""} = ''
@@ -479,6 +489,7 @@ async function listDatabaseLibraryCandidates(
           ON document.tenant_id = asset.tenant_id
           AND document.id = asset.knowledge_document_id
         WHERE asset.tenant_id = ${input.tenantId}
+          AND ${input.sourceAuthorities.includes("capture_asset")}
           AND asset.actor_id IN (${canonicalActorId}, ${exactActorId})
           AND COALESCE(asset.metadata->>'internalKind', '') = ''
           AND ${input.projectId || ""} = ''
@@ -515,6 +526,7 @@ async function listDatabaseLibraryCandidates(
           ON document.tenant_id = recording.tenant_id
           AND document.id = recording.knowledge_document_id
         WHERE recording.tenant_id = ${input.tenantId}
+          AND ${input.sourceAuthorities.includes("capture_recording") || input.sourceAuthorities.includes("capture_transcript")}
           AND recording.actor_id IN (${canonicalActorId}, ${exactActorId})
           AND ${input.projectId || ""} = ''
           AND (
@@ -540,6 +552,7 @@ async function listDatabaseLibraryCandidates(
         SELECT recording.tenant_id, recording.id
         FROM omni_capture_recordings recording
         WHERE recording.tenant_id = ${input.tenantId}
+          AND ${input.sourceAuthorities.includes("capture_recording") || input.sourceAuthorities.includes("capture_transcript")}
           AND recording.actor_id IN (${canonicalActorId}, ${exactActorId})
           AND ${input.projectId || ""} = ''
           AND (
@@ -590,6 +603,7 @@ async function listDatabaseLibraryCandidates(
           AND mapping.source_id = artifact.task_id
           AND mapping.state = 'active'
         WHERE artifact.tenant_id = ${input.tenantId}
+          AND ${input.sourceAuthorities.includes("project_artifact")}
           AND project.actor_id IN (${canonicalActorId}, ${exactActorId})
           AND (
             ${input.projectId || ""} = ''
@@ -620,6 +634,7 @@ async function listDatabaseLibraryCandidates(
           AND mapping.source_id = artifact.task_id
           AND mapping.state = 'active'
         WHERE artifact.tenant_id = ${input.tenantId}
+          AND ${input.sourceAuthorities.includes("project_artifact")}
           AND project.actor_id IN (${canonicalActorId}, ${exactActorId})
           AND (
             ${input.projectId || ""} = ''
@@ -683,6 +698,7 @@ async function listDatabaseLibraryCandidates(
           AND mission_mapping.source_id = artifact.mission_id
           AND mission_mapping.state = 'active'
         WHERE artifact.tenant_id = ${input.tenantId}
+          AND ${input.sourceAuthorities.includes("mission_artifact")}
           AND artifact.actor_id IN (${canonicalActorId}, ${exactActorId})
           AND (
             ${input.projectId || ""} = ''
@@ -734,6 +750,7 @@ async function listDatabaseLibraryCandidates(
           AND mission_mapping.source_id = artifact.mission_id
           AND mission_mapping.state = 'active'
         WHERE artifact.tenant_id = ${input.tenantId}
+          AND ${input.sourceAuthorities.includes("mission_artifact")}
           AND artifact.actor_id IN (${canonicalActorId}, ${exactActorId})
           AND (
             ${input.projectId || ""} = ''
@@ -794,8 +811,9 @@ async function listDatabaseLibraryCandidates(
           AND mission_mapping.state = 'active'
       ), source_result_ids AS MATERIALIZED (
         SELECT source_item.tenant_id, source_item.id
-        FROM omni_source_items source_item
+        FROM library_current_sources source_item
         WHERE source_item.tenant_id = ${input.tenantId}
+          AND ${input.sourceAuthorities.includes("source_item")}
           AND source_item.owner_actor_id IN (${canonicalActorId}, ${exactActorId})
           AND source_item.visibility <> 'agent_private'
           AND source_item.connection_id <> 'first_party.capture'
@@ -842,8 +860,9 @@ async function listDatabaseLibraryCandidates(
         LIMIT ${candidateLimit}
       ), source_facet_ids AS MATERIALIZED (
         SELECT source_item.tenant_id, source_item.id
-        FROM omni_source_items source_item
+        FROM library_current_sources source_item
         WHERE source_item.tenant_id = ${input.tenantId}
+          AND ${input.sourceAuthorities.includes("source_item")}
           AND source_item.owner_actor_id IN (${canonicalActorId}, ${exactActorId})
           AND source_item.visibility <> 'agent_private'
           AND source_item.connection_id <> 'first_party.capture'
@@ -893,7 +912,7 @@ async function listDatabaseLibraryCandidates(
           document.title AS knowledge_title,
           COALESCE(revision_count.version_count, 1)::integer AS version_count
         FROM source_ids candidate
-        JOIN omni_source_items source_item
+        JOIN library_current_sources source_item
           ON source_item.tenant_id = candidate.tenant_id
           AND source_item.id = candidate.id
         JOIN omni_source_revisions revision
@@ -1043,6 +1062,7 @@ async function listLocalLibraryCandidates(
   const kinds = input.kinds.length ? new Set(input.kinds) : undefined;
   const searchTerms = tokenize(input.query);
   const scoped = items
+    .filter((item) => input.sourceAuthorities.includes(item.sourceAuthority))
     .filter((item) => !input.projectId || item.links.some(
       (link) => link.kind === "project" && link.id === input.projectId,
     ))
@@ -1382,6 +1402,7 @@ type NormalizedWorkspaceLibraryQuery = Readonly<{
   actorId: string;
   requestActorBinding?: CanonicalRequestActorBindingV1;
   query: string;
+  sourceAuthorities: readonly WorkspaceLibraryItem["sourceAuthority"][];
   kinds: readonly WorkspaceLibraryKind[];
   projectId?: string;
   limit: number;
@@ -1411,6 +1432,10 @@ function normalizeQuery(input: WorkspaceLibraryQuery): NormalizedWorkspaceLibrar
   const actorId = boundedIdentity(input.actorId, "actor");
   const query = safeText(input.query, 240, "");
   const kinds = [...new Set(input.kinds || [])].slice(0, 20);
+  const sourceAuthorities = [...new Set(input.sourceAuthorities ?? workspaceLibrarySourceAuthorities)];
+  if (sourceAuthorities.some((authority) => !workspaceLibrarySourceAuthorities.includes(authority))) {
+    throw new Error("Library search contains an unsupported source authority.");
+  }
   const projectId = input.projectId ? boundedIdentity(input.projectId, "project") : undefined;
   const limit = Math.min(Math.max(Math.trunc(input.limit || 60), 1), 100);
   const offset = Math.min(Math.max(Math.trunc(input.offset || 0), 0), 10_000);
@@ -1419,6 +1444,7 @@ function normalizeQuery(input: WorkspaceLibraryQuery): NormalizedWorkspaceLibrar
     actorId,
     ...(input.requestActorBinding ? { requestActorBinding: input.requestActorBinding } : {}),
     query,
+    sourceAuthorities,
     kinds,
     ...(projectId ? { projectId } : {}),
     limit,

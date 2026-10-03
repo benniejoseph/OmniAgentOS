@@ -371,3 +371,32 @@
   .empty button:disabled,
   .studio :is(input, select, textarea):disabled { border-color: GrayText; color: GrayText; }
 }
+
+.buildContext { min-width: 0; padding-block: 1rem; border-block-end: 1px solid var(--line); }
+.buildContext > span { color: var(--muted); font-size: 0.8125rem; }
+.buildContext h2 { margin-block: 0.5rem; font-size: 1.5rem; line-height: 1.35; }
+.buildContext p { color: var(--muted); }
+.recordChoices { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1rem; padding-block: 1rem; border-block-end: 1px solid var(--line); }
+.recordChoices > p { grid-column: 1 / -1; color: var(--muted); font-size: 0.875rem; }
+.recordChoice { display: grid; gap: 0.5rem; min-width: 0; }
+.recordChoice select { width: 100%; min-width: 0; text-overflow: ellipsis; }
+.recordChoice p { color: var(--warning); font-size: 0.875rem; }
+.outcome { min-width: 0; border-inline-start: 3px solid var(--success); padding: 1rem; margin-block: 1rem; background: var(--surface-raised); }
+.outcome[data-state="uncertain"], .outcome[data-state="rejected"] { border-inline-start-color: var(--warning); }
+.outcome p { max-width: 75ch; margin-block: 0.75rem; }
+.outcome details, .evidenceInspector details { min-width: 0; }
+.outcome summary, .evidenceInspector summary { cursor: pointer; min-height: 2.75rem; padding-block: 0.75rem; }
+.outcome dl, .evidenceInspector dl { display: grid; min-width: 0; gap: 0.5rem; margin-block: 1rem; }
+.outcome dt, .evidenceInspector dt { color: var(--muted); font-size: 0.8125rem; }
+.outcome dd, .evidenceInspector dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.evidenceInspector { min-width: 0; padding-block: 0.5rem; border-block-end: 1px solid var(--line); }
+.evidenceInspector article { min-width: 0; border-block-start: 1px solid var(--line); padding-block: 1rem; }
+.evidenceInspector h4 { font-size: 1rem; line-height: 1.5; }
+.evidenceInspector p { max-width: 75ch; margin-block: 0.75rem; }
+.evidenceInspector ul { padding-inline-start: 1.5rem; }
+.evidenceInspector li { margin-block: 0.75rem; overflow-wrap: anywhere; }
+.outcome summary:focus-visible, .evidenceInspector summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+@container builder (min-width: 58rem) { .recordChoices { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (pointer: coarse) { .outcome summary, .evidenceInspector summary { min-height: 3rem; } }
+
+.studio[hidden] { display: none !important; }

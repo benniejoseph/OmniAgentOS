@@ -79,6 +79,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - group: work
+            suites: app_builder content_search
           - group: specialists
             suites: markets agents capabilities workflows
           - group: operations

@@ -321,6 +321,19 @@ export async function getOwnedProject(
   return project ? projectForRequest(project, actorId) : undefined;
 }
 
+/** Parent authorization precedes the exact child lookup; a task ID grants no project access. */
+export async function getOwnedProjectTask(
+  projectId: string, taskId: string, options: Parameters<typeof getOwnedProject>[1],
+) {
+  const project = await getOwnedProject(projectId, options);
+  if (!project || project.status === "archived") return null;
+  if (hasDatabaseUrl()) {
+    return (await getProjectTaskById(getSql(), taskId, project.tenantId, project.id)) || null;
+  }
+  const ledger = await readLedger();
+  return ledger.tasks.find((task) => task.id === taskId && task.projectId === project.id && task.tenantId === project.tenantId) || null;
+}
+
 export async function updateProject(
   id: string,
   input: { title?: string; objective?: string; status?: ProjectStatus; targetDate?: string | null },
