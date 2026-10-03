@@ -10,7 +10,7 @@ import {
 import {
   COMPANION_DESTINATIONS, COMPANION_INTENSITIES, COMPANION_MOTION, effectiveCompanionMotion,
   type CompanionPreferences as Preferences,
-} from "@/lib/companion/contracts";
+} from "@/lib/companion/model";
 import styles from "./companion-preferences.module.css";
 
 const intensityLabels = { quiet: "Quiet", balanced: "Balanced", expressive: "Expressive" } as const;

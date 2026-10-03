@@ -59,6 +59,14 @@ describe("Companion browser receipt and draft contract", () => {
     expect(freezeCompanionSubmission({ ...editor, draftRevision: 8 }, "save", "request-b")).toBeUndefined();
   });
 
+  it("refuses an invalid draft or exhausted revision before constructing any submission", () => {
+    const editor = dirtyEditor();
+    expect(() => freezeCompanionSubmission({ ...editor, draft: { ...editor.draft!, preferredThreadId: "opaque-thread" } }, "save", "request-a")).toThrow();
+    const exhausted = { ...editor, current: snapshot(Number.MAX_SAFE_INTEGER), draftRevision: Number.MAX_SAFE_INTEGER };
+    expect(() => freezeCompanionSubmission(exhausted, "save", "request-a")).toThrow();
+    expect(() => freezeCompanionSubmission(exhausted, "reset", "request-a")).toThrow();
+  });
+
   it("requires an exact revision and preferences receipt, rather than any successful response", () => {
     const submission = freezeCompanionSubmission(dirtyEditor(), "save", "request-a")!;
     const response = accepted();

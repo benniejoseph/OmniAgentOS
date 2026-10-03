@@ -1,24 +1,8 @@
-import { z } from "zod";
 import {
-  COMPANION_PREFERENCES_CONTRACT, DEFAULT_COMPANION_PREFERENCES,
-  companionChangeSchema, companionPreferencesSchema, companionThreadIdSchema,
+  DEFAULT_COMPANION_PREFERENCES,
   type CompanionChange, type CompanionPreferences, type CompanionPreferencesResponse,
-} from "@/lib/companion/contracts";
-
-const revision = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
-const instant = z.string().datetime({ offset: true });
-const receiptSchema = z.object({
-  outcome: z.enum(["saved", "replayed"]), receiptId: z.string().regex(/^companion:[a-f0-9]{64}$/),
-  revision: revision.min(1), savedAt: instant, preferences: companionPreferencesSchema,
-}).strict();
-const responseSchema = z.object({
-  schemaVersion: z.literal(1), contract: z.literal(COMPANION_PREFERENCES_CONTRACT),
-  snapshot: z.object({ revision, persisted: z.boolean(), updatedAt: instant.nullable(), preferences: companionPreferencesSchema }).strict(),
-  home: z.object({ state: z.enum(["not_set", "available", "unavailable", "unconfirmed"]), preferredThreadId: companionThreadIdSchema.nullable(),
-    href: z.string().nullable(), fallbackHref: z.literal("/app/command") }).strict(),
-  destination: z.object({ href: z.string(), state: z.enum(["configured", "fallback"]) }).strict(),
-  mutation: receiptSchema.optional(),
-}).strict();
+} from "@/lib/companion/model";
+import { parseBrowserCompanionChange, parseBrowserCompanionConversation, parseBrowserCompanionEnvelope } from "@/lib/companion/browser-validation";
 
 export type CompanionSubmission = Readonly<{
   key: string;
@@ -45,18 +29,18 @@ export function companionDraftIsDirty(editor: CompanionEditor) {
 }
 export function freezeCompanionSubmission(editor: CompanionEditor, action: "save" | "reset", key: string): CompanionSubmission | undefined {
   if (editor.submission || !editor.current || !editor.draft || editor.draftRevision !== editor.current.snapshot.revision || !/^[A-Za-z0-9][A-Za-z0-9._:@/+~-]{0,511}$/.test(key)) return undefined;
-  const body = companionChangeSchema.parse(action === "reset"
+  const body = parseBrowserCompanionChange(action === "reset"
     ? { action, expectedRevision: editor.draftRevision }
     : { action, expectedRevision: editor.draftRevision, preferences: { ...editor.draft } });
+  if (!body) throw new Error("Companion preferences could not be verified for submission.");
   if (body.action === "save") Object.freeze(body.preferences);
   return Object.freeze({ key, body: Object.freeze(body), serializedBody: JSON.stringify(body), draftAtStart: Object.freeze({ ...editor.draft }) });
 }
 
 /** A successful HTTP response is not a confirmed setting until its public identities agree. */
 export function parseCompanionResponse(value: unknown, submission?: CompanionSubmission): CompanionPreferencesResponse | undefined {
-  const parsed = responseSchema.safeParse(value);
-  if (!parsed.success) return undefined;
-  const response = parsed.data;
+  const response = parseBrowserCompanionEnvelope(value);
+  if (!response) return undefined;
   const { snapshot, home, destination, mutation } = response;
   if (snapshot.revision === 0
     ? snapshot.persisted || snapshot.updatedAt !== null || !sameCompanionPreferences(snapshot.preferences, DEFAULT_COMPANION_PREFERENCES)
@@ -122,9 +106,10 @@ export function parseCompanionConversations(value: unknown, tenantId: string, ac
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const rows = (value as Record<string, unknown>).threads;
   if (!Array.isArray(rows) || rows.length > 100) return undefined;
-  const schema = z.object({ id: companionThreadIdSchema, tenantId: z.literal(tenantId), actorId: z.literal(actorId),
-    title: z.string().min(1).max(2_000), updatedAt: instant, mode: z.enum(["orchestrate", "research", "execute", "learn"]) });
-  const accepted = rows.map((row) => schema.safeParse(row)).flatMap((row) => row.success ? [row.data] : []);
+  const accepted = rows.flatMap((row) => {
+    const parsed = parseBrowserCompanionConversation(row, tenantId, actorId);
+    return parsed ? [parsed] : [];
+  });
   const counts = new Map<string, number>();
   for (const row of accepted) counts.set(row.id, (counts.get(row.id) ?? 0) + 1);
   const threads: CompanionConversation[] = accepted.filter((row) => counts.get(row.id) === 1)

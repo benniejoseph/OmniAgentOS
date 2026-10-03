@@ -970,6 +970,19 @@ lint and TypeScript checks passed. Evidence is in
 `ui-validation/companion-settings-lazy-entry`, `companion-replay-integration-final.log`
 and `companion-release-fix-lint-types.log`.
 
+The next Settings budget correction separates browser-safe Companion values and
+public-response guards from the unchanged authoritative server Zod schemas.
+Ten differential cases cover all enum combinations, strict/missing fields,
+UUID variants, ISO calendar/offset forms, safe-integer revisions and detached
+projections. Together with state, service and Settings cases, 53 focused tests
+pass; strict lint, focused TypeScript and native artifact consistency pass.
+The final browser rerun again passed 84 assertions and nine axe scans with no
+unexpected effects or uncaught errors. Evidence is retained in
+`ui-validation/companion-browser-contract-final` and its adjacent unit/lint logs.
+The preceding hosted head passed quality, integration and browser checks but
+measured 884,298 bytes against the unchanged 800,000-byte Settings limit; the
+new exact head must pass the hosted budget before merge.
+
 ## Remaining gates and scope
 
 - Hosted build, route budgets and required repository checks on each new exact head.
