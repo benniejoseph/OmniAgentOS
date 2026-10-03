@@ -170,6 +170,7 @@ export function MemoryIntelligenceWorkspace() {
   const [loadedIndexes, setLoadedIndexes] = useState({ memory: false, knowledge: false });
   const [indexErrors, setIndexErrors] = useState<Partial<Record<"memory" | "knowledge", string>>>({});
   const [reviewsLoading, setReviewsLoading] = useState(false);
+  const [reviewsLoadError, setReviewsLoadError] = useState<string>();
   const [busy, setBusy] = useState<string>();
   const [reviewErrors, setReviewErrors] = useState<Record<string, string>>({});
   const [error, setError] = useState<string>();
@@ -309,10 +310,14 @@ export function MemoryIntelligenceWorkspace() {
       if (!response.ok) throw new Error(body.error || "Memory reviews could not be loaded.");
       setReviews(body.reviews || []);
       setReviewsLoaded(true);
+      setReviewsLoadError(undefined);
       reviewSignatureRef.current = signature;
       setError(undefined);
     } catch (loadError) {
-      if (!controller.signal.aborted) setError(message(loadError));
+      if (!controller.signal.aborted) {
+        setReviewsLoadError(message(loadError));
+        setError(message(loadError));
+      }
     } finally {
       if (reviewsRequestRef.current === controller) setReviewsLoading(false);
     }
@@ -971,6 +976,7 @@ export function MemoryIntelligenceWorkspace() {
                 cognitionReviews={cognitionReviews}
                 cognitionReviewGroups={cognitionReviewGroups}
                 quality={overview?.quality}
+                overviewLoading={loading}
                 semanticShadow={overview?.semanticShadow}
                 onSemanticShadowProgress={loadOverview}
                 loaded={reviewsLoaded}
@@ -978,6 +984,7 @@ export function MemoryIntelligenceWorkspace() {
                 loading={reviewsLoading}
                 cognitionLoading={cognitionReviewsLoading}
                 cognitionLoadError={cognitionReviewsError}
+                loadError={reviewsLoadError}
                 busy={busy}
                 errors={reviewErrors}
                 onResolve={resolveReview}
@@ -1178,6 +1185,7 @@ function ReviewIndex(props: {
   cognitionReviews: CognificationReview[];
   cognitionReviewGroups: CognificationReviewGroup[];
   quality?: MemoryIntelligenceOverview["quality"];
+  overviewLoading: boolean;
   semanticShadow?: MemoryIntelligenceOverview["semanticShadow"];
   onSemanticShadowProgress: () => Promise<void>;
   loaded: boolean;
@@ -1185,6 +1193,7 @@ function ReviewIndex(props: {
   loading: boolean;
   cognitionLoading: boolean;
   cognitionLoadError?: string;
+  loadError?: string;
   busy?: string;
   errors: Record<string, string>;
   total: number;
@@ -1204,18 +1213,8 @@ function ReviewIndex(props: {
     (review) => review.status === "pending_review",
   );
   return <>
-    <IndexHeading eyebrow="Truth review" title="Keep memory accurate and inspectable" detail="Candidates never enter active recall until you make a governed decision." />
-    <MemoryQualityMetrics
-      quality={props.quality}
-      semanticShadow={props.semanticShadow}
-    />
-    <SemanticShadowCollector
-      semanticShadow={props.semanticShadow}
-      onProgressChanged={props.onSemanticShadowProgress}
-    />
-    <SemanticShadowReviewQueue
-      onProgressChanged={props.onSemanticShadowProgress}
-    />
+    <IndexHeading eyebrow="Memory decisions" title="Reviews" detail="Inspect proposed memories and their evidence before deciding what enters recall." />
+    <p id="memory-review-busy" className={styles.reviewBusy} role="status">{props.busy ? "A memory action is in progress. Other review actions are unavailable until it finishes." : ""}</p>
     <section className={styles.cognitionSection} aria-labelledby="source-map-review-title">
       <header className={styles.reviewSectionHeading}>
         <div className={styles.reviewSectionIcon}><GitBranch size={18} /></div>
@@ -1234,18 +1233,18 @@ function ReviewIndex(props: {
             <RefreshCw size={14} className={props.cognitionLoading ? styles.spin : undefined} />
             Refresh
           </button>
-          <strong>{pendingSourceMaps.length}<small>pending</small></strong>
+          <span>{props.cognitionLoaded ? `${pendingSourceMaps.length} pending${props.cognitionLoadError || props.cognitionLoading ? " · Last loaded" : ""}` : props.cognitionLoadError ? "Count unavailable" : "Loading…"}</span>
         </div>
       </header>
       <p className={styles.cognitionBoundary}>
         <ShieldCheck size={16} />
-        These proposals cannot affect memory, recall or the Universe until you confirm them.
+        Pending proposals stay outside memory, recall and the Universe until you confirm them.
       </p>
       <CognitionReviewGroups groups={props.cognitionReviewGroups} />
       {props.cognitionLoadError ? (
         <div className={styles.inlineReviewError} role="alert">
           <CircleAlert size={16} />
-          <span>{props.cognitionLoadError}</span>
+          <span>{props.cognitionLoadError}{props.cognitionLoaded ? " Showing the last loaded source maps." : " Source maps could not be checked."}</span>
           <button type="button" onClick={props.onReloadCognition} disabled={Boolean(props.busy)}>Try again</button>
         </div>
       ) : null}
@@ -1256,13 +1255,13 @@ function ReviewIndex(props: {
           const pendingDecision = review.status === "pending_review";
           const evidence = candidate.summary.evidence || [];
           const actionError = props.errors[`cognition:${candidate.batchId}`];
-          return <article key={candidate.batchId} aria-busy={resolving}>
+          return <article key={candidate.batchId} aria-busy={resolving} aria-label={`Source map ${candidate.batchIndex + 1} of ${candidate.batchCount}`}>
             <header>
               <div>
-                <span>Source map {candidate.batchIndex + 1} of {candidate.batchCount}</span>
-                <small>Batch {candidate.batchIndex + 1} of {candidate.batchCount}</small>
+                <h4>Source map {candidate.batchIndex + 1} of {candidate.batchCount}</h4>
+                <small>{pendingDecision ? "Proposed extraction" : "Saved review decision"}</small>
               </div>
-              <em className={pendingDecision ? styles.cognitionPending : styles.cognitionConfirmed}>
+              <em className={pendingDecision ? styles.cognitionPending : review.projected ? styles.cognitionConfirmed : styles.cognitionInterrupted}>
                 {pendingDecision
                   ? "Awaiting review"
                   : review.projected
@@ -1272,69 +1271,106 @@ function ReviewIndex(props: {
             </header>
             <div className={styles.cognitionBody}>
               <div className={styles.cognitionSummary}>
-                <p>Proposed source summary</p>
+                <p>{pendingDecision ? "Proposed source summary" : "Reviewed source summary"}</p>
                 <strong>{candidate.summary.text}</strong>
-                {candidate.topics.length ? <div className={styles.cognitionTopics}>{candidate.topics.slice(0, 4).map((topic) => <span key={topic.label}>{topic.label}</span>)}</div> : null}
+                {candidate.topics.length ? <div className={styles.cognitionTopics}>{candidate.topics.map((topic) => <span key={topic.label}>{topic.label}</span>)}</div> : null}
               </div>
-              {evidence[0] ? <figure className={styles.cognitionEvidence}>
-                <figcaption>Exact evidence · {Math.round(candidate.summary.confidenceBasisPoints / 100)}% confidence</figcaption>
-                <blockquote>“{evidence[0].quote}”</blockquote>
-                <small>{evidence.length > 1 ? `+${evidence.length - 1} more cited ${evidence.length === 2 ? "quote" : "quotes"}` : "Verified against the private source"}</small>
-              </figure> : null}
+              <details className={styles.cognitionEvidence} open>
+                <summary>Exact source evidence · {evidence.length} {evidence.length === 1 ? "quote" : "quotes"}</summary>
+                <p>Extraction confidence: {Math.round(candidate.summary.confidenceBasisPoints / 100)}%. Review the quoted text before confirming.</p>
+                {evidence.length ? <div className={styles.evidenceQuotes} role="region" aria-label={`Exact evidence for source map ${candidate.batchIndex + 1} of ${candidate.batchCount}`} tabIndex={0}>
+                  {evidence.map((item, index) => <blockquote key={index}>{item.quote}</blockquote>)}
+                </div> : <p>No supporting quote was returned for this summary.</p>}
+              </details>
               <dl className={styles.cognitionCounts}>
                 <div><dt>Topics</dt><dd>{candidate.topics.length}</dd></div>
                 <div><dt>Claims</dt><dd>{candidate.claims.length}</dd></div>
                 <div><dt>Entities</dt><dd>{candidate.entities.length}</dd></div>
                 <div><dt>Links</dt><dd>{candidate.relations.length}</dd></div>
               </dl>
-              <p className={styles.cognitionAttribution}>Extracted by {startCase(candidate.modelAttribution.provider)} · {candidate.modelAttribution.model}</p>
+              <details className={styles.cognitionContents}>
+                <summary>Claims, entities and links</summary>
+                <div>
+                  <section><h5>Claims</h5>{candidate.claims.length ? <ul>{candidate.claims.map((claim, index) => <li key={index}>{claim.statement}</li>)}</ul> : <p>No claims were returned.</p>}</section>
+                  <section><h5>Entities</h5>{candidate.entities.length ? <ul>{candidate.entities.map((entity, index) => <li key={index}>{entity.canonicalLabel}</li>)}</ul> : <p>No entities were returned.</p>}</section>
+                  <section><h5>Links</h5>{candidate.relations.length ? <ul>{candidate.relations.map((relation, index) => <li key={index}>{relation.statement}</li>)}</ul> : <p>No links were returned.</p>}</section>
+                </div>
+              </details>
+              <details className={styles.cognitionAttribution}>
+                <summary>Extraction model and review identity</summary>
+                <dl><div><dt>Provider</dt><dd>{startCase(candidate.modelAttribution.provider)}</dd></div><div><dt>Model</dt><dd>{candidate.modelAttribution.model}</dd></div><div><dt>Batch identity</dt><dd><code>{candidate.batchId}</code></dd></div></dl>
+              </details>
             </div>
             {actionError ? <p className={styles.reviewError} role="alert"><CircleAlert size={15} />{actionError}</p> : null}
             {pendingDecision ? <footer>
-              {resolving ? <span className={styles.reviewProgress} role="status"><LoaderCircle size={15} className={styles.spin} /> Applying decision…</span> : null}
-              <button className={styles.primaryReviewAction} type="button" onClick={() => props.onResolveCognition(candidate.batchId, "confirm")} disabled={Boolean(props.busy)}><Check size={15} /> Confirm source map</button>
-              <button type="button" onClick={() => props.onResolveCognition(candidate.batchId, "dismiss")} disabled={Boolean(props.busy)}><X size={15} /> Dismiss</button>
+              <span className={styles.reviewProgress} role="status">{resolving ? "Applying decision…" : ""}</span>
+              <button className={styles.primaryReviewAction} type="button" onClick={() => props.onResolveCognition(candidate.batchId, "confirm")} disabled={Boolean(props.busy)} aria-describedby={props.busy ? "memory-review-busy" : undefined}><Check size={15} /> Confirm source map</button>
+              <button type="button" onClick={() => props.onResolveCognition(candidate.batchId, "dismiss")} disabled={Boolean(props.busy)} aria-describedby={props.busy ? "memory-review-busy" : undefined}><X size={15} /> Dismiss</button>
             </footer> : review.projected ? (
               <footer className={styles.confirmedFooter}><Check size={15} /> Added to reviewed memory and graph</footer>
             ) : (
               <footer>
-                {resolving ? <span className={styles.reviewProgress} role="status"><LoaderCircle size={15} className={styles.spin} /> Retrying projection…</span> : <span>Review saved; graph projection needs another attempt.</span>}
-                <button className={styles.primaryReviewAction} type="button" onClick={() => props.onResolveCognition(candidate.batchId, "confirm")} disabled={Boolean(props.busy)}><RefreshCw size={15} /> Retry projection</button>
+                <span className={styles.reviewProgress} role="status">{resolving ? "Retrying projection…" : "Review saved; graph projection needs another attempt."}</span>
+                <button className={styles.primaryReviewAction} type="button" onClick={() => props.onResolveCognition(candidate.batchId, "confirm")} disabled={Boolean(props.busy)} aria-describedby={props.busy ? "memory-review-busy" : undefined}><RefreshCw size={15} /> Retry projection</button>
               </footer>
             )}
           </article>;
         })}
         {props.cognitionLoaded && !props.cognitionLoading && !sourceMaps.length && !props.cognitionLoadError ? <EmptyState icon={<GitBranch />} title="No source maps await review" detail="Ask Mnemosyne to cognify eligible sources; proposals will appear here after background processing." /> : null}
-        {props.cognitionLoading ? <LoadingRow /> : null}
+        {props.cognitionLoading || (!props.cognitionLoaded && !props.cognitionLoadError) ? <LoadingRow /> : null}
       </div>
     </section>
 
     <section className={styles.memoryReviewSection} aria-labelledby="memory-review-title">
       <header className={styles.memoryReviewHeading}>
         <div><p>Memory decisions</p><h3 id="memory-review-title">Conflicts and promotions</h3></div>
-        <span>{pending.length} pending</span>
+        <span>{props.loaded ? `${pending.length} pending${props.loadError || props.loading ? " · Last loaded" : ""}` : props.loadError ? "Count unavailable" : "Loading…"}</span>
       </header>
+      {props.loadError ? <p className={styles.inlineReviewError} role="alert"><CircleAlert size={16} aria-hidden="true" /><span>{props.loadError}{props.loaded ? " Showing the last loaded memory reviews." : " The memory review queue could not be checked."}</span></p> : null}
       <div className={styles.reviewList}>
         {pending.map((review) => {
           const resolving = props.busy === `review:${review.id}`;
-          return <article key={review.id} aria-busy={resolving}>
+          return <article key={review.id} aria-busy={resolving} aria-label={`${review.kind === "contradiction" ? "Conflict" : "Proposed memory"}: ${review.candidate.title}`}>
             <header><span>{review.kind === "contradiction" ? "Conflict" : "Proposed memory"}</span><small>{startCase(review.detectionReason)}</small></header>
-            <div className={styles.reviewClaims}><section><p>Candidate</p><strong>{review.candidate.title}</strong><span>{review.candidate.content}</span></section>{review.existing ? <section><p>Current memory</p><strong>{review.existing.title}</strong><span>{review.existing.content}</span></section> : null}</div>
+            <div className={styles.reviewClaims}><ReviewMemoryClaim record={review.candidate} label="Proposed memory" />{review.existing ? <ReviewMemoryClaim record={review.existing} label="Current memory" /> : null}</div>
             {props.errors[review.id] ? <p className={styles.reviewError} role="alert"><CircleAlert size={15} />{props.errors[review.id]}</p> : null}
             <footer>
-              {resolving ? <span className={styles.reviewProgress} role="status"><LoaderCircle size={15} className={styles.spin} /> Applying decision…</span> : null}
-              <button className={styles.primaryReviewAction} type="button" onClick={() => props.onResolve(review.id, "confirm_candidate")} disabled={Boolean(props.busy)}><Check size={15} /> Use candidate</button>
-              {review.existing ? <button type="button" onClick={() => props.onResolve(review.id, "keep_existing")} disabled={Boolean(props.busy)}>Keep current</button> : <button type="button" onClick={() => props.onResolve(review.id, "keep_existing")} disabled={Boolean(props.busy)}>Dismiss</button>}
-              {review.existing ? <button type="button" onClick={() => props.onResolve(review.id, "keep_both")} disabled={Boolean(props.busy)}>Keep both</button> : null}
+              <span className={styles.reviewProgress} role="status">{resolving ? "Applying decision…" : ""}</span>
+              <button className={styles.primaryReviewAction} type="button" onClick={() => props.onResolve(review.id, "confirm_candidate")} disabled={Boolean(props.busy)} aria-describedby={props.busy ? "memory-review-busy" : undefined}><Check size={15} /> Use candidate</button>
+              {review.existing ? <button type="button" onClick={() => props.onResolve(review.id, "keep_existing")} disabled={Boolean(props.busy)} aria-describedby={props.busy ? "memory-review-busy" : undefined}>Keep current</button> : <button type="button" onClick={() => props.onResolve(review.id, "keep_existing")} disabled={Boolean(props.busy)} aria-describedby={props.busy ? "memory-review-busy" : undefined}>Dismiss</button>}
+              {review.existing ? <button type="button" onClick={() => props.onResolve(review.id, "keep_both")} disabled={Boolean(props.busy)} aria-describedby={props.busy ? "memory-review-busy" : undefined}>Keep both</button> : null}
             </footer>
           </article>;
         })}
-        {props.loaded && !props.loading && !pending.length ? <EmptyState icon={<ShieldCheck />} title="Memory review queue is clear" detail="Mnemosyne will place contradictions and inferred memory candidates here before they can affect recall." /> : null}
-        {props.loading ? <LoadingRow /> : null}
+        {props.loaded && !props.loading && !props.loadError && !pending.length ? <EmptyState icon={<ShieldCheck />} title="Memory review queue is clear" detail="Mnemosyne will place contradictions and inferred memory candidates here before they can affect recall." /> : null}
+        {props.loading || (!props.loaded && !props.loadError) ? <LoadingRow /> : null}
       </div>
       {pending.length < props.total ? <button className={styles.loadMore} type="button" onClick={props.onMore} disabled={props.loading}>Load {Math.min(20, props.total - pending.length)} more reviews</button> : null}
     </section>
+    <details className={styles.evaluationDetails}>
+      <summary>Quality signals and semantic evaluation</summary>
+      <p>Semantic evaluation collects human evidence. Its proposals and rank probes do not change live recall or activate semantic memory.</p>
+      <MemoryQualityMetrics quality={props.quality} semanticShadow={props.semanticShadow} loading={props.overviewLoading} />
+      <SemanticShadowCollector semanticShadow={props.semanticShadow} onProgressChanged={props.onSemanticShadowProgress} />
+      <SemanticShadowReviewQueue onProgressChanged={props.onSemanticShadowProgress} />
+    </details>
   </>;
+}
+
+function ReviewMemoryClaim(props: { record: MemoryRecord; label: string }) {
+  const record = props.record;
+  return <section>
+    <p>{props.label}</p><strong>{record.title}</strong><span>{record.content}</span>
+    <details className={styles.reviewProvenance}>
+      <summary>Memory identity and source</summary>
+      <dl>
+        <div><dt>Memory identity</dt><dd><code>{record.id}</code></dd></div>
+        <div><dt>Scope</dt><dd>{startCase(record.scope)}</dd></div>
+        <div><dt>Source</dt><dd><code>{record.source}</code></dd></div>
+        <div><dt>Evidence references</dt><dd>{record.evidenceRefs?.length ? <ul>{record.evidenceRefs.map((reference, index) => <li key={index}><code>{reference}</code></li>)}</ul> : "No evidence references were returned."}</dd></div>
+      </dl>
+    </details>
+  </section>;
 }
 
 function CognitionReviewGroups(props: {
@@ -1358,7 +1394,7 @@ function CognitionReviewGroups(props: {
               <span>{Math.round(group.scoreBasisPoints / 100)}% overlap</span>
             </header>
             <ul>
-              {group.references.slice(0, 4).map((reference) => (
+              {group.references.map((reference) => (
                 <li key={`${reference.batchId}:${reference.claimIndex}`}>
                   <i className={reference.status === "confirmed" ? styles.currentClaim : styles.proposedClaim}>
                     {reference.status === "confirmed" ? "Current" : "Proposed"}
@@ -1378,6 +1414,7 @@ function CognitionReviewGroups(props: {
 function MemoryQualityMetrics(props: {
   quality?: MemoryIntelligenceOverview["quality"];
   semanticShadow?: MemoryIntelligenceOverview["semanticShadow"];
+  loading: boolean;
 }) {
   const quality = props.quality;
   const extraction = quality?.evidenceSupportedExtraction;
@@ -1386,37 +1423,38 @@ function MemoryQualityMetrics(props: {
   const outcomes = quality?.retrievalOutcomeUtility;
   const graph = quality?.graphLag;
   const semanticShadow = props.semanticShadow;
+  const unavailable = props.loading ? "Loading…" : "Unavailable";
   return (
     <section className={styles.qualityMetrics} aria-label="Memory quality signals">
       <article>
         <span>Evidence support</span>
-        <strong>{percentageOrPending(extraction?.exactEvidenceCandidateItemRate)}</strong>
-        <small>{extraction ? `${extraction.exactEvidenceCandidateItemCount} of ${extraction.candidateItemSampleCount} extracted items` : "Loading extraction samples"}</small>
+        <strong>{extraction ? percentageOrPending(extraction.exactEvidenceCandidateItemRate) : unavailable}</strong>
+        <small>{extraction ? `${extraction.exactEvidenceCandidateItemCount} of ${extraction.candidateItemSampleCount} extracted items` : props.loading ? "Loading extraction samples" : "Extraction samples are unavailable"}</small>
       </article>
       <article>
         <span>Review acceptance</span>
-        <strong>{percentageOrPending(reviews?.acceptanceRate)}</strong>
-        <small>{reviews ? `${reviews.reviewedBatchSampleCount} reviewed source maps` : "Loading review samples"}</small>
+        <strong>{reviews ? percentageOrPending(reviews.acceptanceRate) : unavailable}</strong>
+        <small>{reviews ? `${reviews.reviewedBatchSampleCount} reviewed source maps` : props.loading ? "Loading review samples" : "Review samples are unavailable"}</small>
       </article>
       <article>
         <span>Observed recall use</span>
-        <strong>{percentageOrPending(retrieval?.usedActiveDurableMemoryRate)}</strong>
-        <small>{retrieval ? `${retrieval.observedUseCount.toLocaleString()} uses · observational only` : "Loading recall samples"}</small>
+        <strong>{retrieval ? percentageOrPending(retrieval.usedActiveDurableMemoryRate) : unavailable}</strong>
+        <small>{retrieval ? `${retrieval.observedUseCount.toLocaleString()} uses · observational only` : props.loading ? "Loading recall samples" : "Recall samples are unavailable"}</small>
       </article>
       <article>
         <span>Rated context outcomes</span>
-        <strong>{percentageOrPending(outcomes?.usefulRate)}</strong>
-        <small>{outcomes ? `${outcomes.usefulCount} of ${outcomes.contextLinkedRatedRunCount} explicitly rated runs · shadow only, does not tune ranking` : "Loading rated outcomes"}</small>
+        <strong>{outcomes ? percentageOrPending(outcomes.usefulRate) : unavailable}</strong>
+        <small>{outcomes ? `${outcomes.usefulCount} of ${outcomes.contextLinkedRatedRunCount} explicitly rated runs · shadow only, does not tune ranking` : props.loading ? "Loading rated outcomes" : "Rated outcomes are unavailable"}</small>
       </article>
       <article>
         <span>Graph freshness</span>
-        <strong>{graph ? startCase(graph.status) : "—"}</strong>
-        <small>{graphLagLabel(graph?.lagMs)}</small>
+        <strong>{graph ? startCase(graph.status) : unavailable}</strong>
+        <small>{graph ? graphLagLabel(graph.lagMs) : props.loading ? "Loading graph freshness" : "Graph freshness is unavailable"}</small>
       </article>
       <article>
         <span>Semantic shadow</span>
-        <strong>{semanticShadow ? `${semanticShadow.currentEpisodeCount} / ${semanticShadow.minimumEpisodeTarget}` : "—"}</strong>
-        <small>{semanticShadow ? `${semanticShadow.distinctThreadCount} of ${semanticShadow.minimumThreadTarget} threads · evaluation only, does not affect answers` : "Loading shadow sample"}</small>
+        <strong>{semanticShadow ? `${semanticShadow.currentEpisodeCount} / ${semanticShadow.minimumEpisodeTarget}` : unavailable}</strong>
+        <small>{semanticShadow ? `${semanticShadow.distinctThreadCount} of ${semanticShadow.minimumThreadTarget} threads · evaluation only, does not affect answers` : props.loading ? "Loading shadow sample" : "Shadow sample is unavailable"}</small>
       </article>
     </section>
   );

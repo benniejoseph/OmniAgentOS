@@ -134,14 +134,18 @@
 .universeWrap { min-inline-size: 0; padding-block-start: 1.5rem; }
 .universeLoading { display: flex; min-block-size: 24rem; align-items: center; justify-content: center; gap: .5rem; color: var(--muted); background: var(--surface); }
 
-/* Existing review and semantic-shadow layouts retain their exported class names. */
-.cognitionSection { margin: 1rem; overflow: hidden; border: 1px solid color-mix(in oklab, var(--accent) 30%, var(--line)); border-radius: 1.3rem; background: color-mix(in oklab, var(--accent-surface) 26%, var(--surface)); }
-.qualityMetrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); margin: 1rem; overflow: hidden; border: 1px solid var(--line); border-radius: 1.1rem; background: var(--surface); }
-.qualityMetrics article { display: grid; min-width: 0; gap: .35rem; padding: 1rem; }
-.qualityMetrics article + article { border-left: 1px solid var(--line); }
-.qualityMetrics span { color: var(--accent); font-size: .75rem; font-weight: 760; letter-spacing: .06em; text-transform: uppercase; }
-.qualityMetrics strong { font-family: inherit; font-size: clamp(1.2rem, 1.7vw, 1.6rem); font-weight: 620; font-variant-numeric: tabular-nums; }
-.qualityMetrics small { color: var(--muted); font-size: .76rem; line-height: 1.45; }
+/* Review decisions use complete, selectable evidence and shared ATLAS tokens. */
+.cognitionSection { min-inline-size: 0; padding: 1rem; }
+.reviewBusy { padding: .75rem 1rem; color: var(--muted); font-size: .8125rem; line-height: 1.5385; }
+.reviewBusy:empty { padding: 0; }
+.evaluationDetails { min-inline-size: 0; margin: 1.5rem 1rem 1rem; border-block-start: 1px solid var(--line); padding-block-start: .5rem; --focus-surface: var(--background); }
+.evaluationDetails > summary { min-block-size: 2.75rem; padding: .75rem .5rem; color: var(--foreground); font-weight: 500; cursor: pointer; }
+.evaluationDetails > p { max-inline-size: 70ch; padding: .5rem .5rem 1rem; color: var(--muted); font-size: .875rem; line-height: 1.4286; }
+.qualityMetrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(13rem, 100%), 1fr)); border-block: 1px solid var(--line); background: var(--surface); }
+.qualityMetrics article { display: grid; min-inline-size: 0; align-content: start; gap: .25rem; padding: 1rem; }
+.qualityMetrics span, .qualityMetrics small { color: var(--muted); font-size: .8125rem; line-height: 1.5385; }
+.qualityMetrics strong { font-size: 1rem; font-weight: 600; line-height: 1.5; font-variant-numeric: tabular-nums; }
+/* Collector exports are retained for its separate presentation migration. */
 .semanticLab { margin: 1rem; overflow: hidden; border: 1px solid color-mix(in oklab, var(--accent) 34%, var(--line)); border-radius: 1.3rem; background: var(--surface); }
 .semanticLabHeading { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: .75rem; border-bottom: 1px solid color-mix(in oklab, var(--accent) 18%, var(--line)); padding: 1rem; }
 .semanticLabIcon { display: grid; width: 2.7rem; height: 2.7rem; place-items: center; border: 1px solid color-mix(in oklab, var(--accent) 24%, var(--line)); border-radius: .9rem; color: var(--accent); background: var(--surface); box-shadow: 0 .6rem 1.5rem color-mix(in oklab, var(--accent) 10%, transparent); }
@@ -175,89 +179,115 @@
 .semanticLabJobs [data-attention="true"] dd { color: var(--warning); }
 .semanticLabBoundary { display: flex; align-items: flex-start; gap: .45rem; color: var(--muted); font-size: .75rem; line-height: 1.5; }
 .semanticLabBoundary svg { flex: 0 0 auto; margin-top: .08rem; color: var(--accent); }
-.reviewSectionHeading { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: .75rem; padding: 1rem; }
-.reviewSectionIcon { display: grid; width: 2.6rem; height: 2.6rem; place-items: center; border-radius: .85rem; color: var(--accent); background: var(--surface); box-shadow: 0 .5rem 1.5rem color-mix(in oklab, var(--accent) 10%, transparent); }
-.reviewSectionHeading > div:nth-child(2) p, .memoryReviewHeading p { color: var(--accent); font-size: .75rem; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
-.reviewSectionHeading h3, .memoryReviewHeading h3 { margin-top: .12rem; font-family: inherit; font-size: 1.22rem; font-weight: 610; letter-spacing: -.025em; }
-.reviewSectionHeading > div:nth-child(2) > span { display: block; margin-top: .16rem; color: var(--muted); font-size: .75rem; line-height: 1.45; }
-.reviewSectionActions { display: flex; align-items: center; gap: .45rem; }
-.reviewSectionActions > button { display: inline-flex; min-height: 2.25rem; align-items: center; gap: .3rem; border: 1px solid var(--line); border-radius: 999px; padding: 0 .6rem; color: var(--muted); background: var(--surface); font-size: .75rem; font-weight: 680; }
-.reviewSectionActions > button:not(:disabled):hover { border-color: var(--accent); color: var(--accent); }
-.reviewSectionActions > strong { display: grid; min-width: 3.45rem; min-height: 3.45rem; place-items: center; align-content: center; border: 1px solid var(--line); border-radius: 50%; color: var(--foreground); background: var(--surface); font-family: inherit; font-size: 1rem; font-variant-numeric: tabular-nums; }
-.reviewSectionActions > strong small { color: var(--muted); font-family: inherit; font-size: .75rem; font-weight: 500; }
-.cognitionBoundary { display: flex; align-items: center; gap: .45rem; border-block: 1px solid color-mix(in oklab, var(--accent) 20%, var(--line)); padding: .7rem 1rem; color: var(--accent); background: color-mix(in oklab, var(--surface) 70%, transparent); font-size: .75rem; font-weight: 650; line-height: 1.45; }
-.cognitionBoundary svg { flex: 0 0 auto; }
-.claimGroups { display: grid; gap: .7rem; border-bottom: 1px solid color-mix(in oklab, var(--accent) 20%, var(--line)); padding: .9rem; background: color-mix(in oklab, var(--warning) 4%, var(--surface)); }
-.claimGroups > header { display: flex; align-items: end; justify-content: space-between; gap: 1rem; }
-.claimGroups > header p { color: var(--warning); font-size: .75rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
-.claimGroups > header h4 { margin-top: .15rem; font-family: inherit; font-size: 1.12rem; font-weight: 620; }
-.claimGroups > header > span { color: var(--muted); font-size: .75rem; }
-.claimGroups > div { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(18rem, 100%), 1fr)); gap: .65rem; }
-.claimGroups article { overflow: hidden; border: 1px solid color-mix(in oklab, var(--warning) 28%, var(--line)); border-radius: .9rem; background: var(--surface); }
-.claimGroups article > header { display: flex; align-items: center; justify-content: space-between; gap: .75rem; border-bottom: 1px solid var(--line); padding: .65rem .75rem; }
-.claimGroups article > header strong { color: var(--warning); font-size: .78rem; }
-.claimGroups article > header span { color: var(--muted); font-size: .75rem; font-variant-numeric: tabular-nums; }
-.claimGroups ul { display: grid; }
-.claimGroups li { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: .55rem; padding: .7rem .75rem; }
-.claimGroups li + li { border-top: 1px solid var(--line); }
-.claimGroups li i { border-radius: 999px; padding: .18rem .42rem; font-size: .75rem; font-style: normal; font-weight: 740; }
-.claimGroups li .currentClaim { color: var(--success); background: color-mix(in oklab, var(--success) 10%, transparent); }
-.claimGroups li .proposedClaim { color: var(--warning); background: color-mix(in oklab, var(--warning) 10%, transparent); }
-.claimGroups li span { min-width: 0; color: var(--foreground); font-size: .76rem; line-height: 1.5; }
-.claimGroups article > small { display: block; border-top: 1px solid var(--line); padding: .55rem .75rem; color: var(--muted); font-size: .75rem; line-height: 1.45; }
-.inlineReviewError { display: flex; align-items: center; gap: .5rem; margin: .8rem .8rem 0; border: 1px solid color-mix(in oklab, var(--danger) 32%, var(--line)); border-radius: .8rem; padding: .65rem .75rem; color: var(--danger); background: color-mix(in oklab, var(--danger) 7%, var(--surface)); font-size: .75rem; }
-.inlineReviewError span { flex: 1; }
-.inlineReviewError button { min-height: 2.1rem; border: 1px solid currentColor; border-radius: 999px; padding: 0 .65rem; font-weight: 720; }
-.cognitionList { display: grid; gap: .75rem; padding: .8rem; }
-.cognitionList > article { overflow: hidden; border: 1px solid var(--line); border-radius: 1rem; background: var(--surface); content-visibility: auto; contain-intrinsic-size: auto 23rem; }
-.cognitionList article > header { display: flex; min-height: 3.4rem; align-items: center; justify-content: space-between; gap: 1rem; border-bottom: 1px solid var(--line); padding: .65rem .9rem; }
-.cognitionList article > header > div { display: grid; min-width: 0; gap: .12rem; }
-.cognitionList article > header span { overflow: hidden; font-size: .78rem; font-weight: 730; text-overflow: ellipsis; white-space: nowrap; }
-.cognitionList article > header small { color: var(--muted); font-size: .75rem; }
-.cognitionList article > header em { display: inline-flex; min-height: 1.7rem; flex: 0 0 auto; align-items: center; border-radius: 999px; padding: 0 .55rem; font-size: .75rem; font-style: normal; font-weight: 720; }
-.cognitionPending { color: var(--warning); background: color-mix(in oklab, var(--warning) 10%, transparent); }
-.cognitionConfirmed { color: var(--success); background: color-mix(in oklab, var(--success) 10%, transparent); }
-.cognitionBody { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(15rem, .85fr); }
-.cognitionSummary, .cognitionEvidence { min-width: 0; padding: 1rem; }
-.cognitionSummary > p, .cognitionEvidence figcaption { color: var(--accent); font-size: .75rem; font-weight: 790; letter-spacing: .07em; text-transform: uppercase; }
-.cognitionSummary > strong { display: block; margin-top: .45rem; font-size: .79rem; font-weight: 590; line-height: 1.6; }
-.cognitionTopics { display: flex; flex-wrap: wrap; gap: .3rem; margin-top: .7rem; }
-.cognitionTopics span { border: 1px solid var(--line); border-radius: 999px; padding: .25rem .5rem; color: var(--muted); background: var(--surface); font-size: .75rem; }
-.cognitionEvidence { border-left: 1px solid var(--line); background: color-mix(in oklab, var(--surface-raised) 40%, transparent); }
-.cognitionEvidence blockquote { display: -webkit-box; margin-top: .45rem; overflow: hidden; color: var(--muted); font-family: inherit; font-size: .78rem; line-height: 1.55; -webkit-box-orient: vertical; -webkit-line-clamp: 4; }
-.cognitionEvidence small { display: block; margin-top: .55rem; overflow: hidden; color: var(--muted); font-size: .75rem; text-overflow: ellipsis; white-space: nowrap; }
-.cognitionCounts { display: grid; grid-column: 1 / -1; grid-template-columns: repeat(4, minmax(0, 1fr)); border-top: 1px solid var(--line); }
-.cognitionCounts div { display: flex; min-height: 3.2rem; align-items: center; justify-content: space-between; gap: .5rem; padding: .65rem .9rem; }
-.cognitionCounts div + div { border-left: 1px solid var(--line); }
-.cognitionCounts dt { color: var(--muted); font-size: .75rem; }
-.cognitionCounts dd { color: var(--foreground); font-family: inherit; font-size: .92rem; font-weight: 620; font-variant-numeric: tabular-nums; }
-.cognitionAttribution { grid-column: 1 / -1; overflow: hidden; border-top: 1px solid var(--line); padding: .5rem .9rem; color: var(--muted); font-size: .75rem; text-overflow: ellipsis; white-space: nowrap; }
-.cognitionList article > footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .4rem; border-top: 1px solid var(--line); padding: .7rem; }
-.cognitionList footer button { display: inline-flex; min-height: 2.45rem; align-items: center; gap: .35rem; border: 1px solid var(--line); border-radius: 999px; padding: 0 .75rem; color: var(--muted); font-size: .75rem; font-weight: 680; }
-.cognitionList footer button:disabled { cursor: wait; opacity: .58; }
-.cognitionList .confirmedFooter { align-items: center; color: var(--success); font-size: .75rem; font-weight: 690; }
-.cognitionList .empty { min-height: 11rem; }
-.memoryReviewSection { border-top: 1px solid var(--line); }
-.memoryReviewHeading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 1.1rem 1rem 0; }
-.memoryReviewHeading > span { border-radius: 999px; padding: .3rem .55rem; color: var(--muted); background: var(--surface-raised); font-size: .75rem; }
-.reviewList { display: grid; gap: .8rem; padding: 1rem; }
-.reviewList > article { overflow: hidden; border: 1px solid var(--line); border-radius: 1.2rem; background: var(--surface); content-visibility: auto; contain-intrinsic-size: auto 17rem; }
-.reviewList article > header { display: flex; min-height: 2.8rem; align-items: center; justify-content: space-between; gap: 1rem; border-bottom: 1px solid var(--line); padding: 0 .9rem; }
-.reviewList article > header span { color: var(--warning); font-size: .75rem; font-weight: 780; letter-spacing: .08em; text-transform: uppercase; }
-.reviewList article > header small { color: var(--muted); font-size: .75rem; }
-.reviewClaims { display: grid; grid-template-columns: 1fr 1fr; }
-.reviewClaims section { min-width: 0; padding: 1rem; }
-.reviewClaims section + section { border-left: 1px solid var(--line); }
-.reviewClaims p { color: var(--accent); font-size: .75rem; font-weight: 780; text-transform: uppercase; }
-.reviewClaims strong { display: block; margin-top: .3rem; font-size: .82rem; }
-.reviewClaims span { display: -webkit-box; margin-top: .4rem; overflow: hidden; color: var(--muted); font-size: .75rem; line-height: 1.55; -webkit-box-orient: vertical; -webkit-line-clamp: 4; }
-.reviewList article > footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .4rem; border-top: 1px solid var(--line); padding: .7rem; }
-.reviewList footer button { display: inline-flex; min-height: 2.35rem; align-items: center; gap: .35rem; border: 1px solid var(--line); border-radius: 999px; padding: 0 .7rem; color: var(--muted); font-size: .75rem; }
-.reviewList footer .primaryReviewAction, .cognitionList footer .primaryReviewAction { border-color: transparent; color: var(--primary-ink); background: var(--accent); }
-.reviewList footer button:disabled { cursor: wait; opacity: .58; }
-.reviewProgress { display: inline-flex; min-height: 2.35rem; flex: 1 1 auto; align-items: center; gap: .4rem; color: var(--accent); font-size: .75rem; font-weight: 720; }
-.reviewError { display: flex; align-items: flex-start; gap: .45rem; margin: 0 .7rem .7rem; border: 1px solid color-mix(in oklab, var(--danger) 32%, var(--line)); border-radius: .8rem; padding: .65rem .75rem; color: var(--danger); background: color-mix(in oklab, var(--danger) 7%, var(--surface)); font-size: .75rem; line-height: 1.45; }
-.reviewError svg { flex: 0 0 auto; margin-top: .1rem; }
+.reviewSectionHeading { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: .75rem; padding-block-end: 1rem; }
+.reviewSectionIcon { display: grid; min-block-size: 2.75rem; place-items: center; color: var(--muted); }
+.reviewSectionHeading > div:nth-child(2) p, .memoryReviewHeading p { color: var(--muted); font-size: .8125rem; line-height: 1.5385; }
+.reviewSectionHeading h3, .memoryReviewHeading h3 { font-size: 1.25rem; font-weight: 600; line-height: 1.4; letter-spacing: -.01em; }
+.reviewSectionHeading > div:nth-child(2) > span { display: block; padding-block-start: .25rem; color: var(--muted); font-size: .875rem; line-height: 1.4286; }
+.reviewSectionActions { display: flex; grid-column: 1 / -1; flex-wrap: wrap; align-items: center; gap: .75rem; }
+.reviewSectionActions > span, .memoryReviewHeading > span { color: var(--muted); font-size: .8125rem; line-height: 1.5385; font-variant-numeric: tabular-nums; }
+.reviewSectionActions > button, .inlineReviewError button { display: inline-flex; min-block-size: 2.75rem; align-items: center; justify-content: center; gap: .5rem; border: 1px solid var(--line-strong); border-radius: var(--radius-control); padding: .5rem .75rem; color: var(--foreground); background: var(--surface); font-size: .875rem; line-height: 1.4286; font-weight: 500; }
+.cognitionBoundary { display: flex; align-items: start; gap: .5rem; border-block: 1px solid var(--line); padding: .75rem 0; color: var(--muted); font-size: .8125rem; line-height: 1.5385; }
+.cognitionBoundary svg { margin-block-start: .125rem; }
+.claimGroups { display: grid; gap: 1rem; border-block-end: 1px solid var(--line); padding-block: 1rem; }
+.claimGroups > header { display: flex; flex-wrap: wrap; align-items: start; justify-content: space-between; gap: .5rem 1rem; }
+.claimGroups > header p, .claimGroups > header > span { color: var(--muted); font-size: .8125rem; line-height: 1.5385; }
+.claimGroups > header h4 { font-size: 1rem; font-weight: 600; line-height: 1.5; }
+.claimGroups > div { display: grid; gap: 1rem; }
+.claimGroups article { min-inline-size: 0; border-inline-start: 3px solid var(--warning); padding-inline-start: 1rem; }
+.claimGroups article > header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: .5rem 1rem; padding-block-end: .75rem; }
+.claimGroups article > header strong { color: var(--warning); font-size: .875rem; font-weight: 500; }
+.claimGroups article > header span { color: var(--muted); font-size: .8125rem; line-height: 1.5385; font-variant-numeric: tabular-nums; }
+.claimGroups ul { display: grid; list-style: none; padding: 0; }
+.claimGroups li { display: flex; flex-wrap: wrap; align-items: start; gap: .5rem .75rem; padding-block: .75rem; }
+.claimGroups li + li { border-block-start: 1px solid var(--line); }
+.claimGroups li i { border-radius: .375rem; padding: .125rem .5rem; font-size: .8125rem; line-height: 1.5385; font-style: normal; }
+.claimGroups li .currentClaim { color: var(--success); background: var(--success-surface); }
+.claimGroups li .proposedClaim { color: var(--warning); background: var(--warning-surface); }
+.claimGroups li span { min-inline-size: min(100%, 14rem); flex: 1 1 20rem; color: var(--foreground); font-size: 1rem; line-height: 1.625; white-space: pre-wrap; }
+.claimGroups article > small { display: block; padding-block-start: .5rem; color: var(--muted); font-size: .8125rem; line-height: 1.5385; }
+.inlineReviewError { display: flex; flex-wrap: wrap; align-items: start; gap: .5rem; border: 1px solid var(--danger); border-radius: var(--radius-control); padding: .75rem; color: var(--danger); background: var(--danger-surface); font-size: .875rem; line-height: 1.4286; --focus-surface: var(--danger-surface); }
+.inlineReviewError span { min-inline-size: min(100%, 12rem); flex: 1 1 20rem; }
+.inlineReviewError svg, .reviewError svg { flex: 0 0 auto; margin-block-start: .125rem; }
+.cognitionList, .reviewList { display: grid; min-inline-size: 0; gap: 1rem; padding-block-start: 1rem; }
+.cognitionList > article, .reviewList > article { min-inline-size: 0; border: 1px solid var(--line); border-radius: var(--radius-surface); background: var(--surface); --focus-surface: var(--surface); }
+.cognitionList article > header, .reviewList article > header { display: flex; flex-wrap: wrap; align-items: start; justify-content: space-between; gap: .75rem 1rem; border-block-end: 1px solid var(--line); padding: 1rem; }
+.cognitionList article > header > div { display: grid; min-inline-size: 0; gap: .25rem; }
+.cognitionList article > header h4 { font-size: 1rem; font-weight: 600; line-height: 1.5; }
+.cognitionList article > header small, .reviewList article > header small { color: var(--muted); font-size: .8125rem; line-height: 1.5385; }
+.cognitionList article > header em { display: inline-flex; align-items: center; border-radius: .375rem; padding: .25rem .5rem; font-size: .8125rem; line-height: 1.5385; font-style: normal; }
+.cognitionPending, .cognitionInterrupted { color: var(--warning); background: var(--warning-surface); }
+.cognitionConfirmed { color: var(--success); background: var(--success-surface); }
+.cognitionBody { display: grid; min-inline-size: 0; grid-template-columns: minmax(0, 1fr); }
+.cognitionSummary, .cognitionEvidence { min-inline-size: 0; padding: 1rem; }
+.cognitionSummary > p { color: var(--muted); font-size: .8125rem; line-height: 1.5385; }
+.cognitionSummary > strong { display: block; padding-block-start: .5rem; font-size: 1rem; font-weight: 400; line-height: 1.625; white-space: pre-wrap; }
+.cognitionTopics { display: flex; flex-wrap: wrap; gap: .5rem; padding-block-start: .75rem; }
+.cognitionTopics span { border-radius: .375rem; padding: .25rem .5rem; color: var(--muted); background: var(--surface-raised); font-size: .8125rem; line-height: 1.5385; }
+.cognitionEvidence { border-block-start: 1px solid var(--line); }
+.cognitionEvidence > summary, .cognitionAttribution > summary { min-block-size: 2.75rem; padding-block: .75rem; font-size: .875rem; line-height: 1.4286; font-weight: 500; cursor: pointer; }
+.cognitionEvidence > p { padding-block: .5rem; color: var(--muted); font-size: .8125rem; line-height: 1.5385; }
+.evidenceQuotes { max-block-size: 26rem; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: .5rem; border: 1px solid var(--line); }
+.evidenceQuotes blockquote { margin: 0; padding: .75rem; border-inline-start: 3px solid var(--line-strong); color: var(--foreground); font-size: 1rem; line-height: 1.625; white-space: pre-wrap; overflow-wrap: anywhere; }
+.evidenceQuotes blockquote + blockquote { margin-block-start: .75rem; }
+.evidenceQuotes:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; box-shadow: 0 0 0 3px var(--surface); }
+.cognitionCounts { display: grid; grid-column: 1 / -1; grid-template-columns: repeat(auto-fit, minmax(min(7rem, 100%), 1fr)); border-block-start: 1px solid var(--line); }
+.cognitionCounts div { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: .5rem; padding: .75rem 1rem; }
+.cognitionCounts dt { color: var(--muted); font-size: .8125rem; line-height: 1.5385; }
+.cognitionCounts dd { font-size: .875rem; font-weight: 500; font-variant-numeric: tabular-nums; }
+.cognitionAttribution { grid-column: 1 / -1; min-inline-size: 0; border-block-start: 1px solid var(--line); padding: .25rem 1rem; }
+.cognitionAttribution dl { display: grid; gap: .75rem; padding-block: .5rem .75rem; }
+.cognitionAttribution dl > div { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(12rem, 100%), 1fr)); gap: .25rem 1rem; }
+.cognitionAttribution dt, .cognitionAttribution dd { min-inline-size: 0; font-size: .8125rem; line-height: 1.5385; }
+.cognitionAttribution dt { color: var(--muted); }
+.cognitionAttribution code { font-family: var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.cognitionContents { grid-column: 1 / -1; min-inline-size: 0; border-block-start: 1px solid var(--line); padding: .25rem 1rem; }
+.cognitionContents > summary, .reviewProvenance > summary { min-block-size: 2.75rem; padding-block: .75rem; font-size: .875rem; line-height: 1.4286; font-weight: 500; cursor: pointer; }
+.cognitionContents > div { display: grid; gap: 1rem; padding-block: .5rem .75rem; }
+.cognitionContents h5 { margin: 0; font-size: .875rem; line-height: 1.4286; font-weight: 500; }
+.cognitionContents ul { padding-inline-start: 1.25rem; }
+.cognitionContents li { padding-block-start: .5rem; font-size: 1rem; line-height: 1.625; white-space: pre-wrap; }
+.cognitionContents p { padding-block-start: .5rem; color: var(--muted); font-size: .8125rem; line-height: 1.5385; }
+.reviewProvenance { min-inline-size: 0; margin-block-start: 1rem; border-block-start: 1px solid var(--line); }
+.reviewProvenance dl { display: grid; gap: .75rem; padding-block: .5rem; }
+.reviewProvenance dl > div { display: grid; gap: .25rem; }
+.reviewProvenance dt, .reviewProvenance dd { min-inline-size: 0; font-size: .8125rem; line-height: 1.5385; }
+.reviewProvenance dt { color: var(--muted); }
+.reviewProvenance code { font-family: var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.reviewProvenance ul { padding-inline-start: 1.25rem; }
+.reviewProvenance li + li { padding-block-start: .5rem; }
+.cognitionList article > footer, .reviewList article > footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: .75rem; border-block-start: 1px solid var(--line); padding: 1rem; }
+.cognitionList footer button, .reviewList footer button { display: inline-flex; min-block-size: 2.75rem; align-items: center; justify-content: center; gap: .5rem; border: 1px solid var(--line-strong); border-radius: var(--radius-control); padding: .5rem .75rem; color: var(--foreground); background: var(--surface); font-size: .875rem; font-weight: 500; line-height: 1.4286; }
+.cognitionList .confirmedFooter { justify-content: flex-start; color: var(--success); font-size: .8125rem; line-height: 1.5385; }
+.cognitionList .empty { min-block-size: 10rem; }
+.memoryReviewSection { min-inline-size: 0; border-block-start: 1px solid var(--line); padding: 1.5rem 1rem 1rem; }
+.memoryReviewHeading { display: flex; flex-wrap: wrap; align-items: start; justify-content: space-between; gap: .75rem 1rem; }
+.reviewList article > header span { color: var(--warning); font-size: .875rem; font-weight: 500; }
+.reviewClaims { display: grid; min-inline-size: 0; grid-template-columns: repeat(auto-fit, minmax(min(22rem, 100%), 1fr)); gap: 1px; background: var(--line); }
+.reviewClaims section { min-inline-size: 0; padding: 1rem; background: var(--surface); }
+.reviewClaims p { color: var(--muted); font-size: .8125rem; line-height: 1.5385; }
+.reviewClaims strong { display: block; padding-block-start: .5rem; font-size: 1rem; line-height: 1.5; font-weight: 600; white-space: pre-wrap; }
+.reviewClaims span { display: block; padding-block-start: .5rem; font-size: 1rem; line-height: 1.625; white-space: pre-wrap; overflow-wrap: anywhere; }
+.reviewList footer .primaryReviewAction, .cognitionList footer .primaryReviewAction { border-color: var(--primary); color: var(--primary-ink); background: var(--primary); }
+.reviewProgress { min-inline-size: 0; flex: 1 1 12rem; color: var(--muted); font-size: .8125rem; line-height: 1.5385; }
+.reviewProgress:empty { flex-basis: 0; }
+.reviewError { display: flex; align-items: start; gap: .5rem; border-block-start: 1px solid var(--danger); padding: .75rem 1rem; color: var(--danger); background: var(--danger-surface); font-size: .875rem; line-height: 1.4286; }
+.cognitionSection .spin, .memoryReviewSection .spin { animation: none; }
+@container (min-width: 44rem) {
+  .reviewSectionHeading { grid-template-columns: auto minmax(0, 1fr) auto; }
+  .reviewSectionActions { grid-column: auto; }
+  .cognitionBody { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .cognitionEvidence { border-block-start: 0; border-inline-start: 1px solid var(--line); }
+}
+@media (hover: hover) {
+  .reviewSectionActions > button:not(:disabled):hover, .inlineReviewError button:not(:disabled):hover, .cognitionList footer button:not(:disabled):hover, .reviewList footer button:not(:disabled):hover { background: var(--surface-raised); }
+  .reviewList footer .primaryReviewAction:not(:disabled):hover, .cognitionList footer .primaryReviewAction:not(:disabled):hover { color: var(--primary-ink); background: var(--primary-hover); }
+}
+.cognitionList footer button:not(:disabled):active, .reviewList footer button:not(:disabled):active { background: var(--surface-overlay); }
+.reviewList footer .primaryReviewAction:not(:disabled):active, .cognitionList footer .primaryReviewAction:not(:disabled):active { background: var(--primary-pressed); }
+@media (pointer: coarse) {
+  .cognitionList footer button, .reviewList footer button, .reviewSectionActions > button, .inlineReviewError button, .evaluationDetails > summary, .cognitionEvidence > summary, .cognitionAttribution > summary, .cognitionContents > summary, .reviewProvenance > summary { min-block-size: 3rem; }
+}
 
 /* Native modal dialogs provide focus containment, Escape and inert background content. */
 .inspectorLayer, .dialogLayer { position: fixed; inset: 0; inline-size: 100%; block-size: 100%; max-inline-size: none; max-block-size: none; margin: 0; border: 0; padding: 0; color: var(--foreground); background: transparent; overflow: auto; overscroll-behavior: contain; }
@@ -356,8 +386,6 @@
   .workspaceGrid { gap: 1.5rem; }
   .memoryRow, .knowledgeRow { padding-inline: .5rem; }
   .rowFacts { gap: .5rem 1rem; }
-  .cognitionBody, .reviewClaims { grid-template-columns: 1fr; }
-  .cognitionEvidence, .reviewClaims section + section { border-inline-start: 0; border-block-start: 1px solid var(--line); }
   .semanticLabAction { align-items: stretch; flex-direction: column; }
   .semanticLabAction button { align-self: start; }
   .dialogLayer[open] { padding: .75rem; }
@@ -367,11 +395,6 @@
   .forgetButton, .forgetPreview { margin-inline: 1rem; }
   .lifecycleHelp { margin-inline: 1rem !important; }
   .modalError { margin-inline: 1rem !important; }
-  .cognitionCounts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .qualityMetrics { grid-template-columns: 1fr; }
-  .qualityMetrics article + article { border-inline-start: 0; border-block-start: 1px solid var(--line); }
-  .reviewSectionHeading { grid-template-columns: auto minmax(0, 1fr); }
-  .reviewSectionActions { grid-column: 1 / -1; flex-wrap: wrap; }
   .semanticLabHeading { grid-template-columns: auto minmax(0, 1fr); }
   .semanticLabState { grid-column: 1 / -1; justify-self: start; }
   .semanticLabProgress > div { grid-template-columns: 1fr; }

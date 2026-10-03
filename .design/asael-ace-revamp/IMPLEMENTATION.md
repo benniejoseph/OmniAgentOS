@@ -382,6 +382,46 @@ requests were blocked. Approve, retry, execution and Build creation were not
 invoked, and Command links were inspected only. This verifies presentation and
 focus behavior, not a live workflow effect. Hosted checks remain required.
 
+## Memory Reviews and semantic review bench — 3 October 2026
+
+Reviews now foreground source-map proposals and conflicts/promotions using
+canonical controls, full proposed/current text and selectable provenance.
+Every returned summary quote, claim/entity/link and overlap reference remains
+inspectable. Source-map interruption is a warning state. Exact batch/model,
+memory/source/evidence and semantic episode/digest identities wrap in named
+disclosures instead of truncating. Keyboard-scrollable evidence regions preserve
+complete source conversations and deterministic baselines.
+
+Reconciliation, source maps and semantic evaluation distinguish initial loading,
+unavailable sources, successful empty reads and retained last-loaded data. Missing
+quality data is unavailable rather than a zero or endless loading claim. The
+semantic detail ID guard prevents showing another selected episode's evidence.
+Mounted announcements and disabled descriptions expose progress and validation.
+Quality signals, the existing collector and semantic bench remain mounted inside
+an evaluation disclosure; the collector's controllers and ten shared CSS exports
+remain intact. Detailed collector presentation and Universe are separate work.
+
+Independent review found no further actionable issue and confirmed exact decision
+handlers, request bodies/headers, policy boundaries, paging, retries and lifecycle
+behavior were preserved. Twenty-six tests across reconciliation, cognition groups
+and routes, semantic review payloads and the evaluation contract passed. Targeted
+lint, the Memory TypeScript graph, CSS parsing and type-scale checks passed.
+
+Headless Chrome passed 161 checks and four clean scoped axe scans. The fixtures
+cover pending/interrupted/confirmed source maps, complete long evidence and six
+overlap references, memory provenance, local semantic drafts and validation,
+episode selection and missing detail, initial/stale/empty reads, both themes,
+320–1440px, fine/coarse pointers, 200% text, reduced motion and forced colors.
+Wide and phone screenshots were visually inspected. A confirmed/projected source
+map was injected only to inspect that existing presentation branch; the real
+review-list route normally omits completed projections.
+
+All API mutation and external requests were blocked. No review decision,
+projection, collection, rank probe or other action mutation was attempted. Axe
+coverage is limited to source-map reviews, conflicts/promotions and the semantic
+bench, excluding the separate collector, quality summary, steward and app shell.
+Hosted checks remain required before merge.
+
 ## Remaining gates and scope
 
 - Hosted build, route budgets and required repository checks on each new exact head.
