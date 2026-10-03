@@ -5,8 +5,17 @@ import { useRouter } from "next/navigation";
 import { Search, X } from "lucide-react";
 import { clsx } from "clsx";
 import { appNav, type AppNavItem } from "@/lib/navigation";
+import type { WorkspaceRole, WorkspaceSession } from "./session-context";
+import { workspaceOwnerScope } from "./workspace-owner-scope";
+import { useContentSearch } from "./use-content-search";
+import searchStyles from "./content-search.module.css";
+import { ContentSearchPaging, ContentSearchResults } from "./content-search-results";
+import { openSearchOnCurrentPage } from "./content-search-location";
+import type { PaletteSearchState } from "./content-search-state";
 
-export function CommandPalette() {
+export function CommandPalette({ session, sessionStatus, role }: {
+  session?: WorkspaceSession; sessionStatus?: "loading" | "ready" | "error"; role?: WorkspaceRole;
+} = {}) {
   const router = useRouter();
   const dialogTitleId = useId();
   const dialogDescriptionId = useId();
@@ -42,12 +51,11 @@ export function CommandPalette() {
         return relevance(left.label) - relevance(right.label);
       });
   }, [query]);
-  const currentIndex = results.length
-    ? Math.min(activeIndex, results.length - 1)
-    : 0;
-  const activeOptionId = results[currentIndex]
-    ? `${listboxId}-option-${currentIndex}`
-    : undefined;
+  const owner = sessionStatus === "ready" ? workspaceOwnerScope(session, role ?? session?.context?.role ?? "viewer") : "";
+  const content = useContentSearch(owner, query, open);
+  const choices = [...results, ...content.state.groups.flatMap((group) => group.items)];
+  const currentIndex = choices.length ? Math.min(activeIndex, choices.length - 1) : 0;
+  const activeOptionId = choices[currentIndex] ? `${listboxId}-option-${currentIndex}` : undefined;
 
   const openPalette = useCallback(() => {
     previousFocusRef.current =
@@ -138,7 +146,7 @@ export function CommandPalette() {
 
   function go(href: string) {
     closePalette({ restoreFocus: false });
-    router.push(href);
+    if (!openSearchOnCurrentPage(href)) router.push(href);
   }
 
   return (
@@ -174,13 +182,13 @@ export function CommandPalette() {
         >
           <div
             ref={dialogRef}
-            className="w-full max-w-xl overflow-hidden rounded-lg border border-line bg-surface shadow-[0_8px_24px_oklch(0.08_0.02_245/0.32)]"
+            className={`${searchStyles.palette} w-full max-w-xl max-h-[84dvh] overflow-hidden flex flex-col rounded-lg border border-line bg-surface shadow-[0_8px_24px_oklch(0.08_0.02_245/0.32)]`}
           >
             <div className="flex items-start justify-between gap-4 px-4 pt-4">
               <div>
-                <h2 id={dialogTitleId} className="text-sm font-semibold">Go to a workspace</h2>
+                <h2 id={dialogTitleId} className="text-sm font-semibold">Search Asael</h2>
                 <p id={dialogDescriptionId} className="mt-1 text-xs text-muted">
-                  Type to filter. Use arrow keys to move and Enter to open.
+                  Find a workspace or your content. Use arrow keys to move and Enter to open.
                 </p>
               </div>
               <button
@@ -205,26 +213,27 @@ export function CommandPalette() {
                 onKeyDown={(event) => {
                   if (event.key === "ArrowDown") {
                     event.preventDefault();
-                    setActiveIndex((index) => results.length ? (index + 1) % results.length : 0);
+                    setActiveIndex((index) => choices.length ? (index + 1) % choices.length : 0);
                   }
                   if (event.key === "ArrowUp") {
                     event.preventDefault();
-                    setActiveIndex((index) => results.length ? (index - 1 + results.length) % results.length : 0);
+                    setActiveIndex((index) => choices.length ? (index - 1 + choices.length) % choices.length : 0);
                   }
-                  if (event.key === "Home" && results.length) {
+                  if (event.key === "Home" && choices.length) {
                     event.preventDefault();
                     setActiveIndex(0);
                   }
-                  if (event.key === "End" && results.length) {
+                  if (event.key === "End" && choices.length) {
                     event.preventDefault();
-                    setActiveIndex(results.length - 1);
+                    setActiveIndex(choices.length - 1);
                   }
-                  if (event.key === "Enter" && results[currentIndex]) {
+                  if (event.key === "Enter" && choices[currentIndex]) {
                     event.preventDefault();
-                    go(results[currentIndex].href);
+                    go(choices[currentIndex].href);
                   }
                 }}
-                placeholder="Search workspaces"
+                placeholder="Search workspaces and your content"
+                maxLength={240}
                 className="min-h-11 w-full bg-transparent text-base outline-none placeholder:text-muted sm:text-sm"
                 aria-label="Search workspaces"
                 aria-autocomplete="list"
@@ -235,7 +244,7 @@ export function CommandPalette() {
               />
             </div>
             <p className="sr-only" role="status" aria-live="polite">
-              {results.length} {results.length === 1 ? "workspace" : "workspaces"} available.
+              {choices.length} matches available. {content.state.status === "loading" ? "Searching content." : ""}
             </p>
             <CommandPaletteResults
               listboxId={listboxId}
@@ -244,7 +253,18 @@ export function CommandPalette() {
               currentIndex={currentIndex}
               onHighlight={setActiveIndex}
               onOpen={go}
+              contentState={content.state.groups.length ? content.state : undefined}
             />
+            <div className="px-4 py-2 text-xs text-muted" role="status" aria-live="polite">
+              {!owner ? "Content search needs a current signed-in workspace. Navigation stays available." :
+                query.trim().length < 2 ? "Enter at least two characters to search your content." :
+                content.state.status === "loading" ? "Searching your content…" :
+                content.state.error ? content.state.error :
+                content.state.generatedAt ? "Live results may move as content changes. Opening a result checks access again." :
+                "Include a word or number to search content."}
+              {content.state.error ? <button type="button" className="ml-2 min-h-11 underline" onClick={content.refresh}>Restart search</button> : null}
+            </div>
+            <ContentSearchPaging groups={content.state.groups} loadingProvider={content.state.loadingProvider} more={content.more} />
           </div>
         </div>
       ) : null}
@@ -264,6 +284,7 @@ export function CommandPaletteResults({
   currentIndex,
   onHighlight,
   onOpen,
+  contentState,
 }: {
   listboxId: string;
   query: string;
@@ -271,10 +292,9 @@ export function CommandPaletteResults({
   currentIndex: number;
   onHighlight: (index: number) => void;
   onOpen: (href: string) => void;
+  contentState?: PaletteSearchState;
 }) {
-  return (
-    <ul id={listboxId} className="max-h-[55vh] overflow-y-auto p-2" role="listbox" aria-label="Workspace results" data-testid="command-palette-listbox">
-      {results.length ? (
+  const navigation = results.length ? (
         results.map((item, index) => {
           const Icon = item.icon;
           return (
@@ -301,8 +321,10 @@ export function CommandPaletteResults({
           );
         })
       ) : (
-        <li className="px-3 py-8 text-center text-sm text-muted">No workspace matches “{query}”.</li>
-      )}
-    </ul>
-  );
+        <li role="presentation" className="px-3 py-8 text-center text-sm text-muted">No workspace matches “{query}”.</li>
+      );
+  return <ul id={listboxId} className="max-h-[45dvh] min-h-0 overflow-y-auto p-2" role="listbox" aria-label="Workspace and content results" data-testid="command-palette-listbox">
+    {contentState ? <>{navigation}<ContentSearchResults state={contentState} listboxId={listboxId} offset={results.length}
+      currentIndex={currentIndex} onHighlight={onHighlight} onOpen={onOpen} /></> : navigation}
+  </ul>;
 }

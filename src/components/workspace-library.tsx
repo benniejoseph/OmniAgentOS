@@ -35,6 +35,7 @@ import type {
   WorkspaceLibraryItem,
   WorkspaceLibraryKind,
 } from "@/lib/library/contracts";
+import { useContentSearchLocation } from "@/components/app-shell/content-search-location";
 import styles from "@/components/workspace-library.module.css";
 
 type WorkspaceLibraryProps = Readonly<{
@@ -46,6 +47,8 @@ type WorkspaceLibraryProps = Readonly<{
   limit?: number;
   refreshKey?: string | number;
   className?: string;
+  /** Passed by a session-aware host; absent keeps existing non-search behavior. */
+  searchScope?: string;
 }>;
 
 type LibraryPayload = Readonly<{
@@ -86,8 +89,12 @@ export function WorkspaceLibrary({
   limit = compact ? 8 : 60,
   refreshKey,
   className,
+  searchScope,
 }: WorkspaceLibraryProps) {
   const headingId = useId();
+  const searchLocation = useContentSearchLocation();
+  const exactId = searchScope ? new URLSearchParams(searchLocation.split("?")[1]).get("libraryItem") : null;
+  const [exactRead, setExactRead] = useState<{ scope: string; id: string; status: "loading" | "ready" | "error"; item?: WorkspaceLibraryItem; error?: string }>();
   const availableKinds = useMemo(
     () => kinds?.length ? [...new Set(kinds)] : allKinds,
     [kinds],
@@ -180,11 +187,47 @@ export function WorkspaceLibrary({
     };
   }, [offset, query, refreshKey, reloadNonce, requestHref]);
 
+  useEffect(() => {
+    if (!exactId || !searchScope) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      setExactRead({ scope: searchScope, id: exactId, status: "loading" });
+      setSelectedId(exactId);
+      try {
+        const response = await fetch(`/api/library/${encodeURIComponent(exactId)}`, { cache: "no-store", signal: controller.signal });
+        const body = await response.json();
+        if (!response.ok) throw new Error(body.error || "Library item could not be opened.");
+        // Exact opening needs full validation; ordinary Capture/Results visits
+        // do not need to download the server schema runtime.
+        const { parseWorkspaceLibraryItem } = await import("@/lib/library/contracts");
+        if (controller.signal.aborted) return;
+        const item = parseWorkspaceLibraryItem(body.item);
+        if (item.id !== exactId) throw new Error("Library returned a different item.");
+        if (controller.signal.aborted) return;
+        setExactRead({ scope: searchScope, id: exactId, status: "ready", item });
+        window.requestAnimationFrame(() => {
+          if (!controller.signal.aborted && inspectorRef.current?.dataset.libraryItemId === exactId) {
+            inspectorRef.current.focus({ preventScroll: true });
+            inspectorRef.current.scrollIntoView({ block: "nearest" });
+          }
+        });
+      } catch (error) {
+        if (!controller.signal.aborted) setExactRead({ scope: searchScope, id: exactId, status: "error", error: error instanceof Error ? error.message : "Library item could not be opened." });
+      }
+    }, 0);
+    return () => { window.clearTimeout(timer); controller.abort(); };
+  }, [exactId, searchScope, reloadNonce]);
+
   const shownKinds = hasLoaded ? availableKinds.filter((candidate) =>
     payload.countsByKind[candidate] || candidate === kind,
   ) : [];
-  const selectedItem = payload.items.find((item) => item.id === selectedId)
-    || payload.items[0];
+  const currentExactRead = exactRead?.id === exactId && exactRead?.scope === searchScope ? exactRead : undefined;
+  const usingExactItem = Boolean(exactId && (selectedId === exactId || !currentExactRead));
+  const exactLoading = usingExactItem && (!currentExactRead || currentExactRead.status === "loading");
+  const exactError = usingExactItem && currentExactRead?.status === "error" ? currentExactRead.error : undefined;
+  const selectedItem = usingExactItem
+    ? currentExactRead?.status === "ready" ? currentExactRead.item : undefined
+    : payload.items.find((item) => item.id === selectedId) || payload.items[0];
   const visibleStart = payload.items.length ? displayedOffset + 1 : 0;
   const visibleEnd = payload.items.length ? displayedOffset + payload.items.length : 0;
   const countLabel = hasLoaded
@@ -469,6 +512,10 @@ export function WorkspaceLibrary({
             ) : null}
           </div>
 
+          {exactId && (exactLoading || exactError) ? <div role={exactError ? "alert" : "status"}>
+            <p>{exactError || "Opening exact Library item…"}</p>
+            {exactError ? <button type="button" onClick={() => setReloadNonce((value) => value + 1)}>Retry exact item</button> : null}
+          </div> : null}
           <WorkspaceLibraryInspector
             item={selectedItem}
             inspectorRef={inspectorRef}

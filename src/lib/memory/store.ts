@@ -1,3 +1,4 @@
+import { contentSearchQuerySchema, searchDate, searchLikePattern, searchPage, type SearchPosition } from "@/lib/content-search/contracts";
 import { Buffer } from "node:buffer";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -1224,6 +1225,74 @@ async function saveMemoriesWithCommitStatus(
     }
     return result;
   });
+}
+
+/** Exact search destination. Rechecks the active private boundary without legacy fallback. */
+export async function getPrivateSearchMemory(input: {
+  tenantId: string; accessScope: DatabaseMemoryAccessScope; id: string;
+}) {
+  const scope = parseDatabaseMemoryAccessScope(input.accessScope);
+  if (scope.tenantId !== input.tenantId || scope.executingPrincipalType !== "user" ||
+      scope.initiatingActorId !== scope.executingPrincipalId ||
+      !/^actor:[0-9a-f-]{36}$/.test(scope.initiatingActorId) || scope.purposeId !== MEMORY_PURPOSE_IDS.read ||
+      !input.id || input.id.length > 240) throw new Error("Private memory access requires an exact canonical user scope.");
+  if (!hasDatabaseUrl()) throw new Error("Private memory requires the scoped database reader.");
+  await ensureDatabaseSchema();
+  const rows = await runWithDatabaseMemoryAccessScope(scope, input.tenantId, (sql) => sql`
+    SELECT memory.*, lifecycle.pinned_at AS lifecycle_pinned_at
+    FROM omni_memories memory LEFT JOIN omni_memory_lifecycle_states lifecycle
+      ON lifecycle.tenant_id = memory.tenant_id AND lifecycle.memory_id = memory.id
+    WHERE memory.tenant_id = ${input.tenantId} AND memory.id = ${input.id}
+      AND memory.access_contract_version = 1 AND memory.access_state = 'scope_bound'
+      AND memory.owner_actor_id = ${scope.initiatingActorId}
+      AND memory.visibility = 'user_private' AND memory.owner_agent_id IS NULL
+      AND memory.claim_status = 'active' AND memory.forgotten_at IS NULL
+      AND lifecycle.archived_at IS NULL AND memory.tier <> 'working'
+      AND (memory.valid_from IS NULL OR memory.valid_from <= NOW())
+      AND (memory.valid_to IS NULL OR memory.valid_to > NOW())
+      AND (memory.retention_expires_at IS NULL OR memory.retention_expires_at > NOW())
+    LIMIT 1
+  `, [MEMORY_PURPOSE_IDS.read]);
+  return rows[0] ? memoryFromRow(rows[0]) : null;
+}
+
+/** Canonical user-private lexical search: no legacy merge, embedding or generated excerpt. */
+export async function searchPrivateMemoryPage(input: {
+  tenantId: string; accessScope: DatabaseMemoryAccessScope; query: string;
+  limit: number; after?: SearchPosition;
+}) {
+  const query = contentSearchQuerySchema.parse(input.query);
+  const scope = parseDatabaseMemoryAccessScope(input.accessScope);
+  if (scope.tenantId !== input.tenantId || scope.executingPrincipalType !== "user" ||
+      scope.initiatingActorId !== scope.executingPrincipalId ||
+      !/^actor:[0-9a-f-]{36}$/.test(scope.initiatingActorId) || scope.purposeId !== MEMORY_PURPOSE_IDS.read) {
+    throw new Error("Private memory search requires a canonical user read scope.");
+  }
+  const limit = Math.min(20, Math.max(1, Math.trunc(input.limit)));
+  if (!hasDatabaseUrl()) throw new Error("Private memory search requires the scoped database reader.");
+  await ensureDatabaseSchema();
+  const rows = await runWithDatabaseMemoryAccessScope(scope, input.tenantId, (sql) => sql`
+    SELECT memory.id, memory.title, memory.updated_at,
+      to_char(memory.updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_updated_at
+    FROM omni_memories memory
+    LEFT JOIN omni_memory_lifecycle_states lifecycle
+      ON lifecycle.tenant_id = memory.tenant_id AND lifecycle.memory_id = memory.id
+    WHERE memory.tenant_id = ${input.tenantId}
+      AND memory.access_contract_version = 1 AND memory.access_state = 'scope_bound'
+      AND memory.owner_actor_id = ${scope.initiatingActorId}
+      AND memory.visibility = 'user_private' AND memory.owner_agent_id IS NULL
+      AND memory.claim_status = 'active' AND memory.forgotten_at IS NULL
+      AND lifecycle.archived_at IS NULL AND memory.tier <> 'working'
+      AND (memory.valid_from IS NULL OR memory.valid_from <= NOW())
+      AND (memory.valid_to IS NULL OR memory.valid_to > NOW())
+      AND (memory.retention_expires_at IS NULL OR memory.retention_expires_at > NOW())
+      AND (memory.title ILIKE ${searchLikePattern(query)} OR memory.content ILIKE ${searchLikePattern(query)})
+      AND (${input.after?.updatedAt ?? null}::text::timestamptz IS NULL
+        OR memory.updated_at < ${input.after?.updatedAt ?? null}::text::timestamptz
+        OR (memory.updated_at = ${input.after?.updatedAt ?? null}::text::timestamptz AND memory.id COLLATE "C" > ${input.after?.id ?? ""} COLLATE "C"))
+    ORDER BY memory.updated_at DESC, memory.id COLLATE "C" ASC LIMIT ${limit + 1}
+  `, [MEMORY_PURPOSE_IDS.read]);
+  return searchPage(rows.map((row) => ({ id: String(row.id), title: String(row.title), updatedAt: row.cursor_updated_at ? String(row.cursor_updated_at) : searchDate(row.updated_at) })), limit);
 }
 
 export async function searchMemories(

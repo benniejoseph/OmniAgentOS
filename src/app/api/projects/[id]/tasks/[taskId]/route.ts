@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { createRequestMutationAppServiceCaller } from "@/lib/app-services/contracts";
-import { updateWorkItemService } from "@/lib/app-services/projects";
+import { createAppServiceCaller, createRequestMutationAppServiceCaller } from "@/lib/app-services/contracts";
+import { showProjectTaskService, updateWorkItemService } from "@/lib/app-services/projects";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { serverErrorResponse } from "@/lib/http/errors";
@@ -9,9 +9,23 @@ import { ProjectTransitionError } from "@/lib/projects/store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
+export const GET = withDatabaseRequestScope(GETHandler);
 export const PATCH = withDatabaseRequestScope(requireIdempotencyKey(PATCHHandler));
 const agentIds = ["atlas", "scout", "forge", "sentinel", "mnemosyne"] as const;
 const schema = z.object({ title: z.string().trim().min(1).max(240).optional(), detail: z.string().trim().max(1_000).optional(), status: z.enum(["open", "doing", "done"]).optional(), priority: z.enum(["low", "medium", "high"]).optional(), agentId: z.enum(agentIds).optional(), dueAt: z.string().datetime().nullable().optional() }).strict().refine((value) => Object.keys(value).length > 0, { message: "A change is required." });
+
+async function GETHandler(request: Request, route: { params: Promise<{ id: string; taskId: string }> }) {
+  const { id, taskId } = await route.params;
+  const headers = { "cache-control": "private, no-store" };
+  let context;
+  try { context = await authorizeRequest({ request, action: "read", resourceType: "project", resourceId: id }); }
+  catch (error) { const response = forbiddenResponse(error); response.headers.set("cache-control", headers["cache-control"]); return response; }
+  try {
+    const result = await showProjectTaskService(createAppServiceCaller({ context }), { projectId: id, taskId });
+    return result.data.task ? Response.json({ task: result.data.task, serviceReceipt: result.receipt }, { headers }) :
+      Response.json({ error: "Project task is no longer available." }, { status: 404, headers });
+  } catch { return Response.json({ error: "Project task could not be opened." }, { status: 503, headers }); }
+}
 
 async function PATCHHandler(request: Request, route: { params: Promise<{ id: string; taskId: string }> }) {
   const { id, taskId } = await route.params;

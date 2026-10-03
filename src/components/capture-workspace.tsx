@@ -44,6 +44,7 @@ import {
   type OfflineCaptureOwner,
 } from "@/lib/capture/offline";
 import { googleWorkspaceCapabilitiesForScopes } from "@/lib/connectors/google-workspace-capabilities";
+import { workspaceOwnerScope } from "@/components/app-shell/workspace-owner-scope";
 import styles from "./capture-workspace.module.css";
 
 type DocumentItem = {
@@ -975,6 +976,8 @@ export function CaptureWorkspace() {
       </div>
 
       <WorkspaceLibrary
+        key={JSON.stringify([session?.user?.id, session?.context?.tenantId, session?.context?.actorId, session?.context?.role, status])}
+        searchScope={status === "ready" ? workspaceOwnerScope(session, session?.context?.role ?? "viewer") || undefined : undefined}
         title="Everything in this workspace"
         description="Browse files, generated artifacts, images, recordings, transcripts, email, meetings, and connected sources in one versioned and cited view."
         limit={100}

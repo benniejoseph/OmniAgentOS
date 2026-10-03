@@ -1,0 +1,17 @@
+.palette { min-width: 0; }
+.group { list-style: none; padding: 1rem 0 .25rem; border-top: 1px solid var(--line); margin-top: .5rem; }
+.heading { padding: 0 .75rem; font-size: .875rem; font-weight: 650; color: var(--foreground); }
+.coverage, .message { margin: .35rem .75rem .5rem; color: var(--muted); font-size: .8125rem; line-height: 1.5; }
+.groupItems { margin: 0; padding: 0; }
+.option { display: flex; flex-direction: column; justify-content: center; gap: .2rem; min-height: 3.5rem; cursor: pointer; list-style: none; padding: .6rem .75rem; border-radius: .375rem; color: var(--foreground); }
+.option:hover { background: var(--surface-raised); }
+.option.selected { background: var(--primary); color: var(--primary-ink); }
+.title { overflow-wrap: anywhere; font-size: .875rem; font-weight: 600; }
+.detail { font-size: .8125rem; color: var(--muted); }
+.selected .detail { color: var(--primary-ink); }
+.paging { display: flex; flex-wrap: wrap; gap: .5rem; padding: .5rem 1rem; border-top: 1px solid var(--line); max-height: 10rem; overflow-y: auto; }
+.paging:empty { display: none; }
+.paging button { min-height: 2.75rem; border: 1px solid var(--line); border-radius: .375rem; padding: .5rem .75rem; font-size: .8125rem; color: var(--foreground); background: var(--surface); }
+.paging button:disabled { cursor: default; color: var(--muted); }
+.paging button:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 3px; }
+@media (pointer: coarse) { .palette :is(button, input) { min-height: 3rem; } .palette button { min-width: 3rem; } }

@@ -191,7 +191,8 @@ describe("workspace library facets", () => {
       totalIsLowerBound: false,
       countsAreLowerBound: true,
     });
-    expect(statement).toContain("WITH capture_result_ids AS MATERIALIZED");
+    expect(statement).toContain("WITH library_current_sources AS NOT MATERIALIZED");
+    expect(statement).toContain("capture_result_ids AS MATERIALIZED");
     expect(statement).toContain("LEFT(recording.transcript, 600)");
     expect(statement).not.toContain("SELECT asset.*");
     expect(statement).not.toContain("SELECT recording.*");

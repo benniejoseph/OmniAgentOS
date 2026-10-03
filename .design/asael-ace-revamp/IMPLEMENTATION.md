@@ -1264,3 +1264,61 @@ export/restore controls that Connectors never renders. That Settings-only
 dependency now has its own conditional chunk, retaining server rendering when
 the Settings surface actually uses it. Thirteen focused checks, strict lint and
 focused TypeScript pass for this boundary; the hosted build is rerun again.
+
+
+PR #39 merged as `e382199a2c1284bdd724798945f3a879fb661d2e` after all 13
+hosted checks passed on exact head `c7300d33b99bcdeb55cfc04dc775d69a76227126`.
+The retained receipt is `web-families-exact-head-hosted.json`. Final Connectors
+JavaScript measured 775,678 bytes against the unchanged 800,000-byte budget; all
+40 route budgets, 41 page traces and 86 route-handler package checks passed.
+The full quality, four browser jobs, integration, worker, audit and security
+checks are accepted for this commit. This merge does not establish production
+promotion, native parity or completion of the implementation program.
+
+
+## Work Builder and scoped content search — 4 October 2026
+
+Builder now keeps exact project/artifact, file, verification, deployment and
+release choices through navigation. Its controller records accepted effects
+independently of refresh and preserves uncertain outcomes for an explicit
+recovery decision. Preview, code, sandbox, repository/PR and release views retain
+the existing governed actions and isolated preview boundary. Selection metadata
+contains no prompt, source body or preview credential.
+
+The command palette adds bounded conversation, Work, private Memory and Library
+search with explicit unavailable coverage and independent navigation search.
+Scoped cursors preserve microsecond ordering; exact destinations recheck current
+ownership and source authorization. Connected Library results require live
+source provenance, connection generation and current read capability; revoked,
+deleted and mismatched records disappear from search and exact opening. Client
+state is fenced by canonical account UUID, tenant, role and deployment scope.
+
+Strict lint, focused TypeScript and 72 tests across 15 files passed. Fourteen
+real PostgreSQL cases passed using the production serving role with no superuser
+or RLS bypass, including current-source revocation and results beyond the first
+provider window. The maintained external-Chrome Builder suite passed 58
+assertions and seven axe scans; Search passed 56 assertions and seven scans.
+Evidence is in `builder-search-exact-owner-validation.log`,
+`library-connected-search-serving-role.log`, `app-builder-browser-keyboard/` and
+`content-search-connected-exact-browser/` under the retained `ui-validation/`
+directory. The new CI work-family job runs both browser suites serially.
+
+These local fixtures intercept domain effects and do not establish a live
+production deployment, provider connection or external repository action.
+Exact-head hosted acceptance is still required for this release. Native Builder
+and the separate Responsibility contract remain in progress.
+
+
+The first hosted Builder/Search pass accepted full quality, integration, the
+core browser gate and the new work-family job. Its remaining gates found two
+checked-in disposable-database passwords, eagerly loaded Library validation
+JavaScript, and a Settings theme-paint sampling failure. The two test databases
+now use fresh per-process credentials; all fourteen serving-role cases passed
+again. Exact Library opening loads its unchanged strict validator on demand,
+without adding it to ordinary Capture/Results visits. Search passed all 56
+checks and seven axe scans again with frozen application sources. Settings
+forces a painted viewport before its color-contrast scan; its full browser
+suite passed again. Evidence: `library-search-ephemeral-credentials.log`,
+`content-search-frozen-source-lazy/`, `settings-painted-theme-acceptance/`.
+The route budgets remain unchanged; the amended exact head requires a new
+hosted bundle and full-check receipt before merge.

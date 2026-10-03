@@ -283,7 +283,7 @@ export function AppShell({
               </div>
             </div>
             <div className={clsx("flex items-center gap-2", styles.headerActions)}>
-              <CommandPalette />
+              <CommandPalette session={session} sessionStatus={sessionStatus} role={role} />
               <InboxHeaderLink count={inboxCount} pathname={pathname} />
               <NotificationCenter />
               <span className="hidden md:inline-flex"><ThemeToggle /></span>
