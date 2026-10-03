@@ -1,93 +1,46 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { AlertTriangle, CheckCircle2, Loader2 } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { parsePublicHealth, type PublicHealth } from "./public-health";
+import styles from "./public-surface.module.css";
 
-type HealthStatus =
-  | "checking"
-  | "healthy"
-  | "degraded"
-  | "unhealthy"
-  | "unavailable";
-
+const labels = { checking: "Checking", healthy: "Healthy", degraded: "Degraded", unhealthy: "Unhealthy", unavailable: "Unavailable" } as const;
 export function PublicHealthBadge() {
-  const [status, setStatus] = useState<HealthStatus>("checking");
-
-  useEffect(() => {
-    const controller = new AbortController();
-    let timer: number | undefined;
-
-    const load = () => {
-      timer = window.setTimeout(async () => {
-        try {
-          const response = await fetch("/api/health?public=1", {
-            cache: "force-cache",
-            signal: controller.signal,
-          });
-          if (!response.ok) {
-            setStatus("unavailable");
-            return;
-          }
-          const data = (await response.json()) as { status?: string };
-          setStatus(
-            data.status === "healthy" ||
-              data.status === "degraded" ||
-              data.status === "unhealthy"
-              ? data.status
-              : "unavailable",
-          );
-        } catch {
-          if (!controller.signal.aborted) {
-            setStatus("unavailable");
-          }
-        }
-      }, 0);
-    };
-
-    if (document.readyState === "complete") {
-      load();
-    } else {
-      window.addEventListener("load", load, { once: true });
+  const [health, setHealth] = useState<PublicHealth>();
+  const [loading, setLoading] = useState(true);
+  const [failedRefresh, setFailedRefresh] = useState(false);
+  const current = useRef<AbortController | null>(null);
+  const load = useCallback(async () => {
+    current.current?.abort();
+    const controller = new AbortController(); current.current = controller;
+    const timer = window.setTimeout(() => controller.abort(), 10_000);
+    setLoading(true); setFailedRefresh(false);
+    try {
+      const response = await fetch("/api/health?public=1", { cache: "no-store", signal: controller.signal });
+      const body: unknown = await response.json();
+      if (current.current !== controller) return;
+      if (controller.signal.aborted) throw new Error("The public status read did not finish.");
+      const parsed = parsePublicHealth(response.status, body);
+      if (parsed.status === "unavailable") { setFailedRefresh(true); setHealth((previous) => previous ?? parsed); }
+      else setHealth(parsed);
+    } catch {
+      if (current.current === controller) { setFailedRefresh(true); setHealth((previous) => previous ?? { status: "unavailable" }); }
+    } finally {
+      window.clearTimeout(timer);
+      if (current.current === controller) { current.current = null; setLoading(false); }
     }
-    return () => {
-      controller.abort();
-      window.removeEventListener("load", load);
-      if (timer !== undefined) {
-        window.clearTimeout(timer);
-      }
-    };
   }, []);
-
-  const Icon =
-    status === "healthy"
-      ? CheckCircle2
-      : status === "checking"
-        ? Loader2
-        : AlertTriangle;
-
-  return (
-    <div
-      className="mt-6 inline-flex min-h-12 max-w-full items-center gap-3 rounded-md border border-line bg-surface px-4 text-sm text-muted"
-      role="status"
-      aria-live="polite"
-    >
-      <Icon
-        size={17}
-        className={
-          status === "healthy"
-            ? "text-success"
-            : status === "checking"
-              ? "animate-spin text-muted"
-              : status === "degraded"
-                ? "text-warning"
-                : status === "unhealthy"
-                  ? "text-danger"
-                  : "text-muted"
-        }
-        aria-hidden="true"
-      />
-      <span>System health:</span>
-      <strong className="font-mono text-foreground">{status}</strong>
-    </div>
-  );
+  useEffect(() => {
+    let start: number | undefined;
+    const schedule = () => { start = window.setTimeout(() => void load(), 0); };
+    if (document.readyState === "complete") schedule(); else window.addEventListener("load", schedule, { once: true });
+    return () => { window.removeEventListener("load", schedule); window.clearTimeout(start); current.current?.abort(); current.current = null; };
+  }, [load]);
+  const status = health?.status ?? "checking";
+  return <div className={styles.health} data-testid="public-health" data-status={status}>
+    <div className={styles.healthLine}><p role="status" aria-live="polite">{failedRefresh && health?.status !== "unavailable" ? "Last reported public health" : "Public health snapshot"}: <strong>{labels[status]}</strong>{loading && health ? " · Refreshing…" : ""}</p>
+      <button type="button" className={styles.button} disabled={loading} onClick={() => void load()}>{loading ? "Checking status…" : "Refresh status"}</button></div>
+    {health?.checkedAt ? <p className={styles.support}>Reported <time dateTime={health.checkedAt}>{health.checkedAt}</time></p> : null}
+    <p className={styles.support}>{failedRefresh ? "The latest status could not be confirmed. Refresh to try again." : "A public status snapshot; individual workflows and connected services may have a different state."}</p>
+  </div>;
 }

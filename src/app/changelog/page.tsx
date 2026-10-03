@@ -3,6 +3,7 @@ import { MarketingPage } from "@/components/marketing/marketing-page";
 
 export const metadata: Metadata = {
   title: "Changelog",
+  description: "Recorded Asael platform changes, operational updates, and release-evidence notes.",
 };
 
 export default function ChangelogPage() {

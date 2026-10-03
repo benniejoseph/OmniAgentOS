@@ -299,11 +299,21 @@ describe("Automation Studio contracts", () => {
     }));
     const empty = renderToStaticMarkup(createElement(ScheduleOutcomeHistory, {
       id: "history-empty",
-      load: { status: "ready", data: { occurrences: [], receipts: [], policyLeases: { outcomes: [] } } },
+      load: { status: "ready", data: { occurrences: [], receipts: [], policyLeases: { available: true, outcomes: [] } } },
     }));
     expect(loading).toContain('aria-busy="true"');
     expect(error).toContain('role="alert"');
     expect(error).toContain("History unavailable");
     expect(empty).toContain("No runs or PolicyLease decisions");
+  });
+
+  it("does not infer an empty lease history from a missing availability field", () => {
+    const unavailable = renderToStaticMarkup(createElement(ScheduleOutcomeHistory, {
+      id: "history-unknown",
+      load: { status: "ready", data: { occurrences: [], receipts: [], policyLeases: { outcomes: [] } } },
+    }));
+    expect(unavailable).toContain("lease count unavailable");
+    expect(unavailable).toContain("PolicyLease history could not be read");
+    expect(unavailable).not.toContain("No runs or PolicyLease decisions");
   });
 });

@@ -1,10 +1,10 @@
 import type { Metadata } from "next";
-import { DomainConsole } from "@/components/app-shell/domain-console";
+import { MonitoringWorkspace } from "@/components/operations-console/monitoring-workspace";
 
 export const metadata: Metadata = {
   title: "Monitoring",
 };
 
 export default function ObservabilityPage() {
-  return <DomainConsole domain="monitoring" />;
+  return <MonitoringWorkspace />;
 }

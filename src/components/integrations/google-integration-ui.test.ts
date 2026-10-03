@@ -67,7 +67,7 @@ describe("Google integration UI consistency", () => {
     expect(personalConnections).toContain("window.dispatchEvent(new Event(INTEGRATION_STATUS_CHANGED_EVENT))");
     expect(connectedSources).toContain("window.dispatchEvent(new Event(INTEGRATION_STATUS_CHANGED_EVENT))");
     expect(personalConnections).toContain("onChanged={refreshIntegrationViews}");
-    expect(personalConnections).toContain("await onChanged()");
+    expect(personalConnections).toContain("void onChanged()");
     expect(connectedSources).toContain("await refreshIntegrationViews()");
   });
 

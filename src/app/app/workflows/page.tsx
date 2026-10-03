@@ -1,10 +1,10 @@
 import type { Metadata } from "next";
-import { DomainConsole } from "@/components/app-shell/domain-console";
+import { WorkflowsWorkspace } from "@/components/workflows-workspace";
 
 export const metadata: Metadata = {
   title: "Workflows",
 };
 
 export default function WorkflowsPage() {
-  return <DomainConsole domain="workflows" />;
+  return <WorkflowsWorkspace />;
 }

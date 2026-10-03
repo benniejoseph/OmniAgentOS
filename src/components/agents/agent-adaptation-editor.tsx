@@ -9,18 +9,16 @@ import {
   RotateCcw,
   ShieldCheck,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
+import { AgentsLifecycleBoundary, useAgentRead, useAgentsLifecycle } from "./agents-workspace-lifecycle";
+import { agentsActionRequest, adaptationsRead, adaptationReceipt, type AdaptationRead } from "@/components/agents-workspace-state";
+import styles from "./agent-inspectors.module.css";
 
 import type { AgentAdaptationV1 } from "@/lib/agents/adaptation-contracts";
 
 type AdaptationAction =
   | Readonly<{ kind: "evaluate" | "activate" | "rollback"; label: string }>
   | Readonly<{ kind: "blocked"; reason: string }>;
-
-type AdaptationResponse = Readonly<{
-  adaptations: AgentAdaptationV1[];
-  definitionVersion: number;
-}>;
 
 export function agentAdaptationAction(
   adaptation: AgentAdaptationV1,
@@ -56,74 +54,38 @@ export function agentAdaptationAction(
   return { kind: "activate", label: "Activate" };
 }
 
-export function AgentAdaptationEditor({
-  agentId,
-  agentName,
-  compact = false,
-}: {
-  agentId: string;
-  agentName: string;
-  compact?: boolean;
-}) {
-  const [adaptations, setAdaptations] = useState<AgentAdaptationV1[]>([]);
-  const [definitionVersion, setDefinitionVersion] = useState<number>();
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState<string>();
+export function AgentAdaptationEditor(props: { agentId: string; agentName: string; compact?: boolean }) {
+  return <AgentsLifecycleBoundary scope={props.agentId}><AdaptationEditor {...props} /></AgentsLifecycleBoundary>;
+}
+function AdaptationEditor({ agentId, agentName, compact = false }: { agentId: string; agentName: string; compact?: boolean }) {
+  const { gate, busy, reason } = useAgentsLifecycle();
+  const floor = useRef<AdaptationRead | undefined>(undefined);
+  const read = useAgentRead(`/api/agents/${encodeURIComponent(agentId)}/adaptations`, (value) => {
+    const next = adaptationsRead(value, agentId);
+    if (floor.current?.adaptations.some((old) => !next.adaptations.some((item) => item.adaptationId === old.adaptationId && item.lifecycleRevision >= old.lifecycleRevision))) throw new Error("The read predates confirmed adaptation evidence. Last confirmed details are retained.");
+    return next;
+  });
+  const adaptations = read.data?.adaptations || [], definitionVersion = read.data?.definitionVersion;
   const [error, setError] = useState<string>();
   const [message, setMessage] = useState<string>();
-  const loadGeneration = useRef(0);
-
-  useEffect(() => {
-    const generation = ++loadGeneration.current;
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => {
-      setLoading(true);
-      setError(undefined);
-      void requestAdaptations(agentId, undefined, controller.signal)
-        .then((payload) => {
-          if (generation !== loadGeneration.current) return;
-          setAdaptations(payload.adaptations);
-          setDefinitionVersion(payload.definitionVersion);
-        })
-        .catch((caught) => {
-          if (controller.signal.aborted || generation !== loadGeneration.current) return;
-          setError(messageFrom(caught, "Adaptation evidence could not be loaded."));
-        })
-        .finally(() => {
-          if (generation === loadGeneration.current) setLoading(false);
-        });
-    }, 0);
-    return () => {
-      window.clearTimeout(timer);
-      controller.abort();
-    };
-  }, [agentId]);
-
-  async function mutate(
-    action: "refresh" | "evaluate" | "activate" | "rollback",
-    adaptationId?: string,
-  ) {
-    const key = adaptationId ? `${action}:${adaptationId}` : action;
-    setBusy(key);
+  const disabled = Boolean(busy || reason || !read.current);
+  async function mutate(action: "refresh" | "evaluate" | "activate" | "rollback", adaptationId?: string) {
+    if (!read.data || disabled) return;
+    const body = { action, ...(adaptationId ? { adaptationId } : {}) };
+    const token = gate.begin(`/api/agents/${encodeURIComponent(agentId)}/adaptations`, "POST", body, adaptationId ? `${action}:${adaptationId}` : action, { agentId, definitionVersion, adaptation: read.data.adaptations.find((item) => item.adaptationId === adaptationId) });
+    if (!token) return;
     setError(undefined);
-    setMessage(undefined);
     try {
-      const payload = await requestAdaptations(agentId, {
-        action,
-        ...(adaptationId ? { adaptationId } : {}),
-      });
-      setAdaptations(payload.adaptations);
-      setDefinitionVersion(payload.definitionVersion);
-      setMessage(actionMessage(action));
-    } catch (caught) {
-      setError(messageFrom(caught, "The adaptation action could not be completed."));
-    } finally {
-      setBusy(undefined);
-    }
+      const payload = await agentsActionRequest(token);
+      if (!gate.current(token)) return;
+      const next = adaptationReceipt(payload, agentId, read.data, body);
+      floor.current = next; read.accept(next); setMessage(actionMessage(action));
+      gate.finish(token, true);
+    } catch (caught) { if (gate.current(token)) setError(messageFrom(caught, "The adaptation action was not confirmed.")); }
+    finally { gate.finish(token, false); }
   }
-
   return (
-    <section className={`${compact ? "rounded-lg" : "rounded-xl"} border border-border/70 bg-surface-raised/45 p-4`}>
+    <section className={styles.panel} data-compact={compact || undefined} aria-label={`${agentName} adaptation evidence`}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="text-xs font-bold uppercase tracking-[0.14em] text-primary">Evidence-gated adaptation</p>
@@ -132,7 +94,7 @@ export function AgentAdaptationEditor({
         <button
           type="button"
           className="secondary-button justify-center"
-          disabled={Boolean(busy) || loading}
+          disabled={disabled}
           onClick={() => void mutate("refresh")}
         >
           {busy === "refresh" ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
@@ -140,6 +102,10 @@ export function AgentAdaptationEditor({
         </button>
       </div>
 
+      <div className={styles.toolbar}><span role="status">{read.label}</span><button className="secondary-button" disabled={Boolean(busy)} onClick={() => void read.refresh()}>Refresh adaptation status</button></div>
+      <p>Agent ID: {agentId}</p>
+      {read.error ? <p role="alert">{read.error}</p> : null}
+      {reason ? <p>{reason}</p> : null}
       <p className="mt-3 text-xs leading-5 text-muted">
         Run corrections are observations only. They affect future prompts only after exact-release evaluation and your activation; they never add tools, context, budgets, or authority.
       </p>
@@ -152,7 +118,7 @@ export function AgentAdaptationEditor({
         </div>
       ) : null}
 
-      {loading ? (
+      {!read.data && read.loading ? (
         <p className="mt-4 flex items-center gap-2 text-sm text-muted"><Loader2 size={14} className="animate-spin" /> Loading adaptation evidence…</p>
       ) : adaptations.length ? (
         <div className="mt-4 grid gap-3">
@@ -161,14 +127,14 @@ export function AgentAdaptationEditor({
               key={adaptation.adaptationId}
               adaptation={adaptation}
               currentDefinitionVersion={definitionVersion || 0}
-              busy={Boolean(busy)}
+              busy={disabled}
               onAction={(action) => void mutate(action, adaptation.adaptationId)}
             />
           ))}
         </div>
       ) : (
         <div className="mt-4 rounded-lg border border-dashed border-border p-3 text-xs leading-5 text-muted">
-          No correction evidence is waiting. Refresh checks completed runs owned by you; it does not activate anything.
+          {read.data ? "No correction evidence is waiting in this snapshot. Refresh evidence checks completed runs owned by you; it does not activate anything." : "Adaptation evidence is unavailable. No empty or active count has been confirmed."}
         </div>
       )}
 
@@ -213,6 +179,11 @@ function AdaptationCard({
           <span><CheckCircle2 size={12} className="mr-1 inline" /> Activation v{adaptation.activationVersion}{adaptation.rolledBackAt ? " · rolled back" : ""}</span>
         ) : null}
       </div>
+      <details className={styles.evidence}>
+        <summary>Exact adaptation and evidence</summary>
+        <dl className={styles.identity}><dt>Agent ID</dt><dd>{adaptation.agentId}</dd><dt>Adaptation ID</dt><dd>{adaptation.adaptationId}</dd><dt>Owner binding</dt><dd>{adaptation.ownerBindingSha256}</dd><dt>Evidence digest</dt><dd>{adaptation.evidenceSha256}</dd><dt>Effect digest</dt><dd>{adaptation.effect.effectSha256}</dd>{adaptation.evaluation ? <><dt>Evaluation digest</dt><dd>{adaptation.evaluation.evaluationSha256}</dd></> : null}</dl>
+        {adaptation.evidence.map((item) => <dl className={styles.identity} key={item.evidenceId}><dt>Evidence ID</dt><dd>{item.evidenceId}</dd><dt>Source ID</dt><dd>{item.sourceId}</dd><dt>Source digest</dt><dd>{item.sourceSha256}</dd><dt>Verdict</dt><dd>{item.verdict} · {item.groundingStatus}</dd><dt>Observed</dt><dd>{item.observedAt}</dd></dl>)}
+      </details>
       {action.kind === "blocked" ? (
         <p className="mt-3 rounded-md bg-muted/35 px-3 py-2 text-xs leading-5 text-muted">{action.reason}</p>
       ) : (
@@ -252,38 +223,6 @@ function actionMessage(action: "refresh" | "evaluate" | "activate" | "rollback")
       : action === "activate"
         ? "Adaptation activated with a numbered version."
         : "Adaptation rolled back. It no longer affects new runs.";
-}
-
-async function requestAdaptations(
-  agentId: string,
-  body?: Record<string, unknown>,
-  signal?: AbortSignal,
-) {
-  const response = await fetch(
-    `/api/agents/${encodeURIComponent(agentId)}/adaptations`,
-    body
-      ? {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "idempotency-key": crypto.randomUUID(),
-          },
-          body: JSON.stringify(body),
-          signal,
-        }
-      : { cache: "no-store", signal },
-  );
-  const payload = (await response.json().catch(() => ({}))) as Partial<AdaptationResponse> & {
-    error?: string;
-    message?: string;
-  };
-  if (!response.ok) {
-    throw new Error(payload.message || payload.error || "Request failed.");
-  }
-  return {
-    adaptations: payload.adaptations || [],
-    definitionVersion: payload.definitionVersion || 0,
-  } satisfies AdaptationResponse;
 }
 
 function messageFrom(caught: unknown, fallback: string) {

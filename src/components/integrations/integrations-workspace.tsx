@@ -6,6 +6,7 @@ import { Blocks, Cable, ChevronDown, ShieldCheck } from "lucide-react";
 import { useState } from "react";
 import { DomainConsole } from "@/components/app-shell/domain-console";
 import { IntegrationTruthPanel } from "@/components/integrations/integration-truth-panel";
+import { useWorkspaceSession } from "@/components/app-shell/session-context";
 import styles from "./integrations-workspace.module.css";
 
 const SourceCoveragePanel = dynamic(
@@ -19,6 +20,11 @@ const SourceCoveragePanel = dynamic(
 );
 
 export function IntegrationsWorkspace() {
+  const { session } = useWorkspaceSession();
+  return <IntegrationsWorkspaceBody key={JSON.stringify([session?.context?.tenantId, session?.context?.actorId])} />;
+}
+
+function IntegrationsWorkspaceBody() {
   const [coverageOpened, setCoverageOpened] = useState(false);
 
   return (
@@ -27,13 +33,13 @@ export function IntegrationsWorkspace() {
         <div className={styles.pageIdentity}>
           <span className={styles.pageIcon}><Cable size={20} aria-hidden="true" /></span>
           <div>
-            <h1>Integrations</h1>
+            <h1>Connections</h1>
             <p>Control the systems Asael can read from or act in, and see what needs attention.</p>
           </div>
         </div>
         <nav className={styles.pageLinks} aria-label="Integration administration">
           <Link href="/app/automation"><Blocks size={15} aria-hidden="true" />Capabilities</Link>
-          <span aria-current="page"><Cable size={15} aria-hidden="true" />Integrations</span>
+          <span aria-current="page"><Cable size={15} aria-hidden="true" />Connections</span>
           <Link href="/app/approvals"><ShieldCheck size={15} aria-hidden="true" />Approvals</Link>
         </nav>
       </header>

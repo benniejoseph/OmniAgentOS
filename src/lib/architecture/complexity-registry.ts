@@ -242,7 +242,6 @@ export const COMPLEXITY_REGISTRY: readonly ComplexityEntry[] = Object.freeze((
       paths: [
         "src/app/api/mobile/push/canary/route.ts",
         "src/components/settings/push-canary-panel.tsx",
-        "src/components/settings/push-canary-panel.module.css",
       ],
     },
     {

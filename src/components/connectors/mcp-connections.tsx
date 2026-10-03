@@ -21,6 +21,9 @@ import {
 } from "lucide-react";
 import { useMemo, useState, type FormEvent } from "react";
 import type { TrashActionPreviewV1 } from "@/lib/trash/contracts";
+import { useCapabilityActions, type CapabilityActions } from "../automation/use-capability-actions";
+import { parseMcpReceipt, parseMcpTrashPreview, parseMcpTrashReceipt } from "../integrations/connection-state";
+import { isJsonRecord } from "../automation/automation-model";
 
 type McpAuthType = "bearer_vault" | "bearer_env" | "none";
 
@@ -55,6 +58,7 @@ type McpPayload = {
 };
 
 type McpConnectionsProps = {
+  actions?: CapabilityActions;
   payload?: unknown;
   loading?: boolean;
   error?: string;
@@ -70,18 +74,23 @@ type Notice = {
 const GITHUB_MCP_ENDPOINT = "https://api.githubcopilot.com/mcp/x/all";
 
 export function McpConnections({
+  actions: sharedActions,
   payload,
   loading,
   error,
-  disabledReason,
+  disabledReason: permissionReason,
   onRefresh,
 }: McpConnectionsProps) {
+  const localActions = useCapabilityActions();
+  const actions = sharedActions || localActions;
+  const disabledReason = permissionReason || (loading ? "Refreshing current connection state." : error || !payload ? "Refresh the connection inventory before making changes." : undefined);
+  const [receipt, setReceipt] = useState<string>();
   const mcp = asMcpPayload(payload);
   const connectors = useMemo(
     () => (Array.isArray(mcp.connectors) ? mcp.connectors : []),
     [mcp.connectors],
   );
-  const vaultUnavailable = mcp.credentialVault?.configured === false;
+  const vaultUnavailable = mcp.credentialVault?.configured !== true;
   const [adding, setAdding] = useState(false);
   const [advancedAuthOpen, setAdvancedAuthOpen] = useState(false);
   const [name, setName] = useState("");
@@ -99,8 +108,8 @@ export function McpConnections({
   const [pendingAction, setPendingAction] = useState<string>();
   const [notice, setNotice] = useState<Notice>();
 
-  const busy = Boolean(pendingAction) || Boolean(loading);
-  const showAddForm = adding || (!loading && connectors.length === 0);
+  const busy = Boolean(actions.pending) || Boolean(loading);
+  const showAddForm = adding || (Boolean(payload) && !error && !loading && connectors.length === 0);
   const githubPresetApplied =
     name.trim() === "GitHub" &&
     endpoint.trim() === GITHUB_MCP_ENDPOINT &&
@@ -163,11 +172,13 @@ export function McpConnections({
     const submittedToken = bearerToken;
     const submittedEndpoint = endpoint.trim();
     const officialGitHubEndpoint = submittedEndpoint === GITHUB_MCP_ENDPOINT;
+    const attempt = actions.begin("mcp:create");
+    if (!attempt) return;
     setBearerToken("");
     setPendingAction("create");
     setNotice(undefined);
     try {
-      await requestJson(
+      const result = await requestJson(
         "/api/connectors",
         {
           method: "POST",
@@ -189,6 +200,9 @@ export function McpConnections({
         },
         "The MCP connection could not be added.",
       );
+      if (!actions.current(attempt)) return;
+      const confirmed = parseMcpReceipt(result, { fields: { name: name.trim(), endpoint: submittedEndpoint, authType, ...(authType === "bearer_vault" ? { credentialConfigured: true } : {}) }, discovered: discoverOnAdd });
+      setReceipt(`Connection ${String(confirmed.id)} created · state ${String(confirmed.status)} · endpoint ${String(confirmed.endpoint)}. Discovered tools require their current contract review.`);
       resetAddForm();
       setAdding(false);
       setNotice({
@@ -198,14 +212,21 @@ export function McpConnections({
             ? "Connection added. Its token is encrypted and can only be replaced or removed."
             : "Connection added.",
       });
-      await onRefresh();
+      setPendingAction(undefined);
+      actions.finish(attempt);
+      void onRefresh();
     } catch (requestError) {
+      if (!actions.current(attempt)) return;
       if (
         requestError instanceof ConnectorRequestError &&
         requestError.connectionCreated
       ) {
-        resetAddForm();
-        setAdding(false);
+        try {
+          const confirmed = parseMcpReceipt(requestError.result, { fields: { name: name.trim(), endpoint: submittedEndpoint, authType, ...(requestError.credentialSaved ? { credentialConfigured: true } : {}) } });
+          setReceipt(`Connection ${String(confirmed.id)} was created, but tool discovery failed. ${requestError.credentialSaved ? "Its token was saved." : "No token-save receipt was returned."}`);
+          resetAddForm();
+          setAdding(false);
+        } catch { requestError = new Error("The creation outcome could not be confirmed. Refresh before trying again."); }
       }
       setNotice({
         tone: "error",
@@ -214,10 +235,9 @@ export function McpConnections({
             ? requestError.message
             : "The MCP connection could not be added.",
       });
-      await onRefresh();
+      void onRefresh();
     } finally {
-      setBearerToken("");
-      setPendingAction(undefined);
+      if (actions.current(attempt)) { setBearerToken(""); setPendingAction(undefined); actions.finish(attempt); }
     }
   }
 
@@ -231,11 +251,13 @@ export function McpConnections({
       return;
     }
     const submittedToken = credentialValue;
+    const attempt = actions.begin(`mcp:credential:${connector.id}`);
+    if (!attempt) return;
     setCredentialValue("");
     setPendingAction(`credential-${connector.id}`);
     setNotice(undefined);
     try {
-      await requestJson(
+      const result = await requestJson(
         `/api/connectors/${encodeURIComponent(connector.id)}/credential`,
         {
           method: "POST",
@@ -247,6 +269,10 @@ export function McpConnections({
         },
         "The token could not be stored.",
       );
+      if (!actions.current(attempt)) return;
+      const confirmed = parseMcpReceipt(result, { id: connector.id, fields: { credentialConfigured: true, credentialOriginMatch: true }, discovered: true });
+      if (typeof connector.credentialVersion === "number" && !(typeof confirmed.credentialVersion === "number" && confirmed.credentialVersion > connector.credentialVersion)) throw new Error("The new credential version was not confirmed. Refresh before trying again.");
+      setReceipt(`Connection ${connector.id}: token stored at version ${String(confirmed.credentialVersion ?? "unavailable")}; tools rediscovered. State ${String(confirmed.status)}. Current contracts still require review.`);
       setCredentialEditorId(undefined);
       setNotice({
         tone: "success",
@@ -254,13 +280,20 @@ export function McpConnections({
           ? `${connectorLabel(connector)} token rotated and tools rediscovered.`
           : `${connectorLabel(connector)} token stored and tools rediscovered.`,
       });
-      await onRefresh();
+      setPendingAction(undefined);
+      actions.finish(attempt);
+      void onRefresh();
     } catch (requestError) {
+      if (!actions.current(attempt)) return;
       if (
         requestError instanceof ConnectorRequestError &&
         requestError.credentialSaved
       ) {
-        setCredentialEditorId(undefined);
+        try {
+          parseMcpReceipt(requestError.result, { id: connector.id, fields: { credentialConfigured: true } });
+          setReceipt(`Connection ${connector.id}: token saved, but tool discovery failed. Rediscover and review current contracts before enabling it.`);
+          setCredentialEditorId(undefined);
+        } catch { requestError = new Error("The token-save outcome could not be confirmed. Refresh before trying again."); }
       }
       setNotice({
         tone: "error",
@@ -269,10 +302,9 @@ export function McpConnections({
             ? requestError.message
             : "The token could not be stored.",
       });
-      await onRefresh();
+      void onRefresh();
     } finally {
-      setCredentialValue("");
-      setPendingAction(undefined);
+      if (actions.current(attempt)) { setCredentialValue(""); setPendingAction(undefined); actions.finish(attempt); }
     }
   }
 
@@ -283,6 +315,11 @@ export function McpConnections({
       method: "DELETE",
       success: `${connectorLabel(connector)} token removed and connection disabled.`,
       failure: "The stored token could not be removed.",
+      validate: (result) => {
+        parseMcpReceipt(result, { id: connector.id, fields: { status: "disabled", credentialConfigured: false } });
+        if (!isJsonRecord(result) || typeof result.removed !== "boolean" || result.externalCredentialRevoked !== false) throw new Error("The local credential-removal receipt was incomplete.");
+        return `Connection ${connector.id}: encrypted local token removed and connector disabled. The external token was not revoked.`;
+      },
       after: () => setConfirmRemoveCredentialId(undefined),
     });
   }
@@ -294,6 +331,10 @@ export function McpConnections({
       method: "POST",
       success: `${connectorLabel(connector)} tools rediscovered. Review any changed contracts below.`,
       failure: "Tool discovery failed.",
+      validate: (result) => {
+        const confirmed = parseMcpReceipt(result, { id: connector.id, fields: { endpoint: connector.endpoint }, discovered: true });
+        return `Connection ${connector.id}: discovery returned state ${String(confirmed.status)}. Review any changed contracts before activation.`;
+      },
     });
   }
 
@@ -303,10 +344,12 @@ export function McpConnections({
       return;
     }
     const actionId = `upgrade-github-${connector.id}`;
+    const attempt = actions.begin(actionId);
+    if (!attempt) return;
     setPendingAction(actionId);
     setNotice(undefined);
     try {
-      await requestJson(
+      const updated = await requestJson(
         `/api/connectors/${encodeURIComponent(connector.id)}`,
         {
           method: "PATCH",
@@ -319,18 +362,27 @@ export function McpConnections({
         },
         "The GitHub connection could not be upgraded.",
       );
-      await requestJson(
+      if (!actions.current(attempt)) return;
+      parseMcpReceipt(updated, { id: connector.id, fields: { endpoint: GITHUB_MCP_ENDPOINT, defaultRiskLevel: 2, approvalRequired: false } });
+      setReceipt(`Connection ${connector.id}: official GitHub endpoint and policy updated. Tool rediscovery is pending.`);
+      const discovered = await requestJson(
         `/api/connectors/${encodeURIComponent(connector.id)}/discover?resetPolicy=official-github`,
         { method: "POST", headers: requestHeaders(false) },
         "The GitHub connection was upgraded, but its tools could not be rediscovered.",
       );
+      if (!actions.current(attempt)) return;
+      parseMcpReceipt(discovered, { id: connector.id, fields: { endpoint: GITHUB_MCP_ENDPOINT }, discovered: true });
+      setReceipt(`Connection ${connector.id}: official GitHub endpoint updated and tools rediscovered. Review the exact changed contracts before activation.`);
       setNotice({
         tone: "success",
         text:
           "GitHub Actions tools are available. Review the changed contracts below to activate them.",
       });
-      await onRefresh();
+      setPendingAction(undefined);
+      actions.finish(attempt);
+      void onRefresh();
     } catch (requestError) {
+      if (!actions.current(attempt)) return;
       setNotice({
         tone: "error",
         text:
@@ -338,9 +390,9 @@ export function McpConnections({
             ? requestError.message
             : "The GitHub connection could not be upgraded.",
       });
-      await onRefresh();
+      void onRefresh();
     } finally {
-      setPendingAction(undefined);
+      if (actions.current(attempt)) { setPendingAction(undefined); actions.finish(attempt); }
     }
   }
 
@@ -355,13 +407,18 @@ export function McpConnections({
       body: { status: enabled ? "active" : "disabled" },
       success: `${connectorLabel(connector)} ${enabled ? "enabled" : "disabled"}.`,
       failure: `The connection could not be ${enabled ? "enabled" : "disabled"}.`,
+      validate: (result) => {
+        parseMcpReceipt(result, { id: connector.id, fields: { status: enabled ? "active" : "disabled" } });
+        return `Connection ${connector.id}: ${enabled ? "active" : "disabled"}.`;
+      },
     });
   }
 
-  async function deleteConnection(connector: McpConnector) {
+  async function deleteConnection(connector: McpConnector, requestedAt: number) {
     const preview = deletePreviews[connector.id];
-    if (!preview) {
+    if (!preview || Date.parse(preview.expiresAt) <= requestedAt) {
       setNotice({ tone: "error", text: "Prepare the exact trash preview before removing this connection." });
+      setConfirmDeleteId(undefined);
       return;
     }
     await runConnectorAction({
@@ -371,6 +428,10 @@ export function McpConnections({
       body: { preview },
       success: `${connectorLabel(connector)} moved to Trash. Restore is available for 30 days in Settings → Data & privacy.`,
       failure: "The MCP connection could not be moved to Trash.",
+      validate: async (result) => {
+        const confirmed = await parseMcpTrashReceipt(result, preview);
+        return `Connection ${connector.id} moved to Trash ${confirmed.trashId}. Restore until ${confirmed.restoreUntil}. Receipt ${confirmed.receiptSha256}.`;
+      },
       after: () => {
         setConfirmDeleteId(undefined);
         setDeletePreviews((current) => {
@@ -383,11 +444,14 @@ export function McpConnections({
   }
 
   async function prepareDelete(connector: McpConnector) {
+    if (disabledReason) { setNotice({ tone: "error", text: disabledReason }); return; }
     if (confirmDeleteId === connector.id) {
       setConfirmDeleteId(undefined);
       return;
     }
-    setPendingAction(`delete-preview-${connector.id}`);
+    const attempt = actions.begin(`delete-preview-${connector.id}`);
+    if (!attempt) return;
+    setPendingAction(attempt.name);
     setNotice(undefined);
     try {
       const result = await requestJson<ConnectorRequestResult & {
@@ -396,19 +460,22 @@ export function McpConnections({
         method: "POST",
         headers: requestHeaders(false),
       }, "The MCP trash preview could not be prepared.");
-      if (!result.preview) throw new Error("The MCP trash preview was not returned.");
-      setDeletePreviews((current) => ({ ...current, [connector.id]: result.preview! }));
+      if (!actions.current(attempt)) return;
+      const preview = await parseMcpTrashPreview(result, connector.id);
+      if (!actions.current(attempt)) return;
+      setDeletePreviews((current) => ({ ...current, [connector.id]: preview }));
       setCredentialValue("");
       setCredentialEditorId(undefined);
       setConfirmRemoveCredentialId(undefined);
       setConfirmDeleteId(connector.id);
     } catch (requestError) {
+      if (!actions.current(attempt)) return;
       setNotice({
         tone: "error",
         text: requestError instanceof Error ? requestError.message : "The MCP trash preview could not be prepared.",
       });
     } finally {
-      setPendingAction(undefined);
+      if (actions.current(attempt)) { setPendingAction(undefined); actions.finish(attempt); }
     }
   }
 
@@ -419,16 +486,19 @@ export function McpConnections({
     body?: Record<string, unknown>;
     success: string;
     failure: string;
+    validate: (result: unknown) => string | Promise<string>;
     after?: () => void;
   }) {
     if (disabledReason) {
       setNotice({ tone: "error", text: disabledReason });
       return;
     }
+    const attempt = actions.begin(input.actionId);
+    if (!attempt) return;
     setPendingAction(input.actionId);
     setNotice(undefined);
     try {
-      await requestJson(
+      const result = await requestJson(
         input.path,
         {
           method: input.method,
@@ -437,18 +507,25 @@ export function McpConnections({
         },
         input.failure,
       );
+      if (!actions.current(attempt)) return;
+      const confirmed = await input.validate(result);
+      if (!actions.current(attempt)) return;
+      setReceipt(confirmed);
       input.after?.();
       setNotice({ tone: "success", text: input.success });
-      await onRefresh();
+      setPendingAction(undefined);
+      actions.finish(attempt);
+      void onRefresh();
     } catch (requestError) {
+      if (!actions.current(attempt)) return;
       setNotice({
         tone: "error",
         text:
           requestError instanceof Error ? requestError.message : input.failure,
       });
-      await onRefresh();
+      void onRefresh();
     } finally {
-      setPendingAction(undefined);
+      if (actions.current(attempt)) { setPendingAction(undefined); actions.finish(attempt); }
     }
   }
 
@@ -519,7 +596,7 @@ export function McpConnections({
           </div>
         ) : null}
 
-        {vaultUnavailable ? (
+        {vaultUnavailable && payload ? (
           <div
             className="mt-4 flex items-start gap-3 rounded-md border border-warning/40 bg-warning/10 p-3"
             role="status"
@@ -531,7 +608,7 @@ export function McpConnections({
             />
             <div>
               <p className="text-sm font-semibold">
-                Encrypted token storage needs configuration
+                {mcp.credentialVault?.configured === false ? "Encrypted token storage needs configuration" : "Encrypted token storage availability is unconfirmed"}
               </p>
               <p className="mt-1 text-xs leading-5 text-muted">
                 {mcp.credentialVault?.message ||
@@ -546,7 +623,7 @@ export function McpConnections({
             className="mt-4 rounded-md border border-danger/35 bg-danger/10 px-3 py-2 text-sm text-danger"
             role="alert"
           >
-            {error}
+            {error}{payload ? " Last-loaded connection records remain visible." : " Current connection counts are unavailable."}
           </p>
         ) : null}
 
@@ -576,6 +653,7 @@ export function McpConnections({
             <span>{notice.text}</span>
           </div>
         ) : null}
+        {receipt ? <details className="mt-4 border-y border-line py-2"><summary>Last confirmed MCP receipt</summary><p className="text-sm">{receipt}</p></details> : null}
 
         {showAddForm ? (
           <form
@@ -860,7 +938,7 @@ export function McpConnections({
               <p className="mt-1 text-xs leading-5 text-muted">
                 {connectors.length
                   ? `${connectors.length} ${connectors.length === 1 ? "server" : "servers"} registered in this workspace.`
-                  : "No MCP servers have been added yet."}
+                  : !payload || error ? "Current MCP inventory count is unavailable." : loading ? "Checking current MCP inventory…" : "No MCP servers were returned by this inventory read."}
               </p>
             </div>
             {loading ? (
@@ -935,7 +1013,7 @@ export function McpConnections({
                     )
                   }
                   onToggleDelete={() => void prepareDelete(connector)}
-                  onDelete={() => void deleteConnection(connector)}
+                  onDelete={() => void deleteConnection(connector, Date.now())}
                 />
               ))}
             </div>
@@ -1024,9 +1102,10 @@ function ConnectionRow({
               </span>
             ) : null}
           </div>
-          <p className="mt-2 truncate font-mono text-xs text-muted" title={displayEndpoint(connector.endpoint)}>
+          <p className="mt-2 break-words font-mono text-xs text-muted">
             {displayEndpoint(connector.endpoint)}
           </p>
+          <p className="mt-1 break-words font-mono text-xs text-muted">Connection {connector.id}</p>
           {isOfficialGitHubMcpEndpoint(connector.endpoint) ? (
             <p className="mt-2 text-xs leading-5 text-muted">
               Built-in agents discover reviewed GitHub tools automatically.
@@ -1098,7 +1177,7 @@ function ConnectionRow({
         />
         <ConnectionFact
           label="Tools"
-          value={`${connector.toolCount || 0} discovered`}
+          value={typeof connector.toolCount === "number" ? `${connector.toolCount} discovered` : "Count unavailable"}
         />
         <ConnectionFact
           label="Last discovery"
@@ -1240,20 +1319,25 @@ function ConnectionRow({
           description="The connection will be disabled. Removing a token from Asael does not revoke it at the provider; revoke it separately in the provider account if it should no longer work anywhere."
           confirmLabel="Remove stored token"
           busy={pendingAction === `remove-credential-${connector.id}`}
+          disabled={busy || Boolean(disabledReason)}
           onCancel={onToggleRemoveCredential}
           onConfirm={onRemoveCredential}
         />
       ) : null}
 
       {confirmDelete ? (
+        <>
+        {deletePreview ? <details><summary>Exact Trash preview</summary><dl><div><dt>Connection</dt><dd>{deletePreview.resourceId}</dd></div><div><dt>Target digest</dt><dd>{deletePreview.targetSha256}</dd></div><div><dt>Preview digest</dt><dd>{deletePreview.previewSha256}</dd></div><div><dt>Expires</dt><dd>{deletePreview.expiresAt}</dd></div></dl></details> : null}
         <Confirmation
           title={`Move ${connectorLabel(connector)} to Trash?`}
           description={`${deletePreview?.effectSummary || "This moves the connection and its discovered tools to reversible Trash."} Any provider token must still be revoked separately at the provider.`}
           confirmLabel="Move to Trash"
           busy={pendingAction === `delete-${connector.id}`}
+          disabled={busy || Boolean(disabledReason)}
           onCancel={onToggleDelete}
           onConfirm={onDelete}
         />
+        </>
       ) : null}
     </article>
   );
@@ -1344,6 +1428,7 @@ function Confirmation({
   description,
   confirmLabel,
   busy,
+  disabled,
   onCancel,
   onConfirm,
 }: {
@@ -1351,6 +1436,7 @@ function Confirmation({
   description: string;
   confirmLabel: string;
   busy: boolean;
+  disabled: boolean;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
@@ -1366,7 +1452,7 @@ function Confirmation({
         <button
           type="button"
           onClick={onCancel}
-          disabled={busy}
+          disabled={disabled}
           className="min-h-10 rounded-md border border-line bg-background px-3 text-sm font-semibold disabled:opacity-60"
         >
           Cancel
@@ -1374,7 +1460,7 @@ function Confirmation({
         <button
           type="button"
           onClick={onConfirm}
-          disabled={busy}
+          disabled={disabled}
           className="inline-flex min-h-10 items-center gap-2 rounded-md bg-danger px-3 text-sm font-semibold text-white disabled:opacity-60"
         >
           {busy ? (
@@ -1581,12 +1667,15 @@ async function requestJson<T extends ConnectorRequestResult = ConnectorRequestRe
     ...init,
     signal: init.signal || AbortSignal.timeout(70_000),
   });
-  const result = (await response.json().catch(() => ({}))) as T;
+  const body: unknown = await response.json().catch(() => undefined);
+  if (!isJsonRecord(body)) throw new ConnectorRequestError("No complete connection receipt was received. The outcome is unconfirmed; refresh before trying again.");
+  const result = body as T;
   if (!response.ok || result.error || result.discoveryFailed) {
     throw new ConnectorRequestError(
       safeRequestError(fallbackError, response.status, result),
       result.credentialSaved === true,
       result.connectionCreated === true,
+      result,
     );
   }
   return result;
@@ -1631,6 +1720,7 @@ class ConnectorRequestError extends Error {
     message: string,
     readonly credentialSaved = false,
     readonly connectionCreated = false,
+    readonly result?: unknown,
   ) {
     super(message);
     this.name = "ConnectorRequestError";

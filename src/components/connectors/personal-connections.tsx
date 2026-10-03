@@ -17,6 +17,8 @@ import {
 } from "lucide-react";
 import { clsx } from "clsx";
 import { useMemo, useState } from "react";
+import { useCapabilityActions, type CapabilityActions } from "../automation/use-capability-actions";
+import { parseGoogleDisconnectReceipt, parseGoogleSyncReceipt } from "../integrations/connection-state";
 
 import {
   googleWorkspaceCapabilitiesForScopes,
@@ -66,6 +68,7 @@ type OAuthPayload = {
 };
 
 type PersonalConnectionsProps = {
+  actions?: CapabilityActions;
   payload?: unknown;
   loading?: boolean;
   error?: string;
@@ -74,12 +77,16 @@ type PersonalConnectionsProps = {
 };
 
 export function PersonalConnections({
+  actions: sharedActions,
   payload,
   loading,
   error,
   disabledReason,
   onRefresh,
 }: PersonalConnectionsProps) {
+  const localActions = useCapabilityActions();
+  const actions = sharedActions || localActions;
+  const [receipt, setReceipt] = useState<string>();
   const oauth = asOAuthPayload(payload);
   const provider = oauth.providers?.find((item) => item.id === "google");
   const grants = (oauth.grants || []).filter(
@@ -137,26 +144,29 @@ export function PersonalConnections({
 
         {error ? (
           <p className="mt-4 rounded-md border border-danger/35 bg-danger/10 px-3 py-2 text-sm text-danger">
-            {error}
+            {error}{payload ? " Last-loaded account details remain visible." : " Current account details are unavailable."}
           </p>
         ) : null}
+        {receipt ? <p role="status" className="mt-3 text-sm">Last confirmed account receipt: {receipt}</p> : null}
 
         <div className="mt-5">
           {account ? (
             <GoogleAccountCard
+              actions={actions}
+              onReceipt={setReceipt}
               account={account}
               provider={provider}
               grant={grants.find((grant) =>
                 grant.connectionPurpose === account.purpose &&
                 (!account.email || grant.accountEmail === account.email))}
               ownershipReady={oauth.requestReadContracts?.oauthGrants === "readable_v1"}
-              disabledReason={disabledReason}
+              disabledReason={disabledReason || (error ? "Refresh account ownership before changing this connection." : undefined)}
               loading={loading}
               onChanged={refreshIntegrationViews}
             />
           ) : (
             <p className="rounded-lg border border-warning/35 bg-warning/10 px-4 py-3 text-sm text-foreground">
-              This signed-in account could not be matched to its private workspace policy.
+              {loading ? "Checking the signed-in account and its private workspace policy…" : error ? "The account read is unavailable. Retry the connection read above." : "This signed-in account could not be matched to its private workspace policy."}
             </p>
           )}
         </div>
@@ -166,6 +176,8 @@ export function PersonalConnections({
 }
 
 function GoogleAccountCard({
+  actions,
+  onReceipt,
   account,
   provider,
   grant,
@@ -174,6 +186,8 @@ function GoogleAccountCard({
   loading,
   onChanged,
 }: {
+  actions: CapabilityActions;
+  onReceipt: (value: string) => void;
   account: NonNullable<OAuthProvider["accounts"]>[number];
   provider?: OAuthProvider;
   grant?: OAuthGrant;
@@ -188,7 +202,7 @@ function GoogleAccountCard({
     { tone: "success" | "error"; text: string } | undefined
   >();
   const connected = Boolean(grant);
-  const busy = Boolean(action) || loading;
+  const busy = Boolean(actions.pending) || loading;
   const actionDisabledReason = loading
     ? "Refreshing connection ownership."
     : !ownershipReady
@@ -214,6 +228,8 @@ function GoogleAccountCard({
 
   async function syncGoogle() {
     if (!grant || blockUnavailableAction()) return;
+    const attempt = actions.begin(`google-sync:${grant.id}`);
+    if (!attempt) return;
     setAction("sync");
     setMessage(undefined);
     try {
@@ -221,30 +237,35 @@ function GoogleAccountCard({
         `/api/oauth/google/sync?connectionId=${encodeURIComponent(grant.id)}`,
         { method: "POST", headers: { accept: "application/json" } },
       );
-      const result = (await response.json().catch(() => ({}))) as {
-        imported?: number;
-        removed?: number;
-        error?: string;
-      };
-      if (!response.ok) throw new Error(result.error || "Google sync failed.");
+      const result: unknown = await response.json().catch(() => undefined);
+      if (!actions.current(attempt)) return;
+      if (!response.ok) throw new Error("Google sync did not return a confirmed receipt. Refresh its source status before trying again.");
+      const confirmed = parseGoogleSyncReceipt(result, grant.id);
+      const text = `Account ${grant.id}: sync ${confirmed.status} · ${confirmed.imported} imported · ${confirmed.removed} removed. ${confirmed.sources.map((source) => `${source.source}: ${source.status}`).join("; ")}.`;
+      onReceipt(text);
       setMessage({
-        tone: "success",
-        text: `Sync complete · ${result.imported || 0} imported${result.removed ? ` · ${result.removed} removed` : ""}`,
+        tone: confirmed.status === "healthy" ? "success" : "error",
+        text,
       });
-      await onChanged();
+      setAction(undefined);
+      actions.finish(attempt);
+      void onChanged();
     } catch (syncError) {
+      if (!actions.current(attempt)) return;
       setMessage({
         tone: "error",
         text: syncError instanceof Error ? syncError.message : "Google sync failed.",
       });
-      await onChanged();
+      void onChanged();
     } finally {
-      setAction(undefined);
+      if (actions.current(attempt)) { setAction(undefined); actions.finish(attempt); }
     }
   }
 
   async function disconnectGoogle() {
     if (!grant || blockUnavailableAction()) return;
+    const attempt = actions.begin(`google-disconnect:${grant.id}`);
+    if (!attempt) return;
     setAction("disconnect");
     setMessage(undefined);
     try {
@@ -252,12 +273,19 @@ function GoogleAccountCard({
         `/api/oauth/google?connectionId=${encodeURIComponent(grant.id)}`,
         { method: "DELETE", headers: { accept: "application/json" } },
       );
-      const result = (await response.json().catch(() => ({}))) as { error?: string };
-      if (!response.ok) throw new Error(result.error || "Google could not be disconnected.");
+      const result: unknown = await response.json().catch(() => undefined);
+      if (!actions.current(attempt)) return;
+      if (!response.ok) throw new Error("Google disconnect did not return a confirmed receipt. Refresh current account status before trying again.");
+      const confirmed = parseGoogleDisconnectReceipt(result);
+      const text = `Local Google connection ${grant.id} disconnected. ${confirmed.providerRevocation === "failed" ? "Provider token revocation could not be confirmed." : confirmed.providerRevocation === "revoked" ? "Provider token revocation was confirmed." : "Provider token revocation was not needed."} The endpoint confirms provider and revocation state; the exact account ID is the submitted target.`;
       setConfirmDisconnect(false);
-      setMessage({ tone: "success", text: `${account.label} Google disconnected.` });
-      await onChanged();
+      onReceipt(text);
+      setMessage({ tone: "success", text });
+      setAction(undefined);
+      actions.finish(attempt);
+      void onChanged();
     } catch (disconnectError) {
+      if (!actions.current(attempt)) return;
       setMessage({
         tone: "error",
         text: disconnectError instanceof Error
@@ -265,7 +293,7 @@ function GoogleAccountCard({
           : "Google could not be disconnected.",
       });
     } finally {
-      setAction(undefined);
+      if (actions.current(attempt)) { setAction(undefined); actions.finish(attempt); }
     }
   }
 
@@ -320,8 +348,8 @@ function GoogleAccountCard({
                 Sync
               </button>
               <a
-                href={authorizeUrl}
-                aria-disabled={Boolean(actionDisabledReason)}
+                href={busy || actionDisabledReason ? undefined : authorizeUrl}
+                aria-disabled={Boolean(busy || actionDisabledReason)}
                 className={clsx(
                   "inline-flex min-h-10 items-center gap-2 rounded-md border border-line px-3 text-sm font-semibold",
                   actionDisabledReason && "pointer-events-none opacity-60",
@@ -343,8 +371,8 @@ function GoogleAccountCard({
             </div>
           ) : (
             <a
-              href={authorizeUrl}
-              aria-disabled={Boolean(actionDisabledReason)}
+              href={busy || actionDisabledReason ? undefined : authorizeUrl}
+              aria-disabled={Boolean(busy || actionDisabledReason)}
               className={clsx(
                 "inline-flex min-h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-semibold text-primary-ink",
                 actionDisabledReason && "pointer-events-none opacity-60",
@@ -382,10 +410,10 @@ function GoogleAccountCard({
               Future syncs stop. Previously imported knowledge remains available.
             </p>
             <div className="mt-3 flex gap-2">
-              <button type="button" onClick={() => setConfirmDisconnect(false)} className="min-h-9 rounded-md border border-line px-3 text-sm font-semibold">
+              <button type="button" onClick={() => setConfirmDisconnect(false)} disabled={busy} className="min-h-9 rounded-md border border-line px-3 text-sm font-semibold">
                 Keep connected
               </button>
-              <button type="button" onClick={() => void disconnectGoogle()} disabled={Boolean(action)} className="inline-flex min-h-9 items-center gap-2 rounded-md bg-danger px-3 text-sm font-semibold text-white disabled:opacity-60">
+              <button type="button" onClick={() => void disconnectGoogle()} disabled={busy} className="inline-flex min-h-9 items-center gap-2 rounded-md bg-danger px-3 text-sm font-semibold text-white disabled:opacity-60">
                 {action === "disconnect" ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : null}
                 Disconnect
               </button>
@@ -397,7 +425,7 @@ function GoogleAccountCard({
       <div className="grid gap-px bg-line sm:grid-cols-3">
         <ConnectionFact label="Connected" value={grant ? formatDate(grant.createdAt) : "Not yet"} />
         <ConnectionFact label="Last sync" value={lastSuccessfulSyncAt ? formatDate(lastSuccessfulSyncAt) : "Not synced"} />
-        <ConnectionFact label="Knowledge" value={`${grant?.syncedItems || 0} items`} />
+        <ConnectionFact label="Knowledge" value={typeof grant?.syncedItems === "number" ? `${grant.syncedItems} recorded items` : "Count unavailable"} />
       </div>
 
       <details className="group border-t border-line px-4 py-3 sm:px-5">
@@ -436,6 +464,7 @@ function GoogleAccountCard({
                       )}
                       aria-label={`Allow ${permission.label} changes`}
                       aria-disabled={Boolean(actionDisabledReason)}
+                      onClick={(event) => { if (busy || actionDisabledReason) event.preventDefault(); }}
                       className={clsx(
                         "mt-1 inline-flex min-h-8 items-center text-xs font-semibold text-primary underline-offset-2 hover:underline",
                         actionDisabledReason && "pointer-events-none opacity-60",

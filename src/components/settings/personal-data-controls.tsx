@@ -1,133 +1,90 @@
 "use client";
 
-import { Download, FileUp, Loader2, ShieldCheck } from "lucide-react";
-import { useRef, useState } from "react";
-import { clsx } from "clsx";
+import { useLayoutEffect, useRef, useState } from "react";
+import { AdvancedSettingsBoundary, mutationOptions, settingsJson, useAdvancedSettingsActions } from "./settings-advanced-lifecycle";
+import { archiveContainsEncryptedAssets, readPortableRestore, settingsJsonSha256 } from "./settings-recovery-state";
+import { digest, object } from "./settings-advanced-state";
+import { Metadata, SettingsCheck, SettingsField } from "./settings-advanced-ui";
+import styles from "./settings-advanced.module.css";
 
 export function PersonalDataControls() {
+  return <AdvancedSettingsBoundary><PersonalDataContent /></AdvancedSettingsBoundary>;
+}
+function PersonalDataContent() {
+  const actions = useAdvancedSettingsActions();
   const inputRef = useRef<HTMLInputElement>(null);
-  const [archive, setArchive] = useState<File>();
+  const selection = useRef(0);
+  const [archive, setArchive] = useState<{ file: File; value: unknown }>();
+  const [selecting, setSelecting] = useState(false);
+  const [selectionError, setSelectionError] = useState<string>();
   const [includeAssets, setIncludeAssets] = useState(false);
   const [exportPassphrase, setExportPassphrase] = useState("");
   const [restorePassphrase, setRestorePassphrase] = useState("");
-  const [restoreNeedsPassphrase, setRestoreNeedsPassphrase] = useState(false);
-  const [busy, setBusy] = useState<"export" | "restore">();
-  const [message, setMessage] = useState<{ tone: "success" | "error"; text: string }>();
-
-  async function downloadArchive() {
-    setBusy("export"); setMessage(undefined);
-    try {
-      if (includeAssets && exportPassphrase.normalize("NFKC").length < 12) {
-        throw new Error("Use at least 12 characters to encrypt original assets.");
-      }
-      const response = await fetch("/api/data/export", includeAssets ? {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ includeAssets: true, assetPassphrase: exportPassphrase }),
-        cache: "no-store",
-      } : { cache: "no-store" });
-      if (!response.ok) throw new Error("Asael could not prepare the archive.");
-      const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = dispositionFilename(response.headers.get("content-disposition")) || `asael-${new Date().toISOString().slice(0, 10)}.json`;
-      anchor.click();
-      URL.revokeObjectURL(url);
-      setMessage({
-        tone: "success",
-        text: includeAssets
-          ? "Verified archive downloaded with eligible originals encrypted. Keep its passphrase separately."
-          : "Verified portable archive downloaded. Original assets were explicitly excluded.",
-      });
-    } catch (error) { setMessage({ tone: "error", text: error instanceof Error ? error.message : "Export failed." }); }
-    finally { setBusy(undefined); }
-  }
-
-  async function restoreArchive() {
-    if (!archive) return;
-    setBusy("restore"); setMessage(undefined);
-    try {
-      if (archive.size > 4 * 1024 * 1024) throw new Error("Portable archives must be 4 MB or smaller.");
-      const payload = JSON.parse(await archive.text()) as unknown;
-      if (archiveContainsEncryptedAssets(payload) && !restorePassphrase) {
-        throw new Error("Enter the passphrase used to encrypt this archive's assets.");
-      }
-      const requestPayload = archiveContainsEncryptedAssets(payload)
-        ? { archive: payload, assetPassphrase: restorePassphrase }
-        : payload;
-      const response = await fetch("/api/data/restore", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(requestPayload) });
-      const body = await response.json().catch(() => ({})) as PortableRestoreResponse;
-      if (!response.ok) throw new Error(body.error || "Restore failed.");
-      const count = restoredRecordCount(body.restored);
-      const receipt = body.restored?.verification?.receiptSha256?.slice(0, 12);
-      const connections = body.restored?.connectionsReauthorizationRequired || 0;
-      setMessage({ tone: "success", text: `Verified restore complete · ${count} records processed${receipt ? ` · receipt ${receipt}` : ""}.${connections ? ` ${connections} connection${connections === 1 ? "" : "s"} must be reauthorized.` : ""}` });
-      setArchive(undefined);
-      setRestorePassphrase("");
-      setRestoreNeedsPassphrase(false);
-      if (inputRef.current) inputRef.current.value = "";
-    } catch (error) { setMessage({ tone: "error", text: error instanceof Error ? error.message : "Restore failed." }); }
-    finally { setBusy(undefined); }
-  }
-
-  return <section className="mt-4 overflow-hidden rounded-lg border border-line bg-surface p-5 sm:p-6" aria-labelledby="personal-data-title">
-    <div className="flex items-start gap-3"><span className="grid size-10 shrink-0 place-items-center rounded-full bg-primary/10 text-primary"><ShieldCheck size={18} aria-hidden="true" /></span><div><p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">Ownership and recovery</p><h2 id="personal-data-title" className="mt-1 text-lg font-semibold">Your portable Asael archive</h2><p className="mt-1 max-w-3xl text-sm leading-6 text-muted">Archive v2 declares counts, hashes, inclusions, and exclusions. Secrets never leave Asael, and restored connections always require reauthorization.</p></div></div>
-    <div className="mt-5 grid gap-4 md:grid-cols-2">
-      <div className="rounded-lg border border-line bg-background p-4"><h3 className="text-sm font-semibold">Export</h3><p className="mt-1 text-xs leading-5 text-muted">Knowledge, memories, conversations, focus items, projects, skills, and agents are included. Connector credentials, secrets, embeddings, and audit data are excluded.</p><label className="mt-4 flex items-start gap-2 text-xs leading-5"><input type="checkbox" className="mt-1 accent-primary" checked={includeAssets} onChange={(event) => setIncludeAssets(event.target.checked)} /><span><strong className="block text-foreground">Include eligible original assets</strong><span className="text-muted">Up to 25 originals / 2 MB, encrypted before download.</span></span></label>{includeAssets ? <label className="mt-3 block text-xs font-semibold">Asset passphrase<input type="password" autoComplete="new-password" value={exportPassphrase} onChange={(event) => setExportPassphrase(event.target.value)} minLength={12} maxLength={256} placeholder="12 characters minimum" className="mt-1 block h-10 w-full rounded-md border border-line bg-surface px-3 text-sm font-normal outline-none focus:border-primary" /></label> : null}<button type="button" onClick={() => void downloadArchive()} disabled={Boolean(busy)} className="primary-button mt-4">{busy === "export" ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : <Download size={15} aria-hidden="true" />}{busy === "export" ? "Preparing…" : "Download archive v2"}</button></div>
-      <div className="rounded-lg border border-line bg-background p-4"><h3 className="text-sm font-semibold">Restore</h3><p className="mt-1 text-xs leading-5 text-muted">Choose a v1 or verified v2 archive. Contents are rebound to your ownership; existing idempotent records are preserved.</p><div className="mt-4 flex flex-wrap gap-2"><button type="button" onClick={() => inputRef.current?.click()} disabled={Boolean(busy)} className="action-button"><FileUp size={15} aria-hidden="true" />{archive ? archive.name : "Choose archive"}</button>{archive ? <button type="button" onClick={() => void restoreArchive()} disabled={Boolean(busy)} className="primary-button">{busy === "restore" ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : null}{busy === "restore" ? "Restoring…" : "Verify and restore"}</button> : null}<input ref={inputRef} type="file" accept="application/json,.json" className="sr-only" aria-label="Choose an Asael archive to restore" onChange={(event) => void selectArchive(event.target.files?.[0])} /></div>{restoreNeedsPassphrase ? <label className="mt-3 block text-xs font-semibold">Archive asset passphrase<input type="password" autoComplete="current-password" value={restorePassphrase} onChange={(event) => setRestorePassphrase(event.target.value)} maxLength={256} className="mt-1 block h-10 w-full rounded-md border border-line bg-surface px-3 text-sm font-normal outline-none focus:border-primary" /></label> : null}</div>
-    </div>
-    {message ? <p role="status" className={clsx("mt-4 rounded-md border px-3 py-2 text-sm", message.tone === "success" ? "border-primary/30 bg-primary/8" : "border-danger/35 bg-danger/10 text-danger")}>{message.text}</p> : null}
-  </section>;
-
+  const [download, setDownload] = useState<string>();
+  const [receipt, setReceipt] = useState<Awaited<ReturnType<typeof readPortableRestore>>>();
+  useLayoutEffect(() => () => { selection.current++; }, []);
+  const exportingBlocked = actions.blocked("read");
+  const restoreBlocked = actions.blocked("write.memory");
+  const needsPassphrase = archiveContainsEncryptedAssets(archive?.value);
+  const validPassphrase = !includeAssets || exportPassphrase.normalize("NFKC").length >= 12 && exportPassphrase.length <= 256;
   async function selectArchive(file?: File) {
-    setArchive(file);
-    setRestorePassphrase("");
-    setRestoreNeedsPassphrase(false);
-    setMessage(undefined);
+    const epoch = ++selection.current;
+    setArchive(undefined); setRestorePassphrase(""); setSelectionError(undefined); setSelecting(Boolean(file));
     if (!file) return;
     try {
-      if (file.size > 4 * 1024 * 1024) throw new Error("Portable archives must be 4 MB or smaller.");
-      setRestoreNeedsPassphrase(archiveContainsEncryptedAssets(JSON.parse(await file.text())));
-    } catch (error) {
-      setMessage({ tone: "error", text: error instanceof Error ? error.message : "Archive could not be read." });
-    }
+      if (file.size === 0 || file.size > 4 * 1024 * 1024) throw new Error("Choose a nonempty JSON archive no larger than 4 MB.");
+      const value: unknown = JSON.parse(await file.text());
+      if (!object(value)) throw new Error("The archive must be a JSON object.");
+      if (epoch === selection.current) setArchive({ file, value });
+    } catch (failure) { if (epoch === selection.current) setSelectionError(failure instanceof Error ? failure.message : "This archive could not be read."); }
+    finally { if (epoch === selection.current) setSelecting(false); }
   }
-}
-
-type PortableRestoreResponse = {
-  error?: string;
-  restored?: Partial<Record<PortableRestoredCountKey, number>> & {
-    connectionsReauthorizationRequired?: number;
-    verification?: { receiptSha256?: string };
-  };
-};
-
-const portableRestoredCountKeys = [
-  "knowledge", "memories", "threads", "turns", "today", "projects",
-  "skills", "agents", "assets",
-] as const;
-type PortableRestoredCountKey = typeof portableRestoredCountKeys[number];
-
-function restoredRecordCount(restored: PortableRestoreResponse["restored"]) {
-  return portableRestoredCountKeys.reduce(
-    (sum, key) => sum + Number(restored?.[key] || 0),
-    0,
-  );
-}
-
-function archiveContainsEncryptedAssets(value: unknown) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const archive = value as Record<string, unknown>;
-  if (archive.version !== 2 || !archive.assetEncryption) return false;
-  const data = archive.data;
-  return Boolean(
-    data && typeof data === "object" && !Array.isArray(data) &&
-    Array.isArray((data as Record<string, unknown>).assets) &&
-    ((data as Record<string, unknown>).assets as unknown[]).length,
-  );
-}
-
-function dispositionFilename(value: string | null) {
-  return value?.match(/filename="?([^";]+)"?/i)?.[1];
+  async function downloadArchive() {
+    if (actions.busy || exportingBlocked || !validPassphrase) return;
+    const submitted = { includeAssets, assetPassphrase: exportPassphrase };
+    const result = await actions.run({ label: "Prepare archive", permission: "read", fingerprint: JSON.stringify(["archive.export", submitted]), replayable: true, success: "Archive preparation completed. Browser download requested.", execute: async ({ current }) => {
+      const response = await fetch("/api/data/export", { cache: "no-store", signal: AbortSignal.timeout(150_000), ...(submitted.includeAssets ? mutationOptions("POST", submitted) : {}) });
+      if (!response.ok) throw new Error(`The archive could not be prepared (${response.status}).`);
+      const blob = await response.blob();
+      const value: unknown = JSON.parse(await blob.text());
+      if (!object(value) || value.format !== "asael-portable-archive" || value.version !== 2 || !object(value.data) || !digest(value.archiveSha256)) throw new Error("The export returned an incomplete v2 archive; no download was requested.");
+      const { archiveSha256, ...body } = value;
+      if (await settingsJsonSha256(body) !== archiveSha256) throw new Error("The exported archive digest did not match; no download was requested.");
+      if (!current()) return;
+      const url = URL.createObjectURL(blob);
+      try {
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = response.headers.get("content-disposition")?.match(/filename="?([^";]+)"?/i)?.[1]?.replace(/[\\/\u0000-\u001f]/g, "_") || "asael-portable-archive.json";
+        anchor.click();
+      } finally { URL.revokeObjectURL(url); }
+      return archiveSha256;
+    } });
+    if (result) { setDownload(result.value); setExportPassphrase(""); }
+  }
+  async function restoreArchive() {
+    if (actions.busy || restoreBlocked || !archive || selecting || needsPassphrase && !restorePassphrase) return;
+    const submitted = archive;
+    const body = needsPassphrase ? { archive: submitted.value, assetPassphrase: restorePassphrase } : submitted.value;
+    const result = await actions.run({ label: "Restore archive", permission: "write.memory", fingerprint: JSON.stringify(["archive.restore", body]), replayable: false, success: "The archive restore response was confirmed.", execute: async () => readPortableRestore(await settingsJson("/api/data/restore", mutationOptions("POST", body), 300_000), submitted.value, actions.session?.context?.tenantId) });
+    if (result) { setReceipt(result.value); setArchive(undefined); setRestorePassphrase(""); selection.current++; if (inputRef.current) inputRef.current.value = ""; }
+  }
+  return <section className={`${styles.workspace} ${styles.panel}`} aria-labelledby="personal-data-title">
+    <h3 id="personal-data-title">Your portable Asael archive</h3><p>Archive v2 declares counts, hashes, inclusions and exclusions. Credentials, embeddings and audit data are excluded; restored connections require reauthorization.</p>
+    <section className={styles.panel} aria-label="Export personal data"><h4>Export</h4><p>Knowledge, memories, conversations, focus items, projects, skills and Agents are included. Eligible originals can be included as encrypted assets: up to 25 originals / 2 MB.</p>
+      <fieldset disabled={Boolean(actions.busy)}><SettingsCheck label="Include eligible original assets" checked={includeAssets} onChange={setIncludeAssets} />{includeAssets ? <div className={styles.fields}><SettingsField label="Asset passphrase"><input type="password" autoComplete="new-password" value={exportPassphrase} minLength={12} maxLength={256} onChange={(event) => setExportPassphrase(event.target.value)} /></SettingsField><p className={styles.support}>Use 12–256 characters and keep the passphrase separately from the archive.</p></div> : null}</fieldset>
+      {exportingBlocked ? <p className={styles.warning}>{exportingBlocked}</p> : null}<div className={styles.actions}><button type="button" className={styles.primary} disabled={Boolean(actions.busy) || Boolean(exportingBlocked) || !validPassphrase} onClick={() => void downloadArchive()}>Download archive v2</button></div>
+      {download ? <div role="status" className={styles.receipt}><p>Archive prepared; browser download requested. Check your browser downloads for the saved file.</p><Metadata items={[{ label: "Archive digest", value: download }]} /></div> : null}
+    </section>
+    <section className={styles.panel} aria-label="Restore personal data"><h4>Restore</h4><p>Choose a v1 or v2 archive, up to 4 MB. Records are rebound to your current ownership. This endpoint has no general replay guarantee; an unconfirmed response must be checked before another restore.</p>
+      <SettingsField label="Choose an Asael archive to restore"><input ref={inputRef} type="file" accept="application/json,.json" disabled={Boolean(actions.busy)} onChange={(event) => void selectArchive(event.target.files?.[0])} /></SettingsField>
+      {selecting ? <p role="status">Reading the selected local archive…</p> : null}
+      {archive ? <Metadata items={[{ label: "Selected archive", value: archive.file.name }, { label: "Bytes", value: archive.file.size }, { label: "Version", value: object(archive.value) ? String(archive.value.version ?? "Legacy") : "Unknown" }]} /> : null}
+      {needsPassphrase ? <SettingsField label="Archive asset passphrase"><input type="password" autoComplete="current-password" value={restorePassphrase} maxLength={256} disabled={Boolean(actions.busy)} onChange={(event) => setRestorePassphrase(event.target.value)} /></SettingsField> : null}
+      {selectionError ? <p role="alert" className={styles.error}>{selectionError}</p> : null}{restoreBlocked ? <p className={styles.warning}>{restoreBlocked}</p> : null}
+      <div className={styles.actions}><button type="button" className={styles.primary} disabled={Boolean(actions.busy) || Boolean(restoreBlocked) || !archive || selecting || needsPassphrase && !restorePassphrase} onClick={() => void restoreArchive()}>Verify and restore</button></div>
+      {receipt ? <div className={styles.receipt} role="status"><p>{receipt.verification ? "V2 restore receipt confirmed" : "Legacy restore response confirmed; no v2 verification receipt was returned"} · {receipt.count} records processed.</p>{receipt.verification ? <><Metadata items={[{ label: "Receipt digest", value: String(receipt.verification.receiptSha256) }, { label: "Archive digest", value: String(receipt.verification.archiveSha256) }, { label: "Connections requiring reauthorization", value: receipt.reauthorization }, { label: "Verified at", value: String(receipt.verification.verifiedAt) }]} /><details><summary>Full restore verification receipt</summary><pre>{JSON.stringify(receipt.verification, null, 2)}</pre></details></> : null}</div> : null}
+    </section>
+    {actions.error ? <p className={styles.error}>{actions.error}</p> : null}
+  </section>;
 }

@@ -1,5 +1,6 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
+import { safeCompanionReturn } from "@/lib/companion/return-path";
 import {
   ASAEL_PUBLIC_HOST,
   LEGACY_PUBLIC_HOST,
@@ -19,6 +20,10 @@ export function proxy(request: NextRequest) {
   const nonce = crypto.randomUUID().replaceAll("-", "");
   const contentSecurityPolicy = buildContentSecurityPolicy(nonce);
   const requestHeaders = new Headers(request.headers);
+  // This is request metadata, never an authority or a client-supplied return URL.
+  requestHeaders.delete("x-asael-return-path");
+  const returnPath = safeCompanionReturn(request.nextUrl.pathname + request.nextUrl.search);
+  if (returnPath) requestHeaders.set("x-asael-return-path", returnPath);
   requestHeaders.set("x-nonce", nonce);
   requestHeaders.set("content-security-policy", contentSecurityPolicy);
 
@@ -80,7 +85,7 @@ export function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|.*\\..*).*)"],
+  matcher: ["/app/:path*", "/((?!_next/static|_next/image|favicon.ico|.*\\..*).*)"],
 };
 
 function shouldBlockWithoutDatabase() {

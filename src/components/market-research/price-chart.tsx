@@ -2,6 +2,7 @@
 
 import { AlertTriangle, Check, RefreshCw, Save } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import type { MarketAnalysisSubmission } from "./market-research-workspace-state";
 
 import styles from "@/components/market-research/market-research-workspace.module.css";
 import type {
@@ -23,6 +24,8 @@ import {
 } from "@/lib/market-research/tradingview-datafeed";
 
 type TradingViewWidget = {
+  changeTheme: (theme: "light" | "dark") => Promise<void>;
+  applyOverrides: (overrides: Record<string, boolean | string | number>) => void;
   chartReady: () => Promise<void>;
   activeChart: () => {
     resetData: () => void;
@@ -53,7 +56,7 @@ type TradingViewWidgetConstructor = new (options: {
   timezone: string;
   autosize: true;
   fullscreen: false;
-  theme: "dark";
+  theme: "light" | "dark";
   disabled_features: string[];
   enabled_features: string[];
   loading_screen: { backgroundColor: string; foregroundColor: string };
@@ -90,14 +93,16 @@ export function PriceChart({
   latestAnalysis,
   features,
   visibleLayerIds,
-  onAnalysisSaved,
+  onSaveAnalysis,
+  disabledReason,
 }: {
   instrument: MarketInstrument;
   bars: MarketBarsResult;
   latestAnalysis?: MarketAnalysisVersion;
   features?: MarketTechnicalFeaturesResult;
   visibleLayerIds?: readonly MarketTechnicalLayerId[];
-  onAnalysisSaved?: () => void;
+  onSaveAnalysis: (snapshot: MarketBarsResult, submitted: MarketAnalysisSubmission) => Promise<MarketAnalysisVersion | undefined>;
+  disabledReason?: string;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const widgetRef = useRef<TradingViewWidget | undefined>(undefined);
@@ -118,6 +123,22 @@ export function PriceChart({
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [savedLabel, setSavedLabel] = useState<string>();
   const [attempt, setAttempt] = useState(0);
+  const [themeRevision, setThemeRevision] = useState(0);
+  const [forcedColors, setForcedColors] = useState(false);
+  const [tablePage, setTablePage] = useState(0);
+  const [themeError, setThemeError] = useState(false);
+  const [restoreError, setRestoreError] = useState(false);
+  const saveAttemptRef = useRef<object | undefined>(undefined);
+  const themeQueueRef = useRef(Promise.resolve());
+  useEffect(() => {
+    const update = () => { setThemeRevision((value) => value + 1); setForcedColors(window.matchMedia("(forced-colors: active)").matches); };
+    const observer = new MutationObserver(update);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "class"] });
+    const contrast = window.matchMedia("(forced-colors: active)");
+    contrast.addEventListener("change", update);
+    update();
+    return () => { observer.disconnect(); contrast.removeEventListener("change", update); saveAttemptRef.current = undefined; };
+  }, []);
   useEffect(() => {
     latestAnalysisRef.current = latestAnalysis;
   }, [latestAnalysis]);
@@ -131,6 +152,7 @@ export function PriceChart({
     void loadTradingViewLibrary().then((Widget) => {
       if (disposed) return;
       const snapshot = activeSnapshotRef.current;
+      const palette = chartPalette();
       appliedSnapshotRef.current = {
         instrumentId: snapshot.instrument.instrumentId,
         snapshotId: snapshot.bars.snapshotId,
@@ -148,7 +170,7 @@ export function PriceChart({
           : "Etc/UTC",
         autosize: true,
         fullscreen: false,
-        theme: "dark",
+        theme: palette.theme,
         disabled_features: [
           "header_symbol_search",
           "symbol_search_hot_key",
@@ -168,23 +190,10 @@ export function PriceChart({
           "saveload_separate_drawings_storage",
         ],
         loading_screen: {
-          backgroundColor: "#101d21",
-          foregroundColor: "#72d7bd",
+          backgroundColor: palette.background,
+          foregroundColor: palette.foreground,
         },
-        overrides: {
-          "paneProperties.background": "#101d21",
-          "paneProperties.backgroundType": "solid",
-          "paneProperties.vertGridProperties.color": "rgba(126, 180, 170, 0.08)",
-          "paneProperties.horzGridProperties.color": "rgba(126, 180, 170, 0.08)",
-          "scalesProperties.textColor": "#9ab0ad",
-          "scalesProperties.lineColor": "rgba(126, 180, 170, 0.20)",
-          "mainSeriesProperties.candleStyle.upColor": "#72d7bd",
-          "mainSeriesProperties.candleStyle.downColor": "#ef8d86",
-          "mainSeriesProperties.candleStyle.borderUpColor": "#72d7bd",
-          "mainSeriesProperties.candleStyle.borderDownColor": "#ef8d86",
-          "mainSeriesProperties.candleStyle.wickUpColor": "#72d7bd",
-          "mainSeriesProperties.candleStyle.wickDownColor": "#ef8d86",
-        },
+        overrides: chartOverrides(palette),
       });
       widgetRef.current = widget;
       return widget.chartReady().then(async () => {
@@ -197,10 +206,10 @@ export function PriceChart({
           );
           if (!disposed && restored) {
             restoredAnalysisIdRef.current = restored.id;
-            setSavedLabel(`Restored ${formatSavedTime(restored.savedAt)}`);
+            setSavedLabel(`Restored ${formatSavedTime(restored.savedAt)} · saved source ${restored.snapshotId}`);
           }
         } catch {
-          if (!disposed) setSaveState("error");
+          if (!disposed) setRestoreError(true);
         }
         if (disposed) return;
         readyRef.current = true;
@@ -213,6 +222,7 @@ export function PriceChart({
     return () => {
       disposed = true;
       readyRef.current = false;
+      saveAttemptRef.current = undefined;
       systemShapeIdsRef.current = [];
       overlayRevisionRef.current += 1;
       widgetRef.current?.remove();
@@ -220,6 +230,21 @@ export function PriceChart({
       container.replaceChildren();
     };
   }, [attempt]);
+
+  useEffect(() => {
+    const widget = widgetRef.current;
+    if (!widget || status !== "ready") return;
+    let disposed = false;
+    const palette = chartPalette();
+    // TradingView's theme promise must settle before its explicit overrides.
+    // Serialize rapid theme changes so an older completion cannot win.
+    themeQueueRef.current = themeQueueRef.current.catch(() => undefined).then(async () => {
+      if (disposed || widgetRef.current !== widget) return;
+      await widget.changeTheme(palette.theme);
+      if (!disposed && widgetRef.current === widget) { widget.applyOverrides(chartOverrides(palette)); setThemeError(false); }
+    }).catch(() => { if (!disposed && widgetRef.current === widget) setThemeError(true); });
+    return () => { disposed = true; };
+  }, [status, themeRevision]);
 
   useEffect(() => {
     activeSnapshotRef.current = { instrument, bars };
@@ -261,7 +286,7 @@ export function PriceChart({
           activeSnapshotRef.current.bars.interval === snapshot.bars.interval
         ) {
           restoredAnalysisIdRef.current = restored?.id;
-          setSavedLabel(restored ? `Restored ${formatSavedTime(restored.savedAt)}` : undefined);
+          setSavedLabel(restored ? `Restored ${formatSavedTime(restored.savedAt)} · saved source ${restored.snapshotId}` : undefined);
           setSaveState("idle");
         }
       })().catch(() => {
@@ -288,10 +313,11 @@ export function PriceChart({
         latestAnalysisRef.current?.id !== latestAnalysis.id
       ) return;
       restoredAnalysisIdRef.current = latestAnalysis.id;
-      setSavedLabel(`Restored ${formatSavedTime(latestAnalysis.savedAt)}`);
+      setRestoreError(false);
+      setSavedLabel(`Restored ${formatSavedTime(latestAnalysis.savedAt)} · saved source ${latestAnalysis.snapshotId}`);
       setSaveState("idle");
     }).catch(() => {
-      if (!disposed && widgetRef.current === widget) setSaveState("error");
+      if (!disposed && widgetRef.current === widget) setRestoreError(true);
     });
     return () => { disposed = true; };
   }, [bars.interval, instrument.instrumentId, latestAnalysis, status]);
@@ -321,53 +347,47 @@ export function PriceChart({
       setOverlayState(annotations.length ? "rendering" : "ready");
       setOverlayFailureCount(0);
     });
-    void renderAnnotations(chart, annotations).then(({ ids, failedCount }) => {
+    const current = () => overlayRevisionRef.current === revision && widgetRef.current === widget;
+    void renderAnnotations(chart, annotations, current).then(({ ids, failedCount }) => {
       if (overlayRevisionRef.current !== revision || widgetRef.current !== widget) {
-        for (const id of ids) chart.removeEntity(id);
+        if (widgetRef.current === widget) for (const id of ids) chart.removeEntity(id);
         return;
       }
       systemShapeIdsRef.current = ids;
       setOverlayFailureCount(failedCount);
       setOverlayState(failedCount ? "partial" : "ready");
     }).catch(() => {
-      if (widgetRef.current === widget) {
+      if (current()) {
         setOverlayFailureCount(annotations.length);
         setOverlayState("partial");
       }
     });
-  }, [bars.snapshotId, features, status, visibleLayersKey]);
+  }, [bars.snapshotId, features, status, themeRevision, visibleLayersKey]);
 
+  const currentTablePage = Math.min(tablePage, Math.max(0, Math.ceil(bars.bars.length / 40) - 1));
   const saveAnalysis = async () => {
     const widget = widgetRef.current;
-    if (!widget || !readyRef.current || !features) return;
+    if (!widget || !readyRef.current || !features || disabledReason || saveAttemptRef.current) return;
+    const attempt = {};
+    saveAttemptRef.current = attempt;
+    const snapshot = activeSnapshotRef.current;
+    // A same-instrument price refresh may advance while this frozen save runs.
+    // Keep its accepted receipt labelled with its submitted snapshot; the keyed
+    // widget and attempt still fence a different instrument, interval or owner.
+    const current = () => saveAttemptRef.current === attempt && widgetRef.current === widget;
     setSaveState("saving");
     try {
       const chartState = serializeChartState(widget.activeChart().getLineToolsState());
-      const response = await fetch("/api/market-research/analysis", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "idempotency-key": `market-analysis-${bars.snapshotId}-${crypto.randomUUID()}`,
-        },
-        body: JSON.stringify({
-          snapshotId: bars.snapshotId,
-          visibleLayerIds,
-          chartState,
-        }),
-      });
-      const payload = await response.json() as {
-        version?: MarketAnalysisVersion;
-        error?: string;
-      };
-      if (!response.ok || !payload.version) {
-        throw new Error(payload.error || "Chart analysis could not be saved.");
-      }
-      restoredAnalysisIdRef.current = payload.version.id;
-      setSavedLabel(`Saved ${formatSavedTime(payload.version.savedAt)}`);
+      const version = await onSaveAnalysis(snapshot.bars, { snapshotId: snapshot.bars.snapshotId, visibleLayerIds: [...(visibleLayerIds ?? [])], chartState });
+      if (!current()) return;
+      if (!version) throw new Error("Private save was not confirmed.");
+      restoredAnalysisIdRef.current = version.id;
+      setSavedLabel(`Saved ${formatSavedTime(version.savedAt)} · ${version.id} · source ${version.snapshotId}`);
       setSaveState("saved");
-      onAnalysisSaved?.();
     } catch {
-      setSaveState("error");
+      if (current()) setSaveState("error");
+    } finally {
+      if (saveAttemptRef.current === attempt) saveAttemptRef.current = undefined;
     }
   };
 
@@ -379,6 +399,7 @@ export function PriceChart({
         role="region"
         aria-label={`TradingView Advanced Chart for ${instrument.label} with ${bars.bars.length} evidence-bound provider bars`}
         aria-busy={status === "loading"}
+        hidden={forcedColors}
       />
       {status === "loading" ? (
         <div className={styles.chartLibraryState} aria-live="polite">
@@ -412,12 +433,16 @@ export function PriceChart({
             {saveState === "saved" ? <Check size={13} /> : <Save size={13} />}
             {saveState === "error" ? "Private save unavailable" : savedLabel || "Drawings are private to you"}
           </span>
-          <button type="button" disabled={saveState === "saving"} onClick={() => void saveAnalysis()}>
+          <button type="button" disabled={saveState === "saving" || Boolean(disabledReason)} onClick={() => void saveAnalysis()}>
             {saveState === "saving" ? <RefreshCw className={styles.spin} size={13} /> : <Save size={13} />}
             {saveState === "saving" ? "Saving" : "Save version"}
           </button>
         </div>
       ) : null}
+      {disabledReason && features ? <p className={styles.permissionReason}>{disabledReason}</p> : null}
+      {themeError ? <p className={styles.permissionReason} role="status">Chart theme could not refresh. Exact price data remains available below.</p> : null}
+      {restoreError ? <p className={styles.permissionReason} role="status">Stored drawings could not be restored. The saved version remains in the analysis ledger.</p> : null}
+      <details className={styles.chartData} open={forcedColors || undefined}><summary>Exact price data · {bars.bars.length} bars</summary><p>{bars.instrumentId} · {bars.interval} · {bars.providerSymbol} · {bars.providerTimezone}</p><p>Snapshot <code>{bars.snapshotId}</code><br />Digest <code>{bars.snapshotSha256}</code></p><div className={styles.tableScroll} role="region" aria-label="Exact provider price bars" tabIndex={0}><table><caption>Immutable provider bars; timestamps are UTC.</caption><thead><tr><th scope="col">Time</th><th scope="col">Open</th><th scope="col">High</th><th scope="col">Low</th><th scope="col">Close</th><th scope="col">Volume</th></tr></thead><tbody>{bars.bars.slice(currentTablePage * 40, (currentTablePage + 1) * 40).map((bar) => <tr key={bar.time}><th scope="row"><time dateTime={bar.timestamp}>{bar.timestamp}</time></th><td>{bar.open}</td><td>{bar.high}</td><td>{bar.low}</td><td>{bar.close}</td><td>{bar.volume ?? "Unavailable"}</td></tr>)}</tbody></table></div><div className={styles.dataPager}><button type="button" disabled={currentTablePage === 0} onClick={() => setTablePage(Math.max(0, currentTablePage - 1))}>Previous price rows</button><span>Page {currentTablePage + 1} of {Math.max(1, Math.ceil(bars.bars.length / 40))} · 40 rows per page</span><button type="button" disabled={(currentTablePage + 1) * 40 >= bars.bars.length} onClick={() => setTablePage(currentTablePage + 1)}>Next price rows</button></div></details>
     </div>
   );
 }
@@ -469,11 +494,13 @@ function formatSavedTime(value: string) {
 async function renderAnnotations(
   chart: ReturnType<TradingViewWidget["activeChart"]>,
   annotations: MarketTechnicalFeaturesResult["annotations"],
+  current: () => boolean,
 ) {
   const ids: Array<string | number> = [];
   let failedCount = 0;
   const batchSize = 12;
   for (let index = 0; index < annotations.length; index += batchSize) {
+    if (!current()) break;
     const settled = await Promise.allSettled(
       annotations.slice(index, index + batchSize).map((item) =>
         createAnnotation(chart, item)
@@ -541,27 +568,22 @@ function annotationStyle(
   direction: MarketTechnicalFeaturesResult["annotations"][number]["direction"],
   reviewState: MarketTechnicalFeaturesResult["annotations"][number]["reviewState"],
 ) {
-  const palette: Record<MarketTechnicalLayerId, { line: string; fill: string }> = {
-    liquidity: { line: "#f2c078", fill: "rgba(242, 192, 120, 0.12)" },
-    imbalances: { line: "#72d7bd", fill: "rgba(114, 215, 189, 0.14)" },
-    blocks: { line: "#88aef1", fill: "rgba(136, 174, 241, 0.14)" },
-    setups: { line: "#d7a6ff", fill: "rgba(215, 166, 255, 0.16)" },
-    sessions: { line: "#67868b", fill: "rgba(103, 134, 139, 0.07)" },
-    quarterly: { line: "#9fb4af", fill: "rgba(159, 180, 175, 0.08)" },
-    structure: { line: "#d5e4e1", fill: "rgba(213, 228, 225, 0.10)" },
-    gaps: { line: "#ef8d86", fill: "rgba(239, 141, 134, 0.13)" },
+  const palette = chartPalette();
+  const layers: Record<MarketTechnicalLayerId, string> = {
+    liquidity: palette.accent, imbalances: palette.success, blocks: palette.info, setups: palette.warning,
+    sessions: palette.muted, quarterly: palette.strong, structure: palette.foreground, gaps: palette.danger,
   };
   const color = direction === "bullish"
-    ? "#72d7bd"
+    ? palette.success
     : direction === "bearish"
-      ? "#ef8d86"
-      : palette[layerId].line;
+      ? palette.danger
+      : layers[layerId];
   return {
     linecolor: color,
     color,
     textcolor: color,
     textColor: color,
-    backgroundColor: palette[layerId].fill,
+    backgroundColor: annotationFill(layers[layerId]),
     fillBackground: true,
     linewidth: layerId === "setups" ? 2 : 1,
     linestyle: reviewState === "candidate_rule" ? 2 : 0,
@@ -570,6 +592,29 @@ function annotationStyle(
     showPriceLabels: false,
     showTime: false,
   };
+}
+
+function chartPalette() {
+  const tokens = getComputedStyle(document.documentElement);
+  const theme = document.documentElement.dataset.theme === "dark" ? "dark" as const : "light" as const;
+  const value = (name: string) => tokens.getPropertyValue(`--${name}`).trim();
+  return { theme, background: value("surface"), foreground: value("foreground"), muted: value("muted"),
+    line: value("line"), strong: value("line-strong"), accent: value("accent"), success: value("success"),
+    danger: value("danger"), info: value("info"), warning: value("warning") };
+}
+function chartOverrides(palette: ReturnType<typeof chartPalette>) {
+  return {
+    "paneProperties.background": palette.background, "paneProperties.backgroundType": "solid",
+    "paneProperties.vertGridProperties.color": palette.line, "paneProperties.horzGridProperties.color": palette.line,
+    "scalesProperties.textColor": palette.muted, "scalesProperties.lineColor": palette.strong, "scalesProperties.fontSize": 13,
+    "mainSeriesProperties.candleStyle.upColor": palette.success, "mainSeriesProperties.candleStyle.downColor": palette.danger,
+    "mainSeriesProperties.candleStyle.borderUpColor": palette.success, "mainSeriesProperties.candleStyle.borderDownColor": palette.danger,
+    "mainSeriesProperties.candleStyle.wickUpColor": palette.success, "mainSeriesProperties.candleStyle.wickDownColor": palette.danger,
+  };
+}
+function annotationFill(color: string) {
+  const hex = /^#([a-f\d]{6})$/i.exec(color)?.[1];
+  return hex ? `rgba(${Number.parseInt(hex.slice(0, 2), 16)}, ${Number.parseInt(hex.slice(2, 4), 16)}, ${Number.parseInt(hex.slice(4, 6), 16)}, 0.12)` : "transparent";
 }
 
 function loadTradingViewLibrary() {
@@ -588,6 +633,7 @@ function loadTradingViewLibrary() {
       if (constructor) resolve(constructor);
       else {
         chartLibraryPromise = undefined;
+        script.remove();
         reject(new Error("TradingView Advanced Charts did not initialize."));
       }
     };

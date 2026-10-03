@@ -1,5 +1,11 @@
 import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
+import { renderToStaticMarkup as renderMarkup } from "react-dom/server";
+import { WorkspaceSessionProvider } from "@/components/app-shell/session-context";
+function renderToStaticMarkup(element: React.ReactElement) {
+  return renderMarkup(createElement(WorkspaceSessionProvider, {
+    initialSession: { authEnabled: false, authenticated: true, context: { tenantId: "fixture", actorId: "owner", role: "admin" } },
+  } as Parameters<typeof WorkspaceSessionProvider>[0], element));
+}
 import { describe, expect, it } from "vitest";
 
 import {

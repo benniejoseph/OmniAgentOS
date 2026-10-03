@@ -28,7 +28,8 @@ import { clsx } from "clsx";
 import { postApprovalDecision } from "@/components/approvals/approval-decision";
 import { PersonalConnections } from "@/components/connectors/personal-connections";
 import { McpConnections } from "@/components/connectors/mcp-connections";
-import { PersonalDataControls } from "@/components/settings/personal-data-controls";
+import { parseConnectionInventory, parseContractReviewReceipt, parseOpenApiCreationReceipt } from "@/components/integrations/connection-state";
+import { useCapabilityActions } from "@/components/automation/use-capability-actions";
 import {
   permissionMessage,
   type WorkspacePermission,
@@ -41,6 +42,12 @@ import {
 } from "@/lib/browser-storage-keys";
 import { workflowControlRunsFrom } from "@/lib/workflows/client-controls";
 import styles from "../daybook-workspaces.module.css";
+
+// Data export/restore belongs to Settings; other domain routes never render it.
+const PersonalDataControls = dynamic(
+  () => import("@/components/settings/personal-data-controls").then((module) => module.PersonalDataControls),
+  { loading: () => <p role="status">Opening data and privacy controls…</p> },
+);
 
 export type DomainConsoleKey =
   | "knowledge"
@@ -1258,6 +1265,8 @@ export function DomainConsole({
   const actionRequestKeys = useRef<
     Record<string, { signature: string; key: string }>
   >({});
+  const integrationActions = useCapabilityActions();
+  const [integrationReceipt, setIntegrationReceipt] = useState<ActionResult>();
 
   const data = useMemo(() => {
     return Object.fromEntries(Object.entries(resources).map(([key, value]) => [key, value.data])) as DomainData;
@@ -1299,7 +1308,7 @@ export function DomainConsole({
       for (const endpoint of config.endpoints) {
         const access = endpointAccess(endpoint.path, session);
         next[endpoint.key] = access.allowed
-          ? { status: "loading", data: current[endpoint.key]?.data }
+          ? { status: "loading", data: current[endpoint.key]?.data, ...(domain === "integrations" ? { error: current[endpoint.key]?.error } : {}) }
           : {
               status: "error",
               code: access.code,
@@ -1331,7 +1340,7 @@ export function DomainConsole({
               AbortSignal.timeout(15_000),
             ]),
           });
-          resource = { status: "ready", data };
+          resource = { status: "ready", data: domain === "integrations" ? parseConnectionInventory(endpoint.key, data) : data };
         } catch (error) {
           const message = error instanceof HttpError || error instanceof Error ? error.message : "Request failed.";
           const code = error instanceof HttpError ? error.status : undefined;
@@ -1347,7 +1356,7 @@ export function DomainConsole({
         if (!controller.signal.aborted) {
           setResources((current) => ({
             ...current,
-            [endpoint.key]: resource,
+            [endpoint.key]: domain === "integrations" && resource.status === "error" ? { ...resource, data: current[endpoint.key]?.data } : resource,
           }));
         }
         return [endpoint.key, resource] as const;
@@ -1470,6 +1479,7 @@ export function DomainConsole({
   );
 
   async function runAction(action: DomainAction, values: Record<string, FormValue>) {
+    if (domain === "integrations") { await runIntegrationAction(action, values); return; }
     const disabledReason = permissionMessage(
       workspaceSession,
       sessionStatus,
@@ -1618,6 +1628,51 @@ export function DomainConsole({
     }
   }
 
+  async function runIntegrationAction(action: DomainAction, values: Record<string, FormValue>) {
+    const disabled = permissionMessage(workspaceSession, sessionStatus, actionPermission(action));
+    if (disabled) { setActionResult({ title: action.title, status: "error", message: disabled }); return; }
+    const attempt = integrationActions.begin(action.id);
+    if (!attempt) return;
+    setRunningAction(action.id);
+    setAnnouncement(`${action.title} submitted.`);
+    try {
+      const body = asRecord(action.buildPayload?.(values));
+      const requestPath = action.buildPath?.(values) || action.path;
+      const signature = JSON.stringify([requestPath, body]);
+      const prior = actionRequestKeys.current[action.id];
+      const key = prior?.signature === signature ? prior.key : crypto.randomUUID();
+      actionRequestKeys.current[action.id] = { signature, key };
+      const result = await readJson(requestPath, {
+        method: action.method,
+        headers: { "content-type": "application/json", "idempotency-key": key },
+        body: JSON.stringify(body),
+      });
+      if (!integrationActions.current(attempt)) return;
+      const receipt = parseOpenApiCreationReceipt(result, body);
+      delete actionRequestKeys.current[action.id];
+      const message = receipt.importFailed
+        ? `REST connection ${String(receipt.connector.id)} was created, but its operation import failed. Its saved state is ${String(receipt.connector.status)}; it is not ready for execution.`
+        : `REST connection ${String(receipt.connector.id)} was created with state ${String(receipt.connector.status)}. Discovered operations still require their exact contract review.`;
+      const accepted: ActionResult = { title: action.title, status: receipt.importFailed ? "error" : "success", message, data: {
+        connectorId: receipt.connector.id, name: receipt.connector.name, state: receipt.connector.status,
+        specUrl: receipt.connector.specUrl, baseUrl: receipt.connector.baseUrl, importFailed: receipt.importFailed,
+      } };
+      setActionResult(accepted);
+      setIntegrationReceipt(accepted);
+      setAnnouncement(message);
+      // Receipt acceptance and subsequent inventory reads have independent outcomes.
+      integrationActions.finish(attempt);
+      setRunningAction(undefined);
+      void load();
+    } catch (error) {
+      if (!integrationActions.current(attempt)) return;
+      setActionResult({ title: action.title, status: "error", message: error instanceof Error ? error.message : "No confirmed connection receipt was received. Refresh before trying again." });
+      setAnnouncement("The connection outcome could not be confirmed. Review the response and current inventory.");
+    } finally {
+      if (integrationActions.current(attempt)) { integrationActions.finish(attempt); setRunningAction(undefined); }
+    }
+  }
+
   async function reviewConnectorContracts(
     item: JsonRecord,
     kind: "mcp" | "openapi",
@@ -1642,7 +1697,14 @@ export function DomainConsole({
       return;
     }
 
+    const sourceKey = kind === "mcp" ? "connectors" : "openapi";
+    if (resources[sourceKey]?.status !== "ready") {
+      setActionResult({ title: "Connector contract review", status: "error", message: "Refresh the current contract inventory before approving it." });
+      return;
+    }
     const actionId = `review-${kind}-${id}`;
+    const attempt = integrationActions.begin(actionId);
+    if (!attempt) return;
     const label = kind === "mcp" ? "MCP" : "OpenAPI";
     setRunningAction(actionId);
     setActionResult(undefined);
@@ -1658,18 +1720,22 @@ export function DomainConsole({
           body: JSON.stringify({ expectedFingerprint: fingerprint }),
         },
       );
-      const promoted = numberValue(readPath(result, "promoted"), 0);
-      setActionResult({
+      if (!integrationActions.current(attempt)) return;
+      const receipt = parseContractReviewReceipt(result, kind, id);
+      const accepted: ActionResult = {
         title: `${label} contract review`,
         status: "success",
-        message: promoted
-          ? `Approved ${promoted} exact ${label} ${promoted === 1 ? "contract" : "contracts"} and activated the connector.`
-          : "No pending contracts remained. The connector view was refreshed.",
-        data: result,
-      });
+        message: `${receipt.promoted} ${label} contracts were promoted. Connector state: ${receipt.status}.${receipt.activationRequired ? " Activation is still required." : " The connector is active."} Submitted connector: ${id}. Submitted fingerprint: ${fingerprint}.`,
+        data: { submittedConnectorId: id, submittedFingerprint: fingerprint, promoted: receipt.promoted, status: receipt.status, activationRequired: receipt.activationRequired },
+      };
+      setActionResult(accepted);
+      setIntegrationReceipt(accepted);
       setAnnouncement(`${label} contract review completed.`);
-      await load();
+      integrationActions.finish(attempt);
+      setRunningAction(undefined);
+      void load();
     } catch (error) {
+      if (!integrationActions.current(attempt)) return;
       setActionResult({
         title: `${label} contract review`,
         status: "error",
@@ -1678,7 +1744,7 @@ export function DomainConsole({
       });
       setAnnouncement(`${label} contract review failed.`);
     } finally {
-      setRunningAction(undefined);
+      if (integrationActions.current(attempt)) { integrationActions.finish(attempt); setRunningAction(undefined); }
     }
   }
 
@@ -1687,9 +1753,9 @@ export function DomainConsole({
       (section) => section.title === "OpenAPI connectors",
     );
     const tabCounts = {
-      personal: arrayPath(data, "oauth.grants").length,
-      mcp: arrayPath(data, "connectors.connectors").length,
-      openapi: arrayPath(data, "openapi.connectors").length,
+      personal: data.oauth ? arrayPath(data, "oauth.grants").length : "Unavailable",
+      mcp: data.connectors ? arrayPath(data, "connectors.connectors").length : "Unavailable",
+      openapi: data.openapi ? arrayPath(data, "openapi.connectors").length : "Unavailable",
     };
 
     return (
@@ -1702,6 +1768,8 @@ export function DomainConsole({
         <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
           {announcement}
         </p>
+        {Object.values(resources).some((resource) => resource.status !== "ready") ? <p role="status" className="mt-3 text-sm text-muted">Counts and rows with prior successful reads remain last-loaded evidence. Unavailable sources have no confirmed current count.</p> : null}
+        {integrationActions.pending ? <p role="status" className="mt-3 text-sm text-muted">A connection action is pending. Leaving this page stops local follow-up work; submitted server or provider work may still complete.</p> : null}
 
         <section id="manage-connections" className="rounded-xl border border-line bg-surface p-4 sm:p-5" aria-labelledby="manage-connections-title">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
@@ -1784,8 +1852,9 @@ export function DomainConsole({
           <div id="personal-connections" hidden={integrationSection !== "personal"}>
             <div id="personal-sources">
               <PersonalConnections
+                actions={integrationActions}
                 payload={data.oauth}
-                loading={resources.oauth?.status === "loading"}
+                loading={!resources.oauth || resources.oauth.status === "loading"}
                 error={resources.oauth?.status === "error" ? resources.oauth.error : undefined}
                 disabledReason={personalSourceDisabledReason}
                 onRefresh={load}
@@ -1796,8 +1865,9 @@ export function DomainConsole({
           <div id="mcp-connections" hidden={integrationSection !== "mcp"}>
             <div className="mt-4">
               <McpConnections
+                actions={integrationActions}
                 payload={data.connectors}
-                loading={resources.connectors?.status === "loading"}
+                loading={!resources.connectors || resources.connectors.status === "loading"}
                 error={resources.connectors?.status === "error" ? resources.connectors.error : undefined}
                 disabledReason={connectorReviewDisabledReason}
                 onRefresh={load}
@@ -1829,7 +1899,7 @@ export function DomainConsole({
                       key={actionFormVersion}
                       actions={config.actions}
                       defaultValues={actionDefaults}
-                      runningAction={runningAction}
+                      runningAction={integrationActions.pending}
                       disabledReasons={Object.fromEntries(
                         config.actions.map((action) => [
                           action.id,
@@ -1861,15 +1931,17 @@ export function DomainConsole({
             mcpTools={arrayPath(data, "connectors.tools")}
             openApiConnectors={arrayPath(data, "openapi.connectors")}
             openApiOperations={arrayPath(data, "openapi.operations")}
-            runningAction={runningAction}
+            runningAction={integrationActions.pending}
             disabledReason={connectorReviewDisabledReason}
+            readStates={{ mcp: resources.connectors?.status, openapi: resources.openapi?.status }}
             onReview={(item, kind) => void reviewConnectorContracts(item, kind)}
           />
         </div>
 
+        {integrationReceipt ? <details className="mt-4 border-y border-line py-2"><summary>Last confirmed connection receipt</summary><p>{integrationReceipt.message}</p><pre className="whitespace-pre-wrap break-words text-xs">{JSON.stringify(integrationReceipt.data, null, 2)}</pre></details> : null}
         {actionResult ? (
           <div className="mt-4">
-            <Panel title={actionResult.title} description={actionResult.status === "success" ? "Latest connection action." : "The action did not complete."}>
+            <Panel title={actionResult.title} description="Latest connection response. Inventory freshness is reported separately.">
               <div
                 className={clsx(
                   "rounded-md border p-3 text-sm",
@@ -1988,10 +2060,11 @@ export function DomainConsole({
       {domain === "integrations" ? (
         <PersonalConnections
           payload={data.oauth}
-          loading={resources.oauth?.status === "loading"}
+          loading={!resources.oauth || resources.oauth.status === "loading"}
           error={resources.oauth?.status === "error" ? resources.oauth.error : undefined}
           disabledReason={personalSourceDisabledReason}
           onRefresh={load}
+          actions={integrationActions}
         />
       ) : null}
 
@@ -1999,7 +2072,7 @@ export function DomainConsole({
         <div className="mt-4" data-daybook="mcp-manager">
           <McpConnections
             payload={data.connectors}
-            loading={resources.connectors?.status === "loading"}
+            loading={!resources.connectors || resources.connectors.status === "loading"}
             error={
               resources.connectors?.status === "error"
                 ? resources.connectors.error
@@ -2007,6 +2080,7 @@ export function DomainConsole({
             }
             disabledReason={connectorReviewDisabledReason}
             onRefresh={load}
+            actions={integrationActions}
           />
         </div>
       ) : null}
@@ -2310,6 +2384,7 @@ function ConnectorContractReviewPanel({
   runningAction,
   disabledReason,
   onReview,
+  readStates,
 }: {
   mcpConnectors: JsonRecord[];
   mcpTools: JsonRecord[];
@@ -2318,6 +2393,7 @@ function ConnectorContractReviewPanel({
   runningAction?: string;
   disabledReason?: string;
   onReview: (item: JsonRecord, kind: "mcp" | "openapi") => void;
+  readStates?: { mcp?: string; openapi?: string };
 }) {
   const reviews = [
     ...mcpConnectors.map((connector) => ({
@@ -2349,7 +2425,7 @@ function ConnectorContractReviewPanel({
   return (
     <Panel
       title="Contract review queue"
-      description="Inspect newly discovered operations here. Approval activates the connector and is bound to this exact catalog, so a concurrent contract change is rejected."
+      description="Inspect newly discovered operations here. Review is bound to this exact catalog, so a concurrent contract change is rejected. The returned receipt reports whether activation is still required."
     >
       {disabledReason ? (
         <div className="mb-3 rounded-md border border-warning/45 bg-warning/10 p-3 text-xs leading-5 text-muted">
@@ -2412,11 +2488,13 @@ function ConnectorContractReviewPanel({
                   catalog.
                 </p>
               ) : null}
+              <details className="mt-3"><summary>Exact connector and contract catalog</summary><dl><div><dt>Connector</dt><dd>{id}</dd></div><div><dt>Fingerprint</dt><dd>{stringPath(connector, "review.fingerprint", "Unavailable")}</dd></div></dl><pre className="whitespace-pre-wrap break-words text-xs">{JSON.stringify(contracts, null, 2)}</pre></details>
+              {readStates && readStates[kind] !== "ready" ? <p role="status">These are last-loaded contracts. Refresh this source before approving them.</p> : null}
 
               <button
                 type="button"
                 onClick={() => onReview(connector, kind)}
-                disabled={Boolean(disabledReason) || Boolean(runningAction)}
+                disabled={Boolean(disabledReason) || Boolean(runningAction) || Boolean(readStates && readStates[kind] !== "ready")}
                 className="mt-3 inline-flex min-h-10 w-full items-center justify-center gap-2 rounded-md bg-primary px-3 text-xs font-semibold text-primary-ink transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-55"
               >
                 {busy ? (
@@ -2429,8 +2507,8 @@ function ConnectorContractReviewPanel({
                   <ShieldCheck size={14} aria-hidden="true" />
                 )}
                 {busy
-                  ? "Approving and activating"
-                  : "Approve and activate connector"}
+                  ? "Recording contract review"
+                  : "Approve exact contracts"}
               </button>
             </article>
           );

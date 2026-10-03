@@ -108,3 +108,26 @@ dock destination, both themes and eight scoped axe scans. It forwards no
 application write, OAuth, provider, microphone or playback request; the shared
 runner's isolated bootstrap login is the only real setup mutation. This is a
 static portrait, not evidence of the later ATLAS rig or animation pipeline.
+
+The specialist, operations and public families run in three additional hosted
+jobs. Each job runs its suites serially within the existing 15-minute limit;
+local execution remains wholly serial. Route JavaScript and server-trace budgets
+remain unchanged. Every family uses the same isolated login, blocked external
+traffic and exact intercepted effects as the core harness.
+
+| Suite | Main interaction boundary |
+| --- | --- |
+| `markets.py` | Five views; exact instrument, interval and snapshot; retained evidence, pending jobs and chart adapter fallback |
+| `agents.py` | Roster, outcomes and exact Agent identity; release, grant and adaptation inspectors; independent stale sources |
+| `capabilities.py` | Seven independent source reads; connection/manifest review, extension lifecycle and exclusive actions |
+| `workflows.py` | Plan/schedules/history; immutable policy and procedure pins, quarantine, recovery and exact schedule controls |
+| `payments.py` | Exact mandate constraints, cancelled/unsupported synthetic authenticator flows and signer removal |
+| `operational_views.py` | Quality, Monitoring and Security; scoped actions, retained failures and independent source recovery |
+| `settings_advanced.py` | Dirty editors, conflicts, provider rotation, API secrets, recovery/export and same-key uncertain retries |
+| `public_pages.py` | Nine public/legal reading routes, health deadlines and factual private availability with zero effects |
+| `access_recovery.py` | Credential errors/return destinations, explicit simulated demo, offline recovery, loading and branded 404 |
+
+These suites include theme, narrow-width, text scaling, keyboard and accessibility
+checks. WebAuthn, payment, provider, connector and browser downloads use synthetic
+fixtures; passing them does not establish a hardware signer, external effect or
+production deployment. Public legal meaning is preserved by source review.
