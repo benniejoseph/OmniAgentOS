@@ -80,6 +80,7 @@ async function readCurrent(sql: SqlClient, authority: MemoryLifecycleMutationAut
     WHERE memory.tenant_id = ${authority.tenantId} AND memory.id = ${memoryId}
       AND memory.access_contract_version = 1 AND memory.access_state = 'scope_bound'
       AND memory.visibility = 'user_private' AND memory.owner_actor_id = ${authority.ownerActorId}
+      AND memory.allowed_purpose_ids @> ARRAY['memory.maintenance.v1']::TEXT[]
       AND memory.claim_status <> 'forgotten'
     LIMIT 1
   `;

@@ -27,3 +27,6 @@ e57b12cc265ceed63064314b3857a3baef6c0832:src/lib/orchestration/resume-queue-chec
 77de6c9c316062fa1f1f085f2e84e22610cd1048:src/lib/settings/provider-connection-store-postgres.test.ts:generic-api-key:288
 e800e58ffc180af8d65a868f40ae281ad46bd340:src/lib/workflows/personal-context.test.ts:generic-api-key:23
 9549e7ce12e602dff7249b7928da0c716f781f53:supabase/migrations/20260905213500_user_private_memory_access_canary.sql:generic-api-key:195
+# Verified SHA-256 pins of public native-contract v32/v33 OpenAPI documents.
+9c58a9be7461268de81c5e295d99836c559776f4:src/lib/mobile/contracts.test.ts:generic-api-key:588
+9c58a9be7461268de81c5e295d99836c559776f4:src/lib/mobile/contracts.test.ts:generic-api-key:594

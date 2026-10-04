@@ -1590,7 +1590,12 @@ The final combined web build also passed after the communication recovery fixes
 Owner direction defers broad local regression suites. Changed web/server files
 have passed ESLint. The full Flutter analyzer passed with no issues
 (`atlas-completion-flutter-analyze.log`). All 21 declared native destinations
-resolve to working views. The signed macOS Release build is in progress. These facts
+resolve to working views. The universal private macOS Release build, nested
+signature checks, hardened-runtime checks and DMG packaging passed. The package
+is `macos-completion-release/Asael-1.23.8-43-macOS.dmg`, SHA-256
+`303ae27136a25af33d9da5db4fcc2408ce1198722c8377eab042cdb154090ea5`.
+It was built from the functional implementation in `9c58a9be`; subsequent CI
+corrections require the next native package. These facts
 do not claim new regression-suite or device acceptance. Evidence is retained in
 `/Volumes/Extreme Pro/Asael-release-records/2026-10-03-followups/ui-validation`.
 
@@ -1605,6 +1610,17 @@ green exact-commit hosted checks with `--use-hosted-verification`. Required owne
 migration, gateway and smoke-account credentials are absent from the available
 release environment. The dedicated Asael v2 private signing material is present,
 and its immutable credential broker passed signature, source, bundle and certificate
-verification. A private signed Mac release build is next; Apple-notarized/APNs
+verification. Private signed Mac packaging passed; Apple-notarized/APNs
 distribution remains a separate signing configuration. Final ATLAS art and
 physical-device acceptance remain open.
+
+PR #48's first hosted run passed the web build, deployed preview, worker, audit,
+macOS policies and four browser groups. Follow-up corrections cover exact
+approval fixture validation, authenticated native recovery fixtures, Quick Entry
+overlay detection, enlarged Markets text, and forced-colors semantic statuses.
+The exact public v32/v33 OpenAPI checksum findings are documented by two narrow
+secret-scan fingerprints. The focused native rerun passed 41 cases, and the
+Memory serving-role rerun passed 11 cases including concurrent replay and forget
+cleanup. That fixture now explicitly enrolls lifecycle maintenance, while the
+read adapter withholds lifecycle review for records without that existing
+purpose. No record-purpose list or RLS policy was widened.

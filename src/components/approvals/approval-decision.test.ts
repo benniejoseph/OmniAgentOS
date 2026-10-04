@@ -438,19 +438,28 @@ describe("the item a link opened", () => {
     const { stub, fetchImpl } = fetchStub(
       jsonResponse({ item: item({ id: "exec/1" }) }),
       jsonResponse({ item: null }),
-      jsonResponse({ item: { id: "x", kind: "bogus" } }),
     );
 
     await expect(fetchApprovalQueueItem({ id: "exec/1", kind: "tool" }, fetchImpl))
       .resolves.toEqual(item({ id: "exec/1" }));
     await expect(fetchApprovalQueueItem({ id: "decided" }, fetchImpl)).resolves.toBeUndefined();
-    await expect(fetchApprovalQueueItem({ id: "x" }, fetchImpl)).resolves.toBeUndefined();
     expect(stub.mock.calls.map(([url]) => url)).toEqual([
       "/api/approvals?id=exec%2F1&kind=tool",
       "/api/approvals?id=decided",
-      "/api/approvals?id=x",
     ]);
     expect(stub.mock.calls[0]![1]).toEqual({ cache: "no-store" });
+  });
+
+  it.each([
+    { label: "malformed item", body: { item: { id: "exec-1", kind: "bogus" } } },
+    { label: "missing item field", body: {} },
+    { label: "different item identity", body: { item: item({ id: "exec-other" }) } },
+    { label: "different item kind", body: { item: item({ kind: "workflow" }) } },
+  ])("rejects a $label instead of presenting it as absent", async ({ body }) => {
+    await expect(fetchApprovalQueueItem(
+      { id: "exec-1", kind: "tool" },
+      fetchStub(jsonResponse(body)).fetchImpl,
+    )).rejects.toThrow("The approval response did not match the requested item.");
   });
 
   it("throws when the item cannot be read", async () => {

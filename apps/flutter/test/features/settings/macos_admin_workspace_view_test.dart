@@ -102,9 +102,7 @@ void main() {
 Widget _app({Key? key}) => nativeWorkspaceFixture(
   key: key,
   child: ProviderScope(
-    overrides: [
-      adminRepositoryProvider.overrideWithValue(_AdminRepository()),
-    ],
+    overrides: [adminRepositoryProvider.overrideWithValue(_AdminRepository())],
     child: MaterialApp(
       theme: MacosAppTheme.light(),
       home: const MacosAdminWorkspaceView(moduleId: 'monitoring'),

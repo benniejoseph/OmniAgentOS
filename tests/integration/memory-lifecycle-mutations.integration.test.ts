@@ -33,10 +33,8 @@ databaseDescribe("exact Memory lifecycle acceptance and forget closure", () => {
     await admin.unsafe(`GRANT USAGE ON SCHEMA public TO ${runtimeRole}`);
     // Existing legacy grants are deployment provisioning, not installed by the
     // additive migration. RLS and every existing deletion/Memory guard stay on.
-    await admin.unsafe(`GRANT SELECT ON omni_schema_version,omni_agent_runs,omni_agent_events,omni_workflow_runs,omni_workflow_plans,omni_tool_executions TO ${runtimeRole}`);
-    await admin.unsafe(`GRANT SELECT,INSERT,UPDATE ON omni_memories,omni_memory_lifecycle_states,omni_events TO ${runtimeRole}`);
-    await admin.unsafe(`GRANT SELECT,DELETE ON omni_daily_briefs TO ${runtimeRole}`);
-    await admin.unsafe(`GRANT USAGE ON SEQUENCE omni_events_seq_seq TO ${runtimeRole}`);
+    await admin.unsafe(`GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA public TO ${runtimeRole}`);
+    await admin.unsafe(`GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO ${runtimeRole}`);
     await closeDatabaseClient();
     const url = new URL(databaseUrl!); url.username = runtimeRole; url.password = password;
     vi.stubEnv("DATABASE_URL", url.toString()); vi.stubEnv("NODE_ENV", "production");
@@ -64,9 +62,10 @@ databaseDescribe("exact Memory lifecycle acceptance and forget closure", () => {
   function owned<T>(a: MemoryLifecycleMutationAuthority, work: () => Promise<T>) {
     return runWithDatabaseActorScope(a.tenantId, [a.ownerActorId], work);
   }
-  async function seed(tag: string, options: { tenant?: string; actor?: string; parent?: string } = {}) {
+  async function seed(tag: string, options: { tenant?: string; actor?: string; parent?: string; maintenance?: boolean } = {}) {
     const tenantId = options.tenant ?? `lifecycle-${tag}`, memoryId = `memory-${tag}`, ownerActorId = options.actor ?? actor;
-    const binding = buildUserPrivateMemoryAccessBindingV1({ tenantId, ownerActorId, originPurpose: "memory.lifecycle.fixture" });
+    const binding = buildUserPrivateMemoryAccessBindingV1({ tenantId, ownerActorId, originPurpose: "memory.lifecycle.fixture",
+      allowedPurposeIds: options.maintenance === false ? undefined : [MEMORY_PURPOSE_IDS.read, MEMORY_PURPOSE_IDS.maintenance, MEMORY_PURPOSE_IDS.forget] });
     await admin`INSERT INTO omni_memories(id,tenant_id,type,title,content,tags,scope,source,asserted_by,evidence_refs,
       access_contract_version,access_state,owner_actor_id,owner_agent_id,workspace_id,project_id,mission_id,visibility,sensitivity,origin_purpose,allowed_purpose_ids,access_scope_sha256,access_bound_at)
       VALUES(${memoryId},${tenantId},'fact','Private fixture','Never retain this private fixture text',${[]},'user','manual','user',${options.parent ? [`memory:${options.parent}`] : []},
@@ -116,6 +115,13 @@ databaseDescribe("exact Memory lifecycle acceptance and forget closure", () => {
     }
     throw new Error("Expected serving transaction never reached its PostgreSQL lock barrier.");
   }
+
+  test("private read permission alone does not offer a lifecycle target", async () => {
+    const target = await seed("read-only-purpose", { maintenance: false });
+    const a = authority(target.tenantId, MEMORY_PURPOSE_IDS.read, target.ownerActorId);
+    expect(await owned(a, () => readMemoryLifecycleTarget(a, target.memoryId))).toBeNull();
+    expect(await counts(target)).toEqual({ receipts: 0, events: 0 });
+  });
 
   test("exact accepted replay survives later lifecycle changes without undoing them", async () => {
     const target = await seed("replay"), pin = await request(target, "pin");

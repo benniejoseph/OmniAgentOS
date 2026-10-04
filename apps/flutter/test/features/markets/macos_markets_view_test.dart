@@ -18,10 +18,6 @@ void main() {
           ? 'Markets remains readable at 320 pixels and 200 percent text'
           : 'Mac Markets opens stored evidence and all five research views',
       (tester) async {
-        debugDefaultTargetPlatformOverride = phone
-            ? TargetPlatform.android
-            : TargetPlatform.macOS;
-        addTearDown(() => debugDefaultTargetPlatformOverride = null);
         tester.view.physicalSize = phone
             ? const Size(320, 900)
             : const Size(1440, 1000);
@@ -80,6 +76,9 @@ void main() {
         await tester.pump();
         expect(tester.takeException(), isNull);
       },
+      variant: TargetPlatformVariant.only(
+        phone ? TargetPlatform.android : TargetPlatform.macOS,
+      ),
     );
   }
 }

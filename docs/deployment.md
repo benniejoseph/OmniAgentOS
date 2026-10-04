@@ -2470,6 +2470,11 @@ send time. Retained historical metadata cannot become a file attachment.
 Memory create/correct preserve their existing once-only submission behavior;
 an uncertain result is held for inspection rather than automatically replayed.
 Lifecycle and forget recovery reuse the exact saved key and reviewed target.
+Lifecycle review is offered only when that exact private record already allows
+`memory.maintenance.v1`; ordinary default bindings do not include that purpose.
+The lifecycle publication does not enroll older records or widen their purpose
+lists. Records without it retain their separately authorized read, correction
+and forget workflows, and no lifecycle token is offered.
 Source-prefix deletion and proposal promotion are not newly enrolled. New
 Markets reads select stored snapshots without provider effects; calendar and
 provider refresh remain explicit actions. Market analysis metadata excludes

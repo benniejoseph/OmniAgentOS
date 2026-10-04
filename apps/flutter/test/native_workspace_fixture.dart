@@ -14,8 +14,13 @@ const nativeWorkspaceFixtureOrigin = 'https://workspace.example.test';
 
 /// Keeps the production access provider active while isolating layout fixtures
 /// from credential storage, bootstrap I/O, and local biometric plugins.
-Widget nativeWorkspaceFixture({Key? key, ApiClient? api, required Widget child}) {
-  final client = api ??
+Widget nativeWorkspaceFixture({
+  Key? key,
+  ApiClient? api,
+  required Widget child,
+}) {
+  final client =
+      api ??
       ApiClient(
         Dio(BaseOptions(baseUrl: nativeWorkspaceFixtureOrigin)),
         Dio(),

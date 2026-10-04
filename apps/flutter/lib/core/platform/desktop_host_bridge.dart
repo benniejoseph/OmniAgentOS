@@ -389,7 +389,11 @@ class DesktopHostBridge {
         router.go(route);
         return;
       }
-      final current = router.routerDelegate.currentConfiguration.uri.path;
+      // Imperative pushes retain the base configuration URI. The last leaf
+      // identifies the mounted overlay that must be replaced or deduplicated.
+      final configuration = router.routerDelegate.currentConfiguration;
+      final current =
+          configuration.lastOrNull?.matchedLocation ?? configuration.uri.path;
       if (_quickEntryRouteToken != null || current == route) return;
       final token = _quickEntryRouteToken = Object();
       // Keep the existing workspace mounted, including its unsent composer.

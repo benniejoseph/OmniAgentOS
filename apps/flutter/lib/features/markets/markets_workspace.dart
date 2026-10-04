@@ -736,9 +736,10 @@ class _MarketWorkspaceState extends State<_MarketWorkspace> {
                     ),
                   ),
                 SizedBox(
-                  width: 150,
+                  width: MediaQuery.textScalerOf(context).scale(150),
                   child: DropdownButtonFormField<String>(
                     initialValue: c.interval,
+                    isExpanded: true,
                     decoration: const InputDecoration(labelText: 'Interval'),
                     items: [
                       for (final value in ['5min', '15min', '1h'])
