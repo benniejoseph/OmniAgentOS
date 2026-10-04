@@ -7,6 +7,11 @@ import {createAtlas} from '../../.design/asael-ace-revamp/atlas-production/sourc
 import {STATE_NAMES,CLIP_NAMES,createPlaybackGate,validateSequence,sequenceIndex} from '../../.design/asael-ace-revamp/atlas-production/web/lifecycle.mjs';
 const config=JSON.parse(await readFile(new URL('../../.design/asael-ace-revamp/atlas-production/source/model.json',import.meta.url),'utf8'));
 const release = model => {model.mesh.geometry.dispose();model.mesh.material.map?.dispose();model.mesh.material.dispose();model.mesh.skeleton.dispose();};
+const wingAtlasPartNames=new Set();
+for(const side of ['Left','Right']) {
+  wingAtlasPartNames.add(`folded_wing_underform_${side}`);
+  for(let row=0;row<3;row++)for(let column=0;column<4;column++)wingAtlasPartNames.add(`layered_wing_covert_${side}_${row}_${column}`);
+}
 
 test('procedural geometry is finite, indexed and deterministically bound to the 14-bone eyelid rig',()=>{
   const a=createAtlas(config),b=createAtlas(config);
@@ -132,8 +137,11 @@ test('procedural geometry is finite, indexed and deterministically bound to the 
       assert.ok(column>=16&&column<=495&&row>480&&row<959,'only the front upper chart may color a fitted brow');
       assert.equal(colors.getX(i),colors.getY(i));assert.equal(colors.getX(i),colors.getZ(i));
     }
-    const unchanged=a.root.userData.parts.filter(part=>!continuous.includes(part)&&!tufts.includes(part)&&!brows.includes(part));
-    assert.equal(unchanged.length,119);
+    const wings=a.root.userData.parts.filter(part=>wingAtlasPartNames.has(part.name));
+    assert.equal(wings.length,26);
+    assert.deepEqual(new Set(wings.map(part=>part.name)),wingAtlasPartNames,'only the two underforms and 24 named coverts join the mapped parts');
+    const unchanged=a.root.userData.parts.filter(part=>!continuous.includes(part)&&!tufts.includes(part)&&!brows.includes(part)&&!wings.includes(part));
+    assert.equal(unchanged.length,93);
     for(const part of unchanged)for(let i=part.vertexStart;i<part.vertexStart+part.vertexCount;i++) {
       assert.equal(uv.getX(i),504/512);assert.equal(uv.getY(i),504/512);
     }
@@ -207,6 +215,90 @@ test('procedural geometry is finite, indexed and deterministically bound to the 
     assert.ok(upperGrainSamples>0,'upper-head interiors must actually sample their expanded feather field');
     assert.equal(sampledParts.size,2,'both continuous layers must contribute interior samples');
   }finally{release(a);release(b);}
+});
+
+test('mapped wing surfaces use bounded brown paint with scalar tones and continuous longitudinal seams',()=>{
+  const model=createAtlas(config);try{
+    const geometry=model.mesh.geometry,position=geometry.getAttribute('position'),uv=geometry.getAttribute('uv'),colors=geometry.getAttribute('color');
+    const image=model.mesh.material.map.image;
+    const wings=model.root.userData.parts.filter(part=>wingAtlasPartNames.has(part.name));
+    assert.equal(wings.length,26);assert.deepEqual(new Set(wings.map(part=>part.name)),wingAtlasPartNames);
+    const bytes=color=>color.toArray().map(value=>Math.round(value*255));
+    const lower=bytes(new Color(config.palette.umber).multiplyScalar(.76).convertLinearToSRGB());
+    const upper=bytes(new Color(config.palette.umber).multiplyScalar(1.22).convertLinearToSRGB());
+    const vertexOwners=new Map(),samples=new Map();
+    const filteredPixel=(u,v)=>{
+      const x=u*image.width-.5,y=v*image.height-.5,left=Math.floor(x),bottom=Math.floor(y),dx=x-left,dy=y-bottom;
+      assert.ok(left>=528&&left+1<=1007&&bottom>=16&&bottom+1<=480,
+        'the complete wing filter footprint must stay inside existing brown rear-body texels');
+      const pixel=(column,row,channel)=>image.data[(row*image.width+column)*4+channel];
+      return [0,1,2].map(channel=>pixel(left,bottom,channel)*(1-dx)*(1-dy)+pixel(left+1,bottom,channel)*dx*(1-dy)
+        +pixel(left,bottom+1,channel)*(1-dx)*dy+pixel(left+1,bottom+1,channel)*dx*dy);
+    };
+    for(const part of wings) {
+      let minimumTone=Infinity,maximumTone=-Infinity;
+      samples.set(part.name,{triangles:0,colors:new Set(),minimumRed:Infinity,maximumRed:-Infinity});
+      for(let index=part.vertexStart;index<part.vertexStart+part.vertexCount;index++) {
+        vertexOwners.set(index,part);
+        const u=uv.getX(index),v=uv.getY(index),tone=colors.getX(index);
+        assert.ok(Number.isFinite(u)&&Number.isFinite(v));
+        assert.ok(u>=544.5/1024-1e-7&&u<=991.5/1024+1e-7&&v>=48.5/1024-1e-7&&v<=447.5/1024+1e-7,
+          `${part.name}: every corner and affine triangle interior must stay in the retained brown rectangle`);
+        assert.equal(colors.getY(index),tone);assert.equal(colors.getZ(index),tone);
+        assert.ok(Number.isFinite(tone)&&tone>=.95-1e-6&&tone<=1.03+1e-6,
+          `${part.name}: umber comes from the atlas once, with only bounded scalar vertex tones`);
+        minimumTone=Math.min(minimumTone,tone);maximumTone=Math.max(maximumTone,tone);
+        if(part.name.startsWith('folded_wing_underform_'))assert.equal(tone,1,'underforms retain their unit tone');
+      }
+      if(part.name.startsWith('layered_wing_covert_'))assert.ok(minimumTone<.97&&maximumTone>1.005,
+        `${part.name}: the original crest/root tonal variation must not be flattened to a constant`);
+    }
+    const probes=[[1/3,1/3,1/3],[.6,.2,.2],[.2,.6,.2],[.2,.2,.6]];
+    for(let offset=0;offset<geometry.index.count;offset+=3) {
+      const triangle=[0,1,2].map(corner=>geometry.index.getX(offset+corner));
+      const part=vertexOwners.get(triangle[0]);if(!part)continue;
+      assert.ok(triangle.every(index=>vertexOwners.get(index)===part),'a wing triangle must remain inside its own named part');
+      const measured=samples.get(part.name);measured.triangles++;
+      for(const barycentric of probes) {
+        const u=triangle.reduce((sum,index,corner)=>sum+uv.getX(index)*barycentric[corner],0);
+        const v=triangle.reduce((sum,index,corner)=>sum+uv.getY(index)*barycentric[corner],0);
+        const sample=filteredPixel(u,v);
+        for(let channel=0;channel<3;channel++)assert.ok(sample[channel]>=lower[channel]-1e-5&&sample[channel]<=upper[channel]+1e-5,
+          `${part.name}: triangle-interior paint must exclude pale/white texels and remain in the retained umber range`);
+        measured.colors.add(sample.map(Math.round).join(','));
+        measured.minimumRed=Math.min(measured.minimumRed,sample[0]);measured.maximumRed=Math.max(measured.maximumRed,sample[0]);
+      }
+    }
+    for(const [name,measured] of samples) {
+      assert.ok(measured.triangles>0,`${name}: actual indexed triangles must contribute samples`);
+      assert.ok(measured.colors.size>=3&&measured.maximumRed-measured.minimumRed>1,
+        `${name}: interior samples must show nonconstant paint, not a collapsed UV or one flat texel`);
+    }
+    let seamPairs=0;
+    for(const part of wings.filter(value=>value.name.startsWith('folded_wing_underform_'))) {
+      assert.equal(part.vertexCount,21*11,'the retained 20-by-10 underform grid and duplicate seam vertices remain');
+      // Non-pole copies on the sphere's longitudinal seam occupy the same
+      // surface point. Compare UVs and complete filtered paint, not just names.
+      for(let row=1;row<10;row++) {
+        const first=part.vertexStart+row*21,last=first+20;
+        const a=new Vector3().fromBufferAttribute(position,first),b=new Vector3().fromBufferAttribute(position,last);
+        assert.ok(a.distanceTo(b)<1e-6,'longitudinal seam samples must be physically coincident');
+        assert.ok(Math.abs(uv.getX(first)-uv.getX(last))*1024<.001&&Math.abs(uv.getY(first)-uv.getY(last))*1024<.001,
+          'coincident wing seam copies must meet at the same chart location');
+        const startColor=filteredPixel(uv.getX(first),uv.getY(first)),endColor=filteredPixel(uv.getX(last),uv.getY(last));
+        assert.ok(startColor.every((value,channel)=>Math.abs(value-endColor[channel])<.001),'wing seam copies must have matching filtered paint');
+        const columns=[];
+        for(let column=0;column<=20;column++) {
+          const index=first+column;columns.push(uv.getX(index)*1024);
+          if(column>0)assert.ok(Math.abs(uv.getX(index)-uv.getX(index-1))*1024<50,
+            'an adjacent wing ring edge must not jump across the atlas chart');
+        }
+        assert.ok(Math.max(...columns)-Math.min(...columns)>400,'each wing ring must use the angular chart rather than collapse onto one strip');
+        seamPairs++;
+      }
+    }
+    assert.equal(seamPairs,18,'both underforms must contribute all nine non-pole longitudinal seam pairs');
+  }finally{release(model);}
 });
 
 test('all eight state samples reset to the same rest transform without accumulating pose changes',()=>{

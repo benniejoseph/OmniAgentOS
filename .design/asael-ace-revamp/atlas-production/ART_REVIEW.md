@@ -1,5 +1,63 @@
 # ATLAS actual-art review — 5 October 2026 (IST)
 
+## Wing-color01 — retained wing finish and verified matching full export
+
+Root retains wing-color01 after reviewing all fifteen matched comparison sheets /
+120 captures. Independent review of six comparison sheets and the selected
+concept reference agrees: feather color is more coherent across the torso and
+wing bases, especially in three-quarter, profile and raised-wing samples. The
+gain is subtle at 256px. Root finds the 72/36px result neutral; the independent
+72px comparison likewise adds no distracting texture. No new obvious wrap
+banding or wing/body junction defect appears in the reviewed light, dark,
+resting or posed samples. This is an incremental finish improvement, not final
+character or continuous-motion approval.
+
+Exact scope parity confines changes to UV/color attributes of the two folded-wing
+underforms and 24 coverts. All attributes of the other 141 parts, including the
+face, torso and sixteen primaries, remain exact FACE02. All positions, normals,
+ordered indices, skin indices/weights, rig/binds, static poses, all twelve clips
+and 168 tracks, material settings and complete atlas bytes are preserved. These
+scope facts do not by themselves demonstrate appearance or motion quality.
+
+The matching comparison archive is
+`wing-color01-comparison/matching-source-baseline-and-captures.tar.gz`, SHA256
+`222bf301d5a808487d27400f03a6cc9f87a5a353cb1f6afd3ea98c85cffd364e`.
+It binds fourteen sources, 120 captures and fifteen sheets. The retention
+decision is recorded at `2026-10-04T23:34:34.884045+00:00` in
+`wing-color01-comparison/decision.json`.
+
+The matching full export completed at `2026-10-04T23:38:46.946533+00:00`. All nineteen source hashes, 104 artifacts, 33 raster delivery files and 237 archived members verify. The self-contained GLB is 2,969,088 bytes: 27,543 vertices, 49,844 triangles, fourteen bones, twelve clips, one material and one embedded 1024 × 1024 RGBA map, with zero external resources. Eleven model/lifecycle checks and ten lid-coverage checks pass. Full-export GLB comparison covers 72 captures / 36 pairs: 32 byte-exact and four differing by seven total pixels, maximum one channel byte. Root reviewed full, torso, raised-wing and closed-eye sheets; both modes pass hide/reload/dispose with no page/console/rejected-request errors. This verifies retention through export, not final character or continuous-motion acceptance.
+
+Full archive: `atlas-wing-color01-review.tar.gz`, SHA256 `b40b163425a7f7cd678db9f5c33b2a02dd49080b6c97c55a02c864feae448c3a`. Verification receipt: `atlas-wing-color01-export-verification.json`. The nineteen source files now include the two standalone lid diagnostic files absent from the seventeen-source FACE02 export.
+
+Final likeness, lid finish, natural acting, continuous attachment, small-size state readability, device performance and publication remain open. The approved static portrait/greeting remain active.
+
+Next concrete art target: the sixteen primary vanes still read as flat, uniform
+brown strips beside the textured coverts, clearest in the completed .34 front
+and three-quarter samples. The selected reference has a more continuous feather
+finish across that transition. A bounded feather-direction/taper shading pass
+on those vanes, preserving geometry, rig and motion, should be compared at
+256px and 72px. Retain only a visible normal-size improvement without distracting
+small-size patterning; this recommendation does not imply that surface color
+will resolve final silhouette or acting.
+
+## Raised01 — rejected pose experiment; FACE02 restored at that checkpoint
+
+Root and independent review rejected raised01 after 108 captures / eighteen
+sheets. It demonstrated no contour or small-size readability benefit in front
+or either 30-degree view and slightly weakened questioning asymmetry. No clear
+new defect was identified. Closed and final-hold controls were pixel-identical;
+those stills do not establish continuous-motion quality.
+
+Only the left upper-lid `needs_you` keys at .34 and .48 seconds changed to
+-16 degrees. Matching source, baseline, capture helper and all comparisons are
+preserved in `raised01-comparison/matching-source-baseline-and-captures.tar.gz`,
+SHA256 `21f7c106c3ae640e6f430f1c4be507df2eaed0a29e52fde0f7e0b3606ff4eeee`.
+The rejection is recorded at `2026-10-04T23:17:43.690368+00:00`. All seventeen
+FACE02 export-bound inputs were restored and verified after archival; the
+narrower closed-highlight guard remains committed separately. No new full
+model export or publication followed from this experiment.
+
 ## FACE03 — rejected upper-lid depth experiment; exact FACE02 restored
 
 Root and independent review rejected the candidate after 78 matched captures /
@@ -22,25 +80,25 @@ The matching candidate source/baseline/render archive is
 `5949060f704f1efa3ca81a38770673231e389ea70663a1f826db2b943a354ce4`.
 `face03-comparison/review-decision.json` records the rejection at
 `2026-10-04T22:28:26.255756+00:00`. Root restored all seventeen export-bound
-FACE02 source files exactly. FACE02 remains the retained complete export; there
-was no new full GLB export or publication, and final character/acting/device
-acceptance remains open.
+FACE02 source files exactly. FACE02 remained the retained complete export at
+that checkpoint; no new full GLB export or publication followed from FACE03,
+and final character/acting/device acceptance remained open.
 
-## FACE02 — latest matching full export, character still unaccepted
+## FACE02 — verified historical export predecessor, character still unaccepted
 
-The current source is `sculpt-04-face-02-anchored-brows`. Root and independent visual review inspected all seventeen matched sheets / 102 images and retain its clearer neutral/listening integration. No new trench, detached tip or lid obstruction was seen in the sampled phases. The asymmetric crest remains readable, but the distinct eyebrow gesture is substantially quieter, especially at three-quarter. This local refinement is retained with that expressive tradeoff recorded.
+The FACE02 source is `sculpt-04-face-02-anchored-brows`. Root and independent visual review inspected all seventeen matched sheets / 102 images and retained its clearer neutral/listening integration. No new trench, detached tip or lid obstruction was seen in the sampled phases. The asymmetric crest remains readable, but the distinct eyebrow gesture is substantially quieter, especially at three-quarter. Wing-color01 preserves this brow refinement and its recorded expressive tradeoff.
 
 Ten model checks and `/tmp/atlas-face02-parity.mjs` pass. Changes are confined to `neutral_brow_sweep_Left` and `neutral_brow_sweep_Right`; the other 165 parts, all ordered indices, the full atlas, rig/static poses and all 168 animation tracks remain exact FEATHER03. The existing topology is retained. Shallow broad ridges fit the actual retained head triangles, with fully Head-bound attachment borders and terminal rings blending toward Brow-bound centers. Only those two parts reuse the existing upper feather atlas; every image byte stays unchanged.
 
 The nine bound comparison files are preserved in `face02-comparison/matching-source-and-baseline.tar.gz`, SHA256 `15966ef551dfda6b6ffa474e2def0a6bb5ffc750deb59aa317f165cc5a78157f`. Review includes neutral/listening/strongest-needs-you, blink/closed/completed, front/three-quarter/profile and 72/36-pixel samples. These stills do not prove continuous attachment or small-size `needs_you` readability. Existing bulky closed lids, final likeness, natural acting and device acceptance remain open.
 
-The matching full export completed at `2026-10-04T22:10:08.914731+00:00`. All seventeen source hashes, 104 artifact hashes/byte lengths and 169 archive members verify in `atlas-face-02-export-verification.json`. The self-contained GLB is 2,969,076 bytes, retaining 27,543 vertices, 49,844 triangles, fourteen bones, twelve clips, 167 parts, one material and one embedded 1024 × 1024 RGBA8 map, with zero external resources. Ten current model checks pass. The unchanged static-tool scripts retain FEATHER02's ten passing checks; they were not rerun for FACE02.
+The matching full export completed at `2026-10-04T22:10:08.914731+00:00`. All seventeen source hashes, 104 artifact hashes/byte lengths and 169 archive members verify in `atlas-face-02-export-verification.json`. The self-contained GLB is 2,969,076 bytes, retaining 27,543 vertices, 49,844 triangles, fourteen bones, twelve clips, 167 parts, one material and one embedded 1024 × 1024 RGBA8 map, with zero external resources. Ten FACE02 model checks passed. The unchanged static-tool scripts retained FEATHER02's ten passing checks; they were not rerun for FACE02.
 
 Source/GLB parity covers 42 captures / 21 pairs across seven groups and three views. Fifteen pairs are pixel-identical. Listening differs by two pixels in each of three views; closed three-quarter differs by one; completed three-quarter by four and profile by ten. The summed difference is 21 pixels, at most one channel byte. Both modes pass hide/reload/dispose without page, console or rejected-request errors. These are bounded still and lifecycle observations, not continuous attachment, natural acting or performance acceptance.
 
 The GLB comparison archive `face02-glb-parity/matching-source-and-baseline.tar.gz` has SHA256 `c95a062aee104efe36139d48025eaa43fc45bfe0faebd4e1f8a91a3e5f05c9d4`. Full archive `atlas-face-02-review.tar.gz` has SHA256 `5c51cca88d2df62d38b725ef9c1524532499249e2adecd35a0588aa6ae87508a`. Export-manifest SHA256 is `424b740d77b1da8531b84c7ce9cd57615edee99aa07b56db1d6b31da04a5e95a`; raster-manifest SHA256 is `1d5ecf746f98dd23999f3c573fc138f3f667af50beb6fea34bacad7e18e6fdea`.
 
-FACE02 is the latest verified complete matching export. FEATHER03 and earlier exports below are dated history. No final-art, continuous-motion, device-performance or publication acceptance is claimed; the approved static portrait/greeting remain active.
+FACE02 is the verified complete export predecessor to retained wing-color01, whose matching export is pending. FEATHER03 and earlier exports below are dated history. No final-art, continuous-motion, device-performance or publication acceptance is claimed; the approved static portrait/greeting remain active.
 
 ## FEATHER03 — historical torso-paint export at 21:45 UTC
 

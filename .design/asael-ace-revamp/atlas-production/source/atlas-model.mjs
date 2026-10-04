@@ -384,6 +384,14 @@ function overlappingPrimaryFan(side,pivot) {
 
 const wingEase=value=>{const t=clamp(value);return t*t*(3-2*t);};
 
+/** Existing brown rear-chart paint in the wing's own height/angular frame. */
+function wingAtlasUV(side,q,phi) {
+  // Fold front/rear continuously at the sides; never span an atlas wrap seam.
+  const angle=Math.atan2(side*Math.cos(phi),Math.abs(Math.sin(phi)));
+  const column=544.5+447*clamp(.5+angle/Math.PI),row=48.5+399*clamp((q+1)/2);
+  return [column/1024,row/1024];
+}
+
 /** One original wing frame, with a recessed cap and a smaller inner surface. */
 function foldedWingEnvelope(side) {
   const matrix=new THREE.Matrix4().compose(new THREE.Vector3(side*.445,1.601,-.065),
@@ -398,17 +406,18 @@ function foldedWingEnvelope(side) {
     const radial=Math.sqrt(Math.max(0,1-q*q));
     return map(new THREE.Vector3(radial*Math.cos(angle),q,radial*Math.sin(angle)),scale);
   };
-  return {inverse:matrix.clone().invert(),innerScale,map,surface};
+  return {side,inverse:matrix.clone().invert(),innerScale,map,surface};
 }
 
 /** Resample the same sphere vertices; keep its indices, seam and pole copies. */
 function foldedWingUnderform(wing) {
   const result=new THREE.SphereGeometry(1,20,10),vertices=result.getAttribute('position');
-  const point=new THREE.Vector3();
+  const point=new THREE.Vector3(),coordinates=[];
   for(let i=0;i<vertices.count;i++) {
     point.fromBufferAttribute(vertices,i);
     const fitted=wing.map(point,wing.innerScale(point.y));
     vertices.setXYZ(i,fitted.x,fitted.y,fitted.z);
+    coordinates.push(...wingAtlasUV(wing.side,point.y,Math.atan2(point.z,point.x)));
   }
   result.computeVertexNormals();
   const normals=result.getAttribute('normal');
@@ -419,6 +428,7 @@ function foldedWingUnderform(wing) {
     average.normalize();
     for(const index of group)normals.setXYZ(index,average.x,average.y,average.z);
   }
+  result.setAttribute('uv',new THREE.Float32BufferAttribute(coordinates,2));
   return result;
 }
 
@@ -443,7 +453,7 @@ function wingMeshContact(mesh) {
 
 /** Fit only wing coverts; the shared feather() and primary geometry stay intact. */
 function fittedWingCovert(wing,contact,length,width,depth,sweep,curl,position,rotation) {
-  const result=feather(length,width,depth,sweep,curl),vertices=result.getAttribute('position');
+  const result=feather(length,width,depth,sweep,curl),vertices=result.getAttribute('position'),coordinates=[];
   const matrix=new THREE.Matrix4().compose(new THREE.Vector3(...position),quaternion(rotation),new THREE.Vector3(1,1,1));
   const envelopes=[.18,.72,.90,.76,.56,.31,.10,.006];
   for(let row=0;row<vaneProfile.length;row++) {
@@ -468,9 +478,11 @@ function fittedWingCovert(wing,contact,length,width,depth,sweep,curl,position,ro
       const thickness=fullDepth*(1-release)+.00012*release;
       const fitted=crest.addScaledVector(radial,-thickness*(1-front)/2);
       vertices.setXYZ(index,fitted.x,fitted.y,fitted.z);
+      coordinates.push(...wingAtlasUV(wing.side,q,phi));
     }
   }
   result.computeVertexNormals();
+  result.setAttribute('uv',new THREE.Float32BufferAttribute(coordinates,2));
   return result;
 }
 
@@ -879,12 +891,14 @@ export function createAtlas(config) {
     const hasThroat=name==='continuous_eagle_silhouette'||name==='continuous_directional_plumage';
     const hasBodyGrain=name.startsWith('breast_flow_tuft_')||name.startsWith('mantle_flow_tuft_');
     const hasBrowAtlas=name==='neutral_brow_sweep_Left'||name==='neutral_brow_sweep_Right';
+    const hasWingAtlas=/^(folded_wing_underform_(Left|Right)|layered_wing_covert_(Left|Right)_[0-2]_[0-3])$/.test(name);
     // Both continuous layers append in world-rest coordinates with identity transforms.
     if(hasThroat)splitThroatChartUV(mesh);
     const matrix = new THREE.Matrix4().compose(new THREE.Vector3(...position), quaternion(rotation), new THREE.Vector3(...scale));
     const normalMatrix = new THREE.Matrix3().getNormalMatrix(matrix), offset = p.length / 3;
     const vertices = mesh.getAttribute('position'), normals = mesh.getAttribute('normal'), tones=mesh.getAttribute('tone');
     const chartUV=hasThroat?mesh.getAttribute('uv'):null;
+    const wingUV=hasWingAtlas?mesh.getAttribute('uv'):null;
     // Choose one island for the complete tuft; never span the atlas in a triangle.
     // These 44 meshes, like the continuous layers, use world-rest coordinates.
     let tuftRear=false;
@@ -906,6 +920,10 @@ export function createAtlas(config) {
       } else if(hasBodyGrain||hasBrowAtlas) {
         colors.push(tone,tone,tone);
         uv.push(...plumageAtlasUV(silhouette,point.x,point.y,point.z,hasBrowAtlas?false:tuftRear));
+      } else if(hasWingAtlas) {
+        // The unchanged atlas supplies umber once; preserve the original tone.
+        colors.push(tone,tone,tone);
+        uv.push(wingUV.getX(i),wingUV.getY(i));
       } else {
         colors.push(color.r*tone,color.g*tone,color.b*tone);
         // Other parts retain their vertex palette through a padded white region.
