@@ -1732,3 +1732,39 @@ and contract boundary pass covered 51 cases. All 14 serving-role database cases
 passed, and schema verification confirmed 225 migrations and 254 tenant tables.
 Final packaging and hosted acceptance are recorded separately. This entry does
 not claim production deployment or whole-plan completion.
+
+
+## Native deterministic Account health — 4 October 2026
+
+Contract v37 publishes reviewed Account health evaluation and exact immutable
+acceptance reads. The request pins the current Account revision and digest and
+uses the existing deterministic policy with an empty model-suggestion list.
+Migration226 adds bounded, nullable native intent metadata to immutable health
+revisions; legacy rows remain distinguishable and cannot become native receipts.
+Evaluation intent, score, head and typed event commit atomically. Recovery checks
+current workspace/owner authority and can return the original acceptance beside
+a newer Account. Exact reads never re-evaluate. A definite first-attempt refusal
+is only returned when one scoped query proves both current authority and absence
+of the exact evaluation; hidden or unavailable acceptance remains uncertain.
+
+Native phone/macOS review uses the Account journal, preserving existing drafts
+and create/revise recovery. It upgrades that journal to schema2 only when health
+intent is needed. Save-before-dispatch, single pending operation, explicit role
+and foreground fences, and exact GET-only recovery remain. Missing/older durable
+state cannot erase a known unresolved intent, and a known accepted operation
+takes precedence over an older stored receipt after local acknowledgement loss.
+Role changes do not migrate recovery journals across role identities.
+
+The existing health API/service boundary passed 47 focused cases; 15 domain and
+contract cases passed after fixture corrections. Seven serving-role database
+cases passed, and full schema verification confirmed 226 migrations and 254
+tenant tables. Nine core error-envelope cases and nine generated SDK cases pass;
+full Flutter analysis passes. Full TypeScript checking and changed-file lint
+pass. Both phone (320px at 200% text) and desktop review/receipt checks pass;
+seven historical migration/policy replay cases also pass with schema226/254.
+The phone test uses real drags through the list gutter because selectable-text
+scrollables consume center drags. Hosted build and package results are recorded
+with the release evidence. Broader local regression
+runs remain deferred at the owner request. This slice does not complete Account
+workflow, Salesforce or whole-program acceptance, and production has not been
+migrated or promoted.

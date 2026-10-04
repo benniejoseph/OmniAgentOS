@@ -152,6 +152,7 @@ const RESTRICTIVE_ACTOR_POLICIES = new Map<string, string>([
   ].map((tableName): [string, string] => [tableName, `${tableName}_actor`]),
   ["omni_memory_lifecycle_mutations", "omni_memory_lifecycle_mutations_actor"],
   ["omni_meeting_calendar_sync_acceptances", "omni_meeting_calendar_sync_actor"],
+  ["omni_events", "omni_meeting_calendar_sync_event_actor"],
   ["omni_meeting_commitment_resolution_intents", "omni_meeting_commitment_resolution_intents_owner"],
   ["omni_meeting_commitment_resolution_progress", "omni_meeting_commitment_resolution_progress_owner"],
   ["omni_tenant_memory_access_grants", "omni_memory_access_grant_actor"],

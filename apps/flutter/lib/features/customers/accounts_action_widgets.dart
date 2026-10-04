@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'accounts_contracts.dart';
 import 'accounts_controller.dart';
 import 'accounts_mutation_controller.dart';
+import 'accounts_health_review.dart';
 
 class AccountActionsPanel extends StatelessWidget {
   const AccountActionsPanel({super.key, required this.controller});
@@ -53,7 +54,9 @@ class AccountActionsPanel extends StatelessWidget {
                         : null,
                     child: const Text('Revise this Account'),
                   ),
-                if (actions.storageUnconfirmed || actions.pending != null)
+                if (actions.storageUnconfirmed ||
+                    actions.pending != null ||
+                    actions.pendingHealth != null)
                   OutlinedButton(
                     onPressed: actions.available && !actions.busy
                         ? actions.reload
@@ -74,6 +77,7 @@ class AccountActionsPanel extends StatelessWidget {
                   child: Text(actions.message!),
                 ),
               ),
+            AccountHealthRecovery(controller: controller),
             if (actions.pending case final pending?) ...[
               Text(
                 pending.create

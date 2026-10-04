@@ -32,7 +32,9 @@ class AccountsController extends ChangeNotifier {
   }) {
     _ownerKey = repository.access.owner?.key;
     repository.access.addListener(_authorityChanged);
-    if (recovery != null && repository is AccountsMutationRepository) {
+    if (recovery != null &&
+        (repository is AccountsMutationRepository ||
+            repository is AccountsHealthRepository)) {
       actions = AccountsMutationController(
         repository,
         recovery,

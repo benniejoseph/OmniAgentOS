@@ -2,12 +2,35 @@ import 'package:asael/generated/native_contract.g.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('publishes exact Account health evaluation and recovery paths', () {
+    expect(
+      NativeContract.supportsOperation('customers.health.evaluate'),
+      isTrue,
+    );
+    expect(
+      NativeContract.supportsOperation('customers.health.evaluations.get'),
+      isTrue,
+    );
+    expect(
+      NativePaths.customersHealthEvaluate('customer-account:one'),
+      '/api/customer-accounts/customer-account%3Aone/health',
+    );
+    expect(
+      NativePaths.customersHealthEvaluationsGet(
+        'customer-account:one',
+        'customer-health-evaluation:two',
+        workspaceId: 'workspace:one',
+      ),
+      '/api/customer-accounts/customer-account%3Aone/health/evaluations/customer-health-evaluation%3Atwo?workspaceId=workspace%3Aone',
+    );
+  });
+
   test('retains current and previous contract compatibility', () {
-    expect(NativeContract.currentVersion, 36);
-    expect(NativeContract.previousVersion, 35);
-    expect(NativeContract.supportedVersions, [36, 35]);
-    expect(NativeContract.supports(34), isFalse);
-    expect(NativeContract.supports(37), isFalse);
+    expect(NativeContract.currentVersion, 37);
+    expect(NativeContract.previousVersion, 36);
+    expect(NativeContract.supportedVersions, [37, 36]);
+    expect(NativeContract.supports(35), isFalse);
+    expect(NativeContract.supports(38), isFalse);
     expect(
       NativePaths.meetingsList(
         workspaceId: 'workspace:one',

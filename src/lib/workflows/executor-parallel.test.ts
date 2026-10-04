@@ -124,12 +124,18 @@ describe("workflow parallel DAG scheduling", () => {
     let active = 0;
     let maxActive = 0;
     let callCount = 0;
+    let releaseBothBranches!: () => void;
+    const bothBranchesEntered = new Promise<void>((resolve) => {
+      releaseBothBranches = resolve;
+    });
     mocks.generateModelStructured.mockImplementation(async () => {
       callCount += 1;
       const receiptIndex = callCount;
       active += 1;
       maxActive = Math.max(maxActive, active);
-      await delay(25);
+      // Prove overlap without relying on CI filesystem work finishing in 25 ms.
+      if (active === 2) releaseBothBranches();
+      await bothBranchesEntered;
       active -= 1;
       return successfulModelResult(receiptIndex);
     });

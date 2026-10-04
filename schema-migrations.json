@@ -1367,5 +1367,12 @@
     "checksum": "d1b7856075f4d3f6212cb85b13c6f1e59fe82376f908418d098ae6963657850b",
     "file": "20261005123000_personal_context_consent_row_validator_grant.sql",
     "sha256": "d1b7856075f4d3f6212cb85b13c6f1e59fe82376f908418d098ae6963657850b"
+  },
+  {
+    "version": 226,
+    "name": "customer_health_evaluation_intents_v1",
+    "checksum": "d84ef7defa1802422dd887651f706bc169c0da90818dff5a05e061a4c3babc0d",
+    "file": "20261005130000_customer_health_evaluation_intents.sql",
+    "sha256": "d84ef7defa1802422dd887651f706bc169c0da90818dff5a05e061a4c3babc0d"
   }
 ]

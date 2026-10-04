@@ -37,28 +37,36 @@ Set these through the platform secret/configuration store, never in source contr
 - `OMNIAGENT_NATIVE_MIN_ANDROID_VERSION`, `OMNIAGENT_NATIVE_MIN_IOS_VERSION`, and `OMNIAGENT_NATIVE_MIN_MACOS_VERSION`: optional stable `major.minor.patch` minimums for native compatibility telemetry. An absent or empty value defaults to `1.0.0`; a malformed configured value invalidates the policy and holds adoption unavailable. These settings do not authorize Agent enrollment.
 
 Native contract artifacts are committed immutable release inputs. This release
-advertises v36 as current and retains v35 as the rollback-compatible previous
-version. V34 remains a byte-frozen, unadvertised archive. Older documents leave
-the three-version retention window only in a reviewed contract release; a
-Vercel deployment never deletes an archive. Do not retire v35 until the v36
-rollback window closes. Published versions are never regenerated in place.
-Run `npm run check:native-contracts` to verify the generated v36 OpenAPI, event
-schema, fixtures, manifests and Dart SDK, plus the frozen v34/v35 hashes. This
-reviewed publication retires the v33 public documents.
+advertises v37 as current and retains v36 as the supported previous version.
+V35 remains a byte-frozen, unadvertised archive; v34 leaves the three-version
+window in this reviewed publication. Run `npm run check:native-contracts` to
+verify generated v37 documents and SDK against frozen v35/v36 hashes.
 
-V36 adds private personal recall consent and calendar-only sync. Existing
-capability floors remain unchanged: Companion 31, Responsibilities 32, Meetings
-33, Account records and Memory records/lifecycle 34, reconciliation decisions
-35. The new consent and Calendar mutations require 36, fresh attestation and
-current write permission. No recording processing or source-audio capability
-is enrolled by this publication.
+V37 adds explicit deterministic Account health evaluation and exact receipt
+recovery. Its capability `customers.health.evaluate` requires v37 and current
+write authority. Existing floors remain: Companion 31, Responsibilities 32,
+Meetings 33, Account/Memory records 34, reconciliation 35, consent/Calendar 36.
+Recording processing and source-audio access remain unenrolled.
 
-Advertising v36/v35 makes v34 clients `upgrade_required` and holds their native
-mutations. Deploy the v36 server before installing a v36 native build; that
-build fails bootstrap against a server advertising only v35/v34. An installed
-v35 client retains its existing operations through the rollback window and
-cannot enter the new consent or Calendar mutations. A repository merge does
-not establish that this compatibility pair has been promoted to production.
+Deploy a server supporting v37 before distributing this v37 build. A server
+advertising only v36/v35 refuses its bootstrap. On v37/v36, an installed v36
+client retains existing operations and cannot enter the new health mutation;
+v35 clients require an upgrade. A merge does not establish production promotion.
+
+Migration 226 adds nullable exact request intent/digest columns to immutable
+health score revisions, preserving legacy NULL/NULL writers. Its bounded CHECK
+binds owner, Workspace, reviewed Account and empty model suggestions to the score.
+No table, grant or RLS policy is added. Apply and verify before serving v37;
+rollback retains the columns and accepted evidence. Health admission uses the
+existing Account/health locks and transaction, and proves evaluation absence
+alongside current owner/membership authority. Exact GET recovery remains read-only.
+
+The native Account journal adds a version 2 health section while retaining its
+existing create/revise fields, encrypted address and strict role/actor binding.
+Only one pending Account action is admitted. Uncertain responses or storage
+acknowledgements hold the original request; recovery reads its exact receipt.
+Changing roles does not automatically adopt a journal encrypted under another
+role. Full score evidence stays outside this compact recovery record.
 
 Personal recall uses the existing immutable consent history and owner lock;
 migration 225 repairs the missing execution grant on its existing immutable row

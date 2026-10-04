@@ -6747,7 +6747,7 @@ databaseDescribe("Postgres schema integration", () => {
       expect(oldReport.status).toBe("degraded");
       expect([...oldReport.summary.missingTables].sort()).toEqual(additiveDraftReplayTables);
       expect([...oldReport.summary.missingPolicies].sort()).toEqual(
-        [...oldRunnerTenantWidePolicyTables, ...additiveDraftReplayTables].sort(),
+        [...oldRunnerTenantWidePolicyTables, ...additiveDraftReplayTables, "omni_events"].sort(),
       );
 
       // A CHECK that matches neither catalog stops the migration, and what it
@@ -6821,13 +6821,15 @@ databaseDescribe("Postgres schema integration", () => {
     `;
     // Each one covers every command and role, as its restore below does.
     expect(restrictivePolicies.map(({ command, roles }) => ({ command, roles })))
-      .toEqual(Array(66).fill({ command: "*", roles: "{0}" }));
+      .toEqual(Array(68).fill({ command: "*", roles: "{0}" }));
     expect(restrictivePolicies.filter((policy) =>
       additiveDraftReplayTables.includes(policy.table_name),
     ).map(({ table_name, policy_name }) => ({ table_name, policy_name })))
       .toEqual(additiveDraftReplayTables.map((tableName) => ({
         table_name: tableName,
-        policy_name: `${tableName}_${meetingResolutionReplayTables.includes(tableName) ? "owner" : "actor"}`,
+        policy_name: tableName === "omni_meeting_calendar_sync_acceptances"
+          ? "omni_meeting_calendar_sync_actor"
+          : `${tableName}_${meetingResolutionReplayTables.includes(tableName) ? "owner" : "actor"}`,
       })));
     const catalog = await schemaCatalogSnapshot(admin);
     const dropped: typeof restrictivePolicies[number][] = [];
@@ -9582,6 +9584,7 @@ const memoryLifecycleMutationsVersion = 222;
 const memoryReconciliationFencesVersion = 223;
 const meetingCalendarSyncAcceptancesVersion = 224;
 const personalConsentValidatorGrantVersion = 225;
+const customerHealthEvaluationIntentsVersion = 226;
 const additiveReplayVersions = [
   companionPreferencesVersion,
   responsibilityDraftsVersion,
@@ -9594,6 +9597,7 @@ const additiveReplayVersions = [
   memoryReconciliationFencesVersion,
   meetingCalendarSyncAcceptancesVersion,
   personalConsentValidatorGrantVersion,
+  customerHealthEvaluationIntentsVersion,
 ].filter((version) => databaseSchemaMigrations.some((migration) => migration.version === version));
 const meetingResolutionReplayTables: readonly string[] = [
   "omni_meeting_commitment_resolution_intents",
@@ -9617,7 +9621,7 @@ const additiveDraftReplayTables: readonly string[] = [
   "omni_responsibility_observations",
   "omni_responsibility_runtime_receipts",
   "omni_responsibility_wakes",
-];
+].sort();
 
 // A native client that attests an Android build.
 const androidClient = {
@@ -9965,8 +9969,30 @@ async function withMigrationsPendingFrom<T>(
   }
   await client.begin(async (transaction) => {
     if (replay) {
+      if (additiveReplayVersions.includes(meetingCalendarSyncAcceptancesVersion)) {
+        expect(await transaction`
+          SELECT count(*)::int AS acceptances
+          FROM public.omni_meeting_calendar_sync_acceptances
+        `).toEqual([{ acceptances: 0 }]);
+        await transaction`DROP POLICY omni_meeting_calendar_sync_event_actor ON public.omni_events`;
+        await transaction`DROP TABLE public.omni_meeting_calendar_sync_acceptances`;
+        await transaction`DROP FUNCTION public.omni_meeting_calendar_sync_acceptance_guard_v1()`;
+      }
       if (additiveReplayVersions.includes(memoryLifecycleMutationsVersion)) {
         await removeEmptyMemoryLifecycleForReplay(transaction);
+      }
+      if (additiveReplayVersions.includes(customerHealthEvaluationIntentsVersion)) {
+        expect(await transaction`
+          SELECT count(*)::int AS populated_intents
+          FROM public.omni_customer_health_score_revisions
+          WHERE request_intent IS NOT NULL OR request_sha256 IS NOT NULL
+        `).toEqual([{ populated_intents: 0 }]);
+        await transaction`
+          ALTER TABLE public.omni_customer_health_score_revisions
+            DROP CONSTRAINT omni_customer_health_exact_intent,
+            DROP COLUMN request_intent,
+            DROP COLUMN request_sha256
+        `;
       }
       if (additiveReplayVersions.includes(customerAccountIntentsVersion)) {
         expect(await transaction`
@@ -10045,6 +10071,23 @@ async function withMigrationsPendingFrom<T>(
         SELECT version, name, checksum FROM omni_schema_version
         WHERE version IS NOT NULL ORDER BY version
       `).toEqual(databaseSchemaMigrations);
+      if (additiveReplayVersions.includes(customerHealthEvaluationIntentsVersion)) {
+        expect(await client`
+          SELECT column_name, data_type, is_nullable
+          FROM information_schema.columns
+          WHERE table_schema = 'public' AND table_name = 'omni_customer_health_score_revisions'
+            AND column_name IN ('request_intent', 'request_sha256')
+          ORDER BY column_name
+        `).toEqual([
+          { column_name: "request_intent", data_type: "jsonb", is_nullable: "YES" },
+          { column_name: "request_sha256", data_type: "text", is_nullable: "YES" },
+        ]);
+        expect(await client`
+          SELECT convalidated FROM pg_constraint
+          WHERE conrelid = 'public.omni_customer_health_score_revisions'::regclass
+            AND conname = 'omni_customer_health_exact_intent'
+        `).toEqual([{ convalidated: true }]);
+      }
       if (additiveReplayVersions.includes(customerAccountIntentsVersion)) {
         expect(await client`
           SELECT column_name, data_type, is_nullable
