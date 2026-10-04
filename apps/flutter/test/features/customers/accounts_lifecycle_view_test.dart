@@ -8,6 +8,7 @@ import 'package:asael/features/auth/domain/app_session.dart';
 import 'package:asael/features/customers/accounts_contracts.dart';
 import 'package:asael/features/customers/accounts_controller.dart';
 import 'package:asael/features/customers/accounts_providers.dart';
+import 'package:asael/features/customers/accounts_recovery_store.dart';
 import 'package:asael/features/customers/accounts_workspace.dart';
 import 'package:asael/generated/native_contract.g.dart';
 import 'package:flutter/material.dart';
@@ -38,7 +39,7 @@ void main() {
       final refresh = old.refreshCore();
       await started.future;
       harness.api = AccountsTestApi(origin: 'https://replacement.example.test')
-        ..read = (path, _, _) => path == NativePaths.customersList
+        ..read = (path, _, _) => path == NativePaths.customersList()
             ? replacement.future
             : accountPortfolioResponse();
       harness.container.invalidate(apiClientProvider);
@@ -73,6 +74,7 @@ void main() {
       addTearDown(harness.dispose);
       await harness.mount(tester);
       final old = harness.controller;
+      await _showSearch(tester, old);
       await tester.enterText(
         find.byKey(const Key('customer-record-search')),
         'private old search',
@@ -85,6 +87,7 @@ void main() {
       expect(current, isNot(same(old)));
       expect(old.readable, isFalse);
       expect(old.overview.value, isNull);
+      await _showSearch(tester, current);
       expect(
         tester
             .widget<TextField>(find.byKey(const Key('customer-record-search')))
@@ -125,6 +128,18 @@ void main() {
   );
 }
 
+Future<void> _showSearch(WidgetTester tester, AccountsController controller) =>
+    tester.scrollUntilVisible(
+      find.byKey(const Key('customer-record-search')),
+      240,
+      scrollable: find
+          .descendant(
+            of: find.byKey(accountsStorageKey(controller, 'scroll')),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
+
 Future<AccountJson> _namedList(String name) async => accountEnvelope(
   {
     'context': accountContext(),
@@ -147,6 +162,9 @@ class _MountedAccounts {
   late final ProviderContainer container = ProviderContainer(
     overrides: [
       apiClientProvider.overrideWith((ref) => api),
+      accountsRecoveryStoreProvider.overrideWith(
+        (_) => MemoryAccountsRecoveryStore(),
+      ),
       sessionControllerProvider.overrideWith(_Sessions.new),
       biometricSessionLockControllerProvider.overrideWith(
         (ref) => BiometricSessionLockController(_NoSessionEffects()),

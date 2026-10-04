@@ -339,17 +339,6 @@ export async function beginMessageDelivery(input: {
   await ensureDatabaseSchema();
   const sql = getSql();
   return sql.transaction(async (transaction: ReturnType<typeof getSql>) => {
-    const receiptRows = await transaction`
-      SELECT receipt FROM omni_delivery_receipts
-      WHERE tenant_id = ${scope.tenantId} AND owner_actor_id = ${scope.actorId}
-        AND draft_id = ${requiredText(input.draftId, 240)} LIMIT 1
-    `;
-    if (receiptRows[0]) {
-      return {
-        state: "delivered" as const,
-        receipt: deliveryReceiptSchema.parse(receiptRows[0].receipt),
-      };
-    }
     const draftRows = await transaction`
       SELECT draft FROM omni_message_drafts
       WHERE tenant_id = ${scope.tenantId} AND owner_actor_id = ${scope.actorId}
@@ -358,6 +347,7 @@ export async function beginMessageDelivery(input: {
     if (!draftRows[0]) throw new CommunicationPolicyError("Message draft was not found.", "not_found");
     const draft = messageDraftSchema.parse(draftRows[0].draft);
     if (
+      draft.id !== requiredText(input.draftId, 240) ||
       draft.draftSha256 !== input.expectedDraftSha256 ||
       draft.recipient !== normalizeAddress(draft.channel, input.reviewedRecipient) ||
       draft.subject !== input.reviewedSubject.trim() ||
@@ -367,6 +357,28 @@ export async function beginMessageDelivery(input: {
     }
     if (draft.channel !== "email") {
       throw new CommunicationPolicyError("This communication channel is not enabled for delivery.", "policy_blocked");
+    }
+    // A prior receipt acknowledges only this exact reviewed message. It does
+    // not authorize another send or require a mutable policy to remain active.
+    const receiptRows = await transaction`
+      SELECT receipt FROM omni_delivery_receipts
+      WHERE tenant_id = ${scope.tenantId} AND owner_actor_id = ${scope.actorId}
+        AND draft_id = ${draft.id} LIMIT 1
+    `;
+    if (receiptRows[0]) {
+      const receipt = deliveryReceiptSchema.parse(receiptRows[0].receipt);
+      if (
+        receipt.draftId !== draft.id ||
+        receipt.draftSha256 !== draft.draftSha256 ||
+        (draft.googleConnectionId &&
+          receipt.googleConnectionId !== draft.googleConnectionId)
+      ) {
+        throw new CommunicationPolicyError(
+          "The delivery receipt does not match the exact reviewed draft and Google account.",
+          "delivery_conflict",
+        );
+      }
+      return { state: "delivered" as const, receipt };
     }
     const policy = await getPolicyForUpdate(draft.policyId, scope, transaction);
     const intentRows = await transaction`

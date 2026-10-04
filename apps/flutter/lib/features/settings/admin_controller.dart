@@ -12,34 +12,66 @@ class AdminController extends ChangeNotifier {
   bool loading = false;
   String? runningAction;
   String? notice;
+  bool _disposed = false;
+  Future<void>? _refreshInFlight;
 
-  Future<void> refresh() async {
+  void _changed() {
+    if (!_disposed) notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    snapshot = null;
+    super.dispose();
+  }
+
+  Future<void> refresh() {
+    if (_disposed) return Future.value();
+    final current = _refreshInFlight;
+    if (current != null) return current;
+    final next = _refresh();
+    _refreshInFlight = next;
+    return next.whenComplete(() {
+      if (identical(_refreshInFlight, next)) _refreshInFlight = null;
+    });
+  }
+
+  Future<void> _refresh() async {
     loading = true;
     error = null;
-    notifyListeners();
+    _changed();
     try {
-      snapshot = await _repository.load(module);
+      final result = await _repository.load(module);
+      if (_disposed) return;
+      snapshot = result;
     } catch (value) {
-      error = value;
+      if (!_disposed) error = value;
     } finally {
       loading = false;
-      notifyListeners();
+      _changed();
     }
   }
 
   Future<void> run(AdminAction action) async {
+    if (_disposed ||
+        runningAction != null ||
+        !module.actions.contains(action)) {
+      return;
+    }
     runningAction = action.path;
     notice = null;
-    notifyListeners();
+    _changed();
     try {
       await _repository.run(action);
+      if (_disposed) return;
       notice = '${action.label} completed.';
       await refresh();
     } catch (value) {
-      notice = value.toString();
+      if (!_disposed) notice = 'The action could not be confirmed. Refresh its current state before another submission.';
     } finally {
       runningAction = null;
-      notifyListeners();
+      _changed();
     }
   }
 }

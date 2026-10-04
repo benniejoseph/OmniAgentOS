@@ -170,7 +170,9 @@ export async function deliverCommunicationDraftService(
       mode: claimed.state,
     });
   } catch (error) {
-    if (!(error instanceof GmailDeliveryOutcomeUnknownError)) {
+    // A failed lookup or credential refresh cannot disprove an earlier send.
+    // Keep every reconciliation failure in the reconcile-only state.
+    if (claimed.state === "deliver" && !(error instanceof GmailDeliveryOutcomeUnknownError)) {
       await failMessageDelivery(value.draftId, mutationOwner(caller));
     }
     throw error;

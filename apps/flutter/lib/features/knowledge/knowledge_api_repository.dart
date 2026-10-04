@@ -4,29 +4,61 @@ import '../../core/network/api_client.dart';
 import '../../generated/native_contract.g.dart';
 import 'knowledge.dart';
 import 'knowledge_contracts.dart';
+import 'knowledge_mutations.dart';
 
-/// Live, authenticated reads only. The published catalogue is a bounded
-/// projection and never supplies authority for a mutation or a private label.
+/// The bounded catalogue never supplies mutation authority. Exact changes use
+/// the current token-bound transport and a separately reviewed submitted target.
 class ApiKnowledgeRepository
-    implements KnowledgeRepository, PagedKnowledgeRepository {
-  ApiKnowledgeRepository(this.api, {this.expectedTenantId});
+    implements
+        KnowledgeRepository,
+        PagedKnowledgeRepository,
+        KnowledgeMutationRepository {
+  ApiKnowledgeRepository(
+    this.api, {
+    this.expectedTenantId,
+    KnowledgeAccess? access,
+    bool Function()? authorityProbe,
+  }) : access = access ?? KnowledgeAccess(),
+       _probe = authorityProbe {
+    this.access.addListener(_accessChanged);
+  }
   final ApiClient api;
   final String? expectedTenantId;
-  final CancelToken _lifetime = CancelToken();
+  @override
+  final KnowledgeAccess access;
+  final bool Function()? _probe;
+  @override
+  bool authorityCurrent() =>
+      !_disposed && (_probe?.call() ?? true) && !_disposed;
+  @override
+  bool supports(MemoryChange kind) =>
+      NativeContract.supportsOperation(kind.operation) &&
+      (kind != MemoryChange.lifecycle ||
+          NativeContract.supportsOperation('memory.lifecycle.get'));
+  CancelToken _lifetime = CancelToken();
+  void _accessChanged() {
+    _lifetime.cancel('Knowledge authority changed.');
+    _lifetime = CancelToken();
+  }
+
   bool _disposed = false;
   void dispose() {
     _disposed = true;
+    access.removeListener(_accessChanged);
     _lifetime.cancel('Knowledge session replaced.');
   }
 
   Future<Json> _read(String path, {Json? query}) async {
-    if (_disposed) throw StateError('Knowledge session replaced.');
+    if (!authorityCurrent()) throw StateError('Knowledge session replaced.');
+    final generation = access.generation;
     final result = await api.getJsonFreshCancelable(
       path,
       query: query,
       cancelToken: _lifetime,
     );
-    if (_disposed) throw StateError('Knowledge session replaced.');
+    if (!authorityCurrent() || access.generation != generation) {
+      throw StateError('Knowledge session replaced.');
+    }
     return result;
   }
 
@@ -163,7 +195,9 @@ class ApiKnowledgeRepository
     if (value['id'] != id ||
         value['content'] is! String ||
         value['title'] is! String ||
-        (expectedTenantId != null && value['tenantId'] != expectedTenantId)) {
+        ((access.owner?.tenantId ?? expectedTenantId) != null &&
+            value['tenantId'] !=
+                (access.owner?.tenantId ?? expectedTenantId))) {
       throw const FormatException(
         'The exact memory identity or workspace could not be verified.',
       );
@@ -238,6 +272,99 @@ class ApiKnowledgeRepository
   Never _unsupported(String action) => throw UnsupportedError(
     '$action is not published by native contract ${NativeContract.currentVersion}.',
   );
+  @override
+  Future<Json> readLifecycle(String id) async {
+    knowledgeIdentity(id, 'Lifecycle memory', maximum: 200);
+    memoryRequire(
+      access.readable &&
+          NativeContract.supportsOperation('memory.lifecycle.get'),
+    );
+    final owner = access.owner!, generation = access.generation;
+    final response = await _read(
+      '/api/memory/${Uri.encodeComponent(id)}/lifecycle',
+    );
+    memoryRequire(
+      access.generation == generation && access.owner?.key == owner.key,
+    );
+    final current = await parseMemoryLifecycleResponse(response, owner, id);
+    memoryRequire(
+      authorityCurrent() &&
+          access.generation == generation &&
+          access.owner?.key == owner.key,
+    );
+    return current;
+  }
+
+  @override
+  Future<MemoryAcceptance> submit(
+    MemorySubmission submission,
+    bool Function() current,
+  ) async {
+    final owner = access.owner, generation = access.generation;
+    bool valid() =>
+        authorityCurrent() &&
+        access.readable &&
+        access.owner?.canWrite == true &&
+        access.generation == generation &&
+        access.owner?.key == submission.owner.key &&
+        current();
+    memoryRequire(
+      owner != null && valid() && supports(submission.kind),
+      'Current Memory write access is required.',
+    );
+    final authority = NativeRequestAuthority(
+      tenantId: owner!.tenantId,
+      actorId: owner.actorId,
+      canonicalUserId: owner.userId,
+      role: owner.role,
+      apiBaseUrl: owner.apiBaseUrl,
+      isCurrent: valid,
+    );
+    final headers = <String, dynamic>{
+      'Idempotency-Key': submission.key,
+      if (submission.previewDigest != null)
+        'x-asael-deletion-preview': submission.previewDigest,
+    };
+    final path = submission.id == null
+        ? '/api/memory'
+        : '/api/memory/${Uri.encodeComponent(submission.id!)}';
+    final Json raw = switch (submission.kind) {
+      MemoryChange.create => await api.postJsonAuthorized(
+        path,
+        authority: authority,
+        data: submission.body,
+        headers: headers,
+      ),
+      MemoryChange.correct => await api.patchJsonAuthorized(
+        path,
+        authority: authority,
+        data: submission.body,
+        headers: headers,
+      ),
+      MemoryChange.lifecycle => await api.patchJsonAuthorized(
+        '$path/lifecycle',
+        authority: authority,
+        data: submission.body,
+        headers: headers,
+      ),
+      MemoryChange.forget => await api.deleteJsonAuthorized(
+        path,
+        authority: authority,
+        headers: headers,
+      ),
+    };
+    memoryRequire(
+      valid(),
+      'Memory authority changed while the response was pending.',
+    );
+    final receipt = await MemoryAcceptance.parse(raw, submission);
+    memoryRequire(
+      valid(),
+      'Memory authority changed while the receipt was checked.',
+    );
+    return receipt;
+  }
+
   @override
   Future<void> addMemory(Json input) async => _unsupported('Memory creation');
   @override

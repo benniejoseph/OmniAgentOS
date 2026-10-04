@@ -29,6 +29,15 @@ class AdminModule {
   final IconData icon;
   final List<AdminEndpoint> endpoints;
   final List<AdminAction> actions;
+  String get browserPath => switch (id) {
+    'automation' => '/app/workflows',
+    'integrations' => '/app/connectors',
+    'tools' => '/app/automation',
+    'quality' => '/app/evaluations',
+    'monitoring' => '/app/observability',
+    'security' => '/app/security',
+    _ => '/app/settings',
+  };
 }
 
 class AdminSnapshot {

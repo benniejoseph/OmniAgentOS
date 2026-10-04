@@ -2,6 +2,8 @@
 
 import Link from "next/link";
 import dynamic from "next/dynamic";
+import { voiceTextDraft } from "@/components/voice/voice-text-handoff";
+import { promptQueueMutationsForOwner, readPromptQueueItems, readQueueWriteResult, type PromptQueueItem, type QueueIntent } from "@/components/command/prompt-queue-client";
 import { memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
@@ -48,6 +50,8 @@ import {
   permissionMessage,
   useWorkspaceSession,
 } from "@/components/app-shell/session-context";
+import { workspaceOwnerScope } from "@/components/app-shell/workspace-owner-scope";
+import { CommandSelectionRead, CommandWorkspaceScope } from "@/components/command/command-workspace-scope";
 import { followAgentRunStream } from "@/lib/client/agent-run-follow";
 import { startVisibleRefresh } from "@/lib/client/visible-refresh";
 import { readSseEvents, type SseCursor } from "@/lib/http/sse-reader";
@@ -192,41 +196,18 @@ type PersonalContextConsentView = {
   state: "inactive" | "active";
   notice: { text: string; sha256: string };
 };
-type PromptQueueItem = {
-  id: string;
-  clientCorrelationId: string;
-  prompt: string;
-  promptSha256: string;
+type AssistantComposerDraft = {
+  goal: string;
   mode: AgentMode;
-  strategy: "direct" | "auto";
-  target: {
-    threadId: string | null;
-    missionId: string | null;
-    projectId: string | null;
-    executionTarget: "asael" | "local_macos";
-  };
-  agent: {
-    logicalAgentId: string;
-    definitionVersion: number;
-    definitionVersionId: string;
-  };
-  model: {
-    providerId: "openai" | "google" | "anthropic" | "aws_bedrock";
-    modelId: string;
-    tier: "fast" | "reasoning";
-    reasoningLevel?: string;
-  };
-  contextReferenceCount: number;
-  state: "queued" | "paused" | "dispatching" | "completed" | "failed";
-  position: number;
-  lifecycleRevision: number;
-  runId: string | null;
-  resultThreadId: string | null;
-  progressLabel: string | null;
-  failureCode: string | null;
-  updatedAt: string;
-  queueGrantsAuthority: false;
+  preferredAgent?: AgentPresentation;
+  references: CommandContextCatalogItem[];
+  modelSelection?: CommandModelSelectionRequest;
+  contextScope: ActiveContextScopeId;
+  projectId: string;
 };
+// Navigation-only recovery. No private draft is written to an unscoped browser
+// cache or treated as a current context/approval receipt on return.
+const assistantComposerDrafts = new Map<string, AssistantComposerDraft>();
 
 const CONTEXT_SCOPE_OPTIONS: readonly Readonly<{
   id: ContextScopeId;
@@ -481,15 +462,7 @@ const tabs: Array<{ key: TabKey; label: string; icon: typeof TerminalSquare }> =
   { key: "evidence", label: "Result", icon: FileText },
 ];
 
-export function AgentRunsWorkspace({
-  initialAgentId,
-  initialRunId,
-  initialThreadId,
-  initialMissionId,
-  initialProjectId,
-  initialContextScope,
-  initialGoal,
-}: {
+type AgentRunsWorkspaceProps = {
   initialAgentId?: AgentId;
   initialRunId?: string;
   initialThreadId?: string;
@@ -497,20 +470,46 @@ export function AgentRunsWorkspace({
   initialProjectId?: string;
   initialContextScope?: Extract<ActiveContextScopeId, "mission" | "project" | "workspace">;
   initialGoal?: string;
-}) {
+};
+
+export function AgentRunsWorkspace(props: AgentRunsWorkspaceProps) {
+  const { session, status, role } = useWorkspaceSession();
+  const owner = workspaceOwnerScope(session, role);
+  return <OwnedAgentRunsWorkspace key={owner || "unconfirmed"} {...props}
+    ownerScope={owner} scopeAvailable={Boolean(owner) && status === "ready" && !permissionMessage(session, status, "read")} />;
+}
+
+function OwnedAgentRunsWorkspace({
+  initialAgentId,
+  initialRunId,
+  initialThreadId,
+  initialMissionId,
+  initialProjectId,
+  initialContextScope,
+  initialGoal,
+  ownerScope,
+  scopeAvailable,
+}: AgentRunsWorkspaceProps & { ownerScope: string; scopeAvailable: boolean }) {
   const {
     session,
     status: sessionStatus,
     role,
+    refresh: refreshAccountAccess,
   } = useWorkspaceSession();
-  const companionOwnerScope = JSON.stringify([session?.context?.tenantId, session?.context?.actorId]);
-  const [goal, setGoal] = useState(initialGoal || "");
-  const [mode, setMode] = useState<AgentMode>("orchestrate");
+  const companionOwnerScope = ownerScope;
+  const [requestScope] = useState(() => new CommandWorkspaceScope(scopeAvailable));
+  const [activityRead] = useState(() => new CommandSelectionRead());
+  const readJson = useCallback((path: string, init?: RequestInit) => requestScope.run(
+    (signal) => readUnscopedJson(path, { ...init, signal }), init?.signal,
+  ), [requestScope]);
+  const [restoredDraft] = useState(() => initialGoal || initialAgentId ? undefined : assistantComposerDrafts.get(ownerScope));
+  const [goal, setGoal] = useState(initialGoal || restoredDraft?.goal || "");
+  const [mode, setMode] = useState<AgentMode>(restoredDraft?.mode || "orchestrate");
   const initialBuiltInAgent = initialAgentId
     ? builtInAgentPresentation(initialAgentId)
     : undefined;
   const [preferredAgent, setPreferredAgent] = useState<AgentPresentation | undefined>(
-    initialBuiltInAgent,
+    initialBuiltInAgent || restoredDraft?.preferredAgent,
   );
   const [commandReferences, setCommandReferences] = useState<CommandContextCatalogItem[]>(
     initialBuiltInAgent
@@ -522,10 +521,10 @@ export function AgentRunsWorkspace({
           state: "ready",
           selectable: true,
         }]
-      : [],
+      : restoredDraft?.references || [],
   );
   const [commandModelSelection, setCommandModelSelection] =
-    useState<CommandModelSelectionRequest>();
+    useState<CommandModelSelectionRequest | undefined>(restoredDraft?.modelSelection);
   const preferredAgentId = preferredAgent?.id;
   const activeAssistantName = preferredAgent?.name || "Asael";
   const [approvalRequired, setApprovalRequired] = useState(true);
@@ -534,12 +533,21 @@ export function AgentRunsWorkspace({
   const [error, setError] = useState<string>();
   const [contextPack, setContextPack] = useState<JsonRecord>();
   const [contextScope, setContextScope] = useState<ActiveContextScopeId>(
-    initialContextScope || "session",
+    initialContextScope || restoredDraft?.contextScope || "session",
   );
   const [projects, setProjects] = useState<CommandProject[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState(
-    initialProjectId || "",
+    initialProjectId || restoredDraft?.projectId || "",
   );
+  useLayoutEffect(() => {
+    if (!scopeAvailable || !ownerScope || goal.length > 100_000 || commandReferences.length > 20) return;
+    const draft: AssistantComposerDraft = { goal, mode, preferredAgent, references: commandReferences,
+      modelSelection: commandModelSelection, contextScope, projectId: selectedProjectId };
+    if (JSON.stringify(draft).length > 300_000) return;
+    assistantComposerDrafts.delete(ownerScope);
+    assistantComposerDrafts.set(ownerScope, structuredClone(draft));
+    while (assistantComposerDrafts.size > 8) assistantComposerDrafts.delete(assistantComposerDrafts.keys().next().value!);
+  }, [scopeAvailable, ownerScope, goal, mode, preferredAgent, commandReferences, commandModelSelection, contextScope, selectedProjectId]);
   const [contextQuery, setContextQuery] = useState("");
   const [selectedContextIds, setSelectedContextIds] = useState<string[]>([]);
   const [contextPreviewToken, setContextPreviewToken] = useState("");
@@ -581,6 +589,7 @@ export function AgentRunsWorkspace({
   const [evidence, setEvidence] = useState<JsonRecord>({});
   const [evidenceState, setEvidenceState] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [workflowSyncError, setWorkflowSyncError] = useState<string>();
+  const [runSyncError, setRunSyncError] = useState<string>();
   const [runAnnouncement, setRunAnnouncement] = useState("Run workspace ready.");
   const [waitingApproval, setWaitingApproval] = useState<Extract<StreamEvent, { type: "waiting_approval" }>>();
   const [clarificationRunId, setClarificationRunId] = useState("");
@@ -590,6 +599,9 @@ export function AgentRunsWorkspace({
   const [promptQueue, setPromptQueue] = useState<PromptQueueItem[]>([]);
   const [promptQueueBusyId, setPromptQueueBusyId] = useState("");
   const [promptQueueError, setPromptQueueError] = useState<string>();
+  const [queueMutation] = useState(() => promptQueueMutationsForOwner(ownerScope));
+  const [queueUnconfirmed, setQueueUnconfirmed] = useState<QueueIntent | undefined>(queueMutation.pending);
+  const queueReadVersion = useRef(0);
   const [conversationView, setConversationView] = useState<"chat" | "map">("chat");
   const [conversationCanvas, setConversationCanvas] = useState<unknown>();
   const [conversationCanvasState, setConversationCanvasState] = useState<"idle" | "loading" | "ready" | "error">("idle");
@@ -638,17 +650,37 @@ export function AgentRunsWorkspace({
   const threadsRefreshRef = useRef<Promise<void> | null>(null);
   const threadsRefreshQueuedRef = useRef(false);
   const runProjectionControllerRef = useRef<AbortController | null>(null);
+  const selectedThreadRef = useRef(threadId);
+
+  useLayoutEffect(() => { selectedThreadRef.current = threadId; }, [threadId]);
+  useLayoutEffect(() => {
+    requestScope.setAvailable(scopeAvailable);
+    return () => {
+      requestScope.setAvailable(false);
+      activityRead.cancel();
+      threadLoadVersionRef.current += 1;
+      abortControllerRef.current?.abort();
+      threadLoadControllerRef.current?.abort();
+      responseSpeechControllerRef.current?.abort();
+      responseSpeechPlayerRef.current?.stop();
+      pendingDeltasRef.current = [];
+      if (deltaFlushTimerRef.current !== null) window.clearTimeout(deltaFlushTimerRef.current);
+      deltaFlushTimerRef.current = null;
+    };
+  }, [activityRead, requestScope, scopeAvailable]);
 
   const refreshPromptQueue = useCallback(async (signal?: AbortSignal) => {
+    const version = ++queueReadVersion.current;
     const payload = await readJson("/api/command/prompt-queue", {
       cache: "no-store",
       signal,
     });
-    const items = promptQueueItemsFromPayload(payload);
+    const items = readPromptQueueItems(payload);
+    if (version !== queueReadVersion.current || queueMutation.busy) throw new DOMException("This queue read was superseded.", "AbortError");
     setPromptQueue(items);
-    setPromptQueueError(undefined);
+    if (!queueMutation.pending) setPromptQueueError(undefined);
     return items;
-  }, []);
+  }, [readJson, queueMutation]);
 
   useEffect(() => {
     if (sessionStatus !== "ready") return;
@@ -710,7 +742,7 @@ export function AgentRunsWorkspace({
       window.clearTimeout(stateTimer);
       controller.abort();
     };
-  }, [initialAgentId]);
+  }, [initialAgentId, readJson]);
 
   useEffect(() => {
     const projectsNeeded = Boolean(
@@ -749,7 +781,7 @@ export function AgentRunsWorkspace({
       })
       .catch(() => undefined);
     return () => controller.abort();
-  }, [contextScope, initialProjectId, sessionStatus]);
+  }, [contextScope, initialProjectId, readJson, sessionStatus]);
 
   useEffect(() => {
     if (sessionStatus !== "ready") return;
@@ -775,7 +807,7 @@ export function AgentRunsWorkspace({
         setPersonalContextConsentError(refreshMessage(error));
       });
     return () => controller.abort();
-  }, [sessionStatus]);
+  }, [readJson, sessionStatus]);
 
   const planNodes = arrayPath(workflowPlan, "plan.plan.nodes");
   const contextResults = arrayPath(contextPack, "pack.results");
@@ -967,7 +999,7 @@ export function AgentRunsWorkspace({
   }, []);
 
   useEffect(() => {
-    if (!mobileConversationsOpen) return;
+    if (!scopeAvailable || !mobileConversationsOpen) return;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     const focusFrame = window.requestAnimationFrame(() => conversationsSheetRef.current?.focus());
@@ -999,20 +1031,19 @@ export function AgentRunsWorkspace({
       window.removeEventListener("keydown", onKeyDown);
       document.body.style.overflow = previousOverflow;
     };
-  }, [mobileConversationsOpen]);
+  }, [mobileConversationsOpen, scopeAvailable]);
 
   useEffect(() => {
-    if (sessionStatus === "ready") {
+    if (scopeAvailable) {
       void refreshThreads();
       if (initialThreadId && !initialThreadLoadedRef.current) {
         if (initialRunId && !initialRunLoadedRef.current) {
           // Coming back to a conversation on one of its runs keeps following
           // that run without opening its details over the conversation.
-          initialThreadLoadedRef.current = true;
-          initialRunLoadedRef.current = true;
           void loadRunActivity(initialRunId, {
             openDetails: false,
             threadId: initialThreadId,
+            initialSelection: true,
           });
         } else {
           // A canceled setup has not loaded the conversation. React's effect
@@ -1020,8 +1051,7 @@ export function AgentRunsWorkspace({
           void loadThread(initialThreadId, { initialSelection: true });
         }
       } else if (initialRunId && !initialRunLoadedRef.current) {
-        initialRunLoadedRef.current = true;
-        void loadRunActivity(initialRunId);
+        void loadRunActivity(initialRunId, { initialSelection: true });
       }
     }
     return () => {
@@ -1040,7 +1070,7 @@ export function AgentRunsWorkspace({
     };
     // Session changes are the only automatic evidence refresh trigger.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionStatus, session, role]);
+  }, [scopeAvailable, sessionStatus, session, role]);
 
   useEffect(() => {
     const visible = Boolean(
@@ -1069,7 +1099,7 @@ export function AgentRunsWorkspace({
   }, [conversationView, threadId, sessionStatus, readPermission]);
 
   useEffect(() => {
-    if (!detailsOpen) return;
+    if (!scopeAvailable || !detailsOpen) return;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     const focusFrame = window.requestAnimationFrame(() => {
@@ -1099,7 +1129,7 @@ export function AgentRunsWorkspace({
       document.body.style.overflow = previousOverflow;
       detailsReturnFocusRef.current?.focus();
     };
-  }, [detailsOpen]);
+  }, [detailsOpen, scopeAvailable]);
 
   useEffect(() => {
     if (!transcriptPinnedRef.current) return;
@@ -1113,6 +1143,7 @@ export function AgentRunsWorkspace({
 
   useEffect(() => {
     if (
+      !scopeAvailable ||
       !activeWorkflowId ||
       ["completed", "failed", "canceled"].includes(activeWorkflowStatus)
     ) {
@@ -1124,6 +1155,7 @@ export function AgentRunsWorkspace({
       refreshOnStart: !activeWorkflowStatus,
       pollIntervalMs: 3_000,
       onRefresh: async () => {
+        const selectionVersion = threadLoadVersionRef.current;
         controller = new AbortController();
         try {
           const next = asRecord(
@@ -1132,9 +1164,10 @@ export function AgentRunsWorkspace({
               { signal: controller.signal },
             ),
           );
-          if (disposed) {
+          if (disposed || !requestScope.current() || selectionVersion !== threadLoadVersionRef.current) {
             return;
           }
+          if (stringPath(next, "run.id", "") !== activeWorkflowId) throw new Error("The workflow response did not match the followed run.");
           setWorkflowSyncError(undefined);
           const nextStatus = stringPath(next, "run.status", "");
           setWorkflowRun(next);
@@ -1176,20 +1209,23 @@ export function AgentRunsWorkspace({
     };
     // Run identity and status control the polling lifecycle.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeWorkflowId, activeWorkflowStatus]);
+  }, [activeWorkflowId, activeWorkflowStatus, scopeAvailable]);
 
   useEffect(() => {
-    if (!activeAgentRunId || loading === "agent" || agentRunTerminal) return;
+    if (!scopeAvailable || !activeAgentRunId || loading === "agent" || agentRunTerminal) return;
     let disposed = false;
     let controller: AbortController | undefined;
     const stopRefresh = startVisibleRefresh({
       refreshOnStart: false,
       pollIntervalMs: 3_000,
       onRefresh: async () => {
+        const selectionVersion = threadLoadVersionRef.current;
         controller = new AbortController();
         try {
           const payload = asRecord(await readJson(`/api/runs/${encodeURIComponent(activeAgentRunId)}`, { signal: controller.signal }));
-          if (disposed) return;
+          if (disposed || !requestScope.current() || selectionVersion !== threadLoadVersionRef.current) return;
+          if (stringPath(payload, "run.id", "") !== activeAgentRunId) throw new Error("The response did not match the followed run.");
+          setRunSyncError(undefined);
           setRunMediaProjection({
             runId: activeAgentRunId,
             companion: companionRunSnapshot(payload.run, activeAgentRunId),
@@ -1271,6 +1307,8 @@ export function AgentRunsWorkspace({
             setRunAnnouncement("Agent run canceled.");
           }
         } catch {
+          if (disposed || !requestScope.current() || selectionVersion !== threadLoadVersionRef.current) return;
+          setRunSyncError("The latest run status could not be confirmed. The last received result remains visible; no new run was submitted.");
           // Keep the visible last-known state and retry while the run remains active.
         }
       },
@@ -1282,7 +1320,7 @@ export function AgentRunsWorkspace({
     };
     // The run id and terminal state own this polling lifecycle.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeAgentRunId, agentRunTerminal, companionOwnerScope, loading]);
+  }, [activeAgentRunId, agentRunTerminal, companionOwnerScope, loading, scopeAvailable]);
 
   useEffect(() => {
     if (
@@ -1334,6 +1372,7 @@ export function AgentRunsWorkspace({
   }
 
   async function stopAgent() {
+    if (!requestScope.current() || runPermission) return;
     const controller = abortControllerRef.current;
     // The run keeps going when its stream closes, so Stop cancels it by id,
     // including a send whose run has not reached the screen yet.
@@ -1348,7 +1387,7 @@ export function AgentRunsWorkspace({
       return;
     }
     try {
-      const canceled = await cancelAgentRun(runId);
+      const canceled = await cancelAgentRun(runId, requestScope);
       void refreshEvidence();
       setRunAnnouncement(canceled ? "Agent run canceled." : "Agent run stopped.");
     } catch (cancelError) {
@@ -2169,14 +2208,11 @@ export function AgentRunsWorkspace({
       setPromptQueueError(runPermission);
       return;
     }
+    if (queueMutation.pending || queueMutation.busy) return;
     const correlationId = crypto.randomUUID();
-    setPromptQueueBusyId(correlationId);
-    setPromptQueueError(undefined);
-    try {
-      const payload = asRecord(await readJson("/api/command/prompt-queue", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
+    const accepted = await writePromptQueue({
+      operation: "create", id: correlationId, url: "/api/command/prompt-queue", method: "POST",
+      body: JSON.stringify({
           clientCorrelationId: correlationId,
           prompt,
           mode,
@@ -2192,20 +2228,88 @@ export function AgentRunsWorkspace({
             projectId: selectedProjectId || null,
             executionTarget: "asael",
           },
-        }),
-      }));
-      const item = promptQueueItemFromValue(payload.item);
-      if (!item) throw new Error("The server returned an invalid queue item.");
-      setPromptQueue((current) => mergePromptQueueItems(current, [item]));
-      setGoal("");
-      setCommandModelSelection(undefined);
-      clearEphemeralCommandReferences();
-      setRunAnnouncement("Prompt added to the persistent queue.");
-    } catch (queueError) {
-      setPromptQueueError(refreshMessage(queueError));
-      await refreshPromptQueue().catch(() => undefined);
+      }),
+    });
+    if (accepted) {
+      // A response must not erase a draft edited while the request was pending.
+      setGoal((current) => current.trim() === prompt ? "" : current);
+      setRunAnnouncement("Prompt saved to the queue. Its pinned context grants no execution authority.");
+    }
+  }
+
+  async function writePromptQueue(intent: QueueIntent, retry = false) {
+    if (!requestScope.current() || runPermission || queueMutation.busy) return false;
+    const lease = requestScope.capture();
+    try {
+      intent = retry ? queueMutation.retry() : queueMutation.begin(intent);
+    } catch (writeError) {
+      setPromptQueueError(refreshMessage(writeError));
+      return false;
+    }
+    queueReadVersion.current += 1;
+    setPromptQueueBusyId(intent.id);
+    setPromptQueueError(undefined);
+    const deadline = new AbortController();
+    const timer = window.setTimeout(() => deadline.abort(), 30_000);
+    try {
+      const result = await requestScope.run(async (signal) => {
+        const response = await fetch(intent.url, { method: intent.method, signal,
+          headers: { "content-type": "application/json" }, body: intent.body });
+        const payload: unknown = await response.json();
+        return { response, payload };
+      }, deadline.signal);
+      if (!result.response.ok) {
+        // A refusal of the first attempt is definitive. A retry's conflict
+        // cannot negate an earlier write whose acknowledgment was lost.
+        if (!retry && [400, 401, 403, 404, 409, 413, 415, 422].includes(result.response.status)) queueMutation.settle();
+        throw new Error(stringValue(asRecord(result.payload).message) || stringValue(asRecord(result.payload).error) || "Queue change refused.");
+      }
+      const items = readQueueWriteResult(intent, result.payload);
+      if (!lease.current()) throw new Error("Account access changed.");
+      queueMutation.settle();
+      setQueueUnconfirmed(undefined);
+      setPromptQueue((current) => intent.operation === "delete"
+        ? current.filter((item) => item.id !== intent.id)
+        : mergePromptQueueItems(current, items));
+      setRunAnnouncement("Queue change confirmed by the server.");
+      return true;
+    } catch (writeError) {
+      queueMutation.uncertain();
+      setQueueUnconfirmed(queueMutation.pending);
+      setPromptQueueError(queueMutation.pending
+        ? `Queue change unconfirmed. The last confirmed queue is retained. ${intent.operation === "create" ? "Retry the same saved request to recover it; no new prompt has been queued automatically." : "Refresh and review the current queue before making another change."}`
+        : refreshMessage(writeError));
+      return false;
     } finally {
+      window.clearTimeout(timer);
       setPromptQueueBusyId("");
+    }
+  }
+
+  async function reviewPromptQueue() {
+    if (queueMutation.busy) return;
+    try {
+      const items = await refreshPromptQueue();
+      if (queueMutation.pending?.operation === "create") {
+        const saved = items.find((item) => item.clientCorrelationId === queueMutation.pending?.id);
+        if (saved) {
+          // Revalidate the raw DTO; presentation-only fields are not wire fields.
+          const wire: JsonRecord = { ...saved };
+          delete wire.contextReferenceCount;
+          const modelPin = { ...saved.model };
+          delete modelPin.reasoningLevel;
+          readQueueWriteResult(queueMutation.pending, { item: { ...wire, model: modelPin }, created: false });
+          queueMutation.settle();
+        }
+      }
+      queueMutation.reviewed();
+      setQueueUnconfirmed(queueMutation.pending);
+      setPromptQueueError(queueMutation.pending
+        ? "The current queue was read. The earlier add remains unconfirmed; recover it with the same saved request."
+        : undefined);
+      setRunAnnouncement("Current queue reviewed. No queue change was repeated.");
+    } catch (readError) {
+      setPromptQueueError(`Queue refresh failed. The last confirmed queue and any unconfirmed change are retained. ${refreshMessage(readError)}`);
     }
   }
 
@@ -2213,61 +2317,15 @@ export function AgentRunsWorkspace({
     item: PromptQueueItem,
     change: { prompt?: string; state?: "queued" | "paused" },
   ) {
-    setPromptQueueBusyId(item.id);
-    setPromptQueueError(undefined);
-    setPromptQueue((current) => current.map((candidate) =>
-      candidate.id === item.id
-        ? {
-            ...candidate,
-            ...change,
-            lifecycleRevision: candidate.lifecycleRevision + 1,
-            progressLabel: change.state === "paused"
-              ? "Paused by you"
-              : change.state === "queued"
-                ? "Ready to run"
-                : candidate.progressLabel,
-          }
-        : candidate
-    ));
-    try {
-      const payload = asRecord(await readJson(
-        `/api/command/prompt-queue/${encodeURIComponent(item.id)}`,
-        {
-          method: "PATCH",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            expectedRevision: item.lifecycleRevision,
-            ...change,
-          }),
-        },
-      ));
-      const updated = promptQueueItemFromValue(payload.item);
-      if (!updated) throw new Error("The server returned an invalid queue item.");
-      setPromptQueue((current) => mergePromptQueueItems(current, [updated]));
-    } catch (queueError) {
-      setPromptQueueError(refreshMessage(queueError));
-      await refreshPromptQueue().catch(() => undefined);
-    } finally {
-      setPromptQueueBusyId("");
-    }
+    return writePromptQueue({ operation: "update", id: item.id,
+      url: `/api/command/prompt-queue/${encodeURIComponent(item.id)}`, method: "PATCH",
+      body: JSON.stringify({ expectedRevision: item.lifecycleRevision, ...change }) });
   }
 
   async function removeQueuedPrompt(item: PromptQueueItem) {
-    setPromptQueueBusyId(item.id);
-    setPromptQueueError(undefined);
-    setPromptQueue((current) => current.filter((candidate) => candidate.id !== item.id));
-    try {
-      await readJson(`/api/command/prompt-queue/${encodeURIComponent(item.id)}`, {
-        method: "DELETE",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ expectedRevision: item.lifecycleRevision }),
-      });
-    } catch (queueError) {
-      setPromptQueueError(refreshMessage(queueError));
-      await refreshPromptQueue().catch(() => undefined);
-    } finally {
-      setPromptQueueBusyId("");
-    }
+    return writePromptQueue({ operation: "delete", id: item.id,
+      url: `/api/command/prompt-queue/${encodeURIComponent(item.id)}`, method: "DELETE",
+      body: JSON.stringify({ expectedRevision: item.lifecycleRevision }) });
   }
 
   async function moveQueuedPrompt(item: PromptQueueItem, direction: -1 | 1) {
@@ -2279,42 +2337,24 @@ export function AgentRunsWorkspace({
     if (index < 0 || nextIndex < 0 || nextIndex >= active.length) return;
     const reordered = [...active];
     [reordered[index], reordered[nextIndex]] = [reordered[nextIndex], reordered[index]];
-    const terminal = promptQueue.filter((candidate) =>
-      candidate.state !== "queued" && candidate.state !== "paused"
-    );
-    setPromptQueueBusyId(item.id);
-    setPromptQueueError(undefined);
-    setPromptQueue([...reordered, ...terminal]);
-    try {
-      const payload = asRecord(await readJson("/api/command/prompt-queue/reorder", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
+    return writePromptQueue({ operation: "reorder", id: item.id,
+      url: "/api/command/prompt-queue/reorder", method: "POST",
+      body: JSON.stringify({
           items: reordered.map((candidate) => ({
             id: candidate.id,
             expectedRevision: candidate.lifecycleRevision,
           })),
-        }),
-      }));
-      const updated = arrayPath(payload, "items")
-        .map(promptQueueItemFromValue)
-        .filter((candidate): candidate is PromptQueueItem => Boolean(candidate));
-      setPromptQueue((current) => mergePromptQueueItems(current, updated));
-    } catch (queueError) {
-      setPromptQueueError(refreshMessage(queueError));
-      await refreshPromptQueue().catch(() => undefined);
-    } finally {
-      setPromptQueueBusyId("");
-    }
+      }),
+    });
   }
 
   async function drainPromptQueue() {
-    if (promptQueueDrainRef.current) return;
+    if (promptQueueDrainRef.current || queueMutation.pending || queueMutation.busy) return;
     promptQueueDrainRef.current = true;
     try {
       const items = await refreshPromptQueue();
       const next = items.find((item) => item.state === "queued");
-      if (next) {
+      if (next && !queueMutation.pending && !queueMutation.busy) {
         await runAgent({ queueItem: next, queueForce: false });
       }
     } catch (queueError) {
@@ -2332,11 +2372,14 @@ export function AgentRunsWorkspace({
     queueItem?: PromptQueueItem;
     queueForce?: boolean;
   }): Promise<VoiceCommandReply | undefined> {
+    const scopeLease = requestScope.capture();
+    if (!scopeLease.current()) return;
     if (runPermission) {
       setError(runPermission);
       return;
     }
     const queueItem = options?.queueItem;
+    if (queueItem && (queueMutation.pending || queueMutation.busy)) return;
     const submittedGoal = (queueItem?.prompt ?? options?.submittedGoal ?? goal).trim();
     const submittedCommandReferences = queueItem
       ? []
@@ -2387,7 +2430,17 @@ export function AgentRunsWorkspace({
       return;
     }
     const resumeRunId = queueItem ? undefined : clarificationRunId || undefined;
+    if (!scopeLease.current()) return;
+    activityRead.cancel();
+    initialThreadLoadedRef.current = true;
+    initialRunLoadedRef.current = true;
+    threadLoadVersionRef.current += 1;
+    threadLoadControllerRef.current?.abort();
+    const sendSelectionVersion = threadLoadVersionRef.current;
+    const currentAttempt = () => scopeLease.current() && sendSelectionVersion === threadLoadVersionRef.current;
     const controller = new AbortController();
+    const stopFollowing = () => controller.abort();
+    scopeLease.signal.addEventListener("abort", stopFollowing, { once: true });
     abortControllerRef.current = controller;
     homeActionGate.invalidate();
     setLoading("agent");
@@ -2443,7 +2496,8 @@ export function AgentRunsWorkspace({
 
     let terminalEvent: "done" | "delegated" | "clarification" | "waiting_approval" | "error" | "canceled" | undefined;
     try {
-      const response = await fetch(queueItem
+      if (!scopeLease.current()) return;
+      const response = await requestScope.run(() => fetch(queueItem
         ? `/api/command/prompt-queue/${encodeURIComponent(queueItem.id)}/dispatch`
         : "/api/agent", {
         method: "POST",
@@ -2470,7 +2524,9 @@ export function AgentRunsWorkspace({
               voiceInput: resumeRunId ? undefined : options?.voiceReview,
             }),
         signal: controller.signal,
-      });
+      }), controller.signal);
+
+      if (!currentAttempt()) throw new DOMException("Workspace selection changed.", "AbortError");
 
       if (!response.ok || !response.body) {
         const body = asRecord(await response.json().catch(() => ({})));
@@ -2485,7 +2541,9 @@ export function AgentRunsWorkspace({
       streamRunIdRef.current = response.headers.get("x-asael-run-id") || "";
 
       const handleStreamEvent = (event: StreamEvent) => {
+        if (!currentAttempt() || controller.signal.aborted) return;
         if (event.type === "run" && event.runId) {
+          if (streamRunIdRef.current && streamRunIdRef.current !== event.runId) throw new Error("The stream did not match the admitted run.");
           currentRunIdRef.current = event.runId;
           completedRunId = event.runId;
           setActiveAgentRunId(event.runId);
@@ -2587,6 +2645,7 @@ export function AgentRunsWorkspace({
       // run settles, follow the run's event log from the last event seen here
       // instead of reporting a failure the run did not have.
       const followRunId = completedRunId || streamRunIdRef.current;
+      if (!currentAttempt()) throw new DOMException("Workspace selection changed.", "AbortError");
       if (!terminalEvent && !controller.signal.aborted && followRunId) {
         setStreamEvents((current) => [
           ...current.slice(-199),
@@ -2626,7 +2685,18 @@ export function AgentRunsWorkspace({
         void refreshRunProjection(currentRunIdRef.current);
       }
     } catch (agentError) {
-      if (controller.signal.aborted) {
+      if (!scopeLease.current()) {
+        const knownRunId = completedRunId || streamRunIdRef.current;
+        if (knownRunId) setActiveAgentRunId(knownRunId);
+        setRunSyncError(terminalEvent
+          ? "Account access changed after the last received run update. That update is retained; current status has not been rechecked."
+          : "The connection stopped while account access changed. The run outcome is unconfirmed; check its current status before retrying.");
+        setRunAnnouncement(terminalEvent ? "Last received run update retained. No new run was submitted." : "Run outcome unconfirmed. No new run was submitted.");
+      } else if (sendSelectionVersion !== threadLoadVersionRef.current) {
+        // A different conversation now owns the screen. Closing this local
+        // stream does not cancel the durable run or replace the new selection.
+        return;
+      } else if (controller.signal.aborted) {
         agentRequestIdRef.current = "";
         setStreamEvents((current) => [
           ...current.slice(-199),
@@ -2638,16 +2708,20 @@ export function AgentRunsWorkspace({
         setRunAnnouncement("Agent run failed.");
       }
     } finally {
-      flushPendingDeltas();
-      abortControllerRef.current = null;
-      setLoading(undefined);
-      if (queueItem) {
+      scopeLease.signal.removeEventListener("abort", stopFollowing);
+      if (currentAttempt()) flushPendingDeltas();
+      if (abortControllerRef.current === controller) {
+        abortControllerRef.current = null;
+        setLoading(undefined);
+      }
+      if (currentAttempt() && queueItem) {
         await refreshPromptQueue().catch(() => undefined);
       }
-      if (terminalEvent === "done" || terminalEvent === "delegated") {
-        window.setTimeout(() => void drainPromptQueue(), 0);
+      if (currentAttempt() && (terminalEvent === "done" || terminalEvent === "delegated")) {
+        window.setTimeout(() => { if (currentAttempt()) void drainPromptQueue(); }, 0);
       }
     }
+    if (!currentAttempt()) return;
     return completedResponse.trim() || pendingVoiceApproval
       ? {
           text: completedResponse || "Review the exact action before it runs.",
@@ -2659,6 +2733,7 @@ export function AgentRunsWorkspace({
   }
 
   async function listenToResponse(text = currentAssistantResponse) {
+    if (!requestScope.current()) return;
     if (responseSpeechControllerRef.current) {
       responseSpeechControllerRef.current.abort();
       responseSpeechControllerRef.current = null;
@@ -2705,6 +2780,7 @@ export function AgentRunsWorkspace({
   }
 
   async function refreshThreads() {
+    if (!requestScope.current()) return;
     if (threadsRefreshRef.current) {
       threadsRefreshQueuedRef.current = true;
       return threadsRefreshRef.current;
@@ -2722,7 +2798,7 @@ export function AgentRunsWorkspace({
         } catch {
           // Threads are convenience navigation; agent execution reports its own errors.
         }
-      } while (threadsRefreshQueuedRef.current);
+      } while (threadsRefreshQueuedRef.current && requestScope.current());
     })();
     threadsRefreshRef.current = request;
     try {
@@ -2769,6 +2845,7 @@ export function AgentRunsWorkspace({
   }
 
   async function refreshRunProjection(runId: string) {
+    const selectionVersion = threadLoadVersionRef.current;
     runProjectionControllerRef.current?.abort();
     const controller = new AbortController();
     runProjectionControllerRef.current = controller;
@@ -2779,8 +2856,10 @@ export function AgentRunsWorkspace({
       ));
       if (
         controller.signal.aborted ||
-        (runId !== currentRunIdRef.current && runId !== activeAgentRunId)
+        selectionVersion !== threadLoadVersionRef.current ||
+        runId !== currentRunIdRef.current
       ) return;
+      if (stringPath(payload, "run.id", "") !== runId) throw new Error("The artifact response did not match the current run.");
       setRunMediaProjection({
         runId,
         companion: companionRunSnapshot(payload.run, runId),
@@ -2861,9 +2940,11 @@ export function AgentRunsWorkspace({
   }
 
   async function refreshThreadTurns(id: string) {
+    const version = threadLoadVersionRef.current;
     try {
       const result = asRecord(await readJson(`/api/threads/${encodeURIComponent(id)}`));
-      if (id !== threadId) return;
+      if (id !== selectedThreadRef.current || version !== threadLoadVersionRef.current) return;
+      if (stringPath(result, "thread.id", "") !== id) throw new Error("The conversation response did not match the selected conversation.");
       setTurns(projectClientThreadTurns(readPath(result, "turns")));
     } catch {
       // Keep the current transcript visible and let the next poll or reopen retry.
@@ -2880,7 +2961,21 @@ export function AgentRunsWorkspace({
     } = {},
   ) {
     let adopted = false;
+    if (!requestScope.current()) return false;
+    if (!options.preserveActivity) {
+      activityRead.cancel();
+      if (!options.initialSelection) {
+        initialThreadLoadedRef.current = true;
+        initialRunLoadedRef.current = true;
+      }
+    }
     const version = ++threadLoadVersionRef.current;
+    if (!options.preserveActivity) {
+      abortControllerRef.current?.abort();
+      pendingDeltasRef.current = [];
+      if (deltaFlushTimerRef.current !== null) window.clearTimeout(deltaFlushTimerRef.current);
+      deltaFlushTimerRef.current = null;
+    }
     threadLoadControllerRef.current?.abort();
     const controller = new AbortController();
     threadLoadControllerRef.current = controller;
@@ -2900,7 +2995,7 @@ export function AgentRunsWorkspace({
           `/api/runs/${encodeURIComponent(runId)}`,
           { signal },
         )),
-        isCurrent: () => threadLoadVersionRef.current === version && (options.canAdopt?.() ?? true),
+        isCurrent: () => requestScope.current() && threadLoadVersionRef.current === version && (options.canAdopt?.() ?? true),
         onThreadReady: (result, latestRunId) => {
           const thread = asRecord(result.thread);
           if (stringValue(thread.id) !== id) throw new Error("The conversation response did not match the selected conversation.");
@@ -2909,6 +3004,7 @@ export function AgentRunsWorkspace({
           }
           const loadedTurns = projectClientThreadTurns(readPath(result, "turns"));
           adopted = true;
+          selectedThreadRef.current = id;
           setThreadId(stringValue(thread.id));
           const loadedProjectId = stringValue(thread.projectId);
           if (loadedProjectId) setSelectedProjectId(loadedProjectId);
@@ -2958,6 +3054,9 @@ export function AgentRunsWorkspace({
           agentRequestIdRef.current = "";
         },
         onRunReady: (runPayload, latestRunId) => {
+          if (stringPath(runPayload, "run.id", "") !== latestRunId || stringPath(runPayload, "run.threadId", "") !== id) {
+            throw new Error("The run response did not match this conversation.");
+          }
           setRunMediaProjection({
             runId: latestRunId,
             companion: companionRunSnapshot(runPayload.run, latestRunId),
@@ -3029,19 +3128,33 @@ export function AgentRunsWorkspace({
       openDetails?: boolean;
       /** The conversation to open when the run itself cannot be read. */
       threadId?: string;
+      initialSelection?: boolean;
     } = {},
   ) {
+    if (!requestScope.current()) return;
+    const selected = activityRead.begin(id);
+    threadLoadVersionRef.current += 1;
+    threadLoadControllerRef.current?.abort();
+    abortControllerRef.current?.abort();
+    pendingDeltasRef.current = [];
+    if (deltaFlushTimerRef.current !== null) window.clearTimeout(deltaFlushTimerRef.current);
+    deltaFlushTimerRef.current = null;
     const openDetails = options.openDetails ?? true;
     setError(undefined);
     try {
-      const payload = asRecord(await readJson(`/api/runs/${encodeURIComponent(id)}`));
+      const payload = asRecord(await readJson(`/api/runs/${encodeURIComponent(id)}`, { signal: selected.signal }));
+      if (!selected.current()) return;
       const run = asRecord(payload.run);
       if (stringValue(run.id) !== id) throw new Error("Run not found.");
       const ownedThreadId = stringValue(run.threadId);
+      if (options.threadId && ownedThreadId !== options.threadId) throw new Error("The selected run does not belong to this conversation.");
+      if (options.initialSelection) initialRunLoadedRef.current = true;
       if (ownedThreadId) {
         void loadThread(ownedThreadId, {
           restoreLatestRun: false,
           preserveActivity: true,
+          initialSelection: options.initialSelection,
+          canAdopt: () => selected.current() && requestScope.current(),
         });
       }
       const status = stringValue(run.status);
@@ -3105,22 +3218,31 @@ export function AgentRunsWorkspace({
         setRunAnnouncement("Reopened this conversation on its run.");
       }
     } catch (loadError) {
+      if (!selected.current() || !requestScope.current()) return;
       setError(loadError instanceof Error ? loadError.message : "Run activity could not be loaded.");
       setRunAnnouncement("Run activity could not be loaded.");
       if (options.threadId) {
-        void loadThread(options.threadId);
+        void loadThread(options.threadId, { initialSelection: options.initialSelection });
       }
     }
   }
 
   function newThread() {
+    activityRead.cancel();
+    initialThreadLoadedRef.current = true;
+    initialRunLoadedRef.current = true;
     threadLoadVersionRef.current += 1;
+    abortControllerRef.current?.abort();
+    pendingDeltasRef.current = [];
+    if (deltaFlushTimerRef.current !== null) window.clearTimeout(deltaFlushTimerRef.current);
+    deltaFlushTimerRef.current = null;
     threadLoadControllerRef.current?.abort();
     memoryControllerRef.current?.abort();
     memoryVersionRef.current += 1;
     contextControllerRef.current?.abort();
     contextVersionRef.current += 1;
     setThreadId("");
+    selectedThreadRef.current = "";
     setMode("orchestrate");
     setTurns([]);
     setGoal("");
@@ -3144,6 +3266,7 @@ export function AgentRunsWorkspace({
     setWorkflowPlan(undefined);
     setWorkflowRun(undefined);
     setWorkflowSyncError(undefined);
+    setRunSyncError(undefined);
     setActiveAgentRunId("");
     setClarificationRunId("");
     currentRunIdRef.current = "";
@@ -3262,6 +3385,14 @@ export function AgentRunsWorkspace({
     });
   }
 
+  if (!scopeAvailable) return (
+    <section className={workspaceStyles.workspace} aria-label="Assistant access" aria-busy={sessionStatus === "loading"}>
+      <h1>Assistant</h1>
+      <p role="status">{sessionStatus === "loading" ? "Checking account access. Conversation and draft are hidden until access is confirmed." : "Confirm workspace access to open this conversation."}</p>
+      {sessionStatus !== "loading" ? <button type="button" className="action-button" onClick={() => void refreshAccountAccess()}>Refresh account access</button> : null}
+    </section>
+  );
+
   return (
     <>
     {/* Outside the busy view, so a phase is announced while a run streams. */}
@@ -3281,6 +3412,7 @@ export function AgentRunsWorkspace({
             </div>
           </div>
           <div className="flex flex-wrap gap-2">
+            <button type="button" className="action-button" onClick={() => void refreshAccountAccess()}>Refresh account access</button>
             <StatusPill label={runPosture.label} tone={runPosture.tone} />
           </div>
         </div>
@@ -3295,6 +3427,7 @@ export function AgentRunsWorkspace({
             {workflowSyncError}
           </div>
         ) : null}
+        {runSyncError ? <p className="mt-4 rounded-md border border-warning/45 bg-warning/10 p-3 text-sm text-muted" role="status">{runSyncError}</p> : null}
 
         {runPermission || workflowPermission ? (
           <div className="mt-4 flex flex-col gap-3 rounded-md border border-warning/45 bg-warning/10 p-3 text-sm sm:flex-row sm:items-center sm:justify-between">
@@ -3480,6 +3613,8 @@ export function AgentRunsWorkspace({
               {waitingApproval?.executionId ? (
                 <div className="ml-0 max-w-2xl sm:ml-8">
                   <InlineApproval
+                    authorityScope={ownerScope}
+                    isAuthorityCurrent={requestScope.current}
                     key={waitingApproval.executionId}
                     executionId={waitingApproval.executionId}
                     summary={streamEventLabel(waitingApproval)}
@@ -3654,14 +3789,17 @@ export function AgentRunsWorkspace({
               items={promptQueue}
               busyId={promptQueueBusyId}
               error={promptQueueError}
-              dispatchLocked={Boolean(loading) || workflowInProgress}
-              onEdit={(item, prompt) => void updateQueuedPrompt(item, { prompt })}
+              uncertain={queueUnconfirmed}
+              changesLocked={Boolean(runPermission) || Boolean(queueUnconfirmed)}
+              dispatchLocked={Boolean(loading) || workflowInProgress || Boolean(runPermission) || Boolean(queueUnconfirmed)}
+              onEdit={(item, prompt) => updateQueuedPrompt(item, { prompt })}
               onPause={(item) => void updateQueuedPrompt(item, { state: "paused" })}
               onResume={(item) => void updateQueuedPrompt(item, { state: "queued" })}
               onMove={(item, direction) => void moveQueuedPrompt(item, direction)}
               onRun={(item) => void runAgent({ queueItem: item, queueForce: true })}
               onDelete={(item) => void removeQueuedPrompt(item)}
-              onRefresh={() => void refreshPromptQueue()}
+              onRefresh={() => void reviewPromptQueue()}
+              onRecover={() => { if (queueMutation.pending) void writePromptQueue(queueMutation.pending, true); }}
             />
             <GoalStage
               goal={goal}
@@ -3711,8 +3849,17 @@ export function AgentRunsWorkspace({
               onPlan={() => void buildPlan()}
               onAgent={() => void runAgent({ prepareContextAutomatically: true })}
               onQueue={() => void enqueuePrompt()}
+              queueLocked={Boolean(promptQueueBusyId) || Boolean(queueUnconfirmed)}
               onVoiceConversationBound={setThreadId}
               onVoiceOpen={() => homeActionGate.invalidate()}
+              isVoiceAuthorityCurrent={requestScope.current}
+              voiceAuthorityScope={ownerScope}
+              onVoiceContinueInText={(transcript, voiceThreadId) => {
+                if (!requestScope.current() || (voiceThreadId && voiceThreadId !== selectedThreadRef.current)) return false;
+                changeGoal(voiceTextDraft(goal, transcript));
+                setRunAnnouncement("Voice transcript added to your editable draft. Nothing was sent. Any existing typed draft was preserved above it.");
+                return true;
+              }}
               onVoiceTranscript={async (transcript, voiceConversationId, review) => {
                 const voiceGoal = transcript;
                 setThreadId(voiceConversationId);
@@ -4270,6 +4417,7 @@ export function AgentRunsWorkspace({
                 ) : null}
                 {activeWorkflowId ? (
                   <RunTraceJourney
+                    key={`workflow:${activeWorkflowId}`}
                     runId={activeWorkflowId}
                     kind="workflow"
                     live={!["completed", "failed", "canceled"].includes(activeWorkflowStatus)}
@@ -4277,9 +4425,10 @@ export function AgentRunsWorkspace({
                 ) : null}
                 {!activeWorkflowId && (selectedActivityRunId || activeAgentRunId) ? (
                   <ConversationProgressPanel
+                    key={`agent:${selectedActivityRunId || activeAgentRunId}`}
                     runId={selectedActivityRunId || activeAgentRunId}
                     live={loading === "agent" && (!selectedActivityRunId || selectedActivityRunId === activeAgentRunId)}
-                    canCancel={Boolean(activeAgentRunId && (selectedActivityRunId || activeAgentRunId) === activeAgentRunId)}
+                    canCancel={Boolean(!runPermission && activeAgentRunId && (selectedActivityRunId || activeAgentRunId) === activeAgentRunId)}
                     onCancel={() => void stopAgent()}
                     approvalHref={
                       waitingApproval && (selectedActivityRunId || activeAgentRunId) === activeAgentRunId
@@ -5224,7 +5373,7 @@ function RunTraceJourney({
     const loadTrace = async (showLoading: boolean) => {
       if (showLoading) setState("loading");
       try {
-        const payload = asRecord(await readJson(
+        const payload = asRecord(await readUnscopedJson(
           kind === "workflow"
             ? `/api/workflows/${encodeURIComponent(runId)}/trajectory`
             : `/api/runs/${encodeURIComponent(runId)}/trajectory`,
@@ -5584,6 +5733,8 @@ function PromptQueuePanel({
   items,
   busyId,
   error,
+  uncertain,
+  changesLocked,
   dispatchLocked,
   onEdit,
   onPause,
@@ -5592,23 +5743,27 @@ function PromptQueuePanel({
   onRun,
   onDelete,
   onRefresh,
+  onRecover,
 }: {
   items: PromptQueueItem[];
   busyId: string;
   error?: string;
+  uncertain?: QueueIntent;
+  changesLocked: boolean;
   dispatchLocked: boolean;
-  onEdit: (item: PromptQueueItem, prompt: string) => void;
+  onEdit: (item: PromptQueueItem, prompt: string) => Promise<boolean>;
   onPause: (item: PromptQueueItem) => void;
   onResume: (item: PromptQueueItem) => void;
   onMove: (item: PromptQueueItem, direction: -1 | 1) => void;
   onRun: (item: PromptQueueItem) => void;
   onDelete: (item: PromptQueueItem) => void;
   onRefresh: () => void;
+  onRecover: () => void;
 }) {
   const [expanded, setExpanded] = useState(true);
   const [editingId, setEditingId] = useState("");
   const [editValue, setEditValue] = useState("");
-  if (!items.length && !error) return null;
+  if (!items.length && !error && !uncertain) return null;
   const movable = items.filter((item) =>
     item.state === "queued" || item.state === "paused"
   );
@@ -5628,13 +5783,14 @@ function PromptQueuePanel({
             <span className="min-w-0">
               <span id="prompt-queue-title" className="block text-sm font-semibold">Prompt queue</span>
               <span className="block truncate text-xs text-muted">
-                {items.filter((item) => item.state === "queued").length} ready · server-synced across your devices
+                {items.filter((item) => item.state === "queued").length} ready · {uncertain ? "change unconfirmed" : error ? "last confirmed snapshot" : "last server-confirmed snapshot"}
               </span>
             </span>
           </button>
           <button
             type="button"
             onClick={onRefresh}
+            disabled={Boolean(busyId)}
             className="grid size-9 place-items-center rounded-full text-muted transition hover:bg-surface-raised hover:text-foreground"
             aria-label="Refresh prompt queue"
           >
@@ -5646,12 +5802,18 @@ function PromptQueuePanel({
             {error}
           </p>
         ) : null}
+        {uncertain?.operation === "create" ? (
+          <div className="mx-4 mb-3 space-y-2 text-xs">
+            <p>The original prompt, target, and context selection are frozen for this recovery. Your current composer draft is kept separately.</p>
+            <button type="button" onClick={onRecover} disabled={Boolean(busyId)} className="action-button">Retry same queue request</button>
+          </div>
+        ) : null}
         {expanded && items.length ? (
           <ol className="max-h-72 space-y-2 overflow-y-auto border-t border-line/70 px-3 py-3 sm:px-4">
             {items.map((item) => {
               const activeIndex = movable.findIndex((candidate) => candidate.id === item.id);
               const editable = item.state === "queued" || item.state === "paused" || item.state === "failed";
-              const busy = busyId === item.id;
+              const busy = Boolean(busyId) || changesLocked;
               const editing = editingId === item.id;
               return (
                 <li key={item.id} className="rounded-xl border border-line/75 bg-background/70 px-3 py-2.5">
@@ -5677,9 +5839,8 @@ function PromptQueuePanel({
                             <button
                               type="button"
                               disabled={!editValue.trim() || busy}
-                              onClick={() => {
-                                onEdit(item, editValue.trim());
-                                setEditingId("");
+                              onClick={async () => {
+                                if (await onEdit(item, editValue.trim())) setEditingId("");
                               }}
                               className="min-h-8 rounded-full bg-primary px-3 text-xs font-semibold text-primary-ink disabled:opacity-40"
                             >
@@ -5708,8 +5869,20 @@ function PromptQueuePanel({
                         ) : null}
                         {item.progressLabel ? <span>{item.progressLabel}</span> : null}
                       </div>
+                      <details className="mt-2 text-xs text-muted">
+                        <summary className="cursor-pointer">Pinned target and context</summary>
+                        <div className="mt-2 space-y-1 break-all">
+                          <p>Revision {item.lifecycleRevision} · {item.target.executionTarget}</p>
+                          <p>Conversation: {item.target.threadId || "new conversation"} · Mission: {item.target.missionId || "none"} · Project: {item.target.projectId || "none"}</p>
+                          <p>Agent version: {item.agent.definitionVersionId} · Principal generation: {item.agent.principalGeneration}</p>
+                          <p>Model assignment: {item.model.assignmentId || "default route"}{item.model.assignmentRevision !== null ? ` · revision ${item.model.assignmentRevision}` : ""}</p>
+                          {item.context?.references.map((reference) => <p key={`${reference.kind}:${reference.id}`}>{reference.kind}: {reference.id}{reference.versionId ? ` · version ${reference.versionId}` : ""}{reference.expectedVersion ? ` · revision ${reference.expectedVersion}` : ""}{reference.bindingSha256 ? ` · digest ${reference.bindingSha256}` : ""}</p>)}
+                          <p>Context receipt: {item.context?.receiptSha256 || "no pinned context"}</p>
+                          <p>Queueing grants no execution or approval authority. Access is checked again before dispatch.</p>
+                        </div>
+                      </details>
                     </div>
-                    {busy ? <Loader2 size={14} className="mt-1 shrink-0 animate-spin text-primary" aria-label="Saving queue change" /> : null}
+                    {busyId === item.id ? <Loader2 size={14} className="mt-1 shrink-0 animate-spin text-primary" aria-label="Saving queue change" /> : null}
                   </div>
                   {!editing ? (
                     <div className="mt-2 flex flex-wrap items-center gap-1 border-t border-line/60 pt-2">
@@ -5799,8 +5972,12 @@ function GoalStage({
   onPlan,
   onAgent,
   onQueue,
+  queueLocked,
   onVoiceConversationBound,
   onVoiceOpen,
+  isVoiceAuthorityCurrent,
+  voiceAuthorityScope,
+  onVoiceContinueInText,
   onVoiceTranscript,
   onStop,
   onWorkflow,
@@ -5851,8 +6028,12 @@ function GoalStage({
   onPlan: () => void;
   onAgent: () => void;
   onQueue: () => void;
+  queueLocked: boolean;
   onVoiceConversationBound: (conversationId: string) => void;
   onVoiceOpen: () => void;
+  isVoiceAuthorityCurrent: () => boolean;
+  voiceAuthorityScope: string;
+  onVoiceContinueInText: (text: string, conversationId?: string) => boolean;
   onVoiceTranscript: (
     transcript: string,
     conversationId: string,
@@ -6037,6 +6218,9 @@ function GoalStage({
             <div className={workspaceStyles.composerActions}>
               <VoiceMode
                 onOpen={onVoiceOpen}
+                isAuthorityCurrent={isVoiceAuthorityCurrent}
+                authorityScope={voiceAuthorityScope}
+                onContinueInText={onVoiceContinueInText}
                 disabled={draftLocked || contextLoading || Boolean(voiceDisabledReason)}
                 disabledReason={voiceDisabledReason}
                 agentName={preferredAgent?.name || "Asael"}
@@ -6049,7 +6233,7 @@ function GoalStage({
               <button
                 type="button"
                 onClick={onQueue}
-                disabled={draftLocked || goalMissing || Boolean(runDisabledReason)}
+                disabled={draftLocked || goalMissing || Boolean(runDisabledReason) || queueLocked}
                 title={goalMissing ? "Write a message first." : "Add to the persistent prompt queue"}
                 className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-full bg-primary/10 px-3 text-xs font-semibold text-primary transition hover:bg-primary/15 disabled:cursor-not-allowed disabled:opacity-35"
                 aria-label="Add prompt to queue"
@@ -6231,7 +6415,7 @@ function RunCheckpointForkPanel({
 
   useEffect(() => {
     const controller = new AbortController();
-    void readJson(`/api/runs/${encodeURIComponent(runId)}/trajectory`, {
+    void readUnscopedJson(`/api/runs/${encodeURIComponent(runId)}/trajectory`, {
       signal: controller.signal,
     }).then((payload) => {
       if (controller.signal.aborted) return;
@@ -6428,11 +6612,13 @@ function WorkflowOutcomePill({ status }: { status: unknown }) {
 // is asked for once more, under the same key. A run still missing never
 // started, and closing the send already stopped it. Resolves true when a run
 // was canceled.
-async function cancelAgentRun(runId: string) {
+async function cancelAgentRun(runId: string, scope: CommandWorkspaceScope) {
+  const lease = scope.capture();
   const path = `/api/runs/${encodeURIComponent(runId)}`;
   const headers = { "idempotency-key": crypto.randomUUID() };
   for (let attempt = 0; ; attempt += 1) {
-    const response = await fetch(path, { method: "DELETE", headers });
+    if (!lease.current()) throw new Error("Account access changed. Cancellation could not be confirmed.");
+    const response = await scope.run((signal) => fetch(path, { method: "DELETE", headers, signal }));
     if (response.ok) return true;
     if (response.status !== 404) {
       const record = asRecord(await response.json().catch(() => ({})));
@@ -6443,7 +6629,7 @@ async function cancelAgentRun(runId: string) {
   }
 }
 
-async function readJson(path: string, init?: RequestInit) {
+async function readUnscopedJson(path: string, init?: RequestInit) {
   const response = await fetch(path, init);
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -7014,76 +7200,6 @@ function sameOrderedStringValues(left: readonly string[], right: readonly string
 
 function asRecord(value: unknown): JsonRecord {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : {};
-}
-
-function promptQueueItemsFromPayload(value: unknown): PromptQueueItem[] {
-  return arrayPath(value, "items")
-    .map(promptQueueItemFromValue)
-    .filter((item): item is PromptQueueItem => Boolean(item));
-}
-
-function promptQueueItemFromValue(value: unknown): PromptQueueItem | undefined {
-  const item = asRecord(value);
-  const target = asRecord(item.target);
-  const agent = asRecord(item.agent);
-  const model = asRecord(item.model);
-  const commandSelection = asRecord(model.commandSelection);
-  const contextPin = asRecord(item.context);
-  const contextReferences = Array.isArray(contextPin.references)
-    ? contextPin.references
-    : [];
-  const state = stringValue(item.state);
-  const mode = stringValue(item.mode);
-  const strategy = stringValue(item.strategy);
-  const executionTarget = stringValue(target.executionTarget);
-  const providerId = stringValue(model.providerId);
-  const tier = stringValue(model.tier);
-  if (
-    !stringValue(item.id) ||
-    !stringValue(item.prompt) ||
-    !["queued", "paused", "dispatching", "completed", "failed"].includes(state) ||
-    !["orchestrate", "research", "execute", "learn"].includes(mode) ||
-    !["direct", "auto"].includes(strategy) ||
-    !["asael", "local_macos"].includes(executionTarget) ||
-    !["openai", "google", "anthropic", "aws_bedrock"].includes(providerId) ||
-    !["fast", "reasoning"].includes(tier) ||
-    item.queueGrantsAuthority !== false
-  ) return undefined;
-  return {
-    id: stringValue(item.id),
-    clientCorrelationId: stringValue(item.clientCorrelationId),
-    prompt: stringValue(item.prompt),
-    promptSha256: stringValue(item.promptSha256),
-    mode: mode as AgentMode,
-    strategy: strategy as PromptQueueItem["strategy"],
-    target: {
-      threadId: stringValue(target.threadId) || null,
-      missionId: stringValue(target.missionId) || null,
-      projectId: stringValue(target.projectId) || null,
-      executionTarget: executionTarget as PromptQueueItem["target"]["executionTarget"],
-    },
-    agent: {
-      logicalAgentId: stringValue(agent.logicalAgentId),
-      definitionVersion: numberValue(agent.definitionVersion, 0),
-      definitionVersionId: stringValue(agent.definitionVersionId),
-    },
-    model: {
-      providerId: providerId as PromptQueueItem["model"]["providerId"],
-      modelId: stringValue(model.modelId),
-      tier: tier as PromptQueueItem["model"]["tier"],
-      reasoningLevel: stringValue(commandSelection.reasoningLevel) || undefined,
-    },
-    contextReferenceCount: contextReferences.length,
-    state: state as PromptQueueItem["state"],
-    position: numberValue(item.position, 0),
-    lifecycleRevision: numberValue(item.lifecycleRevision, 0),
-    runId: stringValue(item.runId) || null,
-    resultThreadId: stringValue(item.resultThreadId) || null,
-    progressLabel: stringValue(item.progressLabel) || null,
-    failureCode: stringValue(item.failureCode) || null,
-    updatedAt: stringValue(item.updatedAt),
-    queueGrantsAuthority: false,
-  };
 }
 
 function mergePromptQueueItems(

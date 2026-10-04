@@ -804,8 +804,28 @@ class AgentCouncilController extends ChangeNotifier {
   final Set<String> _loadingTaskDetails = <String>{};
   final Map<String, Object> _taskDetailErrors = <String, Object>{};
   Future<void>? _refreshInFlight;
+  bool _disposed = false;
+  @override
+  void notifyListeners() {
+    if (!_disposed) super.notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    projection = null;
+    error = null;
+    _taskDetails.clear();
+    _taskDetailErrors.clear();
+    _cancellationErrors.clear();
+    _cancellationKeys.clear();
+    _loadingTaskDetails.clear();
+    _cancelingTaskIds.clear();
+    super.dispose();
+  }
 
   bool canCancel(AgentCouncilMember member) =>
+      !_disposed &&
       controlAvailable &&
       repository is AgentCouncilControlRepository &&
       member.canCancel;
@@ -820,6 +840,7 @@ class AgentCouncilController extends ChangeNotifier {
   Object? taskDetailError(String taskId) => _taskDetailErrors[taskId];
 
   Future<void> loadTaskDetail(String taskId, {bool refresh = false}) async {
+    if (_disposed) return;
     final source = repository;
     if (source is! AgentCouncilDetailRepository) {
       _taskDetailErrors[taskId] = StateError(
@@ -836,6 +857,7 @@ class AgentCouncilController extends ChangeNotifier {
     try {
       final detail = await (source as AgentCouncilDetailRepository)
           .loadTaskDetail(taskId);
+      if (_disposed) return;
       if (detail.executionId != taskId) {
         throw const FormatException(
           'The service returned authority for a different task.',
@@ -843,7 +865,7 @@ class AgentCouncilController extends ChangeNotifier {
       }
       _taskDetails[taskId] = detail;
     } catch (caught) {
-      _taskDetailErrors[taskId] = caught;
+      if (!_disposed) _taskDetailErrors[taskId] = caught;
     } finally {
       _loadingTaskDetails.remove(taskId);
       notifyListeners();
@@ -851,6 +873,7 @@ class AgentCouncilController extends ChangeNotifier {
   }
 
   Future<void> refresh() {
+    if (_disposed) return Future.value();
     final existing = _refreshInFlight;
     if (existing != null) return existing;
     final operation = _refresh();
@@ -865,9 +888,11 @@ class AgentCouncilController extends ChangeNotifier {
     error = null;
     notifyListeners();
     try {
-      projection = await repository.load();
+      final loaded = await repository.load();
+      if (_disposed) return;
+      projection = loaded;
     } catch (caught) {
-      error = caught;
+      if (!_disposed) error = caught;
     } finally {
       loading = false;
       notifyListeners();
@@ -910,6 +935,7 @@ class AgentCouncilController extends ChangeNotifier {
         reason: normalizedReason,
         idempotencyKey: idempotencyKey,
       );
+      if (_disposed) throw StateError('The current Agent workspace changed.');
       if (result.executionId != member.taskId) {
         throw const FormatException(
           'The service canceled a different delegated task.',
@@ -919,7 +945,7 @@ class AgentCouncilController extends ChangeNotifier {
       _cancellationErrors.remove(member.taskId);
       return result;
     } catch (caught) {
-      _cancellationErrors[member.taskId] = caught;
+      if (!_disposed) _cancellationErrors[member.taskId] = caught;
       rethrow;
     } finally {
       _cancelingTaskIds.remove(member.taskId);

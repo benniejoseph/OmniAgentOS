@@ -710,21 +710,41 @@ class AgentsController extends ChangeNotifier {
       learningReadAvailable;
   final bool governanceReadAvailable, governanceMutationAvailable;
   Future<void>? _refreshing;
+  bool _disposed = false;
+  @override
+  void notifyListeners() {
+    if (!_disposed) super.notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    ledger = null;
+    error = null;
+    super.dispose();
+  }
+
   bool get canMutate => canMutateAgents;
-  bool get canMutateAgents => canManage && mutationsAvailable;
-  bool get canMutateSkills => canManage && skillMutationsAvailable;
-  bool get canDeleteAgents => canManage && agentDeleteAvailable;
-  bool get canManageMoltbook => canManage && moltbookAvailable;
+  bool get canMutateAgents => !_disposed && canManage && mutationsAvailable;
+  bool get canMutateSkills =>
+      !_disposed && canManage && skillMutationsAvailable;
+  bool get canDeleteAgents => !_disposed && canManage && agentDeleteAvailable;
+  bool get canManageMoltbook => !_disposed && canManage && moltbookAvailable;
   bool get canReadLearning =>
-      learningReadAvailable && repository is AgentLearningRepository;
+      !_disposed &&
+      learningReadAvailable &&
+      repository is AgentLearningRepository;
   bool get canReadGovernance =>
-      governanceReadAvailable && repository is AgentGovernanceRepository;
+      !_disposed &&
+      governanceReadAvailable &&
+      repository is AgentGovernanceRepository;
   bool get canManageGovernance =>
       canManage && governanceMutationAvailable && canReadGovernance;
   AgentLedger? ledger;
   bool loading = false;
   Object? error;
   Future<void> refresh() {
+    if (_disposed) return Future.value();
     final refreshing = _refreshing;
     if (refreshing != null) return refreshing;
     final operation = _refresh();
@@ -735,6 +755,7 @@ class AgentsController extends ChangeNotifier {
   }
 
   Future<void> _refresh() async {
+    if (_disposed) return;
     loading = true;
     error = null;
     notifyListeners();
@@ -745,18 +766,23 @@ class AgentsController extends ChangeNotifier {
           : null;
       if (progressive != null) {
         final primary = await progressive.loadPrimary();
+        if (_disposed) return;
         ledger = primary;
         notifyListeners();
+        final performance = await progressive.loadPerformance();
+        if (_disposed) return;
         ledger = AgentLedger(
           agents: primary.agents,
           skills: primary.skills,
-          performance: await progressive.loadPerformance(),
+          performance: performance,
         );
       } else {
-        ledger = await source.load();
+        final loaded = await source.load();
+        if (_disposed) return;
+        ledger = loaded;
       }
     } catch (e) {
-      error = e;
+      if (!_disposed) error = e;
     } finally {
       loading = false;
       notifyListeners();
@@ -766,6 +792,7 @@ class AgentsController extends ChangeNotifier {
   Future<void> saveAgent(Json value, {String? id}) async {
     _requireManageableAgent(id);
     final saved = await repository.saveAgent(value, id: id);
+    if (_disposed) return;
     final current = ledger;
     if (current == null) {
       await _refreshAfterMutation();
@@ -842,7 +869,9 @@ class AgentsController extends ChangeNotifier {
     int limit = 20,
   }) {
     final source = repository;
-    if (!moltbookAvailable || source is! MoltbookAgentsRepository) {
+    if (_disposed ||
+        !moltbookAvailable ||
+        source is! MoltbookAgentsRepository) {
       throw StateError('Moltbook management is not available here.');
     }
     return (source as MoltbookAgentsRepository).loadMoltbook(
@@ -1258,6 +1287,7 @@ class _AgentsViewState extends State<AgentsView>
     if (a != null && !a.manageable) return;
     final result = await showDialog<Json>(
       context: context,
+      useRootNavigator: false,
       builder: (_) => _AgentDialog(
         agent: a,
         skills: widget.controller.ledger?.skills ?? const [],
@@ -1271,6 +1301,7 @@ class _AgentsViewState extends State<AgentsView>
   Future<void> _editSkill([AgentSkill? s]) async {
     final result = await showDialog<Json>(
       context: context,
+      useRootNavigator: false,
       builder: (_) => _SkillDialog(skill: s),
     );
     if (result != null) {
@@ -1284,6 +1315,7 @@ class _AgentsViewState extends State<AgentsView>
   ) async {
     final yes = await showDialog<bool>(
       context: context,
+      useRootNavigator: false,
       builder: (_) => AlertDialog(
         title: Text('Delete $name?'),
         content: const Text('This cannot be undone.'),

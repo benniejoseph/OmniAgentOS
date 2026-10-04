@@ -22,6 +22,9 @@ export const NATIVE_MUTATION_CAPABILITIES = [
   "responsibilities.lifecycle.manage",
   "responsibilities.notifications.manage",
   "meetings.records.manage",
+  "customers.records.manage",
+  "memory.records.write",
+  "memory.lifecycle.write",
   "meetings.commitments.propose",
   "meetings.commitments.resolve",
   "evidence.cancel",
@@ -104,6 +107,8 @@ export function nativeMutationCapabilityPolicy(
 }
 
 function minimumVersion(capability: NativeMutationCapability) {
+  if (capability === "customers.records.manage" || capability === "memory.records.write" ||
+    capability === "memory.lifecycle.write") return 34;
   if (capability === "meetings.records.manage" || capability === "meetings.commitments.propose" ||
     capability === "meetings.commitments.resolve") return 33;
   if (capability === "responsibilities.drafts.manage" || capability === "responsibilities.lifecycle.manage" ||

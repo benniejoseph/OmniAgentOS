@@ -6,6 +6,11 @@ task_flutter_dir="$(cd "$task_script_dir/.." && pwd)"
 source "$task_script_dir/lib/macos_signing_rotation_guard.sh"
 source "$task_script_dir/lib/macos_hardened_runtime_guard.sh"
 task_xcode_path="$(xcode-select -p 2>/dev/null || true)"
+task_build_jobs="${ASAEL_MACOS_BUILD_JOBS:-1}"
+if [[ ! "$task_build_jobs" =~ ^([1-9]|1[0-6])$ ]]; then
+  echo "ASAEL_MACOS_BUILD_JOBS must be an integer from 1 to 16." >&2
+  exit 64
+fi
 task_developer_signing_identity="${ASAEL_MACOS_SIGNING_IDENTITY:-}"
 task_notary_profile="${ASAEL_MACOS_NOTARY_PROFILE:-}"
 task_dist_dir="${ASAEL_MACOS_DIST_DIR:-$task_flutter_dir/build/distribution/macos}"
@@ -206,12 +211,15 @@ else
   flutter build macos --release --config-only "${task_flutter_build_args[@]}"
   xcodebuild \
     -quiet \
+    -jobs "$task_build_jobs" \
     -workspace macos/Runner.xcworkspace \
     -scheme Runner \
     -configuration Release \
     SYMROOT="$task_flutter_dir/build/macos/Build/Products" \
     CODE_SIGNING_ALLOWED=NO \
     CODE_SIGNING_REQUIRED=NO \
+    COMPILER_INDEX_STORE_ENABLE=NO \
+    "OTHER_SWIFT_FLAGS=\$(inherited) -j$task_build_jobs" \
     build
 fi
 

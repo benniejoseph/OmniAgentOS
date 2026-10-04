@@ -2,7 +2,9 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps } from "react";
+import { workspaceOwnerScope } from "@/components/app-shell/workspace-owner-scope";
+import { CommandWorkspaceScope } from "@/components/command/command-workspace-scope";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -25,17 +27,21 @@ import {
 } from "@/components/approvals/approval-card";
 import {
   APPROVAL_PAGE_SIZE,
+  ApprovalDecisionUnconfirmedError,
   MAX_REFRESHED_APPROVALS,
   announceInboxChanged,
   approvalHeadingId,
   approvalItemKey,
   approvalReturnPath,
   findFocusedApproval,
+  fetchApprovalQueuePage,
+  fetchApprovalQueueItem,
   focusAfterDecision,
   loadApprovalQueue,
   matchesApprovalFocus,
   submitApprovalDecision,
   type ApprovalDecision,
+  type ApprovalDecisionRequest,
   type ApprovalItem,
   type ApprovalQueuePage,
   type DecisionNotice,
@@ -83,21 +89,42 @@ type DecisionList = "actions" | "access";
 const ACTION_LIST_HEADING_ID = "action-approval-heading";
 const ACCESS_LIST_HEADING_ID = "access-request-heading";
 
+/** Synchronous event admission; rendering uses decisionInFlight state. */
+class ApprovalDecisionGate {
+  #busy = false;
+  enter() {
+    if (this.#busy) return false;
+    this.#busy = true;
+    return true;
+  }
+  leave() { this.#busy = false; }
+}
+
+function DecisionApprovalCard({ onDecision, ...props }: Omit<ComponentProps<typeof ApprovalCard>, "onDecide"> & {
+  onDecision: (item: ApprovalItem, decision: ApprovalDecision) => Promise<void>;
+}) {
+  return <ApprovalCard {...props} onDecide={(decision) => void onDecision(props.item, decision)} />;
+}
+
 function accessRequestKey(item: Pick<AccessRequestItem, "id">) {
   return `access:${item.id}`;
 }
 
-export function ApprovalsWorkspace({
-  focusId,
-  focusKind,
-  returnTo,
-}: {
+type ApprovalsWorkspaceProps = {
   /** The item a link opened the inbox on. */
   focusId?: string;
   focusKind?: ApprovalKind;
   /** Where to send the approver once that item is decided. */
   returnTo?: string;
-}) {
+};
+
+export function ApprovalsWorkspace(props: ApprovalsWorkspaceProps) {
+  const { session, role, status } = useWorkspaceSession();
+  const owner = workspaceOwnerScope(session, role);
+  return <OwnedApprovalsWorkspace key={owner || "unconfirmed"} {...props} ownerScope={owner} scopeAvailable={Boolean(owner) && status === "ready"} />;
+}
+
+function OwnedApprovalsWorkspace({ focusId, focusKind, returnTo, ownerScope, scopeAvailable }: ApprovalsWorkspaceProps & { ownerScope: string; scopeAvailable: boolean }) {
   const router = useRouter();
   const {
     session,
@@ -122,6 +149,14 @@ export function ApprovalsWorkspace({
   const [trust, setTrust] = useState<TrustResponse>();
   const [accessQueue, setAccessQueue] = useState<AccessQueueResponse>();
   const loadVersionRef = useRef(0);
+  const [scope] = useState(() => new CommandWorkspaceScope(scopeAvailable));
+  const fetch = useCallback<typeof globalThis.fetch>((input, init) => scope.run((signal) => globalThis.fetch(input, { ...init, signal }), init?.signal), [scope]);
+  const [decisionGate] = useState(() => new ApprovalDecisionGate());
+  const [decisionRecovery, setDecisionRecovery] = useState<{ item: ApprovalItem; request: Readonly<ApprovalDecisionRequest> }>();
+  useLayoutEffect(() => {
+    scope.setAvailable(scopeAvailable);
+    return () => { scope.setAvailable(false); loadVersionRef.current += 1; };
+  }, [scope, scopeAvailable]);
   const shownLimitRef = useRef(APPROVAL_PAGE_SIZE);
   // The card a decision was made on, until the queues are read back.
   const decidedRef = useRef<{ list: DecisionList; key: string }>(undefined);
@@ -139,6 +174,7 @@ export function ApprovalsWorkspace({
 
   /** Reads the queues again, and says whether what it read is shown. */
   async function load() {
+    if (!scope.current()) return false;
     const loadVersion = ++loadVersionRef.current;
     if (decisionPermission && accessPermission) {
       setState("ready");
@@ -150,7 +186,7 @@ export function ApprovalsWorkspace({
       const [queuePage, trustRes, accessRes] = await Promise.all([
         decisionPermission
           ? Promise.resolve(undefined)
-          : loadApprovalQueue(shownLimitRef.current),
+          : loadApprovalQueue(shownLimitRef.current, (request) => fetchApprovalQueuePage(request, fetch)),
         decisionPermission
           ? Promise.resolve(undefined)
           : fetch("/api/trust").catch(() => undefined),
@@ -160,7 +196,7 @@ export function ApprovalsWorkspace({
       ]);
       // The queue shown has its own error; the linked item reports its own.
       const focusedApproval: FocusState | undefined = queuePage && focus
-        ? await findFocusedApproval(queuePage, focus).catch((focusError: unknown) => ({
+        ? await findFocusedApproval(queuePage, focus, (requested) => fetchApprovalQueueItem(requested, fetch)).catch((focusError: unknown) => ({
             status: "error" as const,
             message: focusError instanceof Error
               ? focusError.message
@@ -256,22 +292,27 @@ export function ApprovalsWorkspace({
     void load().finally(() => setLoadingMore(false));
   }
 
-  async function decide(item: ApprovalItem, decision: ApprovalDecision) {
+  async function decide(item: ApprovalItem, decision: ApprovalDecision, frozen?: Readonly<ApprovalDecisionRequest>) {
+    if (!scope.current() || (decisionRecovery && !frozen)) return;
     if (decisionPermission) {
       setError(decisionPermission);
       return;
     }
     const key = approvalItemKey(item);
+    if (!decisionGate.enter()) return;
+    const lease = scope.capture();
     const decidingFocus = Boolean(focus && matchesApprovalFocus(item, focus));
     setDecisionInFlight({ key, decision });
     setError(undefined);
     setLastDecision(undefined);
     try {
-      const notice = await submitApprovalDecision(item, decision, {
+      const notice = await submitApprovalDecision(item, decision, frozen ?? {
         reason: reasons[key],
         breakGlass: breakGlassSelections[key],
         ticket: tickets[key],
-      });
+      }, fetch, { scope: ownerScope, isCurrent: lease.current });
+      if (!lease.current()) return;
+      setDecisionRecovery(undefined);
       setApprovedAccessRequest(undefined);
       setLastDecision(notice);
       announceInboxChanged();
@@ -285,8 +326,11 @@ export function ApprovalsWorkspace({
       }
       await rereadAfterDecision("actions", key);
     } catch (decisionError) {
+      if (!lease.current()) return;
+      if (decisionError instanceof ApprovalDecisionUnconfirmedError) setDecisionRecovery({ item, request: decisionError.request });
       setError(decisionError instanceof Error ? decisionError.message : "Decision failed.");
     } finally {
+      decisionGate.leave();
       setDecisionInFlight(undefined);
     }
   }
@@ -295,11 +339,14 @@ export function ApprovalsWorkspace({
     item: AccessRequestItem,
     decision: "approved" | "declined",
   ) {
+    if (!scope.current() || decisionRecovery) return;
     if (accessPermission) {
       setError(accessPermission);
       return;
     }
     const key = accessRequestKey(item);
+    if (!decisionGate.enter()) return;
+    const lease = scope.capture();
     setDecisionInFlight({ key, decision });
     setError(undefined);
     setLastDecision(undefined);
@@ -314,6 +361,7 @@ export function ApprovalsWorkspace({
         }),
       });
       const body = (await response.json().catch(() => ({}))) as JsonRecord;
+      if (!lease.current()) return;
       if (!response.ok) {
         throw new Error(String(body.message || body.error || `Decision failed (${response.status}).`));
       }
@@ -328,8 +376,10 @@ export function ApprovalsWorkspace({
       announceInboxChanged();
       await rereadAfterDecision("access", key);
     } catch (decisionError) {
+      if (!lease.current()) return;
       setError(decisionError instanceof Error ? decisionError.message : "Decision failed.");
     } finally {
+      decisionGate.leave();
       setDecisionInFlight(undefined);
     }
   }
@@ -420,7 +470,7 @@ export function ApprovalsWorkspace({
   function approvalCard(item: ApprovalItem, focusedCard = false) {
     const key = approvalItemKey(item);
     return (
-      <ApprovalCard
+      <DecisionApprovalCard
         key={key}
         item={item}
         focused={focusedCard}
@@ -450,12 +500,13 @@ export function ApprovalsWorkspace({
         onTicket={(value) =>
           setTickets((current) => ({ ...current, [key]: value }))
         }
-        onDecide={(decision) => void decide(item, decision)}
-        inFlight={decisionInFlight?.key === key ? decisionInFlight.decision : undefined}
+        onDecision={decide}
+        inFlight={decisionInFlight?.key === key ? decisionInFlight.decision : decisionRecovery?.request.decision}
       />
     );
   }
 
+  if (!scopeAvailable) return <p role="status">Confirming account access. Private approvals are hidden.</p>;
   return (
     <div className={styles.workspace} aria-busy={firstLoad} data-testid="inbox-workspace">
       <header className={styles.pageHeader}>
@@ -532,6 +583,7 @@ export function ApprovalsWorkspace({
         </section>
       ) : null}
 
+      {decisionRecovery ? <button type="button" disabled={Boolean(decisionInFlight)} className="action-button" onClick={() => void decide(decisionRecovery.item, decisionRecovery.request.decision, decisionRecovery.request)}>Retry same saved decision</button> : null}
       <DecisionNoticeRegion
         notice={lastDecision}
         className={styles.notice}

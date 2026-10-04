@@ -11,6 +11,7 @@ import {
   MARKET_ANALYSIS_VERSION,
   marketAnalysisVersionSchema,
   marketAnalysisVersionsResultSchema,
+  marketAnalysisMetadataResultSchema,
   marketSerializedChartStateSchema,
   marketTechnicalFeaturesResultSchema,
   type MarketAnalysisVersion,
@@ -185,6 +186,27 @@ export async function listMarketAnalysisVersions(input: {
     interval: input.interval,
     versions: rows.map((row) => parseVersion(row.analysis_version)),
     total: rows[0] ? Number(rows[0].total_count) : 0,
+  });
+}
+
+/** Bounded portable identities; opaque browser chart state stays server-side. */
+export async function listMarketAnalysisMetadata(input: {
+  tenantId: string; actorId: string; instrumentId: string; interval: MarketInterval; limit: number;
+}) {
+  assertOwner(input.tenantId, input.actorId);
+  if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 40) throw new Error("Saved analysis metadata limit must be between one and forty.");
+  if (!hasDatabaseUrl()) throw new MarketAnalysisStoreUnavailableError();
+  await ensureDatabaseSchema();
+  const rows = await getSql()`
+    SELECT analysis_version - 'chartState' AS metadata, COUNT(*) OVER() AS total_count
+    FROM omni_market_analysis_versions
+    WHERE tenant_id = ${input.tenantId} AND owner_actor_id = ${input.actorId}
+      AND instrument_id = ${input.instrumentId} AND interval = ${input.interval}
+    ORDER BY saved_at DESC, id DESC LIMIT ${input.limit}
+  `;
+  return marketAnalysisMetadataResultSchema.parse({
+    contractVersion: MARKET_ANALYSIS_VERSION, view: "metadata", instrumentId: input.instrumentId,
+    interval: input.interval, versions: rows.map((row) => row.metadata), total: rows[0] ? Number(rows[0].total_count) : 0,
   });
 }
 

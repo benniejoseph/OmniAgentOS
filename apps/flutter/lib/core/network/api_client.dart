@@ -501,6 +501,23 @@ class ApiClient {
     Map<String, dynamic>? query,
   }) => _json(() => _dio.get<Object?>(path, queryParameters: query));
 
+  Future<Map<String, dynamic>> getJsonAuthorized(
+    String path, {
+    required NativeRequestAuthority authority,
+    Map<String, dynamic>? query,
+    CancelToken? cancelToken,
+  }) {
+    _requireAuthorityTransport(authority);
+    return _json(
+      () => _dio.get<Object?>(
+        path,
+        queryParameters: query,
+        cancelToken: cancelToken,
+        options: Options(extra: {_requestAuthorityKey: authority}),
+      ),
+    );
+  }
+
   /// A cancellable live read through the same authenticated client, with no
   /// offline fallback. Kept separate to preserve existing repository adapters.
   Future<Map<String, dynamic>> getJsonFreshCancelable(
@@ -600,6 +617,25 @@ class ApiClient {
     ),
   );
 
+  Future<Map<String, dynamic>> putJsonAuthorized(
+    String path, {
+    required NativeRequestAuthority authority,
+    Map<String, dynamic>? data,
+    Map<String, dynamic>? headers,
+  }) {
+    _requireAuthorityTransport(authority);
+    return _json(
+      () => _dio.put<Object?>(
+        path,
+        data: data,
+        options: Options(
+          headers: headers,
+          extra: {_requestAuthorityKey: authority},
+        ),
+      ),
+    );
+  }
+
   Future<Map<String, dynamic>> deleteJson(
     String path, {
     Map<String, dynamic>? data,
@@ -613,6 +649,27 @@ class ApiClient {
       options: Options(headers: headers),
     ),
   );
+
+  Future<Map<String, dynamic>> deleteJsonAuthorized(
+    String path, {
+    required NativeRequestAuthority authority,
+    Map<String, dynamic>? data,
+    Map<String, dynamic>? query,
+    Map<String, dynamic>? headers,
+  }) {
+    _requireAuthorityTransport(authority);
+    return _json(
+      () => _dio.delete<Object?>(
+        path,
+        data: data,
+        queryParameters: query,
+        options: Options(
+          headers: headers,
+          extra: {_requestAuthorityKey: authority},
+        ),
+      ),
+    );
+  }
 
   Future<Map<String, dynamic>> postMultipart(
     String path, {

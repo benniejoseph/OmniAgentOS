@@ -421,6 +421,9 @@ void main() {
           .ancestor(of: description, matching: find.byType(Scrollable))
           .first,
     );
+    // The keyboard can leave less height than the paragraph. Reveal its
+    // center before checking the center-based hit test, without hiding text.
+    await Scrollable.ensureVisible(tester.element(description), alignment: 0.5);
     expect(description.hitTestable(), findsOneWidget);
   });
 

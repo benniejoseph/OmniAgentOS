@@ -421,10 +421,10 @@ class AccountsTestApi extends ApiClient {
     if (read != null) {
       return read!(path, query, cancelToken);
     }
-    if (path == NativePaths.customersList) {
+    if (path == NativePaths.customersList()) {
       return accountListResponse();
     }
-    if (path == NativePaths.customersPortfolio) {
+    if (path == NativePaths.customersPortfolio()) {
       return accountPortfolioResponse();
     }
     if (path == NativePaths.customersGet(customerId)) {

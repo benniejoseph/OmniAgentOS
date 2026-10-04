@@ -30,6 +30,14 @@ import {
   MemoryLifecycleConflictError,
   setMemoryLifecycle,
 } from "@/lib/memory/maintenance-store";
+import {
+  MemoryLifecycleMutationError,
+  memoryLifecycleMutationRequestSchema,
+} from "@/lib/memory/lifecycle-mutation-contracts";
+import {
+  readMemoryLifecycleTarget,
+  submitMemoryLifecycleMutation,
+} from "@/lib/memory/lifecycle-mutation-store";
 import { requestMemoryAccessFromSecurityContext } from "@/lib/memory/request-access";
 import {
   correctMemory,
@@ -612,6 +620,48 @@ export async function updateMemoryLifecycleService(
     }
     throw error;
   }
+}
+
+/** Explicit human request contract; legacy and governed action callers above stay unchanged. */
+export async function inspectMemoryLifecycleTargetService(caller: AppServiceCaller, id: string) {
+  memoryIdServiceInputSchema.parse({ id });
+  const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("memory.inspect"));
+  const access = memoryAccess(caller, MEMORY_PURPOSE_IDS.read, "api.memory.lifecycle.read");
+  if (!access) throw new MemoryLifecycleMutationError("memory_lifecycle_authority_invalid", 403, "Current authenticated private Memory authority is required.");
+  const current = await readMemoryLifecycleTarget({
+    tenantId: caller.context.tenantId, ownerActorId: access.actorBinding.canonicalActorId,
+    accessScope: access.databaseAccessScope, executionScope: access.executionScope,
+  }, id);
+  return completeAppServiceCall(authorized, { current }, { resourceCount: current ? 1 : 0 });
+}
+
+export async function submitMemoryLifecycleMutationService(caller: AppServiceCaller, id: string, request: unknown) {
+  memoryIdServiceInputSchema.parse({ id });
+  const value = memoryLifecycleMutationRequestSchema.parse(request);
+  const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("memory.lifecycle"));
+  const access = memoryAccess(caller, MEMORY_PURPOSE_IDS.maintenance, "api.memory.lifecycle.mutate.v1");
+  if (!access || !caller.idempotencyKey) throw new MemoryLifecycleMutationError("memory_lifecycle_authority_invalid", 403, "Current authenticated private Memory authority is required.");
+  const committed = await submitMemoryLifecycleMutation({
+    authority: {
+      tenantId: caller.context.tenantId, ownerActorId: access.actorBinding.canonicalActorId,
+      accessScope: access.databaseAccessScope, executionScope: access.executionScope,
+    }, memoryId: id, idempotencyKey: caller.idempotencyKey, request: value,
+  });
+  // This read is deliberately outside the acceptance transaction. Failure or
+  // later state must never relabel an already committed transition as failed.
+  let currentRecord: { state: "available"; memory: ReturnType<typeof publicMemoryServiceRecord> } | { state: "unavailable" } = { state: "unavailable" };
+  try {
+    const readAccess = memoryAccess(caller, MEMORY_PURPOSE_IDS.read, "api.memory.lifecycle.current");
+    const memory = readAccess ? await getMemory(id, {
+      tenantId: caller.context.tenantId, accessScope: readAccess.databaseAccessScope,
+    }) : null;
+    if (memory?.accessBinding?.visibility === "user_private" && memory.accessBinding.ownerActorId === access.actorBinding.canonicalActorId && memory.claimStatus !== "forgotten") {
+      currentRecord = { state: "available", memory: publicMemoryServiceRecord(memory) };
+    }
+  } catch {
+    // The immutable acceptance is the effect evidence; current visibility is a separate read.
+  }
+  return completeAppServiceCall(authorized, { ...committed, currentRecord });
 }
 
 export async function forgetMemoryService(

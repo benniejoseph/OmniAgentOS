@@ -12,6 +12,8 @@ import 'package:asael/features/auth/domain/app_session.dart';
 import 'package:asael/features/agents/agent_council.dart';
 import 'package:asael/features/agents/agents.dart' hide Json;
 import 'package:asael/features/agents/agents_providers.dart';
+import 'package:asael/features/agents/specialist_api_client.dart';
+import 'package:asael/features/agents/specialist_recovery_store.dart';
 import 'package:asael/features/computer_use/local_computer.dart';
 import 'package:asael/features/companion/companion_providers.dart';
 import 'package:asael/features/talk/talk.dart';
@@ -278,6 +280,9 @@ void main() {
             () => _TestSessionController(bootstrap),
           ),
           appInitialLocationProvider.overrideWithValue('/agents'),
+          specialistRecoveryProvider.overrideWith(
+            (_) => MemorySpecialistRecoveryStore(),
+          ),
           agentsRepositoryProvider.overrideWithValue(_AgentRepository()),
           agentCouncilRepositoryProvider.overrideWithValue(
             _EmptyCouncilRepository(),
@@ -361,6 +366,9 @@ void main() {
           () => _TestSessionController(bootstrap),
         ),
         appInitialLocationProvider.overrideWithValue('/agents'),
+        specialistRecoveryProvider.overrideWith(
+          (_) => MemorySpecialistRecoveryStore(),
+        ),
         agentsRepositoryProvider.overrideWithValue(_AgentRepository()),
         agentCouncilRepositoryProvider.overrideWithValue(
           _EmptyCouncilRepository(),
@@ -471,12 +479,12 @@ const _ownerB = AppSession(
 
 const _ownerMac = AppSession(
   tenantId: 'tenant-mac',
-  actorId: 'actor-mac',
-  userId: 'user-mac',
+  actorId: 'owner@example.test',
+  userId: '33333333-3333-4333-8333-333333333333',
   email: 'owner@example.test',
   displayName: 'Owner',
   workspaceName: 'Asael',
-  role: 'owner',
+  role: 'admin',
 );
 
 class _MemoryValues implements AsaelSecureValueStore {

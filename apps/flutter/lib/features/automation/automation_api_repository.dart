@@ -2,6 +2,7 @@ import '../../core/network/api_client.dart';
 import '../../core/network/api_exception.dart';
 import '../../generated/native_contract.g.dart';
 import 'automation_models.dart';
+import '../agents/specialist_api_client.dart';
 
 abstract interface class AutomationRepository {
   Future<AutomationSnapshot> load();
@@ -144,7 +145,16 @@ class ApiAutomationRepository implements AutomationRepository {
       },
       headers: _mutationHeaders(idempotencyKey),
     );
-    return AutomationPluginPreview.fromResponse(response);
+    final result = AutomationPluginPreview.fromResponse(response);
+    if (result.pluginId != plugin.pluginId ||
+        result.pluginVersion != plugin.version ||
+        result.manifestSha256 != plugin.manifestSha256) {
+      throw const FormatException(
+        'Plugin preview identifies another manifest.',
+      );
+    }
+    await acceptSpecialistResponse(api, response);
+    return result;
   }
 
   @override
@@ -162,7 +172,15 @@ class ApiAutomationRepository implements AutomationRepository {
       data: {'manifest': manifest},
       headers: _mutationHeaders(idempotencyKey),
     );
-    return AutomationPluginPreview.fromResponse(response);
+    final result = AutomationPluginPreview.fromResponse(response);
+    if (result.pluginId != manifest['pluginId'] ||
+        result.pluginVersion != manifest['version']) {
+      throw const FormatException(
+        'Plugin preview identifies another submitted manifest.',
+      );
+    }
+    await acceptSpecialistResponse(api, response);
+    return result;
   }
 
   @override
@@ -177,16 +195,25 @@ class ApiAutomationRepository implements AutomationRepository {
         'This immutable Plugin preview has expired. Prepare it again.',
       );
     }
-    return AutomationPluginMutation.fromResponse(
-      await api.postJson(
-        NativePaths.pluginsInstall,
-        data: {
-          'previewId': preview.previewId,
-          'manifestSha256': preview.manifestSha256,
-        },
-        headers: _mutationHeaders(idempotencyKey),
-      ),
+    final response = await api.postJson(
+      NativePaths.pluginsInstall,
+      data: {
+        'previewId': preview.previewId,
+        'manifestSha256': preview.manifestSha256,
+      },
+      headers: _mutationHeaders(idempotencyKey),
     );
+    final result = AutomationPluginMutation.fromResponse(response);
+    if (result.installation.pluginId != preview.pluginId ||
+        result.installation.manifestSha256 != preview.manifestSha256 ||
+        result.installation.state != 'enabled' ||
+        result.installation.revision < 1) {
+      throw const FormatException(
+        'Plugin installation receipt differs from the exact reviewed manifest.',
+      );
+    }
+    await acceptSpecialistResponse(api, response);
+    return result;
   }
 
   @override
@@ -196,16 +223,23 @@ class ApiAutomationRepository implements AutomationRepository {
     required String idempotencyKey,
   }) async {
     final binding = _lifecycleBinding(plugin);
-    return AutomationPluginMutation.fromResponse(
-      await api.patchJson(
-        NativePaths.pluginsChange(binding.installationId),
-        data: {
-          'action': enabled ? 'enable' : 'disable',
-          'expectedRevision': binding.revision,
-        },
-        headers: _mutationHeaders(idempotencyKey),
-      ),
+    final response = await api.patchJson(
+      NativePaths.pluginsChange(binding.installationId),
+      data: {
+        'action': enabled ? 'enable' : 'disable',
+        'expectedRevision': binding.revision,
+      },
+      headers: _mutationHeaders(idempotencyKey),
     );
+    final result = AutomationPluginMutation.fromResponse(response);
+    _validateLifecycleResult(
+      result,
+      plugin,
+      binding,
+      enabled ? 'enabled' : 'disabled',
+    );
+    await acceptSpecialistResponse(api, response);
+    return result;
   }
 
   @override
@@ -214,12 +248,32 @@ class ApiAutomationRepository implements AutomationRepository {
     required String idempotencyKey,
   }) async {
     final binding = _lifecycleBinding(plugin);
-    return AutomationPluginMutation.fromResponse(
-      await api.deleteJson(
-        NativePaths.pluginsUninstall(binding.installationId),
-        data: {'expectedRevision': binding.revision},
-        headers: _mutationHeaders(idempotencyKey),
-      ),
+    final response = await api.deleteJson(
+      NativePaths.pluginsUninstall(binding.installationId),
+      data: {'expectedRevision': binding.revision},
+      headers: _mutationHeaders(idempotencyKey),
+    );
+    final result = AutomationPluginMutation.fromResponse(response);
+    _validateLifecycleResult(result, plugin, binding, 'uninstalled');
+    await acceptSpecialistResponse(api, response);
+    return result;
+  }
+}
+
+void _validateLifecycleResult(
+  AutomationPluginMutation result,
+  AutomationPlugin plugin,
+  ({String installationId, int revision}) binding,
+  String state,
+) {
+  final saved = result.installation;
+  if (saved.installationId != binding.installationId ||
+      saved.pluginId != plugin.pluginId ||
+      saved.manifestSha256 != plugin.manifestSha256 ||
+      saved.revision != binding.revision + 1 ||
+      saved.state != state) {
+    throw const FormatException(
+      'Plugin receipt differs from the exact submitted lifecycle decision.',
     );
   }
 }
@@ -275,7 +329,15 @@ void _requireSha256(String value, String field) {
   }
 }
 
-List<AutomationJson> _records(Object? value) => (value as List? ?? const [])
-    .whereType<Map>()
-    .map((item) => Map<String, dynamic>.from(item))
-    .toList(growable: false);
+List<AutomationJson> _records(Object? value) {
+  if (value is! List ||
+      value.length > 1000 ||
+      value.any((row) => row is! Map)) {
+    throw const FormatException(
+      'The capability inventory is incomplete or exceeds its native bound.',
+    );
+  }
+  return value
+      .map((item) => Map<String, dynamic>.from(item as Map))
+      .toList(growable: false);
+}

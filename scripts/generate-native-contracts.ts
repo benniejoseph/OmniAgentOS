@@ -19,17 +19,17 @@ const checkOnly = process.argv.includes("--check");
 // The previous contract and the one archive before it, byte for byte. When a
 // new contract ships, the oldest entry goes, and its directory with it.
 const frozenDocumentSha256ByVersion = Object.freeze({
-  31: Object.freeze({
-    "openapi.json": "66b51d623dfd13eed8f156cacbe775f34040523a719ba30a9688696b83e51c5b", // gitleaks:allow -- public frozen artifact SHA-256 integrity digest
-    "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9",
-    "fixtures.json": "e5f1d2cdd2f72999816522995a22d341ad88ec82a427d47fae127e0288fbf82a",
-    "manifest.json": "0fe915016137f93ee135ff627a6f437f3ee4baea66f0bc1ff9ff7d5e0565c6a7",
-  }),
   32: Object.freeze({
-    "openapi.json": "c0c97a2c76ea047c9d29f7ddfa53d9e93923ed5eef93b2a14b89f7cd2ace7b6d", // gitleaks:allow -- public frozen artifact SHA-256 integrity digest
-    "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9",
-    "fixtures.json": "f234f15036114da197fac2bbaf8041343235b7cc79ad775e1f2499fdaa83f79c",
-    "manifest.json": "ca895e229d5f3b8bc1648ec1131d0903d31f991f3566a78f38566ee5a6d1ea5d",
+    "openapi.json": "c0c97a2c76ea047c9d29f7ddfa53d9e93923ed5eef93b2a14b89f7cd2ace7b6d", // gitleaks:allow -- public artifact integrity digest
+    "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
+    "fixtures.json": "f234f15036114da197fac2bbaf8041343235b7cc79ad775e1f2499fdaa83f79c", // gitleaks:allow -- public artifact integrity digest
+    "manifest.json": "ca895e229d5f3b8bc1648ec1131d0903d31f991f3566a78f38566ee5a6d1ea5d", // gitleaks:allow -- public artifact integrity digest
+  }),
+  33: Object.freeze({
+    "openapi.json": "10be81a8dc2a713d4f85ae84a5585d5a899905f4331953b74dbedff963712aee", // gitleaks:allow -- public artifact integrity digest
+    "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
+    "fixtures.json": "292b6e6681f5046246afb440b556d4f08196d50e8377ef1cbd27eb5480483994", // gitleaks:allow -- public artifact integrity digest
+    "manifest.json": "9ea3092df3d97eb6cc8aa72fb7f34f82b3ebeb4cdd3b8e00af38308faafb8e2f", // gitleaks:allow -- public artifact integrity digest
   }),
 });
 

@@ -2062,7 +2062,9 @@ private final class DesktopHostController: NSObject {
   /// never carry a prompt, approval, execution target, or Computer Use grant.
   private enum AmbientVoiceState: String {
     case asleep
+    case starting
     case listening
+    case processing
     case review
     case running
     case speaking
@@ -2073,7 +2075,9 @@ private final class DesktopHostController: NSObject {
     var title: String {
       switch self {
       case .asleep: "Ready"
+      case .starting: "Connecting"
       case .listening: "Listening"
+      case .processing: "Finishing transcript"
       case .review: "Review before sending"
       case .running: "Working"
       case .speaking: "Speaking"
@@ -2086,7 +2090,9 @@ private final class DesktopHostController: NSObject {
     var symbolName: String {
       switch self {
       case .asleep: "sparkles"
+      case .starting: "network"
       case .listening: "mic.fill"
+      case .processing: "text.bubble"
       case .review: "text.bubble.fill"
       case .running: "sparkles"
       case .speaking: "waveform.circle.fill"

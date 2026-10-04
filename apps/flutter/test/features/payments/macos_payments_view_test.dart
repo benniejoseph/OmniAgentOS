@@ -8,6 +8,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../native_workspace_fixture.dart';
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -20,9 +22,12 @@ void main() {
     final api = _PaymentsApi();
 
     await tester.pumpWidget(
-      MaterialApp(
-        theme: MacosAppTheme.light(),
-        home: MacosPaymentsView(api: api),
+      nativeWorkspaceFixture(
+        api: api,
+        child: MaterialApp(
+          theme: MacosAppTheme.light(),
+          home: MacosPaymentsView(api: api),
+        ),
       ),
     );
     await tester.pumpAndSettle();
@@ -54,9 +59,12 @@ void main() {
     final api = _PaymentsApi();
 
     await tester.pumpWidget(
-      MaterialApp(
-        theme: MacosAppTheme.light(),
-        home: MacosPaymentsView(api: api),
+      nativeWorkspaceFixture(
+        api: api,
+        child: MaterialApp(
+          theme: MacosAppTheme.light(),
+          home: MacosPaymentsView(api: api),
+        ),
       ),
     );
     await tester.pumpAndSettle();
@@ -84,12 +92,16 @@ void main() {
 
 class _PaymentsApi extends ApiClient {
   _PaymentsApi()
-    : super(Dio(), Dio(), SecureSessionStore(const FlutterSecureStorage()));
+    : super(
+        Dio(BaseOptions(baseUrl: nativeWorkspaceFixtureOrigin)),
+        Dio(),
+        SecureSessionStore(const FlutterSecureStorage()),
+      );
 
   int reads = 0;
 
   @override
-  Future<Map<String, dynamic>> getJson(
+  Future<Map<String, dynamic>> getJsonFresh(
     String path, {
     Map<String, dynamic>? query,
   }) async {

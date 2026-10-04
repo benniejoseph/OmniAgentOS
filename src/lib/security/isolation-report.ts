@@ -150,6 +150,7 @@ const RESTRICTIVE_ACTOR_POLICIES = new Map<string, string>([
     "omni_workflow_schedule_occurrences",
     "omni_workflow_schedule_shadow_events",
   ].map((tableName): [string, string] => [tableName, `${tableName}_actor`]),
+  ["omni_memory_lifecycle_mutations", "omni_memory_lifecycle_mutations_actor"],
   ["omni_meeting_commitment_resolution_intents", "omni_meeting_commitment_resolution_intents_owner"],
   ["omni_meeting_commitment_resolution_progress", "omni_meeting_commitment_resolution_progress_owner"],
   ["omni_tenant_memory_access_grants", "omni_memory_access_grant_actor"],
@@ -188,10 +189,15 @@ export function hasExpectedTenantIsolationPolicy(
   // The table's one permissive policy is omni_tenant_isolation, so a policy
   // with the restrictive policy's name is restrictive.
   const restrictivePolicyName = RESTRICTIVE_ACTOR_POLICIES.get(tableName);
-  return !restrictivePolicyName
-    || tablePolicies.some((policy) =>
-      policy.policyName === restrictivePolicyName && policy.command === "*"
-    );
+  const requiredRestrictivePolicies = [
+    ...(restrictivePolicyName ? [restrictivePolicyName] : []),
+    ...(tableName === "omni_memory_lifecycle_mutations"
+      ? ["omni_memory_lifecycle_mutations_memory_scope"] : []),
+  ];
+  return requiredRestrictivePolicies.every((name) =>
+    tablePolicies.some((policy) =>
+      policy.policyName === name && !policy.permissive && policy.command === "*"
+    ));
 }
 
 const CLASSIFIED_TABLES = new Set<string>([

@@ -8,6 +8,8 @@ import '../../core/network/api_exception.dart';
 import '../../generated/native_contract.g.dart';
 import '../auth/domain/app_session.dart';
 import 'accounts_contracts.dart';
+import 'accounts_mutation_contracts.dart';
+import 'accounts_advanced_contracts.dart';
 
 class AccountsAccess extends ChangeNotifier {
   AccountsAccess({
@@ -62,7 +64,27 @@ abstract interface class AccountsRepository {
   });
 }
 
-class ApiAccountsRepository implements AccountsRepository {
+abstract interface class AccountsMutationRepository {
+  Future<AccountMutationReceipt> mutate(
+    AccountMutationIntent intent, {
+    required bool Function() isCurrent,
+  });
+}
+
+abstract interface class AccountsAdvancedRepository {
+  Future<AccountAdvancedRead> advanced(
+    AccountAdvancedKind kind,
+    CancelToken cancel, {
+    required String workspaceId,
+    String? accountId,
+  });
+}
+
+class ApiAccountsRepository
+    implements
+        AccountsRepository,
+        AccountsMutationRepository,
+        AccountsAdvancedRepository {
   ApiAccountsRepository(
     this.api, {
     required this.access,
@@ -177,7 +199,7 @@ class ApiAccountsRepository implements AccountsRepository {
   Future<AccountsSnapshot> list(CancelToken cancel, {String? workspaceId}) =>
       _read(
         'customers.list',
-        NativePaths.customersList,
+        NativePaths.customersList(),
         cancel,
         {'limit': 200, 'workspaceId': ?workspaceId},
         (value, owner) =>
@@ -189,7 +211,7 @@ class ApiAccountsRepository implements AccountsRepository {
     String? workspaceId,
   }) => _read(
     'customers.portfolio',
-    NativePaths.customersPortfolio,
+    NativePaths.customersPortfolio(),
     cancel,
     {'limit': 200, 'workspaceId': ?workspaceId},
     (value, owner) =>
@@ -219,5 +241,98 @@ class ApiAccountsRepository implements AccountsRepository {
     _disposed = true;
     _changed();
     access.removeListener(_changed);
+  }
+
+  @override
+  Future<AccountMutationReceipt> mutate(
+    AccountMutationIntent intent, {
+    required bool Function() isCurrent,
+  }) async {
+    final generation = access.generation;
+    bool current() =>
+        authorityCurrent() &&
+        generation == access.generation &&
+        access.owner?.key == intent.owner.key &&
+        isCurrent();
+    accountRequire(
+      current() &&
+          intent.owner.role != 'viewer' &&
+          access.operations.contains(intent.operation),
+      'Current Account management access is required.',
+    );
+    final authority = NativeRequestAuthority(
+      tenantId: intent.owner.tenantId,
+      actorId: intent.owner.actorId,
+      canonicalUserId: intent.owner.userId,
+      role: intent.owner.role,
+      apiBaseUrl: intent.owner.apiScope,
+      isCurrent: current,
+    );
+    final raw = intent.create
+        ? await api.postJsonAuthorized(
+            NativePaths.customersCreate,
+            authority: authority,
+            data: intent.body,
+            headers: {'Idempotency-Key': intent.key},
+          )
+        : await api.patchJsonAuthorized(
+            NativePaths.customersUpdate(intent.accountId),
+            authority: authority,
+            data: intent.body,
+            headers: {'Idempotency-Key': intent.key},
+          );
+    accountRequire(
+      current(),
+      'Account access changed after the request. Its outcome remains unconfirmed.',
+    );
+    accountRequire(utf8.encode(jsonEncode(raw)).length <= 1000000);
+    final receipt = await AccountMutationReceipt.parse(
+      accountFreeze(raw),
+      intent,
+    );
+    accountRequire(
+      current(),
+      'Account access changed after the request. Its outcome remains unconfirmed.',
+    );
+    return receipt;
+  }
+
+  @override
+  Future<AccountAdvancedRead> advanced(
+    AccountAdvancedKind kind,
+    CancelToken cancel, {
+    required String workspaceId,
+    String? accountId,
+  }) {
+    if (kind != AccountAdvancedKind.salesforce) {
+      accountRequire(accountId != null);
+      // Exact path helpers encode the complete identity once.
+    }
+    final path = switch (kind) {
+      AccountAdvancedKind.health => NativePaths.customersHealth(accountId!),
+      AccountAdvancedKind.intelligence => NativePaths.customersIntelligence(
+        accountId!,
+      ),
+      AccountAdvancedKind.workflows => NativePaths.customersWorkflows(
+        accountId!,
+      ),
+      AccountAdvancedKind.salesforce => NativePaths.customersSalesforceStatus(),
+    };
+    return _read(
+      kind.operation,
+      path,
+      cancel,
+      {
+        'workspaceId': workspaceId,
+        if (kind == AccountAdvancedKind.health) 'historyLimit': 20,
+        if (kind == AccountAdvancedKind.intelligence) ...{
+          'historyLimit': 100,
+          'timelineLimit': 100,
+        },
+        if (kind == AccountAdvancedKind.workflows) 'limit': 50,
+      },
+      (row, owner) =>
+          AccountAdvancedRead.parse(kind, row, owner, workspaceId, accountId),
+    );
   }
 }

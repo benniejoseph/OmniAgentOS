@@ -8,6 +8,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../native_workspace_fixture.dart';
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -31,14 +33,16 @@ void main() {
     await controller.refresh();
 
     await tester.pumpWidget(
-      ProviderScope(
-        overrides: [
-          deviceSecurityControllerProvider.overrideWith((ref) => controller),
-          mobilePushCoordinatorProvider.overrideWith((ref) => null),
-        ],
-        child: MaterialApp(
-          theme: MacosAppTheme.light(),
-          home: const DeviceSecurityScreen(),
+      nativeWorkspaceFixture(
+        child: ProviderScope(
+          overrides: [
+            deviceSecurityControllerProvider.overrideWith((ref) => controller),
+            mobilePushCoordinatorProvider.overrideWith((ref) => null),
+          ],
+          child: MaterialApp(
+            theme: MacosAppTheme.light(),
+            home: const DeviceSecurityScreen(),
+          ),
         ),
       ),
     );
@@ -83,12 +87,14 @@ void main() {
     await controller.refresh();
 
     await tester.pumpWidget(
-      ProviderScope(
-        overrides: [
-          deviceSecurityControllerProvider.overrideWith((ref) => controller),
-          mobilePushCoordinatorProvider.overrideWith((ref) => null),
-        ],
-        child: const MaterialApp(home: DeviceSecurityScreen()),
+      nativeWorkspaceFixture(
+        child: ProviderScope(
+          overrides: [
+            deviceSecurityControllerProvider.overrideWith((ref) => controller),
+            mobilePushCoordinatorProvider.overrideWith((ref) => null),
+          ],
+          child: const MaterialApp(home: DeviceSecurityScreen()),
+        ),
       ),
     );
     await tester.pumpAndSettle();

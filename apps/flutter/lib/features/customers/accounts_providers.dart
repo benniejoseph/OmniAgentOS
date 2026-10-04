@@ -2,12 +2,20 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/legacy.dart';
 
 import '../../core/network/api_client.dart';
+import '../../core/storage/secure_session_store.dart';
 import '../../generated/native_contract.g.dart';
 import '../auth/application/biometric_session_lock_controller.dart';
 import '../auth/application/session_controller.dart';
 import 'accounts_contracts.dart';
 import 'accounts_controller.dart';
 import 'accounts_repository.dart';
+import 'accounts_recovery_store.dart';
+
+final accountsRecoveryStoreProvider = Provider<AccountsRecoveryStore>(
+  (ref) => EncryptedAccountsRecoveryStore(
+    ref.watch(secureSessionStoreProvider).readOrCreateOfflineProjectionSecret,
+  ),
+);
 
 final accountsRepositoryProvider = Provider.autoDispose<AccountsRepository>((
   ref,
@@ -20,6 +28,12 @@ final accountsRepositoryProvider = Provider.autoDispose<AccountsRepository>((
         'customers.list',
         'customers.portfolio',
         'customers.get',
+        'customers.create',
+        'customers.update',
+        'customers.health',
+        'customers.intelligence',
+        'customers.workflows',
+        'customers.salesforce.status',
       ])
         if (NativeContract.supportsOperation(id)) id,
     },
@@ -99,6 +113,7 @@ final accountsControllerProvider = ChangeNotifierProvider.autoDispose
       final controller = AccountsController(
         ref.watch(accountsRepositoryProvider),
         accountId: accountId,
+        recovery: ref.watch(accountsRecoveryStoreProvider),
       );
       ref.onDispose(() => controller.invalidateAuthority(notify: false));
       return controller;

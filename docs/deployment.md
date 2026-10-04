@@ -37,13 +37,14 @@ Set these through the platform secret/configuration store, never in source contr
 - `OMNIAGENT_NATIVE_MIN_ANDROID_VERSION`, `OMNIAGENT_NATIVE_MIN_IOS_VERSION`, and `OMNIAGENT_NATIVE_MIN_MACOS_VERSION`: optional stable `major.minor.patch` minimums for native compatibility telemetry. An absent or empty value defaults to `1.0.0`; a malformed configured value invalidates the policy and holds adoption unavailable. These settings do not authorize Agent enrollment.
 
 Native contract artifacts are committed immutable release inputs. This release
-advertises v33 as current and retains v32 as the rollback-compatible previous
-version. V31 remains a byte-frozen, unadvertised archive. Older documents leave
+advertises v34 as current and retains v33 as the rollback-compatible previous
+version. V32 remains a byte-frozen, unadvertised archive. Older documents leave
 the three-version retention window only in a reviewed contract release; a
-Vercel deployment never deletes an archive. Do not retire v32 until the v33
+Vercel deployment never deletes an archive. Do not retire v33 until the v34
 rollback window closes. Published versions are never regenerated in place.
-Run `npm run check:native-contracts` to verify the generated v33 OpenAPI, event
-schema, fixtures, manifests and Dart SDK, plus the frozen v31/v32 hashes.
+Run `npm run check:native-contracts` to verify the generated v34 OpenAPI, event
+schema, fixtures, manifests and Dart SDK, plus the frozen v32/v33 hashes. This
+reviewed publication retires the v31 public documents.
 
 V31 added owner-bound Companion presentation preferences, v32 added bounded
 Responsibilities, and v33 adds typed Meeting reads plus separately enrolled
@@ -52,11 +53,11 @@ retain their own minimum versions: Companion 31 and Responsibilities 32. Each
 Meeting mutation requires 33, fresh attestation and its original permission.
 Calendar sync, recording completion and source audio receive no new authority.
 
-Advertising v33/v32 makes v31 clients `upgrade_required` and holds their native
-mutations. Deploy the v33 server before installing a v33 native build; that
-build fails bootstrap against a server advertising only v32/v31. An installed
-v32 client keeps its existing operations through the rollback window and cannot
-enter the new Meeting mutations. A repository merge does not establish that
+Advertising v34/v33 makes v32 clients `upgrade_required` and holds their native
+mutations. Deploy the v34 server before installing a v34 native build; that
+build fails bootstrap against a server advertising only v33/v32. An installed
+v33 client keeps its existing operations through the rollback window and cannot
+enter the new v34 mutations. A repository merge does not establish that
 this compatibility pair has been promoted to production.
 
 ### Memory forget lineage closure (v207)
@@ -2425,3 +2426,57 @@ guarantees. An application rollback preserves those rows but removes the new
 recovery behavior; use a compatible application for clients relying on it. Do
 not drop intent columns or rewrite immutable revisions during rollback. Native
 Account writes remain unavailable until a separate typed contract publication.
+
+
+### Memory lifecycle acceptance schema v222
+
+`memory_lifecycle_mutations_v1` follows the exact v221 predecessor. The migration
+adds database-managed semantic and lifecycle revisions plus one actor-private
+acceptance ledger. Apply it before the opt-in lifecycle API is served. Legacy
+lifecycle requests retain their existing behavior, and legacy writers also
+advance the relevant revisions through database triggers.
+
+The opt-in API freezes the owner, exact Memory target, action, opaque target
+revision and idempotency key. Accepted replay precedes the fresh revision check,
+while current access is revalidated first. An accepted response distinguishes
+the committed lifecycle change from a separately refreshed record. Forgetting
+scrubs request fingerprints, target tokens and accepted state across the exact
+existing root/descendant receipt closure. It leaves only a non-replayable
+tombstone; an older application must not remove the ledger or its scrub triggers.
+
+Schema verification includes the ledger's tenant policy and both restrictive
+actor and Memory-purpose policies. Historical disposable fixtures remove only an
+empty ledger and the exact v222 columns, triggers and functions, then recreate
+them using the unchanged migration. This fixture teardown is not a production
+rollback procedure. New native controls require the paired v34 API publication.
+
+
+### Native personal-data and Markets publication v34
+
+v34 publishes typed bounded Account, Library/current/history, entity-selector,
+Memory lifecycle and stored Markets projections. New Account record mutations
+and private Memory record/lifecycle controls require fresh v34 attestation plus
+their existing application permission and exact current target authority. v33
+remains supported with its byte-frozen documents; v32 remains an unadvertised
+archive, and v31 public documents are retired. Existing capability floors stay
+unchanged for compatible clients.
+
+The v34 conversation request also publishes the existing bounded context
+references and exact Project ID. Native Library selection re-resolves the current
+ready source and pins its version number, version ID and content digest before
+adding it to the composer. The server repeats these current-source checks at
+send time. Retained historical metadata cannot become a file attachment.
+
+Memory create/correct preserve their existing once-only submission behavior;
+an uncertain result is held for inspection rather than automatically replayed.
+Lifecycle and forget recovery reuse the exact saved key and reviewed target.
+Lifecycle review is offered only when that exact private record already allows
+`memory.maintenance.v1`; ordinary default bindings do not include that purpose.
+The lifecycle publication does not enroll older records or widen their purpose
+lists. Records without it retain their separately authorized read, correction
+and forget workflows, and no lifecycle token is offered.
+Source-prefix deletion and proposal promotion are not newly enrolled. New
+Markets reads select stored snapshots without provider effects; calendar and
+provider refresh remain explicit actions. Market analysis metadata excludes
+opaque chart plug-in state. Protected native recovery is bounded per namespace
+and shared across macOS engines through the existing host broker.

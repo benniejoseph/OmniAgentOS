@@ -3,9 +3,9 @@
 
 abstract final class NativeContract {
   static const id = 'asael.native-api';
-  static const currentVersion = 33;
-  static const previousVersion = 32;
-  static const supportedVersions = <int>[33, 32];
+  static const currentVersion = 34;
+  static const previousVersion = 33;
+  static const supportedVersions = <int>[34, 33];
   static const discoveryPath = '/api/mobile/contracts';
   static const operationIds = <String>{
     'auth.login',
@@ -81,11 +81,8 @@ abstract final class NativeContract {
     'push.registrations.upsert',
     'push.registrations.revoke',
     'push.deliveries.acknowledge',
-    'customers.get',
     'memory.intelligence.get',
     'memory.get',
-    'customers.list',
-    'customers.portfolio',
     'market.overview',
     'market.bars',
     'market.events',
@@ -94,7 +91,6 @@ abstract final class NativeContract {
     'market.replays.backfill',
     'market.baselines',
     'market.features',
-    'market.analysis',
     'market.journal',
     'market.journal.generate',
     'market.journal.score',
@@ -171,6 +167,30 @@ abstract final class NativeContract {
     'meetings.commitments.list',
     'meetings.commitments.propose',
     'meetings.commitments.resolve',
+    'customers.list',
+    'customers.get',
+    'customers.portfolio',
+    'customers.health',
+    'customers.intelligence',
+    'customers.workflows',
+    'customers.salesforce.status',
+    'customers.create',
+    'customers.update',
+    'library.list',
+    'library.get',
+    'library.versions.list',
+    'library.versions.get',
+    'entities.options',
+    'market.snapshots.list',
+    'market.snapshots.get',
+    'market.analysis.metadata',
+    'market.jobs.get',
+    'market.calendar',
+    'memory.create',
+    'memory.update',
+    'memory.delete',
+    'memory.lifecycle.get',
+    'memory.lifecycle.change',
   };
 
   static bool supports(int version) => supportedVersions.contains(version);
@@ -278,21 +298,70 @@ abstract final class NativePaths {
   static const pushRegistrationsUpsert = '/api/mobile/push/registrations';
   static String pushRegistrationsRevoke(String id) => '/api/mobile/push/registrations/${Uri.encodeComponent(id)}';
   static String pushDeliveriesAcknowledge(String id) => '/api/mobile/push/deliveries/${Uri.encodeComponent(id)}/acknowledge';
-  static String customersGet(String id) => '/api/customer-accounts/${Uri.encodeComponent(id)}';
   static const memoryIntelligenceGet = '/api/memory/intelligence';
   static String memoryGet(String id) => '/api/memory/${Uri.encodeComponent(id)}';
-  static const customersList = '/api/customer-accounts';
-  static const customersPortfolio = '/api/customer-accounts/portfolio';
   static const marketOverview = '/api/market-research';
   static const marketBars = '/api/market-research/bars';
-  static const marketEvents = '/api/market-research/events';
+  static String marketEvents({int? limit}) {
+    final path = '/api/market-research/events';
+    final query = <String, String>{
+      if (limit != null) 'limit': limit.toString(),
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
   static const marketEventsBackfill = '/api/market-research/events';
-  static const marketReplays = '/api/market-research/replays';
+  static String marketReplays({required String instrumentId, int? limit}) {
+    final path = '/api/market-research/replays';
+    final query = <String, String>{
+      'instrumentId': instrumentId,
+      if (limit != null) 'limit': limit.toString(),
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
   static const marketReplaysBackfill = '/api/market-research/replays';
-  static const marketBaselines = '/api/market-research/baselines';
-  static const marketFeatures = '/api/market-research/features';
-  static const marketAnalysis = '/api/market-research/analysis';
-  static const marketJournal = '/api/market-research/journal';
+  static String marketBaselines({required String instrumentId, int? minimumSampleSize}) {
+    final path = '/api/market-research/baselines';
+    final query = <String, String>{
+      'instrumentId': instrumentId,
+      if (minimumSampleSize != null) 'minimumSampleSize': minimumSampleSize.toString(),
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static String marketFeatures({required String snapshotId}) {
+    final path = '/api/market-research/features';
+    final query = <String, String>{
+      'snapshotId': snapshotId,
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static String marketJournal({required String instrumentId, int? limit}) {
+    final path = '/api/market-research/journal';
+    final query = <String, String>{
+      'instrumentId': instrumentId,
+      if (limit != null) 'limit': limit.toString(),
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
   static const marketJournalGenerate = '/api/market-research/journal/generate';
   static const marketJournalScore = '/api/market-research/journal/score';
   static String operationsJob(String id) => '/api/operations/jobs/${Uri.encodeComponent(id)}';
@@ -304,7 +373,18 @@ abstract final class NativePaths {
   static const settingsAssignmentsUpdate = '/api/settings/assignments';
   static String workspacesBuilderGet(String id) => '/api/projects/${Uri.encodeComponent(id)}/builder';
   static String workspacesBuilderUpdate(String id) => '/api/projects/${Uri.encodeComponent(id)}/builder';
-  static const marketBacktests = '/api/market-research/backtests';
+  static String marketBacktests({required String instrumentId, int? limit}) {
+    final path = '/api/market-research/backtests';
+    final query = <String, String>{
+      'instrumentId': instrumentId,
+      if (limit != null) 'limit': limit.toString(),
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
   static const marketBacktestsRun = '/api/market-research/backtests';
   static String threadsList({int? limit}) {
     final path = '/api/threads';
@@ -543,6 +623,189 @@ abstract final class NativePaths {
   }
   static String meetingsCommitmentsPropose(String id) => '/api/meetings/${Uri.encodeComponent(id)}/commitments';
   static String meetingsCommitmentsResolve(String id) => '/api/meetings/${Uri.encodeComponent(id)}/commitments';
+  static String customersList({String? workspaceId, String? lifecycle, int? limit}) {
+    final path = '/api/customer-accounts';
+    final query = <String, String>{
+      'workspaceId': ?workspaceId,
+      'lifecycle': ?lifecycle,
+      if (limit != null) 'limit': limit.toString(),
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static String customersGet(String id, {String? workspaceId}) {
+    final path = '/api/customer-accounts/${Uri.encodeComponent(id)}';
+    final query = <String, String>{
+      'workspaceId': ?workspaceId,
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static String customersPortfolio({String? workspaceId, int? limit}) {
+    final path = '/api/customer-accounts/portfolio';
+    final query = <String, String>{
+      'workspaceId': ?workspaceId,
+      if (limit != null) 'limit': limit.toString(),
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static String customersHealth(String id, {String? workspaceId, int? historyLimit}) {
+    final path = '/api/customer-accounts/${Uri.encodeComponent(id)}/health';
+    final query = <String, String>{
+      'workspaceId': ?workspaceId,
+      if (historyLimit != null) 'historyLimit': historyLimit.toString(),
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static String customersIntelligence(String id, {String? workspaceId, int? historyLimit, int? timelineLimit}) {
+    final path = '/api/customer-accounts/${Uri.encodeComponent(id)}/intelligence';
+    final query = <String, String>{
+      'workspaceId': ?workspaceId,
+      if (historyLimit != null) 'historyLimit': historyLimit.toString(),
+      if (timelineLimit != null) 'timelineLimit': timelineLimit.toString(),
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static String customersWorkflows(String id, {String? workspaceId, int? limit}) {
+    final path = '/api/customer-accounts/${Uri.encodeComponent(id)}/workflows';
+    final query = <String, String>{
+      'workspaceId': ?workspaceId,
+      if (limit != null) 'limit': limit.toString(),
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static String customersSalesforceStatus({String? workspaceId}) {
+    final path = '/api/customer-accounts/salesforce';
+    final query = <String, String>{
+      'workspaceId': ?workspaceId,
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static const customersCreate = '/api/customer-accounts';
+  static String customersUpdate(String id) => '/api/customer-accounts/${Uri.encodeComponent(id)}';
+  static String libraryList({String? q, String? kind, String? project, int? limit, int? offset}) {
+    final path = '/api/library';
+    final query = <String, String>{
+      'q': ?q,
+      'kind': ?kind,
+      'project': ?project,
+      if (limit != null) 'limit': limit.toString(),
+      if (offset != null) 'offset': offset.toString(),
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static String libraryGet(String id) => '/api/library/${Uri.encodeComponent(id)}';
+  static String libraryVersionsList(String id, {int? limit, String? before, String? currentVersionId}) {
+    final path = '/api/library/${Uri.encodeComponent(id)}/versions';
+    final query = <String, String>{
+      if (limit != null) 'limit': limit.toString(),
+      'before': ?before,
+      'currentVersionId': ?currentVersionId,
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static String libraryVersionsGet(String id, String versionId, {String? currentVersionId}) {
+    final path = '/api/library/${Uri.encodeComponent(id)}/versions/${Uri.encodeComponent(versionId)}';
+    final query = <String, String>{
+      'currentVersionId': ?currentVersionId,
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static String entitiesOptions({int? limit, String? after}) {
+    final path = '/api/entities/options';
+    final query = <String, String>{
+      if (limit != null) 'limit': limit.toString(),
+      'after': ?after,
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static String marketSnapshotsList({required String instrumentId, required String interval, int? limit}) {
+    final path = '/api/market-research/snapshots';
+    final query = <String, String>{
+      'instrumentId': instrumentId,
+      'interval': interval,
+      if (limit != null) 'limit': limit.toString(),
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static String marketSnapshotsGet(String id) => '/api/market-research/snapshots/${Uri.encodeComponent(id)}';
+  static String marketAnalysisMetadata({required String instrumentId, required String interval, required String view, int? limit}) {
+    final path = '/api/market-research/analysis';
+    final query = <String, String>{
+      'instrumentId': instrumentId,
+      'interval': interval,
+      'view': view,
+      if (limit != null) 'limit': limit.toString(),
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static String marketJobsGet(String id) => '/api/market-research/jobs/${Uri.encodeComponent(id)}';
+  static String marketCalendar({int? days}) {
+    final path = '/api/market-research/calendar';
+    final query = <String, String>{
+      if (days != null) 'days': days.toString(),
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static const memoryCreate = '/api/memory';
+  static String memoryUpdate(String id) => '/api/memory/${Uri.encodeComponent(id)}';
+  static String memoryDelete(String id) => '/api/memory/${Uri.encodeComponent(id)}';
+  static String memoryLifecycleGet(String id) => '/api/memory/${Uri.encodeComponent(id)}/lifecycle';
+  static String memoryLifecycleChange(String id) => '/api/memory/${Uri.encodeComponent(id)}/lifecycle';
 }
 
 abstract final class NativeConversationEvents {

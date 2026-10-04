@@ -1,7 +1,11 @@
+import 'dart:async';
+
 import 'package:asael/core/platform/desktop_host_bridge.dart';
 import 'package:asael/app/router/app_router.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:go_router/go_router.dart';
 
 void main() {
   test('exact workspace selections retain only their allowed identity parameter', () {
@@ -122,6 +126,67 @@ void main() {
     await Future<void>.delayed(Duration.zero);
 
     expect(opened, ['/inbox']);
+  });
+
+  testWidgets('Quick Entry preserves the mounted draft and opens once', (
+    tester,
+  ) async {
+    final router = GoRouter(
+      initialLocation: '/talk',
+      routes: [
+        GoRoute(
+          path: '/talk',
+          builder: (_, _) =>
+              const Scaffold(body: TextField(key: ValueKey('workspace-draft'))),
+        ),
+        GoRoute(
+          path: '/ambient-voice',
+          builder: (_, _) => const Scaffold(body: Text('Voice overlay')),
+        ),
+        GoRoute(
+          path: '/quick-entry',
+          builder: (context, _) => Scaffold(
+            body: TextButton(
+              onPressed: () => context.pop(),
+              child: const Text('Return to workspace'),
+            ),
+          ),
+        ),
+      ],
+    );
+    addTearDown(router.dispose);
+    final bridge = DesktopHostBridge(enabled: false)..attachRouter(router);
+    await tester.pumpWidget(MaterialApp.router(routerConfig: router));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const ValueKey('workspace-draft')),
+      'Keep this unsent conversation draft',
+    );
+
+    const open = MethodCall('openRoute', {'route': '/quick-entry'});
+    await bridge.handleNativeCall(open);
+    bridge.attachRouter(router);
+    await bridge.handleNativeCall(open);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Return to workspace'));
+    await tester.pumpAndSettle();
+
+    expect(router.canPop(), isFalse);
+    expect(find.text('Keep this unsent conversation draft'), findsOneWidget);
+
+    // Switching out of Ambient Voice replaces only that overlay, so its
+    // widget/transport can close while the original workspace stays mounted.
+    unawaited(router.push<void>('/ambient-voice'));
+    await tester.pumpAndSettle();
+    await bridge.handleNativeCall(open);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Return to workspace'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Voice overlay'), findsNothing);
+    expect(router.canPop(), isFalse);
+    expect(find.text('Keep this unsent conversation draft'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 
   test('queues and validates one native notification action', () async {

@@ -5,6 +5,7 @@ import {
 import {
   generateMarketAnalysisVersionService,
   listMarketAnalysisVersionsService,
+  listMarketAnalysisMetadataService,
 } from "@/lib/app-services/market-research";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
@@ -44,17 +45,18 @@ async function GETHandler(request: Request) {
     interval: url.searchParams.get("interval") || undefined,
     limit: numericQuery(url.searchParams.get("limit"), 10),
   });
-  if (!parsed.success) {
+  const view = url.searchParams.get("view");
+  if (!parsed.success || (view !== null && view !== "metadata")) {
     return Response.json({ error: "Invalid saved market-analysis request." }, {
       status: 400,
       headers: privateNoStoreHeaders,
     });
   }
   try {
-    const result = await listMarketAnalysisVersionsService(
-      createAppServiceCaller({ context }),
-      parsed.data,
-    );
+    const caller = createAppServiceCaller({ context });
+    const result = view === "metadata"
+      ? await listMarketAnalysisMetadataService(caller, { ...parsed.data, view })
+      : await listMarketAnalysisVersionsService(caller, parsed.data);
     return Response.json({ ...result.data, serviceReceipt: result.receipt }, {
       headers: privateNoStoreHeaders,
     });

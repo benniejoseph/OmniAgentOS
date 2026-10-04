@@ -340,11 +340,18 @@ def main():
     checks = Checks(args.output, args.axe.resolve())
     contexts, failure = [], None
     try:
-        with preview(args.output) as (origin, _credentials), sync_playwright() as playwright:
+        with sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=True, executable_path=str(args.chrome) if args.chrome else None)
             try:
                 for coarse in (False, True):
-                    contexts.append(exercise(browser, origin, checks, coarse))
+                    # Each independent viewport gets a bounded compiler lifetime.
+                    # Retaining both complete route passes in one webpack dev
+                    # server can trigger Next's memory-threshold restart midway
+                    # through a navigation; never retry or weaken that assertion.
+                    preview_output = args.output / ("preview-phone" if coarse else "preview-desktop")
+                    preview_output.mkdir(parents=True, exist_ok=True)
+                    with preview(preview_output) as (origin, _credentials):
+                        contexts.append(exercise(browser, origin, checks, coarse))
             finally:
                 browser.close()
     except Exception as error:

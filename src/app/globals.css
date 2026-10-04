@@ -319,6 +319,12 @@ summary:focus-visible,
     --primary-pressed: ButtonFace;
     --accent: LinkText;
     --accent-surface: Canvas;
+    --danger: CanvasText;
+    --danger-surface: Canvas;
+    --warning: CanvasText;
+    --warning-surface: Canvas;
+    --success: CanvasText;
+    --success-surface: Canvas;
     --focus: Highlight;
     --shadow-floating: none;
   }

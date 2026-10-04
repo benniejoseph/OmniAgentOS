@@ -56,6 +56,10 @@ unexpected entitlement. Distribution to another Mac requires
 `ASAEL_MACOS_SIGNING_IDENTITY` and the Keychain profile name in
 `ASAEL_MACOS_NOTARY_PROFILE`; the script signs, notarizes, staples, verifies, and
 prints the DMG SHA-256. Signing credentials never belong in the repository.
+The owner-only Xcode and Swift build defaults to one compiler job for machines
+with limited memory. Set `ASAEL_MACOS_BUILD_JOBS` to an integer from 1 to 16 to
+increase that concurrency. Packaging stages the new app and leaves the installed
+application unchanged.
 
 ## Compatibility identifiers
 

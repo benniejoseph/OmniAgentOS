@@ -1,5 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../../core/network/native_workspace_access.dart';
+import '../capture/library_view.dart';
 
 const talkCommandContextKinds = <String>{
   'agent',
@@ -177,6 +181,87 @@ class _TalkCommandComposerState extends State<TalkCommandComposer> {
   Object? catalogError;
   bool loading = false;
   int activeIndex = 0;
+  bool _pickingLibrary = false;
+  String? _libraryNotice;
+
+  Future<void> _pickLibrary() async {
+    if (_pickingLibrary || widget.disabled) return;
+    final draft = widget.controller;
+    setState(() {
+      _pickingLibrary = true;
+      _libraryNotice = null;
+    });
+    try {
+      final origin = ProviderScope.containerOf(
+        context,
+        listen: false,
+      ).read(nativeWorkspaceAccessProvider);
+      if (origin == null || !origin.current) {
+        throw StateError('Current workspace access is required.');
+      }
+      final selected = await showNativeLibraryPicker(context);
+      if (!mounted ||
+          !identical(draft, widget.controller) ||
+          widget.disabled ||
+          selected == null) {
+        return;
+      }
+      final current = ProviderScope.containerOf(
+        context,
+        listen: false,
+      ).read(nativeWorkspaceAccessProvider);
+      // The original live authority also fences A→B→A and API replacement while
+      // the picker is open; a matching label or final account ID is insufficient.
+      if (!origin.current ||
+          current == null ||
+          !selected.matchesCurrent(current) ||
+          !selected.item.commandAvailable) {
+        setState(
+          () => _libraryNotice =
+              'Workspace access changed. No source was attached.',
+        );
+        return;
+      }
+      final reference = selected.item.commandReference();
+      if (widget.selected.length >= 20 &&
+          !widget.selected.any(
+            (row) => row.kind == 'file' && row.id == selected.item.id,
+          )) {
+        setState(
+          () => _libraryNotice = 'A command can contain at most 20 context references. Remove one before adding this source.',
+        );
+        return;
+      }
+      widget.onSelected(
+        TalkCommandContextReference(
+          kind: 'file',
+          id: selected.item.id,
+          label: selected.item.title,
+          description:
+              'Current Library version ${selected.item.version['versionNumber']} · ${selected.item.raw['sourceLabel']}',
+          selectable: true,
+          state: 'ready',
+          sourceId: selected.item.sourceId,
+          expectedVersion: reference['expectedVersion'] as int,
+          versionId: reference['versionId'] as String,
+          bindingSha256: reference['bindingSha256'] as String,
+        ),
+      );
+      widget.focusNode.requestFocus();
+      setState(
+        () => _libraryNotice = 'Current source selected. Send explicitly when the command is ready.',
+      );
+    } catch (_) {
+      if (mounted) {
+        setState(
+          () => _libraryNotice =
+              'Library selection did not finish. No source was attached.',
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _pickingLibrary = false);
+    }
+  }
 
   @override
   void initState() {
@@ -708,6 +793,24 @@ class _TalkCommandComposerState extends State<TalkCommandComposer> {
               suffixIcon: widget.suffixIcon,
             ),
           ),
+          Align(
+            alignment: AlignmentDirectional.centerStart,
+            child: TextButton.icon(
+              key: const Key('command-attach-library'),
+              onPressed: widget.disabled || _pickingLibrary
+                  ? null
+                  : _pickLibrary,
+              style: TextButton.styleFrom(minimumSize: const Size(48, 48)),
+              icon: const Icon(Icons.attach_file, size: 18),
+              label: Text(
+                _pickingLibrary
+                    ? 'Choosing Library context…'
+                    : 'Attach from Library',
+              ),
+            ),
+          ),
+          if (_libraryNotice != null)
+            Semantics(liveRegion: true, child: Text(_libraryNotice!)),
         ],
       ),
     );

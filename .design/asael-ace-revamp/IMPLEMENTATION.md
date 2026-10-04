@@ -1562,3 +1562,65 @@ binary requires v33 server support, and its decision mutations require the
 paired v220 application/schema release before use. Remaining specialist/admin
 families, native Memory mutations, expanded Accounts actions and device gates
 remain open in Phase 5.
+
+
+## Completion release candidate — 4 October 2026
+
+PRs #44, #45, #46 and #47 are merged. The current candidate adds v34 typed
+Account, Library/history, entity, Memory and Markets contracts while preserving
+the published v32/v33 bytes. Library selections carry exact current version and
+content pins into the existing conversation contract. Native Account editing,
+Memory lifecycle controls, five Market views and their encrypted recovery are
+implemented. Agents/Automation retain their working panels with current-owner
+authority and protected decision recovery. Administration, device controls,
+Payments and Settings close stale private views when access changes. Quick Entry
+preserves the mounted conversation draft, and menu-bar microphone labels follow
+observed capture state.
+
+Migration 222 applied and verified in the isolated migration harness: 222 ordered
+migrations and 253 tenant tables. The complete Next.js Webpack build passed,
+including TypeScript, 165 static pages and build traces. Turbopack could not use
+the local shared dependency symlink, so the documented Webpack build path was
+used. The TypeScript process needed a 4096 MB heap on this workstation; no runtime
+application budget was changed. A subsequent complete TypeScript check passed
+after the Library conversation publication and approval event callback change.
+The final combined web build also passed after the communication recovery fixes
+(`atlas-completion-release-web-build.log`).
+
+Owner direction defers broad local regression suites. Changed web/server files
+have passed ESLint. The full Flutter analyzer passed with no issues
+(`atlas-completion-flutter-analyze.log`). All 21 declared native destinations
+resolve to working views. The universal private macOS Release build, nested
+signature checks, hardened-runtime checks and DMG packaging passed. The package
+is `macos-completion-release/Asael-1.23.8-43-macOS.dmg`, SHA-256
+`303ae27136a25af33d9da5db4fcc2408ce1198722c8377eab042cdb154090ea5`.
+It was built from the functional implementation in `9c58a9be`; subsequent CI
+corrections require the next native package. These facts
+do not claim new regression-suite or device acceptance. Evidence is retained in
+`/Volumes/Extreme Pro/Asael-release-records/2026-10-03-followups/ui-validation`.
+
+Two existing delivery recovery boundaries were tightened for the planned reviewed
+effect: receipt replay first verifies the exact reviewed draft and pinned account;
+failed reconciliation retains the uncertain delivery state. No external message
+was sent. The finite Meeting pilot and governed Gmail effect path already exist;
+integrated owner/provider acceptance remains separate from implementation.
+
+Production promotion has not occurred. The paired runner is prepared to reuse
+green exact-commit hosted checks with `--use-hosted-verification`. Required owner
+migration, gateway and smoke-account credentials are absent from the available
+release environment. The dedicated Asael v2 private signing material is present,
+and its immutable credential broker passed signature, source, bundle and certificate
+verification. Private signed Mac packaging passed; Apple-notarized/APNs
+distribution remains a separate signing configuration. Final ATLAS art and
+physical-device acceptance remain open.
+
+PR #48's first hosted run passed the web build, deployed preview, worker, audit,
+macOS policies and four browser groups. Follow-up corrections cover exact
+approval fixture validation, authenticated native recovery fixtures, Quick Entry
+overlay detection, enlarged Markets text, and forced-colors semantic statuses.
+The exact public v32/v33 OpenAPI checksum findings are documented by two narrow
+secret-scan fingerprints. The focused native rerun passed 41 cases, and the
+Memory serving-role rerun passed 11 cases including concurrent replay and forget
+cleanup. That fixture now explicitly enrolls lifecycle maintenance, while the
+read adapter withholds lifecycle review for records without that existing
+purpose. No record-purpose list or RLS policy was widened.

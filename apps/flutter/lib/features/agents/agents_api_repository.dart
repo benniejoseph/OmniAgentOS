@@ -3,6 +3,7 @@ import '../../generated/native_contract.g.dart';
 import 'agents.dart';
 import 'agent_governance.dart';
 import 'agent_learning.dart';
+import 'specialist_api_client.dart';
 
 class ApiAgentsRepository
     implements
@@ -39,6 +40,15 @@ class ApiAgentsRepository
       api.getJson(NativePaths.skillsList),
     ]);
     final a = primary[0], s = primary[1];
+    for (final rows in [a['builtIns'], a['agents'], s['skills']]) {
+      if (rows is! List ||
+          rows.length > 1000 ||
+          rows.any((row) => row is! Map)) {
+        throw const FormatException(
+          'The Agent inventory is incomplete or exceeds the native bound.',
+        );
+      }
+    }
     return AgentLedger(
       agents: [
         ...(a['builtIns'] as List? ?? const []).whereType<Map>().map(
@@ -62,6 +72,12 @@ class ApiAgentsRepository
   @override
   Future<List<AgentPerformance>> loadPerformance() async {
     final response = await api.getJson(NativePaths.agentsPerformance);
+    if (response['agents'] is! List ||
+        (response['agents'] as List).length > 1000) {
+      throw const FormatException(
+        'Agent outcomes are incomplete or exceed the native bound.',
+      );
+    }
     return (response['agents'] as List? ?? const [])
         .whereType<Map>()
         .map((j) => AgentPerformance.fromJson(Map<String, dynamic>.from(j)))
@@ -85,7 +101,16 @@ class ApiAgentsRepository
     if (agent is! Map) {
       throw const FormatException('The service returned an invalid Agent.');
     }
-    return AgentProfile.fromJson(Map<String, dynamic>.from(agent));
+    final saved = AgentProfile.fromJson(Map<String, dynamic>.from(agent));
+    if ((id != null && saved.id != id) ||
+        (input.containsKey('name') &&
+            saved.name != input['name'].toString().trim())) {
+      throw const FormatException(
+        'The returned Agent differs from the exact submitted definition.',
+      );
+    }
+    await acceptSpecialistResponse(api, response);
+    return saved;
   }
 
   @override
@@ -131,11 +156,30 @@ class ApiAgentsRepository
 
   @override
   Future<void> changeMoltbook(String agentId, Json input) async {
-    await api.postJson(
+    final response = await api.postJson(
       NativePaths.moltbookConnectionManage(agentId),
       data: input,
       headers: _mutationHeaders('moltbook'),
     );
+    final connection = response['connection'];
+    if (connection is! Map ||
+        connection['agentId'] != agentId ||
+        !const {
+          'registering',
+          'pending_claim',
+          'claimed',
+          'paused',
+          'error',
+          'revoked',
+        }.contains(connection['status'])) {
+      throw const FormatException(
+        'The connection receipt does not identify the exact Agent.',
+      );
+    }
+    // A provider cycle can report an uncertain effect even with HTTP success.
+    if (input['action'] != 'run_autonomy_once') {
+      await acceptSpecialistResponse(api, response);
+    }
   }
 
   @override
@@ -187,11 +231,17 @@ class ApiAgentsRepository
         'Native Agent release controls allow only evaluate, promote, or rollback.',
       );
     }
-    await api.postJson(
+    final response = await api.postJson(
       NativePaths.agentsReleaseManage(agentId),
       data: action,
       headers: {'idempotency-key': idempotencyKey},
     );
+    // The current release projection is read independently from this response.
+    final release = AgentReleaseProjection.fromResponse(response);
+    if (release.agentId != agentId) {
+      throw const FormatException('Release receipt identifies another Agent.');
+    }
+    await acceptSpecialistResponse(api, response);
     return loadGovernance(agentId);
   }
 
@@ -208,11 +258,27 @@ class ApiAgentsRepository
         'Native Agent adaptation controls do not accept this action.',
       );
     }
-    await api.postJson(
+    final response = await api.postJson(
       NativePaths.agentsAdaptationsManage(agentId),
       data: action,
       headers: {'idempotency-key': idempotencyKey},
     );
+    if (response['adaptations'] is! List) {
+      throw const FormatException('Adaptation receipt is missing.');
+    }
+    final adaptations = AgentAdaptationProjection.listFromResponse(
+      response,
+      expectedAgentId: agentId,
+    );
+    if (name != 'refresh' &&
+        !adaptations.items.any(
+          (item) => item.adaptationId == action['adaptationId'],
+        )) {
+      throw const FormatException(
+        'The exact adaptation is missing from the accepted projection.',
+      );
+    }
+    await acceptSpecialistResponse(api, response);
     return loadGovernance(agentId);
   }
 

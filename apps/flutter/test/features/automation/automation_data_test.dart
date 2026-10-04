@@ -522,7 +522,11 @@ class _MutationApiClient extends ApiClient {
     Map<String, dynamic>? headers,
   }) async {
     _record('PATCH', path, data, headers);
-    return _mutationResponse();
+    final response = _mutationResponse();
+    (response['installation'] as Map)['state'] = data?['action'] == 'enable'
+        ? 'enabled'
+        : 'disabled';
+    return response;
   }
 
   @override
@@ -533,7 +537,9 @@ class _MutationApiClient extends ApiClient {
     Map<String, dynamic>? headers,
   }) async {
     _record('DELETE', path, data, headers);
-    return _mutationResponse();
+    final response = _mutationResponse();
+    (response['installation'] as Map)['state'] = 'uninstalled';
+    return response;
   }
 
   void _record(

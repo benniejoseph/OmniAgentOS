@@ -321,6 +321,19 @@ void _owner(Object? value) {
   accountText(row['displayName'], 180);
 }
 
+void accountSemanticOwner(Object? value) => _owner(value);
+void accountDataPurposes(Object? value) => _purposes(value, account: true);
+void accountFreshness(Object? value) => _freshness(value);
+void accountEvidence(Object? value) => _evidence(value);
+Future<void> accountRecommendation(Object? value) => _recommendation(value);
+Future<AccountJson> accountReadReceipt(
+  AccountJson response,
+  AccountsOwner owner,
+  String operation,
+  String resource,
+  int count,
+) => _receipt(response, owner, operation, resource, count);
+
 void _purposes(Object? value, {bool account = false}) {
   final purposes = accountList(
     value,

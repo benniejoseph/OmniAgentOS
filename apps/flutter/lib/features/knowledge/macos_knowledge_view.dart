@@ -6,6 +6,8 @@ import '../../app/macos/macos_page_scaffold.dart';
 import '../../app/theme/macos_app_theme.dart';
 import 'knowledge.dart';
 import 'knowledge_read_widgets.dart';
+import 'knowledge_mutations.dart';
+import 'knowledge_mutation_widgets.dart';
 
 enum _KnowledgeWorkspace { memories, sources, reviews, relationships }
 
@@ -104,6 +106,44 @@ class _MacosKnowledgeViewState extends State<MacosKnowledgeView> {
         description: 'Browse what Asael remembers, inspect its sources, and trace relationships.',
         icon: Icons.account_tree_outlined,
         actions: [
+          if (controller.pendingChange != null ||
+              controller.acceptedChange != null ||
+              controller.recoveryError != null)
+            OutlinedButton(
+              onPressed: () => showDialog<void>(
+                context: context,
+                builder: (_) => Dialog(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 640),
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.all(20),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          MemoryChangeStatus(controller: controller),
+                          Builder(
+                            builder: (dialogContext) => TextButton(
+                              onPressed: () =>
+                                  Navigator.of(dialogContext).pop(),
+                              child: const Text('Close receipt'),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              child: const Text('Memory submission'),
+            ),
+          if (controller.supportsChange(MemoryChange.create))
+            OutlinedButton.icon(
+              onPressed: controller.pendingChange != null
+                  ? null
+                  : () => showMemoryEditor(context, controller),
+              icon: const Icon(Icons.add),
+              label: const Text('Add private memory'),
+            ),
           IconButton(
             key: const Key('macos-knowledge-refresh'),
             tooltip: 'Refresh knowledge',

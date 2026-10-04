@@ -7,6 +7,7 @@ import 'package:asael/features/auth/application/session_controller.dart';
 import 'package:asael/features/auth/data/session_repository.dart';
 import 'package:asael/features/auth/domain/app_session.dart';
 import 'package:asael/features/customers/accounts_providers.dart';
+import 'package:asael/features/customers/accounts_recovery_store.dart';
 import 'package:asael/features/customers/accounts_workspace.dart';
 import 'package:asael/generated/native_contract.g.dart';
 import 'package:flutter/material.dart';
@@ -37,6 +38,9 @@ void main() {
           sessionControllerProvider.overrideWith(_Sessions.new),
           appInitialLocationProvider.overrideWithValue(route),
           apiClientProvider.overrideWithValue(api),
+          accountsRecoveryStoreProvider.overrideWith(
+            (_) => MemoryAccountsRecoveryStore(),
+          ),
           biometricSessionLockControllerProvider.overrideWith(
             (ref) => BiometricSessionLockController(_NoSessionEffects()),
           ),
@@ -65,14 +69,14 @@ void main() {
           NativePaths.bootstrapGet,
           NativePaths.customersGet(customerId),
           NativePaths.bootstrapGet,
-          NativePaths.customersPortfolio,
+          NativePaths.customersPortfolio(),
         ]),
       );
       expect(
         api.paths.where((path) => path == NativePaths.customersGet(customerId)),
         hasLength(1),
       );
-      expect(api.paths, isNot(contains(NativePaths.customersList)));
+      expect(api.paths, isNot(contains(NativePaths.customersList())));
       expect(
         container.read(accountsRepositoryProvider).authorityCurrent(),
         isTrue,

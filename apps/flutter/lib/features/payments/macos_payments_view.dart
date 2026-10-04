@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import '../../app/macos/macos_page_scaffold.dart';
 import '../../app/theme/macos_app_theme.dart';
 import '../../core/network/api_client.dart';
+import '../../core/network/native_workspace_access.dart';
 import '../../generated/native_contract.g.dart';
 
 typedef _Json = Map<String, dynamic>;
@@ -14,9 +15,10 @@ enum _PaymentSection { mandates, signers, evidence }
 /// capability is exposed here: the server's deterministic Trusted Surface
 /// remains the only place where an enrolled human-present signer may act.
 class MacosPaymentsView extends StatefulWidget {
-  const MacosPaymentsView({super.key, required this.api});
+  const MacosPaymentsView({super.key, required this.api, this.authority});
 
   final ApiClient api;
+  final NativeRequestAuthority? authority;
 
   @override
   State<MacosPaymentsView> createState() => _MacosPaymentsViewState();
@@ -36,6 +38,10 @@ class _MacosPaymentsViewState extends State<MacosPaymentsView> {
   final Map<_PaymentSection, String?> _selectedIds = {
     for (final section in _PaymentSection.values) section: null,
   };
+
+  Future<_Json> _read(String path) => widget.authority == null
+      ? widget.api.getJsonFresh(path)
+      : widget.api.getJsonAuthorized(path, authority: widget.authority!);
 
   @override
   void initState() {
@@ -69,8 +75,8 @@ class _MacosPaymentsViewState extends State<MacosPaymentsView> {
     }
     try {
       final primary = await Future.wait([
-        widget.api.getJson(NativePaths.paymentsReadiness),
-        widget.api.getJson(NativePaths.paymentsReviews),
+        _read(NativePaths.paymentsReadiness),
+        _read(NativePaths.paymentsReviews),
       ]);
       if (!mounted) return;
       setState(() {
@@ -78,8 +84,8 @@ class _MacosPaymentsViewState extends State<MacosPaymentsView> {
         _reviews = primary[1];
       });
       final secondary = await Future.wait([
-        widget.api.getJson(NativePaths.paymentsAuthenticators),
-        widget.api.getJson(NativePaths.paymentsTransactions),
+        _read(NativePaths.paymentsAuthenticators),
+        _read(NativePaths.paymentsTransactions),
       ]);
       if (!mounted) return;
       setState(() {
@@ -139,6 +145,10 @@ class _MacosPaymentsViewState extends State<MacosPaymentsView> {
           description: 'Inspect exact mandates, hardware signers, and verified payment evidence.',
           icon: Icons.account_balance_wallet_outlined,
           actions: [
+            const NativeWorkspaceBrowserButton(
+              path: '/app/payments',
+              label: 'Review and manage signers',
+            ),
             const _ReadOnlyBadge(),
             if (_loading)
               const Padding(

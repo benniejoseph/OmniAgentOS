@@ -174,14 +174,16 @@ export function approvalDecisionNotice(
   const stillPending =
     decision === "approve" &&
     (status === 202 || Boolean(approvalProgress?.remaining));
-  if (executionRecord?.status === "failed") {
+  if (executionRecord?.status === "failed" || executionRecord?.status === "blocked") {
     return {
-      message: `${reconciliationRequired ? "Reconciliation finished" : "Approval recorded"} for ${item.title}, but execution failed${
+      message: `${reconciliationRequired ? "Reconciliation finished" : "Approval recorded"} for ${item.title}, but execution ${executionRecord.status === "blocked" ? "was blocked" : "failed"}${
         executionRecord.reason ? `: ${executionRecord.reason}` : "."
       }${resumeNote}`,
       tone: "danger",
     };
   }
+  if (executionRecord?.status === "executing") return { message: `Approval recorded for ${item.title}. Execution is still in progress; its outcome is not confirmed.${resumeNote}`, tone: "warning" };
+  if (executionRecord?.status === "dry_run") return { message: `Approval recorded for ${item.title}. The dry run completed; it does not prove a live effect.`, tone: "neutral" };
   if (reconciliationRequired) {
     return stillPending
       ? { message: `Reconciliation is in progress for ${item.title}.${resumeNote}`, tone: "warning" }
@@ -205,31 +207,88 @@ export function approvalDecisionNotice(
 /**
  * The Idempotency-Key of each decision sent and not yet answered. Sending
  * the same decision again, after the answer was lost or the server failed,
- * reuses its key; a changed decision or note is a new request.
+ * reuses its key. A changed decision or note cannot replace an unknown request.
  */
-const unansweredDecisionKeys = new Map<string, string>();
+export type ApprovalDecisionAuthority = { scope: string; isCurrent: () => boolean };
+export type ApprovalDecisionRequest = { kind: string; decision: ApprovalDecision; reason?: string; breakGlass?: boolean; ticket?: string };
+export class ApprovalDecisionUnconfirmedError extends Error {
+  constructor(public readonly request: Readonly<ApprovalDecisionRequest>, message = "The decision outcome is unconfirmed. Recover only the same saved decision; no approval was repeated automatically.") {
+    super(message);
+    this.name = "ApprovalDecisionUnconfirmedError";
+  }
+}
+const unansweredDecisionKeys = new Map<string, { key: string; body: string; request: Readonly<ApprovalDecisionRequest>; busy: boolean }>();
+const recordValue = (value: unknown): JsonRecord | undefined => value && typeof value === "object" && !Array.isArray(value) ? value as JsonRecord : undefined;
+const validCount = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+
+/** A 2xx alone is not evidence of the exact decision or its execution. */
+export function validateApprovalDecisionResponse(id: string, request: ApprovalDecisionRequest, status: number, value: unknown): JsonRecord {
+  const body = recordValue(value);
+  const invalid = () => { throw new ApprovalDecisionUnconfirmedError(request, "The decision response did not prove the exact item and outcome. The original decision is retained for recovery."); };
+  if (!body || ![200, 202].includes(status) || body.error !== undefined) return invalid();
+  const continuation = recordValue(body.continuation);
+  if (body.continuation !== undefined && (!continuation || typeof continuation.scheduled !== "boolean")) return invalid();
+  const progress = recordValue(body.approvalProgress);
+  if (body.approvalProgress !== undefined && (!progress || !validCount(progress.approvals) || !validCount(progress.required) || !validCount(progress.remaining) || Number(progress.required) < 1 || Number(progress.approvals) > Number(progress.required) || Number(progress.remaining) > Number(progress.required))) return invalid();
+  if (request.kind === "tool") {
+    const record = recordValue(body.record);
+    if (!record || record.id !== id || typeof record.toolId !== "string" || !record.toolId) return invalid();
+    if (status === 202) {
+      const quorum = recordValue(body.quorum);
+      if (request.decision !== "approve" || record.status !== "approval_required" || !quorum || !validCount(quorum.have) || !validCount(quorum.need) || Number(quorum.have) < 1 || Number(quorum.need) <= Number(quorum.have)) return invalid();
+    } else if (record.approvalDecision !== (request.decision === "approve" ? "approved" : "rejected") ||
+      !(request.decision === "reject" ? ["rejected"] : ["executed", "executing", "dry_run", "failed", "blocked"]).includes(String(record.status))) return invalid();
+  } else if (request.kind === "workflow") {
+    const run = recordValue(body.run);
+    if (status !== 200 || !run || run.id !== id ||
+      (request.decision === "reject" ? run.status !== "canceled" : !["queued", "running", "paused", "completed", "failed"].includes(String(run.status)) || typeof run.approvedAt !== "string" || !Number.isFinite(Date.parse(run.approvedAt)))) return invalid();
+  } else if (request.kind === "slo_policy") {
+    const change = recordValue(body.change);
+    if (!change || change.id !== id || change.status !== (request.decision === "reject" ? "rejected" : status === 202 ? "pending" : "applied") || (request.decision === "reject" && status !== 200)) return invalid();
+    if (status === 202 && (!progress || Number(progress.approvals) < 1 || Number(progress.remaining) < 1 || progress.canApply !== false)) return invalid();
+  } else return invalid();
+  return body;
+}
 
 /** Posts one decision on an item under its Idempotency-Key. */
 export async function postApprovalDecision(
   id: string,
-  request: { kind: string; decision: ApprovalDecision; reason?: string },
+  request: ApprovalDecisionRequest,
   fetchImpl: typeof fetch = fetch,
+  authority?: ApprovalDecisionAuthority,
 ) {
+  if (authority && !authority.isCurrent()) throw new Error("Account access changed. Review the approval again.");
   const body = JSON.stringify(request);
-  const sent = `${id}\u0000${body}`;
-  const idempotencyKey = unansweredDecisionKeys.get(sent) ??
-    `approval-${request.decision}-${crypto.randomUUID()}`;
-  unansweredDecisionKeys.set(sent, idempotencyKey);
-  const response = await fetchImpl(`/api/approvals/${encodeURIComponent(id)}`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "idempotency-key": idempotencyKey,
-    },
-    body,
-  });
-  if (response.status < 500) unansweredDecisionKeys.delete(sent);
-  return response;
+  const sent = `${authority?.scope || "unbound"}\u0000${request.kind}\u0000${id}`;
+  const existing = unansweredDecisionKeys.get(sent);
+  if (existing && (existing.body !== body || existing.busy)) throw new ApprovalDecisionUnconfirmedError(existing.request, "A decision is already pending for this exact item. Retry the original saved decision after the active request finishes.");
+  if (!existing && unansweredDecisionKeys.size >= 64) throw new Error("Resolve pending decisions before submitting another approval.");
+  const pending = existing ?? { key: `approval-${request.decision}-${crypto.randomUUID()}`, body,
+    request: Object.freeze({ ...request }), busy: false };
+  pending.busy = true;
+  unansweredDecisionKeys.set(sent, pending);
+  try {
+    const response = await fetchImpl(`/api/approvals/${encodeURIComponent(id)}`, {
+      method: "POST", headers: { "content-type": "application/json", "idempotency-key": pending.key }, body: pending.body,
+    });
+    if (authority && !authority.isCurrent()) throw new ApprovalDecisionUnconfirmedError(pending.request);
+    if (response.ok) {
+      const result: unknown = await response.clone().json().catch(() => undefined);
+      validateApprovalDecisionResponse(id, request, response.status, result);
+      if (authority && !authority.isCurrent()) throw new ApprovalDecisionUnconfirmedError(pending.request);
+      unansweredDecisionKeys.delete(sent);
+    } else if (!existing && [400, 401, 403, 404, 409, 413, 415, 422].includes(response.status)) {
+      unansweredDecisionKeys.delete(sent);
+    } else {
+      throw new ApprovalDecisionUnconfirmedError(pending.request);
+    }
+    return response;
+  } catch (error) {
+    if (error instanceof ApprovalDecisionUnconfirmedError) throw error;
+    throw new ApprovalDecisionUnconfirmedError(pending.request);
+  } finally {
+    pending.busy = false;
+  }
 }
 
 /** Sends one decision and returns the notice for it, or throws the server's reason. */
@@ -238,11 +297,13 @@ export async function submitApprovalDecision(
   decision: ApprovalDecision,
   form: ApprovalDecisionForm = {},
   fetchImpl: typeof fetch = fetch,
+  authority?: ApprovalDecisionAuthority,
 ) {
   const response = await postApprovalDecision(
     item.id,
     approvalDecisionRequest(item, decision, form),
     fetchImpl,
+    authority,
   );
   const body = (await response.json().catch(() => ({}))) as JsonRecord;
   if (!response.ok) {
@@ -371,7 +432,10 @@ export async function fetchApprovalQueueItem(
       body.message || body.error || `The approval could not be loaded (${response.status}).`,
     ));
   }
-  return readApprovalItem(body.item);
+  if (body.item === null) return undefined;
+  const item = readApprovalItem(body.item);
+  if (!item || !matchesApprovalFocus(item, { id, kind })) throw new Error("The approval response did not match the requested item.");
+  return item;
 }
 
 export function matchesApprovalFocus(item: ApprovalItem, focus: ApprovalFocus) {
@@ -434,8 +498,10 @@ export async function decideAndReread(
   decision: ApprovalDecision,
   form: ApprovalDecisionForm = {},
   fetchImpl: typeof fetch = fetch,
+  authority?: ApprovalDecisionAuthority,
 ) {
-  const notice = await submitApprovalDecision(item, decision, form, fetchImpl);
+  const notice = await submitApprovalDecision(item, decision, form, fetchImpl, authority);
+  if (authority && !authority.isCurrent()) return { notice, item: undefined };
   announceInboxChanged();
   const pending = await fetchApprovalQueueItem({ id: item.id, kind: item.kind }, fetchImpl)
     .catch(() => undefined);

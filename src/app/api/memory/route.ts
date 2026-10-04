@@ -90,6 +90,7 @@ async function POSTHandler(request: Request) {
     const context = await authorizeRequest({
       request,
       action: "write.memory",
+      nativeMutationCapability: "memory.records.write",
       resourceType: "memory",
       metadata: {
         titleLength: parsed.data.title.length,

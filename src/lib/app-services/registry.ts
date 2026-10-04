@@ -13,6 +13,8 @@ export const APP_SERVICE_OPERATION_CONTRACTS = Object.freeze([
   read("app.sources.coverage.show", "read", "source_coverage"),
   read("app.market_research.overview.show", "read", "market_research"),
   read("app.market_research.bars.list", "read", "market_snapshot"),
+  read("app.market_research.snapshots.list", "read", "market_snapshot"),
+  read("app.market_research.snapshots.show", "read", "market_snapshot"),
   read("app.market_research.features.show", "read", "market_technical_features"),
   read("app.market_research.analysis.list", "read", "market_analysis_version"),
   mutation("app.market_research.analysis.generate", "run.agent", "market_analysis_version", "market-analysis-version-events.v1"),

@@ -6,6 +6,8 @@ import '../../core/network/api_client.dart';
 import 'accounts_contracts.dart';
 import 'accounts_controller.dart';
 import 'accounts_providers.dart';
+import 'accounts_action_widgets.dart';
+import 'accounts_advanced_panels.dart';
 
 // Expansion stores a bool; scrolling stores a double. Every persisted widget
 // has a distinct identity and is fenced by the exact controller/owner/account.
@@ -229,7 +231,7 @@ class _AccountsWorkspaceState extends State<AccountsWorkspace> {
                   ),
                   const SizedBox(height: 8),
                   const Text(
-                    'Customer relationship records. Connection and login accounts are separate. This native view reads evidence; recommendations do not authorize actions.',
+                    'Customer relationship records. Connection and login accounts are separate. Recommendations do not authorize actions.',
                   ),
                   if (selected) _Value('Exact account', controller.accountId),
                   _ReadStatus(
@@ -245,6 +247,9 @@ class _AccountsWorkspaceState extends State<AccountsWorkspace> {
                   Text(
                     'Up to 200 accounts per source. No continuation or whole-workspace completeness is supplied by this API. ${controller.workspaceId == null ? 'Workspace not yet verified.' : 'Workspace: ${controller.workspaceId}'}',
                   ),
+                  const SizedBox(height: 14),
+                  AccountActionsPanel(controller: controller),
+                  AccountsAdvancedPanels(controller: controller),
                   const SizedBox(height: 14),
                   TextField(
                     key: const Key('customer-record-search'),

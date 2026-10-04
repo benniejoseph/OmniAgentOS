@@ -11,6 +11,7 @@ import {
   promptQueueUpdateRequestSchema,
 } from "@/lib/command/prompt-queue-contracts";
 import { commandModelSelectionRequestSchema } from "@/lib/models/command-selection";
+import { commandContextReferencesSchema } from "@/lib/command/composer-context-contract";
 import { REALTIME_PROVIDER_ERROR_CODE_PATTERN } from "@/lib/voice/realtime-error";
 import { COMMAND_REASONING_LEVELS } from "@/lib/models/reasoning-effort";
 import {
@@ -27,6 +28,15 @@ import {
 import { mobilePushReceiptRequestSchema } from "@/lib/mobile/push-contract";
 import { nativeResponsibilityContractSchemas } from "@/lib/mobile/responsibility-contracts";
 import { nativeMeetingContractSchemas } from "@/lib/mobile/meeting-contracts";
+import { nativeCustomerContractSchemas } from "@/lib/mobile/customer-contracts";
+import { nativeCustomerDetailContractSchemas } from "@/lib/mobile/customer-detail-contracts";
+import { nativeCustomerMutationContractSchemas } from "@/lib/mobile/customer-mutation-contracts";
+import { nativeLibraryContractSchemas, nativeLibraryListQueryMetadata } from "@/lib/mobile/library-contracts";
+import { nativeLibraryHistoryContractSchemas } from "@/lib/mobile/library-history-contracts";
+import { entityOptionsContractSchemas, entityOptionsQueryMetadata } from "@/lib/entities/options-contracts";
+import { nativeMarketReadContractSchemas } from "@/lib/mobile/market-contracts";
+import { nativeMemoryMutationSchemas } from "@/lib/mobile/memory-mutation-contracts";
+
 import { pluginManifestSchema } from "@/lib/plugins/contracts";
 import {
   MODEL_ASSIGNMENT_SCOPES,
@@ -35,10 +45,10 @@ import {
 import { voiceCommandInputSchema } from "@/lib/voice/command-input";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 33 as const;
-// v32 remains the byte-frozen rollback bridge. v33 publishes scoped Meeting
-// reads and separately enrolled records, proposals and exact decision controls.
-export const NATIVE_API_PREVIOUS_VERSION = 32 as const;
+export const NATIVE_API_CURRENT_VERSION = 34 as const;
+// v33 remains byte-frozen. v34 adds bounded personal-data and specialist
+// projections, with separately enrolled exact native mutation capabilities.
+export const NATIVE_API_PREVIOUS_VERSION = 33 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -573,6 +583,9 @@ export const nativeConversationRequestSchema = z.object({
   agentId: z.string().trim().min(1).max(120).regex(/^[a-zA-Z0-9_.:-]+$/).optional(),
   computerUseTarget: z.literal("local_macos").optional(),
   modelSelection: commandModelSelectionRequestSchema.optional(),
+  /** v34: existing server-resolved source references; never inline source content. */
+  contextReferences: commandContextReferencesSchema.optional(),
+  projectId: z.string().trim().min(1).max(200).regex(/^[a-zA-Z0-9_.:-]+$/).optional(),
   requestId: z.string().min(1).max(200).regex(/^[A-Za-z0-9._:-]+$/),
   /** v30: the reviewed realtime voice declaration for this command. */
   voiceInput: voiceCommandInputSchema.optional(),
@@ -776,7 +789,7 @@ export type NativeOperation = Readonly<{
   responseMediaType?: "application/json" | "text/event-stream" | "audio/pcm";
   responseHeaders?: readonly NativeResponseHeader[];
   successStatuses?: readonly (200 | 201)[];
-  errorStatuses?: readonly (400 | 401 | 403 | 404 | 409 | 413 | 415 | 503)[];
+  errorStatuses?: readonly (400 | 401 | 403 | 404 | 409 | 413 | 415 | 428 | 500 | 503)[];
   errorResponseSchema?: string;
   pathParameters?: readonly NativePathParameter[];
   queryParameters?: readonly NativeQueryParameter[];
@@ -1801,6 +1814,95 @@ const v33Operations: readonly NativeOperation[] = [
     { ...meetingMutationOptions, requestBodyMaxBytes: 100_000 }),
 ];
 
+const privateReadOptions = {
+  errorStatuses: [400, 401, 403, 404, 409, 503],
+  responseHeaders: [{ name: "cache-control", description: "Private scoped response; never stored.", constValue: "private, no-store" }],
+} as const satisfies Partial<NativeOperation>;
+const customerWorkspaceQuery = [queryParameter("workspaceId", "string", { minLength: 1, maxLength: 240 })];
+const customerDetailOptions = {
+  ...privateReadOptions,
+  pathParameters: [{ name: "id", minLength: 81, maxLength: 81, pattern: "^customer-account:[a-f0-9]{64}$" }],
+} as const satisfies Partial<NativeOperation>;
+const marketInstrumentQuery = queryParameter("instrumentId", "string", { required: true, minLength: 3, maxLength: 120 });
+const marketIntervalQuery = queryParameter("interval", "string", { required: true, enumValues: ["5min", "15min", "1h"] });
+const libraryPath = { name: "id", minLength: 1, maxLength: 320,
+  pattern: "^library:(capture_asset|capture_recording|capture_transcript|project_artifact|source_item):.+$" } as const;
+const historyHeadQuery = queryParameter("currentVersionId", "string", { minLength: 1, maxLength: 320 });
+const memoryMutationOptions = {
+  ...privateReadOptions, headerParameters: pluginMutationHeaders,
+  errorStatuses: [400, 401, 403, 404, 409, 413, 415, 503],
+  errorResponseSchema: "NativeMemoryMutationError",
+  pathParameters: [{ name: "id", minLength: 1, maxLength: 200, pattern: "^[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$" }],
+} as const satisfies Partial<NativeOperation>;
+const typedMarketReadSchemas: Readonly<Record<string, string>> = {
+  "market.overview": "NativeMarketOverviewResponse", "market.features": "NativeMarketFeaturesResponse",
+  "market.events": "NativeMarketEventsResponse", "market.replays": "NativeMarketReplaysResponse",
+  "market.baselines": "NativeMarketBaselinesResponse", "market.backtests": "NativeMarketBacktestsResponse",
+  "market.journal": "NativeMarketJournalResponse",
+};
+const typedMarketQueries: Readonly<Record<string, readonly NativeQueryParameter[]>> = {
+  "market.features": [queryParameter("snapshotId", "string", { required: true, minLength: 64, maxLength: 64 })],
+  "market.events": [queryParameter("limit", "integer", { minimum: 1, maximum: 500, defaultValue: 100 })],
+  "market.replays": [marketInstrumentQuery, queryParameter("limit", "integer", { minimum: 1, maximum: 500, defaultValue: 100 })],
+  "market.baselines": [marketInstrumentQuery, queryParameter("minimumSampleSize", "integer", { minimum: 5, maximum: 100, defaultValue: 20 })],
+  "market.backtests": [marketInstrumentQuery, queryParameter("limit", "integer", { minimum: 1, maximum: 100, defaultValue: 20 })],
+  "market.journal": [marketInstrumentQuery, queryParameter("limit", "integer", { minimum: 1, maximum: 100, defaultValue: 40 })],
+};
+const v34Operations: readonly NativeOperation[] = [
+  ...v33Operations.filter(({ id }) => !["customers.list", "customers.get", "customers.portfolio", "market.analysis"].includes(id))
+    .map((candidate) => typedMarketReadSchemas[candidate.id] ? {
+      ...candidate, ...privateReadOptions, responseSchema: typedMarketReadSchemas[candidate.id],
+      ...(typedMarketQueries[candidate.id] ? { queryParameters: typedMarketQueries[candidate.id] } : {}),
+    } : candidate),
+  operation("customers.list", "GET", "/api/customer-accounts", "Read a bounded authorized Account portfolio.", "bearer", undefined, "NativeCustomerListResponse",
+    { ...privateReadOptions, queryParameters: [...customerWorkspaceQuery, queryParameter("lifecycle", "string", { enumValues: ["prospect", "onboarding", "active", "at_risk", "churned", "archived"] }), queryParameter("limit", "integer", { minimum: 1, maximum: 200, defaultValue: 100 })] }),
+  operation("customers.get", "GET", "/api/customer-accounts/{id}", "Read exact account facts, conflicts and source evidence with bounded fact coverage.", "bearer", undefined, "NativeCustomerReadResponse",
+    { ...customerDetailOptions, queryParameters: customerWorkspaceQuery }),
+  operation("customers.portfolio", "GET", "/api/customer-accounts/portfolio", "Read health and risk intelligence for the bounded authorized portfolio.", "bearer", undefined, "NativeCustomerPortfolioResponse",
+    { ...privateReadOptions, queryParameters: [...customerWorkspaceQuery, queryParameter("limit", "integer", { minimum: 1, maximum: 200, defaultValue: 100 })] }),
+  operation("customers.health", "GET", "/api/customer-accounts/{id}/health", "Read bounded health history and its evidence.", "bearer", undefined, "NativeCustomerHealthResponse",
+    { ...customerDetailOptions, queryParameters: [...customerWorkspaceQuery, queryParameter("historyLimit", "integer", { minimum: 1, maximum: 100, defaultValue: 20 })] }),
+  operation("customers.intelligence", "GET", "/api/customer-accounts/{id}/intelligence", "Read bounded Account intelligence and timeline evidence.", "bearer", undefined, "NativeCustomerIntelligenceResponse",
+    { ...customerDetailOptions, queryParameters: [...customerWorkspaceQuery, queryParameter("historyLimit", "integer", { minimum: 1, maximum: 250, defaultValue: 100 }), queryParameter("timelineLimit", "integer", { minimum: 1, maximum: 250, defaultValue: 100 })] }),
+  operation("customers.workflows", "GET", "/api/customer-accounts/{id}/workflows", "Read bounded exact Account workflow history.", "bearer", undefined, "NativeCustomerWorkflowsResponse",
+    { ...customerDetailOptions, queryParameters: [...customerWorkspaceQuery, queryParameter("limit", "integer", { minimum: 1, maximum: 100, defaultValue: 50 })] }),
+  operation("customers.salesforce.status", "GET", "/api/customer-accounts/salesforce", "Read CRM connection and reviewed write status; grants no OAuth or provider write authority.", "bearer", undefined, "NativeCustomerSalesforceStatusResponse",
+    { ...privateReadOptions, queryParameters: customerWorkspaceQuery }),
+  operation("customers.create", "POST", "/api/customer-accounts", "Create one exact Account intent with durable acceptance and no external CRM write.", "bearer", "NativeCustomerCreateRequest", "NativeCustomerCreateResponse",
+    { ...privateReadOptions, errorStatuses: [400, 401, 403, 404, 409, 413, 415, 503], headerParameters: pluginMutationHeaders, requestBodyMaxBytes: 250_000, successStatuses: [201] }),
+  operation("customers.update", "PATCH", "/api/customer-accounts/{id}", "Revise the exact Account intent and replay its original immutable acceptance.", "bearer", "NativeCustomerReviseRequest", "NativeCustomerReviseResponse",
+    { ...customerDetailOptions, errorStatuses: [400, 401, 403, 404, 409, 413, 415, 503], headerParameters: pluginMutationHeaders, requestBodyMaxBytes: 250_000 }),
+  operation("library.list", "GET", "/api/library", "Read a bounded authorized page of current Library sources.", "bearer", undefined, "NativeLibraryListResponse",
+    { ...privateReadOptions, queryParameters: nativeLibraryListQueryMetadata }),
+  operation("library.get", "GET", "/api/library/{id}", "Resolve the exact current Library source and available citations.", "bearer", undefined, "NativeLibraryReadResponse",
+    { ...privateReadOptions, pathParameters: [libraryPath] }),
+  operation("library.versions.list", "GET", "/api/library/{id}/versions", "Read retained version metadata with current access and an exact current-head continuation pin.", "bearer", undefined, "NativeLibraryHistoryListResponse",
+    { ...privateReadOptions, pathParameters: [libraryPath], queryPolicy: "exact", queryParameters: [queryParameter("limit", "integer", { minimum: 1, maximum: 100, defaultValue: 40 }), queryParameter("before", "string", { minLength: 1, maxLength: 320 }), historyHeadQuery] }),
+  operation("library.versions.get", "GET", "/api/library/{id}/versions/{versionId}", "Read exact historical metadata; historical bytes confer no new attachment authority.", "bearer", undefined, "NativeLibraryHistoryReadResponse",
+    { ...privateReadOptions, pathParameters: [libraryPath, { name: "versionId", minLength: 1, maxLength: 320 }], queryPolicy: "exact", queryParameters: [historyHeadQuery] }),
+  operation("entities.options", "GET", "/api/entities/options", "Read bounded current actor-private entity choices with exact IDs and labels.", "bearer", undefined, "NativeEntityOptionsResponse",
+    { ...privateReadOptions, queryPolicy: "exact", queryParameters: entityOptionsQueryMetadata }),
+  operation("market.snapshots.list", "GET", "/api/market-research/snapshots", "Read bounded stored snapshot metadata without fetching provider data.", "bearer", undefined, "NativeMarketSnapshotsResponse",
+    { ...privateReadOptions, queryParameters: [marketInstrumentQuery, marketIntervalQuery, queryParameter("limit", "integer", { minimum: 1, maximum: 40, defaultValue: 20 })] }),
+  operation("market.snapshots.get", "GET", "/api/market-research/snapshots/{id}", "Read one exact authorized stored market snapshot.", "bearer", undefined, "NativeMarketStoredSnapshotResponse",
+    { ...privateReadOptions, pathParameters: [{ name: "id", minLength: 64, maxLength: 64, pattern: "^market_snapshot_[a-f0-9]{48}$" }] }),
+  operation("market.analysis.metadata", "GET", "/api/market-research/analysis", "Read saved analysis identities and evidence without arbitrary chart plug-in state.", "bearer", undefined, "NativeMarketAnalysisMetadataResponse",
+    { ...privateReadOptions, queryParameters: [marketInstrumentQuery, marketIntervalQuery, queryParameter("view", "string", { required: true, enumValues: ["metadata"] }), queryParameter("limit", "integer", { minimum: 1, maximum: 40, defaultValue: 10 })] }),
+  operation("market.jobs.get", "GET", "/api/market-research/jobs/{id}", "Read one authorized Market operation with bounded progress, results and error text.", "bearer", undefined, "NativeMarketJobResponse",
+    { ...privateReadOptions, pathParameters: [{ name: "id", minLength: 36, maxLength: 36 }] }),
+  operation("market.calendar", "GET", "/api/market-research/calendar", "Explicitly refresh the official provider calendar; never an automatic stored-data read.", "bearer", undefined, "NativeMarketCalendarResponse",
+    { ...privateReadOptions, queryParameters: [queryParameter("days", "integer", { minimum: 1, maximum: 31, defaultValue: 14 })] }),
+  operation("memory.create", "POST", "/api/memory", "Create one private Memory; an uncertain response does not authorize automatic replay.", "bearer", "NativeMemoryCreateRequest", "NativeMemoryCreateResponse",
+    { ...memoryMutationOptions, errorStatuses: [...memoryMutationOptions.errorStatuses, 500], pathParameters: [], successStatuses: [201] }),
+  operation("memory.update", "PATCH", "/api/memory/{id}", "Correct an exact private Memory while preserving lineage; an uncertain response remains held.", "bearer", "NativeMemoryCorrectionRequest", "NativeMemoryCorrectionResponse", memoryMutationOptions),
+  operation("memory.delete", "DELETE", "/api/memory/{id}", "Forget the exact reviewed Memory lineage and reconcile its immutable deletion receipt.", "bearer", undefined, "NativeMemoryForgetResponse",
+    { ...memoryMutationOptions, errorStatuses: [400, 401, 403, 404, 409, 428, 503], headerParameters: [...pluginMutationHeaders,
+      { name: "x-asael-deletion-preview", required: true, minLength: 64, maxLength: 64, pattern: "^[a-f0-9]{64}$" }] }),
+  operation("memory.lifecycle.get", "GET", "/api/memory/{id}/lifecycle", "Read the exact current private lifecycle and opaque revision token.", "bearer", undefined, "NativeMemoryLifecycleReadResponse",
+    { ...privateReadOptions, errorResponseSchema: "NativeMemoryMutationError", pathParameters: memoryMutationOptions.pathParameters, queryPolicy: "exact" }),
+  operation("memory.lifecycle.change", "PATCH", "/api/memory/{id}/lifecycle", "Pin, unpin, archive or restore one exact reviewed lifecycle intent with durable acceptance.", "bearer", "NativeMemoryLifecycleRequest", "NativeMemoryLifecycleChangeResponse", memoryMutationOptions),
+];
+
 const nativeCompanionPreferencesResponseSchema = z.object({
   schemaVersion: z.literal(1), contract: z.literal(COMPANION_PREFERENCES_CONTRACT),
   snapshot: z.object({
@@ -1823,6 +1925,14 @@ const nativeCompanionPreferencesResponseSchema = z.object({
 export const nativeContractSchemas = Object.freeze({
   ...nativeResponsibilityContractSchemas,
   ...nativeMeetingContractSchemas,
+  ...nativeCustomerContractSchemas,
+  ...nativeCustomerDetailContractSchemas,
+  ...nativeCustomerMutationContractSchemas,
+  ...nativeLibraryContractSchemas,
+  ...nativeLibraryHistoryContractSchemas,
+  ...entityOptionsContractSchemas,
+  ...nativeMarketReadContractSchemas,
+  ...nativeMemoryMutationSchemas,
   NativeCompanionPreferencesRequest: companionChangeSchema,
   NativeCompanionPreferencesResponse: nativeCompanionPreferencesResponseSchema,
   JsonObject: jsonObject,
@@ -1952,6 +2062,7 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 31) return v31Operations;
   if (version === 32) return v32Operations;
   if (version === 33) return v33Operations;
+  if (version === 34) return v34Operations;
   return undefined;
 }
 

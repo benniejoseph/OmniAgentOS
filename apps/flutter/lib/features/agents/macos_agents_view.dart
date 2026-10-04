@@ -544,6 +544,7 @@ class _MacosAgentsViewState extends ConsumerState<MacosAgentsView>
     );
     final reason = await showDialog<String>(
       context: context,
+      useRootNavigator: false,
       builder: (dialogContext) => AlertDialog(
         title: Text('Cancel ${member.identity.name}\'s task?'),
         content: SizedBox(
@@ -625,6 +626,7 @@ class _MacosAgentsViewState extends ConsumerState<MacosAgentsView>
     if (agent != null && !agent.manageable) return;
     final value = await showDialog<Json>(
       context: context,
+      useRootNavigator: false,
       builder: (_) => _MacosAgentDialog(
         agent: agent,
         skills: widget.controller.ledger?.skills ?? const [],
@@ -639,6 +641,7 @@ class _MacosAgentsViewState extends ConsumerState<MacosAgentsView>
     if (skill != null && !skill.manageable) return;
     final value = await showDialog<Json>(
       context: context,
+      useRootNavigator: false,
       builder: (_) => _MacosSkillDialog(skill: skill),
     );
     if (value != null) {
@@ -652,6 +655,7 @@ class _MacosAgentsViewState extends ConsumerState<MacosAgentsView>
   ) async {
     final confirmed = await showDialog<bool>(
       context: context,
+      useRootNavigator: false,
       builder: (dialogContext) => AlertDialog(
         title: Text('Delete $name?'),
         content: const SizedBox(

@@ -153,6 +153,31 @@ export const marketBarsResultSchema = marketBarsProviderResultSchema.extend({
 
 export type MarketBarsResult = z.infer<typeof marketBarsResultSchema>;
 
+export const marketStoredSnapshotsQuerySchema = z.object({
+  instrumentId: marketInstrumentIdSchema,
+  interval: z.enum(MARKET_INTERVALS),
+  limit: z.number().int().min(1).max(40).default(20),
+}).strict();
+export const marketStoredSnapshotMetadataSchema = z.object({
+  snapshotId: marketBarsResultSchema.shape.snapshotId,
+  snapshotSha256: marketBarsResultSchema.shape.snapshotSha256,
+  instrumentId: marketInstrumentIdSchema,
+  provider: z.enum(MARKET_PRICE_PROVIDERS),
+  providerSymbol: z.string().min(1).max(80),
+  providerTimezone: z.string().min(1).max(120),
+  interval: z.enum(MARKET_INTERVALS),
+  retrievedAt: z.string().datetime({ offset: true }),
+  asOf: z.string().datetime({ offset: true }),
+  barCount: z.number().int().min(0).max(1000),
+}).strict();
+export const marketStoredSnapshotsResultSchema = z.object({
+  contractVersion: z.literal(MARKET_RESEARCH_CONTRACT_VERSION),
+  instrumentId: marketInstrumentIdSchema,
+  interval: z.enum(MARKET_INTERVALS),
+  snapshots: z.array(marketStoredSnapshotMetadataSchema).max(40),
+  hasMore: z.boolean(),
+}).strict();
+
 const marketDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
 export const MARKET_LIVE_CALENDAR_VERSION =
@@ -670,6 +695,20 @@ export const marketAnalysisVersionsResultSchema = z.object({
 export type MarketAnalysisVersionsResult = z.infer<
   typeof marketAnalysisVersionsResultSchema
 >;
+
+export const marketAnalysisMetadataQuerySchema = marketAnalysisVersionsQuerySchema.extend({ view: z.literal("metadata") }).strict();
+const { chartState: _chartState, ...marketAnalysisMetadataShape } = marketAnalysisVersionSchema.shape;
+export const marketAnalysisMetadataSchema = z.object(marketAnalysisMetadataShape).strict().superRefine((value, context) => {
+  if (value.candidateCount > value.detectionCount) context.addIssue({ code: "custom", path: ["candidateCount"], message: "Review-candidate count cannot exceed the detection count." });
+});
+export const marketAnalysisMetadataResultSchema = z.object({
+  contractVersion: z.literal(MARKET_ANALYSIS_VERSION),
+  view: z.literal("metadata"),
+  instrumentId: marketInstrumentIdSchema,
+  interval: z.enum(MARKET_INTERVALS),
+  versions: z.array(marketAnalysisMetadataSchema).max(40),
+  total: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+}).strict();
 
 export const marketEventReplayRequestSchema = z.object({
   instrumentId: marketInstrumentIdSchema,

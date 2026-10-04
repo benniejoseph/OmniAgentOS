@@ -67,6 +67,7 @@ async function POSTHandler(request: Request) {
     context = await authorizeRequest({
       request,
       action: "manage.workflow",
+      nativeMutationCapability: "customers.records.manage",
       resourceType: "customer_account",
       riskLevel: 2,
       metadata: {
