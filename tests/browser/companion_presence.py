@@ -111,6 +111,12 @@ def greeting_views(page, origin, fixture, checks, label, coarse):
         snapshot(page, checks, "presence-greeting-320-text-200", True, greeting=True)
         draft.click()
         draft.fill("Local unsent greeting draft. Keep this message editable while reviewing composer options.")
+        draft_width = draft.evaluate("""el=>{const box=el.getBoundingClientRect();const style=getComputedStyle(el);const composer=el.closest('section[aria-labelledby="command-composer-title"]');const scrollport=composer.getBoundingClientRect();const dock=document.querySelector('nav[aria-label="Everyday workspace navigation"]').getBoundingClientRect();return {width:box.width,composerWidth:composer.clientWidth,textWidth:el.clientWidth-parseFloat(style.paddingLeft)-parseFloat(style.paddingRight),fontSize:parseFloat(style.fontSize),lineHeight:parseFloat(style.lineHeight),visibleHeight:Math.min(box.bottom,scrollport.bottom,dock.top,innerHeight)-Math.max(box.top,scrollport.top,0),horizontalOverflow:el.scrollWidth>el.clientWidth+1}}""")
+        checks.check("greeting 320px/200%: draft retains readable width and visible lines",
+                     draft_width["width"] >= .75 * draft_width["composerWidth"] and
+                     draft_width["textWidth"] >= 5 * draft_width["fontSize"] and
+                     draft_width["visibleHeight"] >= 1.5 * draft_width["lineHeight"] and
+                     not draft_width["horizontalOverflow"], draft_width)
         send = page.get_by_role("button", name="Send message", exact=True)
         expect(send).to_be_enabled()
         send.click(trial=True)

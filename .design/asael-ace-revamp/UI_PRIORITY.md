@@ -92,15 +92,30 @@ App version `1.23.14+49` is reserved for this follow-up. Connector work must use
 later build number when resumed. Full Flutter analysis and 21 focused cases pass;
 five native widget captures cover light/dark desktop, phone, 200% text and the
 populated state. These synthetic captures do not establish physical-device or
-microphone acceptance. Web visual review and the exact hosted cycle remain the
-release gate. No separate portrait/material study was saved; sculpt04 remains
-the latest exported, unaccepted 3D prototype.
+microphone acceptance. All 39 focused web greeting checks pass, including
+hidden-character preference, exact neutral-image fallback and return to the
+compact conversation portrait. Visual review found and corrected draft crowding
+at 320px with 200% text: controls wrap below the draft, preserving 198px of usable
+text width and a reachable Send control above navigation. The exact hosted cycle
+remains the release gate.
+
+The private Mac greeting package `Asael-1.23.14-49-macOS.dmg` was built from
+`38839901326f7a065a25235a898aaf0195ce1529`; its SHA256 is
+`053f382551b221f1b774bf088098a25033571ac6d882df135e81bef064cd329e`.
+The later composer correction changes only web CSS and browser verification;
+packaged native application code is unchanged. Signing is local/private,
+not Apple notarization.
+
+No separate portrait/material study was saved; sculpt04 remains the latest fully
+exported, unaccepted 3D prototype. A narrow beak revision is being reviewed
+separately and is not part of this greeting release.
 
 ## ATLAS boundary
 
 Sculpt04 is exported and structurally checked: 41,580 triangles, a 1,750,516-byte
 GLB, fourteen bones and twelve clips, with all nine geometry/lifecycle checks
 passing. Actual turnaround and blink review still finds a likeness/finish gap.
-No new artwork has been published. The approved concept portrait remains active;
-the final authored model, material pass, convincing facial closure, full-body
-greeting delivery and state-performance/device acceptance remain open.
+No 3D artwork has been published. The approved concept portrait remains active,
+with the static full-body greeting implemented above. The final authored model,
+material pass, convincing facial closure, animated greeting/state delivery and
+state-performance/device acceptance remain open.
