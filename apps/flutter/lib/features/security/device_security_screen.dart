@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../app/macos/macos_page_scaffold.dart';
 import '../../app/platform/macos_presentation.dart';
 import '../../app/theme/macos_app_theme.dart';
+import '../../core/network/native_workspace_access.dart';
 import '../push/mobile_push.dart';
 import 'device_security.dart';
 import 'device_security_providers.dart';
@@ -13,6 +14,12 @@ class DeviceSecurityScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final access = ref.watch(nativeWorkspaceAccessProvider);
+    if (access == null || !access.current) {
+      return const Center(
+        child: Text('Unlock and sign in to view your devices.'),
+      );
+    }
     final controller = ref.watch(deviceSecurityControllerProvider);
     final push = ref.watch(mobilePushCoordinatorProvider);
     if (usesMacosPresentation()) {
@@ -129,6 +136,7 @@ class DeviceSecurityScreen extends ConsumerWidget {
     final wiping = action == DeviceLifecycleAction.remoteWipe;
     final confirmed = await showDialog<bool>(
       context: context,
+      useRootNavigator: false,
       builder: (dialogContext) => AlertDialog(
         icon: Icon(
           wiping ? Icons.phonelink_erase_rounded : Icons.logout_rounded,

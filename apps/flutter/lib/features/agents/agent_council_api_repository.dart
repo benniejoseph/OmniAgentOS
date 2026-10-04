@@ -1,6 +1,7 @@
 import '../../core/network/api_client.dart';
 import '../../generated/native_contract.g.dart';
 import 'agent_council.dart';
+import 'specialist_api_client.dart';
 
 class ApiAgentCouncilRepository
     implements
@@ -48,16 +49,19 @@ class ApiAgentCouncilRepository
     if (idempotencyKey.isEmpty || idempotencyKey.length > 512) {
       throw ArgumentError.value(idempotencyKey, 'idempotencyKey');
     }
-    return AgentCouncilCancellation.fromJson(
-      await api.postJson(
-        NativePaths.agentsTasksCancel(executionId),
-        data: {
-          'expectedRevision': expectedRevision,
-          'reason': normalizedReason,
-        },
-        headers: {'idempotency-key': idempotencyKey},
-      ),
+    final response = await api.postJson(
+      NativePaths.agentsTasksCancel(executionId),
+      data: {'expectedRevision': expectedRevision, 'reason': normalizedReason},
+      headers: {'idempotency-key': idempotencyKey},
     );
+    final result = AgentCouncilCancellation.fromJson(response);
+    if (result.executionId != executionId) {
+      throw const FormatException(
+        'Cancellation receipt identifies another task.',
+      );
+    }
+    await acceptSpecialistResponse(api, response);
+    return result;
   }
 
   @override

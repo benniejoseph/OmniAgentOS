@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../core/network/api_client.dart';
+import '../../core/network/native_workspace_access.dart';
 import '../../core/platform/desktop_host_bridge.dart';
 import '../../core/storage/secure_session_store.dart';
 import '../../core/sync/reconnect_coordinator.dart';
@@ -13,16 +14,12 @@ import '../../features/ambient_voice/ambient_voice_consent.dart';
 import '../../features/ambient_voice/realtime_voice_controller.dart';
 import '../../features/activity/activity_providers.dart';
 import '../../features/activity/activity_view.dart';
+import '../../features/agents/native_agents_workspace.dart';
+import '../../features/automation/native_automation_workspace.dart';
 import '../../features/auth/application/biometric_session_lock_controller.dart';
 import '../../features/auth/application/session_controller.dart';
 import '../../features/auth/presentation/login_screen.dart';
 import '../../features/auth/presentation/session_bootstrap_screen.dart';
-import '../../features/agents/agents.dart';
-import '../../features/agents/agent_control_view.dart';
-import '../../features/agents/macos_agents_view.dart';
-import '../../features/agents/agents_providers.dart';
-import '../../features/automation/automation_studio_view.dart';
-import '../../features/automation/macos_automation_studio_view.dart';
 import '../../features/capture/capture.dart';
 import '../../features/capture/capture_providers.dart';
 import '../../features/computer_use/local_computer.dart';
@@ -36,7 +33,7 @@ import '../../features/inbox/inbox_providers.dart';
 import '../../features/knowledge/knowledge.dart';
 import '../../features/knowledge/macos_knowledge_view.dart';
 import '../../features/knowledge/knowledge_providers.dart';
-import '../../features/markets/markets_view.dart';
+import '../../features/markets/markets_workspace.dart';
 import '../../features/payments/macos_payments_view.dart';
 import '../../features/payments/payments_view.dart';
 import '../../features/meetings/meetings_page.dart';
@@ -63,6 +60,14 @@ import '../navigation/adaptive_shell.dart';
 import '../navigation/app_destination.dart';
 import '../navigation/destination_placeholder.dart';
 import '../platform/macos_presentation.dart';
+
+Widget _nativeAdminWorkspace(String moduleId) => NativePrivateWorkspace(
+  requireManager: true,
+  ownNavigator: true,
+  builder: (_) => usesMacosPresentation()
+      ? MacosAdminWorkspaceView(moduleId: moduleId)
+      : AdminWorkspaceView(moduleId: moduleId),
+);
 
 String appHomePath() => !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS
     ? '/talk'
@@ -577,11 +582,18 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/administration',
         redirect: (_, _) => usesMacosPresentation() ? '/monitoring' : null,
-        builder: (_, _) => const AdminConsole(),
+        builder: (_, _) => NativePrivateWorkspace(
+          requireManager: true,
+          ownNavigator: true,
+          builder: (_) => const AdminConsole(),
+        ),
       ),
       GoRoute(
         path: '/devices',
-        builder: (_, _) => const DeviceSecurityScreen(),
+        builder: (_, _) => NativePrivateWorkspace(
+          ownNavigator: true,
+          builder: (_) => const DeviceSecurityScreen(),
+        ),
       ),
       GoRoute(
         path: '/quick-entry',
@@ -676,95 +688,56 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                               onOpenResponsibility: (id) =>
                                   _openResponsibility(context, id),
                             ),
-                    '/agents' =>
-                      usesMacosPresentation()
-                          ? MacosAgentsView(
-                              controller: ref.read(agentsControllerProvider),
-                              councilController: ref.read(
-                                agentCouncilControllerProvider,
+                    '/agents' => NativeAgentsWorkspace(
+                      onAssignWork: (agent) {
+                        final talk = ref.read(talkControllerProvider);
+                        if (talk.hasPendingConversationWork) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text(
+                                'Finish, stop, or clear pending Conversation work before assigning another Agent.',
                               ),
-                              onAssignWork: (agent) {
-                                final talk = ref.read(talkControllerProvider);
-                                if (talk.hasPendingConversationWork) {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    const SnackBar(
-                                      content: Text(
-                                        'Finish, stop, or clear pending Conversation work before assigning another Agent.',
-                                      ),
-                                    ),
-                                  );
-                                  return;
-                                }
-                                talk.newConversation();
-                                talk.assignAgent(
-                                  id: agent.id,
-                                  name: agent.name,
-                                );
-                                context.go('/talk');
-                              },
-                            )
-                          : AgentsView(
-                              controller: ref.read(agentsControllerProvider),
-                              liveWork: AgentControlView(
-                                controller: ref.read(
-                                  agentCouncilControllerProvider,
-                                ),
-                              ),
-                              onRefreshLiveWork: ref
-                                  .read(agentCouncilControllerProvider)
-                                  .refresh,
                             ),
+                          );
+                          return;
+                        }
+                        talk.newConversation();
+                        talk.assignAgent(id: agent.id, name: agent.name);
+                        context.go('/talk');
+                      },
+                    ),
                     '/knowledge' => ProviderBoundKnowledgeRoute(
                       initialMemoryId: state.uri.queryParameters['memory'],
                     ),
                     '/accounts' => const ProviderBoundAccountsRoute(),
-                    '/markets' => MarketsView(api: ref.read(apiClientProvider)),
-                    '/payments' =>
-                      usesMacosPresentation()
-                          ? MacosPaymentsView(api: ref.read(apiClientProvider))
-                          : PaymentsView(api: ref.read(apiClientProvider)),
-                    '/automation' =>
-                      usesMacosPresentation()
-                          ? MacosAutomationStudioView(
-                              initialSection:
-                                  state.uri.queryParameters['section'],
+                    '/markets' => const NativeMarketsView(),
+                    '/payments' => NativePrivateWorkspace(
+                      ownNavigator: true,
+                      builder: (access) => usesMacosPresentation()
+                          ? MacosPaymentsView(
+                              api: access.api,
+                              authority: access.authority,
                             )
-                          : AutomationStudioView(
-                              initialSection:
-                                  state.uri.queryParameters['section'],
+                          : PaymentsView(
+                              api: access.api,
+                              authority: access.authority,
                             ),
-                    '/workflows' =>
-                      usesMacosPresentation()
-                          ? const MacosAdminWorkspaceView(
-                              moduleId: 'automation',
-                            )
-                          : const AdminWorkspaceView(moduleId: 'automation'),
-                    '/integrations' =>
-                      usesMacosPresentation()
-                          ? const MacosAdminWorkspaceView(
-                              moduleId: 'integrations',
-                            )
-                          : const AdminWorkspaceView(moduleId: 'integrations'),
-                    '/tools' =>
-                      usesMacosPresentation()
-                          ? const MacosAdminWorkspaceView(moduleId: 'tools')
-                          : const AdminWorkspaceView(moduleId: 'tools'),
-                    '/quality' =>
-                      usesMacosPresentation()
-                          ? const MacosAdminWorkspaceView(moduleId: 'quality')
-                          : const AdminWorkspaceView(moduleId: 'quality'),
-                    '/monitoring' =>
-                      usesMacosPresentation()
-                          ? const MacosAdminWorkspaceView(
-                              moduleId: 'monitoring',
-                            )
-                          : const AdminWorkspaceView(moduleId: 'monitoring'),
-                    '/security' =>
-                      usesMacosPresentation()
-                          ? const MacosAdminWorkspaceView(moduleId: 'security')
-                          : const AdminWorkspaceView(moduleId: 'security'),
-                    '/settings' => ModelSettingsView(
-                      api: ref.read(apiClientProvider),
+                    ),
+                    '/automation' => NativeAutomationWorkspace(
+                      initialSection: state.uri.queryParameters['section'],
+                    ),
+                    '/workflows' => _nativeAdminWorkspace('automation'),
+                    '/integrations' => _nativeAdminWorkspace('integrations'),
+                    '/tools' => _nativeAdminWorkspace('tools'),
+                    '/quality' => _nativeAdminWorkspace('quality'),
+                    '/monitoring' => _nativeAdminWorkspace('monitoring'),
+                    '/security' => _nativeAdminWorkspace('security'),
+                    '/settings' => NativePrivateWorkspace(
+                      ownNavigator: true,
+                      builder: (access) => ModelSettingsView(
+                        api: access.api,
+                        authority: access.authority,
+                      ),
                     ),
                     _ => DestinationPlaceholder(destination: destination),
                   },

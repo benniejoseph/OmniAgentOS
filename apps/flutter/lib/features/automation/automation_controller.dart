@@ -29,10 +29,11 @@ class AutomationController extends ChangeNotifier {
   int _generation = 0;
   bool _disposed = false;
 
-  bool get canMutatePlugins => canManage && mutationsAvailable;
+  bool get canMutatePlugins => !_disposed && canManage && mutationsAvailable;
   bool get pluginBusy => pluginMutationKey != null;
 
   Future<void> loadSchedule(String triggerId, {bool refresh = false}) async {
+    if (_disposed) return;
     if (!refresh && scheduleDetails.containsKey(triggerId)) return;
     if (loadingScheduleIds.contains(triggerId)) return;
     loadingScheduleIds.add(triggerId);
@@ -40,6 +41,7 @@ class AutomationController extends ChangeNotifier {
     _emit();
     try {
       final detail = await repository.loadSchedule(triggerId);
+      if (_disposed) return;
       if (detail.trigger.id != triggerId) {
         throw const FormatException(
           'The service returned history for a different schedule.',
@@ -47,7 +49,7 @@ class AutomationController extends ChangeNotifier {
       }
       scheduleDetails[triggerId] = detail;
     } catch (value) {
-      scheduleErrors[triggerId] = value;
+      if (!_disposed) scheduleErrors[triggerId] = value;
     } finally {
       loadingScheduleIds.remove(triggerId);
       _emit();
@@ -55,6 +57,7 @@ class AutomationController extends ChangeNotifier {
   }
 
   Future<void> refresh() async {
+    if (_disposed) return;
     final generation = ++_generation;
     refreshing = true;
     error = null;
@@ -87,6 +90,7 @@ class AutomationController extends ChangeNotifier {
               plugin,
               idempotencyKey: idempotencyKey,
             );
+      if (_disposed) return null;
       pluginPreview = preview;
       notice = 'Review the exact effects before installing ${preview.name}.';
       return preview;
@@ -121,6 +125,7 @@ class AutomationController extends ChangeNotifier {
         manifest,
         idempotencyKey: _idempotencyKey('manifest-preview'),
       );
+      if (_disposed) return null;
       pluginPreview = preview;
       notice = 'Review the exact effects before installing ${preview.name}.';
       return preview;
@@ -140,6 +145,7 @@ class AutomationController extends ChangeNotifier {
         preview,
         idempotencyKey: _idempotencyKey('install'),
       );
+      if (_disposed) return false;
       pluginPreview = null;
       notice = result.explanation.isNotEmpty
           ? result.explanation
@@ -163,6 +169,7 @@ class AutomationController extends ChangeNotifier {
         enabled: enabled,
         idempotencyKey: _idempotencyKey(action),
       );
+      if (_disposed) return false;
       notice = result.explanation.isNotEmpty
           ? result.explanation
           : '${result.installation.name} is now ${enabled ? 'enabled' : 'disabled'}.';
@@ -183,6 +190,7 @@ class AutomationController extends ChangeNotifier {
         plugin,
         idempotencyKey: _idempotencyKey('uninstall'),
       );
+      if (_disposed) return false;
       if (pluginPreview?.pluginId == plugin.pluginId) pluginPreview = null;
       notice = '${result.installation.name} was uninstalled.';
       await _refreshPlugins();
@@ -209,7 +217,7 @@ class AutomationController extends ChangeNotifier {
   bool _beginPluginMutation(String key) {
     if (pluginBusy) return false;
     if (!canMutatePlugins) {
-      error = 'Plugin changes require an operator or administrator on native contract v17.';
+      error = 'Plugin changes require a current operator or administrator and a supported native contract.';
       _emit();
       return false;
     }
@@ -226,10 +234,12 @@ class AutomationController extends ChangeNotifier {
   }
 
   Future<void> _refreshPlugins() async {
+    if (_disposed) return;
     final previous = snapshot.plugins.data;
     snapshot = snapshot.copyWith(plugins: AutomationResource.loading(previous));
     _emit();
     final plugins = await repository.loadPlugins();
+    if (_disposed) return;
     snapshot = snapshot.copyWith(
       plugins: plugins.hasError && previous != null
           ? AutomationResource.failed(plugins.error!, previous)
@@ -255,6 +265,13 @@ class AutomationController extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _generation += 1;
+    snapshot = const AutomationSnapshot();
+    pluginPreview = null;
+    scheduleDetails.clear();
+    scheduleErrors.clear();
+    loadingScheduleIds.clear();
+    notice = null;
+    error = null;
     super.dispose();
   }
 }

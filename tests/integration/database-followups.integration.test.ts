@@ -6,6 +6,7 @@ import path from "node:path";
 
 import postgres from "postgres";
 import { removeEmptyResponsibilityRuntimeForReplay } from "./helpers/responsibility-replay";
+import { removeEmptyMemoryLifecycleForReplay } from "./helpers/memory-lifecycle-replay";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
 import { closeDatabaseClient, ensureDatabaseSchema } from "@/lib/db/client";
@@ -87,6 +88,9 @@ async function prepareHistoricalReplay(transaction: Transaction, version: 213 | 
     SELECT version, name, checksum FROM public.omni_schema_version
     WHERE version IS NOT NULL ORDER BY version
   `).toEqual(registeredMarkers);
+  if (manifest.some((migration) => migration.version === 222)) {
+    await removeEmptyMemoryLifecycleForReplay(transaction);
+  }
   if (manifest.some((migration) => migration.version === 221)) {
     expect(await transaction`
       SELECT count(*)::int AS populated_intents

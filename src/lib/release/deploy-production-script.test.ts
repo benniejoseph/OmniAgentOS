@@ -47,6 +47,23 @@ afterAll(() => {
 });
 
 describe("paired production deployment", () => {
+  it("can reuse exact-commit hosted verification while retaining paired promotion checks", async () => {
+    const result = await runProcess(process.execPath,
+      ["scripts/deploy-production.mjs", "--dry-run", "--use-hosted-verification"],
+      { ...process.env, OMNIAGENT_RELEASE_SHA: "test-release" });
+    expect(result.code).toBe(0);
+    const lines = result.stdout.split("\n");
+    const provenance = lines.findIndex((line) => line.includes("verify release provenance"));
+    const hosted = lines.findIndex((line) => line.includes("use green exact-commit hosted verification"));
+    const stage = lines.findIndex((line) => line.includes("vercel deploy"));
+    expect(provenance).toBeGreaterThanOrEqual(0);
+    expect(hosted).toBeGreaterThan(provenance);
+    expect(stage).toBeGreaterThan(hosted);
+    expect(result.stdout).not.toContain("DRY RUN npm run verify");
+    expect(result.stdout).toContain("smoke:release");
+    expect(result.stdout).toContain("vercel promote");
+    expect(result.stdout).toContain("kill -USR1");
+  });
   it("keeps the tenant-isolation workflow read to the scoped run list", async () => {
     const tenantSmoke = await readFile(
       "scripts/smoke-tenant-isolation.mjs",

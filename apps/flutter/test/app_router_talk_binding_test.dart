@@ -471,12 +471,12 @@ const _ownerB = AppSession(
 
 const _ownerMac = AppSession(
   tenantId: 'tenant-mac',
-  actorId: 'actor-mac',
-  userId: 'user-mac',
+  actorId: 'owner@example.test',
+  userId: '33333333-3333-4333-8333-333333333333',
   email: 'owner@example.test',
   displayName: 'Owner',
   workspaceName: 'Asael',
-  role: 'owner',
+  role: 'admin',
 );
 
 class _MemoryValues implements AsaelSecureValueStore {

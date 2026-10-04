@@ -1,13 +1,15 @@
 import 'package:flutter/material.dart';
 
 import '../../core/network/api_client.dart';
+import '../../core/network/native_workspace_access.dart';
 import '../../generated/native_contract.g.dart';
 
 typedef Json = Map<String, dynamic>;
 
 class PaymentsView extends StatefulWidget {
-  const PaymentsView({super.key, required this.api});
+  const PaymentsView({super.key, required this.api, this.authority});
   final ApiClient api;
+  final NativeRequestAuthority? authority;
 
   @override
   State<PaymentsView> createState() => _PaymentsViewState();
@@ -18,6 +20,10 @@ class _PaymentsViewState extends State<PaymentsView> {
   Json? readiness, reviews, authenticators, transactions;
   Object? error;
   bool loading = true;
+
+  Future<Json> _read(String path) => widget.authority == null
+      ? widget.api.getJsonFresh(path)
+      : widget.api.getJsonAuthorized(path, authority: widget.authority!);
 
   @override
   void initState() {
@@ -42,8 +48,8 @@ class _PaymentsViewState extends State<PaymentsView> {
     });
     try {
       final primary = await Future.wait([
-        widget.api.getJson(NativePaths.paymentsReadiness),
-        widget.api.getJson(NativePaths.paymentsReviews),
+        _read(NativePaths.paymentsReadiness),
+        _read(NativePaths.paymentsReviews),
       ]);
       if (!mounted) return;
       setState(() {
@@ -51,8 +57,8 @@ class _PaymentsViewState extends State<PaymentsView> {
         reviews = primary[1];
       });
       final secondary = await Future.wait([
-        widget.api.getJson(NativePaths.paymentsAuthenticators),
-        widget.api.getJson(NativePaths.paymentsTransactions),
+        _read(NativePaths.paymentsAuthenticators),
+        _read(NativePaths.paymentsTransactions),
       ]);
       if (!mounted) return;
       setState(() {
@@ -112,6 +118,11 @@ class _PaymentsViewState extends State<PaymentsView> {
                         style: TextStyle(
                           color: Theme.of(context).colorScheme.onSurfaceVariant,
                         ),
+                      ),
+                      const SizedBox(height: 14),
+                      const NativeWorkspaceBrowserButton(
+                        path: '/app/payments',
+                        label: 'Review and manage signers in browser',
                       ),
                       const SizedBox(height: 14),
                       _BoundaryNotice(

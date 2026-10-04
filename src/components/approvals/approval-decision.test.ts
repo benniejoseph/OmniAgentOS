@@ -18,6 +18,7 @@ import {
   readApprovalItem,
   readApprovalQueuePage,
   submitApprovalDecision,
+  validateApprovalDecisionResponse,
   type ApprovalItem,
   type ApprovalQueuePage,
 } from "@/components/approvals/approval-decision";
@@ -65,6 +66,10 @@ function jsonResponse(body: unknown, status = 200) {
     status,
     headers: { "content-type": "application/json" },
   });
+}
+
+function acceptedTool(id = "exec-1", decision: "approve" | "reject" = "approve") {
+  return { record: { id, toolId: "email.send", status: decision === "approve" ? "executed" : "rejected", approvalDecision: decision === "approve" ? "approved" : "rejected" } };
 }
 
 function fetchStub(...responses: Response[]) {
@@ -180,7 +185,7 @@ describe("decision notice", () => {
 
 describe("submitting a decision", () => {
   it("posts the decision for the encoded id and returns its notice", async () => {
-    const { stub, fetchImpl } = fetchStub(jsonResponse({ continuation: { scheduled: true } }));
+    const { stub, fetchImpl } = fetchStub(jsonResponse({ ...acceptedTool("exec/1?x"), continuation: { scheduled: true } }));
 
     const notice = await submitApprovalDecision(
       item({ id: "exec/1?x" }),
@@ -228,16 +233,14 @@ describe("submitting a decision", () => {
 
     const first = await send(lost());
     expect(first).toMatch(/^approval-approve-[0-9a-f-]{36}$/);
-    const others = [
-      await send(lost(), "approve", "Checked twice."),
-      await send(lost(), "reject"),
-      await send(lost(), "approve", "Checked.", "exec-other"),
-    ];
+    await expect(submitApprovalDecision(item({ id: "exec-keyed" }), "reject", {}, fetchImpl)).rejects.toThrow("already pending");
+    await expect(submitApprovalDecision(item({ id: "exec-keyed" }), "approve", { reason: "Changed" }, fetchImpl)).rejects.toThrow("already pending");
+    expect(keys).toHaveLength(1);
     expect(await send(new Response("", { status: 503 }))).toBe(first);
     expect(await send(jsonResponse({ error: "Already decided." }, 409))).toBe(first);
-    const next = await send(jsonResponse({}));
-    expect(new Set([first, ...others, next]).size).toBe(5);
-    expect(others[1]).toMatch(/^approval-reject-/);
+    expect(await send(jsonResponse({}))).toBe(first);
+    expect(await send(jsonResponse(acceptedTool("exec-keyed")))).toBe(first);
+    expect(await send(jsonResponse(acceptedTool("exec-keyed")))).not.toBe(first);
   });
 
   it("throws the server's reason", async () => {
@@ -254,11 +257,32 @@ describe("submitting a decision", () => {
       fetchStub(jsonResponse({ message: "Session expired.", error: "unauthorized" }, 401)).fetchImpl,
     )).rejects.toThrow("Session expired.");
     await expect(submitApprovalDecision(
-      item(),
+      item({ id: "exec-unavailable" }),
       "reject",
       {},
       fetchStub(new Response("<html>", { status: 502 })).fetchImpl,
-    )).rejects.toThrow("Decision failed (502).");
+    )).rejects.toThrow("unconfirmed");
+  });
+
+  it("rejects wrong identities, wrong decisions and malformed quorum receipts", () => {
+    expect(() => validateApprovalDecisionResponse("exact", { kind: "tool", decision: "approve" }, 200, acceptedTool("other"))).toThrow();
+    expect(() => validateApprovalDecisionResponse("exact", { kind: "tool", decision: "reject" }, 200, acceptedTool("exact"))).toThrow();
+    expect(() => validateApprovalDecisionResponse("exact", { kind: "tool", decision: "approve" }, 202, { record: { id: "exact", toolId: "email.send", status: "approval_required" }, quorum: { have: 0, need: 2 } })).toThrow();
+    expect(() => validateApprovalDecisionResponse("exact", { kind: "workflow", decision: "approve" }, 200, acceptedTool("exact"))).toThrow();
+  });
+
+  it("separates exact workflow and policy authority from a successful status code", () => {
+    expect(validateApprovalDecisionResponse("workflow-1", { kind: "workflow", decision: "approve" }, 200, { run: { id: "workflow-1", status: "queued", approvedAt: "2026-10-04T00:00:00Z" } })).toHaveProperty("run");
+    expect(() => validateApprovalDecisionResponse("workflow-1", { kind: "workflow", decision: "approve" }, 200, { run: { id: "workflow-1", status: "queued" } })).toThrow();
+    expect(validateApprovalDecisionResponse("policy-1", { kind: "slo_policy", decision: "reject" }, 200, { change: { id: "policy-1", status: "rejected" } })).toHaveProperty("change");
+  });
+
+  it("never follows an accepted receipt with an old-owner read", async () => {
+    let current = true;
+    const stub = vi.fn(async () => { current = false; return jsonResponse(acceptedTool("owner-held")); });
+    await expect(decideAndReread(item({ id: "owner-held" }), "approve", {}, stub as unknown as typeof fetch,
+      { scope: "owner-held-scope", isCurrent: () => current })).rejects.toThrow("unconfirmed");
+    expect(stub).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -515,7 +539,7 @@ describe("deciding outside the inbox", () => {
       record: { approvals: [{ by: "first-admin", role: "admin" }] },
     });
     const { events, calls, fetchImpl } = recordingFetch(
-      jsonResponse({ approvalProgress: { approvals: 1, required: 2, remaining: 1 } }, 202),
+      jsonResponse({ record: { id: "exec-1", toolId: "email.send", status: "approval_required" }, quorum: { have: 1, need: 2 }, approvalProgress: { approvals: 1, required: 2, remaining: 1 } }, 202),
       jsonResponse({ item: recorded }),
     );
 
@@ -537,11 +561,11 @@ describe("deciding outside the inbox", () => {
   it("keeps the notice when the item is gone or cannot be read", async () => {
     const released = { message: "Approved and released: Send email.", tone: "success" };
 
-    const gone = recordingFetch(jsonResponse({}), jsonResponse({ item: null }));
+    const gone = recordingFetch(jsonResponse(acceptedTool()), jsonResponse({ item: null }));
     await expect(decideAndReread(item(), "approve", {}, gone.fetchImpl))
       .resolves.toEqual({ notice: released, item: undefined });
 
-    const unreadable = recordingFetch(jsonResponse({}), new Response("", { status: 500 }));
+    const unreadable = recordingFetch(jsonResponse(acceptedTool()), new Response("", { status: 500 }));
     await expect(decideAndReread(item(), "approve", {}, unreadable.fetchImpl))
       .resolves.toEqual({ notice: released, item: undefined });
     expect(unreadable.events).toEqual(["changed"]);

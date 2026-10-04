@@ -92,12 +92,28 @@ class DeviceSecurityController extends ChangeNotifier {
     required this.readBiometricEnabled,
     required this.readBiometricAvailable,
     required this.changeBiometricEnabled,
+    this.canAccess,
   });
 
   final DeviceSecurityRepository repository;
   final Future<bool> Function() readBiometricEnabled;
   final Future<bool> Function() readBiometricAvailable;
   final Future<void> Function(bool enabled) changeBiometricEnabled;
+  final bool Function()? canAccess;
+  bool _disposed = false;
+  bool get _current => !_disposed && (canAccess?.call() ?? true);
+  void _changed() {
+    if (_current) notifyListeners();
+  }
+
+  final Set<String> _uncertainDevices = {};
+
+  @override
+  void dispose() {
+    _disposed = true;
+    devices = const [];
+    super.dispose();
+  }
 
   List<MobileDeviceSession> devices = const [];
   bool biometricEnabled = false;
@@ -108,39 +124,44 @@ class DeviceSecurityController extends ChangeNotifier {
   Object? error;
 
   Future<void> refresh() async {
+    if (!_current || loading) return;
     loading = true;
     error = null;
-    notifyListeners();
+    _changed();
     try {
       final values = await Future.wait<Object>([
         repository.loadDevices(),
         readBiometricEnabled(),
         readBiometricAvailable(),
       ]);
+      if (!_current) return;
       devices = values[0] as List<MobileDeviceSession>;
+      _uncertainDevices.clear();
       biometricEnabled = values[1] as bool;
       biometricAvailable = values[2] as bool;
     } catch (caught) {
-      error = caught;
+      if (_current) error = caught;
     } finally {
       loading = false;
-      notifyListeners();
+      _changed();
     }
   }
 
   Future<void> setBiometricEnabled(bool enabled) async {
+    if (!_current || changingBiometric) return;
     changingBiometric = true;
     error = null;
-    notifyListeners();
+    _changed();
     try {
       await changeBiometricEnabled(enabled);
+      if (!_current) return;
       biometricEnabled = enabled;
     } catch (caught) {
       error = caught;
       rethrow;
     } finally {
       changingBiometric = false;
-      notifyListeners();
+      _changed();
     }
   }
 
@@ -148,21 +169,36 @@ class DeviceSecurityController extends ChangeNotifier {
     MobileDeviceSession device,
     DeviceLifecycleAction action,
   ) async {
+    if (!_current ||
+        changingDevices.contains(device.id) ||
+        _uncertainDevices.contains(device.id) ||
+        !devices.any((item) => identical(item, device)) ||
+        (action == DeviceLifecycleAction.revoke
+            ? !device.canRevoke
+            : !device.canRemoteWipe)) {
+      throw StateError(
+        'Refresh the current device before reviewing this action.',
+      );
+    }
     changingDevices.add(device.id);
     error = null;
-    notifyListeners();
+    _changed();
     try {
       final updated = await repository.changeDevice(device.id, action);
+      if (!_current) {
+        throw StateError('Device access changed before confirmation.');
+      }
       devices = [
         for (final value in devices)
           if (value.id == updated.id) updated else value,
       ];
     } catch (caught) {
+      _uncertainDevices.add(device.id);
       error = caught;
       rethrow;
     } finally {
       changingDevices.remove(device.id);
-      notifyListeners();
+      _changed();
     }
   }
 }

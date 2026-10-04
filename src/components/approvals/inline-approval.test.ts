@@ -61,6 +61,8 @@ function view(overrides: Partial<ComponentProps<typeof InlineApprovalView>> = {}
 function inline() {
   return renderToStaticMarkup(createElement(InlineApproval, {
     executionId: "exec-1",
+    authorityScope: "tenant-1:actor-1",
+    isAuthorityCurrent: () => true,
     summary: "Waiting for approval: email.send",
     returnTo: "/app/command?thread=thread-1&run=run-1",
   }));

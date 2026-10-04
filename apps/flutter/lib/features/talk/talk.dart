@@ -4682,10 +4682,17 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   }
 
   void _publishAmbientVoiceState(AmbientVoicePhase phase) {
+    final microphoneActive =
+        recording || realtimeVoice?.microphoneActive == true;
     final state = switch (phase) {
-      AmbientVoicePhase.starting ||
-      AmbientVoicePhase.listening ||
-      AmbientVoicePhase.transcribing => DesktopAmbientVoiceState.listening,
+      AmbientVoicePhase.starting || AmbientVoicePhase.listening =>
+        microphoneActive
+            ? DesktopAmbientVoiceState.listening
+            : DesktopAmbientVoiceState.starting,
+      AmbientVoicePhase.transcribing =>
+        microphoneActive
+            ? DesktopAmbientVoiceState.listening
+            : DesktopAmbientVoiceState.processing,
       AmbientVoicePhase.review => DesktopAmbientVoiceState.review,
       AmbientVoicePhase.running => DesktopAmbientVoiceState.running,
       AmbientVoicePhase.speaking => DesktopAmbientVoiceState.speaking,

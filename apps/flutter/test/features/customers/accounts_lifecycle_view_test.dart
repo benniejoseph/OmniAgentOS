@@ -38,7 +38,7 @@ void main() {
       final refresh = old.refreshCore();
       await started.future;
       harness.api = AccountsTestApi(origin: 'https://replacement.example.test')
-        ..read = (path, _, _) => path == NativePaths.customersList
+        ..read = (path, _, _) => path == NativePaths.customersList()
             ? replacement.future
             : accountPortfolioResponse();
       harness.container.invalidate(apiClientProvider);

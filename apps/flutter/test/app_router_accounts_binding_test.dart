@@ -65,14 +65,14 @@ void main() {
           NativePaths.bootstrapGet,
           NativePaths.customersGet(customerId),
           NativePaths.bootstrapGet,
-          NativePaths.customersPortfolio,
+          NativePaths.customersPortfolio(),
         ]),
       );
       expect(
         api.paths.where((path) => path == NativePaths.customersGet(customerId)),
         hasLength(1),
       );
-      expect(api.paths, isNot(contains(NativePaths.customersList)));
+      expect(api.paths, isNot(contains(NativePaths.customersList())));
       expect(
         container.read(accountsRepositoryProvider).authorityCurrent(),
         isTrue,

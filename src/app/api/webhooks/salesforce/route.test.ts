@@ -1,7 +1,7 @@
 import { createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
-import { verifySalesforceWebhookSignature } from "@/app/api/webhooks/salesforce/route";
+import { verifySalesforceWebhookSignature } from "@/lib/customer-success/salesforce-webhook-signature";
 
 describe("Salesforce webhook verification", () => {
   it("accepts only a fresh exact-body HMAC", () => {

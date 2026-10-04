@@ -19,7 +19,8 @@ vi.mock("@/components/app-shell/session-context", async (importOriginal) => {
       session: {
         authEnabled: true,
         authenticated: true,
-        context: { actorId: "reviewer", role: session.role },
+        user: { id: "00000000-0000-4000-8000-000000000001", email: "reviewer@example.com" },
+        context: { tenantId: "tenant-a", actorId: "reviewer@example.com", role: session.role },
       },
       status: "ready",
       role: session.role,

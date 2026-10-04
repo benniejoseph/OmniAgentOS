@@ -19,7 +19,8 @@ from urllib.request import urlopen
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError, expect, sync_playwright
 
-from fixtures import ANSWER, PROMPT, THREAD_ID, Fixtures
+from fixtures import (ANSWER, PROMPT, THREAD_ID, RUN_ID, SCOPE_THREAD_B,
+                      Fixtures, AssistantScopeFixtures, scope_session)
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -240,6 +241,148 @@ def exercise(browser, origin, credentials, checks, coarse):
         context.close()
 
 
+def scope_until(page, condition, message):
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        if condition():
+            return
+        page.wait_for_timeout(25)
+    raise AssertionError(message)
+
+
+def exercise_scope(browser, origin, credentials, checks):
+    fixture = AssistantScopeFixtures(origin)
+    errors = []
+    context = browser.new_context(viewport={"width": 1440, "height": 900}, service_workers="block", reduced_motion="reduce")
+    page = None
+    try:
+        login = context.request.post(origin + "/api/auth/login", data=credentials, headers={"Origin": origin}, timeout=90_000)
+        checks.check("Assistant scope: real isolated login", login.ok)
+        session_response = context.request.get(origin + "/api/auth/session")
+        if not session_response.ok:
+            raise AssertionError("Assistant scope session was unavailable")
+        session = scope_session(session_response.json())
+        context.route("**/*", fixture.route)
+        context.add_init_script("""window.__scopeMicAttempts=0; window.__scopeMicStops=0; window.__scopePeers=0;
+          navigator.mediaDevices.getUserMedia=async()=>{
+            window.__scopeMicAttempts++;
+            const track=Object.assign(new EventTarget(),{enabled:true,readyState:'live',
+              stop(){if(this.readyState==='live'){this.readyState='ended';window.__scopeMicStops++;this.dispatchEvent(new Event('ended'));}}});
+            return {getTracks:()=>[track],getAudioTracks:()=>[track]};
+          };
+          window.AudioContext=class{constructor(){throw new Error('Synthetic meter unavailable');}};
+          window.RTCPeerConnection=class{constructor(){window.__scopePeers++;throw new Error('Unexpected peer after stale session');}};""")
+        fixture.plan_read("/api/runs/" + RUN_ID, fixture.defaults["/api/runs/" + RUN_ID], hold="initial-run-a")
+        page = context.new_page()
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        page.on("popup", lambda popup: (fixture.unexpected.append({"kind": "popup"}), popup.close()))
+        page.on("download", lambda download: (fixture.unexpected.append({"kind": "download"}), download.cancel()))
+        navigate(page, origin, f"/app/command?thread={THREAD_ID}&run={RUN_ID}")
+        field = page.locator('textarea[role="combobox"]')
+        expect(field).to_be_visible()
+        scope_until(page, lambda: "initial-run-a" in fixture.held, "Initial run A was not held")
+        field.fill("Keep this same-owner composer draft.")
+        page.get_by_role("button", name="Show conversations", exact=True).click()
+        rail = page.get_by_role("complementary", name="Recent conversations")
+        rail.get_by_role("button").filter(has_text="Initial B conversation").click()
+        expect(page.get_by_text("Initial B private response", exact=True)).to_be_visible()
+        before_a = sum(read["path"] == "/api/threads/" + THREAD_ID for read in fixture.requests)
+        fixture.release("initial-run-a")
+        page.wait_for_timeout(150)
+        expect(page.get_by_text("Initial B private response", exact=True)).to_be_visible()
+        expect(field).to_have_value("Keep this same-owner composer draft.")
+        checks.check("Assistant scope: late selected run A cannot adopt or start a thread follow-up after B",
+                     before_a == sum(read["path"] == "/api/threads/" + THREAD_ID for read in fixture.requests)
+                     and "Initial A private response" not in page.locator("body").inner_text())
+
+        page.evaluate("window.__assistantScopeDocument='same-mounted-document'")
+        fixture.plan_read("/api/auth/session", session, hold="same-owner")
+        page.get_by_role("button", name="Refresh account access", exact=True).click()
+        scope_until(page, lambda: "same-owner" in fixture.held, "Same-owner access check was not held")
+        expect(field).to_have_count(0)
+        checks.check("Assistant scope: pending access recheck hides private transcript and draft",
+                     "Initial B private response" not in page.locator("body").inner_text())
+        fixture.defaults["/api/auth/session"] = session
+        fixture.release("same-owner")
+        expect(field).to_have_value("Keep this same-owner composer draft.")
+        expect(page.get_by_text("Initial B private response", exact=True)).to_be_visible()
+        checks.check("Assistant scope: same-owner confirmation retains draft without sending", not fixture.writes)
+
+        for label, held_thread in (("Canonical replacement", THREAD_ID), ("Role replacement", SCOPE_THREAD_B)):
+            old_text = "Old held " + label + " private response"
+            held_body = json.loads(json.dumps(fixture.defaults["/api/threads/" + held_thread]))
+            held_body["turns"][0]["content"] = old_text
+            hold = "old-thread-" + label
+            fixture.plan_read("/api/threads/" + held_thread, held_body, hold=hold)
+            if not rail.is_visible():
+                page.get_by_role("button", name="Show conversations", exact=True).click()
+            old_title = fixture.defaults["/api/threads/" + held_thread]["thread"]["title"]
+            rail.get_by_role("button").filter(has_text=old_title).click()
+            scope_until(page, lambda: hold in fixture.held, "Prior-owner conversation read was not held")
+            field.fill("Private draft before " + label)
+            if label == "Canonical replacement":
+                fixture.allow_voice = True
+                page.get_by_role("button", name="Start voice mode with Asael", exact=True).click()
+                page.get_by_role("button", name="Agree & start", exact=True).click()
+                scope_until(page, lambda: "old-voice" in fixture.held, "Synthetic voice session was not held")
+                checks.check("Assistant scope: synthetic microphone is active before replacement",
+                             page.evaluate("window.__scopeMicAttempts===1 && window.__scopeMicStops===0"))
+                replacement = scope_session(session, user_id="77777777-7777-4777-8777-777777777777")
+            else:
+                replacement = scope_session(session, role="viewer")
+            fixture.plan_read("/api/auth/session", replacement, hold="replacement-access")
+            if label == "Canonical replacement":
+                # Simulate an asynchronous account-access refresh while the
+                # modal owns focus, through the real refresh control/provider.
+                # This dispatches a DOM click; no React state or callback is replaced.
+                page.get_by_role("button", name="Refresh account access", exact=True).dispatch_event("click")
+            else:
+                page.get_by_role("button", name="Refresh account access", exact=True).click()
+            scope_until(page, lambda: "replacement-access" in fixture.held, "Replacement access check was not held")
+            expect(field).to_have_count(0)
+            expect(page.get_by_role("dialog", name="Realtime voice to Asael")).to_have_count(0)
+            if label == "Canonical replacement":
+                checks.check("Assistant scope: access loss stops the active microphone before replacement settles",
+                             page.evaluate("window.__scopeMicStops===1 && window.__scopePeers===0"))
+            fixture.set_owner_label(label)
+            fixture.defaults["/api/auth/session"] = replacement
+            fixture.release("replacement-access")
+            expect(field).to_have_value("")
+            expect(page.get_by_text(label + " A private response", exact=True)).to_be_visible()
+            scope_until(page, lambda: rail.is_visible(), "Current-owner conversations were not restored")
+            reads_before_release = len(fixture.requests)
+            fixture.release(hold)
+            if label == "Canonical replacement":
+                fixture.release("old-voice")
+            page.wait_for_timeout(200)
+            checks.check("Assistant scope: " + label + " clears prior draft and ignores late private follow-ups",
+                         old_text not in page.locator("body").inner_text()
+                         and field.input_value() == "" and len(fixture.requests) == reads_before_release
+                         and page.evaluate("window.__assistantScopeDocument") == "same-mounted-document")
+            session = replacement
+        expect(page.get_by_role("button", name="Send follow-up", exact=True)).to_be_disabled()
+        checks.check("Assistant scope: viewer cannot send and cleanup produced no effect retry",
+                     len(fixture.writes) == 1 and fixture.writes[0]["disposition"] == "synthetic_held_voice_session"
+                     and page.evaluate("window.__scopeMicStops===1 && window.__scopePeers===0"))
+        checks.check("Assistant scope: no unplanned request or uncaught browser error", not fixture.unexpected and not errors,
+                     {"unexpected": fixture.unexpected, "errors": errors})
+        return {"scenario": "mounted Assistant owner/role and exact selection", "reads": fixture.requests,
+                "writes": fixture.writes, "releases": fixture.releases, "unexpected": fixture.unexpected, "browserErrors": errors,
+                "boundary": "Real session-provider refresh; coherent intercepted owner/role replacement; synthetic microphone track only. No device, provider transport, send, cancel or approval effect."}
+    except Exception:
+        if page is not None and not page.is_closed():
+            page.screenshot(path=str(checks.output / "assistant-scope-failure.png"), full_page=False)
+            (checks.output / "assistant-scope-failure-dom.html").write_text(page.content())
+            (checks.output / "assistant-scope-failure-requests.json").write_text(json.dumps({
+                "reads": fixture.requests, "writes": fixture.writes, "held": list(fixture.held), "unexpected": fixture.unexpected, "errors": errors}, indent=2))
+        raise
+    finally:
+        fixture.abort_held()
+        if page is not None and not page.is_closed():
+            page.goto("about:blank")
+        context.close()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=REPO / "test-results/browser")
@@ -258,6 +401,7 @@ def main():
             try:
                 for coarse in (False, True):
                     contexts.append(exercise(browser, origin, credentials, checks, coarse))
+                contexts.append(exercise_scope(browser, origin, credentials, checks))
             finally:
                 browser.close()
     except Exception as error:

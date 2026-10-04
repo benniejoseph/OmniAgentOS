@@ -3,11 +3,11 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   test('retains current and previous contract compatibility', () {
-    expect(NativeContract.currentVersion, 33);
-    expect(NativeContract.previousVersion, 32);
-    expect(NativeContract.supportedVersions, [33, 32]);
-    expect(NativeContract.supports(31), isFalse);
-    expect(NativeContract.supports(34), isFalse);
+    expect(NativeContract.currentVersion, 34);
+    expect(NativeContract.previousVersion, 33);
+    expect(NativeContract.supportedVersions, [34, 33]);
+    expect(NativeContract.supports(32), isFalse);
+    expect(NativeContract.supports(35), isFalse);
     expect(
       NativePaths.meetingsList(
         workspaceId: 'workspace:one',

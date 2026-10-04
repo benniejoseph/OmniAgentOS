@@ -6,10 +6,13 @@ import {
   type AppServiceCaller,
 } from "@/lib/app-services/contracts";
 import { getAppServiceOperationContract } from "@/lib/app-services/registry";
+import { hasDatabaseUrl } from "@/lib/db/client";
 import {
   MARKET_RESEARCH_CONTRACT_VERSION,
   marketAnalysisGenerateRequestSchema,
   marketAnalysisVersionsQuerySchema,
+  marketAnalysisMetadataQuerySchema,
+  marketStoredSnapshotsQuerySchema,
   marketBacktestRequestSchema,
   marketBacktestsQuerySchema,
   marketBarsQuerySchema,
@@ -27,6 +30,7 @@ import {
 } from "@/lib/market-research/contracts";
 import {
   listMarketAnalysisVersions,
+  listMarketAnalysisMetadata,
   saveMarketAnalysisVersion,
 } from "@/lib/market-research/analysis-store";
 import { buildMarketEventBaselines } from "@/lib/market-research/event-baselines";
@@ -54,6 +58,8 @@ import { marketInstruments } from "@/lib/market-research/instruments";
 import { fetchMarketBarSnapshot } from "@/lib/market-research/market-data";
 import {
   findFreshMarketPriceSnapshot,
+  listStoredMarketPriceSnapshots,
+  MarketPriceSnapshotStoreUnavailableError,
   readMarketPriceSnapshot,
   saveMarketPriceSnapshot,
 } from "@/lib/market-research/price-snapshot-store";
@@ -250,6 +256,29 @@ export async function showMarketResearchFeaturesService(
   });
 }
 
+export async function listStoredMarketSnapshotsService(caller: AppServiceCaller, input: z.input<typeof marketStoredSnapshotsQuerySchema>) {
+  const value = marketStoredSnapshotsQuerySchema.parse(input);
+  const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.market_research.snapshots.list"));
+  const result = await listStoredMarketPriceSnapshots({ tenantId: caller.context.tenantId, actorId: caller.context.actorId, ...value });
+  return completeAppServiceCall(authorized, result, { resourceCount: result.snapshots.length });
+}
+export async function showStoredMarketSnapshotService(caller: AppServiceCaller, snapshotId: string) {
+  marketTechnicalFeaturesQuerySchema.parse({ snapshotId });
+  const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.market_research.snapshots.show"));
+  const result = await readMarketPriceSnapshot({ tenantId: caller.context.tenantId, actorId: caller.context.actorId, snapshotId });
+  return completeAppServiceCall(authorized, result, { resourceCount: result.bars.length, occurredAt: result.retrievedAt });
+}
+export async function listMarketAnalysisMetadataService(caller: AppServiceCaller, input: z.input<typeof marketAnalysisMetadataQuerySchema>) {
+  const value = marketAnalysisMetadataQuerySchema.parse(input);
+  const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.market_research.analysis.list"));
+  const result = await listMarketAnalysisMetadata({ tenantId: caller.context.tenantId, actorId: caller.context.actorId, ...value });
+  return completeAppServiceCall(authorized, result, { resourceCount: result.versions.length });
+}
+
+function requireStoredMarketRead() {
+  if (!hasDatabaseUrl()) throw new MarketPriceSnapshotStoreUnavailableError();
+}
+
 export async function listMarketAnalysisVersionsService(
   caller: AppServiceCaller,
   input: z.input<typeof marketAnalysisVersionsQuerySchema>,
@@ -259,6 +288,7 @@ export async function listMarketAnalysisVersionsService(
     caller,
     getAppServiceOperationContract("app.market_research.analysis.list"),
   );
+  requireStoredMarketRead();
   const result = await listMarketAnalysisVersions({
     tenantId: caller.context.tenantId,
     actorId: caller.context.actorId,
@@ -328,6 +358,7 @@ export async function listMarketResearchEventsService(
     caller,
     getAppServiceOperationContract("app.market_research.events.list"),
   );
+  requireStoredMarketRead();
   const result = await listMarketEvents({
     tenantId: caller.context.tenantId,
     actorId: caller.context.actorId,
@@ -385,6 +416,7 @@ export async function listMarketResearchReplaysService(
     caller,
     getAppServiceOperationContract("app.market_research.replays.list"),
   );
+  requireStoredMarketRead();
   const result = await listMarketEventReplays({
     tenantId: caller.context.tenantId,
     actorId: caller.context.actorId,
@@ -405,6 +437,7 @@ export async function showMarketResearchBaselinesService(
     caller,
     getAppServiceOperationContract("app.market_research.baselines.show"),
   );
+  requireStoredMarketRead();
   const replayResult = await listMarketEventReplays({
     tenantId: caller.context.tenantId,
     actorId: caller.context.actorId,
@@ -449,6 +482,7 @@ export async function listMarketBacktestsService(
     caller,
     getAppServiceOperationContract("app.market_research.backtests.list"),
   );
+  requireStoredMarketRead();
   const result = await listMarketBacktests({
     tenantId: caller.context.tenantId,
     actorId: caller.context.actorId,
@@ -487,6 +521,7 @@ export async function listMarketForecastJournalService(
     caller,
     getAppServiceOperationContract("app.market_research.journal.list"),
   );
+  requireStoredMarketRead();
   const result = await listMarketForecastJournal({
     tenantId: caller.context.tenantId,
     actorId: caller.context.actorId,

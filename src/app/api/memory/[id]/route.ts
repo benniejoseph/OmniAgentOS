@@ -31,6 +31,7 @@ async function authorize(
   return authorizeRequest({
     request,
     action,
+    ...(action === "write.memory" ? { nativeMutationCapability: "memory.records.write" as const } : {}),
     resourceType: "memory",
     resourceId: id,
   });

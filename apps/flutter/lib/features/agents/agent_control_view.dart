@@ -92,6 +92,7 @@ class _AgentControlViewState extends State<AgentControlView> {
     );
     final reason = await showDialog<String>(
       context: context,
+      useRootNavigator: false,
       builder: (dialogContext) => AlertDialog(
         title: Text('Cancel ${member.identity.name}\'s task?'),
         content: Column(

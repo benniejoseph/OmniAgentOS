@@ -4,6 +4,9 @@ import 'package:flutter/foundation.dart';
 import '../../core/network/api_exception.dart';
 import 'accounts_contracts.dart';
 import 'accounts_repository.dart';
+import 'accounts_advanced_contracts.dart';
+import 'accounts_mutation_controller.dart';
+import 'accounts_recovery_store.dart';
 
 enum AccountReadState { idle, loading, current, stale, unavailable, forbidden }
 
@@ -21,15 +24,47 @@ class AccountRead<T> {
 }
 
 class AccountsController extends ChangeNotifier {
-  AccountsController(this.repository, {this.accountId, this._active = false}) {
+  AccountsController(
+    this.repository, {
+    this.accountId,
+    this._active = false,
+    AccountsRecoveryStore? recovery,
+  }) {
     _ownerKey = repository.access.owner?.key;
     repository.access.addListener(_authorityChanged);
+    if (recovery != null && repository is AccountsMutationRepository) {
+      actions = AccountsMutationController(
+        repository,
+        recovery,
+        isVisible: () => readable,
+        canManage: () =>
+            (accountId == null ? overview.state : detail.state) ==
+                AccountReadState.current &&
+            (accountId == null
+                        ? overview.value?.context
+                        : detail.value?.context)
+                    ?.accessLevel !=
+                'reader',
+      );
+      actions!.addListener(_actionsChanged);
+    }
   }
   final AccountsRepository repository;
   final String? accountId;
   final overview = AccountRead<AccountsSnapshot>();
   final detail = AccountRead<CustomerDetail>();
   final intelligence = AccountRead<AccountsPortfolio>();
+  final advancedReads = {
+    for (final kind in AccountAdvancedKind.values)
+      kind: AccountRead<AccountAdvancedRead>(),
+  };
+  AccountsMutationController? actions;
+  void _actionsChanged() {
+    if (!_disposed) {
+      notifyListeners();
+    }
+  }
+
   final Set<CancelToken> _reads = {};
   bool _active, _disposed = false;
   int _generation = 0;
@@ -49,7 +84,12 @@ class AccountsController extends ChangeNotifier {
     return true;
   }
 
-  bool get busy => overview.loading || detail.loading || intelligence.loading;
+  bool get busy =>
+      overview.loading ||
+      detail.loading ||
+      intelligence.loading ||
+      advancedReads.values.any((value) => value.loading) ||
+      (actions?.busy ?? false);
   String? get workspaceId => accountId == null
       ? overview.value?.context.workspaceId
       : detail.value?.context.workspaceId;
@@ -65,6 +105,10 @@ class AccountsController extends ChangeNotifier {
     overview.clear();
     detail.clear();
     intelligence.clear();
+    for (final source in advancedReads.values) {
+      source.clear();
+    }
+    actions?.hide();
   }
 
   void _authorityChanged() {
@@ -138,6 +182,29 @@ class AccountsController extends ChangeNotifier {
         intelligence.value!.context.workspaceId != workspaceId) {
       intelligence.clear();
     }
+    if (readable && workspaceId != null) {
+      await actions?.bind(workspaceId!);
+    }
+  }
+
+  Future<void> refreshAdvanced(AccountAdvancedKind kind) async {
+    final repo = repository, workspace = workspaceId;
+    if (!readable ||
+        workspace == null ||
+        repo is! AccountsAdvancedRepository ||
+        !repository.access.operations.contains(kind.operation) ||
+        accountId == null && kind != AccountAdvancedKind.salesforce) {
+      return;
+    }
+    await _load(
+      advancedReads[kind]!,
+      (cancel) => (repo as AccountsAdvancedRepository).advanced(
+        kind,
+        cancel,
+        workspaceId: workspace,
+        accountId: accountId,
+      ),
+    );
   }
 
   Future<void> refreshIntelligence() => _load(
@@ -186,6 +253,10 @@ class AccountsController extends ChangeNotifier {
         // The account boundary being refused also invalidates linked health.
         if (identical(source, overview) || identical(source, detail)) {
           intelligence.clear();
+          for (final value in advancedReads.values) {
+            value.clear();
+          }
+          actions?.hide();
         }
       } else {
         source.state = source.value == null
@@ -220,6 +291,8 @@ class AccountsController extends ChangeNotifier {
     _cancel();
     _clear();
     repository.access.removeListener(_authorityChanged);
+    actions?.removeListener(_actionsChanged);
+    actions?.dispose();
     super.dispose();
   }
 }

@@ -20,7 +20,7 @@ void main() {
       final updated = await repository.saveAgent(input, id: 'custom agent/one');
 
       expect(created.id, 'created-agent');
-      expect(updated.id, 'updated-agent');
+      expect(updated.id, 'custom agent/one');
       expect(api.posts.single.path, '/api/agents');
       expect(api.posts.single.data, input);
       expect(
@@ -103,7 +103,12 @@ class _RecordingApiClient extends ApiClient {
         'agent': {'id': 'created-agent', ...?data},
       };
     }
-    return const {'connection': null};
+    return {
+      'connection': {
+        'agentId': Uri.decodeComponent(path.split('/')[3]),
+        'status': 'paused',
+      },
+    };
   }
 
   @override
@@ -114,7 +119,7 @@ class _RecordingApiClient extends ApiClient {
   }) async {
     patches.add(_ApiCall(path, data, headers));
     return {
-      'agent': {'id': 'updated-agent', ...?data},
+      'agent': {'id': Uri.decodeComponent(path.split('/').last), ...?data},
     };
   }
 

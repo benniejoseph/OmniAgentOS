@@ -5,6 +5,7 @@ import '../../app/macos/macos_page_scaffold.dart';
 import '../../app/platform/macos_presentation.dart';
 import '../../app/theme/macos_app_theme.dart';
 import '../../core/network/api_client.dart';
+import '../../core/network/native_workspace_access.dart';
 import '../../core/platform/desktop_host_bridge.dart';
 import '../../core/platform/local_computer_bridge.dart';
 import '../../generated/native_contract.g.dart';
@@ -56,8 +57,9 @@ const _assignmentDescriptions = <String, String>{
 };
 
 class ModelSettingsView extends ConsumerStatefulWidget {
-  const ModelSettingsView({super.key, required this.api});
+  const ModelSettingsView({super.key, required this.api, this.authority});
   final ApiClient api;
+  final NativeRequestAuthority? authority;
 
   @override
   ConsumerState<ModelSettingsView> createState() => _ModelSettingsViewState();
@@ -75,6 +77,10 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
   bool ambientVoiceSaving = false;
   int macosSection = 0;
   String macosQuery = '';
+  int _readGeneration = 0;
+  bool _saveUncertain = false;
+
+  bool get _current => mounted && (widget.authority?.isCurrent() ?? true);
 
   @override
   void initState() {
@@ -131,23 +137,38 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
   }
 
   Future<void> _load() async {
+    if (!_current) return;
+    final generation = ++_readGeneration;
     setState(() {
       loading = true;
       error = null;
     });
     try {
-      snapshot = await widget.api.getJson(
-        NativePaths.settingsGet,
-        query: {'ownerScope': 'readable'},
-      );
+      final owner = widget.authority;
+      final result = owner == null
+          ? await widget.api.getJsonFresh(
+              NativePaths.settingsGet,
+              query: {'ownerScope': 'readable'},
+            )
+          : await widget.api.getJsonAuthorized(
+              NativePaths.settingsGet,
+              authority: owner,
+              query: {'ownerScope': 'readable'},
+            );
+      if (!_current || generation != _readGeneration) return;
+      snapshot = result;
+      _saveUncertain = false;
     } catch (value) {
-      error = value;
+      if (_current && generation == _readGeneration) error = value;
     } finally {
-      if (mounted) setState(() => loading = false);
+      if (_current && generation == _readGeneration) {
+        setState(() => loading = false);
+      }
     }
   }
 
   Future<void> _edit(String scope) async {
+    if (!_current || saving != null || _saveUncertain) return;
     final data = snapshot;
     if (data == null) return;
     final assignments = (data['assignments'] as List? ?? const [])
@@ -181,6 +202,7 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
         .toList();
     final result = await showDialog<Json>(
       context: context,
+      useRootNavigator: false,
       builder: (context) => _AssignmentDialog(
         scope: scope,
         current: current,
@@ -188,19 +210,41 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
         providers: providers,
       ),
     );
-    if (result == null) return;
+    if (result == null ||
+        !_current ||
+        saving != null ||
+        !identical(snapshot, data)) {
+      return;
+    }
     setState(() {
       saving = scope;
       error = null;
     });
     try {
-      await widget.api.putJson(
-        NativePaths.settingsAssignmentsUpdate,
-        data: {'scope': scope, ...result},
-      );
+      final owner = widget.authority;
+      if (owner == null) {
+        await widget.api.putJson(
+          NativePaths.settingsAssignmentsUpdate,
+          data: {'scope': scope, ...result},
+        );
+      } else {
+        await widget.api.putJsonAuthorized(
+          NativePaths.settingsAssignmentsUpdate,
+          authority: owner,
+          data: {'scope': scope, ...result},
+        );
+      }
+      if (!_current) return;
       await _load();
     } catch (value) {
-      if (mounted) setState(() => error = value);
+      if (_current) {
+        setState(() {
+          _saveUncertain = true;
+          error = StateError(
+            'The model route change could not be confirmed. Refresh current settings before making another change.',
+          );
+        });
+      }
     } finally {
       if (mounted) setState(() => saving = null);
     }
@@ -300,6 +344,11 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
                       ],
                       const SizedBox(height: 24),
                       const CompanionSettingsSection(),
+                      const SizedBox(height: 12),
+                      const NativeWorkspaceBrowserButton(
+                        path: '/app/settings',
+                        label: 'Open advanced workspace settings',
+                      ),
                       if (loading && snapshot == null)
                         const Padding(
                           padding: EdgeInsets.all(48),
@@ -669,6 +718,10 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
       description: 'Configure every provider, model route, and native workspace capability.',
       icon: Icons.tune_rounded,
       actions: [
+        const NativeWorkspaceBrowserButton(
+          path: '/app/settings',
+          label: 'Advanced settings',
+        ),
         IconButton(
           key: const ValueKey('macos-settings-refresh'),
           tooltip: loading ? 'Refreshing settings' : 'Refresh settings',

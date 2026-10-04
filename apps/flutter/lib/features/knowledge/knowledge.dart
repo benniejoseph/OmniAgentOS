@@ -1,6 +1,10 @@
 import 'package:flutter/foundation.dart';
 
+import '../../core/network/api_exception.dart';
+
 import 'knowledge_contracts.dart';
+import 'knowledge_mutations.dart';
+import 'knowledge_recovery_store.dart';
 export 'knowledge_view.dart';
 
 typedef Json = Map<String, dynamic>;
@@ -281,13 +285,307 @@ class KnowledgeController extends ChangeNotifier {
     required this.canManage,
     required this.mutationsAvailable,
     this.enabled = true,
-  });
+    this.recoveryStore,
+  }) {
+    final repo = repository;
+    if (repo is KnowledgeMutationRepository) {
+      final access = (repo as KnowledgeMutationRepository).access;
+      _ownerKey = access.owner?.key;
+      access.addListener(_accessChanged);
+      access.addSilentListener(_accessClosed);
+    }
+  }
   final KnowledgeRepository repository;
+  final KnowledgeRecoveryStore? recoveryStore;
   final bool canManage, mutationsAvailable, enabled;
   bool _disposed = false;
+  bool _authorityLost = false;
+  String? _ownerKey;
   int _generation = 0;
-  bool get available => enabled && !_disposed;
+  bool get available =>
+      enabled &&
+      !_disposed &&
+      !_authorityLost &&
+      (repository is! KnowledgeMutationRepository ||
+          (repository as KnowledgeMutationRepository).authorityCurrent() &&
+              (repository as KnowledgeMutationRepository).access.owner?.key ==
+                  _ownerKey);
   bool get canMutate => available && canManage && mutationsAvailable;
+  KnowledgeMutationRepository? get mutationRepository =>
+      repository is KnowledgeMutationRepository
+      ? repository as KnowledgeMutationRepository
+      : null;
+  bool supportsChange(MemoryChange kind) =>
+      available &&
+      canManage &&
+      recoveryReady &&
+      !recoveryBusy &&
+      mutationRepository?.access.owner?.canWrite == true &&
+      mutationRepository!.supports(kind);
+  MemorySubmission? pendingChange;
+  MemoryAcceptance? acceptedChange;
+  Object? changeError;
+  String? changeRefusal;
+  final Set<MemorySubmission> _attemptedChanges = {};
+  bool changing = false;
+  bool recoveryReady = false, recoveryBusy = false;
+  Object? recoveryError;
+  int _recoveryGeneration = 0;
+  int _changeGeneration = 0;
+  bool get hasUnconfirmedChange => pendingChange != null && !changing;
+  void _accessChanged() {
+    _authorityLost = true;
+    _invalidatePrivate();
+    _publish();
+  }
+
+  void _accessClosed() {
+    _authorityLost = true;
+    _invalidatePrivate();
+  }
+
+  void _invalidatePrivate() {
+    ++_generation;
+    ++_changeGeneration;
+    ++_recoveryGeneration;
+    state = null;
+    error = null;
+    acceptedChange = null;
+    pendingChange = null;
+    changeError = null;
+    changeRefusal = null;
+    _attemptedChanges.clear();
+    changing = false;
+    loading = false;
+    recoveryReady = false;
+    recoveryBusy = false;
+    recoveryError = null;
+  }
+
+  Future<void> reloadRecovery() async {
+    final store = recoveryStore, owner = mutationRepository?.access.owner;
+    if (!available ||
+        store == null ||
+        owner == null ||
+        changing ||
+        recoveryBusy) {
+      return;
+    }
+    final generation = ++_recoveryGeneration;
+    bool current() =>
+        available &&
+        generation == _recoveryGeneration &&
+        mutationRepository?.access.owner?.key == owner.key;
+    recoveryReady = false;
+    recoveryBusy = true;
+    recoveryError = null;
+    _publish();
+    try {
+      final value = await store.read(owner);
+      if (!current()) return;
+      if (value == null) {
+        // A missing durable file cannot erase a locally uncertain network attempt.
+        memoryRequire(
+          pendingChange == null || !_attemptedChanges.contains(pendingChange),
+          'The saved submission disappeared. The earlier result remains unknown.',
+        );
+        pendingChange = null;
+      } else {
+        memoryRequire(
+          value['version'] == 1 &&
+              const {'pending', 'accepted', 'refused'}.contains(value['state']),
+        );
+        final sent = MemorySubmission.restore(value['submission'], owner);
+        final local = pendingChange;
+        memoryRequire(
+          local == null ||
+              !_attemptedChanges.contains(local) ||
+              memoryCanonical(local.recovery) == memoryCanonical(sent.recovery),
+          'Another saved submission cannot resolve this earlier uncertain request.',
+        );
+        if (value['state'] == 'accepted') {
+          final receipt = await MemoryAcceptance.parse(
+            knowledgeMap(value['receipt'], 'Saved acceptance'),
+            sent,
+          );
+          if (!current()) return;
+          acceptedChange = receipt;
+          pendingChange = null;
+        } else if (value['state'] == 'pending') {
+          final existing = acceptedChange;
+          if (existing != null &&
+              memoryCanonical(existing.submission.recovery) ==
+                  memoryCanonical(sent.recovery)) {
+            // Only this exact already-verified acceptance may settle a lost local save.
+            await store.write(owner, {
+              'version': 1,
+              'state': 'accepted',
+              'submission': sent.recovery,
+              'receipt': existing.raw,
+            }, current);
+            if (!current()) return;
+            pendingChange = null;
+          } else {
+            pendingChange = sent;
+            _attemptedChanges.add(sent);
+          }
+        } else {
+          pendingChange = null;
+          changeRefusal = 'The saved request was refused before acceptance. Review current data before a new change.';
+        }
+      }
+      recoveryReady = true;
+    } catch (error) {
+      if (current()) recoveryError = error;
+    } finally {
+      if (current()) {
+        recoveryBusy = false;
+        _publish();
+      }
+    }
+  }
+
+  Future<Json> lifecycle(String id) async {
+    _requireAvailable();
+    final repo = mutationRepository;
+    if (repo == null) throw StateError('Lifecycle review is unavailable.');
+    final result = await repo.readLifecycle(id);
+    _requireAvailable();
+    return result;
+  }
+
+  Future<void> submitChange(
+    MemoryChange kind,
+    Json input, {
+    String? id,
+    String? previewDigest,
+  }) async {
+    if (changing || pendingChange != null) {
+      throw StateError(
+        'Resolve the current Memory submission before another change.',
+      );
+    }
+    if (!supportsChange(kind)) {
+      throw StateError(
+        'This Memory change is not available for the current account and app version.',
+      );
+    }
+    final sent = MemorySubmission(
+      kind: kind,
+      owner: mutationRepository!.access.owner!,
+      body: input,
+      id: id,
+      previewDigest: previewDigest,
+    );
+    pendingChange = sent;
+    await _sendChange(sent);
+  }
+
+  Future<void> retryChange() async {
+    final sent = pendingChange;
+    if (sent == null ||
+        !sent.replayable ||
+        changing ||
+        !supportsChange(sent.kind) ||
+        sent.owner.key != mutationRepository?.access.owner?.key) {
+      return;
+    }
+    await _sendChange(sent);
+  }
+
+  Future<void> _sendChange(MemorySubmission sent) async {
+    final generation = ++_changeGeneration;
+    final recovery = _attemptedChanges.contains(sent);
+    changing = true;
+    changeError = null;
+    changeRefusal = null;
+    _publish();
+    bool current() =>
+        available &&
+        generation == _changeGeneration &&
+        identical(pendingChange, sent);
+    bool ownerCurrent() =>
+        available &&
+        generation == _changeGeneration &&
+        mutationRepository?.access.owner?.key == sent.owner.key;
+    bool dispatched = false;
+    try {
+      await recoveryStore!.write(sent.owner, {
+        'version': 1,
+        'state': 'pending',
+        'submission': sent.recovery,
+      }, current);
+      if (!current()) return;
+      _attemptedChanges.add(sent);
+      dispatched = true;
+      final accepted = await mutationRepository!.submit(sent, current);
+      if (!current()) return;
+      acceptedChange = accepted;
+      pendingChange = null;
+      changing = false;
+      recoveryReady = false;
+      recoveryBusy = true;
+      _publish();
+      try {
+        await recoveryStore!.write(sent.owner, {
+          'version': 1,
+          'state': 'accepted',
+          'submission': sent.recovery,
+          'receipt': accepted.raw,
+        }, ownerCurrent);
+        if (ownerCurrent()) {
+          recoveryReady = true;
+          _attemptedChanges.remove(sent);
+        }
+      } catch (error) {
+        if (ownerCurrent()) recoveryError = error;
+      } finally {
+        if (ownerCurrent()) {
+          recoveryBusy = false;
+          _publish();
+        }
+      }
+      // Receipt acceptance is settled before this independent, fallible read.
+      if (ownerCurrent()) await refresh();
+    } catch (failure) {
+      if (current()) {
+        changeError = failure;
+        changing = false;
+        if (!dispatched) {
+          recoveryReady = false;
+          recoveryError = failure;
+        }
+        // A later refusal cannot erase uncertainty about an earlier request.
+        final status = failure is ApiException ? failure.statusCode : null;
+        if (!recovery &&
+            (const {400, 413, 415}.contains(status) ||
+                sent.replayable &&
+                    const {401, 403, 404, 409, 428}.contains(status))) {
+          recoveryReady = false;
+          recoveryBusy = true;
+          try {
+            await recoveryStore!.write(sent.owner, {
+              'version': 1,
+              'state': 'refused',
+              'submission': sent.recovery,
+            }, current);
+            if (current()) {
+              pendingChange = null;
+              _attemptedChanges.remove(sent);
+              recoveryReady = true;
+              changeRefusal = 'The service refused this change. Refresh the exact target and review it again before submitting.';
+            }
+          } catch (error) {
+            if (current()) recoveryError = error;
+          } finally {
+            if (ownerCurrent()) recoveryBusy = false;
+          }
+        }
+        _publish();
+      }
+    }
+  }
+
   KnowledgeState? state;
   bool loading = false, loadingMoreMemory = false, loadingMoreKnowledge = false;
   Object? error, memoryPageError, knowledgePageError;
@@ -512,12 +810,14 @@ class KnowledgeController extends ChangeNotifier {
   @override
   void dispose() {
     if (_disposed) return;
+    final access = mutationRepository?.access;
+    access?.removeListener(_accessChanged);
+    access?.removeSilentListener(_accessClosed);
+    _invalidatePrivate();
     _disposed = true;
     ++_generation;
     state = null;
     error = null;
-    // Owned inspector routes listen to this fence before ChangeNotifier closes.
-    notifyListeners();
     super.dispose();
   }
 }

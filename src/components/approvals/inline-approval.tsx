@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { AlertTriangle, Loader2 } from "lucide-react";
 import {
   permissionMessage,
@@ -13,9 +13,11 @@ import {
 } from "@/components/approvals/approval-card";
 import {
   decideAndReread,
+  ApprovalDecisionUnconfirmedError,
   fetchApprovalQueueItem,
   type ApprovalDecision,
   type ApprovalItem,
+  type ApprovalDecisionRequest,
   type DecisionNotice,
   type TrustResponse,
 } from "@/components/approvals/approval-decision";
@@ -35,12 +37,16 @@ export function InlineApproval({
   executionId,
   summary,
   returnTo,
+  authorityScope,
+  isAuthorityCurrent,
 }: {
   executionId: string;
   /** What the run said it is waiting for. */
   summary: string;
   /** The conversation to come back to from the inbox. */
   returnTo?: string;
+  authorityScope: string;
+  isAuthorityCurrent: () => boolean;
 }) {
   const { session, status: sessionStatus, role } = useWorkspaceSession();
   const decisionPermission = permissionMessage(session, sessionStatus, "manage.workflow");
@@ -49,6 +55,11 @@ export function InlineApproval({
   const [inFlight, setInFlight] = useState<ApprovalDecision>();
   const [notice, setNotice] = useState<DecisionNotice>();
   const [decisionError, setDecisionError] = useState<string>();
+  const [recovery, setRecovery] = useState<{ item: ApprovalItem; request: Readonly<ApprovalDecisionRequest> }>();
+  const decidingRef = useRef(false);
+  const mountedRef = useRef(true);
+  useLayoutEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
+  const current = () => mountedRef.current && isAuthorityCurrent();
 
   useEffect(() => {
     if (decisionPermission) return;
@@ -69,11 +80,16 @@ export function InlineApproval({
     };
   }, [decisionPermission, executionId]);
 
-  async function decide(item: ApprovalItem, decision: ApprovalDecision) {
+  async function decide(item: ApprovalItem, decision: ApprovalDecision, frozen?: Readonly<ApprovalDecisionRequest>) {
+    if (!current() || decisionPermission || decidingRef.current || (recovery && !frozen)) return;
+    decidingRef.current = true;
     setInFlight(decision);
     setDecisionError(undefined);
     try {
-      const result = await decideAndReread(item, decision, { reason });
+      const result = await decideAndReread(item, decision, frozen ?? { reason }, fetch,
+        { scope: authorityScope, isCurrent: current });
+      if (!current()) return;
+      setRecovery(undefined);
       setNotice(result.notice);
       setReason("");
       setLoaded((current) => ({
@@ -82,15 +98,18 @@ export function InlineApproval({
         trust: current?.status === "ready" ? current.trust : undefined,
       }));
     } catch (error) {
+      if (!current()) return;
+      if (error instanceof ApprovalDecisionUnconfirmedError) setRecovery({ item, request: error.request });
       setDecisionError(error instanceof Error ? error.message : "Decision failed.");
     } finally {
-      setInFlight(undefined);
+      decidingRef.current = false;
+      if (current()) setInFlight(undefined);
     }
   }
 
   const { loading, unavailable, item, trust } = inlineApprovalState(decisionPermission, loaded, notice);
   return (
-    <InlineApprovalView
+    <><InlineApprovalView
       summary={summary}
       inboxHref={approvalInboxHref({ id: executionId, kind: "tool", returnTo })}
       loading={loading}
@@ -112,10 +131,12 @@ export function InlineApproval({
           ticket=""
           onTicket={() => undefined}
           onDecide={(decision) => void decide(item, decision)}
-          inFlight={inFlight}
+          inFlight={inFlight || (recovery ? recovery.request.decision : undefined)}
         />
       ) : undefined}
     />
+      {recovery ? <button type="button" className="action-button" disabled={Boolean(inFlight)} onClick={() => void decide(recovery.item, recovery.request.decision, recovery.request)}>Retry same saved decision</button> : null}
+    </>
   );
 }
 

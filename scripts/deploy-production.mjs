@@ -63,6 +63,7 @@ const WORKER_PID_FILE = "/tmp/asael-worker.pid";
 const WORKER_RELEASE_ACTIVATION_FILE =
   "/tmp/asael-worker-release-activated";
 const dryRun = process.argv.includes("--dry-run");
+const useHostedVerification = process.argv.includes("--use-hosted-verification");
 const configurationProbe = process.argv.includes("--configuration-probe");
 const provenanceProbe = process.argv.includes("--provenance-probe");
 const readinessProbeIndex = process.argv.indexOf("--readiness-probe");
@@ -217,7 +218,11 @@ if (provenanceProbe) {
 
 if (dryRun) {
   printDryRunReleaseProvenance();
-  printDryRun("npm", ["run", "verify"]);
+  if (useHostedVerification) {
+    console.log("DRY RUN use green exact-commit hosted verification; defer the repeated local suite");
+  } else {
+    printDryRun("npm", ["run", "verify"]);
+  }
   printDryRun(
     "npm",
     ["run", "smoke:release", "--", "--previous-release"],
@@ -287,9 +292,13 @@ await requireCleanWorkingTree();
 // Vercel and Fly build the checked-out tree, so prove that tree is a reviewed
 // commit on main with green CI before spending time on local verification.
 const provenance = await verifyRunnerProvenance();
-await run("npm", ["run", "verify"]).catch((error) =>
-  fail(`Production verification failed: ${errorMessage(error)}`),
-);
+if (useHostedVerification) {
+  console.log(`Using verified hosted checks for ${provenance.revision}; the repeated local suite is deferred.`);
+} else {
+  await run("npm", ["run", "verify"]).catch((error) =>
+    fail(`Production verification failed: ${errorMessage(error)}`),
+  );
+}
 const previousWorkerImage = await getCurrentWorkerImage();
 const previousVercelDeployment = await getCurrentVercelDeployment(
   productionBaseUrl,

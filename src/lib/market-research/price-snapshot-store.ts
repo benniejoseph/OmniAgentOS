@@ -11,6 +11,8 @@ import {
   MARKET_RESEARCH_CONTRACT_VERSION,
   marketBarsProviderResultSchema,
   marketBarsResultSchema,
+  marketStoredSnapshotsQuerySchema,
+  marketStoredSnapshotsResultSchema,
   type MarketBarsProviderResult,
   type MarketBarsResult,
   type MarketInterval,
@@ -56,6 +58,35 @@ export async function readMarketPriceSnapshot(input: {
   `;
   if (!rows[0]) throw new MarketPriceSnapshotNotFoundError();
   return marketSnapshotFromRow(rows[0], "cache");
+}
+
+/** Metadata only. Stored history never refreshes a provider or rewrites a row. */
+export async function listStoredMarketPriceSnapshots(input: {
+  tenantId: string; actorId: string; instrumentId: string; interval: MarketInterval; limit?: number;
+}) {
+  assertOwnerScope(input.tenantId, input.actorId);
+  const query = marketStoredSnapshotsQuerySchema.parse({ instrumentId: input.instrumentId, interval: input.interval, limit: input.limit });
+  if (!hasDatabaseUrl()) throw new MarketPriceSnapshotStoreUnavailableError();
+  await ensureDatabaseSchema();
+  const rows = await getSql()`
+    SELECT id, normalized_sha256, instrument_id, provider, provider_symbol,
+      provider_timezone, interval, retrieved_at, as_of, jsonb_array_length(normalized_bars) AS bar_count
+    FROM omni_market_price_snapshots
+    WHERE tenant_id = ${input.tenantId} AND owner_actor_id = ${input.actorId}
+      AND contract_version = ${MARKET_RESEARCH_CONTRACT_VERSION}
+      AND instrument_id = ${query.instrumentId} AND interval = ${query.interval}
+    ORDER BY created_at DESC, id DESC LIMIT ${query.limit + 1}
+  `;
+  return marketStoredSnapshotsResultSchema.parse({
+    contractVersion: MARKET_RESEARCH_CONTRACT_VERSION, instrumentId: query.instrumentId, interval: query.interval,
+    hasMore: rows.length > query.limit,
+    snapshots: rows.slice(0, query.limit).map((row) => ({
+      snapshotId: String(row.id), snapshotSha256: String(row.normalized_sha256), instrumentId: String(row.instrument_id),
+      provider: String(row.provider), providerSymbol: String(row.provider_symbol), providerTimezone: String(row.provider_timezone),
+      interval: String(row.interval), retrievedAt: new Date(String(row.retrieved_at)).toISOString(),
+      asOf: new Date(String(row.as_of)).toISOString(), barCount: Number(row.bar_count),
+    })),
+  });
 }
 
 export async function findFreshMarketPriceSnapshot(input: {

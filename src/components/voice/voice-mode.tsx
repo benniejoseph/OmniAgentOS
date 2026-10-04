@@ -1,12 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { AlertTriangle, AudioLines, Check, Loader2, Mic, RotateCcw, Send, ShieldCheck, Square, X } from "lucide-react";
 import { clsx } from "clsx";
 import { CompanionPresence } from "@/components/companion-presence";
 import { companionWork } from "@/lib/companion/presentation";
 import { requestCurrentMicrophone } from "./microphone-attempt";
-import { postApprovalDecision } from "@/components/approvals/approval-decision";
+import { ApprovalDecisionUnconfirmedError, postApprovalDecision, type ApprovalDecisionRequest } from "@/components/approvals/approval-decision";
 import {
   applyRealtimeTranscriptEvent,
   closeRealtimeTranscript,
@@ -90,6 +90,9 @@ export function VoiceMode({
   onConversationBound,
   onOpen,
   onTranscript,
+  isAuthorityCurrent,
+  authorityScope,
+  onContinueInText,
 }: {
   disabled?: boolean;
   disabledReason?: string;
@@ -100,6 +103,10 @@ export function VoiceMode({
   onConversationBound: (conversationId: string) => void;
   /** Presentation/navigation observer only; grants no device or action consent. */
   onOpen?: () => void;
+  /** Current mounted account/role boundary, independent of composer busy state. */
+  isAuthorityCurrent: () => boolean;
+  authorityScope: string;
+  onContinueInText: (text: string, conversationId?: string) => boolean;
   onTranscript: (
     text: string,
     conversationId: string,
@@ -138,6 +145,8 @@ export function VoiceMode({
   const maxSessionTimerRef = useRef<number | null>(null);
   const sessionRef = useRef<VoiceSession | null>(null);
   const transcriptStateRef = useRef<RealtimeTranscriptState>(EMPTY_REALTIME_TRANSCRIPT);
+  const transcriptSubmittedRef = useRef(false);
+  const [transcriptSubmitted, setTranscriptSubmitted] = useState(false);
   const commitPendingRef = useRef(false);
   const providerErrorCodeRef = useRef("");
   const recordingStartedAtRef = useRef(0);
@@ -146,11 +155,15 @@ export function VoiceMode({
   const reconnectingRef = useRef(false);
   const reconnectCountRef = useRef(0);
   const reportedRef = useRef(false);
+  const decidingRef = useRef(false);
+  const [decisionRecovery, setDecisionRecovery] = useState<Readonly<ApprovalDecisionRequest>>();
   const reviewAttestedRef = useRef(false);
   const approvalRunIdRef = useRef("");
   const approvalAgentIdRef = useRef<string | undefined>(undefined);
   const approvalConversationIdRef = useRef("");
   const mountedRef = useRef(true);
+  const currentVoice = useCallback((token: number) => mountedRef.current &&
+    isAuthorityCurrent() && token === sessionTokenRef.current, [isAuthorityCurrent]);
 
   // The ref leads, so a review waiting on it never reads a draft React has
   // not rendered yet.
@@ -217,7 +230,7 @@ export function VoiceMode({
 
   const reportSession = useCallback(async (outcome: SessionOutcome) => {
     const session = sessionRef.current;
-    if (!session || reportedRef.current) return;
+    if (!isAuthorityCurrent() || !session || reportedRef.current) return;
     reportedRef.current = true;
     const transcript = realtimeTranscriptText(transcriptStateRef.current).trim();
     const confidence = realtimeTranscriptConfidence(transcriptStateRef.current);
@@ -242,11 +255,13 @@ export function VoiceMode({
       }),
       keepalive: true,
     }).catch(() => undefined);
-  }, []);
+  }, [isAuthorityCurrent]);
 
   const resetSession = useCallback(() => {
     sessionRef.current = null;
     transcriptStateRef.current = EMPTY_REALTIME_TRANSCRIPT;
+    transcriptSubmittedRef.current = false;
+    setTranscriptSubmitted(false);
     reconnectCountRef.current = 0;
     providerErrorCodeRef.current = "";
     reportedRef.current = false;
@@ -259,6 +274,7 @@ export function VoiceMode({
     setPendingApproval(undefined);
     setApprovalNote("");
     setDecisionMessage("");
+    setDecisionRecovery(undefined);
     setElapsedSeconds(0);
     setError("");
     setAnnouncement("Voice mode ready.");
@@ -275,16 +291,17 @@ export function VoiceMode({
     window.requestAnimationFrame(() => triggerRef.current?.focus());
   }, [reportSession, resetSession, stopSpeech, stopTransport]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
       sessionTokenRef.current += 1;
-      void reportSession("canceled");
+      // Disposal can follow an account replacement. Only explicit actions
+      // report a session; cleanup must not POST its old private coordinates.
       stopSpeech();
       stopTransport();
     };
-  }, [reportSession, stopSpeech, stopTransport]);
+  }, [stopSpeech, stopTransport]);
 
   useEffect(() => {
     if (!isActivePhase(phase)) return;
@@ -364,7 +381,7 @@ export function VoiceMode({
   }
 
   function failVoice(message: string, token: number) {
-    if (!mountedRef.current || token !== sessionTokenRef.current) return;
+    if (!currentVoice(token)) return;
     // Ends the session's pending work, so a review finishing in the
     // background cannot replace the error.
     sessionTokenRef.current += 1;
@@ -382,7 +399,7 @@ export function VoiceMode({
       failVoice(`${message} Nothing was sent.`, token);
       return;
     }
-    if (!mountedRef.current || token !== sessionTokenRef.current) return;
+    if (!currentVoice(token)) return;
     // Ends the session's pending work, as a failure does.
     sessionTokenRef.current += 1;
     stopSpeech();
@@ -400,6 +417,7 @@ export function VoiceMode({
     reconnectAttempt: number,
     conversationOverride?: string,
   ): Promise<VoiceSession> {
+    if (!currentVoice(token)) throw new DOMException("Workspace access changed.", "AbortError");
     const existing = sessionRef.current;
     const controller = new AbortController();
     requestControllerRef.current?.abort();
@@ -425,11 +443,12 @@ export function VoiceMode({
     });
     const body: unknown = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(errorMessage(body, "Realtime voice could not start."));
-    if (token !== sessionTokenRef.current) throw new DOMException("Canceled", "AbortError");
+    if (!currentVoice(token)) throw new DOMException("Canceled", "AbortError");
     return parseVoiceSession(body);
   }
 
   async function connectPeer(session: VoiceSession, stream: MediaStream, token: number) {
+    if (!currentVoice(token)) throw new DOMException("Workspace access changed.", "AbortError");
     stopPeer();
     const peer = new RTCPeerConnection();
     peerRef.current = peer;
@@ -437,13 +456,13 @@ export function VoiceMode({
     const channel = peer.createDataChannel("oai-events");
     dataChannelRef.current = channel;
     channel.addEventListener("open", () => {
-      if (token !== sessionTokenRef.current || peerRef.current !== peer) return;
+      if (!currentVoice(token) || peerRef.current !== peer) return;
       reconnectingRef.current = false;
       setPhase("listening");
       setAnnouncement("Realtime transcription connected. Listening.");
     });
     channel.addEventListener("message", (event) => {
-      if (token !== sessionTokenRef.current || dataChannelRef.current !== channel || typeof event.data !== "string") return;
+      if (!currentVoice(token) || dataChannelRef.current !== channel || typeof event.data !== "string") return;
       let providerEvent: unknown;
       try { providerEvent = JSON.parse(event.data); } catch { return; }
       const eventType = eventTypeOf(providerEvent);
@@ -494,7 +513,7 @@ export function VoiceMode({
       updateTranscript(applyRealtimeTranscriptEvent(transcriptStateRef.current, providerEvent));
     });
     peer.addEventListener("connectionstatechange", () => {
-      if (token !== sessionTokenRef.current || peerRef.current !== peer || !["failed", "disconnected"].includes(peer.connectionState)) return;
+      if (!currentVoice(token) || peerRef.current !== peer || !["failed", "disconnected"].includes(peer.connectionState)) return;
       if (reconnectTimerRef.current !== null) return;
       reconnectTimerRef.current = window.setTimeout(() => {
         reconnectTimerRef.current = null;
@@ -503,7 +522,9 @@ export function VoiceMode({
     });
 
     const offer = await peer.createOffer();
+    if (!currentVoice(token) || peerRef.current !== peer) return;
     await peer.setLocalDescription(offer);
+    if (!currentVoice(token) || peerRef.current !== peer) return;
     if (!offer.sdp) throw new Error("The browser did not create a realtime audio offer.");
     const form = new FormData();
     form.set("sdp", new Blob([offer.sdp], { type: "application/sdp" }), "offer.sdp");
@@ -517,12 +538,12 @@ export function VoiceMode({
     });
     const answerSdp = await answerResponse.text();
     if (!answerResponse.ok || answerSdp.length > 1_000_000 || !answerSdp.startsWith("v=0")) throw new Error("The realtime audio connection was rejected.");
-    if (token !== sessionTokenRef.current || peerRef.current !== peer) return;
+    if (!currentVoice(token) || peerRef.current !== peer) return;
     await peer.setRemoteDescription({ type: "answer", sdp: answerSdp });
   }
 
   async function reconnect(token: number) {
-    if (reconnectingRef.current || token !== sessionTokenRef.current) return;
+    if (reconnectingRef.current || !currentVoice(token)) return;
     reconnectingRef.current = true;
     stopPeer();
     const attempt = reconnectCountRef.current + 1;
@@ -536,7 +557,7 @@ export function VoiceMode({
     try {
       let stream = streamRef.current;
       if (!stream || stream.getAudioTracks().every((track) => track.readyState === "ended")) {
-        const acquired = await requestCurrentMicrophone(requestMicrophone, () => mountedRef.current && token === sessionTokenRef.current);
+        const acquired = await requestCurrentMicrophone(requestMicrophone, () => currentVoice(token));
         if (!acquired) return;
         stream = acquired;
         streamRef.current = stream;
@@ -547,7 +568,7 @@ export function VoiceMode({
       await connectPeer(session, stream, token);
     } catch (reconnectError) {
       reconnectingRef.current = false;
-      if (isAbortError(reconnectError) || token !== sessionTokenRef.current) return;
+      if (isAbortError(reconnectError) || !currentVoice(token)) return;
       reconnectTimerRef.current = window.setTimeout(() => {
         reconnectTimerRef.current = null;
         void reconnect(token);
@@ -556,7 +577,7 @@ export function VoiceMode({
   }
 
   async function startRealtime() {
-    if (disabled) return;
+    if (disabled || !isAuthorityCurrent()) return;
     const token = sessionTokenRef.current + 1;
     sessionTokenRef.current = token;
     resetSession();
@@ -568,7 +589,7 @@ export function VoiceMode({
     }
     try {
       const stream = await requestMicrophone();
-      if (!mountedRef.current || token !== sessionTokenRef.current) {
+      if (!currentVoice(token)) {
         stream.getTracks().forEach((track) => track.stop());
         return;
       }
@@ -582,9 +603,10 @@ export function VoiceMode({
       onConversationBound(session.conversationId);
       recordingStartedAtRef.current = Date.now();
       await connectPeer(session, stream, token);
+      if (!currentVoice(token)) return;
       maxSessionTimerRef.current = window.setTimeout(() => void finishListening(), 10 * 60 * 1_000);
     } catch (startError) {
-      if (isAbortError(startError) || token !== sessionTokenRef.current) return;
+      if (isAbortError(startError) || !currentVoice(token)) return;
       failVoice(startError instanceof Error ? startError.message : "Realtime voice could not start.", token);
     }
   }
@@ -608,13 +630,13 @@ export function VoiceMode({
     const deadline = Date.now() + 4_000;
     while (
       open &&
-      token === sessionTokenRef.current &&
+      currentVoice(token) &&
       Date.now() < deadline &&
       (commitPendingRef.current || realtimeTranscriptPending(transcriptStateRef.current))
     ) {
       await delay(50);
     }
-    if (token !== sessionTokenRef.current) return;
+    if (!currentVoice(token)) return;
     stopTransport();
     updateTranscript(closeRealtimeTranscript(transcriptStateRef.current));
     reviewAttestedRef.current = false;
@@ -627,8 +649,11 @@ export function VoiceMode({
     activeConversationId: string,
     token: number,
   ) {
+    if (!currentVoice(token)) throw new DOMException("Workspace access changed.", "AbortError");
     sessionRef.current = null;
     transcriptStateRef.current = EMPTY_REALTIME_TRANSCRIPT;
+    transcriptSubmittedRef.current = false;
+    setTranscriptSubmitted(false);
     reconnectCountRef.current = 0;
     providerErrorCodeRef.current = "";
     reportedRef.current = false;
@@ -639,7 +664,7 @@ export function VoiceMode({
     setError("");
     setAnnouncement("Reopening listening so you can interrupt the reply.");
     const stream = await requestMicrophone();
-    if (!mountedRef.current || token !== sessionTokenRef.current) {
+    if (!currentVoice(token)) {
       stream.getTracks().forEach((track) => track.stop());
       throw new DOMException("Canceled", "AbortError");
     }
@@ -650,11 +675,13 @@ export function VoiceMode({
     onConversationBound(nextSession.conversationId);
     recordingStartedAtRef.current = Date.now();
     await connectPeer(nextSession, stream, token);
+    if (!currentVoice(token)) throw new DOMException("Workspace access changed.", "AbortError");
     const channel = dataChannelRef.current;
     if (!channel) throw new Error("The listening channel did not open.");
     await waitForDataChannelOpen(channel, () => (
-      mountedRef.current && token === sessionTokenRef.current
+      currentVoice(token)
     ));
+    if (!currentVoice(token)) throw new DOMException("Workspace access changed.", "AbortError");
     maxSessionTimerRef.current = window.setTimeout(
       () => void finishListening(),
       10 * 60 * 1_000,
@@ -666,6 +693,7 @@ export function VoiceMode({
     activeConversationId: string,
     token: number,
   ) {
+    if (!currentVoice(token)) return false;
     const controller = new AbortController();
     const player = new StreamingPcmPlayer();
     speechControllerRef.current = controller;
@@ -684,14 +712,14 @@ export function VoiceMode({
         player,
         signal: controller.signal,
         onStarted: () => {
-          if (!mountedRef.current || token !== sessionTokenRef.current || speechControllerRef.current !== controller || controller.signal.aborted) return;
+          if (!currentVoice(token) || speechControllerRef.current !== controller || controller.signal.aborted) return;
           setReplyAudioPlaying(true);
           echoGuard.replyStarted(reply.text, Date.now());
           setPhase("replying");
           setAnnouncement(`${agentName} is speaking. Speak to interrupt.`);
         },
       });
-      return token === sessionTokenRef.current;
+      return currentVoice(token);
     } catch (speechError) {
       if (isAbortError(speechError) || controller.signal.aborted) return false;
       throw speechError;
@@ -707,6 +735,8 @@ export function VoiceMode({
   }
 
   async function sendTranscript() {
+    if (!isAuthorityCurrent()) return;
+    const token = sessionTokenRef.current;
     const session = sessionRef.current;
     const transcript = realtimeTranscriptText(transcriptStateRef.current).trim();
     const confidence = realtimeTranscriptConfidence(transcriptStateRef.current);
@@ -741,14 +771,16 @@ export function VoiceMode({
     setAnnouncement("Sending the reviewed transcript to the conversation.");
     stopTransport();
     await reportSession("sent");
-    const token = sessionTokenRef.current;
-    if (!mountedRef.current || token !== sessionTokenRef.current) return;
+    if (!currentVoice(token)) return;
     onConversationBound(session.conversationId);
     setPhase("waiting");
     setAnnouncement(`${agentName} is working on the reviewed command.`);
     try {
+      if (transcriptSubmittedRef.current) return;
+      transcriptSubmittedRef.current = true;
+      setTranscriptSubmitted(true);
       const reply = await onTranscript(transcript, session.conversationId, review);
-      if (!mountedRef.current || token !== sessionTokenRef.current) return;
+      if (!currentVoice(token)) return;
       if (!reply?.text.trim()) {
         throw new Error(`${agentName} did not return a speakable response.`);
       }
@@ -759,7 +791,7 @@ export function VoiceMode({
         setPendingApproval(reply.approval);
         setDecisionMessage("");
         await streamReply(reply, session.conversationId, token);
-        if (token === sessionTokenRef.current) {
+        if (currentVoice(token)) {
           setPhase("approval");
           setAnnouncement("Review the exact visible action. Spoken words cannot approve it.");
         }
@@ -767,12 +799,12 @@ export function VoiceMode({
       }
       await startContinuationListening(session.conversationId, token);
       const completed = await streamReply(reply, session.conversationId, token);
-      if (completed && token === sessionTokenRef.current) {
+      if (completed && currentVoice(token)) {
         setPhase("listening");
         setAnnouncement("Reply complete. Listening for your next turn.");
       }
     } catch (sendError) {
-      if (isAbortError(sendError) || token !== sessionTokenRef.current) return;
+      if (isAbortError(sendError) || !currentVoice(token)) return;
       failVoice(sendError instanceof Error
         ? sendError.message
         : "The voice reply could not be completed.", token);
@@ -791,26 +823,33 @@ export function VoiceMode({
     }
   }
 
-  async function decideApproval(decision: "approve" | "reject") {
+  async function decideApproval(decision: "approve" | "reject", frozen?: Readonly<ApprovalDecisionRequest>) {
+    if (!isAuthorityCurrent() || decidingRef.current || (decisionRecovery && !frozen)) return;
     const approval = pendingApproval;
     const runId = approvalRunIdRef.current;
-    if (!approval || (decision === "approve" && !approval.canApprove)) return;
-    if (decision === "reject" && !approval.canReject) return;
+    if (!approval || (!frozen && decision === "approve" && !approval.canApprove)) return;
+    if (!frozen && decision === "reject" && !approval.canReject) return;
     const token = sessionTokenRef.current;
+    decidingRef.current = true;
+    let accepted = false;
     setPhase("deciding");
     setError("");
     setAnnouncement(`${decision === "approve" ? "Approving" : "Rejecting"} the exact visible action.`);
     try {
-      const response = await postApprovalDecision(approval.id, {
+      const response = await postApprovalDecision(approval.id, frozen ?? {
         kind: "tool",
         decision,
         ...(approvalNote.trim() ? { reason: approvalNote.trim() } : {}),
-      });
+      }, fetch, { scope: authorityScope, isCurrent: () => currentVoice(token) });
       const body: unknown = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(errorMessage(body, "The approval decision could not be recorded."));
-      if (token !== sessionTokenRef.current) return;
+      if (!currentVoice(token)) return;
+      accepted = true;
+      setDecisionRecovery(undefined);
+      setDecisionMessage(`${decision === "approve" ? "Approval" : "Rejection"} recorded for the exact action.`);
       if (response.status === 202) {
-        const refreshed = await loadApprovalEvidence(approval.id);
+        const refreshed = await loadApprovalEvidence(approval.id, () => currentVoice(token));
+        if (!currentVoice(token)) return;
         setPendingApproval(refreshed);
         setDecisionMessage("Your approval is recorded. Another eligible admin must review this action.");
         setPhase("approval");
@@ -831,9 +870,9 @@ export function VoiceMode({
       const outcome = await waitForVoiceRun(
         runId,
         approval.id,
-        () => token === sessionTokenRef.current,
+        () => currentVoice(token),
       );
-      if (token !== sessionTokenRef.current) return;
+      if (!currentVoice(token)) return;
       if (outcome.approval) {
         setPendingApproval(outcome.approval);
         setApprovalNote("");
@@ -852,7 +891,7 @@ export function VoiceMode({
           runId,
           agentId: approvalAgentIdRef.current,
         }, activeConversationId, token);
-        if (completed && token === sessionTokenRef.current) {
+        if (completed && currentVoice(token)) {
           setPhase("listening");
           setAnnouncement("Approved task complete. Listening for your next turn.");
         }
@@ -861,10 +900,38 @@ export function VoiceMode({
       setDecisionMessage(outcome.message || "Approval recorded. The task continues in Activity.");
       setPhase("resolved");
     } catch (decisionError) {
-      if (token !== sessionTokenRef.current) return;
+      if (!currentVoice(token)) return;
+      if (decisionError instanceof ApprovalDecisionUnconfirmedError) setDecisionRecovery(decisionError.request);
       setError(decisionError instanceof Error ? decisionError.message : "The approval decision failed.");
-      setPhase("approval");
-      setAnnouncement("The approval decision was not recorded.");
+      setPhase(accepted ? "resolved" : "approval");
+      setAnnouncement(accepted ? "The decision is recorded. Its follow-up could not be confirmed; review Activity. No decision was repeated." : "The decision could not be confirmed. Review the visible recovery notice.");
+      if (accepted) setDecisionMessage("The exact decision was recorded. The current run or approval status could not be read. Review Activity; this does not revoke the recorded decision.");
+    } finally {
+      decidingRef.current = false;
+    }
+  }
+
+  function continueInText() {
+    const token = sessionTokenRef.current;
+    if (!currentVoice(token) || transcriptSubmittedRef.current) return;
+    const text = realtimeTranscriptText(transcriptStateRef.current);
+    stopSpeech();
+    stopTransport();
+    try {
+      if (!currentVoice(token)) return;
+      if (!onContinueInText(text, sessionRef.current?.conversationId || conversationId)) throw new Error("The conversation changed. Reopen the matching conversation before moving this transcript.");
+      // This is a local draft transfer, with no command or decision request.
+      sessionTokenRef.current += 1;
+      setOpen(false);
+      setPhase("consent");
+      resetSession();
+      window.requestAnimationFrame(() => {
+        const label = [...document.querySelectorAll("label")].find((element) => element.querySelector(".sr-only")?.textContent === "Message Asael");
+        label?.querySelector("textarea")?.focus();
+      });
+    } catch (handoffError) {
+      setError(handoffError instanceof Error ? handoffError.message : "The transcript could not be moved.");
+      setPhase("review");
     }
   }
 
@@ -1016,6 +1083,7 @@ export function VoiceMode({
             )}
 
             <footer className={styles.footer}>
+              {["review", "error"].includes(phase) && transcript.trim() && !transcriptSubmitted ? <button type="button" onClick={continueInText} className={clsx("action-button", styles.action)}>Continue in text</button> : null}
               {phase === "consent" ? (
                 <>
                   <button type="button" onClick={() => closeDialog()} className={clsx("action-button", styles.action)}>Cancel</button>
@@ -1033,8 +1101,9 @@ export function VoiceMode({
                 </>
               ) : phase === "approval" && pendingApproval ? (
                 <>
-                  <button type="button" onClick={() => void decideApproval("reject")} disabled={!pendingApproval.canReject} className={clsx("action-button", styles.action)}>Reject</button>
-                  <button ref={primaryActionRef} type="button" onClick={() => void decideApproval("approve")} disabled={!pendingApproval.canApprove} title={pendingApproval.blockReason} className={clsx("primary-button", styles.action)}><Check size={15} aria-hidden="true" />Approve exact action</button>
+                  <button type="button" onClick={() => void decideApproval("reject")} disabled={!pendingApproval.canReject || Boolean(decisionRecovery)} className={clsx("action-button", styles.action)}>Reject</button>
+                  <button ref={primaryActionRef} type="button" onClick={() => void decideApproval("approve")} disabled={!pendingApproval.canApprove || Boolean(decisionRecovery)} title={pendingApproval.blockReason} className={clsx("primary-button", styles.action)}><Check size={15} aria-hidden="true" />Approve exact action</button>
+                  {decisionRecovery ? <button type="button" onClick={() => void decideApproval(decisionRecovery.decision, decisionRecovery)} className={clsx("action-button", styles.action)}>Retry same saved decision</button> : null}
                 </>
               ) : phase === "deciding" ? (
                 <button type="button" disabled className={clsx("primary-button", styles.action)}><Loader2 size={15} className="animate-spin" aria-hidden="true" />Recording decision</button>
@@ -1164,13 +1233,17 @@ function delay(milliseconds: number) {
   return new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds));
 }
 
-async function loadApprovalEvidence(id: string) {
+async function loadApprovalEvidence(id: string, isCurrent: () => boolean) {
+  if (!isCurrent()) throw new DOMException("Workspace access changed.", "AbortError");
   const response = await fetch(`/api/approvals/${encodeURIComponent(id)}`);
   const body: unknown = await response.json().catch(() => ({}));
+  if (!isCurrent()) throw new DOMException("Workspace access changed.", "AbortError");
   if (!response.ok) {
     throw new Error(errorMessage(body, "Approval evidence is temporarily unavailable."));
   }
-  return parseVoiceApprovalEvidence(isRecord(body) ? body.approval : undefined);
+  const approval = parseVoiceApprovalEvidence(isRecord(body) ? body.approval : undefined);
+  if (approval.id !== id) throw new Error("Approval evidence did not match the requested action.");
+  return approval;
 }
 
 async function waitForVoiceRun(
@@ -1187,10 +1260,12 @@ async function waitForVoiceRun(
     if (!isCurrent()) return { message: "The voice session ended." };
     const response = await fetch(`/api/runs/${encodeURIComponent(runId)}`);
     const body: unknown = await response.json().catch(() => ({}));
+    if (!isCurrent()) return { message: "The voice session ended." };
     if (!response.ok) {
       throw new Error(errorMessage(body, "The approved run status is unavailable."));
     }
     const run = isRecord(body) && isRecord(body.run) ? body.run : {};
+    if (run.id !== runId) throw new Error("The approved run response did not match the requested run.");
     const status = typeof run.status === "string" ? run.status : "";
     if (status === "completed") {
       return {
@@ -1204,7 +1279,7 @@ async function waitForVoiceRun(
         typeof waiting.executionId === "string" &&
         waiting.executionId !== previousApprovalId
       ) {
-        return { approval: await loadApprovalEvidence(waiting.executionId) };
+        return { approval: await loadApprovalEvidence(waiting.executionId, isCurrent) };
       }
     }
     if (["failed", "canceled", "rejected"].includes(status)) {

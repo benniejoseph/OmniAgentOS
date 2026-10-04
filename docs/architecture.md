@@ -125,7 +125,7 @@ Key properties:
 - Text deltas stream to the client immediately but persist to the run ledger in batches.
 
 P9.1 inserts a transport-neutral application-service boundary between product
-callers and domain stores. Later phases extend it to 206 active `app.*`
+callers and domain stores. Later phases extend it to 208 active `app.*`
 operations, listed in `APP_SERVICE_OPERATION_CONTRACTS` in
 `src/lib/app-services/registry.ts`, across the workspace, project, work-item,
 asset, memory, Agent, Skill, run, workflow, connector, settings, Today, and

@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 
 import 'knowledge.dart';
 import 'knowledge_read_widgets.dart';
+import 'knowledge_mutations.dart';
+import 'knowledge_mutation_widgets.dart';
 
 /// The touch presenter keeps exact memory reads in this route, so replacing a
 /// session cannot leave a private inspector in an independently owned sheet.
@@ -76,6 +78,14 @@ class _KnowledgeViewState extends State<KnowledgeView>
             overflow: TextOverflow.ellipsis,
           ),
           actions: [
+            if (controller.supportsChange(MemoryChange.create))
+              IconButton(
+                tooltip: 'Add private memory',
+                icon: const Icon(Icons.add),
+                onPressed: controller.pendingChange != null
+                    ? null
+                    : () => showMemoryEditor(context, controller),
+              ),
             IconButton(
               tooltip: 'Refresh catalogue',
               onPressed: controller.loading ? null : controller.refresh,
@@ -157,6 +167,7 @@ class _KnowledgeViewState extends State<KnowledgeView>
     return ListView(
       children: [
         KnowledgeCoverage(controller: widget.controller),
+        MemoryChangeStatus(controller: widget.controller),
         KnowledgeMemoryFilters(controller: widget.controller),
         Padding(
           padding: const EdgeInsets.all(12),

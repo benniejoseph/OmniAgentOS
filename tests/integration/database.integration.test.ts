@@ -5,6 +5,7 @@ import path from "node:path";
 
 import postgres from "postgres";
 import { removeEmptyResponsibilityRuntimeForReplay } from "./helpers/responsibility-replay";
+import { removeEmptyMemoryLifecycleForReplay } from "./helpers/memory-lifecycle-replay";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import {
   buildAgentRunIdentityPinV1,
@@ -6820,7 +6821,7 @@ databaseDescribe("Postgres schema integration", () => {
     `;
     // Each one covers every command and role, as its restore below does.
     expect(restrictivePolicies.map(({ command, roles }) => ({ command, roles })))
-      .toEqual(Array(65).fill({ command: "*", roles: "{0}" }));
+      .toEqual(Array(66).fill({ command: "*", roles: "{0}" }));
     expect(restrictivePolicies.filter((policy) =>
       additiveDraftReplayTables.includes(policy.table_name),
     ).map(({ table_name, policy_name }) => ({ table_name, policy_name })))
@@ -9577,6 +9578,7 @@ const responsibilityRuntimeVersion = 218;
 const responsibilityNotificationsVersion = 219;
 const meetingResolutionIntentsVersion = 220;
 const customerAccountIntentsVersion = 221;
+const memoryLifecycleMutationsVersion = 222;
 const additiveReplayVersions = [
   companionPreferencesVersion,
   responsibilityDraftsVersion,
@@ -9585,6 +9587,7 @@ const additiveReplayVersions = [
   responsibilityNotificationsVersion,
   meetingResolutionIntentsVersion,
   customerAccountIntentsVersion,
+  memoryLifecycleMutationsVersion,
 ].filter((version) => databaseSchemaMigrations.some((migration) => migration.version === version));
 const meetingResolutionReplayTables: readonly string[] = [
   "omni_meeting_commitment_resolution_intents",
@@ -9594,6 +9597,7 @@ const additiveDraftReplayTables: readonly string[] = [
   "omni_companion_preference_mutations",
   "omni_companion_preferences",
   ...meetingResolutionReplayTables,
+  "omni_memory_lifecycle_mutations",
   "omni_responsibilities",
   "omni_responsibility_baselines",
   "omni_responsibility_budget_entries",
@@ -9954,6 +9958,9 @@ async function withMigrationsPendingFrom<T>(
   }
   await client.begin(async (transaction) => {
     if (replay) {
+      if (additiveReplayVersions.includes(memoryLifecycleMutationsVersion)) {
+        await removeEmptyMemoryLifecycleForReplay(transaction);
+      }
       if (additiveReplayVersions.includes(customerAccountIntentsVersion)) {
         expect(await transaction`
           SELECT count(*)::int AS populated_intents

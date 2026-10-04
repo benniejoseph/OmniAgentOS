@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/network/native_workspace_access.dart';
+
 import '../auth/application/session_controller.dart';
 import 'admin_controller.dart';
 import 'admin_models.dart';
@@ -22,7 +24,13 @@ class _AdminConsoleState extends ConsumerState<AdminConsole> {
   @override
   Widget build(BuildContext context) {
     final session = ref.watch(sessionControllerProvider).value;
-    if (session == null || !session.canManage) return const _AccessDenied();
+    final access = ref.watch(nativeWorkspaceAccessProvider);
+    if (session == null ||
+        !session.canManage ||
+        access == null ||
+        !access.current) {
+      return const _AccessDenied();
+    }
     final module = adminModules[selected];
     final controller = ref.watch(adminControllerProvider(module.id));
     final width = MediaQuery.sizeOf(context).width;
@@ -165,6 +173,11 @@ class AdminModuleView extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   _ModuleHeader(module: module),
+                  const SizedBox(height: 12),
+                  NativeWorkspaceBrowserButton(
+                    path: module.browserPath,
+                    label: 'Open full ${module.label.toLowerCase()} controls',
+                  ),
                   const SizedBox(height: 20),
                   _StatusBar(
                     loading: controller.loading,
@@ -252,7 +265,13 @@ class AdminWorkspaceView extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final session = ref.watch(sessionControllerProvider).value;
-    if (session == null || !session.canManage) return const _AccessDenied();
+    final access = ref.watch(nativeWorkspaceAccessProvider);
+    if (session == null ||
+        !session.canManage ||
+        access == null ||
+        !access.current) {
+      return const _AccessDenied();
+    }
     final module = adminModules.firstWhere((item) => item.id == moduleId);
     final controller = ref.watch(adminControllerProvider(module.id));
     return AdminModuleView(module: module, controller: controller);

@@ -53,7 +53,7 @@ void main() {
 
     await repository.manageAdaptation('agent/one', const {
       'action': 'activate',
-      'adaptationId': 'adaptation-one',
+      'adaptationId': 'agent-adaptation:$_shaB',
     }, idempotencyKey: 'adaptation-activate-one');
     expect(
       api.posts.last.path,
@@ -366,7 +366,9 @@ class _GovernanceApiClient extends ApiClient {
     Map<String, dynamic>? headers,
   }) async {
     posts.add(_Call(path, data, headers));
-    return const {};
+    return path.endsWith('/release')
+        ? _releaseResponse()
+        : _adaptationResponse();
   }
 }
 

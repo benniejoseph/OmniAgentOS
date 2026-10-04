@@ -198,56 +198,12 @@ export async function setMemoryLifecycle(
     await ensureDatabaseSchema();
     const lifecycle = await getSql().transaction(async (sql: MemorySqlClient) => {
       await enterMaintenanceScope(sql, options.accessScope, tenantId);
-      const rows = await sql`
-        INSERT INTO omni_memory_lifecycle_states (
-          memory_id, tenant_id, access_contract_version, owner_actor_id,
-          policy_version, pinned_at, archived_at, archive_reason,
-          duplicate_of_memory_id, created_at, updated_at
-        ) VALUES (
-          ${memory.id}, ${tenantId}, ${memory.accessBinding?.version || 0},
-          ${memory.accessBinding?.ownerActorId || null},
-          ${MEMORY_LIFECYCLE_POLICY_VERSION},
-          ${parsedAction === "pin" ? now : null},
-          ${parsedAction === "archive" ? now : null},
-          ${parsedAction === "archive" ? "manual" : null},
-          ${null}, ${now}, ${now}
-        )
-        ON CONFLICT (memory_id) DO UPDATE SET
-          pinned_at = CASE
-            WHEN ${parsedAction} = 'pin' THEN ${now}::timestamptz
-            WHEN ${parsedAction} = 'unpin' THEN NULL
-            ELSE omni_memory_lifecycle_states.pinned_at
-          END,
-          archived_at = CASE
-            WHEN ${parsedAction} = 'archive' THEN ${now}::timestamptz
-            WHEN ${parsedAction} = 'restore' THEN NULL
-            ELSE omni_memory_lifecycle_states.archived_at
-          END,
-          archive_reason = CASE
-            WHEN ${parsedAction} = 'archive' THEN 'manual'
-            WHEN ${parsedAction} = 'restore' THEN NULL
-            ELSE omni_memory_lifecycle_states.archive_reason
-          END,
-          duplicate_of_memory_id = CASE
-            WHEN ${parsedAction} = 'restore' THEN NULL
-            ELSE omni_memory_lifecycle_states.duplicate_of_memory_id
-          END,
-          updated_at = ${now}
-        WHERE (${parsedAction} NOT IN ('pin', 'unpin') OR
-                 omni_memory_lifecycle_states.archived_at IS NULL)
-          AND (${parsedAction} NOT IN ('archive', 'restore') OR
-                 omni_memory_lifecycle_states.pinned_at IS NULL)
-        RETURNING *
-      `;
-      if (!rows[0]) {
-        throw new MemoryLifecycleConflictError(
-          parsedAction === "pin" || parsedAction === "unpin"
-            ? "Restore this memory before changing its pin."
-            : "Unpin this memory before changing its archive state.",
-        );
-      }
-      await appendLifecycleEvent(sql, executionScope, memory.id, parsedAction);
-      return lifecycleFromRow(rows[0]);
+      return applyMemoryLifecycleInTransaction(sql, {
+        memoryId: memory.id, tenantId,
+        accessContractVersion: memory.accessBinding?.version || 0,
+        ownerActorId: memory.accessBinding?.ownerActorId || null,
+        action: parsedAction, executionScope, now,
+      });
     }) as ReturnType<typeof lifecycleFromRow>;
     return lifecycle;
   }
@@ -299,6 +255,66 @@ export async function setMemoryLifecycle(
   if (!lifecycle) return null;
   await appendLifecycleEvent(undefined, executionScope, memory.id, parsedAction);
   return lifecycle;
+}
+
+/** Caller owns the transaction, authorized Memory scope and any target locks. */
+export async function applyMemoryLifecycleInTransaction(sql: MemorySqlClient, input: {
+  memoryId: string; tenantId: string; accessContractVersion: number; ownerActorId: string | null;
+  action: MemoryLifecycleAction; executionScope: ExecutionScope; now: string; eventId?: string;
+}) {
+  const parsedAction = memoryLifecycleActionSchema.parse(input.action);
+  const { tenantId, now } = input;
+  assertExecutionScopeTenant(input.executionScope, tenantId);
+  const rows = await sql`
+        INSERT INTO omni_memory_lifecycle_states (
+          memory_id, tenant_id, access_contract_version, owner_actor_id,
+          policy_version, pinned_at, archived_at, archive_reason,
+          duplicate_of_memory_id, created_at, updated_at
+        ) VALUES (
+          ${input.memoryId}, ${tenantId}, ${input.accessContractVersion},
+          ${input.ownerActorId},
+          ${MEMORY_LIFECYCLE_POLICY_VERSION},
+          ${parsedAction === "pin" ? now : null},
+          ${parsedAction === "archive" ? now : null},
+          ${parsedAction === "archive" ? "manual" : null},
+          ${null}, ${now}, ${now}
+        )
+        ON CONFLICT (memory_id) DO UPDATE SET
+          pinned_at = CASE
+            WHEN ${parsedAction} = 'pin' THEN ${now}::timestamptz
+            WHEN ${parsedAction} = 'unpin' THEN NULL
+            ELSE omni_memory_lifecycle_states.pinned_at
+          END,
+          archived_at = CASE
+            WHEN ${parsedAction} = 'archive' THEN ${now}::timestamptz
+            WHEN ${parsedAction} = 'restore' THEN NULL
+            ELSE omni_memory_lifecycle_states.archived_at
+          END,
+          archive_reason = CASE
+            WHEN ${parsedAction} = 'archive' THEN 'manual'
+            WHEN ${parsedAction} = 'restore' THEN NULL
+            ELSE omni_memory_lifecycle_states.archive_reason
+          END,
+          duplicate_of_memory_id = CASE
+            WHEN ${parsedAction} = 'restore' THEN NULL
+            ELSE omni_memory_lifecycle_states.duplicate_of_memory_id
+          END,
+          updated_at = ${now}
+        WHERE (${parsedAction} NOT IN ('pin', 'unpin') OR
+                 omni_memory_lifecycle_states.archived_at IS NULL)
+          AND (${parsedAction} NOT IN ('archive', 'restore') OR
+                 omni_memory_lifecycle_states.pinned_at IS NULL)
+        RETURNING *
+      `;
+      if (!rows[0]) {
+        throw new MemoryLifecycleConflictError(
+          parsedAction === "pin" || parsedAction === "unpin"
+            ? "Restore this memory before changing its pin."
+            : "Unpin this memory before changing its archive state.",
+        );
+      }
+      await appendLifecycleEvent(sql, input.executionScope, input.memoryId, parsedAction, input.eventId);
+      return lifecycleFromRow(rows[0]);
 }
 
 export async function listMemoryPromotionReviews(options: {
@@ -728,9 +744,10 @@ async function appendLifecycleEvent(
   executionScope: ExecutionScope,
   memoryId: string,
   action: MemoryLifecycleAction,
+  eventId?: string,
 ) {
   await appendScopedDomainEvent({
-    id: `memory_lifecycle_${sha256(`${executionScope.correlationId}:${memoryId}:${action}`)}`,
+    id: eventId || `memory_lifecycle_${sha256(`${executionScope.correlationId}:${memoryId}:${action}`)}`,
     streamId: `memory:${memoryId}`,
     type: `memory.lifecycle.${action}`,
     executionScope,

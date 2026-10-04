@@ -1,7 +1,10 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../auth/application/session_controller.dart';
+import '../../core/network/native_workspace_access.dart';
 import 'automation_controller.dart';
 import 'automation_models.dart';
 import 'automation_providers.dart';
@@ -453,9 +456,201 @@ class _PortableCapabilities extends StatelessWidget {
           resource: snapshot.plugins,
           count: snapshot.plugins.data?.plugins.length,
         ),
+        const NativeWorkspaceBrowserButton(
+          path: '/app/connectors',
+          label: 'Manage connections in browser',
+        ),
+        for (final skill in snapshot.skills.data ?? const <AutomationSkill>[])
+          _PortableInspection(
+            title: skill.name,
+            identity: skill.id,
+            status: skill.status,
+            value: skill.raw,
+          ),
+        for (final connection
+            in snapshot.connections.data?.installed ??
+                const <AutomationConnection>[])
+          _PortableInspection(
+            title: connection.name,
+            identity: connection.id,
+            status: connection.state,
+            value: connection.raw,
+          ),
+        for (final server in snapshot.mcp.data ?? const <AutomationMcpServer>[])
+          _PortableInspection(
+            title: server.name,
+            identity: server.id,
+            status: server.status,
+            value: server.raw,
+          ),
+        for (final tool in snapshot.tools.data ?? const <AutomationTool>[])
+          _PortableInspection(
+            title: tool.name,
+            identity: tool.id,
+            status: tool.status,
+            value: tool.raw,
+          ),
+        for (final plugin
+            in snapshot.plugins.data?.plugins ?? const <AutomationPlugin>[])
+          _PortablePluginControls(controller: controller, plugin: plugin),
       ],
     );
   }
+}
+
+class _PortableInspection extends StatelessWidget {
+  const _PortableInspection({
+    required this.title,
+    required this.identity,
+    required this.status,
+    required this.value,
+  });
+  final String title, identity, status;
+  final AutomationJson value;
+  @override
+  Widget build(BuildContext context) {
+    final detail = const JsonEncoder.withIndent('  ').convert(value);
+    return Card(
+      child: ExpansionTile(
+        key: PageStorageKey<String>('capability:$identity'),
+        title: Text(title),
+        subtitle: Text('$identity · $status'),
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: SelectableText(
+              detail.length > 16000
+                  ? '${detail.substring(0, 16000)}\n[Display limited; open the full workspace for more.]'
+                  : detail,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PortablePluginControls extends StatelessWidget {
+  const _PortablePluginControls({
+    required this.controller,
+    required this.plugin,
+  });
+  final AutomationController controller;
+  final AutomationPlugin plugin;
+  Future<void> _review(BuildContext context) async {
+    final preview = await controller.previewCatalogPlugin(plugin);
+    if (preview == null || !context.mounted) return;
+    final install = await showDialog<bool>(
+      context: context,
+      useRootNavigator: false,
+      builder: (context) => AlertDialog(
+        title: Text('Review ${preview.name}'),
+        content: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SelectableText(
+                '${preview.pluginId} · ${preview.pluginVersion}\nManifest: ${preview.manifestSha256}\nPreview: ${preview.previewId}\nExpires: ${preview.expiresAt.toIso8601String()}',
+              ),
+              for (final effect in preview.effects) Text('• $effect'),
+              for (final limitation in preview.limitations) Text(limitation),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Keep for review'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Install exact preview'),
+          ),
+        ],
+      ),
+    );
+    if (install == true &&
+        context.mounted &&
+        identical(controller.pluginPreview, preview)) {
+      await controller.installPreview();
+    }
+  }
+
+  Future<void> _uninstall(BuildContext context) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      useRootNavigator: false,
+      builder: (context) => AlertDialog(
+        title: Text('Uninstall ${plugin.name}?'),
+        content: SelectableText(
+          'Installation: ${plugin.installationId}\nRevision: ${plugin.revision}\nManifest: ${plugin.manifestSha256}\nThis removes this exact installed plugin.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Uninstall'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true && context.mounted) {
+      await controller.uninstallPlugin(plugin);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Card(
+    child: Padding(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(plugin.name, style: Theme.of(context).textTheme.titleMedium),
+          SelectableText(
+            '${plugin.pluginId} · ${plugin.version}\n${plugin.status ?? 'Not installed'}\n${plugin.manifestSha256}',
+          ),
+          Text(plugin.description),
+          if (controller.canMutatePlugins)
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                if (!plugin.installed || plugin.status == 'uninstalled')
+                  OutlinedButton(
+                    onPressed: controller.pluginBusy
+                        ? null
+                        : () => _review(context),
+                    child: const Text('Review installation'),
+                  ),
+                if (plugin.installed && plugin.status != 'uninstalled') ...[
+                  OutlinedButton(
+                    onPressed: controller.pluginBusy
+                        ? null
+                        : () => controller.setPluginEnabled(
+                            plugin,
+                            plugin.status != 'enabled',
+                          ),
+                    child: Text(
+                      plugin.status == 'enabled' ? 'Disable' : 'Enable',
+                    ),
+                  ),
+                  OutlinedButton(
+                    onPressed: controller.pluginBusy
+                        ? null
+                        : () => _uninstall(context),
+                    child: const Text('Uninstall'),
+                  ),
+                ],
+              ],
+            ),
+        ],
+      ),
+    ),
+  );
 }
 
 class _CapabilityCard<T> extends StatelessWidget {

@@ -182,6 +182,7 @@ class _MacosAutomationStudioViewState
   ) async {
     final install = await showDialog<bool>(
       context: context,
+      useRootNavigator: false,
       builder: (context) =>
           _PluginReviewDialog(preview: preview, busy: controller.pluginBusy),
     );
@@ -199,6 +200,7 @@ class _MacosAutomationStudioViewState
   ) async {
     final confirmed = await showDialog<bool>(
       context: context,
+      useRootNavigator: false,
       builder: (context) => AlertDialog(
         title: Text('Uninstall ${plugin.name}?'),
         content: const Text(
@@ -470,6 +472,7 @@ class _AutomationsSection extends StatelessWidget {
   Future<void> _showSchedule(BuildContext context, AutomationTrigger trigger) =>
       showDialog<void>(
         context: context,
+        useRootNavigator: false,
         builder: (context) =>
             _ScheduleHistoryDialog(controller: controller, trigger: trigger),
       );

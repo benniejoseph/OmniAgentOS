@@ -21,6 +21,17 @@ function policy(
 }
 
 describe("tenant isolation policy evidence", () => {
+  it("requires both actor and Memory-purpose restrictions on lifecycle acceptances", () => {
+    const table = "omni_memory_lifecycle_mutations";
+    const tenant = policy(table, "omni_tenant_isolation");
+    const actor = policy(table, `${table}_actor`, { permissive: false });
+    const memory = policy(table, `${table}_memory_scope`, { permissive: false });
+    expect(hasExpectedTenantIsolationPolicy(table, [tenant, actor, memory])).toBe(true);
+    expect(hasExpectedTenantIsolationPolicy(table, [tenant, actor])).toBe(false);
+    expect(hasExpectedTenantIsolationPolicy(table, [tenant, memory])).toBe(false);
+    expect(hasExpectedTenantIsolationPolicy(table, [tenant, actor,
+      policy(table, `${table}_memory_scope`, { permissive: true })])).toBe(false);
+  });
   it("fails owner-scoped preference and responsibility evidence when a restrictive actor policy is absent or permissive", () => {
     for (const tableName of ["omni_companion_preferences", "omni_companion_preference_mutations", "omni_responsibilities", "omni_responsibility_mutations", "omni_responsibility_observations", "omni_responsibility_baselines", "omni_responsibility_changes", "omni_responsibility_lifecycles", "omni_responsibility_wakes", "omni_responsibility_runtime_receipts", "omni_responsibility_budget_entries", "omni_responsibility_notification_admissions", "omni_responsibility_notification_candidates", "omni_responsibility_notification_receipts"]) {
       const tenant = policy(tableName, "omni_tenant_isolation");

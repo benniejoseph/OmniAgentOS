@@ -1,6 +1,5 @@
 import 'package:asael/app/theme/macos_app_theme.dart';
-import 'package:asael/features/auth/application/session_controller.dart';
-import 'package:asael/features/auth/domain/app_session.dart';
+import 'package:asael/core/network/api_client.dart';
 import 'package:asael/features/settings/admin_models.dart';
 import 'package:asael/features/settings/admin_providers.dart';
 import 'package:asael/features/settings/admin_repository.dart';
@@ -8,6 +7,8 @@ import 'package:asael/features/settings/macos_admin_workspace_view.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import '../../native_workspace_fixture.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -98,32 +99,26 @@ void main() {
   });
 }
 
-Widget _app({Key? key}) => ProviderScope(
+Widget _app({Key? key}) => nativeWorkspaceFixture(
   key: key,
-  overrides: [
-    sessionControllerProvider.overrideWith(_OwnerSessionController.new),
-    adminRepositoryProvider.overrideWithValue(_AdminRepository()),
-  ],
-  child: MaterialApp(
-    theme: MacosAppTheme.light(),
-    home: const MacosAdminWorkspaceView(moduleId: 'monitoring'),
+  child: ProviderScope(
+    overrides: [
+      adminRepositoryProvider.overrideWithValue(_AdminRepository()),
+    ],
+    child: MaterialApp(
+      theme: MacosAppTheme.light(),
+      home: const MacosAdminWorkspaceView(moduleId: 'monitoring'),
+    ),
   ),
 );
 
-class _OwnerSessionController extends SessionController {
-  @override
-  Future<AppSession?> build() async => const AppSession(
-    tenantId: 'tenant-test',
-    actorId: 'actor:test',
-    userId: 'user-test',
-    email: 'owner@example.com',
-    displayName: 'Owner',
-    workspaceName: 'Asael',
-    role: 'owner',
-  );
-}
-
 class _AdminRepository implements AdminRepository {
+  @override
+  NativeRequestAuthority? get authority => null;
+
+  @override
+  bool Function()? get canAccess => null;
+
   @override
   Future<AdminSnapshot> load(AdminModule module) async => AdminSnapshot(
     {

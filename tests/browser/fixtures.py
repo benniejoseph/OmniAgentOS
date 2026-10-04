@@ -2,7 +2,10 @@
 
 import json
 import re
+import copy
+from collections import defaultdict, deque
 from urllib.parse import parse_qs, urlsplit
+from playwright.sync_api import Error as PlaywrightError
 
 THREAD_ID = "7c1ca45b-1068-41c4-93ab-8c09e15e84a3"
 RUN_ID = "browser-fixture-run"
@@ -10,6 +13,8 @@ APPROVAL_ID = "browser-fixture-approval"
 PROMPT = "Summarize the synthetic review document."
 ANSWER = "The synthetic review is ready. <script>window.untrustedContentRan=true</script>"
 STAMP = "2026-10-03T12:00:00.000Z"
+SCOPE_THREAD_B = "82222222-2222-4222-8222-222222222222"
+SCOPE_RUN_B = "browser-scope-run-b"
 
 
 class Fixtures:
@@ -135,3 +140,102 @@ class Fixtures:
             return self.fulfill(route, {"record": {"id": APPROVAL_ID, "status": "executed"}})
         self.unexpected.append({"kind": "write", "path": path, "method": request.method})
         return self.fulfill(route, {"error": "Unexpected browser mutation blocked."}, 503)
+
+
+def scope_session(session, *, user_id=None, role=None):
+    value = copy.deepcopy(session)
+    if user_id is not None:
+        value["user"]["id"] = value["membership"]["userId"] = value["context"]["auth"]["userId"] = user_id
+    if role is not None:
+        value["membership"]["role"] = value["context"]["role"] = role
+    assert value["authEnabled"] is True and value["authenticated"] is True
+    assert re.fullmatch(r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}", value["user"]["id"])
+    assert value["user"]["id"] == value["membership"]["userId"] == value["context"]["auth"]["userId"]
+    assert value["tenant"]["id"] == value["membership"]["tenantId"] == value["context"]["tenantId"]
+    assert value["user"]["email"] == value["context"]["actorId"]
+    assert value["context"]["role"] == value["membership"]["role"] in ("viewer", "operator", "admin", "system")
+    return value
+
+
+class AssistantScopeFixtures(Fixtures):
+    """Bounded held responses; every effect remains locally intercepted."""
+    def __init__(self, origin):
+        super().__init__(origin)
+        self.plans = defaultdict(deque)
+        self.defaults = {}
+        self.held = {}
+        self.requests = []
+        self.releases = []
+        self.allow_voice = False
+        self.set_owner_label("Initial")
+
+    def set_owner_label(self, label):
+        threads = []
+        for tid, rid, suffix in ((THREAD_ID, RUN_ID, "A"), (SCOPE_THREAD_B, SCOPE_RUN_B, "B")):
+            title = label + " " + suffix + " conversation"
+            content = label + " " + suffix + " private response"
+            thread = {"id": tid, "title": title, "mode": "orchestrate", "createdAt": STAMP, "updatedAt": STAMP}
+            threads.append(thread)
+            self.defaults["/api/threads/" + tid] = {"thread": thread, "turns": [
+                {"id": rid + "-turn", "role": "assistant", "content": content, "runId": rid, "createdAt": STAMP}], "summaries": []}
+            self.defaults["/api/runs/" + rid] = {"run": {**self.run(), "id": rid, "threadId": tid, "response": content}}
+        self.defaults["/api/threads"] = {"threads": threads}
+
+    def plan_read(self, path, body, *, hold=None, status=200):
+        self.plans[path].append({"body": copy.deepcopy(body), "hold": hold, "status": status})
+
+    def route(self, route):
+        parsed = urlsplit(route.request.url)
+        if f"{parsed.scheme}://{parsed.netloc}" == self.origin and route.request.method == "GET":
+            path = parsed.path
+            if path in self.defaults or self.plans[path]:
+                query = parse_qs(parsed.query)
+                if (path == "/api/threads" and query != {"limit": ["100"]}) or (path != "/api/threads" and query):
+                    self.unexpected.append({"kind": "scope_read_query", "path": path, "query": query})
+                    return route.abort()
+                self.requests.append({"path": path, "query": query})
+                if len(self.requests) > 80:
+                    self.unexpected.append({"kind": "scope_read_budget", "count": len(self.requests)})
+                    return route.abort()
+                spec = self.plans[path].popleft() if self.plans[path] else {"body": self.defaults[path], "status": 200}
+                return self.answer(route, spec)
+        return super().route(route)
+
+    def answer(self, route, spec):
+        if spec.get("hold"):
+            name = spec["hold"]
+            if name in self.held:
+                self.unexpected.append({"kind": "duplicate_held_scope_read", "name": name})
+                return route.abort()
+            self.held[name] = (route, copy.deepcopy(spec))
+            return
+        return self.fulfill(route, spec["body"], spec.get("status", 200))
+
+    def release(self, name):
+        route, spec = self.held.pop(name)
+        try:
+            self.fulfill(route, spec["body"], spec.get("status", 200))
+            self.releases.append({"name": name, "result": "fulfilled"})
+        except PlaywrightError:
+            self.releases.append({"name": name, "result": "already_aborted"})
+
+    def abort_held(self):
+        for route, _ in self.held.values():
+            try:
+                route.abort()
+            except PlaywrightError:
+                pass
+        self.held.clear()
+
+    def mutation(self, route, path):
+        request = route.request
+        if path == "/api/voice/realtime/session" and request.method == "POST" and self.allow_voice:
+            body = request.post_data_json
+            if body == {"conversationId": SCOPE_THREAD_B, "mode": "orchestrate", "providerConsent": True,
+                        "audioRetention": "not_stored_by_asael", "reconnectAttempt": 0}:
+                self.allow_voice = False
+                self.writes.append({"path": path, "disposition": "synthetic_held_voice_session"})
+                # The old request must be canceled before this deliberately
+                # unavailable response is released; no credential is fabricated.
+                return self.answer(route, {"hold": "old-voice", "body": {"error": "Synthetic session unavailable."}, "status": 503})
+        return super().mutation(route, path)

@@ -11,12 +11,19 @@ import 'package:path_provider/path_provider.dart';
 enum RecoveryNamespace {
   responsibility(64, 4000000),
   builder(128, 8000000),
-  meetings(128, 4000000);
+  meetings(128, 4000000),
+  markets(12, 262144),
+  accounts(16, 1048576),
+  specialist(32, 1048576),
+  memory(16, 8388608);
 
   const RecoveryNamespace(this.maximumRecords, this.maximumBytes);
   final int maximumRecords, maximumBytes;
-  String get directoryName =>
-      this == meetings ? 'asael-meeting-drafts-v1' : 'asael-$name-recovery-v1';
+  String get directoryName => this == meetings
+      ? 'asael-meeting-drafts-v1'
+      : this == memory
+      ? 'asael-memory-submissions-v1'
+      : 'asael-$name-recovery-v1';
   String get fileExtension => this == meetings ? 'meeting' : name;
 }
 

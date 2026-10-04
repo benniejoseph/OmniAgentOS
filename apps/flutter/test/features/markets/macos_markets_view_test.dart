@@ -1,89 +1,85 @@
 import 'package:asael/app/theme/macos_app_theme.dart';
 import 'package:asael/core/network/api_client.dart';
-import 'package:asael/core/storage/secure_session_store.dart';
-import 'package:asael/features/markets/markets_view.dart';
-import 'package:asael/generated/native_contract.g.dart';
-import 'package:dio/dio.dart';
+import 'package:asael/features/markets/markets_providers.dart';
+import 'package:asael/features/markets/markets_recovery_store.dart';
+import 'package:asael/features/markets/markets_workspace.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import 'markets_test_support.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
-
-  testWidgets('Markets uses a Mac research workspace and context inspector', (
-    tester,
-  ) async {
-    debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
-    addTearDown(() => debugDefaultTargetPlatformOverride = null);
-    FlutterSecureStorage.setMockInitialValues({});
-    tester.view.physicalSize = const Size(1440, 900);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-
-    await tester.pumpWidget(
-      MaterialApp(
-        theme: MacosAppTheme.light(),
-        home: MarketsView(api: _MarketApi()),
-      ),
+  for (final phone in [false, true]) {
+    testWidgets(
+      phone
+          ? 'Markets remains readable at 320 pixels and 200 percent text'
+          : 'Mac Markets opens stored evidence and all five research views',
+      (tester) async {
+        debugDefaultTargetPlatformOverride = phone
+            ? TargetPlatform.android
+            : TargetPlatform.macOS;
+        addTearDown(() => debugDefaultTargetPlatformOverride = null);
+        tester.view.physicalSize = phone
+            ? const Size(320, 900)
+            : const Size(1440, 1000);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        final repo = MarketTestRepository(), api = MarketTestApi();
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              apiClientProvider.overrideWithValue(api),
+              marketsRepositoryProvider.overrideWithValue(repo),
+              marketsRecoveryStoreProvider.overrideWithValue(
+                MemoryMarketsRecoveryStore(),
+              ),
+            ],
+            child: MaterialApp(
+              theme: MacosAppTheme.light(),
+              builder: (context, child) => MediaQuery(
+                data: MediaQuery.of(context)
+                    .copyWith(textScaler: TextScaler.linear(phone ? 2 : 1)),
+                child: child!,
+              ),
+              home: const NativeMarketsView(),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(find.text('Markets'), findsOneWidget);
+        expect(repo.reads, ['overview', 'snapshots']);
+        expect(repo.reads, isNot(contains('bars')));
+        expect(repo.writes, isEmpty);
+        expect(tester.takeException(), isNull);
+        if (!phone) {
+          for (final tab in ['Events', 'Technical', 'Backtests', 'Journal']) {
+            await tester.ensureVisible(find.widgetWithText(ChoiceChip, tab));
+            await tester.tap(find.widgetWithText(ChoiceChip, tab));
+            await tester.pumpAndSettle();
+            expect(tester.takeException(), isNull);
+          }
+          expect(
+            repo.reads,
+            containsAll([
+              'events',
+              'replays',
+              'baselines',
+              'analysis',
+              'backtests',
+              'journal',
+            ]),
+          );
+          expect(repo.reads, isNot(contains('calendar')));
+          expect(repo.writes, isEmpty);
+        }
+        await tester.pumpWidget(const SizedBox());
+        await tester.pump();
+        expect(tester.takeException(), isNull);
+      },
     );
-    await tester.pumpAndSettle();
-
-    expect(find.text('Market Intelligence'), findsOneWidget);
-    expect(find.text('XAUUSD'), findsOneWidget);
-    expect(find.text('ICT + Quarterly'), findsOneWidget);
-    expect(
-      find.byKey(const ValueKey('macos-market-inspector')),
-      findsOneWidget,
-    );
-    expect(
-      find.byKey(const ValueKey('macos-market-scroll-view')),
-      findsOneWidget,
-    );
-    expect(tester.takeException(), isNull);
-    debugDefaultTargetPlatformOverride = null;
-  });
-}
-
-class _MarketApi extends ApiClient {
-  _MarketApi()
-    : super(Dio(), Dio(), SecureSessionStore(const FlutterSecureStorage()));
-
-  @override
-  Future<Map<String, dynamic>> getJson(
-    String path, {
-    Map<String, dynamic>? query,
-  }) async {
-    if (path == NativePaths.marketOverview) {
-      return {
-        'phase': 'research',
-        'instruments': [
-          {'id': 'xauusd.spot', 'symbol': 'XAUUSD'},
-          {'id': 'ndx.index', 'symbol': 'NAS100'},
-        ],
-        'agent': {
-          'name': 'Meridian',
-          'provider': 'OpenAI',
-          'model': 'configured-model',
-          'assignmentState': 'ready',
-        },
-        'providers': const [],
-        'guardrails': const ['Research only'],
-      };
-    }
-    if (path == NativePaths.marketBars) {
-      return {
-        'instrumentId': 'xauusd.spot',
-        'snapshotSource': 'Twelve Data',
-        'asOf': '2026-09-17T10:00:00Z',
-        'bars': [
-          {'close': 3650.0},
-          {'close': 3662.0},
-        ],
-      };
-    }
-    return const {};
   }
 }

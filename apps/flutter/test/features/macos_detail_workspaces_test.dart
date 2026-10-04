@@ -116,7 +116,7 @@ void main() {
         if (path == NativePaths.customersGet(customerId)) {
           return projection;
         }
-        if (path == NativePaths.customersPortfolio) {
+        if (path == NativePaths.customersPortfolio()) {
           return accountPortfolioResponse();
         }
         throw StateError('Unexpected customer read $path');

@@ -1339,5 +1339,12 @@
     "checksum": "aaa8677534825332f55e5765c5b6829766a5b7fed8b6f11a1c3762c17aa922ae",
     "file": "20261004210000_customer_account_mutation_intents.sql",
     "sha256": "aaa8677534825332f55e5765c5b6829766a5b7fed8b6f11a1c3762c17aa922ae"
+  },
+  {
+    "version": 222,
+    "name": "memory_lifecycle_mutations_v1",
+    "checksum": "35264a49f7eaf88153a1e83f1a35e6baa7933c21277977c6c5442d5341677a1b",
+    "file": "20261005103000_memory_lifecycle_mutations.sql",
+    "sha256": "35264a49f7eaf88153a1e83f1a35e6baa7933c21277977c6c5442d5341677a1b"
   }
 ]

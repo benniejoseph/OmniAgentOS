@@ -21,7 +21,7 @@ void main() {
     harness.adapter.respond = (_) async => _body(403);
     await expectLater(
       harness.api.getJsonFreshCancelable(
-        NativePaths.customersList,
+        NativePaths.customersList(),
         cancelToken: CancelToken(),
       ),
       throwsA(
@@ -63,7 +63,7 @@ void main() {
     await harness.controller.refresh();
     final accepted = harness.adapter.respond;
     harness.adapter.respond = (request) =>
-        request.path == NativePaths.customersPortfolio
+        request.path == NativePaths.customersPortfolio()
         ? Future.value(_body(403))
         : accepted(request);
     await harness.controller.refreshIntelligence();
@@ -226,8 +226,8 @@ class _TransportHarness {
     final adapter = _AccountsTransport(
       (request) async => _body(200, switch (request.path) {
         NativePaths.bootstrapGet => bootstrap,
-        NativePaths.customersList => list,
-        NativePaths.customersPortfolio => portfolio,
+        _ when request.path == NativePaths.customersList() => list,
+        _ when request.path == NativePaths.customersPortfolio() => portfolio,
         _ when request.path == NativePaths.customersGet(customerId) => detail,
         _ => throw StateError(
           'Unexpected synthetic Accounts read: ${request.path}',

@@ -61,7 +61,9 @@ enum DesktopQuickEntryShortcut {
 
 enum DesktopAmbientVoiceState {
   asleep,
+  starting,
   listening,
+  processing,
   review,
   running,
   speaking,
@@ -346,6 +348,8 @@ class DesktopHostBridge {
   bool get supported => _enabled;
   DesktopRouteOpener? _openRoute;
   String? _pendingRoute;
+  GoRouter? _attachedRouter;
+  Object? _quickEntryRouteToken;
   DesktopNotificationActionHandler? _notificationHandler;
   final List<DesktopNotificationAction> _pendingNotificationActions = [];
   DesktopNotificationReceivedHandler? _notificationReceivedHandler;
@@ -375,7 +379,33 @@ class DesktopHostBridge {
     }
   }
 
-  void attachRouter(GoRouter router) => attachRouteOpener(router.go);
+  void attachRouter(GoRouter router) {
+    if (!identical(_attachedRouter, router)) {
+      _attachedRouter = router;
+      _quickEntryRouteToken = null;
+    }
+    attachRouteOpener((route) {
+      if (route != '/quick-entry') {
+        router.go(route);
+        return;
+      }
+      final current = router.routerDelegate.currentConfiguration.uri.path;
+      if (_quickEntryRouteToken != null || current == route) return;
+      final token = _quickEntryRouteToken = Object();
+      // Keep the existing workspace mounted, including its unsent composer.
+      // Replacing an Ambient Voice overlay still disposes its local transport.
+      final opening = current == '/ambient-voice'
+          ? router.pushReplacement<void>(route)
+          : router.push<void>(route);
+      unawaited(
+        opening.whenComplete(() {
+          if (identical(_quickEntryRouteToken, token)) {
+            _quickEntryRouteToken = null;
+          }
+        }),
+      );
+    });
+  }
 
   @visibleForTesting
   void attachRouteOpener(DesktopRouteOpener opener) {
@@ -830,6 +860,8 @@ class DesktopHostBridge {
     _channel.setMethodCallHandler(null);
     _openRoute = null;
     _pendingRoute = null;
+    _attachedRouter = null;
+    _quickEntryRouteToken = null;
     _notificationHandler = null;
     _pendingNotificationActions.clear();
     _notificationReceivedHandler = null;

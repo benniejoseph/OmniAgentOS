@@ -143,6 +143,23 @@ describe("governed communication application service", () => {
     expect(mocks.fail).not.toHaveBeenCalled();
   });
 
+  it("keeps a prior uncertain send reconcile-only after credential lookup fails", async () => {
+    mocks.begin.mockResolvedValue({ state: "reconcile", draft: { id: deliveryInput().draftId } });
+    mocks.deliver
+      .mockRejectedValueOnce(new Error("The Google connection needs to be reconnected."))
+      .mockRejectedValueOnce(new GmailDeliveryOutcomeUnknownError("Prior delivery is not visible yet."));
+
+    await expect(deliverCommunicationDraftService(caller(), deliveryInput()))
+      .rejects.toThrow("needs to be reconnected");
+    await expect(deliverCommunicationDraftService(caller(), deliveryInput()))
+      .rejects.toThrow("not visible yet");
+
+    expect(mocks.fail).not.toHaveBeenCalled();
+    expect(mocks.complete).not.toHaveBeenCalled();
+    expect(mocks.deliver.mock.calls.map(([, options]) => options.mode))
+      .toEqual(["reconcile", "reconcile"]);
+  });
+
   it("keeps a verified send reconcile-only when local receipt persistence fails", async () => {
     const draft = {
       id: "message_draft:123e4567-e89b-12d3-a456-426614174000",

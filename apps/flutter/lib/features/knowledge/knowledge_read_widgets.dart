@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 
 import '../../generated/native_contract.g.dart';
 import 'knowledge.dart';
+import 'knowledge_mutations.dart';
+import 'knowledge_mutation_widgets.dart';
 
 class KnowledgeCoverage extends StatelessWidget {
   const KnowledgeCoverage({
@@ -193,6 +195,7 @@ class _KnowledgeMemoryInspectorState extends State<KnowledgeMemoryInspector> {
   MemoryForgetPreview? _preview;
   Object? _error, _previewError;
   bool _loading = true, _previewLoading = false;
+  bool _forgetConfirmed = false;
   @override
   void initState() {
     super.initState();
@@ -208,6 +211,7 @@ class _KnowledgeMemoryInspectorState extends State<KnowledgeMemoryInspector> {
       _preview = null;
       _error = _previewError = null;
       _previewLoading = false;
+      _forgetConfirmed = false;
       _loading = true;
       _read();
     }
@@ -225,6 +229,7 @@ class _KnowledgeMemoryInspectorState extends State<KnowledgeMemoryInspector> {
         _loading = true;
         _memory = null;
         _preview = null;
+        _forgetConfirmed = false;
         _error = null;
         _previewError = null;
       });
@@ -245,6 +250,7 @@ class _KnowledgeMemoryInspectorState extends State<KnowledgeMemoryInspector> {
       _previewLoading = true;
       _previewError = null;
       _preview = null;
+      _forgetConfirmed = false;
     });
     try {
       final value = await controller.previewForget(widget.memoryId);
@@ -316,9 +322,23 @@ class _KnowledgeMemoryInspectorState extends State<KnowledgeMemoryInspector> {
             const SizedBox(height: 16),
             MemoryEvidenceDetails(memory: memory),
             const SizedBox(height: 16),
-            Text(
-              'Pin, archive, restore, correct and forget require a separately published native mutation contract. Current contract: ${NativeContract.currentVersion}.',
+            MemoryChangeStatus(controller: widget.controller),
+            MemoryLifecycleControls(
+              controller: widget.controller,
+              memoryId: widget.memoryId,
             ),
+            if (widget.controller.supportsChange(MemoryChange.correct) &&
+                memory.metadata.visibility == 'user_private')
+              OutlinedButton(
+                onPressed: widget.controller.pendingChange != null
+                    ? null
+                    : () => showMemoryEditor(
+                        context,
+                        widget.controller,
+                        memory: memory,
+                      ),
+                child: const Text('Review a correction'),
+              ),
             if (widget.controller.canManage)
               OutlinedButton.icon(
                 onPressed: _previewLoading ? null : _readImpact,
@@ -336,8 +356,76 @@ class _KnowledgeMemoryInspectorState extends State<KnowledgeMemoryInspector> {
               const Text(
                 'The current impact could not be verified. Nothing was forgotten.',
               ),
-            if (_preview != null) MemoryImpactDetails(preview: _preview!),
+            if (_preview != null) ...[
+              MemoryImpactDetails(preview: _preview!),
+              if (widget.controller.supportsChange(MemoryChange.forget) &&
+                  memory.metadata.visibility == 'user_private' &&
+                  _preview!.guarantee == 'rollback_proof_barrier') ...[
+                CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  value: _forgetConfirmed,
+                  title: const Text(
+                    'I reviewed this exact impact and understand forgetting is irreversible.',
+                  ),
+                  onChanged: widget.controller.pendingChange != null
+                      ? null
+                      : (value) =>
+                            setState(() => _forgetConfirmed = value ?? false),
+                ),
+                FilledButton(
+                  onPressed:
+                      !_forgetConfirmed ||
+                          widget.controller.pendingChange != null
+                      ? null
+                      : () async {
+                          final preview = _preview;
+                          if (preview == null ||
+                              widget.controller.pendingChange != null) {
+                            return;
+                          }
+                          setState(() {
+                            _preview = null;
+                            _forgetConfirmed = false;
+                          });
+                          try {
+                            await widget.controller.submitChange(
+                              MemoryChange.forget,
+                              {},
+                              id: widget.memoryId,
+                              previewDigest:
+                                  preview.expectedReceiptManifestSha256,
+                            );
+                          } catch (error) {
+                            if (mounted) setState(() => _previewError = error);
+                          }
+                          if (mounted &&
+                              widget.controller.available &&
+                              widget
+                                      .controller
+                                      .acceptedChange
+                                      ?.submission
+                                      .kind ==
+                                  MemoryChange.forget &&
+                              widget.controller.acceptedChange?.submission.id ==
+                                  widget.memoryId &&
+                              widget
+                                      .controller
+                                      .acceptedChange
+                                      ?.submission
+                                      .previewDigest ==
+                                  preview.expectedReceiptManifestSha256) {
+                            setState(() => _memory = null);
+                          }
+                        },
+                  child: const Text('Forget reviewed memory and descendants'),
+                ),
+              ] else
+                const Text(
+                  'Deletion is unavailable for this app version, ownership or impact guarantee.',
+                ),
+            ],
           ],
+          if (memory == null) MemoryChangeStatus(controller: widget.controller),
         ],
       );
     },

@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/macos/macos_page_scaffold.dart';
 import '../../app/theme/macos_app_theme.dart';
+import '../../core/network/native_workspace_access.dart';
 import '../auth/application/session_controller.dart';
 import 'admin_controller.dart';
 import 'admin_models.dart';
@@ -44,7 +45,11 @@ class _MacosAdminWorkspaceViewState
   @override
   Widget build(BuildContext context) {
     final session = ref.watch(sessionControllerProvider).value;
-    if (session == null || !session.canManage) {
+    final access = ref.watch(nativeWorkspaceAccessProvider);
+    if (session == null ||
+        !session.canManage ||
+        access == null ||
+        !access.current) {
       return const _MacosAccessDenied();
     }
 
@@ -83,6 +88,10 @@ class _MacosAdminWorkspaceViewState
       description: module.description,
       icon: module.icon,
       actions: [
+        NativeWorkspaceBrowserButton(
+          path: module.browserPath,
+          label: 'Full controls',
+        ),
         IconButton(
           key: const ValueKey('macos-admin-refresh'),
           tooltip: controller.loading ? 'Refreshing status' : 'Refresh status',

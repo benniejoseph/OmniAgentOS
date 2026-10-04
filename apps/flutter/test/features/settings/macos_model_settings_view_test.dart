@@ -13,6 +13,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../native_workspace_fixture.dart';
 import '../companion/companion_fixtures.dart';
 
 void main() {
@@ -37,24 +38,28 @@ void main() {
       authenticated: false,
     );
     addTearDown(coordinator.dispose);
+    final api = _SettingsApi();
 
     await tester.pumpWidget(
-      ProviderScope(
-        overrides: [
-          companionScopeProvider.overrideWithValue((
-            deployment: 'https://settings.example.test',
-            tenantId: 'settings-tenant',
-            actorId: 'settings-actor',
-            role: 'admin',
-          )),
-          companionRepositoryProvider.overrideWith(
-            (_) => FakeCompanionRepository(),
+      nativeWorkspaceFixture(
+        api: api,
+        child: ProviderScope(
+          overrides: [
+            companionScopeProvider.overrideWithValue((
+              deployment: nativeWorkspaceFixtureOrigin,
+              tenantId: 'tenant-test',
+              actorId: 'owner@example.com',
+              role: 'admin',
+            )),
+            companionRepositoryProvider.overrideWith(
+              (_) => FakeCompanionRepository(),
+            ),
+            localComputerCoordinatorProvider.overrideWith((ref) => coordinator),
+          ],
+          child: MaterialApp(
+            theme: MacosAppTheme.light(),
+            home: ModelSettingsView(api: api),
           ),
-          localComputerCoordinatorProvider.overrideWith((ref) => coordinator),
-        ],
-        child: MaterialApp(
-          theme: MacosAppTheme.light(),
-          home: ModelSettingsView(api: _SettingsApi()),
         ),
       ),
     );
@@ -83,10 +88,14 @@ void main() {
 
 class _SettingsApi extends ApiClient {
   _SettingsApi()
-    : super(Dio(), Dio(), SecureSessionStore(const FlutterSecureStorage()));
+    : super(
+        Dio(BaseOptions(baseUrl: nativeWorkspaceFixtureOrigin)),
+        Dio(),
+        SecureSessionStore(const FlutterSecureStorage()),
+      );
 
   @override
-  Future<Map<String, dynamic>> getJson(
+  Future<Map<String, dynamic>> getJsonFresh(
     String path, {
     Map<String, dynamic>? query,
   }) async {

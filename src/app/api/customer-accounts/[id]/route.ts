@@ -76,6 +76,7 @@ async function PATCHHandler(request: Request, routeContext: RouteContext) {
     context = await authorizeRequest({
       request,
       action: "manage.workflow",
+      nativeMutationCapability: "customers.records.manage",
       resourceType: "customer_account",
       resourceId: accountId,
       riskLevel: 2,

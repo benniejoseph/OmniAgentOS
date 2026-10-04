@@ -15,6 +15,7 @@ import 'capture_outbox.dart';
 import 'capture_recording.dart';
 import 'capture_recording_panel.dart';
 import 'capture_receipt_panel.dart';
+import 'library_view.dart';
 
 export 'capture_controller.dart';
 export 'capture_models.dart';
@@ -570,6 +571,24 @@ class _CaptureViewState extends State<CaptureView> {
                     const SizedBox(height: 8),
                     const Text(
                       'Save a note, record audio, or add files. Transfer, extraction and indexing each have their own state.',
+                    ),
+                    Align(
+                      alignment: AlignmentDirectional.centerStart,
+                      child: OutlinedButton.icon(
+                        key: const Key('capture-open-library'),
+                        onPressed: controller.available
+                            ? () => Navigator.of(context).push(
+                                MaterialPageRoute<void>(
+                                  builder: (_) => const NativeLibraryPage(),
+                                ),
+                              )
+                            : null,
+                        style: OutlinedButton.styleFrom(
+                          minimumSize: const Size(48, 48),
+                        ),
+                        icon: const Icon(Icons.folder_copy_outlined, size: 18),
+                        label: const Text('Open Library and version history'),
+                      ),
                     ),
                     const SizedBox(height: 16),
                     Wrap(
