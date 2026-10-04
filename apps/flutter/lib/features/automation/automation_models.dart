@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import '../results/result_contracts.dart';
+
 typedef AutomationJson = Map<String, dynamic>;
 
 const automationPluginManifestMaxBytes = 128000;
@@ -345,6 +347,10 @@ class AutomationWorkflowRun {
   final String id, title, status, mode;
   final DateTime? updatedAt;
   final AutomationJson raw;
+
+  // The display ID can be a fallback or trimmed text, so only the exact
+  // identity returned by the service can address a Result.
+  ResultKey? get resultKey => _workflowResultKey(raw['id']);
 }
 
 class AutomationTrigger {
@@ -469,7 +475,9 @@ class AutomationScheduleOccurrence {
       kind: _requiredChoice(value, 'kind', _scheduleOccurrenceKinds),
       status: _requiredChoice(value, 'status', _scheduleOccurrenceStatuses),
       scheduledFor: scheduledFor,
-      workflowRunId: _nullableText(value['workflowRunId']),
+      workflowRunId: value['workflowRunId'] is String
+          ? value['workflowRunId'] as String
+          : null,
       failureCode: _nullableText(value['failureCode']),
       attemptCount: _requiredNonNegativeInteger(value, 'attemptCount'),
       authoritySha256: _requiredSha256(value, 'authoritySha256'),
@@ -481,6 +489,17 @@ class AutomationScheduleOccurrence {
   final String? workflowRunId, failureCode;
   final int attemptCount;
   final DateTime scheduledFor, updatedAt;
+
+  ResultKey? get resultKey => _workflowResultKey(workflowRunId);
+}
+
+ResultKey? _workflowResultKey(Object? id) {
+  if (id is! String) return null;
+  try {
+    return ResultKey.parse('workflow:$id');
+  } on FormatException {
+    return null;
+  }
 }
 
 class AutomationScheduleReceipt {
