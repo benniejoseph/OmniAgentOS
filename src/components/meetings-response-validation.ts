@@ -1,8 +1,10 @@
 import type {
   ContactPolicy, EntityOption, LibraryItem, LinkedSource, Meeting,
   MeetingCommitmentProposal, ProcessedMeetingMediaView,
-  ProjectOption, WorkspaceContext,
+  ProjectOption, WorkspaceContext, MeetingCommitmentView,
 } from "./meetings-workspace";
+import type { MeetingResolutionReconciliation } from "@/lib/meetings/commitment-resolution-intent";
+import type { MeetingResolutionSubmission } from "./meetings-workspace-state";
 
 // Browser response checks only. Keep the classic response contract's loose domain
 // records and stripped envelopes/options. Known nested fields are parsed into new
@@ -16,11 +18,19 @@ function object(value: unknown): Row {
   requireValue(value !== null && typeof value === "object" && !Array.isArray(value));
   return value as Row;
 }
+function exactKeys(row: Row, keys: readonly string[]) {
+  requireValue(Object.keys(row).length === keys.length && keys.every((key) => Object.hasOwn(row, key)));
+}
 function string(value: unknown, min = 0, max = Infinity): string {
   requireValue(typeof value === "string" && value.length >= min && value.length <= max);
   return value;
 }
 function id(value: unknown) { return string(value, 1, 512); }
+function proposalActorId(value: unknown) {
+  const result = string(value).trim();
+  requireValue(result.length > 0 && result.length <= 240);
+  return result;
+}
 function digest(value: unknown) {
   const result = string(value);
   requireValue(/^[a-f0-9]{64}$/.test(result));
@@ -184,6 +194,7 @@ function proposal(value: unknown): MeetingCommitmentProposal & Row {
   const row = object(value); const ownership = object(row.ownership); const dueDate = object(row.dueDate);
   return loose(row, {
     proposalId: id(row.proposalId), proposalSha256: digest(row.proposalSha256), meetingId: id(row.meetingId), meetingRevisionId: id(row.meetingRevisionId),
+    proposedByActorId: proposalActorId(row.proposedByActorId),
     projectId: id(row.projectId), mediaRevisionId: id(row.mediaRevisionId), actionItemId: id(row.actionItemId), title: string(row.title, 1, 12000), citations: array(row.citations, citation, 24, 1),
     ownership: loose(ownership, { participantId: nullable(ownership.participantId, id), displayName: nullable(ownership.displayName, string), authority: member(ownership.authority, ["explicit_transcript", "confirmation_required"]) }),
     dueDate: loose(dueDate, { dueAt: nullable(dueDate.dueAt, time), authority: member(dueDate.authority, ["explicit_transcript", "confirmation_required"]) }),
@@ -199,12 +210,106 @@ function resolution(value: unknown) {
     communicationPolicyId: nullable(row.communicationPolicyId, id), meetingRevisionId: nullable(row.meetingRevisionId, id), resolutionSha256: digest(row.resolutionSha256),
   });
 }
+// This additive projection is strict even though the older domain records keep
+// their extension fields. It is evidence for inspection, never retry authority.
+export function readMeetingReconciliation(value: unknown): MeetingResolutionReconciliation {
+  const row = object(value);
+  exactKeys(row, ["schemaVersion", "requestSha256", "decision", "state", "automaticRetryAllowed", "createdAt", "phases"]);
+  requireValue(row.schemaVersion === 1 && row.automaticRetryAllowed === false);
+  const decision = member(row.decision, ["confirmed", "dismissed"]);
+  const state = member(row.state, ["pending", "partial", "uncertain", "resolved"]);
+  const phases = array(row.phases, (value) => {
+    const item = object(value);
+    exactKeys(item, ["phase", "at", "resourceId", "evidenceSha256"]);
+    const phase = member(item.phase, ["work_started", "work_completed", "draft_started", "draft_completed", "meeting_started", "meeting_completed", "resolution_started", "interrupted"]);
+    const resourceId = nullable(item.resourceId, (value) => string(value).trim());
+    requireValue(resourceId === null || resourceId.length > 0 && resourceId.length <= 240);
+    const evidenceSha256 = nullable(item.evidenceSha256, digest);
+    requireValue(phase.endsWith("_completed") ? resourceId !== null && evidenceSha256 !== null : resourceId === null && evidenceSha256 === null);
+    return { phase, at: offsetTime(item.at), resourceId, evidenceSha256 };
+  }, 8);
+  const names = phases.map((phase) => phase.phase);
+  requireValue(new Set(names).size === names.length);
+  const sequence = names.at(-1) === "interrupted" ? names.slice(0, -1) : names;
+  const plans = decision === "dismissed" ? [["resolution_started"]] : [
+    ["work_started", "work_completed", "meeting_started", "meeting_completed", "resolution_started"],
+    ["work_started", "work_completed", "draft_started", "draft_completed", "meeting_started", "meeting_completed", "resolution_started"],
+  ];
+  requireValue(plans.some((plan) => sequence.every((phase, index) => plan[index] === phase)));
+  const unacknowledged = names.some((phase) => phase.endsWith("_started") && !names.includes(phase.replace("_started", "_completed") as typeof names[number]));
+  const unresolved = names.includes("interrupted") || unacknowledged ? "uncertain" : names.some((phase) => phase.endsWith("_completed")) ? "partial" : "pending";
+  requireValue(state === "resolved" ? names.at(-1) === "resolution_started" : state === unresolved);
+  return { schemaVersion: 1, requestSha256: digest(row.requestSha256), decision, state, automaticRetryAllowed: false, createdAt: offsetTime(row.createdAt), phases };
+}
+function offsetTime(value: unknown) {
+  const result = string(value);
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/.exec(result);
+  requireValue(match);
+  const year = Number(match[1]), month = Number(match[2]), day = Number(match[3]);
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const maximum = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
+  requireValue(maximum !== undefined && day >= 1 && day <= maximum);
+  return result;
+}
+export function readMeetingReconciliationError(value: unknown) {
+  const row = object(value);
+  exactKeys(row, ["error", "code", ...(Object.hasOwn(row, "reconciliation") ? ["reconciliation"] : [])]);
+  requireValue(row.code === "meeting_commitment_reconciliation_required");
+  string(row.error, 1, 4000);
+  return row.reconciliation === undefined ? undefined : readMeetingReconciliation(row.reconciliation);
+}
+export async function meetingResolutionRequestDigest(proposal: MeetingCommitmentProposal, scope: Pick<Meeting, "tenantId" | "workspaceId">, submitted: MeetingResolutionSubmission) {
+  const communication = submitted.communication;
+  const request = submitted.decision === "dismissed" ? { decision: "dismissed" } : {
+    decision: "confirmed", ownerParticipantId: submitted.ownerParticipantId || proposal.ownership.participantId,
+    dueAt: submitted.dueAt === undefined ? proposal.dueDate.dueAt : submitted.dueAt === null ? null : new Date(submitted.dueAt).toISOString(),
+    communication: communication ? { connectionId: null, policyId: communication.policyId, recipientParticipantId: communication.recipientParticipantId, subject: communication.subject.trim(), body: communication.body.trim() } : null,
+  };
+  // A shared Meeting can have a different owner; the proposal's actor owns this intent.
+  const body = { schemaVersion: 1, contract: "meeting-commitment-resolution-intent:1", tenantId: scope.tenantId, workspaceId: scope.workspaceId,
+    meetingId: proposal.meetingId, proposalId: proposal.proposalId, proposalSha256: proposal.proposalSha256, ownerActorId: proposalActorId(proposal.proposedByActorId), request };
+  function sorted(value: unknown): unknown {
+    if (value && typeof value === "object" && !Array.isArray(value)) return Object.fromEntries(Object.entries(value).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0).map(([key, item]) => [key, sorted(item)]));
+    return value;
+  }
+  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(sorted(body))));
+  return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+export function assertMeetingReconciliationRead(received: readonly MeetingCommitmentView[], retained: Iterable<MeetingCommitmentView>) {
+  for (const previous of retained) {
+    if (!previous.reconciliation) continue;
+    const next = received.find((view) => view.proposal.proposalId === previous.proposal.proposalId);
+    const keepsEvidence = next && next.proposal.proposalSha256 === previous.proposal.proposalSha256 && next.proposal.proposedByActorId === previous.proposal.proposedByActorId && next.reconciliation &&
+      next.reconciliation.requestSha256 === previous.reconciliation.requestSha256 && next.reconciliation.decision === previous.reconciliation.decision &&
+      next.reconciliation.createdAt === previous.reconciliation.createdAt &&
+      previous.reconciliation.phases.every((phase, index) => {
+        const current = next.reconciliation!.phases[index];
+        return current && current.phase === phase.phase && current.at === phase.at && current.resourceId === phase.resourceId && current.evidenceSha256 === phase.evidenceSha256;
+      });
+    if (!keepsEvidence) throw new Error("The latest read has not retained the recorded resolution intent and phase receipts. Existing evidence remains available for inspection.");
+  }
+}
+export function meetingResolutionReceiptHref(proposal: MeetingCommitmentProposal, phase: MeetingResolutionReconciliation["phases"][number]): string | undefined {
+  const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
+  if (phase.phase === "work_completed" && uuid.test(proposal.projectId) && phase.resourceId && uuid.test(phase.resourceId))
+    return `/app/projects?project=${encodeURIComponent(proposal.projectId)}&task=${encodeURIComponent(phase.resourceId)}`;
+  if (phase.phase === "meeting_completed" && proposal.meetingId.startsWith("meeting:") && uuid.test(proposal.meetingId.slice(8)) &&
+    phase.resourceId?.startsWith(`${proposal.meetingId}:v`) && /^[1-9]\d*$/.test(phase.resourceId.slice(proposal.meetingId.length + 2)))
+    return `/app/meetings/${encodeURIComponent(proposal.meetingId)}`;
+  return undefined;
+}
 function commitmentView(value: unknown) {
   const row = object(value); const proposed = proposal(row.proposal); const resolved = nullable(row.resolution, resolution);
   requireValue(!resolved || (resolved.proposalId === proposed.proposalId && resolved.proposalSha256 === proposed.proposalSha256 &&
     (resolved.decision === "confirmed" ? Boolean(resolved.ownerParticipantId && resolved.ownerDisplayName && resolved.ownershipAuthority && resolved.workItemId && resolved.meetingRevisionId) : !resolved.workItemId && !resolved.draftId && !resolved.ownerParticipantId) &&
     Boolean(resolved.draftId) === Boolean(resolved.communicationPolicyId)));
-  return loose(row, { proposal: proposed, resolution: resolved });
+  const reconciliation = row.reconciliation === undefined ? undefined : readMeetingReconciliation(row.reconciliation);
+  requireValue(!reconciliation || ((reconciliation.state === "resolved") === Boolean(resolved) && (!resolved || resolved.decision === reconciliation.decision)));
+  if (resolved && reconciliation) {
+    const known = (phase: string) => reconciliation.phases.find((item) => item.phase === phase)?.resourceId ?? null;
+    requireValue(resolved.decision !== "confirmed" || known("work_completed") === resolved.workItemId && known("draft_completed") === resolved.draftId && known("meeting_completed") === resolved.meetingRevisionId);
+  }
+  return loose(row, { proposal: proposed, resolution: resolved, ...optional(row, "reconciliation", () => reconciliation) });
 }
 function policy(value: unknown): ContactPolicy & Row {
   const row = object(value); requireValue(row.channel === "email");

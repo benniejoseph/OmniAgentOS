@@ -37,28 +37,27 @@ Set these through the platform secret/configuration store, never in source contr
 - `OMNIAGENT_NATIVE_MIN_ANDROID_VERSION`, `OMNIAGENT_NATIVE_MIN_IOS_VERSION`, and `OMNIAGENT_NATIVE_MIN_MACOS_VERSION`: optional stable `major.minor.patch` minimums for native compatibility telemetry. An absent or empty value defaults to `1.0.0`; a malformed configured value invalidates the policy and holds adoption unavailable. These settings do not authorize Agent enrollment.
 
 Native contract artifacts are committed immutable release inputs. This release
-advertises v31 as current and deliberately retains v30 as the one
-rollback-compatible previous version. V29 remains the one immutable archive
-and is not advertised by current discovery. Older versions are deleted: each
-new contract deletes the oldest archive, and a unit test holds
-`public/native-contracts/` to these three versions. Do not retire v30 until
-the v31 rollback window closes. A published version is never regenerated in
-place. Run `npm run check:native-contracts` before a native-contract release;
-the check fails if the generated OpenAPI, event schema, fixtures, integrity
-manifests, Dart SDK, or frozen v29-v30 document hashes drift. A Vercel deployment
-never deletes an archive; only a contract release does. V25/v20 was the
-2026-09-22 adaptive-runtime compatibility pair; v27/v26 was the governed
-local-command pair; v28/v27 added scoped model selection; v29/v28 added native
-Ambient Command voice; v30/v29 added task-authority target checks and reviewed
-voice declarations. V31/v30 adds owner-bound Companion preferences and the
-explicitly enrolled native preference mutation.
+advertises v33 as current and retains v32 as the rollback-compatible previous
+version. V31 remains a byte-frozen, unadvertised archive. Older documents leave
+the three-version retention window only in a reviewed contract release; a
+Vercel deployment never deletes an archive. Do not retire v32 until the v33
+rollback window closes. Published versions are never regenerated in place.
+Run `npm run check:native-contracts` to verify the generated v33 OpenAPI, event
+schema, fixtures, manifests and Dart SDK, plus the frozen v31/v32 hashes.
 
-Advertising v31/v30 stops supporting v29, so a v29 client receives
-`upgrade_required` and its native mutations are held. Deploy the v31 server
-before installing a v31 native build: a v31 client fails bootstrap against a
-server that advertises only v30/v29. The installed v30 client keeps working
-against a v31 server through the rollback window. A repository merge does not
-establish that this pair has been promoted to production.
+V31 added owner-bound Companion presentation preferences, v32 added bounded
+Responsibilities, and v33 adds typed Meeting reads plus separately enrolled
+record, proposal and exact commitment-decision mutations. Existing capabilities
+retain their own minimum versions: Companion 31 and Responsibilities 32. Each
+Meeting mutation requires 33, fresh attestation and its original permission.
+Calendar sync, recording completion and source audio receive no new authority.
+
+Advertising v33/v32 makes v31 clients `upgrade_required` and holds their native
+mutations. Deploy the v33 server before installing a v33 native build; that
+build fails bootstrap against a server advertising only v32/v31. An installed
+v32 client keeps its existing operations through the rollback window and cannot
+enter the new Meeting mutations. A repository merge does not establish that
+this compatibility pair has been promoted to production.
 
 ### Memory forget lineage closure (v207)
 
@@ -2360,11 +2359,10 @@ never run migration DDL. The finite pilot executes only its saved governed
 Meeting read; notification delivery needs a separate explicit owner-inbox
 admission and never emits external push/email/provider effects.
 
-Serve contract v32 before distributing a v32 native client. V31 remains the
-immediately previous supported client; its existing operations keep their
-minimum versions. Responsibility mutations require v32, and notification reads,
-unread counts and bulk-read actions omit the new kind for older native clients.
-The v30 and v31 public documents remain byte-frozen; only v32 is generated.
+Responsibility mutations retain their v32 minimum on both supported v33/v32
+clients. Notification reads, unread counts and bulk-read actions omit the new
+kind for native clients below 32. The compatibility and archive window above
+is authoritative; published v32 receipts and documents remain unchanged.
 
 A rollback must first hold worker ticks and new Responsibility admissions.
 Preserve immutable usage, observations and delivery receipts. The prior v215
@@ -2373,3 +2371,33 @@ do not assume a prior binary can operate an activated pilot. Use a compatible
 rollback build, or follow the separately verified backup/restore procedure when
 an incompatible rollback is required. Never drop the new history tables or
 reset cumulative counters as an application rollback shortcut.
+
+
+### Meeting commitment decision admission schema v220
+
+`meeting_commitment_resolution_intents_v1` follows the exact v219 predecessor.
+The dedicated migration job and updated Meeting application must ship together
+while traffic and workers are held. Retain `db:verify` and serving-role evidence
+for both new owner-scoped, immutable intent/progress tables and the terminal
+resolution admission trigger. Legacy accepted resolutions remain readable.
+
+The first committed normalized decision owns child execution. An interrupted
+request retains its exact decision and bounded phase acknowledgements, including
+known Work/draft/Meeting identities. Separate child stores are not one atomic
+transaction. Neither refreshing nor repeating a request grants takeover or
+retries uncertain effects; the UI must retain reconciliation evidence.
+
+After v220, an older application cannot insert a new terminal resolution without
+the admitted intent and phase sequence. Hold new resolutions before rollback and
+use a compatible application build or the separately verified database restore
+procedure. Do not remove decision evidence, drop the trigger, or infer that a
+legacy binary is compatible merely because it can still read old resolutions.
+
+Native contract v33 publishes three scoped Meeting GETs and four writes over
+the existing routes. Creation/revision require `meetings.records.manage`,
+proposal admission requires `meetings.commitments.propose`, and exact decision
+admission requires `meetings.commitments.resolve`, in addition to the existing
+RBAC and fresh native attestation. Publish the paired v220 application/database
+release and v33 contracts before distributing a client that uses these writes.
+A rollback to the retained v32 client is a client-compatibility option, not
+permission to run a pre-v220 server against admitted decision records.

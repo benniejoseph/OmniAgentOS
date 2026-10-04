@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   authorizeRequest: vi.fn(),
@@ -16,9 +16,9 @@ vi.mock("@/lib/db/client", () => ({
     (handler: (...args: never[]) => Promise<Response>) => handler,
 }));
 
-vi.mock("@/lib/security/guard", () => ({
+vi.mock("@/lib/security/guard", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/security/guard")>()),
   authorizeRequest: mocks.authorizeRequest,
-  forbiddenResponse: vi.fn(),
 }));
 
 vi.mock("@/lib/app-services/meetings", async (importOriginal) => ({
@@ -39,6 +39,11 @@ import {
   POST as POSTCommitment,
 } from "@/app/api/meetings/[id]/commitments/route";
 import { GET as GETMeetings, POST as POSTMeeting } from "@/app/api/meetings/route";
+import { MeetingWriteDeniedError } from "@/lib/app-services/meetings";
+import type { AppServiceCaller } from "@/lib/app-services/contracts";
+import { assertTrustedSessionMutation, type authorizeRequest } from "@/lib/security/guard";
+import { requirePermission } from "@/lib/security/context";
+import type { SecurityContext } from "@/lib/security/types";
 
 const context = {
   tenantId: "tenant-a",
@@ -69,6 +74,8 @@ function draft() {
 }
 
 beforeEach(() => {
+  vi.stubEnv("NEXT_PUBLIC_APP_URL", "http://localhost");
+  vi.stubEnv("OMNIAGENT_NATIVE_MIN_MACOS_VERSION", "1.0.0");
   mocks.authorizeRequest.mockReset().mockResolvedValue(context);
   mocks.list.mockReset().mockResolvedValue({
     data: { context: {}, meetings: [meeting] },
@@ -99,6 +106,42 @@ beforeEach(() => {
     receipt: { operation: "app.meetings.commitments.resolve" },
   });
 });
+afterEach(() => vi.unstubAllEnvs());
+
+function nativeContext(version = 33, role: SecurityContext["role"] = "operator"): SecurityContext {
+  return {
+    ...context, role, source: "mobile",
+    native: { deviceId: "meeting-native-device", platform: "macos", appVersion: "1.0.0", buildNumber: 1,
+      clientContractVersion: version, clientAttestedAt: new Date().toISOString() },
+  };
+}
+
+/** Exercise the real origin, capability and role policies at the route's
+ * authorization seam; authentication and all domain effects remain mocked. */
+function authorizeAs(principal: SecurityContext) {
+  mocks.authorizeRequest.mockImplementation(async (input: Parameters<typeof authorizeRequest>[0]) => {
+    assertTrustedSessionMutation(input.request, principal, input.nativeMutationCapability);
+    requirePermission(principal, input.action);
+    return principal;
+  });
+}
+
+const routeContext = () => ({ params: Promise.resolve({ id: encodeURIComponent(meetingId) }) });
+const mutations = [
+  { name: "create", method: "POST", path: "/api/meetings", capability: "meetings.records.manage", action: "manage.workflow", expectedStatus: 201,
+    body: () => ({ ...draft(), workspaceId: "workspace-a" }), call: (request: Request) => POSTMeeting(request), service: mocks.create },
+  { name: "update", method: "PATCH", path: `/api/meetings/${encodeURIComponent(meetingId)}`, capability: "meetings.records.manage", action: "manage.workflow", expectedStatus: 200,
+    body: () => ({ ...draft(), workspaceId: "workspace-a", expectedRevision: 1 }), call: (request: Request) => PATCHMeeting(request, routeContext()), service: mocks.update },
+  { name: "propose", method: "POST", path: `/api/meetings/${encodeURIComponent(meetingId)}/commitments`, capability: "meetings.commitments.propose", action: "run.agent", expectedStatus: 201,
+    body: () => ({ workspaceId: "workspace-a", mediaRevisionId: "recording-1:media:v1", actionItemId: `media-action:${"a".repeat(64)}` }), call: (request: Request) => POSTCommitment(request, routeContext()), service: mocks.proposeCommitment },
+  { name: "resolve", method: "PATCH", path: `/api/meetings/${encodeURIComponent(meetingId)}/commitments`, capability: "meetings.commitments.resolve", action: "manage.workflow", expectedStatus: 200,
+    body: () => ({ workspaceId: "workspace-a", proposalId: `meeting-commitment-proposal:${"b".repeat(64)}`, expectedProposalSha256: "c".repeat(64), decision: "dismissed" }), call: (request: Request) => PATCHCommitment(request, routeContext()), service: mocks.resolveCommitment },
+];
+function mutationRequest(route: typeof mutations[number], body: unknown = route.body(), key: string | undefined = `native-${route.name}`, origin?: string) {
+  return new Request(`http://localhost${route.path}`, { method: route.method,
+    headers: { "content-type": "application/json", ...(key ? { "idempotency-key": key } : {}), ...(origin ? { origin } : {}) },
+    body: JSON.stringify(body) });
+}
 
 describe("meeting routes", () => {
   it("lists with private no-store response semantics", async () => {
@@ -212,5 +255,96 @@ describe("meeting routes", () => {
       expect.objectContaining({ idempotencyKey: "resolution-1" }),
       expect.objectContaining({ meetingId, proposalId, decision: "dismissed" }),
     );
+  });
+
+  it.each(mutations)("enrolls $name only with its exact v33 capability and request scope", async (route) => {
+    const principal = nativeContext(); authorizeAs(principal);
+    const request = mutationRequest(route), response = await route.call(request);
+    expect(response.status).toBe(route.expectedStatus);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(mocks.authorizeRequest).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      request, action: route.action, nativeMutationCapability: route.capability,
+    }));
+    expect(route.service).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      context: principal, idempotencyKey: `native-${route.name}`,
+      executionScope: expect.objectContaining({ tenantId: principal.tenantId, initiatingActorId: principal.actorId,
+        executingPrincipalType: "user", executingPrincipalId: principal.actorId, workspaceId: "workspace-a" }),
+    }), expect.objectContaining({ workspaceId: "workspace-a" }));
+  });
+
+  it.each(mutations)("keeps $name held for rollback v32, viewer and stale native attestations", async (route) => {
+    const stale = nativeContext(); stale.native!.clientAttestedAt = "2020-01-01T00:00:00.000Z";
+    for (const principal of [nativeContext(32), nativeContext(33, "viewer"), stale]) {
+      authorizeAs(principal);
+      const response = await route.call(mutationRequest(route));
+      expect(response.status).toBe(403);
+      expect(response.headers.get("cache-control")).toBe("private, no-store");
+    }
+    expect(route.service).not.toHaveBeenCalled();
+  });
+
+  it.each(mutations)("preserves trusted web origin enforcement and exact key requirement for $name", async (route) => {
+    authorizeAs(context);
+    expect((await route.call(mutationRequest(route, route.body(), "web-key", "https://untrusted.example"))).status).toBe(403);
+    expect(route.service).not.toHaveBeenCalled();
+    mocks.authorizeRequest.mockClear();
+    const missing = await route.call(mutationRequest(route, route.body(), "", "http://localhost"));
+    expect(missing.status).toBe(400); expect(missing.headers.get("cache-control")).toBe("private, no-store");
+    expect(mocks.authorizeRequest).not.toHaveBeenCalled();
+    expect((await route.call(mutationRequest(route, route.body(), "web-key", "http://localhost"))).status).toBe(route.expectedStatus);
+  });
+
+  it.each(mutations)("rejects body-selected identity and authority on $name before authorization", async (route) => {
+    for (const extra of [{ meetingId }, { meetingId: "another-meeting" }, { tenantId: "foreign" }, { actorId: "foreign" }]) {
+      const response = await route.call(mutationRequest(route, { ...route.body(), ...extra }));
+      expect(response.status).toBe(400); expect(response.headers.get("cache-control")).toBe("private, no-store");
+    }
+    expect(mocks.authorizeRequest).not.toHaveBeenCalled(); expect(route.service).not.toHaveBeenCalled();
+  });
+
+  it("returns private bounded path errors for all detail and commitment methods", async () => {
+    for (const id of ["%", "%E0%A4%A", "x".repeat(721), "%20", " meeting-1 "]) {
+      const params = { params: Promise.resolve({ id }) };
+      const path = `http://localhost/api/meetings/${id}`;
+      const responses = [
+        await GETMeeting(new Request(path), params),
+        await GETCommitments(new Request(`${path}/commitments`), params),
+        await PATCHMeeting(mutationRequest(mutations[1]), params),
+        await POSTCommitment(mutationRequest(mutations[2]), params),
+        await PATCHCommitment(mutationRequest(mutations[3]), params),
+      ];
+      for (const response of responses) {
+        expect(response.status).toBe(400); expect(response.headers.get("cache-control")).toBe("private, no-store");
+      }
+    }
+    expect(mocks.authorizeRequest).not.toHaveBeenCalled();
+    for (const call of [mocks.show, mocks.listCommitments, mocks.update, mocks.proposeCommitment, mocks.resolveCommitment]) expect(call).not.toHaveBeenCalled();
+  });
+
+  it("preserves private body media/size failures without reaching authority or effects", async () => {
+    for (const route of mutations) {
+      const contentType = mutationRequest(route); contentType.headers.set("content-type", "text/plain");
+      const typeResponse = await route.call(contentType);
+      const oversized = mutationRequest(route); oversized.headers.set("content-length", "250001");
+      const sizeResponse = await route.call(oversized);
+      expect([typeResponse.status, sizeResponse.status]).toEqual([415, 413]);
+      expect(typeResponse.headers.get("cache-control")).toBe("private, no-store");
+      expect(sizeResponse.headers.get("cache-control")).toBe("private, no-store");
+    }
+    expect(mocks.authorizeRequest).not.toHaveBeenCalled();
+  });
+
+  it("passes current authenticated scope anew and preserves a downstream workspace revocation", async () => {
+    const route = mutations[1]; authorizeAs(nativeContext());
+    expect((await route.call(mutationRequest(route))).status).toBe(200);
+    const replacement = { ...nativeContext(), tenantId: "tenant-b", actorId: "replacement@example.test",
+      auth: { ...context.auth, userId: "33333333-3333-4333-8333-333333333333", email: "replacement@example.test" } };
+    authorizeAs(replacement); mocks.update.mockRejectedValueOnce(new MeetingWriteDeniedError());
+    const response = await route.call(mutationRequest(route));
+    expect(response.status).toBe(403); expect(response.headers.get("cache-control")).toBe("private, no-store");
+    const caller = mocks.update.mock.calls[1][0] as AppServiceCaller;
+    expect(caller.context).toEqual(replacement);
+    expect(caller.executionScope).toMatchObject({ tenantId: replacement.tenantId, initiatingActorId: replacement.actorId, workspaceId: "workspace-a" });
+    await expect(response.json()).resolves.toEqual({ error: "Meeting contributor access is required." });
   });
 });

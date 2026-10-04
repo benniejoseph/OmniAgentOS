@@ -150,6 +150,8 @@ const RESTRICTIVE_ACTOR_POLICIES = new Map<string, string>([
     "omni_workflow_schedule_occurrences",
     "omni_workflow_schedule_shadow_events",
   ].map((tableName): [string, string] => [tableName, `${tableName}_actor`]),
+  ["omni_meeting_commitment_resolution_intents", "omni_meeting_commitment_resolution_intents_owner"],
+  ["omni_meeting_commitment_resolution_progress", "omni_meeting_commitment_resolution_progress_owner"],
   ["omni_tenant_memory_access_grants", "omni_memory_access_grant_actor"],
   ["omni_workflow_triggers", "omni_workflow_triggers_schedule_actor"],
 ]);

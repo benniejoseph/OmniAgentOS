@@ -12,6 +12,7 @@ import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import { meetingFailureResponse } from "@/lib/meetings/http";
+import { decodeMeetingRouteId, isPathScopedMeetingBody, privateMeetingResponse } from "@/lib/meetings/route-input";
 import { MeetingNotFoundError } from "@/lib/meetings/store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
@@ -24,7 +25,8 @@ const privateNoStoreHeaders = { "cache-control": "private, no-store" };
 type RouteContext = { params: Promise<{ id: string }> };
 
 async function GETHandler(request: Request, routeContext: RouteContext) {
-  const meetingId = decodeURIComponent((await routeContext.params).id);
+  const meetingId = decodeMeetingRouteId((await routeContext.params).id);
+  if (!meetingId) return invalidRequest({ formErrors: ["Invalid meeting path identity."], fieldErrors: {} });
   const url = new URL(request.url);
   const parsed = meetingShowServiceInputSchema.safeParse({
     meetingId,
@@ -40,7 +42,7 @@ async function GETHandler(request: Request, routeContext: RouteContext) {
       resourceId: meetingId,
     });
   } catch (error) {
-    return forbiddenResponse(error);
+    return privateMeetingResponse(forbiddenResponse(error));
   }
   try {
     const result = await showMeetingService(
@@ -63,15 +65,17 @@ async function GETHandler(request: Request, routeContext: RouteContext) {
 }
 
 async function PATCHHandler(request: Request, routeContext: RouteContext) {
-  const meetingId = decodeURIComponent((await routeContext.params).id);
+  const meetingId = decodeMeetingRouteId((await routeContext.params).id);
+  if (!meetingId) return invalidRequest({ formErrors: ["Invalid meeting path identity."], fieldErrors: {} });
   let body: unknown;
   try {
     body = await parseJsonBody(request, 250_000);
   } catch (error) {
-    return jsonBodyErrorResponse(error);
+    return privateMeetingResponse(jsonBodyErrorResponse(error));
   }
+  if (!isPathScopedMeetingBody(body)) return invalidRequest({ formErrors: ["The body must be an object without meetingId."], fieldErrors: {} });
   const parsed = meetingUpdateServiceInputSchema.safeParse({
-    ...(body && typeof body === "object" ? body : {}),
+    ...body,
     meetingId,
   });
   if (!parsed.success) return invalidRequest(parsed.error.flatten());
@@ -81,6 +85,7 @@ async function PATCHHandler(request: Request, routeContext: RouteContext) {
       request,
       action: "manage.workflow",
       resourceType: "meeting",
+      nativeMutationCapability: "meetings.records.manage",
       resourceId: meetingId,
       riskLevel: 2,
       metadata: {
@@ -91,7 +96,7 @@ async function PATCHHandler(request: Request, routeContext: RouteContext) {
       },
     });
   } catch (error) {
-    return forbiddenResponse(error);
+    return privateMeetingResponse(forbiddenResponse(error));
   }
   try {
     const result = await updateMeetingService(

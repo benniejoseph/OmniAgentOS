@@ -101,8 +101,8 @@ describe("native API contracts", () => {
   it("retains exactly the current and previous rollout versions", () => {
     // Tripwire: a native contract bump must be a deliberate, reviewed change.
     // The other tests follow these constants.
-    expect(NATIVE_API_CURRENT_VERSION).toBe(32);
-    expect(NATIVE_API_PREVIOUS_VERSION).toBe(31);
+    expect(NATIVE_API_CURRENT_VERSION).toBe(33);
+    expect(NATIVE_API_PREVIOUS_VERSION).toBe(32);
     expect(NATIVE_API_SUPPORTED_VERSIONS).toEqual([
       NATIVE_API_CURRENT_VERSION,
       NATIVE_API_PREVIOUS_VERSION,
@@ -342,6 +342,7 @@ describe("native API contracts", () => {
       32: added("responsibilities.list", "responsibilities.create", "responsibilities.get", "responsibilities.change",
         "responsibilities.references", "responsibilities.lifecycle.get", "responsibilities.lifecycle.change",
         "responsibilities.observations.list", "responsibilities.notifications.get", "responsibilities.notifications.change"),
+      33: added("meetings.create", "meetings.update", "meetings.commitments.list", "meetings.commitments.propose", "meetings.commitments.resolve"),
     });
     // v20 and v23 changed only request and push schemas.
     expect(nativeOperationsForVersion(20)).toEqual(nativeOperationsForVersion(19));
@@ -580,19 +581,19 @@ describe("native API contracts", () => {
     });
   });
 
-  it("retains every published v30 and v31 document byte for byte", async () => {
+  it("retains every published v31 and v32 document byte for byte", async () => {
     const frozen = {
-      30: {
-        "openapi.json": "2abf9f964377dc8058e5cd1d1681ef795933d65b8a6b75fd8578d6c7e56069bc", // gitleaks:allow -- public frozen artifact SHA-256 integrity digest
-        "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9",
-        "fixtures.json": "fe8ce85e53bf3346b74e7b429b3b33d66076465b914aeef4c22c42c1163a1808",
-        "manifest.json": "ddf28e1a590542c09be88076c18c3a5eab0785058140276a97656d90e2d779d7",
-      },
       31: {
         "openapi.json": "66b51d623dfd13eed8f156cacbe775f34040523a719ba30a9688696b83e51c5b", // gitleaks:allow -- public frozen artifact SHA-256 integrity digest
         "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9",
         "fixtures.json": "e5f1d2cdd2f72999816522995a22d341ad88ec82a427d47fae127e0288fbf82a",
         "manifest.json": "0fe915016137f93ee135ff627a6f437f3ee4baea66f0bc1ff9ff7d5e0565c6a7",
+      },
+      32: {
+        "openapi.json": "c0c97a2c76ea047c9d29f7ddfa53d9e93923ed5eef93b2a14b89f7cd2ace7b6d", // gitleaks:allow -- public frozen artifact SHA-256 integrity digest
+        "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9",
+        "fixtures.json": "f234f15036114da197fac2bbaf8041343235b7cc79ad775e1f2499fdaa83f79c",
+        "manifest.json": "ca895e229d5f3b8bc1648ec1131d0903d31f991f3566a78f38566ee5a6d1ea5d",
       },
     };
     for (const [version, documents] of Object.entries(frozen)) {

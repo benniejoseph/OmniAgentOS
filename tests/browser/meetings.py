@@ -14,8 +14,8 @@ import time
 
 from playwright.sync_api import expect, sync_playwright
 
-from meetings_fixtures import (CREATED, EMAIL, GUEST, LONG, MAIN, MEDIA, OTHER, OUTSIDE, OWNER,
-                               POLICY, RECORDING, WORKSPACE, MeetingFixtures, media, meeting_path)
+from meetings_fixtures import (CREATED, EMAIL, GUEST, KNOWN_WORK, LONG, MAIN, MARKUP, MEDIA, OTHER, OUTSIDE, OWNER,
+                               POLICY, PROJECT, RECORDING, SHARED_MEETING_OWNER, WORKSPACE, MeetingFixtures, media, meeting_path)
 from run import Checks, REPO, navigate, preview, select_theme
 
 
@@ -53,6 +53,10 @@ def settle_layout(page):
 
 def read_count(fixture, key):
     return sum(row["key"] == key for row in fixture.requests)
+
+
+def effect_count(fixture):
+    return sum(row["kind"] != "calendar" for row in fixture.writes)
 
 
 def ready(page, fixture, identity=MAIN, *, commitments=True):
@@ -195,14 +199,14 @@ def edit_lifecycle(page, fixture, checks):
     refresh(page, fixture)
     expect(title).to_have_value("Unsaved immutable revision draft")
     fixture.expect_action("edit", submitted, mode="conflict", hold="frozen-edit")
-    before = len(fixture.writes)
+    before = effect_count(fixture)
     synchronous_submit(page, button(page, "Publish revision"))
     until(page, lambda: "frozen-edit" in fixture.held, "Frozen edit was not intercepted")
     expect(title).to_be_disabled()
     expect(button(page, "Sync Calendar")).to_be_disabled()
     expect(button(page, "Cancel")).to_be_disabled()
     page.wait_for_timeout(100)
-    checks.check("Frozen edit keeps original revision1 and one synchronous write slot", len(fixture.writes) == before + 1 and fixture.writes[-1]["body"] == submitted)
+    checks.check("Frozen edit keeps original revision1 and one synchronous write slot", effect_count(fixture) == before + 1 and fixture.writes[-1]["body"] == submitted)
     fixture.release("frozen-edit")
     expect(workspace(page).get_by_role("alert")).to_contain_text("Synthetic immutable revision conflict.")
     expect(title).to_have_value("Unsaved immutable revision draft")
@@ -304,7 +308,17 @@ def proposal_lifecycle(page, fixture, checks):
     checks.check("Explicit proposal uses exact media/action identity and rejects an unrelated receipt", True)
 
 
+def shared_meeting(page, fixture):
+    fixture.bump(MAIN, ownerActorId=SHARED_MEETING_OWNER, declaredAccessClass="workspace_members", effectiveAccessClass="workspace_members")
+    for link in fixture.records[MAIN]["sourceLinks"]:
+        link["accessClass"] = "workspace_members"
+    refresh(page, fixture)
+    ready(page, fixture)
+
+
 def decisions(page, fixture, checks):
+    shared_meeting(page, fixture)
+    checks.check("Shared Meeting owner differs from the exact proposal owner", fixture.records[MAIN]["ownerActorId"] != fixture.proposals[0]["proposal"]["proposedByActorId"] == fixture.actor_id)
     form = review(page, 1)
     form.get_by_label("Also prepare an unsent, governed follow-up email", exact=True).check()
     form.get_by_label("Subject", exact=True).fill(" Exact follow-up subject ")
@@ -313,11 +327,6 @@ def decisions(page, fixture, checks):
     communication = {"policyId": POLICY, "recipientParticipantId": OWNER, "subject": " Exact follow-up subject ",
                      "body": " Exact recipient-bound draft body.\nNo message is sent. "}
     body = fixture.resolution_body(communication=communication)
-    fixture.expect_action("resolve", body, mode="wrong_draft")
-    form.get_by_role("button", name="Confirm WorkItem + draft", exact=True).click()
-    expect(workspace(page).get_by_role("alert")).to_contain_text("The governed draft receipt does not match its submitted recipient or content.")
-    expect(form.get_by_label("Message", exact=True)).to_have_value(communication["body"])
-    checks.check("Mismatched draft200 cannot claim confirmation or erase review values", workspace(page).get_by_text("Confirmed commitment", exact=True).count() == 0)
     fixture.expect_action("resolve", body, hold="confirmed-decision", after_fail=("list", "detail:" + MAIN, "commitments:" + MAIN))
     form.get_by_role("button", name="Confirm WorkItem + draft", exact=True).click()
     until(page, lambda: "confirmed-decision" in fixture.held, "Decision was not held")
@@ -325,17 +334,19 @@ def decisions(page, fixture, checks):
     expect(form.get_by_role("button", name="Dismiss", exact=True)).to_be_disabled()
     expect(button(page, "Sync Calendar")).to_be_disabled()
     fixture.release("confirmed-decision")
-    expect(receipt(page)).to_contain_text("WorkItem work:browser-1; unsent draft draft:browser-1; recipient " + EMAIL)
+    expect(receipt(page)).to_contain_text("WorkItem work:browser-1; governed draft draft:browser-1; recipient " + EMAIL)
     expect(receipt(page)).to_contain_text("Returned draft recipient and content match the submitted review.")
     expect(receipt(page)).to_be_focused()
     expect(workspace(page).get_by_text("Confirmed commitment", exact=True)).to_be_visible()
     expect(button(page, "Retry commitment review")).to_be_visible()
     expect(button(page, "New meeting")).to_be_enabled()
     checks.check("Exact decision receipt survives failed reads; accepted work and unsent draft are separate from read freshness", True)
+    checks.check("Accepted shared-Meeting decision uses the proposal owner's recorded request digest", fixture.proposals[0]["reconciliation"]["requestSha256"] == fixture.resolution_digest(fixture.proposals[0]["proposal"], body))
     fixture.defaults.clear()
     # A successful but old unresolved projection is also insufficient to erase an accepted decision.
     stale = fixture.commitment_read()
     stale["commitments"][0]["resolution"] = None
+    stale["commitments"][0].pop("reconciliation")
     fixture.read_plan("commitments:" + MAIN, body=stale)
     button(page, "Retry commitment review").click()
     expect(button(page, "Retry commitment review")).to_be_enabled()
@@ -350,6 +361,91 @@ def decisions(page, fixture, checks):
     expect(workspace(page).get_by_text("Dismissed proposal", exact=True)).to_be_visible()
     ready(page, fixture)
     checks.check("Dismissal sends only exact proposal/digest/decision and creates no work or draft", fixture.writes[-1]["body"] == fixture.resolution_body(2, "dismissed"))
+
+
+def reconciliation_lifecycle(page, fixture, checks, coarse):
+    shared_meeting(page, fixture)
+    fixture.proposals.extend([fixture.proposal(number) for number in (4, 5, 6)])
+    refresh(page, fixture)
+    ready(page, fixture)
+    communication = {"policyId": POLICY, "recipientParticipantId": OWNER, "subject": "Fixed reviewed subject", "body": "Fixed private review. " + MARKUP}
+    form = review(page, 4)
+    form.get_by_label("Also prepare an unsent, governed follow-up email", exact=True).check()
+    form.get_by_label("Subject", exact=True).fill(communication["subject"])
+    form.get_by_label("Message", exact=True).fill(communication["body"])
+    fixture.expect_action("resolve", fixture.resolution_body(4, communication=communication), mode="wrong_draft")
+    form.get_by_role("button", name="Confirm WorkItem + draft", exact=True).click()
+    expect(workspace(page).get_by_role("alert")).to_contain_text("The governed draft receipt does not match its submitted recipient or content.")
+    inspector = workspace(page).get_by_role("article", name="Resolution inspection: Review action 4, source version 1.", exact=True)
+    expect(inspector).to_be_visible()
+    expect(inspector).to_be_focused()
+    expect(review(page, 4)).to_have_count(0)
+    inspector.locator("summary").get_by_text("Retained local review fields", exact=True).click()
+    expect(inspector.get_by_text(communication["body"], exact=True)).to_be_visible()
+    before = effect_count(fixture)
+    refresh(page, fixture)
+    ready(page, fixture)
+    expect(review(page, 4)).to_have_count(0)
+    checks.check("Malformed accepted-looking response retains private review for inspection and refresh cannot authorize resubmission", effect_count(fixture) == before)
+
+    fixture.expect_action("resolve", fixture.resolution_body(5), mode="lost_response", after_fail=("commitments:" + MAIN,))
+    review(page, 5).get_by_role("button", name="Confirm WorkItem", exact=True).click()
+    lost = workspace(page).get_by_role("article", name="Resolution inspection: Review action 5, source version 1.", exact=True)
+    expect(lost.get_by_text("Decision outcome unconfirmed", exact=True)).to_be_visible()
+    expect(button(page, "Retry commitment review")).to_be_visible()
+    expect(review(page, 5)).to_have_count(0)
+    before = effect_count(fixture)
+    fixture.defaults.clear()
+    refresh(page, fixture)
+    ready(page, fixture)
+    expect(lost.get_by_text("Resolution uncertain", exact=True)).to_be_visible()
+    expect(lost.get_by_role("button")).to_have_count(0)
+    expect(lost.get_by_role("link", name="Inspect exact WorkItem", exact=True)).to_have_attribute("href", f"/app/projects?project={PROJECT}&task={KNOWN_WORK}")
+    expect(lost.get_by_text(KNOWN_WORK, exact=True)).to_be_visible()
+    lost_proposal = next(row for row in fixture.proposals if row["proposal"]["proposalId"] == "proposal:5")
+    expect(lost.get_by_text(lost_proposal["reconciliation"]["requestSha256"], exact=True)).to_be_visible()
+    lost.locator("summary").get_by_text("Exact proposal evidence", exact=True).click()
+    expect(lost.get_by_text("proposal:5", exact=True)).to_be_visible()
+    checks.check("Lost response preserves known Work receipt and exact proposal inspection without a second child decision", effect_count(fixture) == before)
+    checks.check("Shared Meeting reconciliation uses the proposal owner after a lost response", fixture.records[MAIN]["ownerActorId"] != lost_proposal["proposal"]["proposedByActorId"] == fixture.actor_id)
+    stale = fixture.commitment_read()
+    next(row for row in stale["commitments"] if row["proposal"]["proposalId"] == "proposal:5").pop("reconciliation")
+    fixture.read_plan("commitments:" + MAIN, body=stale)
+    refresh(page, fixture)
+    expect(button(page, "Retry commitment review")).to_be_visible()
+    expect(lost.get_by_text(KNOWN_WORK, exact=True)).to_be_visible()
+    expect(review(page, 5)).to_have_count(0)
+    checks.check("A successful stale read cannot erase the immutable intent or known phase receipts", effect_count(fixture) == before)
+    button(page, "Retry commitment review").click()
+    ready(page, fixture)
+
+    fixture.expect_action("resolve", fixture.resolution_body(6), mode="reconciliation_pending", after_fail=("commitments:" + MAIN,))
+    review(page, 6).get_by_role("button", name="Confirm WorkItem", exact=True).click()
+    pending = workspace(page).get_by_role("article", name="Resolution inspection: Review action 6, source version 1.", exact=True)
+    expect(pending.get_by_text("Resolution pending", exact=True)).to_be_visible()
+    expect(pending.get_by_text("No child phase receipts have been returned.", exact=True)).to_be_visible()
+    expect(button(page, "Retry commitment review")).to_be_visible()
+    next(row for row in fixture.proposals if row["proposal"]["proposalId"] == "proposal:6")["reconciliation"].update(
+        state="partial", phases=copy.deepcopy(next(row for row in fixture.proposals if row["proposal"]["proposalId"] == "proposal:5")["reconciliation"]["phases"][:2]))
+    fixture.defaults.clear()
+    before = effect_count(fixture)
+    refresh(page, fixture)
+    ready(page, fixture)
+    expect(pending.get_by_text("Resolution partial", exact=True)).to_be_visible()
+    expect(review(page, 6)).to_have_count(0)
+    checks.check("A bounded409 shows pending evidence even when refresh fails; later partial evidence never grants another decision", effect_count(fixture) == before)
+    checks.check("Reconciliation preserves literal private review text without executing markup", page.evaluate("window.untrustedMeetingRan !== true"))
+    original_viewport = page.viewport_size
+    page.set_viewport_size({"width": 320, "height": 844})
+    page.evaluate("document.documentElement.style.fontSize='200%'")
+    try:
+        settle_layout(page)
+        checks.snapshot(page, "meetings-reconciliation-320-text200-" + ("phone" if coarse else "desktop"), coarse)
+        pending.screenshot(path=str(checks.output / ("meetings-reconciliation-inspector-320-text200-" + ("phone" if coarse else "desktop") + ".png")))
+        checks.check("Reconciliation receipt links retain their touch target", pending.get_by_role("link").evaluate_all("(els,min)=>els.every(el=>el.getBoundingClientRect().height>=min-1)", 48 if coarse else 44))
+    finally:
+        page.evaluate("document.documentElement.style.fontSize=''")
+        page.set_viewport_size(original_viewport)
 
 
 def media_and_calendar(page, fixture, checks):
@@ -430,6 +526,7 @@ def visual_checks(page, fixture, checks, coarse):
 
 
 def empty_and_read_disposal(page, fixture, checks, coarse):
+    fixture.begin_terminal_read_budget()
     fixture.list_ids = []
     navigate(page, fixture.origin, "/app/meetings")
     expect(workspace(page).get_by_text("No meetings were returned in this readable window.", exact=True)).to_be_visible()
@@ -438,6 +535,11 @@ def empty_and_read_disposal(page, fixture, checks, coarse):
     fixture.read_plan("list", hold="disposed-list", body={"error": "LATE_LIST_ERROR_MUST_NOT_APPEAR"}, status=503)
     button(page, "Refresh meetings").click()
     until(page, lambda: "disposed-list" in fixture.held, "Disposal list read was not held")
+    expected_reads = {"list": 2, "projects": 2, "entities": 2, "library": 2}
+    until(page, lambda: fixture.read_budget_report()[-1]["counts"] == expected_reads,
+          "Terminal Meetings reads did not match the empty mount and held refresh")
+    checks.check("Empty mount and disposal refresh use exactly eight bounded reads",
+                 fixture.read_budget_report()[-1]["counts"] == expected_reads, fixture.read_budget_report())
     fixture.leaving_for_assistant = True
     page.get_by_role("navigation", name="Everyday workspace navigation" if coarse else "Application navigation", exact=True).get_by_role("link", name="Assistant", exact=True).click()
     expect(page.locator('textarea[role="combobox"]')).to_be_visible(timeout=30_000)
@@ -470,6 +572,7 @@ def exercise(browser, origin, credentials, checks, coarse):
         visual_checks(page, fixture, checks, coarse)
         if coarse:
             create_lifecycle(page, fixture, checks)
+            reconciliation_lifecycle(page, fixture, checks, coarse)
             open_route(page, fixture, OUTSIDE)
             checks.check("Phone deep link retains outside-window selection", timeline_link(page, OUTSIDE).count() == 0)
         else:
@@ -479,6 +582,7 @@ def exercise(browser, origin, credentials, checks, coarse):
             create_lifecycle(page, fixture, checks)
             proposal_lifecycle(page, fixture, checks)
             decisions(page, fixture, checks)
+            reconciliation_lifecycle(page, fixture, checks, coarse)
             media_and_calendar(page, fixture, checks)
             disposal(page, fixture, checks)
         empty_and_read_disposal(page, fixture, checks, coarse)
@@ -486,7 +590,7 @@ def exercise(browser, origin, credentials, checks, coarse):
         checks.check(label + ": no unexpected request, popup, download or real effect", not fixture.unexpected, fixture.unexpected)
         checks.check(label + ": no uncaught browser errors", not errors, errors)
         return {"viewport": label, "scope": {key: scope[key] for key in ("tenantId", "actorId")}, "reads": fixture.requests, "writes": fixture.writes,
-                "releases": fixture.releases, "unexpected": fixture.unexpected, "errors": errors}
+                "readBudgets": fixture.read_budget_report(), "releases": fixture.releases, "unexpected": fixture.unexpected, "errors": errors}
     except Exception:
         if page is not None and not page.is_closed():
             page.screenshot(path=str(checks.output / f"{label}-failure.png"), full_page=False)
@@ -494,7 +598,7 @@ def exercise(browser, origin, credentials, checks, coarse):
         if fixture:
             (checks.output / f"{label}-failure-requests.json").write_text(json.dumps({"reads": fixture.requests,
                 "writes": fixture.writes, "held": list(fixture.held), "pendingActions": list(fixture.actions),
-                "unexpected": fixture.unexpected, "errors": errors}, indent=2))
+                "readBudgets": fixture.read_budget_report(), "unexpected": fixture.unexpected, "errors": errors}, indent=2))
         raise
     finally:
         if fixture:

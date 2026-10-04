@@ -1325,5 +1325,12 @@
     "checksum": "b7781a7c49662c506457a340ef81b0f31ceb683587d8bff62391e246efbacaf2",
     "file": "20261004113000_responsibility_notifications.sql",
     "sha256": "b7781a7c49662c506457a340ef81b0f31ceb683587d8bff62391e246efbacaf2"
+  },
+  {
+    "version": 220,
+    "name": "meeting_commitment_resolution_intents_v1",
+    "checksum": "45e63154aeaca286c2da9d898873be0e26fa3a2412ab58ac22a373d1f759339b",
+    "file": "20261004200000_meeting_commitment_resolution_intents.sql",
+    "sha256": "45e63154aeaca286c2da9d898873be0e26fa3a2412ab58ac22a373d1f759339b"
   }
 ]

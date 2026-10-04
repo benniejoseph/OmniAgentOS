@@ -9,6 +9,8 @@ const mocks = vi.hoisted(() => ({
   getProposal: vi.fn(),
   listProposals: vi.fn(),
   recordResolution: vi.fn(),
+  claimResolution: vi.fn(),
+  recordPhase: vi.fn(),
   createWorkItem: vi.fn(),
   createDraft: vi.fn(),
   listPolicies: vi.fn(),
@@ -30,6 +32,8 @@ vi.mock("@/lib/meetings/commitment-store", () => ({
   getMeetingCommitmentView: mocks.getProposal,
   listMeetingCommitmentViews: mocks.listProposals,
   recordMeetingCommitmentResolution: mocks.recordResolution,
+  claimMeetingCommitmentResolution: mocks.claimResolution,
+  recordMeetingCommitmentResolutionPhase: mocks.recordPhase,
 }));
 vi.mock("@/lib/app-services/projects", () => ({
   createWorkItemService: mocks.createWorkItem,
@@ -49,6 +53,7 @@ import {
   listMeetingCommitmentsService,
   proposeMeetingCommitmentService,
   resolveMeetingCommitmentService,
+  MeetingCommitmentReconciliationRequiredError,
 } from "@/lib/app-services/meetings";
 import {
   meetingCommitmentProposalId,
@@ -56,6 +61,12 @@ import {
   withMeetingCommitmentProposalDigest,
   withMeetingCommitmentResolutionDigest,
 } from "@/lib/meetings/commitment-contracts";
+import {
+  meetingResolutionIntentBody, meetingResolutionIntentSchema, meetingResolutionReconciliation,
+  assertMeetingResolutionPhaseOrder,
+  type MeetingResolutionIntent, type MeetingResolutionPhase,
+} from "@/lib/meetings/commitment-resolution-intent";
+import type { MeetingCommitmentView } from "@/lib/meetings/commitment-contracts";
 import { messageDraftSchema } from "@/lib/communications/contracts";
 import { buildMeetingRevision } from "@/lib/meetings/contracts";
 import { createExecutionScope } from "@/lib/security/execution-scope";
@@ -182,6 +193,9 @@ const proposal = withMeetingCommitmentProposalDigest({
   proposedAt: timestamp,
 });
 const view = { proposal, resolution: null };
+let storedIntent: MeetingResolutionIntent | undefined;
+let storedPhases: MeetingResolutionPhase[] = [];
+let storedView: MeetingCommitmentView = view;
 const policy = {
   id: "contact_policy:33333333-3333-4333-8333-333333333333",
   channel: "email",
@@ -226,7 +240,13 @@ function recordedConfirmation() {
     meetingRevisionId: `${meetingId}:v2`, resolvedByActorId: canonicalActorId, resolvedAt: timestamp,
   });
   const commitment = { proposal, resolution };
-  mocks.getProposal.mockResolvedValue(commitment);
+  storedView = commitment;
+  storedIntent = meetingResolutionIntentSchema.parse({
+    ...meetingResolutionIntentBody({ tenantId: context.tenantId, workspaceId, meetingId, proposalId,
+      proposalSha256: proposal.proposalSha256, ownerActorId: canonicalActorId,
+      request: { decision: "confirmed", ownerParticipantId: participant.participantId, dueAt: actionItem.dueAt,
+        communication: { ...communication, connectionId: null } }, }), createdAt: timestamp,
+  });
   mocks.getDraft.mockResolvedValue(draft);
   return { communication, draft, commitment, input: {
     meetingId, proposalId, expectedProposalSha256: proposal.proposalSha256,
@@ -278,22 +298,47 @@ beforeEach(() => {
   mocks.getMeeting.mockResolvedValue(meeting);
   mocks.readLinkedSources.mockResolvedValue([{ media: { output: media } }]);
   mocks.createProposal.mockResolvedValue(view);
-  mocks.getProposal.mockResolvedValue(view);
-  mocks.listProposals.mockResolvedValue([view]);
+  storedIntent = undefined;
+  storedPhases = [];
+  storedView = view;
+  mocks.getProposal.mockImplementation(async () => storedView);
+  mocks.claimResolution.mockImplementation(async ({ authority, proposal: source, request }) => {
+    const candidate = meetingResolutionIntentSchema.parse({
+      ...meetingResolutionIntentBody({ tenantId: authority.tenantId, workspaceId: authority.workspaceId,
+        meetingId: source.meetingId, proposalId: source.proposalId, proposalSha256: source.proposalSha256,
+        ownerActorId: authority.canonicalActorId, request }), createdAt: timestamp,
+    });
+    if (storedIntent) {
+      if (storedIntent.requestSha256 !== candidate.requestSha256) throw new Error("This proposal is bound to a different immutable resolution request.");
+      return { state: storedView.resolution ? "resolved" : "incomplete", intent: storedIntent, view: storedView };
+    }
+    if (storedView.resolution) return { state: "legacy", view: storedView };
+    storedIntent = candidate;
+    storedView = { ...storedView, reconciliation: meetingResolutionReconciliation(candidate, [], false) };
+    return { state: "claimed", intent: candidate, view: storedView };
+  });
+  mocks.recordPhase.mockImplementation(async ({ intent, phase, resourceId, evidenceSha256 }) => {
+    assertMeetingResolutionPhaseOrder(intent, storedPhases, phase);
+    storedPhases.push({ phase, at: timestamp, resourceId: resourceId || null, evidenceSha256: evidenceSha256 || null });
+    const reconciliation = meetingResolutionReconciliation(intent, storedPhases, false);
+    storedView = { ...storedView, reconciliation };
+    return reconciliation;
+  });
+  mocks.listProposals.mockImplementation(async () => [storedView]);
   mocks.listPolicies.mockResolvedValue([policy]);
   mocks.createWorkItem.mockResolvedValue({
     data: { workItem: { id: "work-item-1" } },
-    receipt: {},
+    receipt: { receiptSha256: "f".repeat(64) },
   });
   mocks.createDraft.mockResolvedValue({
     data: { draft: { id: "message_draft:44444444-4444-4444-8444-444444444444" } },
-    receipt: {},
+    receipt: { receiptSha256: "f".repeat(64) },
   });
   mocks.saveMeeting.mockResolvedValue({ ...meeting, meetingRevisionId: `${meetingId}:v2`, revision: 2 });
-  mocks.recordResolution.mockImplementation(async ({ proposal: source, resolution }) => ({
-    proposal: source,
-    resolution,
-  }));
+  mocks.recordResolution.mockImplementation(async ({ proposal: source, resolution, intent }) => {
+    storedView = { proposal: source, resolution, reconciliation: meetingResolutionReconciliation(intent, storedPhases, true) };
+    return storedView;
+  });
 });
 
 describe("meeting commitment app services", () => {
@@ -337,7 +382,7 @@ describe("meeting commitment app services", () => {
       } else {
         recorded.input.communication.body = "A different message";
       }
-      await expect(resolveMeetingCommitmentService(mutationCaller(`replay-${change}`), recorded.input)).rejects.toThrow("different draft");
+      await expect(resolveMeetingCommitmentService(mutationCaller(`replay-${change}`), recorded.input)).rejects.toThrow(/different (draft|immutable resolution request)/);
       expectNoReplayedEffects();
     },
   );
@@ -421,4 +466,87 @@ describe("meeting commitment app services", () => {
       workItemId: "work-item-1",
     });
   });
+  it("rejects a distinct recipient identity even when two participants share one email", async () => {
+    const recorded = recordedConfirmation();
+    mocks.getMeeting.mockResolvedValue({ ...meeting, participants: [participant, { ...participant, participantId: "participant:same-email" }] });
+    await expect(resolveMeetingCommitmentService(mutationCaller("same-email-drift"), {
+      ...recorded.input, communication: { ...recorded.communication, recipientParticipantId: "participant:same-email" },
+    })).rejects.toThrow("different immutable resolution request");
+    expectNoReplayedEffects();
+  });
+
+  it("keeps legacy accepted communication readable but refuses a new recipient receipt", async () => {
+    const recorded = recordedConfirmation();
+    storedIntent = undefined;
+    const listed = await listMeetingCommitmentsService(createAppServiceCaller({ context }), { meetingId });
+    expect(listed.data.commitments[0].resolution).toEqual(recorded.commitment.resolution);
+    await expect(resolveMeetingCommitmentService(mutationCaller("legacy"), recorded.input))
+      .rejects.toThrow("no exact recipient decision receipt");
+    expect(storedIntent).toBeUndefined();
+    expectNoReplayedEffects();
+  });
+
+  it("commits the decision before a child and prevents a concurrent identical resolution", async () => {
+    let signalStarted!: () => void, release!: () => void;
+    const started = new Promise<void>((resolve) => { signalStarted = resolve; });
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    mocks.createWorkItem.mockImplementation(async () => {
+      expect(storedIntent).toBeDefined();
+      expect(storedPhases.map((phase) => phase.phase)).toEqual(["work_started"]);
+      signalStarted();
+      await held;
+      return { data: { workItem: { id: "work-item-1" } }, receipt: { receiptSha256: "f".repeat(64) } };
+    });
+    const input = { meetingId, proposalId, expectedProposalSha256: proposal.proposalSha256, decision: "confirmed" as const };
+    const first = resolveMeetingCommitmentService(mutationCaller("concurrent-one"), input);
+    await started;
+    await expect(resolveMeetingCommitmentService(mutationCaller("concurrent-two"), input))
+      .rejects.toBeInstanceOf(MeetingCommitmentReconciliationRequiredError);
+    expect(mocks.createWorkItem).toHaveBeenCalledTimes(1);
+    release();
+    await expect(first).resolves.toMatchObject({ data: { commitment: { resolution: { decision: "confirmed" } } } });
+    expect(mocks.saveMeeting).toHaveBeenCalledTimes(1);
+    expect(mocks.recordResolution).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains a completed Work receipt when draft creation fails and never repeats either child", async () => {
+    mocks.createDraft.mockRejectedValue(new Error("Connection closed; outcome unknown"));
+    const input = { meetingId, proposalId, expectedProposalSha256: proposal.proposalSha256,
+      decision: "confirmed" as const, communication: { policyId: policy.id, recipientParticipantId: participant.participantId, subject: "Reviewed follow-up", body: "Reviewed content" } };
+    await expect(resolveMeetingCommitmentService(mutationCaller("partial-one"), input))
+      .rejects.toBeInstanceOf(MeetingCommitmentReconciliationRequiredError);
+    const listed = await listMeetingCommitmentsService(createAppServiceCaller({ context }), { meetingId });
+    expect(listed.data.commitments[0]).toMatchObject({ resolution: null, reconciliation: {
+      state: "uncertain", automaticRetryAllowed: false,
+      phases: expect.arrayContaining([{ phase: "work_completed", at: timestamp, resourceId: "work-item-1", evidenceSha256: "f".repeat(64) }]),
+    } });
+    await expect(resolveMeetingCommitmentService(mutationCaller("partial-two"), input))
+      .rejects.toBeInstanceOf(MeetingCommitmentReconciliationRequiredError);
+    expect(mocks.createWorkItem).toHaveBeenCalledTimes(1);
+    expect(mocks.createDraft).toHaveBeenCalledTimes(1);
+    expect(mocks.saveMeeting).not.toHaveBeenCalled();
+    expect(mocks.recordResolution).not.toHaveBeenCalled();
+  });
+
+  it("records an unknown child outcome without inventing a completion receipt", async () => {
+    mocks.createWorkItem.mockRejectedValue(new Error("Response lost after child dispatch"));
+    const input = { meetingId, proposalId, expectedProposalSha256: proposal.proposalSha256, decision: "confirmed" as const };
+    await expect(resolveMeetingCommitmentService(mutationCaller("lost-one"), input))
+      .rejects.toMatchObject({ reconciliationCode: "meeting_commitment_reconciliation_required" });
+    expect(storedPhases.map((phase) => phase.phase)).toEqual(["work_started", "interrupted"]);
+    expect(storedPhases.every((phase) => phase.resourceId === null)).toBe(true);
+    await expect(resolveMeetingCommitmentService(mutationCaller("lost-two"), input)).rejects.toThrow("no child action");
+    expect(mocks.createWorkItem).toHaveBeenCalledTimes(1);
+  });
+
+  it("validates a selected communication policy before claiming any effects", async () => {
+    mocks.listPolicies.mockResolvedValue([]);
+    await expect(resolveMeetingCommitmentService(mutationCaller("invalid-policy"), {
+      meetingId, proposalId, expectedProposalSha256: proposal.proposalSha256, decision: "confirmed",
+      communication: { policyId: policy.id, recipientParticipantId: participant.participantId, subject: "Reviewed subject", body: "Reviewed content" },
+    })).rejects.toThrow("eligible follow-up");
+    expect(mocks.claimResolution).not.toHaveBeenCalled();
+    expect(mocks.createWorkItem).not.toHaveBeenCalled();
+  });
+
 });

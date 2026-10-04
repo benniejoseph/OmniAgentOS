@@ -29,6 +29,8 @@ import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useSta
 
 import { permissionMessage, useWorkspaceSession } from "@/components/app-shell/session-context";
 import { assertMeetingCommitmentRead, createMeetingRequestGate, freezeMeetingSubmission, startMeetingMediaReads, meetingCalendarReceipt, parseMeetingCommitments, parseMeetingDetail, parseMeetingList, parseMeetingMediaReceipt, parseMeetingMutation, parseMeetingProposalReceipt, parseMeetingResolutionReceipt, parseMeetingOptions, type MeetingReadState } from "./meetings-workspace-state";
+import { assertMeetingReconciliationRead, meetingResolutionReceiptHref, meetingResolutionRequestDigest, readMeetingReconciliationError } from "./meetings-response-validation";
+import type { MeetingResolutionReconciliation } from "@/lib/meetings/commitment-resolution-intent";
 import styles from "@/components/meetings-workspace.module.css";
 
 type MeetingStatus = "scheduled" | "in_progress" | "completed" | "cancelled";
@@ -184,6 +186,7 @@ export type ContactPolicy = {
 export type MeetingCommitmentProposal = {
   proposalId: string;
   proposalSha256: string;
+  proposedByActorId: string;
   meetingId: string;
   meetingRevisionId: string;
   projectId: string;
@@ -218,6 +221,7 @@ export type MeetingCommitmentResolution = {
 export type MeetingCommitmentView = {
   proposal: MeetingCommitmentProposal;
   resolution: MeetingCommitmentResolution | null;
+  reconciliation?: MeetingResolutionReconciliation;
 };
 export type ProjectOption = { id: string; title: string };
 export type EntityOption = { entityId: string; entityTypeId: string; canonicalLabel: string; state: string };
@@ -264,6 +268,10 @@ function ScopedMeetingsWorkspace({ initialMeetingId }: { initialMeetingId?: stri
   const [linkedSources, setLinkedSources] = useState<LinkedSource[]>([]);
   const [commitmentSnapshot, setCommitmentSnapshot] = useState<ReturnType<typeof parseMeetingCommitments>>();
   const confirmedCommitments = useRef(new Map<string, MeetingCommitmentView>());
+  // A failed or malformed response cannot prove that dispatch had no effects.
+  // The exact submitted decision stays fixed for this owner-scoped mount.
+  const resolutionAttempts = useRef(new Map<string, { proposal: MeetingCommitmentProposal; submitted: Record<string, unknown>; requestSha256: string }>());
+  const [heldResolutionIds, setHeldResolutionIds] = useState<ReadonlySet<string>>(new Set());
   const [workspaceContext, setWorkspaceContext] = useState<WorkspaceContext>();
   const [projects, setProjects] = useState<ProjectOption[]>([]);
   const [entities, setEntities] = useState<EntityOption[]>([]);
@@ -338,7 +346,17 @@ function ScopedMeetingsWorkspace({ initialMeetingId }: { initialMeetingId?: stri
   const loadCommitments = useCallback((meetingId: string, signal?: AbortSignal) => read("commitments", `/api/meetings/${encodeURIComponent(meetingId)}/commitments`, (body) => {
     const data = parseMeetingCommitments(body, meetingId);
     assertMeetingCommitmentRead(data.commitments, confirmedCommitments.current.values(), meetingId);
-    if (selectionRef.current === meetingId) setCommitmentSnapshot(data);
+    assertMeetingReconciliationRead(data.commitments, [...confirmedCommitments.current.values()].filter((item) => item.proposal.meetingId === meetingId));
+    for (const attempt of resolutionAttempts.current.values()) {
+      if (attempt.proposal.meetingId !== meetingId) continue;
+      const latest = data.commitments.find((item) => item.proposal.proposalId === attempt.proposal.proposalId);
+      if (!latest || latest.proposal.proposalSha256 !== attempt.proposal.proposalSha256 || latest.proposal.proposedByActorId !== attempt.proposal.proposedByActorId) throw new Error("The submitted proposal identity is missing or changed. Its decision remains held for inspection.");
+      if (latest.reconciliation && latest.reconciliation.requestSha256 !== attempt.requestSha256) throw new Error("The recorded intent differs from this submitted decision. Its original review remains held for inspection.");
+    }
+    if (selectionRef.current === meetingId) {
+      data.commitments.forEach((item) => { if (item.reconciliation) confirmedCommitments.current.set(item.proposal.proposalId, item); });
+      setCommitmentSnapshot(data);
+    }
   }, signal), [read]);
 
   const loadOptions = useCallback(() => {
@@ -432,7 +450,7 @@ function ScopedMeetingsWorkspace({ initialMeetingId }: { initialMeetingId?: stri
     restoreEditorFocus();
   };
 
-  async function mutate(label: string, request: () => Promise<Record<string, unknown>>, accept: (body: Record<string, unknown>) => string, after?: () => void) {
+  async function mutate(label: string, request: () => Promise<Record<string, unknown>>, accept: (body: Record<string, unknown>) => string, after?: () => void, unconfirmed?: (failure: unknown) => void) {
     const action = gate.beginWrite();
     if (!action) return;
     const origin = document.activeElement;
@@ -449,7 +467,10 @@ function ScopedMeetingsWorkspace({ initialMeetingId }: { initialMeetingId?: stri
       setReceipt(feedback);
       setAnnouncement(feedback);
     } catch (failure) {
-      if (action.current()) setError(`${message(failure)} Check the current meeting before retrying an uncertain change.`);
+      if (action.current()) {
+        unconfirmed?.(failure);
+        setError(`${message(failure)} ${unconfirmed ? "This submitted decision is held for inspection. Refresh can read its receipts; it cannot submit the decision again." : "Check the current meeting before retrying an uncertain change."}`);
+      }
     } finally {
       if (action.current()) {
         setBusy(undefined);
@@ -457,7 +478,7 @@ function ScopedMeetingsWorkspace({ initialMeetingId }: { initialMeetingId?: stri
         if (accepted) {
           after?.();
           refresh();
-        }
+        } else if (unconfirmed) refresh();
       }
     }
   }
@@ -520,15 +541,27 @@ function ScopedMeetingsWorkspace({ initialMeetingId }: { initialMeetingId?: stri
 
   async function resolveCommitment(proposal: MeetingCommitmentProposal, decision: "confirmed" | "dismissed", details: { ownerParticipantId?: string; dueAt?: string | null; communication?: { policyId: string; recipientParticipantId: string; subject: string; body: string } | null } = {}) {
     if (!selectedRef.current || !workspaceContext?.canWrite || workflowReason || !commitmentsCurrent) return;
+    const current = commitmentSnapshot?.commitments.find((item) => item.proposal.proposalId === proposal.proposalId);
+    if (!current || current.proposal.proposalSha256 !== proposal.proposalSha256 || current.resolution || current.reconciliation || resolutionAttempts.current.has(proposal.proposalId)) return;
     const target = structuredClone(proposal);
     const submitted = structuredClone({ decision, ...details });
     const recipientEmail = submitted.communication ? selectedRef.current.participants.find((item) => item.participantId === submitted.communication?.recipientParticipantId)?.email ?? undefined : undefined;
     if (submitted.communication && !recipientEmail) return;
-    await mutate(`resolution:${target.proposalId}`, () => readJson(`/api/meetings/${encodeURIComponent(target.meetingId)}/commitments`, {
+    const scope = { tenantId: selectedRef.current.tenantId, workspaceId: selectedRef.current.workspaceId };
+    let requestSha256: string;
+    await mutate(`resolution:${target.proposalId}`, async () => {
+      requestSha256 = await meetingResolutionRequestDigest(target, scope, submitted);
+      // The request gate may have been disposed while Web Crypto completed.
+      if (!gate.isWriting()) throw new Error("The decision scope is no longer current.");
+      resolutionAttempts.current.set(target.proposalId, { proposal: target, submitted, requestSha256 });
+      setHeldResolutionIds((previous) => new Set([...previous, target.proposalId]));
+      return readJson(`/api/meetings/${encodeURIComponent(target.meetingId)}/commitments`, {
       method: "PATCH", headers: { "content-type": "application/json", "idempotency-key": `meeting-resolution:${target.proposalSha256}` },
       body: JSON.stringify({ proposalId: target.proposalId, expectedProposalSha256: target.proposalSha256, ...submitted }),
-    }), (body) => {
+      });
+    }, (body) => {
       const result = parseMeetingResolutionReceipt(body, target, submitted, recipientEmail);
+      if (result.commitment.reconciliation && result.commitment.reconciliation.requestSha256 !== requestSha256) throw new Error("The resolution receipt belongs to a different submitted decision.");
       markStale();
       confirmedCommitments.current.set(target.proposalId, result.commitment);
       setCommitmentSnapshot((current) => current ? { ...current, commitments: current.commitments.map((item) => item.proposal.proposalId === target.proposalId ? result.commitment : item) } : current);
@@ -537,7 +570,18 @@ function ScopedMeetingsWorkspace({ initialMeetingId }: { initialMeetingId?: stri
         setSelected(result.meeting);
         setMeetings((current) => current.map((item) => item.meetingId === target.meetingId ? result.meeting! : item));
       }
-      return decision === "confirmed" ? `Commitment confirmed: WorkItem ${result.commitment.resolution!.workItemId}${result.commitment.resolution!.draftId ? `; unsent draft ${result.commitment.resolution!.draftId}; recipient ${recipientEmail}` : ""}.${result.draftVerification === "identity_only" ? " Draft identity is confirmed; this receipt did not return its content." : result.draftVerification === "returned_content" ? " Returned draft recipient and content match the submitted review." : ""}` : `Proposal ${target.proposalId} dismissal confirmed.`;
+      return decision === "confirmed" ? `Commitment confirmed: WorkItem ${result.commitment.resolution!.workItemId}${result.commitment.resolution!.draftId ? `; governed draft ${result.commitment.resolution!.draftId}; recipient ${recipientEmail}` : ""}.${result.draftVerification === "identity_only" ? " Draft identity is confirmed; this receipt did not return its content." : result.draftVerification === "returned_content" ? " Returned draft recipient and content match the submitted review." : ""}${result.commitment.resolution!.draftId ? " Current delivery status is separate from this decision receipt." : ""}` : `Proposal ${target.proposalId} dismissal confirmed.`;
+    }, undefined, (failure) => {
+      markStale();
+      if (!(failure instanceof MeetingResponseError) || failure.status !== 409) return;
+      try {
+        const reconciliation = readMeetingReconciliationError(failure.payload);
+        if (!reconciliation || reconciliation.state === "resolved" || reconciliation.decision !== submitted.decision || reconciliation.requestSha256 !== requestSha256) return; // A terminal claim needs its actual accepted resolution.
+        const retained = { proposal: target, resolution: null, reconciliation };
+        assertMeetingReconciliationRead([retained], [...confirmedCommitments.current.values()].filter((item) => item.proposal.proposalId === target.proposalId));
+        confirmedCommitments.current.set(target.proposalId, retained);
+        setCommitmentSnapshot((snapshot) => snapshot ? { ...snapshot, commitments: snapshot.commitments.map((item) => item.proposal.proposalId === target.proposalId ? retained : item) } : snapshot);
+      } catch { /* Unverified error evidence cannot replace the fixed local hold. */ }
     });
   }
 
@@ -573,7 +617,7 @@ function ScopedMeetingsWorkspace({ initialMeetingId }: { initialMeetingId?: stri
         {reads.detail.error ? <div className={styles.error}><p>{reads.detail.error}{selected ? " Last loaded detail remains below." : ""}</p><button className={styles.secondaryButton} onClick={() => selectionId && void loadDetail(selectionId)}>Retry meeting detail</button></div> : null}
         {selected ? <><p className={styles.readStatus}>{reads.detail.loading || reads.detail.error || reads.detail.stale ? "Last loaded meeting detail." : "Meeting detail loaded."}</p>
           {!commitmentsCurrent ? <div className={styles.notice}><p>{reads.commitments.error ?? (reads.commitments.loading ? "Checking commitment review; availability is not yet confirmed." : "Commitment review is awaiting the current meeting revision. Retained proposals are not actionable.")}</p><button className={styles.secondaryButton} disabled={reads.commitments.loading} onClick={() => void loadCommitments(selected.meetingId)}>Retry commitment review</button></div> : null}
-          <MeetingDetail meeting={selected} linkedSources={linkedSources} commitmentViews={commitmentViews} commitmentsKnown={Boolean(commitmentSnapshot)} eligiblePolicies={commitmentSnapshot?.eligiblePolicies ?? []} project={projects.find((item) => item.id === selected.projectId)} canWrite={canWrite} writeBusy={Boolean(busy)} canProcess={!mediaReason && Boolean(workspaceContext?.canWrite)} canPropose={!proposalReason && Boolean(workspaceContext?.canWrite) && commitmentsCurrent} canResolve={canWrite && commitmentsCurrent} processingRecordingId={busy?.startsWith("recording:") ? busy.slice(10) : undefined} commitmentBusyId={busy?.startsWith("proposal:") ? busy.slice(9) : busy?.startsWith("resolution:") ? busy.slice(11) : undefined} onEdit={() => openEditor(selected)} onProcessRecording={(source) => void processLinkedRecording(source)} onProposeCommitment={(media, action) => void proposeCommitment(media, action)} onResolveCommitment={(proposal, decision, details) => void resolveCommitment(proposal, decision, details)} />
+          <MeetingDetail meeting={selected} linkedSources={linkedSources} commitmentViews={commitmentViews} heldResolutionIds={heldResolutionIds} commitmentsKnown={Boolean(commitmentSnapshot)} eligiblePolicies={commitmentSnapshot?.eligiblePolicies ?? []} project={projects.find((item) => item.id === selected.projectId)} canWrite={canWrite} writeBusy={Boolean(busy)} canProcess={!mediaReason && Boolean(workspaceContext?.canWrite)} canPropose={!proposalReason && Boolean(workspaceContext?.canWrite) && commitmentsCurrent} canResolve={canWrite && commitmentsCurrent} processingRecordingId={busy?.startsWith("recording:") ? busy.slice(10) : undefined} commitmentBusyId={busy?.startsWith("proposal:") ? busy.slice(9) : busy?.startsWith("resolution:") ? busy.slice(11) : undefined} onEdit={() => openEditor(selected)} onProcessRecording={(source) => void processLinkedRecording(source)} onProposeCommitment={(media, action) => void proposeCommitment(media, action)} onResolveCommitment={(proposal, decision, details) => void resolveCommitment(proposal, decision, details)} />
         </> : <div className={styles.emptyCanvas}><h2>{reads.detail.loading ? "Checking meeting detail" : selectionId ? "Meeting detail is unavailable" : known ? "No meeting selected" : "Meetings are unavailable"}</h2><p>{selectionId ? "The exact requested meeting must be loaded before its evidence or actions can be shown." : known ? "Create a meeting or choose a record from the timeline." : "The source reads have not established whether meetings are available."}</p></div>}
       </section>
     </div>}
@@ -583,6 +627,7 @@ function MeetingDetail({
   meeting,
   linkedSources,
   commitmentViews,
+  heldResolutionIds,
   commitmentsKnown,
   eligiblePolicies,
   project,
@@ -601,6 +646,7 @@ function MeetingDetail({
   meeting: Meeting;
   linkedSources: LinkedSource[];
   commitmentViews: MeetingCommitmentView[];
+  heldResolutionIds: ReadonlySet<string>;
   commitmentsKnown: boolean;
   eligiblePolicies: ContactPolicy[];
   project?: ProjectOption;
@@ -704,6 +750,7 @@ function MeetingDetail({
             canWrite={canPropose}
             writeBusy={writeBusy}
             commitmentViews={commitmentViews}
+            heldResolutionIds={heldResolutionIds}
             commitmentBusyId={commitmentBusyId}
             onProposeCommitment={onProposeCommitment}
           />
@@ -732,6 +779,8 @@ function MeetingDetail({
                 policies={eligiblePolicies}
                 canWrite={canResolve}
                 busy={writeBusy}
+                decisionDispatching={commitmentBusyId === view.proposal.proposalId}
+                decisionPending={heldResolutionIds.has(view.proposal.proposalId)}
                 onResolve={onResolveCommitment}
               />
             ))}
@@ -770,6 +819,7 @@ export function ProcessedMeetingMedia({
   canWrite = false,
   writeBusy = false,
   commitmentViews = [],
+  heldResolutionIds,
   commitmentBusyId,
   onProposeCommitment,
 }: {
@@ -779,6 +829,7 @@ export function ProcessedMeetingMedia({
   canWrite?: boolean;
   writeBusy?: boolean;
   commitmentViews?: MeetingCommitmentView[];
+  heldResolutionIds?: ReadonlySet<string>;
   commitmentBusyId?: string;
   onProposeCommitment?: (mediaRevisionId: string, actionItemId: string) => void;
 }) {
@@ -851,8 +902,8 @@ export function ProcessedMeetingMedia({
                 ].join(" · ")}</small>
                 <MediaCitations citations={item.citations} />
                 {commitment ? (
-                  <span className={styles.proposalState} data-state={commitment.resolution?.decision || "proposed"}>
-                    {commitment.resolution?.decision || "proposal ready"}
+                  <span className={styles.proposalState} data-state={commitment.resolution?.decision || commitment.reconciliation?.state || (heldResolutionIds?.has(commitment.proposal.proposalId) ? "unconfirmed" : "proposed")}>
+                    {commitment.resolution?.decision || (commitment.reconciliation ? `Resolution ${commitment.reconciliation.state} · inspection only` : heldResolutionIds?.has(commitment.proposal.proposalId) ? "Decision submitted · inspection only" : "proposal ready")}
                   </span>
                 ) : canWrite ? (
                   <button
@@ -909,6 +960,8 @@ function CommitmentProposalCard({
   policies,
   canWrite,
   busy,
+  decisionPending,
+  decisionDispatching,
   onResolve,
 }: {
   view: MeetingCommitmentView;
@@ -916,6 +969,8 @@ function CommitmentProposalCard({
   policies: ContactPolicy[];
   canWrite: boolean;
   busy: boolean;
+  decisionPending: boolean;
+  decisionDispatching: boolean;
   onResolve: (
     proposal: MeetingCommitmentProposal,
     decision: "confirmed" | "dismissed",
@@ -931,8 +986,12 @@ function CommitmentProposalCard({
     },
   ) => void;
 }) {
-  const { proposal, resolution } = view;
+  const { proposal, resolution, reconciliation } = view;
   const draftMessageLabelId = useId();
+  const inspection = useRef<HTMLElement>(null);
+  useLayoutEffect(() => {
+    if (decisionPending && !decisionDispatching && !resolution && document.activeElement === document.body) inspection.current?.focus();
+  }, [decisionPending, decisionDispatching, resolution]);
   const [ownerParticipantId, setOwnerParticipantId] = useState(
     proposal.ownership.participantId || "",
   );
@@ -959,12 +1018,27 @@ function CommitmentProposalCard({
             <span><strong>Owner</strong>{resolution.ownerDisplayName} · {authorityLabel(resolution.ownershipAuthority)}</span>
             <span><strong>Due</strong>{resolution.dueAt ? formatCompactDate(resolution.dueAt) : "No due date"}{resolution.dueDateAuthority ? ` · ${authorityLabel(resolution.dueDateAuthority)}` : ""}</span>
             <span><strong>WorkItem</strong>{resolution.workItemId}</span>
-            {resolution.draftId ? <span><strong>Governed draft</strong>{resolution.draftId} · unsent</span> : null}
+            {resolution.draftId ? <span><strong>Governed draft</strong>{resolution.draftId} · creation recorded; current delivery status is separate.</span> : null}
           </div>
         ) : null}
         <MediaCitations citations={proposal.citations} />
+        <ProposalEvidence proposal={proposal} />
+        {reconciliation ? <ResolutionEvidence proposal={proposal} reconciliation={reconciliation} /> : <p className={styles.fieldHelp}>This view does not include an exact decision receipt. Its accepted resolution remains readable.</p>}
       </article>
     );
+  }
+
+  if (reconciliation || decisionPending && !decisionDispatching) {
+    return <article ref={inspection} tabIndex={-1} className={styles.commitmentCard} data-state={reconciliation?.state || "unconfirmed"} aria-label={`Resolution inspection: ${proposal.title}`}>
+      <div className={styles.commitmentCardHeader}><div><AlertTriangle size={14} /><strong>{reconciliation ? `Resolution ${reconciliation.state}` : "Decision outcome unconfirmed"}</strong></div><small>inspection only</small></div>
+      <p>{proposal.title}</p>
+      <p>The submitted decision stays fixed. Refresh reads its recorded evidence and cannot submit another WorkItem, draft or decision.</p>
+      {!reconciliation ? <p className={styles.fieldHelp}>No verified intent receipt is available yet. The request may have taken effect; the retained proposal does not prove that no work occurred.</p> : null}
+      <ProposalEvidence proposal={proposal} />
+      <MediaCitations citations={proposal.citations} />
+      {decisionPending ? <details className={styles.provenance}><summary>Retained local review fields</summary><p>These local fields remain available for inspection. A dismissal submits only its decision and exact proposal identity.</p><dl><div><dt>Owner</dt><dd><code>{ownerParticipantId || "Not selected"}</code></dd></div><div><dt>Due date</dt><dd>{dueAt || "No due date"}</dd></div>{includeDraft ? <><div><dt>Policy</dt><dd><code>{policyId}</code></dd></div><div><dt>Subject</dt><dd>{subject}</dd></div><div><dt>Message</dt><dd>{body}</dd></div></> : null}</dl></details> : null}
+      {reconciliation ? <ResolutionEvidence proposal={proposal} reconciliation={reconciliation} /> : null}
+    </article>;
   }
 
   const policy = policies.find((candidate) => candidate.id === policyId);
@@ -995,10 +1069,10 @@ function CommitmentProposalCard({
     >
       <div className={styles.commitmentCardHeader}>
         <div><span><Sparkles size={14} /></span><strong>Review proposed commitment</strong></div>
-        <small>no effects yet</small>
+        <small>{decisionPending ? "Decision submitted · outcome pending" : "no effects yet"}</small>
       </div>
       <p>{proposal.title}</p>
-      <details className={styles.provenance}><summary>Exact proposal evidence</summary><dl><div><dt>Proposal</dt><dd><code>{proposal.proposalId}</code></dd></div><div><dt>Digest</dt><dd><code>{proposal.proposalSha256}</code></dd></div><div><dt>Meeting revision</dt><dd><code>{proposal.meetingRevisionId}</code></dd></div><div><dt>Media revision</dt><dd><code>{proposal.mediaRevisionId}</code></dd></div><div><dt>Action item</dt><dd><code>{proposal.actionItemId}</code></dd></div><div><dt>Project</dt><dd><code>{proposal.projectId}</code></dd></div></dl></details>
+      <ProposalEvidence proposal={proposal} />
       <MediaCitations citations={proposal.citations} />
       <div className={styles.proposalEvidence}>
         <span data-evidence={proposal.ownership.authority}>
@@ -1085,6 +1159,21 @@ function CommitmentProposalCard({
       {!canWrite ? <p className={styles.fieldHelp}>Current proposal review and contributor access are required before a decision can be submitted.</p> : null}
     </form>
   );
+}
+
+function ProposalEvidence({ proposal }: { proposal: MeetingCommitmentProposal }) {
+  return <details className={styles.provenance}><summary>Exact proposal evidence</summary><dl><div><dt>Proposal</dt><dd><code>{proposal.proposalId}</code></dd></div><div><dt>Digest</dt><dd><code>{proposal.proposalSha256}</code></dd></div><div><dt>Meeting revision</dt><dd><code>{proposal.meetingRevisionId}</code></dd></div><div><dt>Media revision</dt><dd><code>{proposal.mediaRevisionId}</code></dd></div><div><dt>Action item</dt><dd><code>{proposal.actionItemId}</code></dd></div><div><dt>Project</dt><dd><code>{proposal.projectId}</code></dd></div></dl></details>;
+}
+function ResolutionEvidence({ proposal, reconciliation }: { proposal: MeetingCommitmentProposal; reconciliation: MeetingResolutionReconciliation }) {
+  const labels = { work_started: "Work creation started; its result is not recorded by this phase.", work_completed: "Work creation acknowledged", draft_started: "Draft creation started; its result is not recorded by this phase.", draft_completed: "Draft creation acknowledged; delivery status is separate.", meeting_started: "Meeting update started; its result is not recorded by this phase.", meeting_completed: "Meeting update acknowledged", resolution_started: "Final decision recording started", interrupted: "The sequence was interrupted. No automatic continuation is authorized." };
+  return <section className={styles.reconciliation} aria-label="Recorded resolution evidence">
+    <p>{reconciliation.state === "pending" ? "The immutable decision was recorded before child work. No completed child is acknowledged yet." : reconciliation.state === "partial" ? "Some child work is acknowledged. The final decision is not recorded." : reconciliation.state === "uncertain" ? "At least one effect is unconfirmed or the sequence was interrupted. Recorded child receipts remain available below." : "The exact final decision and its recorded child identities are accepted."}</p>
+    <dl><div><dt>Decision</dt><dd>{reconciliation.decision}</dd></div><div><dt>Request digest</dt><dd><code>{reconciliation.requestSha256}</code></dd></div><div><dt>Recorded at</dt><dd><time dateTime={reconciliation.createdAt}>{reconciliation.createdAt}</time></dd></div></dl>
+    {reconciliation.phases.length ? <ol className={styles.phaseList}>{reconciliation.phases.map((phase) => {
+      const href = meetingResolutionReceiptHref(proposal, phase);
+      return <li key={phase.phase}><strong>{labels[phase.phase]}</strong><time dateTime={phase.at}>{phase.at}</time>{phase.resourceId ? <><span>Resource <code>{phase.resourceId}</code></span><span>Receipt digest <code>{phase.evidenceSha256}</code></span>{href ? <Link href={href}>{phase.phase === "work_completed" ? "Inspect exact WorkItem" : "Open current meeting"}</Link> : null}</> : null}</li>;
+    })}</ol> : <p>No child phase receipts have been returned.</p>}
+  </section>;
 }
 
 function MediaCitations({ citations }: { citations: MediaCitation[] }) {
@@ -1230,5 +1319,8 @@ function authorityLabel(value: MeetingCommitmentResolution["ownershipAuthority"]
 function localDateTimeInput(value: string | null) { return value ? toLocalInput(value) : ""; }
 function toLocalInput(value: string) { const date = new Date(value); const offset = date.getTimezoneOffset() * 60_000; return new Date(date.getTime() - offset).toISOString().slice(0, 16); }
 function fromLocalInput(value: string) { const date = new Date(value); return Number.isFinite(date.getTime()) ? date.toISOString() : new Date().toISOString(); }
-async function readJson(path: string, init?: RequestInit) { const response = await fetch(path, { cache: "no-store", ...init }); const payload = await response.json().catch(() => ({})); if (!response.ok) throw new Error(String(payload.error || payload.message || `${path} returned ${response.status}`)); return payload as Record<string, unknown>; }
+class MeetingResponseError extends Error {
+  constructor(message: string, readonly status: number, readonly payload: unknown) { super(message); }
+}
+async function readJson(path: string, init?: RequestInit) { const response = await fetch(path, { cache: "no-store", ...init }); const payload = await response.json().catch(() => ({})); if (!response.ok) { const record = payload && typeof payload === "object" ? payload as Record<string, unknown> : {}; const detail = typeof record.error === "string" ? record.error : typeof record.message === "string" ? record.message : `${path} returned ${response.status}`; throw new MeetingResponseError(detail.slice(0, 4000), response.status, payload); } return payload as Record<string, unknown>; }
 function message(error: unknown) { return error instanceof Error ? error.message : "Meetings could not be updated."; }

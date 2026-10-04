@@ -1,6 +1,19 @@
 import type postgres from "postgres";
 import { expect } from "vitest";
 
+/** Historical replay removes only empty, disposable v220 decision evidence.
+ * This is fixture cleanup, never a production rollback path. */
+async function removeEmptyMeetingResolutionIntentsForReplay(sql: postgres.TransactionSql) {
+  expect(await sql`SELECT
+    (SELECT count(*)::int FROM public.omni_meeting_commitment_resolution_intents) AS intents,
+    (SELECT count(*)::int FROM public.omni_meeting_commitment_resolution_progress) AS progress
+  `).toEqual([{ intents: 0, progress: 0 }]);
+  await sql`DROP TRIGGER omni_meeting_commitment_resolution_requires_intent ON public.omni_meeting_commitment_resolutions`;
+  await sql`DROP TABLE public.omni_meeting_commitment_resolution_progress`;
+  await sql`DROP TABLE public.omni_meeting_commitment_resolution_intents`;
+  await sql`DROP FUNCTION public.omni_admit_meeting_resolution_intent_v1()`;
+}
+
 /** Historical replay removes only empty, disposable notification authority and
  * restores the pre-v219 contract on existing notification tables. */
 export async function removeEmptyResponsibilityNotificationsForReplay(sql: postgres.TransactionSql) {
@@ -35,6 +48,7 @@ export async function removeEmptyResponsibilityNotificationsForReplay(sql: postg
 /** Only the guarded historical migration fixtures call this, on empty runtime
  * tables. Restore the predecessor policy as well as its object inventory. */
 export async function removeEmptyResponsibilityRuntimeForReplay(sql: postgres.TransactionSql) {
+  await removeEmptyMeetingResolutionIntentsForReplay(sql);
   await removeEmptyResponsibilityNotificationsForReplay(sql);
   expect(await sql`SELECT
     (SELECT count(*)::int FROM public.omni_responsibility_lifecycles) AS lifecycles,

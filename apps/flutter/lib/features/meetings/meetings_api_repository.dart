@@ -9,7 +9,7 @@ class ApiMeetingsRepository implements MeetingsRepository {
   @override
   Future<List<Meeting>> list() async {
     final json = await api.getJson(
-      NativePaths.meetingsList,
+      NativePaths.meetingsList(),
       query: {'limit': 100},
     );
     return ((json['meetings'] as List?) ?? const [])

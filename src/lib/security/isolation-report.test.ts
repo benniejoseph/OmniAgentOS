@@ -31,6 +31,17 @@ describe("tenant isolation policy evidence", () => {
       expect(hasExpectedTenantIsolationPolicy(tableName, [tenant, policy(tableName, actor, { permissive: false, command: "r" })])).toBe(false);
     }
   });
+  it("requires exact canonical owner gates on Meeting resolution intent and progress", () => {
+    for (const tableName of ["omni_meeting_commitment_resolution_intents", "omni_meeting_commitment_resolution_progress"]) {
+      const tenant = policy(tableName, "omni_tenant_isolation");
+      const owner = `${tableName}_owner`;
+      expect(hasExpectedTenantIsolationPolicy(tableName, [tenant, policy(tableName, owner, { permissive: false })])).toBe(true);
+      expect(hasExpectedTenantIsolationPolicy(tableName, [tenant])).toBe(false);
+      expect(hasExpectedTenantIsolationPolicy(tableName, [tenant, policy(tableName, owner)])).toBe(false);
+      expect(hasExpectedTenantIsolationPolicy(tableName, [tenant, policy(tableName, owner, { permissive: false, command: "r" })])).toBe(false);
+      expect(hasExpectedTenantIsolationPolicy(tableName, [tenant, policy(tableName, `${tableName}_actor`, { permissive: false })])).toBe(false);
+    }
+  });
   it("recognizes the policy contracts used by tenant and actor-scoped tables", () => {
     expect(expectedTenantIsolationPolicyName("omni_memories"))
       .toBe("omni_tenant_isolation");
