@@ -120,6 +120,9 @@
 .inspectorEmpty p { max-inline-size: 32ch; font-size: .8125rem; line-height: 1.5385; }
 
 .mobileDetails { display: grid; min-inline-size: 0; grid-column: 1 / -1; gap: 1rem; border-block-start: 1px solid var(--line); padding: 1rem; background: var(--surface); }
+.exactInline { min-inline-size: 0; border-block: 1px solid var(--line); padding: 1rem; }
+.exactInline > h3 { font-size: 1.25rem; line-height: 1.4; overflow-wrap: anywhere; }
+.exactInline:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
 .mobileDetails > p { font-size: 1rem; line-height: 1.625; white-space: pre-wrap; }
 .mobileDetails dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
 .mobileDetails dl > div { min-inline-size: 0; }
@@ -170,9 +173,18 @@
 .compactFacts code { flex-basis: 100%; color: var(--foreground); font-family: var(--font-mono); font-size: .8125rem; line-height: 1.5385; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
 .compactFacts a { display: inline-flex; min-block-size: var(--library-control-size); align-items: center; padding-block: .5rem; color: var(--accent); text-decoration: underline; text-underline-offset: .2em; }
 .compactSkeleton { min-block-size: 12rem; }
+.compactIdentity { grid-column: 2 / -1; min-inline-size: 0; }
+.identityDisclosure { min-inline-size: 0; margin-block: 1rem; border-block: 1px solid var(--line); }
+.identityDisclosure summary { min-block-size: var(--library-control-size); padding-block: .75rem; font-size: .875rem; line-height: 1.4286; font-weight: 500; cursor: pointer; }
+.identityDisclosure > p, .identityDisclosure dt { color: var(--muted); font-size: .8125rem; line-height: 1.5385; }
+.identityDisclosure dl { display: grid; min-inline-size: 0; gap: .75rem; padding-block: 1rem; }
+.identityDisclosure dl > div { min-inline-size: 0; }
+.identityDisclosure dd, .identityDisclosure code { font-family: var(--font-mono); font-size: .8125rem; line-height: 1.5385; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.identityDisclosure ul { display: grid; gap: .5rem; padding: .75rem 0 .75rem 1rem; }
+.citations { min-inline-size: 0; }
 
 .shell :is(button, a, input, select) { transition: color var(--duration-control) var(--ease-standard), background-color var(--duration-control) var(--ease-standard), border-color var(--duration-control) var(--ease-standard); }
-.shell :is(button, a, input, select):focus-visible, .inspectorContent:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; box-shadow: 0 0 0 3px var(--focus-surface, var(--background)); }
+.shell :is(button, a, input, select, summary):focus-visible, .inspectorContent:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; box-shadow: 0 0 0 3px var(--focus-surface, var(--background)); }
 .inputShell, .inspector, .mobileDetails { --focus-surface: var(--surface); }
 .assetRow.selectedAsset, .assetTile.selectedAsset { --focus-surface: var(--accent-surface); }
 .error { --focus-surface: var(--danger-surface); }
@@ -200,6 +212,7 @@
     scrollbar-width: thin;
   }
   .mobileDetails { display: none; }
+  .exactInline { display: none; }
 }
 
 @container workspace-library (min-width: 80rem) {
@@ -245,6 +258,7 @@
     .collectionRail { grid-column: 1; }
     .inspector { display: none; }
     .mobileDetails { display: grid; }
+    .exactInline { display: block; }
   }
   @container workspace-library (min-width: 80rem) {
     .workspace { grid-template-columns: 14rem minmax(0, 1fr); }

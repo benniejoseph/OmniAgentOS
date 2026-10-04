@@ -14,7 +14,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useId, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import { clsx } from "clsx";
 import type {
   CaptureRecordingStatus,
@@ -22,6 +22,7 @@ import type {
   RequestCaptureRecordingSummary,
 } from "@/lib/capture/types";
 import styles from "./long-recording-studio.module.css";
+import { createRecordingSelectionGate, createRecordingVisibilityEpoch, readRecordingMetadata, readRecordingPrivateDetail } from "./recording-selection";
 import {
   createCaptureRecordingStartAttempt,
   startCaptureRecording,
@@ -82,6 +83,9 @@ type RecordingDraftProps = {
 };
 
 type Props = RecordingDraftProps & {
+  requestedRecordingId?: string | null;
+  readEnabled?: boolean;
+  requestOwner?: { tenantId: string; actorId: string };
   disabledReason?: string;
   onJob?: (job: {
     id: string;
@@ -178,7 +182,7 @@ export function captureRecordingMetadataDetailIsSafe(
   return recording.segments.every(isRecordingMetadataSegment);
 }
 
-export function LongRecordingStudio({ disabledReason, onJob, onIndexed, draft, onDraftChange }: Props) {
+export function LongRecordingStudio({ disabledReason, onJob, onIndexed, draft, onDraftChange, requestedRecordingId, readEnabled = true, requestOwner }: Props) {
   const [phase, setPhase] = useState<RecordingPhase>("idle");
   const [recordingId, setRecordingId] = useState<string>();
   const [localDraft, setLocalDraft] = useState<LongRecordingDraft>({
@@ -249,6 +253,7 @@ export function LongRecordingStudio({ disabledReason, onJob, onIndexed, draft, o
   }, []);
 
   const loadRecordings = useCallback(async (): Promise<RecordingCollectionLoadResult> => {
+    if (!readEnabled) { setLoadingRecordings(false); return "failure"; }
     recordingsControllerRef.current?.abort();
     const controller = new AbortController();
     recordingsControllerRef.current = controller;
@@ -317,7 +322,7 @@ export function LongRecordingStudio({ disabledReason, onJob, onIndexed, draft, o
         setLoadingRecordings(false);
       }
     }
-  }, [replaceRecordings]);
+  }, [readEnabled, replaceRecordings]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void loadRecordings(), 0);
@@ -736,6 +741,8 @@ export function LongRecordingStudio({ disabledReason, onJob, onIndexed, draft, o
 
   return (
     <div className={styles.studio} data-testid="long-recording-studio">
+      {requestedRecordingId === null ? <p role="alert" className={styles.error}>This recording link has an invalid identity.</p> : requestedRecordingId && readEnabled && requestOwner ?
+        <ExactRecordingLink key={requestedRecordingId} id={requestedRecordingId} owner={requestOwner} /> : null}
       <div className={styles.layout}>
         <section className={styles.recorder} aria-label="Record a conversation">
           <div className={styles.fields}>
@@ -995,6 +1002,94 @@ export function LongRecordingStudio({ disabledReason, onJob, onIndexed, draft, o
       ) : null}
     </div>
   );
+}
+
+function subscribeRecordingVisibility(listener: () => void) {
+  document.addEventListener("visibilitychange", listener);
+  return () => document.removeEventListener("visibilitychange", listener);
+}
+function ExactRecordingLink({ id, owner }: { id: string; owner: { tenantId: string; actorId: string } }) {
+  const [gate] = useState(createRecordingSelectionGate);
+  const [visibilitySource] = useState(createRecordingVisibilityEpoch);
+  const visibilitySnapshot = useCallback(() => visibilitySource.read(document.visibilityState !== "hidden"), [visibilitySource]);
+  const visibility = useSyncExternalStore(subscribeRecordingVisibility, visibilitySnapshot, visibilitySource.server);
+  const visible = visibility.visible;
+  const [revision, setRevision] = useState(0);
+  const [readState, setRead] = useState<{ visibilityEpoch: number; metadata?: RecordingMetadataDetail; privateDetail?: RecordingDetail; error?: string; pendingPrivate?: boolean; privateError?: string }>();
+  const read = readState?.visibilityEpoch === visibility.epoch ? readState : undefined;
+  const [closed, setClosed] = useState(false);
+  const [visibleSegments, setVisibleSegments] = useState(8);
+  const [copyFeedback, setCopyFeedback] = useState<string>();
+  const openRef = useRef<HTMLButtonElement>(null);
+  const headingId = useId();
+  useLayoutEffect(() => () => gate.clear(), [gate, id, owner.tenantId, owner.actorId]);
+  useEffect(() => {
+    if (!visible) { gate.clear(); return; }
+    const token = gate.begin(id);
+    const timer = window.setTimeout(async () => {
+      setRead(undefined); setCopyFeedback(undefined); setVisibleSegments(8);
+      try {
+        const response = await fetch(`/api/capture/recordings/${encodeURIComponent(id)}?ownerScope=readable`, { cache: "no-store", signal: token.controller.signal });
+        const value: unknown = await response.json();
+        if (!gate.current(token) || document.visibilityState === "hidden") return;
+        if (!response.ok) throw new Error(response.status === 403 || response.status === 404 ? "This exact recording is no longer readable." : "Recording metadata could not be loaded.");
+        setRead({ visibilityEpoch: visibility.epoch, metadata: readRecordingMetadata(value, id) });
+      } catch (error) {
+        if (gate.current(token) && document.visibilityState !== "hidden") setRead({ visibilityEpoch: visibility.epoch, error: error instanceof Error ? error.message : "Recording metadata could not be loaded." });
+      }
+    }, 0);
+    return () => { window.clearTimeout(timer); gate.clear(); };
+  }, [gate, id, owner.tenantId, owner.actorId, revision, visible, visibility.epoch]);
+
+  async function openPrivate() {
+    const metadata = read?.metadata;
+    if (!metadata?.transcriptAvailable || read?.pendingPrivate || !visible || closed) return;
+    const token = gate.begin(id);
+    setRead({ visibilityEpoch: visibility.epoch, metadata, pendingPrivate: true });
+    try {
+      const response = await fetch(`/api/capture/recordings/${encodeURIComponent(id)}`, { cache: "no-store", signal: token.controller.signal });
+      const value = await response.json();
+      if (!gate.current(token) || document.visibilityState === "hidden") return;
+      if (!response.ok) throw new Error("The owner-authorized recording content is unavailable. Metadata remains a separate read.");
+      setRead({ visibilityEpoch: visibility.epoch, metadata, privateDetail: readRecordingPrivateDetail(value, metadata, owner) });
+    } catch (error) {
+      if (gate.current(token) && document.visibilityState !== "hidden") setRead({ visibilityEpoch: visibility.epoch, metadata, privateError: error instanceof Error ? error.message : "Private recording content is unavailable." });
+    }
+  }
+  function close() {
+    gate.clear(); setClosed(true); setRead((current) => current?.metadata ? { visibilityEpoch: current.visibilityEpoch, metadata: current.metadata } : current);
+    window.requestAnimationFrame(() => { if (document.activeElement === document.body) openRef.current?.focus({ preventScroll: true }); });
+  }
+  async function copyTranscript() {
+    const detail = read?.privateDetail;
+    if (!detail?.transcript) return;
+    const token = gate.begin(id);
+    try { await navigator.clipboard.writeText(detail.transcript); if (gate.current(token)) setCopyFeedback("Transcript copied."); }
+    catch { if (gate.current(token)) setCopyFeedback("Transcript could not be copied. Select the full text below."); }
+  }
+  const metadata = visible ? read?.metadata : undefined;
+  const detail = read?.privateDetail;
+  return <section className={styles.linkedRecording} aria-label="Linked recording">
+    <div className={styles.sectionHeader}><div><h3 className={styles.sectionTitle}>Linked recording</h3><p className={styles.identity}>{id}</p></div>
+      <button ref={openRef} type="button" className={styles.button} onClick={() => { setClosed(false); setRevision((current) => current + 1); }}>{read?.error ? "Retry exact recording" : closed ? "Open linked recording metadata" : "Refresh exact recording"}</button></div>
+    <p className={styles.supporting}>This exact source opens independently of the six most recent recordings.</p>
+    {!read && visible ? <p role="status" className={styles.readStatus}>Opening exact recording metadata…</p> : null}
+    {read?.error ? <p role="alert" className={styles.error}>{read.error}</p> : null}
+    {metadata && !closed ? <RecordingDialog labelledBy={headingId} onClose={close}>
+      <header className={styles.dialogHeader}><div><p className={styles.supporting}>{metadata.transcriptAvailable ? "Recording metadata" : "Retained recording metadata"}</p><h3 id={headingId} className={styles.dialogTitle}>{metadata.metadataAvailable ? metadata.title : "Recording metadata unavailable"}</h3><p className={styles.identity}>Session ID: {metadata.id}</p></div><button type="button" className={styles.iconButton} aria-label="Close linked recording" onClick={close}><X size={18} aria-hidden="true" /></button></header>
+      <div className={styles.metadataContent}>
+        <p className={styles.reading}>{metadata.transcriptAvailable ? "Private transcript and audio require a separate current owner-authorized read." : "Read-only retained history. Transcript, audio and management remain with the stored owner."}</p>
+        {metadata.metadataAvailable ? <dl className={styles.metadata}><MetadataValue label="Status" value={recordingStatusLabel(metadata.status)} /><MetadataValue label="Updated" value={metadata.updatedAt} /><MetadataValue label="Started" value={metadata.startedAt} /><MetadataValue label="Duration" value={formatDuration(metadata.durationMs)} /><MetadataValue label="Stored bytes" value={String(metadata.byteCount)} /><MetadataValue label="Segments" value={String(metadata.segmentCount)} /></dl> : <p className={styles.empty}>Recording metadata and counts are unavailable to this request actor.</p>}
+        {metadata.transcriptAvailable && !detail ? <button type="button" className={styles.button} disabled={read?.pendingPrivate} onClick={() => void openPrivate()}>{read?.pendingPrivate ? "Reading private recording…" : "Read private transcript and audio"}</button> : null}
+        {read?.privateError ? <p role="alert" className={styles.error}>{read.privateError}</p> : null}
+        {detail ? <section aria-label="Linked recording transcript"><div className={styles.sectionHeader}><h4 className={styles.itemTitle}>Full transcript</h4><button type="button" className={styles.button} disabled={!detail.transcript} onClick={() => void copyTranscript()}>Copy linked transcript</button></div>{copyFeedback ? <p role="status">{copyFeedback}</p> : null}<p className={styles.transcript}>{detail.transcript || "No completed transcript was returned."}</p></section> : null}
+        <section className={styles.retainedSegments} aria-label="Linked recording segments"><h4 className={styles.itemTitle}>{detail ? "Owner recording segments" : "Segment metadata"}</h4>
+          {!metadata.segmentMetadataAvailable ? <p className={styles.empty}>Segment metadata is unavailable.</p> : metadata.segments.length === 0 ? <p className={styles.empty}>No segments were returned for this recording.</p> : <div className={styles.segmentList}>{detail ? detail.segments.slice(0, visibleSegments).map((segment) => <RecordingAudioSegment key={segment.id} recordingId={id} segment={segment} />) : metadata.segments.slice(0, visibleSegments).map((segment) => <article key={segment.id} className={styles.segment}><h5 className={styles.rowTitle}>Segment {segment.segmentIndex + 1}</h5><p className={styles.identity}>{segment.id}</p><p>{formatDuration(segment.durationMs)} · {formatByteCount(segment.byteCount)} · {recordingTranscriptionStatusLabel(segment.transcriptionStatus)}</p></article>)}</div>}
+          {visibleSegments < (detail?.segments.length ?? metadata.segments.length) ? <button type="button" className={styles.button} onClick={() => setVisibleSegments((current) => current + 8)}>Show more linked segments</button> : null}
+        </section>
+      </div>
+    </RecordingDialog> : null}
+  </section>;
 }
 
 function RecordingDialog({ labelledBy, onClose, children }: {
