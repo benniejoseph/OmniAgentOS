@@ -5,11 +5,12 @@ import 'package:flutter/material.dart';
 import '../../app/macos/macos_page_scaffold.dart';
 import '../../app/theme/macos_app_theme.dart';
 import 'knowledge.dart';
+import 'knowledge_consent_view.dart';
 import 'knowledge_read_widgets.dart';
 import 'knowledge_mutations.dart';
 import 'knowledge_mutation_widgets.dart';
 
-enum _KnowledgeWorkspace { memories, sources, reviews, relationships }
+enum _KnowledgeWorkspace { memories, sources, reviews, relationships, recall }
 
 /// A desktop knowledge browser for macOS.
 ///
@@ -192,6 +193,7 @@ class _MacosKnowledgeViewState extends State<MacosKnowledgeView> {
                   _KnowledgeWorkspace.sources => sources.length,
                   _KnowledgeWorkspace.relationships => nodes.length,
                   _KnowledgeWorkspace.reviews => 0,
+                  _KnowledgeWorkspace.recall => 0,
                 },
                 onWorkspaceChanged: _selectWorkspace,
                 onSearchChanged: (_) => setState(() {}),
@@ -227,6 +229,9 @@ class _MacosKnowledgeViewState extends State<MacosKnowledgeView> {
     required GraphNode? selectedNode,
   }) {
     final controller = widget.controller;
+    if (_workspace == _KnowledgeWorkspace.recall) {
+      return KnowledgePersonalRecall(controller: controller);
+    }
     if (state == null && controller.loading) {
       return const MacosLoadingList(rows: 9);
     }
@@ -275,6 +280,9 @@ class _MacosKnowledgeViewState extends State<MacosKnowledgeView> {
         ],
       ),
       _KnowledgeWorkspace.reviews => KnowledgeReviews(controller: controller),
+      _KnowledgeWorkspace.recall => KnowledgePersonalRecall(
+        controller: controller,
+      ),
       _KnowledgeWorkspace.relationships => Column(
         children: [
           KnowledgeCoverage(controller: controller, graph: true),
@@ -310,6 +318,7 @@ class _MacosKnowledgeViewState extends State<MacosKnowledgeView> {
           (item) => item.category,
         ),
       _KnowledgeWorkspace.reviews => const <String>[],
+      _KnowledgeWorkspace.recall => const <String>[],
       _KnowledgeWorkspace.relationships =>
         (state?.nodes ?? const <GraphNode>[]).map((item) => item.kind),
     };
@@ -440,6 +449,7 @@ class _KnowledgeToolbar extends StatelessWidget {
                 _KnowledgeWorkspace.sources: 'Sources',
                 _KnowledgeWorkspace.reviews: 'Reviews',
                 _KnowledgeWorkspace.relationships: 'Relationships',
+                _KnowledgeWorkspace.recall: 'Personal recall',
               }.entries)
                 ChoiceChip(
                   label: Text(entry.value),
@@ -454,59 +464,68 @@ class _KnowledgeToolbar extends StatelessWidget {
                 ),
             ],
           ),
-          const SizedBox(width: 12),
-          SizedBox(
-            width: compact ? 220 : 290,
-            child: TextField(
-              key: const Key('macos-knowledge-search'),
-              controller: searchController,
-              onChanged: onSearchChanged,
-              onSubmitted: onSearchSubmitted,
-              decoration: InputDecoration(
-                hintText: switch (workspace) {
-                  _KnowledgeWorkspace.memories => 'Search memory',
-                  _KnowledgeWorkspace.sources => 'Search indexed sources',
-                  _KnowledgeWorkspace.relationships => 'Find a concept',
-                  _KnowledgeWorkspace.reviews => 'Search catalogue',
-                },
-                prefixIcon: const Icon(Icons.search_rounded, size: 17),
-                suffixIcon: searchController.text.isEmpty
-                    ? null
-                    : IconButton(
-                        tooltip: 'Clear search',
-                        onPressed: onClearSearch,
-                        icon: const Icon(Icons.close_rounded, size: 15),
-                      ),
+          if (workspace != _KnowledgeWorkspace.recall) ...[
+            const SizedBox(width: 12),
+            SizedBox(
+              width: compact ? 220 : 290,
+              child: TextField(
+                key: const Key('macos-knowledge-search'),
+                controller: searchController,
+                onChanged: onSearchChanged,
+                onSubmitted: onSearchSubmitted,
+                decoration: InputDecoration(
+                  hintText: switch (workspace) {
+                    _KnowledgeWorkspace.memories => 'Search memory',
+                    _KnowledgeWorkspace.sources => 'Search indexed sources',
+                    _KnowledgeWorkspace.relationships => 'Find a concept',
+                    _KnowledgeWorkspace.reviews => 'Search catalogue',
+                    _KnowledgeWorkspace.recall => 'Personal recall',
+                  },
+                  prefixIcon: const Icon(Icons.search_rounded, size: 17),
+                  suffixIcon: searchController.text.isEmpty
+                      ? null
+                      : IconButton(
+                          tooltip: 'Clear search',
+                          onPressed: onClearSearch,
+                          icon: const Icon(Icons.close_rounded, size: 15),
+                        ),
+                ),
               ),
             ),
-          ),
-          const SizedBox(width: 8),
-          SizedBox(
-            width: compact ? 132 : 165,
-            child: DropdownButtonFormField<String>(
-              key: ValueKey('macos-knowledge-filter-$workspace-$category'),
-              initialValue: category,
-              isExpanded: true,
-              decoration: const InputDecoration(),
-              items: [
-                const DropdownMenuItem(value: 'all', child: Text('All kinds')),
-                ...categories.map(
-                  (value) => DropdownMenuItem(
-                    value: value,
-                    child: Text(_label(value), overflow: TextOverflow.ellipsis),
+            const SizedBox(width: 8),
+            SizedBox(
+              width: compact ? 132 : 165,
+              child: DropdownButtonFormField<String>(
+                key: ValueKey('macos-knowledge-filter-$workspace-$category'),
+                initialValue: category,
+                isExpanded: true,
+                decoration: const InputDecoration(),
+                items: [
+                  const DropdownMenuItem(
+                    value: 'all',
+                    child: Text('All kinds'),
                   ),
-                ),
-              ],
-              onChanged: (value) {
-                if (value != null) onCategoryChanged(value);
-              },
+                  ...categories.map(
+                    (value) => DropdownMenuItem(
+                      value: value,
+                      child: Text(
+                        _label(value),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ),
+                ],
+                onChanged: (value) {
+                  if (value != null) onCategoryChanged(value);
+                },
+              ),
             ),
-          ),
-          if (!compact)
-            Text(
-              '$visibleCount visible',
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
+            if (!compact)
+              Text(
+                '$visibleCount visible',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+          ],
         ],
       );
     },
@@ -1227,6 +1246,11 @@ class _KnowledgeInspector extends StatelessWidget {
       icon: Icons.fact_check_outlined,
       title: 'Exact private reviews',
       message: 'Inspect the candidate and existing claim. A current decision token and explicit review are required; downstream projections remain separate.',
+    ),
+    _KnowledgeWorkspace.recall => const _InspectorPlaceholder(
+      icon: Icons.privacy_tip_outlined,
+      title: 'Your personal recall choice',
+      message: 'Read the current notice and explicitly enable or disable personal automatic recall. A saved decision receipt is separate from the latest setting.',
     ),
     _KnowledgeWorkspace.sources =>
       source == null

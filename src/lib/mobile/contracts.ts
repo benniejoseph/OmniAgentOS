@@ -37,6 +37,8 @@ import { entityOptionsContractSchemas, entityOptionsQueryMetadata } from "@/lib/
 import { nativeMarketReadContractSchemas } from "@/lib/mobile/market-contracts";
 import { nativeMemoryMutationSchemas } from "@/lib/mobile/memory-mutation-contracts";
 import { nativeMemoryReconciliationSchemas } from "@/lib/mobile/memory-reconciliation-contracts";
+import { nativePersonalContextConsentSchemas } from "@/lib/mobile/personal-context-consent-contracts";
+import { nativeMeetingCalendarSchemas } from "@/lib/mobile/meeting-calendar-contracts";
 
 import { pluginManifestSchema } from "@/lib/plugins/contracts";
 import {
@@ -46,10 +48,10 @@ import {
 import { voiceCommandInputSchema } from "@/lib/voice/command-input";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 35 as const;
-// v34 remains byte-frozen. v35 adds scoped private Memory reconciliation
-// with exact decision acceptance and read-only recovery.
-export const NATIVE_API_PREVIOUS_VERSION = 34 as const;
+export const NATIVE_API_CURRENT_VERSION = 36 as const;
+// v35 remains byte-frozen. v36 adds exact personal recall consent decisions
+// and owner-bound calendar-only sync with durable acceptance recovery.
+export const NATIVE_API_PREVIOUS_VERSION = 35 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -1934,6 +1936,39 @@ const v35Operations: readonly NativeOperation[] = [
   }),
 ];
 
+const personalContextConsentOptions = {
+  ...privateReadOptions, queryPolicy: "exact", errorResponseSchema: "NativePersonalContextConsentError",
+  errorStatuses: [400, 401, 403, 404, 409, 503],
+} as const satisfies Partial<NativeOperation>;
+const meetingCalendarOptions = {
+  ...privateReadOptions, queryPolicy: "exact", errorResponseSchema: "NativeMeetingCalendarError",
+  errorStatuses: [400, 401, 403, 404, 409, 503],
+} as const satisfies Partial<NativeOperation>;
+const v36Operations: readonly NativeOperation[] = [
+  ...v35Operations,
+  operation("memory.personal-context-consent.get", "GET", "/api/memory/personal-context-consent", "Read the current owner's exact personal recall consent generation and complete notice.", "bearer", undefined, "NativePersonalContextConsentResponse", {
+    ...personalContextConsentOptions,
+    queryParameters: [queryParameter("contract", "string", { required: true, enumValues: ["asael-personal-context-consent-read:1"] })],
+  }),
+  operation("memory.personal-context-consent.decide", "PATCH", "/api/memory/personal-context-consent", "Accept one exact generation-bound personal recall decision with durable recovery.", "bearer", "NativePersonalContextConsentDecisionRequest", "NativePersonalContextConsentDecisionResponse", {
+    ...personalContextConsentOptions, headerParameters: pluginMutationHeaders, requestBodyMaxBytes: 4096,
+    errorStatuses: [400, 401, 403, 409, 413, 415, 503],
+  }),
+  operation("memory.personal-context-consent.decision.get", "GET", "/api/memory/personal-context-consent/decisions/{id}", "Recover one exact keyed personal recall acceptance and current state without repeating a decision.", "bearer", undefined, "NativePersonalContextConsentDecisionReadResponse", {
+    ...personalContextConsentOptions, pathParameters: [{ name: "id", minLength: 64, maxLength: 64, pattern: "^[a-f0-9]{64}$" }],
+  }),
+  operation("meetings.calendar.get", "GET", "/api/meetings/calendar", "Read the current private Google calendar connection and any unsettled sync acceptance.", "bearer", undefined, "NativeMeetingCalendarStatusResponse", meetingCalendarOptions),
+  operation("meetings.calendar.sync", "POST", "/api/meetings/calendar/sync", "Accept calendar-only sync for one exact owner connection and authorization generation.", "bearer", "NativeMeetingCalendarSyncRequest", "NativeMeetingCalendarSyncResponse", {
+    ...meetingCalendarOptions, headerParameters: pluginMutationHeaders, requestBodyMaxBytes: 4096,
+    errorStatuses: [400, 401, 403, 404, 409, 413, 415, 503],
+  }),
+  operation("meetings.calendar.sync.get", "GET", "/api/meetings/calendar/sync/{id}", "Read one exact private calendar sync acceptance without repeating provider work.", "bearer", undefined, "NativeMeetingCalendarSyncReadResponse", {
+    ...meetingCalendarOptions,
+    pathParameters: [{ name: "id", minLength: 86, maxLength: 86, pattern: "^meeting-calendar-sync:[a-f0-9]{64}$" }],
+    queryParameters: [queryParameter("acceptanceKeySha256", "string", { required: true, minLength: 64, maxLength: 64, pattern: "^[a-f0-9]{64}$" })],
+  }),
+];
+
 const nativeCompanionPreferencesResponseSchema = z.object({
   schemaVersion: z.literal(1), contract: z.literal(COMPANION_PREFERENCES_CONTRACT),
   snapshot: z.object({
@@ -1965,6 +2000,8 @@ export const nativeContractSchemas = Object.freeze({
   ...nativeMarketReadContractSchemas,
   ...nativeMemoryMutationSchemas,
   ...nativeMemoryReconciliationSchemas,
+  ...nativePersonalContextConsentSchemas,
+  ...nativeMeetingCalendarSchemas,
   NativeCompanionPreferencesRequest: companionChangeSchema,
   NativeCompanionPreferencesResponse: nativeCompanionPreferencesResponseSchema,
   JsonObject: jsonObject,
@@ -2096,6 +2133,7 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 33) return v33Operations;
   if (version === 34) return v34Operations;
   if (version === 35) return v35Operations;
+  if (version === 36) return v36Operations;
   return undefined;
 }
 

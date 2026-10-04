@@ -1353,5 +1353,19 @@
     "checksum": "c6eb6a4e6550aa5585b2c15fd417e8fca797b232b9dc12d25459e9ebcf08b27a",
     "file": "20261005110000_memory_reconciliation_native_fences.sql",
     "sha256": "c6eb6a4e6550aa5585b2c15fd417e8fca797b232b9dc12d25459e9ebcf08b27a"
+  },
+  {
+    "version": 224,
+    "name": "meeting_calendar_sync_acceptances_v1",
+    "checksum": "cb10e54d898d741a666336d05c91364b52926a0237e6220c24fa629df73c7ef5",
+    "file": "20261005120000_meeting_calendar_sync_acceptances.sql",
+    "sha256": "cb10e54d898d741a666336d05c91364b52926a0237e6220c24fa629df73c7ef5"
+  },
+  {
+    "version": 225,
+    "name": "personal_context_consent_row_validator_grant_v1",
+    "checksum": "d1b7856075f4d3f6212cb85b13c6f1e59fe82376f908418d098ae6963657850b",
+    "file": "20261005123000_personal_context_consent_row_validator_grant.sql",
+    "sha256": "d1b7856075f4d3f6212cb85b13c6f1e59fe82376f908418d098ae6963657850b"
   }
 ]

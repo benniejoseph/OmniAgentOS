@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'knowledge.dart';
+import 'knowledge_consent_view.dart';
 import 'knowledge_read_widgets.dart';
 import 'knowledge_mutations.dart';
 import 'knowledge_mutation_widgets.dart';
@@ -28,7 +29,7 @@ class _KnowledgeViewState extends State<KnowledgeView>
   @override
   void initState() {
     super.initState();
-    _tabs = TabController(length: 4, vsync: this);
+    _tabs = TabController(length: 5, vsync: this);
     _tabs.addListener(_tabChanged);
     _selectedMemoryId = widget.initialMemoryId;
     _search.text = widget.controller.query;
@@ -100,6 +101,7 @@ class _KnowledgeViewState extends State<KnowledgeView>
               Tab(text: 'Knowledge'),
               Tab(text: 'Reviews'),
               Tab(text: 'Universe'),
+              Tab(text: 'Personal recall'),
             ],
           ),
         ),
@@ -112,7 +114,7 @@ class _KnowledgeViewState extends State<KnowledgeView>
               )
             : Column(
                 children: [
-                  if (_tabs.index != 2)
+                  if (_tabs.index != 2 && _tabs.index != 4)
                     Padding(
                       padding: const EdgeInsets.all(12),
                       child: TextField(
@@ -144,6 +146,10 @@ class _KnowledgeViewState extends State<KnowledgeView>
                         state == null
                             ? _catalogueUnavailable()
                             : _universe(state),
+                        KnowledgePersonalRecall(
+                          controller: controller,
+                          active: _tabs.index == 4,
+                        ),
                       ],
                     ),
                   ),

@@ -4,6 +4,8 @@ import 'package:flutter/services.dart';
 import 'meetings.dart';
 import 'meetings_action_controller.dart';
 import 'meetings_action_widgets.dart';
+import 'meetings_calendar_controller.dart';
+import 'meetings_calendar_view.dart';
 import 'meetings_commitments.dart';
 import 'meetings_detail_body.dart';
 import 'meetings_mutations.dart';
@@ -16,12 +18,14 @@ class MeetingsView extends StatefulWidget {
     required this.controller,
     required this.onOpen,
     this.actions,
+    this.calendar,
     this.desktop = false,
     this.active = true,
   });
   final MeetingsController controller;
   final ValueChanged<Meeting> onOpen;
   final MeetingActionController? actions;
+  final MeetingCalendarController? calendar;
   final bool desktop, active;
   @override
   State<MeetingsView> createState() => _MeetingsViewState();
@@ -192,6 +196,11 @@ class _MeetingsViewState extends State<MeetingsView>
                 Widget agenda() => ListView(
                   padding: const EdgeInsets.all(20),
                   children: [
+                    if (widget.calendar != null)
+                      MeetingCalendarPanel(
+                        controller: widget.calendar!,
+                        active: widget.active,
+                      ),
                     const Text(
                       'Prepare from saved sources, review consent, and inspect exact follow-up evidence.',
                     ),

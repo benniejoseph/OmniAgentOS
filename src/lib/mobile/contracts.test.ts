@@ -65,7 +65,7 @@ describe("native API contracts", () => {
   });
 
   it("generates exact Responsibility paths, bounds and status schemas without changing older operation defaults", async () => {
-    const previous = JSON.parse(await readFile(new URL("../../../public/native-contracts/v33/openapi.json", import.meta.url), "utf8"));
+    const previous = JSON.parse(await readFile(new URL("../../../public/native-contracts/v34/openapi.json", import.meta.url), "utf8"));
     const current = JSON.parse(await readFile(new URL(`../../../public/native-contracts/v${NATIVE_API_CURRENT_VERSION}/openapi.json`, import.meta.url), "utf8"));
     for (const operation of nativeOperationsForVersion(32)!.filter(({ id }) => id.startsWith("responsibilities."))) {
       expect(current.paths[operation.path][operation.method.toLowerCase()], operation.id).toEqual(previous.paths[operation.path][operation.method.toLowerCase()]);
@@ -101,8 +101,8 @@ describe("native API contracts", () => {
   it("retains exactly the current and previous rollout versions", () => {
     // Tripwire: a native contract bump must be a deliberate, reviewed change.
     // The other tests follow these constants.
-    expect(NATIVE_API_CURRENT_VERSION).toBe(35);
-    expect(NATIVE_API_PREVIOUS_VERSION).toBe(34);
+    expect(NATIVE_API_CURRENT_VERSION).toBe(36);
+    expect(NATIVE_API_PREVIOUS_VERSION).toBe(35);
     expect(NATIVE_API_SUPPORTED_VERSIONS).toEqual([
       NATIVE_API_CURRENT_VERSION,
       NATIVE_API_PREVIOUS_VERSION,
@@ -345,6 +345,7 @@ describe("native API contracts", () => {
       33: added("meetings.create", "meetings.update", "meetings.commitments.list", "meetings.commitments.propose", "meetings.commitments.resolve"),
       34: { ...added("customers.health", "customers.intelligence", "customers.workflows", "customers.salesforce.status", "customers.create", "customers.update", "library.list", "library.get", "library.versions.list", "library.versions.get", "entities.options", "market.snapshots.list", "market.snapshots.get", "market.analysis.metadata", "market.jobs.get", "market.calendar", "memory.create", "memory.update", "memory.delete", "memory.lifecycle.get", "memory.lifecycle.change"), removed: ["market.analysis"] },
       35: added("memory.reconciliation.list", "memory.reconciliation.read", "memory.reconciliation.resolve"),
+      36: added("memory.personal-context-consent.get", "memory.personal-context-consent.decide", "memory.personal-context-consent.decision.get", "meetings.calendar.get", "meetings.calendar.sync", "meetings.calendar.sync.get"),
     });
     // v20 and v23 changed only request and push schemas.
     expect(nativeOperationsForVersion(20)).toEqual(nativeOperationsForVersion(19));
@@ -583,19 +584,19 @@ describe("native API contracts", () => {
     });
   });
 
-  it("retains every published v33 and v34 document byte for byte", async () => {
+  it("retains every published v34 and v35 document byte for byte", async () => {
     const frozen = {
-  "33": {
-    "openapi.json": "10be81a8dc2a713d4f85ae84a5585d5a899905f4331953b74dbedff963712aee",
-    "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9",
-    "fixtures.json": "292b6e6681f5046246afb440b556d4f08196d50e8377ef1cbd27eb5480483994",
-    "manifest.json": "9ea3092df3d97eb6cc8aa72fb7f34f82b3ebeb4cdd3b8e00af38308faafb8e2f"
-  },
   "34": {
-    "openapi.json": "9d9c35c0085c9f1d5473ce26e0d77d86e5188b8c33ab7061308eb3c7750d62fe",
-    "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9",
-    "fixtures.json": "081a006740ef7603fd13e783317cb009e52c6e288b35dda4958dce3dc174e2cf",
-    "manifest.json": "3079eb94d3b21c75feffc715b8bc445090fdb02458681ab06a78bfc6257422e5"
+    "openapi.json": "9d9c35c0085c9f1d5473ce26e0d77d86e5188b8c33ab7061308eb3c7750d62fe", // gitleaks:allow -- public artifact integrity digest
+    "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
+    "fixtures.json": "081a006740ef7603fd13e783317cb009e52c6e288b35dda4958dce3dc174e2cf", // gitleaks:allow -- public artifact integrity digest
+    "manifest.json": "3079eb94d3b21c75feffc715b8bc445090fdb02458681ab06a78bfc6257422e5" // gitleaks:allow -- public artifact integrity digest
+  },
+  "35": {
+    "openapi.json": "ca1a78b332945d10fb6413333e4791aeb3c8ce03c78841869ec5fe3726865ad8", // gitleaks:allow -- public artifact integrity digest
+    "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
+    "fixtures.json": "eff2a2237b94d9d1142fac976faa985616ba1be91493d184d52f8185de92be14", // gitleaks:allow -- public artifact integrity digest
+    "manifest.json": "d45efb315c6926b3d625bcecc46f5b105d4c594236339f23c6df71b61ce7b472" // gitleaks:allow -- public artifact integrity digest
   }
 };
     for (const [version, documents] of Object.entries(frozen)) {

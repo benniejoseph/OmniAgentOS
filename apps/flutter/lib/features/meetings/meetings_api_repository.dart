@@ -4,6 +4,7 @@ import '../../core/network/api_client.dart';
 import '../../generated/native_contract.g.dart';
 import 'meetings.dart';
 import 'meetings_access.dart';
+import 'meetings_calendar_contracts.dart';
 import 'meetings_commitments.dart';
 import 'meetings_snapshots.dart';
 import 'meetings_mutations.dart';
@@ -33,7 +34,22 @@ abstract interface class MutatingMeetingsRepository
   Future<Json> mutate(MeetingSubmission submitted);
 }
 
-class ApiMeetingsRepository implements MutatingMeetingsRepository {
+abstract interface class CalendarMeetingsRepository
+    implements LiveMeetingsRepository {
+  Future<Json> calendarStatus(CancelToken cancel);
+  Future<Json> calendarSyncRead(
+    String id,
+    String keySha256,
+    CancelToken cancel,
+  );
+  Future<Json> calendarSync(
+    MeetingCalendarSubmission submitted, {
+    required bool Function() isCurrent,
+  });
+}
+
+class ApiMeetingsRepository
+    implements MutatingMeetingsRepository, CalendarMeetingsRepository {
   ApiMeetingsRepository(
     this.api, {
     required this.access,
@@ -90,7 +106,9 @@ class ApiMeetingsRepository implements MutatingMeetingsRepository {
             receipt['action'] == 'read' &&
             receipt['accessMode'] == 'read' &&
             receipt['resourceType'] ==
-                (operation == 'app.meetings.commitments.list'
+                (operation.startsWith('meetings.calendar.')
+                    ? 'meeting_calendar'
+                    : operation == 'app.meetings.commitments.list'
                     ? 'meeting_commitment'
                     : 'meeting') &&
             receipt['eventContract'] == 'read_only:no_domain_mutation' &&
@@ -294,6 +312,70 @@ class ApiMeetingsRepository implements MutatingMeetingsRepository {
         );
       }
       return value;
+    } finally {
+      _writeBusy = false;
+    }
+  }
+
+  @override
+  Future<Json> calendarStatus(CancelToken cancel) => _read(
+    NativePaths.meetingsCalendarGet,
+    cancel,
+    const {},
+    available: access.supports('meetings.calendar.get'),
+    operation: 'meetings.calendar.get',
+  );
+
+  @override
+  Future<Json> calendarSyncRead(
+    String id,
+    String keySha256,
+    CancelToken cancel,
+  ) => _read(
+    NativePaths.meetingsCalendarSyncGet(id, acceptanceKeySha256: keySha256),
+    cancel,
+    const {},
+    available: access.supports('meetings.calendar.sync.get'),
+    operation: 'meetings.calendar.sync.get',
+  );
+
+  @override
+  Future<Json> calendarSync(
+    MeetingCalendarSubmission submitted, {
+    required bool Function() isCurrent,
+  }) async {
+    final owner = access.owner, generation = access.generation;
+    bool current() =>
+        authorityCurrent() &&
+        access.generation == generation &&
+        access.owner?.key == submitted.ownerKey &&
+        access.owner?.canManage == true &&
+        access.supports('meetings.calendar.sync') &&
+        isCurrent();
+    if (_writeBusy || owner == null || !current()) {
+      throw StateError('This exact Calendar sync is unavailable.');
+    }
+    _writeBusy = true;
+    try {
+      final result = await api.postJsonAuthorized(
+        NativePaths.meetingsCalendarSync,
+        authority: NativeRequestAuthority(
+          tenantId: owner.tenantId,
+          actorId: owner.actorId,
+          canonicalUserId: owner.userId,
+          role: owner.role,
+          apiBaseUrl: api.apiBaseUrl,
+          isCurrent: current,
+        ),
+        data: submitted.body,
+        headers: {'Idempotency-Key': submitted.key},
+      );
+      if (!current()) {
+        throw StateError(
+          'Calendar authority changed; recover the saved request with its exact read.',
+        );
+      }
+      return result;
     } finally {
       _writeBusy = false;
     }

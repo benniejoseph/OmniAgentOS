@@ -1,7 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import { createAppServiceCaller, createRequestMutationAppServiceCaller } from "@/lib/app-services/contracts";
+import { decidePersonalContextConsentService, inspectPersonalContextConsentService } from "@/lib/app-services/personal-context-consent";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { parseJsonBody, jsonBodyErrorResponse } from "@/lib/http/body";
+import { IdempotencyKeyError, idempotencyKeyErrorResponse, requireIdempotencyKey, requiredRequestIdempotencyKey } from "@/lib/http/idempotency-key";
+import { PersonalContextConsentNativeError, personalContextConsentNativeRequestSchema } from "@/lib/memory/personal-context-consent-native-contracts";
+import { nativePersonalContextConsentQuerySchema } from "@/lib/mobile/personal-context-consent-contracts";
 import {
   PERSONAL_CONTEXT_NOTICE_SHA256,
 } from "@/lib/memory/personal-context-consent";
@@ -22,6 +27,7 @@ export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
 export const POST = withDatabaseRequestScope(POSTHandler);
 export const DELETE = withDatabaseRequestScope(DELETEHandler);
+export const PATCH = withDatabaseRequestScope(requireIdempotencyKey(PATCHHandler));
 
 const privateNoStoreHeaders = { "cache-control": "private, no-store" };
 const activateSchema = z.object({
@@ -37,6 +43,17 @@ async function GETHandler(request: Request) {
     });
     const actorBinding = canonicalRequestActorBindingFromSecurityContext(context);
     if (!actorBinding) return canonicalIdentityRequired();
+    const params = [...new URL(request.url).searchParams];
+    if (context.source === "mobile" || params.some(([key]) => key === "contract")) {
+      const parsed = nativePersonalContextConsentQuerySchema.safeParse(Object.fromEntries(params));
+      if (!parsed.success || new Set(params.map(([key]) => key)).size !== params.length) {
+        return Response.json({ error: "The current personal recall read contract is required." }, { status: 400, headers: privateNoStoreHeaders });
+      }
+      try {
+        const result = await inspectPersonalContextConsentService(createAppServiceCaller({ context }));
+        return Response.json({ ...result.data, serviceReceipt: result.receipt }, { headers: privateNoStoreHeaders });
+      } catch (error) { return nativeFailure(error); }
+    }
     return Response.json(
       await getPersonalContextConsentStatus({
         tenantId: context.tenantId,
@@ -54,7 +71,7 @@ async function POSTHandler(request: Request) {
   try {
     body = await parseJsonBody(request);
   } catch (error) {
-    return jsonBodyErrorResponse(error);
+    return privateResponse(jsonBodyErrorResponse(error));
   }
   const parsed = activateSchema.safeParse(body);
   if (!parsed.success) {
@@ -72,6 +89,7 @@ async function POSTHandler(request: Request) {
     });
     const actorBinding = canonicalRequestActorBindingFromSecurityContext(context);
     if (!actorBinding) return canonicalIdentityRequired();
+    if (context.source === "mobile") return nativeContractRequired();
     return Response.json(
       await activatePersonalContextConsent({
         tenantId: context.tenantId,
@@ -100,6 +118,7 @@ async function DELETEHandler(request: Request) {
     });
     const actorBinding = canonicalRequestActorBindingFromSecurityContext(context);
     if (!actorBinding) return canonicalIdentityRequired();
+    if (context.source === "mobile") return nativeContractRequired();
     return Response.json(
       await revokePersonalContextConsent({
         tenantId: context.tenantId,
@@ -115,6 +134,58 @@ async function DELETEHandler(request: Request) {
   } catch (error) {
     return routeError(error);
   }
+}
+
+async function PATCHHandler(request: Request) {
+  if ([...new URL(request.url).searchParams].length) {
+    return Response.json({ error: "Personal recall decisions do not accept query parameters." }, { status: 400, headers: privateNoStoreHeaders });
+  }
+  try { requiredRequestIdempotencyKey(request); }
+  catch (error) {
+    if (error instanceof IdempotencyKeyError) return idempotencyKeyErrorResponse(error);
+    throw error;
+  }
+  let body: unknown;
+  try { body = await parseJsonBody(request, 4_096); }
+  catch (error) { return privateResponse(jsonBodyErrorResponse(error)); }
+  const parsed = personalContextConsentNativeRequestSchema.safeParse(body);
+  if (!parsed.success) {
+    return Response.json({ error: "The exact reviewed personal recall state and current notice are required." }, { status: 400, headers: privateNoStoreHeaders });
+  }
+  let context;
+  try {
+    context = await authorizeRequest({
+      request, action: "write.memory", resourceType: "personal_context_consent",
+      nativeMutationCapability: "memory.personal-context-consent.manage",
+      metadata: { operation: parsed.data.action },
+    });
+  } catch (error) { return privateResponse(forbiddenResponse(error)); }
+  const binding = canonicalRequestActorBindingFromSecurityContext(context);
+  if (!binding) return canonicalIdentityRequired();
+  try {
+    const result = await decidePersonalContextConsentService(
+      createRequestMutationAppServiceCaller(request, context, {
+        purpose: "api.memory.personal-context-consent.native.decide",
+        causationId: binding.canonicalActorId,
+      }), parsed.data,
+    );
+    return Response.json({ ...result.data, serviceReceipt: result.receipt }, { headers: privateNoStoreHeaders });
+  } catch (error) { return nativeFailure(error); }
+}
+
+function nativeContractRequired() {
+  return Response.json({ error: "Personal recall changes require an exact reviewed decision." }, { status: 400, headers: privateNoStoreHeaders });
+}
+
+function privateResponse(response: Response) {
+  response.headers.set("cache-control", privateNoStoreHeaders["cache-control"]);
+  return response;
+}
+
+function nativeFailure(error: unknown) {
+  return error instanceof PersonalContextConsentNativeError
+    ? Response.json({ error: error.message, code: error.code }, { status: error.status, headers: privateNoStoreHeaders })
+    : Response.json({ error: "Personal recall consent is temporarily unavailable.", code: "personal_context_consent_unavailable" }, { status: 503, headers: privateNoStoreHeaders });
 }
 
 function createConsentExecutionScope(
@@ -151,5 +222,5 @@ function routeError(error: unknown) {
       },
     );
   }
-  return forbiddenResponse(error);
+  return privateResponse(forbiddenResponse(error));
 }

@@ -6747,7 +6747,7 @@ databaseDescribe("Postgres schema integration", () => {
       expect(oldReport.status).toBe("degraded");
       expect([...oldReport.summary.missingTables].sort()).toEqual(additiveDraftReplayTables);
       expect([...oldReport.summary.missingPolicies].sort()).toEqual(
-        [...oldRunnerTenantWidePolicyTables, ...additiveDraftReplayTables].sort(),
+        [...oldRunnerTenantWidePolicyTables, ...additiveDraftReplayTables, "omni_events"].sort(),
       );
 
       // A CHECK that matches neither catalog stops the migration, and what it
@@ -6821,13 +6821,15 @@ databaseDescribe("Postgres schema integration", () => {
     `;
     // Each one covers every command and role, as its restore below does.
     expect(restrictivePolicies.map(({ command, roles }) => ({ command, roles })))
-      .toEqual(Array(66).fill({ command: "*", roles: "{0}" }));
+      .toEqual(Array(68).fill({ command: "*", roles: "{0}" }));
     expect(restrictivePolicies.filter((policy) =>
       additiveDraftReplayTables.includes(policy.table_name),
     ).map(({ table_name, policy_name }) => ({ table_name, policy_name })))
       .toEqual(additiveDraftReplayTables.map((tableName) => ({
         table_name: tableName,
-        policy_name: `${tableName}_${meetingResolutionReplayTables.includes(tableName) ? "owner" : "actor"}`,
+        policy_name: tableName === "omni_meeting_calendar_sync_acceptances"
+          ? "omni_meeting_calendar_sync_actor"
+          : `${tableName}_${meetingResolutionReplayTables.includes(tableName) ? "owner" : "actor"}`,
       })));
     const catalog = await schemaCatalogSnapshot(admin);
     const dropped: typeof restrictivePolicies[number][] = [];
@@ -9580,6 +9582,8 @@ const meetingResolutionIntentsVersion = 220;
 const customerAccountIntentsVersion = 221;
 const memoryLifecycleMutationsVersion = 222;
 const memoryReconciliationFencesVersion = 223;
+const meetingCalendarSyncAcceptancesVersion = 224;
+const personalConsentValidatorGrantVersion = 225;
 const additiveReplayVersions = [
   companionPreferencesVersion,
   responsibilityDraftsVersion,
@@ -9590,12 +9594,15 @@ const additiveReplayVersions = [
   customerAccountIntentsVersion,
   memoryLifecycleMutationsVersion,
   memoryReconciliationFencesVersion,
+  meetingCalendarSyncAcceptancesVersion,
+  personalConsentValidatorGrantVersion,
 ].filter((version) => databaseSchemaMigrations.some((migration) => migration.version === version));
 const meetingResolutionReplayTables: readonly string[] = [
   "omni_meeting_commitment_resolution_intents",
   "omni_meeting_commitment_resolution_progress",
 ];
 const additiveDraftReplayTables: readonly string[] = [
+  "omni_meeting_calendar_sync_acceptances",
   "omni_companion_preference_mutations",
   "omni_companion_preferences",
   ...meetingResolutionReplayTables,
@@ -9612,7 +9619,7 @@ const additiveDraftReplayTables: readonly string[] = [
   "omni_responsibility_observations",
   "omni_responsibility_runtime_receipts",
   "omni_responsibility_wakes",
-];
+].sort();
 
 // A native client that attests an Android build.
 const androidClient = {
@@ -9960,6 +9967,15 @@ async function withMigrationsPendingFrom<T>(
   }
   await client.begin(async (transaction) => {
     if (replay) {
+      if (additiveReplayVersions.includes(meetingCalendarSyncAcceptancesVersion)) {
+        expect(await transaction`
+          SELECT count(*)::int AS acceptances
+          FROM public.omni_meeting_calendar_sync_acceptances
+        `).toEqual([{ acceptances: 0 }]);
+        await transaction`DROP POLICY omni_meeting_calendar_sync_event_actor ON public.omni_events`;
+        await transaction`DROP TABLE public.omni_meeting_calendar_sync_acceptances`;
+        await transaction`DROP FUNCTION public.omni_meeting_calendar_sync_acceptance_guard_v1()`;
+      }
       if (additiveReplayVersions.includes(memoryLifecycleMutationsVersion)) {
         await removeEmptyMemoryLifecycleForReplay(transaction);
       }

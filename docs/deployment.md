@@ -37,28 +37,48 @@ Set these through the platform secret/configuration store, never in source contr
 - `OMNIAGENT_NATIVE_MIN_ANDROID_VERSION`, `OMNIAGENT_NATIVE_MIN_IOS_VERSION`, and `OMNIAGENT_NATIVE_MIN_MACOS_VERSION`: optional stable `major.minor.patch` minimums for native compatibility telemetry. An absent or empty value defaults to `1.0.0`; a malformed configured value invalidates the policy and holds adoption unavailable. These settings do not authorize Agent enrollment.
 
 Native contract artifacts are committed immutable release inputs. This release
-advertises v35 as current and retains v34 as the rollback-compatible previous
-version. V33 remains a byte-frozen, unadvertised archive. Older documents leave
+advertises v36 as current and retains v35 as the rollback-compatible previous
+version. V34 remains a byte-frozen, unadvertised archive. Older documents leave
 the three-version retention window only in a reviewed contract release; a
-Vercel deployment never deletes an archive. Do not retire v34 until the v35
+Vercel deployment never deletes an archive. Do not retire v35 until the v36
 rollback window closes. Published versions are never regenerated in place.
-Run `npm run check:native-contracts` to verify the generated v35 OpenAPI, event
-schema, fixtures, manifests and Dart SDK, plus the frozen v33/v34 hashes. This
-reviewed publication retires the v32 public documents.
+Run `npm run check:native-contracts` to verify the generated v36 OpenAPI, event
+schema, fixtures, manifests and Dart SDK, plus the frozen v34/v35 hashes. This
+reviewed publication retires the v33 public documents.
 
-V35 adds canonical private Memory review list/read/decision operations. Existing
-capabilities retain their floors: Companion 31, Responsibilities 32, Meetings 33,
-Account records and Memory records/lifecycle 34. Reconciliation decisions require
-35, fresh attestation, write permission and the already enrolled correction
-purpose; read permission alone grants no decision token. Calendar sync,
-recording completion and source audio receive no new authority.
+V36 adds private personal recall consent and calendar-only sync. Existing
+capability floors remain unchanged: Companion 31, Responsibilities 32, Meetings
+33, Account records and Memory records/lifecycle 34, reconciliation decisions
+35. The new consent and Calendar mutations require 36, fresh attestation and
+current write permission. No recording processing or source-audio capability
+is enrolled by this publication.
 
-Advertising v35/v34 makes v33 clients `upgrade_required` and holds their native
-mutations. Deploy the v35 server before installing a v35 native build; that
-build fails bootstrap against a server advertising only v34/v33. An installed
-v34 client keeps its existing operations through the rollback window and cannot
-enter v35 reconciliation decisions. A repository merge does not establish that
-this compatibility pair has been promoted to production.
+Advertising v36/v35 makes v34 clients `upgrade_required` and holds their native
+mutations. Deploy the v36 server before installing a v36 native build; that
+build fails bootstrap against a server advertising only v35/v34. An installed
+v35 client retains its existing operations through the rollback window and
+cannot enter the new consent or Calendar mutations. A repository merge does
+not establish that this compatibility pair has been promoted to production.
+
+Personal recall uses the existing immutable consent history and owner lock;
+migration 225 repairs the missing execution grant on its existing immutable row
+validator for runtime and maintenance writers. PUBLIC execution remains revoked;
+RLS, owner checks and lifecycle permissions stay unchanged. Native decisions require the exact
+reviewed state, latest generation, lifecycle revision, signed comparison token
+and complete notice digest. The transition and keyed acceptance event commit
+together. Replaying an accepted key returns its historical receipt alongside
+current state and cannot reactivate revoked consent. Native recovery performs
+only exact authenticated receipt reads.
+
+Migration 224 adds the owner-scoped Calendar sync acceptance table and a
+one-unsettled-command-per-connection fence. Sync pins the exact private Google
+connection and authorization generation, imports only Calendar data into the
+canonical owner's personal workspace, and reuses existing provider leases and
+access checks. It never requests Calendar write access. Accepted or unconfirmed
+commands block new intents; a missing terminal receipt after process loss is
+not proof of completion and cannot cause an automatic sync retry. Recovery
+reads and matching replays do not call the provider. Apply and verify the
+migration before promoting the paired serving code.
 
 Migration 223 (`memory_reconciliation_native_fences_v1`) follows schema 222. It
 adds a lifecycle parent-lock trigger and a narrowly scoped metadata reader for

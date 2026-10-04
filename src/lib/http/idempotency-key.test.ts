@@ -22,6 +22,8 @@ const UNKEYED_ROUTE_EXPORTS = new Set([
   "src/app/api/capture/recordings/[id]/route.ts PATCH",
   "src/app/api/connectors/[id]/route.ts PATCH",
   "src/app/api/openapi-connectors/[id]/route.ts PATCH",
+  "src/app/api/memory/personal-context-consent/route.ts POST",
+  "src/app/api/memory/personal-context-consent/route.ts DELETE",
 ]);
 
 // This shared route retains its unkeyed legacy web envelope. Its strict native
