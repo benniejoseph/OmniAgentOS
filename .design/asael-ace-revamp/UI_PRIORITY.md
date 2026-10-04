@@ -2,11 +2,13 @@
 
 The owner explicitly prioritized the UI revamp and ATLAS, asking to stabilize the current release and return to connector expansion afterward. The full implementation plan remains in scope; this changes execution order.
 
-The UI, static greeting, personality, expanded Voice, native Automation and native
-scoped content search releases are accepted through PR59. FACE02 is the current
+The UI, static greeting, personality, expanded Voice, native Automation, native
+scoped content search and Quality + Monitoring releases are accepted through PR60. FACE02 is the current
 complete ATLAS export and retains the reviewed brow integration; final character
-artwork, acting and device acceptance remain open. Quality + Monitoring is underway
-on a separate branch for `1.23.18+53`. Connector work is preserved in
+artwork, acting and device acceptance remain open. FACE03's upper-lid depth
+experiment was rejected and the exact FACE02 sources restored. The next Security UI
+slice is pending implementation on a new native branch, with build 54 reserved.
+Connector work is preserved in
 `codex/native-connector-controls` and is deferred until after this UI/ATLAS priority.
 
 Visual thesis: a warm, precise conversation workspace with a quiet graphite rail, readable typography, restrained gold and an expressive umber eagle.
@@ -26,6 +28,31 @@ The approved reference in `DESIGN_BRIEF.md` remains authoritative. Sculpt02 rema
 
 ## Current software checkpoint — 5 October
 
+PR60 Quality + Monitoring is accepted for `1.23.18+53`. All sixteen hosted checks
+succeeded on head `51b48d927f707d035e726729ef04eb58555f2d2a`, including 1,292
+Flutter tests. It merged as `45977bded2317bfa04b89b18cc11c971d58f3085` at
+`2026-10-04T22:31:09Z`. The accepted head, built source and merge share the exact
+full Git tree `5b6f845c0d09f683ef4894c93e280e87955cd31d`; the native release
+checkout was clean and detached at accepted main at this checkpoint.
+
+All 118 focused cases pass (46 Quality, 57 Monitoring and fifteen existing
+foundation/navigation/admin cases), eight actual-widget captures have passed and
+been root-reviewed, and full Flutter analysis is clean. The universal private
+Mac 1.23.18 (53) package and signatures are verified; its SHA256 is
+`fd6596167fd7e9c4bb7382c041eab2d8c3d71153ae01e02b29969367322035b4`.
+The `pr60-acceptance.json` and
+`macos-native-operations-release/verification.json` receipts record this acceptance.
+PR60 completes this bounded slice; the full plan remains open.
+
+Security UI is next and remains pending implementation on a new native branch,
+with build 54 reserved. No new database migration or native API version change is
+planned for that slice. Canonical production remains
+`a06aa78b843cce6c8f41a79ec5beb6192f3c4b20`, with the owner release environment
+still pending. Parked connector work must rebase onto native v39 and use the next
+free build number, at least 55; Settings work could advance that minimum further.
+
+## Historical scoped content search acceptance — 5 October
+
 PR59 native scoped content search is accepted with native API v39 and app
 `1.23.17+52`. All sixteen hosted checks passed on
 `608368ed679e483105198e62966f02dac198b662`; the accepted merge is
@@ -36,14 +63,6 @@ The verified universal private Mac 1.23.17 (52) package was built from
 `f52edbd1dc200e55b86dc9ced5e8ef7d9b335fe27d118fe8929a7456376d5fa7`.
 Only two test files differ on the accepted head; application and package inputs
 are exact. This remains a private package, not a production promotion.
-
-Quality + Monitoring is underway on a separate branch for `1.23.18+53`.
-Forty-six focused Quality and 57 Monitoring checks pass; eight actual-widget
-captures have passed and been root-reviewed. Full Flutter analysis is clean and fifteen existing foundation/navigation/admin cases pass. Build 53 and exact-head hosted PR #60 checks remain pending. This slice is not yet accepted and does
-not complete the full plan.
-Canonical production remains `a06aa78b843cce6c8f41a79ec5beb6192f3c4b20`, with the
-owner release environment still pending. Parked connector work must rebase onto
-native v39 and use build 54 or later when resumed.
 
 ## Historical native Automation acceptance — 5 October
 
@@ -63,7 +82,7 @@ read-only mounted image. SHA256:
 Signing is local/private, not Apple notarization. The installed application and
 canonical production revision were unchanged at this checkpoint. Paired v38
 server promotion required the complete operator release environment. The current
-package and connector baseline are recorded in the PR59 checkpoint above.
+package and connector baseline are recorded in the current software checkpoint above.
 
 ## Historical implemented UI checkpoint — 4 October
 
@@ -182,6 +201,26 @@ Bulky closed lids, final likeness, natural acting, continuous attachment,
 FEATHER03 and all older exports are historical checkpoints. The approved static
 portrait and full-body greeting remain active; no 3D artwork has been published.
 
+## Rejected FACE03 upper-lid depth experiment — 5 October
+
+Root and independent review rejected the FACE03 upper-lid depth experiment after
+78 captures across thirteen sheets; the independent review included eighteen
+original 512px captures. Both closed upper caps gained bright pinholes at
+`available` 0.12 in light and dark: approximately `(199,128)` / `(313,128)` in
+front view and `(153,128)` / `(252,128)` in three-quarter view. Raised
+`needs_you` 0.34 gained an upper white sliver. The reduction in lid bulk was subtle.
+
+All eleven candidate model checks and the two-part scope proof passed, but sampled
+vertex probes did not provide sufficient coverage. The pixels establish the visual
+regressions without proving their source cause. The matching candidate/baseline
+archive is `face03-comparison/matching-source-and-baseline.tar.gz`, SHA256
+`5949060f704f1efa3ca81a38770673231e389ea70663a1f826db2b943a354ce4`.
+
+The exact seventeen FACE02 source files were restored. FACE02 remains the retained
+complete export above; no new full GLB export or publication followed this
+experiment. Future retention requires triangle-interior coverage and raised/closing
+pose coverage; sampled vertex probes alone are insufficient.
+
 ## Historical grain02 art checkpoint — 4 October
 
 The grain02 archive had 27,543 vertices, 49,844 triangles, a 2,494,008-byte GLB,
@@ -278,5 +317,5 @@ At this 4 October checkpoint, the clean software release was accepted main
 `79386e26`, with private Mac 1.23.15 (50) unchanged. A read-only environment probe
 at 18:13 UTC found required production credentials absent. Canonical health at
 18:42 UTC remained
-healthy on `a06aa78b`; no migration or production deployment occurred. The PR59
+healthy on `a06aa78b`; no migration or production deployment occurred. The current software
 checkpoint above records the current accepted software and connector baseline.

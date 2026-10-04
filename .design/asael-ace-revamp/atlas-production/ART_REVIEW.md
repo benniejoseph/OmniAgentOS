@@ -1,5 +1,31 @@
 # ATLAS actual-art review — 5 October 2026 (IST)
 
+## FACE03 — rejected upper-lid depth experiment; exact FACE02 restored
+
+Root and independent review rejected the candidate after 78 matched captures /
+thirteen sheets. The independent reviewer also inspected eighteen original
+512-pixel captures. At `available` .12, new bright pinholes appear on both closed
+upper caps in light and dark views: front near (199,128) and (313,128), and
+three-quarter near (153,128) and (252,128). At raised `needs_you` .34, a new white
+sliver appears along the upper eye contour. The intended reduction in lid bulk
+is subtle and does not justify these defects.
+
+All eleven candidate model checks and the two-part scope proof passed. These
+checks did not catch the visible coverage defects; sampled vertex-only probes
+are insufficient. The renders do not prove a source-level cause. Any future
+upper-lid refinement must preserve triangle-interior coverage and raised/closing
+pose coverage before retention, with matched visual review. This is a narrow
+coverage requirement, not a claim that continuous motion is already certified.
+
+The matching candidate source/baseline/render archive is
+`face03-comparison/matching-source-and-baseline.tar.gz`, SHA256
+`5949060f704f1efa3ca81a38770673231e389ea70663a1f826db2b943a354ce4`.
+`face03-comparison/review-decision.json` records the rejection at
+`2026-10-04T22:28:26.255756+00:00`. Root restored all seventeen export-bound
+FACE02 source files exactly. FACE02 remains the retained complete export; there
+was no new full GLB export or publication, and final character/acting/device
+acceptance remains open.
+
 ## FACE02 — latest matching full export, character still unaccepted
 
 The current source is `sculpt-04-face-02-anchored-brows`. Root and independent visual review inspected all seventeen matched sheets / 102 images and retain its clearer neutral/listening integration. No new trench, detached tip or lid obstruction was seen in the sampled phases. The asymmetric crest remains readable, but the distinct eyebrow gesture is substantially quieter, especially at three-quarter. This local refinement is retained with that expressive tradeoff recorded.

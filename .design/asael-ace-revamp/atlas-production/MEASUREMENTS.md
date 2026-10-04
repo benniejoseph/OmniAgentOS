@@ -18,6 +18,27 @@ Face-02 full archive `atlas-face-02-review.tar.gz` SHA-256: `5c51cca88d2df62d38b
 
 The ten static-tool checks remain FEATHER02 evidence on unchanged scripts; they were not rerun for FACE02. The 80-state review remains finish-02 evidence. Final character/acting/device acceptance and 3D/state-bundle publication remain open. Feather-03 and earlier exports below are dated history.
 
+## Rejected face-03 upper-lid experiment
+
+The candidate's eleven model checks and two-part scope proof passed, but root
+and independent review rejected it across 78 captures / thirteen sheets.
+Independent review included eighteen original 512-pixel captures. New bright
+pinholes appear on both closed upper caps at `available` .12 in front and
+three-quarter views on both backgrounds; raised `needs_you` .34 adds an upper
+white sliver. The bulk improvement is subtle. Those checks therefore do not
+establish coverage between sampled vertices, and the pixels alone do not prove
+a source-level cause.
+
+Matching candidate source/baseline/render archive:
+`face03-comparison/matching-source-and-baseline.tar.gz`, SHA-256
+`5949060f704f1efa3ca81a38770673231e389ea70663a1f826db2b943a354ce4`.
+The rejection receipt is `face03-comparison/review-decision.json`.
+All seventeen export-bound FACE02 sources were restored exactly. There was no
+new full GLB export or publication. FACE02's export measurements above remain
+current; the eleven candidate checks do not replace its ten retained checks.
+Future lid retention requires triangle-interior and raised/closing coverage,
+with matched visual review; vertex-only probes are insufficient.
+
 ## Historical feather-03 retained torso paint and complete matching export
 
 Root and independent review retained `sculpt-04-feather-03-short-vanes` after 96 comparison captures. Close-up chest/flank marks are less hair-like, with no new scales, repeated rows or conspicuous collar transition in the reviewed samples. The gain is small at full-body size. Soft mottling, layered relief, smooth-wing contrast, final likeness and natural acting remain open.

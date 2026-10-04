@@ -661,6 +661,24 @@ were not rerun; the 80-state review remains finish-02 evidence. FEATHER03 and
 earlier exports above are history. Final art/acting/device acceptance and
 3D/state-bundle publication remain open.
 
+## Rejected ATLAS face-03 experiment — 5 October 2026 (IST)
+
+Root and independent review rejected upper-lid depth shaping after 78 captures /
+thirteen sheets; independent inspection included eighteen original 512-pixel
+captures. New bright pinholes on both closed upper caps at `available` .12 and
+an upper white sliver at raised `needs_you` .34 outweigh the subtle bulk gain.
+Eleven candidate model checks and the two-part scope proof passed without
+catching these defects. Passing sampled vertex probes is insufficient; future
+lid retention requires triangle-interior and raised/closing coverage with matched
+visual review. The pixels do not establish a source-level cause.
+
+The candidate matching source/baseline/render archive SHA-256 is
+`5949060f704f1efa3ca81a38770673231e389ea70663a1f826db2b943a354ce4`;
+`face03-comparison/review-decision.json` records rejection. Root restored all
+seventeen export-bound FACE02 sources exactly. No new full GLB export or
+publication occurred; FACE02 remains the retained complete export, with final
+art/acting/device acceptance open.
+
 Native scoped content search is accepted through PR59 after all 16 hosted checks
 passed on `608368ed679e483105198e62966f02dac198b662`; it merged as
 `2fd786531899d686da6686988e82e3c5faa83224`, publishing native v39 /
@@ -669,7 +687,18 @@ and three visual captures pass. Mac52 is verified with SHA-256
 `f52edbd1dc200e55b86dc9ced5e8ef7d9b335fe27d118fe8929a7456376d5fa7`,
 built from `2d4c1410b400f2d72e1ca7e3ec9ed6471ce8ed49`; application
 and packaging inputs are exact, with only two test expectations differing in the
-accepted candidate. Quality + Monitoring implementation is underway on a separate
-branch for app 1.23.18+53: 46 focused Quality and 57 Monitoring checks pass;
-eight actual-widget captures pass root review. Full Flutter analysis is clean and fifteen existing foundation/navigation/admin cases pass. Build 53 and exact-head hosted PR #60 checks remain pending; this slice is not yet accepted. Parked connector work must rebase native v39 and use
-build 54 or later. Production is unchanged; no new promotion is claimed.
+accepted candidate. Quality + Monitoring is accepted and merged through PR60 after all
+sixteen hosted checks succeeded on
+`51b48d927f707d035e726729ef04eb58555f2d2a`, including all 1,292 Flutter tests.
+It merged as `45977bded2317bfa04b89b18cc11c971d58f3085` at
+`2026-10-04T22:31:09Z`. All 118 focused checks, eight root-reviewed widget
+captures and full Flutter analysis pass. The universal private Mac 1.23.18 (53)
+package is verified, including version/build and private signatures, with SHA-256
+`fd6596167fd7e9c4bb7382c041eab2d8c3d71153ae01e02b29969367322035b4`.
+Accepted head, built source and merged full Git tree are identical at
+`5b6f845c0d09f683ef4894c93e280e87955cd31d`; `pr60-acceptance.json` and
+`macos-native-operations-release/verification.json` record the receipts.
+At this acceptance checkpoint, the native release checkout was clean and detached at accepted main. Security UI
+is next on a separate native branch, with build 54 reserved and no new migration
+or native API version; implementation and release acceptance remain pending. Parked connector work must rebase native v39 and use
+the next free build, at least 55. Production is unchanged; no new promotion is claimed.

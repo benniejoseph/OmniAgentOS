@@ -1,7 +1,7 @@
 # ATLAS implementation evidence
 
 **Current checkpoint, 5 October 2026 (IST):** software UI priorities through
-PR59 are accepted and merged. PR53 introduced contract v38 / app 1.23.12+47;
+PR60 are accepted and merged. PR53 introduced contract v38 / app 1.23.12+47;
 PR54–58 retain their dated UI, greeting, personality, Voice and Automation
 acceptance below. PR59's native scoped content search passed all 16 hosted checks
 on `608368ed679e483105198e62966f02dac198b662` and merged as
@@ -27,10 +27,21 @@ Mac52 package has SHA-256
 `f52edbd1dc200e55b86dc9ced5e8ef7d9b335fe27d118fe8929a7456376d5fa7`,
 built from `2d4c1410b400f2d72e1ca7e3ec9ed6471ce8ed49`. Only two test
 expectations differ in the accepted candidate; application/packaging inputs
-are exact. Quality + Monitoring implementation is underway on a separate branch
-for app 1.23.18+53. Forty-six focused Quality and 57 Monitoring checks pass;
-eight actual-widget captures pass root review. Full Flutter analysis is clean and fifteen existing foundation/navigation/admin cases pass. Build 53 and exact-head hosted PR #60 checks remain pending; this slice is not yet accepted. Connector expansion stays parked and must rebase v39
-and use build 54 or later. The dated entries below preserve earlier preparation
+are exact. Quality + Monitoring is accepted and merged through PR60 after all
+sixteen hosted checks succeeded on
+`51b48d927f707d035e726729ef04eb58555f2d2a`, including all 1,292 Flutter tests.
+It merged as `45977bded2317bfa04b89b18cc11c971d58f3085` at
+`2026-10-04T22:31:09Z`. All 118 focused checks, eight root-reviewed widget
+captures and full Flutter analysis pass. The universal private Mac 1.23.18 (53)
+package is verified, including version/build and private signatures, with SHA-256
+`fd6596167fd7e9c4bb7382c041eab2d8c3d71153ae01e02b29969367322035b4`.
+Accepted head, built source and merged full Git tree are identical at
+`5b6f845c0d09f683ef4894c93e280e87955cd31d`; `pr60-acceptance.json` and
+`macos-native-operations-release/verification.json` record the receipts.
+At this acceptance checkpoint, the native release checkout was clean and detached at accepted main. Security UI
+is next on a separate native branch, with build 54 reserved and no new migration
+or native API version; implementation and release acceptance remain pending. Connector expansion stays parked and must rebase v39
+and use the next free build, at least 55. The dated entries below preserve earlier preparation
 and validation boundaries without completing whole-task gates.
 
 ## First web slice — merged, 3 October 2026
@@ -1674,6 +1685,23 @@ all 37 companion cases in `atlas-companion-final-regression.log` (the prior
 That historical package-preparation checkpoint is superseded by the signed
 packages and hosted acceptance below. Nine Node geometry/lifecycle checks and
 three Python tool tests also passed for the sculpt-02 source workbench.
+
+### Rejected face-03 upper-lid experiment
+
+Root and independent review rejected upper-lid depth shaping after 78 captures /
+thirteen sheets, including eighteen original 512-pixel captures independently
+reviewed. New closed-cap pinholes at `available` .12 and a raised upper white
+sliver at `needs_you` .34 outweigh the subtle bulk reduction. Eleven candidate
+model checks and the two-part scope proof passed without catching these defects.
+Sampled vertex-only checks are insufficient; the renders do not prove a
+source-level cause. Future retention requires triangle-interior and
+raised/closing coverage with matched visual review.
+
+The candidate source/baseline/render archive SHA-256 is
+`5949060f704f1efa3ca81a38770673231e389ea70663a1f826db2b943a354ce4`;
+`face03-comparison/review-decision.json` records rejection. All seventeen
+export-bound FACE02 sources were restored exactly. No new full GLB export or
+publication followed, and FACE02 remains the current retained export below.
 
 ### Current face-02 retained brow integration
 
