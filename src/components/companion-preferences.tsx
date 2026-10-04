@@ -215,7 +215,7 @@ function ScopedCompanionPreferences({ tenantId, actorId, blocked, checkAccess }:
           <label className={styles.choice}><input type="checkbox" checked={draft.visible} disabled={Boolean(blocked)} onChange={(event) => edit({ visible: event.target.checked })} /><span>Show Companion character</span></label>
           <fieldset className={styles.fieldset} disabled={Boolean(blocked)}><legend>Visual motion</legend>
             <div className={styles.options}>{COMPANION_MOTION.map((value) => <label className={styles.choice} key={value}><input type="radio" name="companion-motion" value={value} checked={draft.motion === value} onChange={() => edit({ motion: value })} /><span>{motionLabels[value]}</span></label>)}</div>
-            <p className={styles.support}>Your device’s reduced motion setting is always respected. Motion and visibility do not turn audio on.</p>
+            <p className={styles.support}>With reviewed artwork, Balanced reacts to verified results; Expressive also reacts to listening, speaking and work. Quiet, Reduced and Off stay still. Your device’s reduced motion setting is always respected. Motion and visibility do not turn audio on.</p>
           </fieldset>
           <label className={styles.field}><span>Default destination</span><select value={draft.defaultDestination} disabled={Boolean(blocked)} onChange={(event) => edit({ defaultDestination: event.target.value as Preferences["defaultDestination"] })}>{COMPANION_DESTINATIONS.map((value) => <option key={value} value={value}>{destinationLabels[value]}</option>)}</select></label>
         </div>

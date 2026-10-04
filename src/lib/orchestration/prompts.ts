@@ -6,6 +6,10 @@ import type {
   ComputerUseTarget,
 } from "@/lib/orchestration/types";
 import { assignedSkillsWithinRuntimeLimit } from "@/lib/skills/limits";
+import {
+  companionLanguageStyleInstructions,
+  type CompanionLanguageStyle,
+} from "@/lib/companion/language-style";
 
 export const AGENT_PROMPT_CONTRACT_VERSION_ID =
   "agent-instructions:1" as const;
@@ -23,6 +27,7 @@ export function buildAgentInstructions({
   agentId = "atlas",
   specialistIds = [],
   adaptationGuidance = [],
+  companionLanguageStyle,
   profile: rawProfile,
   runtimeClock,
   computerUse,
@@ -32,6 +37,7 @@ export function buildAgentInstructions({
   agentId?: string;
   specialistIds?: string[];
   adaptationGuidance?: string[];
+  companionLanguageStyle?: CompanionLanguageStyle;
   profile?: {
     name: string;
     role: string;
@@ -119,7 +125,7 @@ Specialist mandate: ${identity.mandate}
 ${behavioralIdentity}
 ${collaboration}
 ${activatedGuidance}
-${configuredInstructions}
+${configuredInstructions}${companionLanguageStyleInstructions(companionLanguageStyle)}
 ${computerUseInstructions}
 ${computerUseKeyboardGuidance}
 ${computerUseFailureAccuracy}

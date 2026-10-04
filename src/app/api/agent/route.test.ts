@@ -200,6 +200,7 @@ vi.mock("@/lib/memory/personal-context-consent-store", async (importOriginal) =>
 import { POST } from "@/app/api/agent/route";
 import { buildAgentSkillPinV1, buildCustomAgentIdentityV1 } from "@/lib/agents/identity-contracts";
 import { resolveCommandContextReferences } from "@/lib/command/context-reference-runtime";
+import { resolveDirectConversationLanguageStyle } from "@/lib/companion/language-style-resolver";
 import { AGENT_RUN_BUDGET_LIMITS } from "@/lib/config";
 import { appendDomainEvent } from "@/lib/events/store";
 import { forgetMemory, saveMemory } from "@/lib/memory/store";
@@ -2184,6 +2185,70 @@ describe("agent saved procedure catalog", () => {
 });
 
 describe("agent Loop v2 canary routing", () => {
+  it.each([
+    ["session", "read"], ["mobile", "read"],
+    ["session", "model"], ["mobile", "model"],
+    ["session", "context"], ["mobile", "context"],
+  ] as const)("binds the ordinary direct purpose when %s selects a model over the %s canary", async (source, canary) => {
+    const personalContext = { ...context, actorId: context.auth.email, source };
+    routeMocks.authorizeRequest.mockResolvedValue(personalContext);
+    routeMocks.createThread.mockResolvedValue({
+      id: "thread-a", tenantId: personalContext.tenantId, actorId: personalContext.actorId,
+    });
+    const enrollment = { enginePin: { engineVersionId: `loop-v2-${canary}-test` } };
+    const enrollmentResolver = canary === "read"
+      ? routeMocks.resolveLoopV2ReadOnlyCanaryEnrollment
+      : canary === "model"
+        ? routeMocks.resolveLoopV2ModelTextEnrollment
+        : routeMocks.resolveLoopV2ContextTextEnrollment;
+    enrollmentResolver.mockResolvedValue(enrollment);
+    routeMocks.runAgent.mockImplementation(async function* (input) {
+      yield { type: "run", runId: input.runId, threadId: "thread-a" };
+      yield { type: "done", response: "The selected model answered." };
+    });
+    const requestId = `explicit-model-${source}-${canary}`;
+    const modelSelection = {
+      schemaVersion: 1, assignmentId: "assignment-reviewed", assignmentRevision: 3,
+      assignmentConfigurationSha256: "a".repeat(64), route: "primary", provider: "openai", modelId: "gpt-test",
+    };
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        message: canary === "read" ? "Show my recent runs" : `Summarize: ${"Keep tenant and actor attribution explicit. ".repeat(3)}`,
+        requestId, strategy: "direct", modelSelection,
+        ...(canary === "context" ? { contextScope: "session" } : {}),
+      }),
+    }));
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("The selected model answered.");
+    expect(enrollmentResolver).toHaveBeenCalledOnce();
+    expect(routeMocks.runLoopV2ReadOnlyCanary).not.toHaveBeenCalled();
+    expect(routeMocks.runLoopV2ModelText).not.toHaveBeenCalled();
+    expect(routeMocks.runAgent).toHaveBeenCalledOnce();
+    const runRequest = routeMocks.runAgent.mock.calls[0][0];
+    const runId = agentRequestRunId(context.tenantId, personalContext.actorId, requestId);
+    expect(runRequest).toMatchObject({
+      runId, tenantId: context.tenantId, actorId: personalContext.actorId, role: context.role,
+      securityContext: personalContext, commandModelSelection: modelSelection,
+      requestActorBinding: { canonicalActorId: `actor:${context.auth.userId}` },
+      executionScope: {
+        tenantId: context.tenantId, initiatingActorId: personalContext.actorId,
+        executingPrincipalType: "agent", executingPrincipalId: "agent:atlas:test",
+        correlationId: runId, causationId: requestId, delegationId: null, purpose: "agent.run",
+      },
+    });
+    expect(runRequest.preclaimedRunId).toBeUndefined();
+    const read = vi.fn(async () => undefined);
+    expect(await resolveDirectConversationLanguageStyle(runRequest, { read })).toMatchObject({
+      source: "default", intensity: "balanced", preferenceRevision: 0,
+    });
+    expect(read).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      tenantId: context.tenantId, actorId: personalContext.actorId,
+    }));
+  });
+
   it("rejects a resume identifier without its actor-owned thread binding", async () => {
     const response = await POST(new Request("http://asael.test/api/agent", {
       method: "POST",

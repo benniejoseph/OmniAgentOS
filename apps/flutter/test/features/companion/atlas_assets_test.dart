@@ -55,6 +55,63 @@ class _HeldManifest extends CachingAssetBundle {
 }
 
 void main() {
+  test('intensity preserves composed states and result-focused balance', () {
+    final expected = {
+      'quiet': <String>{},
+      'balanced': {'completed'},
+      'expressive': {'listening', 'responding', 'working', 'completed'},
+    };
+    for (final entry in expected.entries) {
+      expect(
+        atlasStates
+            .where((state) => atlasMotionAllowed(entry.key, state))
+            .toSet(),
+        entry.value,
+      );
+    }
+    expect(atlasMotionAllowed(null, 'completed'), isFalse);
+    expect(atlasMotionAllowed('unknown', 'completed'), isFalse);
+    expect(atlasMotionAllowed('expressive', 'unknown'), isFalse);
+  });
+
+  testWidgets('increasing intensity cannot replay a consumed reaction', (
+    tester,
+  ) async {
+    final bundle = _HeldManifest();
+    final firstReaction = Object();
+    final nextReaction = Object();
+    Widget view(String intensity, String state, Object reaction) => MaterialApp(
+      home: DefaultAssetBundle(
+        bundle: bundle,
+        child: Scaffold(
+          body: AtlasPortrait(
+            state: state,
+            scopeKey: 'same-owner-and-conversation',
+            reactionKey: reaction,
+            preferences: CompanionPreferences(intensity: intensity),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpWidget(view('balanced', 'working', firstReaction));
+    await tester.pump();
+    bundle.resolve();
+    await tester.pump();
+    await tester.pumpWidget(view('expressive', 'working', firstReaction));
+    await tester.pump();
+    expect(
+      bundle.textureRequests.every((path) => path.endsWith('-poster.webp')),
+      isTrue,
+    );
+    await tester.pumpWidget(view('expressive', 'listening', nextReaction));
+    await tester.pump();
+    expect(
+      bundle.textureRequests.last,
+      '$atlasAssetDirectory/listening-light-sprite.webp',
+    );
+    expect(tester.takeException(), isNull);
+  });
+
   test(
     'bounded delivery preserves all exact states and padded sprite rows',
     () {
