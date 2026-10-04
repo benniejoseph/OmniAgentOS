@@ -20,7 +20,7 @@ describe("native v33 Meeting publication", () => {
       .toEqual([["meetings.list", "JsonObject"], ["meetings.get", "JsonObject"]]);
     expect(current.filter(({ id }) => id.startsWith("meetings.")).map(({ id, method, path, requestSchema, responseSchema }) => [id, method, path, requestSchema, responseSchema])).toEqual(expected);
     expect(current.filter(({ id }) => !id.startsWith("meetings."))).toEqual(previous.filter(({ id }) => !id.startsWith("meetings.")));
-    expect(Object.keys(nativeContractSchemas).filter((name) => name.startsWith("NativeMeeting"))).toHaveLength(14);
+    expect(Object.keys(nativeContractSchemas).filter((name) => name.startsWith("NativeMeeting") && !name.startsWith("NativeMeetingCalendar"))).toHaveLength(14);
     for (const operation of current.filter(({ id }) => id.startsWith("meetings."))) {
       expect(operation.auth).toBe("bearer");
       expect(operation.queryPolicy).toBeUndefined();
@@ -33,7 +33,7 @@ describe("native v33 Meeting publication", () => {
   });
 
   it("generates bounded scoped paths, exact status envelopes and private receipts", async () => {
-    const prior = JSON.parse(await readFile(new URL("../../../public/native-contracts/v33/openapi.json", import.meta.url), "utf8"));
+    const prior = JSON.parse(await readFile(new URL("../../../public/native-contracts/v34/openapi.json", import.meta.url), "utf8"));
     const wire = JSON.parse(await readFile(new URL(`../../../public/native-contracts/v${NATIVE_API_CURRENT_VERSION}/openapi.json`, import.meta.url), "utf8"));
     for (const operation of nativeOperationsForVersion(33)!.filter(({ id }) => id.startsWith("meetings."))) {
       expect(wire.paths[operation.path][operation.method.toLowerCase()], operation.id).toEqual(prior.paths[operation.path][operation.method.toLowerCase()]);
@@ -64,7 +64,8 @@ describe("native v33 Meeting publication", () => {
   it("does not publish Calendar sync, recording completion or source audio by association", () => {
     const operations = nativeOperationsForVersion(33)!;
     expect(operations.filter(({ id }) => id.startsWith("meetings.")).map(({ id }) => id)).toEqual(expected.map(([id]) => id));
-    expect(Object.keys(nativeContractSchemas).filter((name) => /Meeting.*(Recording|Calendar|Voice)/.test(name))).toEqual([]);
+    expect(Object.keys(nativeContractSchemas).filter((name) => /Meeting.*(Recording|Voice)/.test(name))).toEqual([]);
+    expect(operations.some(({ id }) => id.startsWith("meetings.calendar."))).toBe(false);
     expect(operations.find(({ id }) => id === "capture.transcribe")).toEqual(nativeOperationsForVersion(32)!.find(({ id }) => id === "capture.transcribe"));
   });
 });

@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import '../../core/network/api_exception.dart';
 
 import 'knowledge_contracts.dart';
+import 'knowledge_consent_contracts.dart';
 import 'knowledge_mutations.dart';
 import 'knowledge_recovery_store.dart';
 import 'knowledge_review_contracts.dart';
@@ -322,16 +323,26 @@ class KnowledgeController extends ChangeNotifier {
       : null;
   bool get reviewsAvailable =>
       available && reviewRepository?.supportsReviews == true;
-  bool get canRecoverReview {
+  KnowledgeConsentRepository? get consentRepository =>
+      repository is KnowledgeConsentRepository
+      ? repository as KnowledgeConsentRepository
+      : null;
+  bool get consentAvailable =>
+      available && consentRepository?.supportsConsent == true;
+  bool get canRecoverReview => _canRecoverReadOnlyChange(MemoryChange.review);
+  bool get canRecoverConsent => _canRecoverReadOnlyChange(MemoryChange.consent);
+  bool _canRecoverReadOnlyChange(MemoryChange kind) {
     final sent = pendingChange, owner = mutationRepository?.access.owner;
     if (sent == null || owner == null) {
       return false;
     }
-    return reviewsAvailable &&
+    return (kind == MemoryChange.review
+            ? reviewsAvailable
+            : consentAvailable) &&
         recoveryReady &&
         !recoveryBusy &&
         !changing &&
-        sent.kind == MemoryChange.review &&
+        sent.kind == kind &&
         sent.owner.tenantId == owner.tenantId &&
         sent.owner.userId == owner.userId &&
         sent.owner.apiBaseUrl == owner.apiBaseUrl;
@@ -578,10 +589,82 @@ class KnowledgeController extends ChangeNotifier {
     }
   }
 
-  /// An uncertain review is never PATCHed again. Only a current authenticated
-  /// exact read with the original raw-key hash can establish its acceptance.
-  Future<void> recoverReview() async {
-    if (!canRecoverReview) {
+  Future<MemoryConsentRead> readConsent() async {
+    _requireAvailable();
+    memoryRequire(
+      consentAvailable,
+      'Personal recall consent is unavailable. Check account access or update the app.',
+    );
+    final result = await consentRepository!.readConsent();
+    _requireAvailable();
+    return result;
+  }
+
+  Future<void> decideConsent(
+    MemoryConsentCurrent reviewed,
+    String action, {
+    required bool Function() isReviewCurrent,
+  }) async {
+    memoryRequire(
+      consentAvailable &&
+          supportsChange(MemoryChange.consent) &&
+          pendingChange == null &&
+          !changing &&
+          reviewed.token != null &&
+          memoryConsentActions.contains(action) &&
+          isReviewCurrent(),
+      'Read the current personal recall notice and resolve any pending submission before deciding.',
+    );
+    final owner = mutationRepository!.access.owner!,
+        generation = ++_changeGeneration;
+    bool owned() =>
+        available &&
+        _changeGeneration == generation &&
+        mutationRepository?.access.owner?.key == owner.key &&
+        pendingChange == null;
+    bool current() => owned() && isReviewCurrent();
+    changing = true;
+    changeError = null;
+    _publish();
+    try {
+      final exact = await consentRepository!.readConsent();
+      if (!current()) {
+        return;
+      }
+      memoryRequire(
+        exact.current.token != null &&
+            memoryCanonical(exact.current.raw) == memoryCanonical(reviewed.raw),
+        'Personal recall consent or its notice changed. Refresh and review it before making a new decision.',
+      );
+      final sent = MemorySubmission(
+        kind: MemoryChange.consent,
+        owner: owner,
+        id: owner.canonicalActorId,
+        body: reviewed.decision(action),
+        consentNotice: reviewed.notice,
+      );
+      pendingChange = sent;
+      changing = false;
+      await _sendChange(sent, isAdmitted: isReviewCurrent);
+    } catch (failure) {
+      if (owned()) {
+        changeError = failure;
+      }
+      rethrow;
+    } finally {
+      if (owned() && changing) {
+        changing = false;
+        _publish();
+      }
+    }
+  }
+
+  /// These uncertain decisions are never PATCHed again. Only an authenticated
+  /// exact read with the original raw-key hash can establish acceptance.
+  Future<void> recoverReview() => _recoverReadOnlyChange(MemoryChange.review);
+  Future<void> recoverConsent() => _recoverReadOnlyChange(MemoryChange.consent);
+  Future<void> _recoverReadOnlyChange(MemoryChange kind) async {
+    if (!_canRecoverReadOnlyChange(kind)) {
       return;
     }
     final sent = pendingChange!, owner = mutationRepository!.access.owner!;
@@ -598,21 +681,34 @@ class KnowledgeController extends ChangeNotifier {
       if (!current()) {
         return;
       }
-      final read = await reviewRepository!.readReview(
-        sent.id!,
-        acceptanceKeySha256: keyHash,
-      );
+      late final KnowledgeJson raw;
+      if (kind == MemoryChange.review) {
+        final read = await reviewRepository!.readReview(
+          sent.id!,
+          acceptanceKeySha256: keyHash,
+        );
+        memoryRequire(
+          read.acceptance != null,
+          read.review.status == 'resolved'
+              ? 'A resolution is visible, but no matching native receipt confirms this submitted decision. The original request remains held.'
+              : 'This review is still pending and has no matching acceptance. The submitted outcome remains unconfirmed; no decision was resent.',
+        );
+        raw = read.raw;
+      } else {
+        final read = await consentRepository!.readConsent(
+          acceptanceKeySha256: keyHash,
+        );
+        memoryRequire(
+          read.acceptance != null,
+          'No matching receipt confirms this personal recall decision. The saved request remains held; its current setting does not prove acceptance and no decision was resent.',
+        );
+        raw = read.raw;
+      }
       if (!current() || !identical(pendingChange, sent)) {
         return;
       }
-      memoryRequire(
-        read.acceptance != null,
-        read.review.status == 'resolved'
-            ? 'A resolution is visible, but no matching native receipt confirms this submitted decision. The original request remains held.'
-            : 'This review is still pending and has no matching acceptance. The submitted outcome remains unconfirmed; no decision was resent.',
-      );
       final accepted = await MemoryAcceptance.parse(
-        read.raw,
+        raw,
         sent,
         reviewReadOwner: owner,
       );
@@ -767,7 +863,7 @@ class KnowledgeController extends ChangeNotifier {
         }
       }
       // Receipt acceptance is settled before this independent, fallible read.
-      if (ownerCurrent()) await refresh();
+      if (ownerCurrent() && sent.kind != MemoryChange.consent) await refresh();
     } catch (failure) {
       if (current()) {
         changeError = failure;
@@ -779,6 +875,7 @@ class KnowledgeController extends ChangeNotifier {
         // A later refusal cannot erase uncertainty about an earlier request.
         final status = failure is ApiException ? failure.statusCode : null;
         if (sent.kind != MemoryChange.review &&
+            sent.kind != MemoryChange.consent &&
             !recovery &&
             (const {400, 413, 415}.contains(status) ||
                 sent.replayable &&

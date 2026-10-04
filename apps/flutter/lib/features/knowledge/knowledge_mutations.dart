@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import '../../core/network/api_client.dart';
 import '../auth/domain/app_session.dart';
 import 'knowledge_contracts.dart';
+import 'knowledge_consent_contracts.dart';
 import 'knowledge_review_contracts.dart';
 
 void memoryRequire(
@@ -140,7 +141,7 @@ class KnowledgeAccess extends ChangeNotifier {
   }
 }
 
-enum MemoryChange { create, correct, lifecycle, forget, review }
+enum MemoryChange { create, correct, lifecycle, forget, review, consent }
 
 extension MemoryChangeOperation on MemoryChange {
   String get operation => switch (this) {
@@ -149,6 +150,7 @@ extension MemoryChangeOperation on MemoryChange {
     MemoryChange.lifecycle => 'memory.lifecycle.change',
     MemoryChange.forget => 'memory.delete',
     MemoryChange.review => 'memory.reconciliation.resolve',
+    MemoryChange.consent => 'memory.personal-context-consent.decide',
   };
   String get service => switch (this) {
     MemoryChange.create => 'memory.write',
@@ -156,6 +158,7 @@ extension MemoryChangeOperation on MemoryChange {
     MemoryChange.lifecycle => 'memory.lifecycle',
     MemoryChange.forget => 'memory.forget',
     MemoryChange.review => 'memory.reconciliation.resolve',
+    MemoryChange.consent => 'memory.personal-context-consent.decide',
   };
 }
 
@@ -167,11 +170,15 @@ class MemorySubmission {
     this.id,
     this.previewDigest,
     KnowledgeJson? reviewEvidence,
+    KnowledgeJson? consentNotice,
     String? key,
   }) : body = freezeKnowledgeJson(body) as KnowledgeJson,
        reviewEvidence = reviewEvidence == null
            ? null
            : freezeKnowledgeJson(reviewEvidence) as KnowledgeJson,
+       consentNotice = consentNotice == null
+           ? null
+           : freezeKnowledgeJson(consentNotice) as KnowledgeJson,
        key =
            key ??
            'native-memory-${List.generate(24, (_) => Random.secure().nextInt(256).toRadixString(16).padLeft(2, '0')).join()}' {
@@ -252,11 +259,17 @@ class MemorySubmission {
     } else {
       memoryRequire(reviewEvidence == null);
     }
+    if (kind == MemoryChange.consent) {
+      validateMemoryConsentRequest(this.body, owner, id, this.consentNotice);
+    } else {
+      memoryRequire(consentNotice == null);
+    }
   }
   final MemoryChange kind;
   final KnowledgeOwner owner;
   final KnowledgeJson body;
   final KnowledgeJson? reviewEvidence;
+  final KnowledgeJson? consentNotice;
   final String? id, previewDigest;
   final String key;
   bool get replayable =>
@@ -268,6 +281,7 @@ class MemorySubmission {
     'id': id,
     'previewDigest': previewDigest,
     if (reviewEvidence != null) 'reviewEvidence': reviewEvidence,
+    if (consentNotice != null) 'consentNotice': consentNotice,
     'owner': {
       'tenantId': owner.tenantId,
       'actorId': owner.actorId,
@@ -311,6 +325,9 @@ class MemorySubmission {
       reviewEvidence: raw['reviewEvidence'] == null
           ? null
           : knowledgeMap(raw['reviewEvidence'], 'Saved review targets'),
+      consentNotice: raw['consentNotice'] == null
+          ? null
+          : knowledgeMap(raw['consentNotice'], 'Saved personal recall notice'),
     );
   }
 }
@@ -443,7 +460,7 @@ class MemoryAcceptance {
       'Saved review receipt scope',
     );
     memoryRequire(
-      sent.kind == MemoryChange.review &&
+      const {MemoryChange.review, MemoryChange.consent}.contains(sent.kind) &&
           scope.length == 2 &&
           scope.keys.every(const {'actorId', 'role'}.contains) &&
           scope['actorId'] is String &&
@@ -470,6 +487,36 @@ class MemoryAcceptance {
     MemorySubmission sent, {
     KnowledgeOwner? reviewReadOwner,
   }) async {
+    if (sent.kind == MemoryChange.consent) {
+      final mutation = raw.containsKey('replayed');
+      final owner = reviewReadOwner ?? sent.owner;
+      memoryRequire(
+        (!mutation || reviewReadOwner == null) &&
+            owner.tenantId == sent.owner.tenantId &&
+            owner.userId == sent.owner.userId &&
+            owner.apiBaseUrl == sent.owner.apiBaseUrl,
+      );
+      final read = await MemoryConsentRead.parse(
+        raw,
+        owner,
+        keyHash: await memoryShaText(sent.key),
+        sent: sent,
+        mutation: mutation,
+      );
+      memoryRequire(
+        read.acceptance != null,
+        'No matching receipt has confirmed this personal recall decision.',
+      );
+      return MemoryAcceptance(
+        sent,
+        read.raw,
+        read.acceptance!['id'] as String,
+        sent.body['action'] == 'activate'
+            ? 'Your decision to enable personal automatic recall was recorded. Current consent is shown separately.'
+            : 'Your decision to disable personal automatic recall was recorded. Current consent is shown separately.',
+        reviewReadOwner: mutation ? null : owner,
+      );
+    }
     if (sent.kind == MemoryChange.review) {
       final mutation = raw.containsKey('projections');
       final owner = reviewReadOwner ?? sent.owner;

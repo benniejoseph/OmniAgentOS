@@ -9580,6 +9580,8 @@ const meetingResolutionIntentsVersion = 220;
 const customerAccountIntentsVersion = 221;
 const memoryLifecycleMutationsVersion = 222;
 const memoryReconciliationFencesVersion = 223;
+const meetingCalendarSyncAcceptancesVersion = 224;
+const personalConsentValidatorGrantVersion = 225;
 const additiveReplayVersions = [
   companionPreferencesVersion,
   responsibilityDraftsVersion,
@@ -9590,12 +9592,15 @@ const additiveReplayVersions = [
   customerAccountIntentsVersion,
   memoryLifecycleMutationsVersion,
   memoryReconciliationFencesVersion,
+  meetingCalendarSyncAcceptancesVersion,
+  personalConsentValidatorGrantVersion,
 ].filter((version) => databaseSchemaMigrations.some((migration) => migration.version === version));
 const meetingResolutionReplayTables: readonly string[] = [
   "omni_meeting_commitment_resolution_intents",
   "omni_meeting_commitment_resolution_progress",
 ];
 const additiveDraftReplayTables: readonly string[] = [
+  "omni_meeting_calendar_sync_acceptances",
   "omni_companion_preference_mutations",
   "omni_companion_preferences",
   ...meetingResolutionReplayTables,

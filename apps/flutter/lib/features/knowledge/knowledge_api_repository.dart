@@ -4,6 +4,7 @@ import '../../core/network/api_client.dart';
 import '../../generated/native_contract.g.dart';
 import 'knowledge.dart';
 import 'knowledge_contracts.dart';
+import 'knowledge_consent_contracts.dart';
 import 'knowledge_mutations.dart';
 import 'knowledge_review_contracts.dart';
 
@@ -14,7 +15,8 @@ class ApiKnowledgeRepository
         KnowledgeRepository,
         PagedKnowledgeRepository,
         KnowledgeMutationRepository,
-        KnowledgeReviewRepository {
+        KnowledgeReviewRepository,
+        KnowledgeConsentRepository {
   ApiKnowledgeRepository(
     this.api, {
     this.expectedTenantId,
@@ -41,6 +43,57 @@ class ApiKnowledgeRepository
   bool get supportsReviews =>
       NativeContract.supportsOperation('memory.reconciliation.list') &&
       NativeContract.supportsOperation('memory.reconciliation.read');
+  @override
+  bool get supportsConsent =>
+      NativeContract.supportsOperation('memory.personal-context-consent.get') &&
+      NativeContract.supportsOperation(
+        'memory.personal-context-consent.decision.get',
+      );
+
+  @override
+  Future<MemoryConsentRead> readConsent({String? acceptanceKeySha256}) async {
+    if (acceptanceKeySha256 != null) {
+      memoryHash(acceptanceKeySha256);
+    }
+    final owner = access.owner, generation = access.generation;
+    bool current() =>
+        authorityCurrent() &&
+        access.readable &&
+        owner != null &&
+        access.generation == generation &&
+        access.owner?.key == owner.key;
+    memoryRequire(
+      current() && supportsConsent,
+      'Current personal recall consent access is required.',
+    );
+    final authority = NativeRequestAuthority(
+      tenantId: owner!.tenantId,
+      actorId: owner.actorId,
+      canonicalUserId: owner.userId,
+      role: owner.role,
+      apiBaseUrl: owner.apiBaseUrl,
+      isCurrent: current,
+    );
+    final raw = await api.getJsonAuthorized(
+      acceptanceKeySha256 == null
+          ? NativePaths.memoryPersonalContextConsentGet(
+              contract: memoryConsentReadContract,
+            )
+          : NativePaths.memoryPersonalContextConsentDecisionGet(
+              acceptanceKeySha256,
+            ),
+      authority: authority,
+      cancelToken: _lifetime,
+    );
+    memoryRequire(current(), 'Personal recall consent access changed.');
+    final read = await MemoryConsentRead.parse(
+      raw,
+      owner,
+      keyHash: acceptanceKeySha256,
+    );
+    memoryRequire(current(), 'Personal recall consent access changed.');
+    return read;
+  }
 
   Future<Json> _reviewRead(String path) async {
     final owner = access.owner, generation = access.generation;
@@ -453,6 +506,12 @@ class ApiKnowledgeRepository
       ),
       MemoryChange.review => await api.patchJsonAuthorized(
         NativePaths.memoryReconciliationResolve,
+        authority: authority,
+        data: submission.body,
+        headers: headers,
+      ),
+      MemoryChange.consent => await api.patchJsonAuthorized(
+        NativePaths.memoryPersonalContextConsentDecide,
         authority: authority,
         data: submission.body,
         headers: headers,

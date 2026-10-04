@@ -22,6 +22,8 @@ export async function getActiveGoogleWorkspaceAccess(input: {
   actorId: string;
   connectionId?: string;
   capability: GoogleWorkspaceCapability;
+  expectedAuthorizationGeneration?: number;
+  expectedAccountEmail?: string;
 }): Promise<Readonly<{ accessToken: string; grant: NormalizedOAuthGrant }>> {
   const secrets = await getOAuthGrantSecrets(
     input.tenantId,
@@ -36,6 +38,12 @@ export async function getActiveGoogleWorkspaceAccess(input: {
       "The Google connection was not found.",
       "grant_not_found",
     );
+  }
+  if (input.expectedAuthorizationGeneration !== undefined && (
+    secrets.grant.authorizationGeneration !== input.expectedAuthorizationGeneration ||
+    secrets.grant.accountEmail !== input.expectedAccountEmail
+  )) {
+    throw new OAuthCredentialError("The reviewed Google authorization changed.", "account_identity_changed");
   }
   if (!hasGoogleWorkspaceCapability(secrets.grant.scopes, input.capability)) {
     const writeAccess = googleWorkspaceWriteAccessFor(input.capability);

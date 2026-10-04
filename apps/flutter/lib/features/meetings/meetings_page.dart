@@ -21,6 +21,7 @@ class NativeMeetingsPage extends ConsumerWidget {
       key: ObjectKey(controller),
       controller: controller,
       actions: ref.watch(meetingActionControllerProvider('new')),
+      calendar: ref.watch(meetingCalendarControllerProvider),
       onOpen: onOpen,
       desktop: desktop,
       active: active,

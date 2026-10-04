@@ -40,6 +40,20 @@ beforeEach(() => {
 });
 
 describe("active Google Workspace access", () => {
+  it("refuses a stale native Calendar authorization before token refresh", async () => {
+    mocks.getOAuthGrantSecrets.mockResolvedValue({ grant: { ...grant, accountEmail: "owner@example.test", scopes: [GOOGLE_CALENDAR_EVENTS_READ_SCOPE], authorizationGeneration: 4 },
+      tokens: { access_token: "expired-token", refresh_token: "refresh-token" }, credentialState: "refresh_required" });
+    await expect(getActiveGoogleWorkspaceAccess({ tenantId: grant.tenantId, actorId: grant.actorId, connectionId: grant.id,
+      capability: "calendar.events.read", expectedAuthorizationGeneration: 3, expectedAccountEmail: "owner@example.test" })).rejects.toMatchObject({ code: "account_identity_changed" });
+    expect(mocks.refreshOAuthAccess).not.toHaveBeenCalled(); expect(mocks.saveOAuthGrant).not.toHaveBeenCalled();
+  });
+  it("refuses a changed Calendar account even when its generation matches", async () => {
+    mocks.getOAuthGrantSecrets.mockResolvedValue({ grant: { ...grant, accountEmail: "other@example.test", scopes: [GOOGLE_CALENDAR_EVENTS_READ_SCOPE] },
+      tokens: { access_token: "active-token" }, credentialState: "active" });
+    await expect(getActiveGoogleWorkspaceAccess({ tenantId: grant.tenantId, actorId: grant.actorId, connectionId: grant.id,
+      capability: "calendar.events.read", expectedAuthorizationGeneration: 1, expectedAccountEmail: "owner@example.test" })).rejects.toMatchObject({ code: "account_identity_changed" });
+    expect(mocks.refreshOAuthAccess).not.toHaveBeenCalled();
+  });
   it("returns an active exact-owner token after capability validation", async () => {
     mocks.getOAuthGrantSecrets.mockResolvedValue({
       grant,

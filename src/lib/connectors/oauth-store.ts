@@ -567,6 +567,7 @@ export async function claimOAuthSyncLease(input: {
   actorId: string;
   provider: OAuthProvider;
   connectionId?: string;
+  expectedAuthorizationGeneration?: number;
 }): Promise<
   | { status: "claimed"; lease: OAuthSyncLease }
   | { status: "busy" }
@@ -589,6 +590,8 @@ export async function claimOAuthSyncLease(input: {
         AND provider = ${input.provider}
         AND id = ${connectionId}
         AND status = 'active'
+        AND (${input.expectedAuthorizationGeneration ?? null}::BIGINT IS NULL
+          OR authorization_generation = ${input.expectedAuthorizationGeneration ?? null})
         AND (
           sync_lease_owner_id IS NULL
           OR sync_lease_expires_at <= clock_timestamp()
@@ -619,6 +622,8 @@ export async function claimOAuthSyncLease(input: {
           grant.provider !== input.provider ||
           grant.id !== connectionId ||
           grant.status !== "active" ||
+          (input.expectedAuthorizationGeneration !== undefined &&
+            grant.authorizationGeneration !== input.expectedAuthorizationGeneration) ||
           (
             grant.syncLeaseOwnerId &&
             Date.parse(grant.syncLeaseExpiresAt || "") > now

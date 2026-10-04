@@ -215,7 +215,7 @@ class MeetingDetailBody extends StatelessWidget {
                 ),
         ),
         const MeetingNotice(
-          'Calendar connection and sync status are unavailable in this native contract. Calendar sync and media processing remain available through the governed web workspace.',
+          'View Calendar connection and sync status in Meetings. Recording processing is available in the web workspace.',
         ),
       ],
     );

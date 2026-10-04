@@ -52,6 +52,8 @@ class MemoryChangeStatus extends StatelessWidget {
                   controller.changing
                       ? sent.kind == MemoryChange.review
                             ? 'Checking the exact review decision…'
+                            : sent.kind == MemoryChange.consent
+                            ? 'Checking the personal recall decision…'
                             : 'Submitting the reviewed Memory change…'
                       : 'Submission unconfirmed. It may already have been recorded.',
                 ),
@@ -70,12 +72,21 @@ class MemoryChangeStatus extends StatelessWidget {
                   ),
                   if (sent.previewDigest != null)
                     SelectableText('Reviewed impact: ${sent.previewDigest}'),
+                  if (sent.consentNotice != null)
+                    Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: SelectableText(
+                        'Reviewed notice:\n${sent.consentNotice!['text']}\nNotice digest: ${sent.consentNotice!['sha256']}',
+                      ),
+                    ),
                 ],
               ),
               if (!controller.changing) ...[
                 Text(
                   sent.kind == MemoryChange.review
                       ? 'Recovery only reads this exact review with the saved request identity. It never sends the decision again. A visible decision without a matching acceptance does not settle this request.'
+                      : sent.kind == MemoryChange.consent
+                      ? 'Recovery only reads the exact saved personal recall decision. It never sends it again. The current setting alone cannot confirm this request.'
                       : sent.replayable
                       ? 'Recovery sends the same frozen request and key. A changed impact or lost authorization may prevent recovery.'
                       : 'This operation has no exact retry receipt. Inspect the live catalogue before making another entry. This app will not resend it.',
@@ -97,7 +108,17 @@ class MemoryChangeStatus extends StatelessWidget {
                         : null,
                     child: const Text('Read exact review acceptance'),
                   ),
-                if (sent.kind == MemoryChange.review &&
+                if (sent.kind == MemoryChange.consent)
+                  OutlinedButton(
+                    onPressed: controller.canRecoverConsent
+                        ? controller.recoverConsent
+                        : null,
+                    child: const Text('Read saved personal recall decision'),
+                  ),
+                if (const {
+                      MemoryChange.review,
+                      MemoryChange.consent,
+                    }.contains(sent.kind) &&
                     controller.changeError != null)
                   Text(
                     controller.changeError is FormatException
@@ -105,6 +126,7 @@ class MemoryChangeStatus extends StatelessWidget {
                         : 'The exact acceptance could not be confirmed. The original request remains held.',
                   ),
                 if (sent.kind != MemoryChange.review &&
+                    sent.kind != MemoryChange.consent &&
                     sent.owner.key !=
                         controller.mutationRepository?.access.owner?.key)
                   const Text(
@@ -114,7 +136,9 @@ class MemoryChangeStatus extends StatelessWidget {
             ],
             if (accepted != null) ...[
               Semantics(liveRegion: true, child: Text(accepted.description)),
-              SelectableText('Accepted target: ${accepted.memoryId}'),
+              SelectableText(
+                '${accepted.submission.kind == MemoryChange.consent ? 'Decision receipt' : 'Accepted target'}: ${accepted.memoryId}',
+              ),
               if (controller.error != null)
                 const Text(
                   'The change was accepted, but the catalogue refresh failed. The receipt remains available.',

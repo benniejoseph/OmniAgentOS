@@ -22,6 +22,15 @@ const UNKEYED_ROUTE_EXPORTS = new Set([
   "src/app/api/capture/recordings/[id]/route.ts PATCH",
   "src/app/api/connectors/[id]/route.ts PATCH",
   "src/app/api/openapi-connectors/[id]/route.ts PATCH",
+  "src/app/api/memory/personal-context-consent/route.ts POST",
+  "src/app/api/memory/personal-context-consent/route.ts DELETE",
+]);
+
+// This shared route retains its unkeyed legacy web envelope. Its strict native
+// contract branch validates the standard key before authorization; route tests
+// also verify missing keys and mobile legacy-envelope rejection behavior.
+const CONTRACT_KEYED_ROUTE_EXPORTS = new Set([
+  "src/app/api/memory/reconciliation/route.ts PATCH",
 ]);
 
 function request(method: string, headers: Record<string, string> = {}) {
@@ -152,6 +161,7 @@ describe("client idempotency keys", () => {
       .map((file) => relative(root, file));
     const unguarded: string[] = [];
     const exempt: string[] = [];
+    const contractGuarded: string[] = [];
     let guarded = 0;
     for (const route of routes) {
       const source = await readFile(resolve(root, route), "utf8");
@@ -163,6 +173,17 @@ describe("client idempotency keys", () => {
         const name = `${route} ${method}`;
         if (UNKEYED_ROUTE_EXPORTS.has(name)) {
           exempt.push(name);
+        } else if (CONTRACT_KEYED_ROUTE_EXPORTS.has(name)) {
+          const branch = source.indexOf('if ("contract" in parsed.data) {');
+          const key = source.indexOf("requiredRequestIdempotencyKey(request)", branch);
+          const authorization = source.indexOf("authorizeRequest({", branch);
+          const mutation = source.indexOf("createRequestMutationAppServiceCaller(", branch);
+          expect(branch, name).toBeGreaterThanOrEqual(0);
+          expect(key, name).toBeGreaterThan(branch);
+          expect(authorization, name).toBeGreaterThan(key);
+          expect(mutation, name).toBeGreaterThan(authorization);
+          expect(source.slice(key, authorization), name).toContain("idempotencyKeyErrorResponse(error)");
+          contractGuarded.push(name);
         } else if (line.includes("requireIdempotencyKey(")) {
           guarded += 1;
         } else {
@@ -173,6 +194,7 @@ describe("client idempotency keys", () => {
 
     expect(unguarded).toEqual([]);
     expect(exempt.sort()).toEqual([...UNKEYED_ROUTE_EXPORTS].sort());
+    expect(contractGuarded.sort()).toEqual([...CONTRACT_KEYED_ROUTE_EXPORTS].sort());
     expect(guarded).toBeGreaterThanOrEqual(69);
   });
 });
