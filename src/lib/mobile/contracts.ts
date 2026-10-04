@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { contentSearchResponseSchema } from "@/lib/content-search/contracts";
 import { COMPANION_PREFERENCES_CONTRACT, companionChangeSchema, companionPreferencesSchema, companionThreadIdSchema } from "@/lib/companion/contracts";
 import { agentDailyLearningStatusV1Schema } from "@/lib/agents/learning-contracts";
 import {
@@ -62,10 +63,10 @@ import {
 import { voiceCommandInputSchema } from "@/lib/voice/command-input";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 38 as const;
-// v37 remains byte-frozen. v38 adds reviewed native mutations with
-// immutable intent and exact acceptance recovery across these domain surfaces.
-export const NATIVE_API_PREVIOUS_VERSION = 37 as const;
+export const NATIVE_API_CURRENT_VERSION = 39 as const;
+// v38 remains byte-frozen. v39 publishes existing scoped content-search reads;
+// it grants no new mutation capability and retains the existing version floors.
+export const NATIVE_API_PREVIOUS_VERSION = 38 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -2241,6 +2242,28 @@ const v38Operations: readonly NativeOperation[] = [
   }),
 ];
 
+// Search follows the same current actor and canonical-owner checks as web.
+// Detail wrappers intentionally leave domain payload validation to their existing
+// native parsers; publishing metadata grants no authority to open a result.
+const v39Operations: readonly NativeOperation[] = [
+  ...v38Operations,
+  operation("content.search", "GET", "/api/content-search", "Search the current account's readable conversation titles, Work, private Memory and Library with independent provider availability.", "bearer", undefined, "NativeContentSearchResponse", {
+    ...privateReadOptions, queryPolicy: "exact", queryParameters: [
+      queryParameter("q", "string", { required: true, minLength: 2, maxLength: 240, description: "A trimmed query containing at least one Unicode letter or number." }),
+      queryParameter("limit", "integer", { minimum: 1, maximum: 20, defaultValue: 8 }),
+      queryParameter("provider", "string", { enumValues: ["conversations", "work", "memory", "library"] }),
+      queryParameter("cursor", "string", { maxLength: 1800, description: "Opaque continuation bound to the exact query, provider and authenticated owner." }),
+    ],
+  }),
+  operation("content.search.work.get", "GET", "/api/content-search/work/{id}", "Revalidate a current mapped Work search result and place its exact selected task first in the bounded project detail.", "bearer", undefined, "NativeContentSearchWorkResponse", {
+    ...privateReadOptions, pathParameters: [{ name: "id", minLength: 1, maxLength: 200 }],
+    queryParameters: [queryParameter("task", "string", { minLength: 1, maxLength: 200 })],
+  }),
+  operation("content.search.memory.get", "GET", "/api/content-search/memory/{id}", "Revalidate one currently active private Memory search result under the existing purpose and owner rules.", "bearer", undefined, "NativeContentSearchMemoryResponse", {
+    ...privateReadOptions, pathParameters: [{ name: "id", minLength: 1, maxLength: 200 }],
+  }),
+];
+
 const nativeCompanionPreferencesResponseSchema = z.object({
   schemaVersion: z.literal(1), contract: z.literal(COMPANION_PREFERENCES_CONTRACT),
   snapshot: z.object({
@@ -2289,6 +2312,9 @@ export const nativeContractSchemas = Object.freeze({
   ...nativeMeetingCalendarSchemas,
   NativeCompanionPreferencesRequest: companionChangeSchema,
   NativeCompanionPreferencesResponse: nativeCompanionPreferencesResponseSchema,
+  NativeContentSearchResponse: contentSearchResponseSchema,
+  NativeContentSearchWorkResponse: z.object({ project: jsonObject }).strict(),
+  NativeContentSearchMemoryResponse: z.object({ memory: jsonObject }).strict(),
   JsonObject: jsonObject,
   NativeClientAttestation: nativeClientAttestationSchema,
   NativeDevice: nativeDeviceSchema,
@@ -2421,6 +2447,7 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 36) return v36Operations;
   if (version === 37) return v37Operations;
   if (version === 38) return v38Operations;
+  if (version === 39) return v39Operations;
   return undefined;
 }
 

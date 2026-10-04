@@ -18,6 +18,31 @@ import {
 } from "@/lib/mobile/contracts";
 
 describe("native API contracts", () => {
+  it("publishes scoped search as three private reads from v39 without enrolling mutations", () => {
+    expect(nativeOperationsForVersion(38)?.some(({ id }) => id.startsWith("content.search"))).toBe(false);
+    const search = nativeOperationsForVersion(39)!.filter(({ id }) => id.startsWith("content.search"));
+    expect(search.map(({ id, path, responseSchema }) => [id, path, responseSchema])).toEqual([
+      ["content.search", "/api/content-search", "NativeContentSearchResponse"],
+      ["content.search.work.get", "/api/content-search/work/{id}", "NativeContentSearchWorkResponse"],
+      ["content.search.memory.get", "/api/content-search/memory/{id}", "NativeContentSearchMemoryResponse"],
+    ]);
+    for (const operation of search) {
+      expect(operation).toMatchObject({ method: "GET", auth: "bearer" });
+      expect(operation.requestSchema).toBeUndefined();
+      expect(operation.headerParameters).toBeUndefined();
+      expect(operation.responseHeaders).toContainEqual(expect.objectContaining({ name: "cache-control", constValue: "private, no-store" }));
+    }
+    expect(search[0].queryPolicy).toBe("exact");
+    expect(search[0].queryParameters).toContainEqual(expect.objectContaining({ name: "q", required: true, minLength: 2, maxLength: 240 }));
+    expect(search[0].queryParameters).toContainEqual(expect.objectContaining({ name: "limit", minimum: 1, maximum: 20, defaultValue: 8 }));
+    expect(search[0].queryParameters).toContainEqual(expect.objectContaining({ name: "cursor", maxLength: 1800 }));
+    expect(search[1].queryPolicy).toBeUndefined();
+    expect(search[2].queryPolicy).toBeUndefined();
+    for (const schema of [nativeContractSchemas.NativeContentSearchWorkResponse, nativeContractSchemas.NativeContentSearchMemoryResponse]) {
+      expect(schema.safeParse({}).success).toBe(false);
+      expect(schema.safeParse({ project: {}, memory: {}, actorId: "other" }).success).toBe(false);
+    }
+  });
   it("exposes owner-bound presentation preferences from v31 with strict revision-bound input", () => {
     expect(nativeOperationsForVersion(30)?.some((item) => item.id.startsWith("companion."))).toBe(false);
     const operations = nativeOperationsForVersion(31)?.filter((item) => item.id.startsWith("companion."));
@@ -65,7 +90,7 @@ describe("native API contracts", () => {
   });
 
   it("generates exact Responsibility paths, bounds and status schemas without changing older operation defaults", async () => {
-    const previous = JSON.parse(await readFile(new URL("../../../public/native-contracts/v36/openapi.json", import.meta.url), "utf8"));
+    const previous = JSON.parse(await readFile(new URL("../../../public/native-contracts/v37/openapi.json", import.meta.url), "utf8"));
     const current = JSON.parse(await readFile(new URL(`../../../public/native-contracts/v${NATIVE_API_CURRENT_VERSION}/openapi.json`, import.meta.url), "utf8"));
     for (const operation of nativeOperationsForVersion(32)!.filter(({ id }) => id.startsWith("responsibilities."))) {
       expect(current.paths[operation.path][operation.method.toLowerCase()], operation.id).toEqual(previous.paths[operation.path][operation.method.toLowerCase()]);
@@ -101,8 +126,8 @@ describe("native API contracts", () => {
   it("retains exactly the current and previous rollout versions", () => {
     // Tripwire: a native contract bump must be a deliberate, reviewed change.
     // The other tests follow these constants.
-    expect(NATIVE_API_CURRENT_VERSION).toBe(38);
-    expect(NATIVE_API_PREVIOUS_VERSION).toBe(37);
+    expect(NATIVE_API_CURRENT_VERSION).toBe(39);
+    expect(NATIVE_API_PREVIOUS_VERSION).toBe(38);
     expect(NATIVE_API_SUPPORTED_VERSIONS).toEqual([
       NATIVE_API_CURRENT_VERSION,
       NATIVE_API_PREVIOUS_VERSION,
@@ -348,6 +373,7 @@ describe("native API contracts", () => {
       36: added("memory.personal-context-consent.get", "memory.personal-context-consent.decide", "memory.personal-context-consent.decision.get", "meetings.calendar.get", "meetings.calendar.sync", "meetings.calendar.sync.get"),
       37: added("customers.health.evaluate", "customers.health.evaluations.get"),
       38: added("agents.delete.review", "agents.delete", "agents.mutations.get", "skills.mutation.review", "skills.create", "skills.update", "skills.delete", "skills.mutations.get", "memory.promotions.list", "memory.promotions.read", "memory.promotions.decide", "customers.workflows.start", "customers.workflows.outcome", "customers.workflows.get", "customers.workflows.mutations.get", "meetings.recordings.review", "meetings.recordings.process", "meetings.recordings.processing.get", "customers.facts.record", "customers.facts.acceptance.get", "customers.salesforce.actions.review", "customers.salesforce.actions.submit", "customers.salesforce.actions.get", "knowledge.cognification.list", "knowledge.cognification.read", "knowledge.cognification.decide", "knowledge.cognification.decisions.get", "knowledge.sources.deletion.review", "knowledge.sources.delete", "knowledge.sources.deletions.get", "memory.graph.universe", "memory.graph.node", "memory.graph.entity", "memory.graph.temporalRelations", "memory.graph.relationshipPaths", "memory.maintenance.review", "memory.maintenance.run", "memory.maintenance.runs.get", "memory.graph.rebuild.review", "memory.graph.rebuild", "memory.graph.rebuilds.get", "knowledge.cognification.build.review", "knowledge.cognification.build", "knowledge.cognification.builds.get"),
+      39: added("content.search", "content.search.work.get", "content.search.memory.get"),
     });
     // v20 and v23 changed only request and push schemas.
     expect(nativeOperationsForVersion(20)).toEqual(nativeOperationsForVersion(19));
@@ -586,19 +612,19 @@ describe("native API contracts", () => {
     });
   });
 
-  it("retains every published v36 and v37 document byte for byte", async () => {
+  it("retains every published v37 and v38 document byte for byte", async () => {
     const frozen = {
-      "36": {
-        "openapi.json": "8823044860927d2cabed33ff028efbb617107810ae71cece020bda2bc64d850a", // gitleaks:allow -- public artifact integrity digest
-        "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
-        "fixtures.json": "f3c0947090ef532ba3a8089b56c6f363480b0e8839c606f2fdd12831248e675b", // gitleaks:allow -- public artifact integrity digest
-        "manifest.json": "7c8321e35e6738aea34d9625aecac3516848fe1e887e16e0f43bbcdc05f8150b", // gitleaks:allow -- public artifact integrity digest
-      },
       "37": {
         "openapi.json": "996b2e4efc644c66ae6f706d59d19825c17d8e605fb06a31c67cda625a56eefe", // gitleaks:allow -- public artifact integrity digest
         "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
         "fixtures.json": "f8678d98b6111eb59f3e5fb2deb94dc60f7d5173342ec551015e9489291a8947", // gitleaks:allow -- public artifact integrity digest
         "manifest.json": "65d474906ae509f88327a0b6f600ab53ec0c3b9d31ec2b6cd4b54fa4fa1e26c6", // gitleaks:allow -- public artifact integrity digest
+      },
+      "38": {
+        "openapi.json": "d53c27a1f2f65840c2c6322130a57656cecfe1938af25f6e4c3da4bb4fd94545", // gitleaks:allow -- public artifact integrity digest
+        "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
+        "fixtures.json": "99af3b313dc0eeaa68f5523f9ba6754b97f53769339c3860d29f44892c88e6af", // gitleaks:allow -- public artifact integrity digest
+        "manifest.json": "74683356d10e3c316375d63a5cbc28618bb5dc307b6a30ae9e8c0acff23796a0", // gitleaks:allow -- public artifact integrity digest
       },
     };
     for (const [version, documents] of Object.entries(frozen)) {

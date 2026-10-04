@@ -102,12 +102,14 @@ describe("native mutation capability enrollment", () => {
     for (const capability of ["memory.promotions.decide", "customers.workflows.start", "customers.workflows.outcomes.manage",
       "agents.delete", "skills.create", "skills.update", "skills.delete", "customers.facts.mutate", "meetings.recordings.process", "customers.salesforce.manage", "knowledge.cognification.decide", "knowledge.cognification.build", "knowledge.sources.delete", "memory.maintenance.run", "memory.graph.rebuild"] as const) {
       for (const platform of ["android", "ios", "macos"] as const) {
-        expect(nativeMutationEnrollment(context(38, undefined, platform), capability, asOf))
-          .toEqual({ state: "active", minimumContractVersion: 38 });
-        for (const client of [context(37, undefined, platform), context(39, undefined, platform),
+        for (const version of [NATIVE_API_PREVIOUS_VERSION, NATIVE_API_CURRENT_VERSION]) {
+          expect(nativeMutationEnrollment(context(version, undefined, platform), capability, asOf))
+            .toEqual({ state: "active", minimumContractVersion: 38 });
+        }
+        for (const client of [context(37, undefined, platform), context(NATIVE_API_CURRENT_VERSION + 1, undefined, platform),
           context(38, "2026-01-01T00:00:00.000Z", platform), { source: "session" as const }, { source: "mobile" as const }]) {
           expect(nativeMutationEnrollment(client, capability, asOf))
-            .toMatchObject({ state: "held", minimumContractVersion: 38 });
+            .toMatchObject({ state: "held", minimumContractVersion: "native" in client ? 38 : NATIVE_API_CURRENT_VERSION });
         }
       }
     }

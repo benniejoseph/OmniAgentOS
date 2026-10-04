@@ -51,6 +51,8 @@ import '../../features/settings/admin_console.dart';
 import '../../features/settings/macos_admin_workspace_view.dart';
 import '../../features/settings/model_settings_view.dart';
 import '../../features/security/device_security_screen.dart';
+import '../../features/search/content_search_targets.dart';
+import '../../features/search/content_search_view.dart';
 import '../../features/talk/talk.dart';
 import '../../features/talk/talk_providers.dart';
 import '../../features/today/today.dart';
@@ -72,6 +74,18 @@ Widget _nativeAdminWorkspace(String moduleId) => NativePrivateWorkspace(
 String appHomePath() => !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS
     ? '/talk'
     : '/today';
+
+@visibleForTesting
+bool nativeRouteQueryDecodes(Uri uri) {
+  try {
+    uri.queryParametersAll;
+    return true;
+  } on FormatException {
+    return false;
+  } on ArgumentError {
+    return false;
+  }
+}
 
 bool isSafeInitialAppLocation(String route) {
   final uri = Uri.tryParse(route);
@@ -653,94 +667,143 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                   path: destination.path,
                   redirect: (_, _) =>
                       legacyAutomationRedirect(destination.path),
-                  builder: (context, state) => switch (destination.path) {
-                    '/today' =>
-                      usesMacosPresentation()
-                          ? MacosTodayView(
-                              controller: ref.read(todayControllerProvider),
-                              focusItemId:
-                                  state.uri.queryParameters['workItemId'],
-                            )
-                          : TodayView(
-                              controller: ref.read(todayControllerProvider),
-                              focusItemId:
-                                  state.uri.queryParameters['workItemId'],
-                            ),
-                    '/talk' => ProviderBoundTalkRoute(
-                      requestedThreadId: state.uri.queryParameters['thread'],
-                    ),
-                    '/activity' => const ProviderBoundActivityRoute(),
-                    '/responsibilities' =>
-                      const ProviderBoundResponsibilityRoute(),
-                    '/capture' => const ProviderBoundCaptureRoute(),
-                    '/projects' => const ProviderBoundProjectsRoute(),
-                    '/meetings' => const ProviderBoundMeetingsRoute(),
-                    '/results' => const ProviderBoundResultsRoute(),
-                    '/inbox' =>
-                      usesMacosPresentation()
-                          ? MacosInboxView(
-                              controller: ref.read(inboxControllerProvider),
-                              onOpenResponsibility: (id) =>
-                                  _openResponsibility(context, id),
-                            )
-                          : InboxView(
-                              controller: ref.read(inboxControllerProvider),
-                              onOpenResponsibility: (id) =>
-                                  _openResponsibility(context, id),
-                            ),
-                    '/agents' => NativeAgentsWorkspace(
-                      onAssignWork: (agent) {
-                        final talk = ref.read(talkControllerProvider);
-                        if (talk.hasPendingConversationWork) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text(
-                                'Finish, stop, or clear pending Conversation work before assigning another Agent.',
-                              ),
-                            ),
-                          );
-                          return;
-                        }
-                        talk.newConversation();
-                        talk.assignAgent(id: agent.id, name: agent.name);
-                        context.go('/talk');
-                      },
-                    ),
-                    '/knowledge' => ProviderBoundKnowledgeRoute(
-                      initialMemoryId: state.uri.queryParameters['memory'],
-                    ),
-                    '/accounts' => const ProviderBoundAccountsRoute(),
-                    '/markets' => const NativeMarketsView(),
-                    '/payments' => NativePrivateWorkspace(
-                      ownNavigator: true,
-                      builder: (access) => usesMacosPresentation()
-                          ? MacosPaymentsView(
+                  builder: (context, state) =>
+                      !nativeRouteQueryDecodes(state.uri)
+                      ? const Center(
+                          child: Text('This workspace link is invalid.'),
+                        )
+                      : switch (destination.path) {
+                          '/search' => const NativeContentSearchPage(),
+                          '/today' =>
+                            usesMacosPresentation()
+                                ? MacosTodayView(
+                                    controller: ref.read(
+                                      todayControllerProvider,
+                                    ),
+                                    focusItemId:
+                                        state.uri.queryParameters['workItemId'],
+                                  )
+                                : TodayView(
+                                    controller: ref.read(
+                                      todayControllerProvider,
+                                    ),
+                                    focusItemId:
+                                        state.uri.queryParameters['workItemId'],
+                                  ),
+                          '/talk' => ProviderBoundTalkRoute(
+                            requestedThreadId:
+                                state.uri.queryParameters['thread'],
+                          ),
+                          '/activity' => const ProviderBoundActivityRoute(),
+                          '/responsibilities' =>
+                            const ProviderBoundResponsibilityRoute(),
+                          '/capture' =>
+                            state.uri.queryParameters.containsKey('libraryItem')
+                                ? isNativeContentSearchLocation(
+                                        state.uri.toString(),
+                                      )
+                                      ? NativeSearchLibraryPage(
+                                          id: state
+                                              .uri
+                                              .queryParameters['libraryItem']!,
+                                        )
+                                      : const Center(
+                                          child: Text(
+                                            'This Library link is invalid.',
+                                          ),
+                                        )
+                                : const ProviderBoundCaptureRoute(),
+                          '/projects' => const ProviderBoundProjectsRoute(),
+                          '/meetings' => const ProviderBoundMeetingsRoute(),
+                          '/results' => const ProviderBoundResultsRoute(),
+                          '/inbox' =>
+                            usesMacosPresentation()
+                                ? MacosInboxView(
+                                    controller: ref.read(
+                                      inboxControllerProvider,
+                                    ),
+                                    onOpenResponsibility: (id) =>
+                                        _openResponsibility(context, id),
+                                  )
+                                : InboxView(
+                                    controller: ref.read(
+                                      inboxControllerProvider,
+                                    ),
+                                    onOpenResponsibility: (id) =>
+                                        _openResponsibility(context, id),
+                                  ),
+                          '/agents' => NativeAgentsWorkspace(
+                            onAssignWork: (agent) {
+                              final talk = ref.read(talkControllerProvider);
+                              if (talk.hasPendingConversationWork) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text(
+                                      'Finish, stop, or clear pending Conversation work before assigning another Agent.',
+                                    ),
+                                  ),
+                                );
+                                return;
+                              }
+                              talk.newConversation();
+                              talk.assignAgent(id: agent.id, name: agent.name);
+                              context.go('/talk');
+                            },
+                          ),
+                          '/knowledge' =>
+                            state.uri.queryParameters.containsKey('fromSearch')
+                                ? isNativeContentSearchLocation(
+                                        state.uri.toString(),
+                                      )
+                                      ? NativeSearchMemoryPage(
+                                          id: state
+                                              .uri
+                                              .queryParameters['memory']!,
+                                        )
+                                      : const Center(
+                                          child: Text(
+                                            'This memory search link is invalid.',
+                                          ),
+                                        )
+                                : ProviderBoundKnowledgeRoute(
+                                    initialMemoryId:
+                                        state.uri.queryParameters['memory'],
+                                  ),
+                          '/accounts' => const ProviderBoundAccountsRoute(),
+                          '/markets' => const NativeMarketsView(),
+                          '/payments' => NativePrivateWorkspace(
+                            ownNavigator: true,
+                            builder: (access) => usesMacosPresentation()
+                                ? MacosPaymentsView(
+                                    api: access.api,
+                                    authority: access.authority,
+                                  )
+                                : PaymentsView(
+                                    api: access.api,
+                                    authority: access.authority,
+                                  ),
+                          ),
+                          '/automation' => NativeAutomationWorkspace(
+                            initialSection:
+                                state.uri.queryParameters['section'],
+                          ),
+                          '/workflows' => _nativeAdminWorkspace('automation'),
+                          '/integrations' => _nativeAdminWorkspace(
+                            'integrations',
+                          ),
+                          '/tools' => _nativeAdminWorkspace('tools'),
+                          '/quality' => _nativeAdminWorkspace('quality'),
+                          '/monitoring' => _nativeAdminWorkspace('monitoring'),
+                          '/security' => _nativeAdminWorkspace('security'),
+                          '/settings' => NativePrivateWorkspace(
+                            ownNavigator: true,
+                            builder: (access) => ModelSettingsView(
                               api: access.api,
                               authority: access.authority,
-                            )
-                          : PaymentsView(
-                              api: access.api,
-                              authority: access.authority,
                             ),
-                    ),
-                    '/automation' => NativeAutomationWorkspace(
-                      initialSection: state.uri.queryParameters['section'],
-                    ),
-                    '/workflows' => _nativeAdminWorkspace('automation'),
-                    '/integrations' => _nativeAdminWorkspace('integrations'),
-                    '/tools' => _nativeAdminWorkspace('tools'),
-                    '/quality' => _nativeAdminWorkspace('quality'),
-                    '/monitoring' => _nativeAdminWorkspace('monitoring'),
-                    '/security' => _nativeAdminWorkspace('security'),
-                    '/settings' => NativePrivateWorkspace(
-                      ownNavigator: true,
-                      builder: (access) => ModelSettingsView(
-                        api: access.api,
-                        authority: access.authority,
-                      ),
-                    ),
-                    _ => DestinationPlaceholder(destination: destination),
-                  },
+                          ),
+                          _ => DestinationPlaceholder(destination: destination),
+                        },
                   routes: destination.path == '/accounts'
                       ? [
                           GoRoute(
@@ -754,15 +817,38 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                       ? [
                           GoRoute(
                             path: ':id',
-                            builder: (_, state) => ProviderBoundProjectRoute(
-                              id: state.pathParameters['id']!,
-                              focusWorkItemId:
-                                  state.uri.queryParameters['workItemId'],
-                              initiallyBuild:
-                                  state.uri.queryParameters['view'] == 'build',
-                              focusArtifactId:
-                                  state.uri.queryParameters['artifact'],
-                            ),
+                            builder: (_, state) =>
+                                !nativeRouteQueryDecodes(state.uri)
+                                ? const Center(
+                                    child: Text('This Work link is invalid.'),
+                                  )
+                                : state.uri.queryParameters.containsKey(
+                                    'fromSearch',
+                                  )
+                                ? isNativeContentSearchLocation(
+                                        state.uri.toString(),
+                                      )
+                                      ? NativeSearchWorkPage(
+                                          id: state.pathParameters['id']!,
+                                          taskId: state
+                                              .uri
+                                              .queryParameters['workItemId'],
+                                        )
+                                      : const Center(
+                                          child: Text(
+                                            'This Work search link is invalid.',
+                                          ),
+                                        )
+                                : ProviderBoundProjectRoute(
+                                    id: state.pathParameters['id']!,
+                                    focusWorkItemId:
+                                        state.uri.queryParameters['workItemId'],
+                                    initiallyBuild:
+                                        state.uri.queryParameters['view'] ==
+                                        'build',
+                                    focusArtifactId:
+                                        state.uri.queryParameters['artifact'],
+                                  ),
                           ),
                         ]
                       : destination.path == '/results'

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../core/auth/native_client_info.dart';
@@ -56,7 +57,18 @@ class AdaptiveShell extends StatelessWidget {
       );
     }
     final width = MediaQuery.sizeOf(context).width;
-    return width < 840 ? _phone(context) : _wide(context, width);
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.keyK, control: true): () =>
+            _select(destinationIndex('/search')),
+        const SingleActivator(LogicalKeyboardKey.keyK, meta: true): () =>
+            _select(destinationIndex('/search')),
+      },
+      child: FocusScope(
+        autofocus: true,
+        child: width < 840 ? _phone(context) : _wide(context, width),
+      ),
+    );
   }
 
   Widget _phone(BuildContext context) {
@@ -114,6 +126,11 @@ class AdaptiveShell extends StatelessWidget {
           ],
         ),
         actions: [
+          IconButton(
+            tooltip: 'Search workspace content',
+            onPressed: () => _select(destinationIndex('/search')),
+            icon: const Icon(Icons.search_rounded, size: 21),
+          ),
           IconButton(
             tooltip: 'Attention inbox',
             onPressed: () => _select(destinationIndex('/inbox')),

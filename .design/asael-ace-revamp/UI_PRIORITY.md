@@ -6,6 +6,36 @@ PR53 is stabilized and merged with all sixteen hosted checks passing. The UI, st
 Expanded Voice playback is accepted through PR57. Connector work is preserved in
 `codex/native-connector-controls` and is deferred until after this UI/ATLAS priority.
 
+## Native scoped content search — 5 October candidate
+
+The native Search destination now exposes live, authorized conversations, Work,
+private active Memory and saved Library sources. Command-K/Control-K opens it in
+both native shells. Deliberate queries and independently paginated source groups
+are bounded, and each source reports its coverage and availability. Search state
+is held only for the visible session; hidden pages, changed identity, API scope or
+lock state discard private content and cancel outstanding reads.
+
+Typed links preserve exact result identity, including legacy Work task identifiers.
+Work and Memory open dedicated read-only inspectors using the existing exact
+search readers; refused reads never fall back to broader readers. Explicit
+workspace actions hand off to the established mutation controllers. Library
+controllers are isolated by visibility and target identity, and conversation
+navigation retains the existing draft safeguards.
+
+Native contract v39 publishes these three existing GET routes, retaining frozen
+v38 and v37 artifacts. It introduces no mutation enrollment or database migration.
+App `1.23.17+52` identifies this follow-up. The deferred connector checkpoint must
+rebase its contract publication beyond v39 and use build 53 or later.
+
+Independent source review has no unresolved concrete authority/navigation finding.
+Contract generation/check and 44 focused contract/authentication cases pass, as
+well as changed TypeScript lint. Full Flutter analysis is clean and 59 focused
+search, scope, keyboard, shell and destination cases pass. Three actual widget
+captures cover light/dark desktop and a 390px phone with 200% text, using synthetic
+data and system-font substitution. Packaging and exact-head hosted acceptance
+remain separate gates for this candidate. The new app requires the
+matching v39 server promotion before compatible production distribution.
+
 ## Native Automation run navigation — 5 October checkpoint
 
 Recent workflow runs and schedule-occurrence history now expose an accessible
@@ -20,7 +50,7 @@ presentations, encoded identities, unavailable Results, Back navigation, fresh
 history reads, malformed identities and button semantics. Full Flutter analysis is
 clean. This checkpoint adds no database migration or API contract version.
 App `1.23.16+51` identifies the native follow-up; the deferred connector checkpoint
-must use build 52 or later. Packaging and exact-head hosted acceptance are separate
+must use build 53 or later. Packaging and exact-head hosted acceptance are separate
 release gates, and physical-device acceptance remains pending.
 
 Visual thesis: a warm, precise conversation workspace with a quiet graphite rail, readable typography, restrained gold and an expressive umber eagle.

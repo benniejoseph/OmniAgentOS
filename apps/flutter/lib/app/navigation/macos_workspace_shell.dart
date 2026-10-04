@@ -73,7 +73,7 @@ class _MacosWorkspaceShellState extends ConsumerState<MacosWorkspaceShell> {
 
     final shortcuts = <ShortcutActivator, VoidCallback>{
       const SingleActivator(LogicalKeyboardKey.keyK, meta: true): () =>
-          _selectPath('/talk'),
+          _selectPath('/search'),
       const SingleActivator(LogicalKeyboardKey.comma, meta: true): () =>
           _selectPath('/settings'),
       const SingleActivator(
@@ -131,7 +131,7 @@ class _MacosWorkspaceShellState extends ConsumerState<MacosWorkspaceShell> {
                           : () => setState(
                               () => _sidebarCollapsed = !_sidebarCollapsed,
                             ),
-                      onOpenCommand: () => _selectPath('/talk'),
+                      onOpenCommand: () => _selectPath('/search'),
                       onOpenInbox: () => _selectPath('/inbox'),
                       onOpenDevices: () => context.push('/devices'),
                       themeMode: themeMode,
@@ -683,15 +683,11 @@ class _MacosCommandButton extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 10),
             child: Row(
               children: [
-                Icon(
-                  Icons.auto_awesome_rounded,
-                  size: 16,
-                  color: scheme.primary,
-                ),
+                Icon(Icons.search_rounded, size: 16, color: scheme.primary),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    'Ask Asael or run a command',
+                    'Search workspace content',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(

@@ -180,10 +180,18 @@ class KnowledgeMemoryInspector extends StatefulWidget {
     required this.controller,
     required this.memoryId,
     this.onClose,
+    this.exactRead,
+    this.readOnly = false,
+    this.onOpenWorkspace,
   });
   final KnowledgeController controller;
   final String memoryId;
   final VoidCallback? onClose;
+
+  /// Search retains its private-active reader for every exact refresh.
+  final Future<MemoryRecord> Function(String id)? exactRead;
+  final bool readOnly;
+  final VoidCallback? onOpenWorkspace;
   @override
   State<KnowledgeMemoryInspector> createState() =>
       _KnowledgeMemoryInspectorState();
@@ -235,7 +243,9 @@ class _KnowledgeMemoryInspectorState extends State<KnowledgeMemoryInspector> {
       });
     }
     try {
-      final memory = await controller.inspect(widget.memoryId);
+      final memory =
+          await (widget.exactRead?.call(widget.memoryId) ??
+              controller.inspect(widget.memoryId));
       if (_current(generation, controller)) setState(() => _memory = memory);
     } catch (error) {
       if (_current(generation, controller)) setState(() => _error = error);
@@ -322,110 +332,124 @@ class _KnowledgeMemoryInspectorState extends State<KnowledgeMemoryInspector> {
             const SizedBox(height: 16),
             MemoryEvidenceDetails(memory: memory),
             const SizedBox(height: 16),
-            MemoryChangeStatus(controller: widget.controller),
-            MemoryLifecycleControls(
-              controller: widget.controller,
-              memoryId: widget.memoryId,
-            ),
-            if (widget.controller.supportsChange(MemoryChange.correct) &&
-                memory.metadata.visibility == 'user_private')
+            if (widget.onOpenWorkspace != null)
               OutlinedButton(
-                onPressed: widget.controller.pendingChange != null
-                    ? null
-                    : () => showMemoryEditor(
-                        context,
-                        widget.controller,
-                        memory: memory,
-                      ),
-                child: const Text('Review a correction'),
+                onPressed: widget.onOpenWorkspace,
+                child: const Text('Open memory workspace'),
               ),
-            if (widget.controller.canManage)
-              OutlinedButton.icon(
-                onPressed: _previewLoading ? null : _readImpact,
-                style: OutlinedButton.styleFrom(
-                  minimumSize: const Size(48, 48),
+            if (!widget.readOnly) ...[
+              MemoryChangeStatus(controller: widget.controller),
+              MemoryLifecycleControls(
+                controller: widget.controller,
+                memoryId: widget.memoryId,
+              ),
+              if (widget.controller.supportsChange(MemoryChange.correct) &&
+                  memory.metadata.visibility == 'user_private')
+                OutlinedButton(
+                  onPressed: widget.controller.pendingChange != null
+                      ? null
+                      : () => showMemoryEditor(
+                          context,
+                          widget.controller,
+                          memory: memory,
+                        ),
+                  child: const Text('Review a correction'),
                 ),
-                icon: const Icon(Icons.policy_outlined),
-                label: Text(
-                  _previewLoading
-                      ? 'Reading impact…'
-                      : 'Review forgetting impact',
-                ),
-              ),
-            if (_previewError != null)
-              const Text(
-                'The current impact could not be verified. Nothing was forgotten.',
-              ),
-            if (_preview != null) ...[
-              MemoryImpactDetails(preview: _preview!),
-              if (widget.controller.supportsChange(MemoryChange.forget) &&
-                  memory.metadata.visibility == 'user_private' &&
-                  _preview!.guarantee == 'rollback_proof_barrier') ...[
-                CheckboxListTile(
-                  contentPadding: EdgeInsets.zero,
-                  value: _forgetConfirmed,
-                  title: const Text(
-                    'I reviewed this exact impact and understand forgetting is irreversible.',
+              if (widget.controller.canManage)
+                OutlinedButton.icon(
+                  onPressed: _previewLoading ? null : _readImpact,
+                  style: OutlinedButton.styleFrom(
+                    minimumSize: const Size(48, 48),
                   ),
-                  onChanged: widget.controller.pendingChange != null
-                      ? null
-                      : (value) =>
-                            setState(() => _forgetConfirmed = value ?? false),
+                  icon: const Icon(Icons.policy_outlined),
+                  label: Text(
+                    _previewLoading
+                        ? 'Reading impact…'
+                        : 'Review forgetting impact',
+                  ),
                 ),
-                FilledButton(
-                  onPressed:
-                      !_forgetConfirmed ||
-                          widget.controller.pendingChange != null
-                      ? null
-                      : () async {
-                          final preview = _preview;
-                          if (preview == null ||
-                              widget.controller.pendingChange != null) {
-                            return;
-                          }
-                          setState(() {
-                            _preview = null;
-                            _forgetConfirmed = false;
-                          });
-                          try {
-                            await widget.controller.submitChange(
-                              MemoryChange.forget,
-                              {},
-                              id: widget.memoryId,
-                              previewDigest:
-                                  preview.expectedReceiptManifestSha256,
-                            );
-                          } catch (error) {
-                            if (mounted) setState(() => _previewError = error);
-                          }
-                          if (mounted &&
-                              widget.controller.available &&
-                              widget
-                                      .controller
-                                      .acceptedChange
-                                      ?.submission
-                                      .kind ==
-                                  MemoryChange.forget &&
-                              widget.controller.acceptedChange?.submission.id ==
-                                  widget.memoryId &&
-                              widget
-                                      .controller
-                                      .acceptedChange
-                                      ?.submission
-                                      .previewDigest ==
-                                  preview.expectedReceiptManifestSha256) {
-                            setState(() => _memory = null);
-                          }
-                        },
-                  child: const Text('Forget reviewed memory and descendants'),
-                ),
-              ] else
+              if (_previewError != null)
                 const Text(
-                  'Deletion is unavailable for this app version, ownership or impact guarantee.',
+                  'The current impact could not be verified. Nothing was forgotten.',
                 ),
+              if (_preview != null) ...[
+                MemoryImpactDetails(preview: _preview!),
+                if (widget.controller.supportsChange(MemoryChange.forget) &&
+                    memory.metadata.visibility == 'user_private' &&
+                    _preview!.guarantee == 'rollback_proof_barrier') ...[
+                  CheckboxListTile(
+                    contentPadding: EdgeInsets.zero,
+                    value: _forgetConfirmed,
+                    title: const Text(
+                      'I reviewed this exact impact and understand forgetting is irreversible.',
+                    ),
+                    onChanged: widget.controller.pendingChange != null
+                        ? null
+                        : (value) =>
+                              setState(() => _forgetConfirmed = value ?? false),
+                  ),
+                  FilledButton(
+                    onPressed:
+                        !_forgetConfirmed ||
+                            widget.controller.pendingChange != null
+                        ? null
+                        : () async {
+                            final preview = _preview;
+                            if (preview == null ||
+                                widget.controller.pendingChange != null) {
+                              return;
+                            }
+                            setState(() {
+                              _preview = null;
+                              _forgetConfirmed = false;
+                            });
+                            try {
+                              await widget.controller.submitChange(
+                                MemoryChange.forget,
+                                {},
+                                id: widget.memoryId,
+                                previewDigest:
+                                    preview.expectedReceiptManifestSha256,
+                              );
+                            } catch (error) {
+                              if (mounted) {
+                                setState(() => _previewError = error);
+                              }
+                            }
+                            if (mounted &&
+                                widget.controller.available &&
+                                widget
+                                        .controller
+                                        .acceptedChange
+                                        ?.submission
+                                        .kind ==
+                                    MemoryChange.forget &&
+                                widget
+                                        .controller
+                                        .acceptedChange
+                                        ?.submission
+                                        .id ==
+                                    widget.memoryId &&
+                                widget
+                                        .controller
+                                        .acceptedChange
+                                        ?.submission
+                                        .previewDigest ==
+                                    preview.expectedReceiptManifestSha256) {
+                              setState(() => _memory = null);
+                            }
+                          },
+                    child: const Text('Forget reviewed memory and descendants'),
+                  ),
+                ] else
+                  const Text(
+                    'Deletion is unavailable for this app version, ownership or impact guarantee.',
+                  ),
+              ],
             ],
           ],
-          if (memory == null) MemoryChangeStatus(controller: widget.controller),
+          if (memory == null && !widget.readOnly)
+            MemoryChangeStatus(controller: widget.controller),
         ],
       );
     },

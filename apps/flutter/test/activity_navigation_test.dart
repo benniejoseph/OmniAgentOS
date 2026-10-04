@@ -54,6 +54,7 @@ void main() {
         '/monitoring',
         '/security',
         '/settings',
+        '/search',
       });
       expect(DesktopHostBridge.isWorkspaceRoute('/activity'), isTrue);
       expect(
