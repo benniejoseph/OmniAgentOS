@@ -11,6 +11,7 @@ import '../../core/platform/local_computer_bridge.dart';
 import '../../generated/native_contract.g.dart';
 import '../computer_use/local_computer.dart';
 import '../companion/companion_settings.dart';
+import 'portable_archive_panel.dart';
 
 typedef Json = Map<String, dynamic>;
 
@@ -344,6 +345,8 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
                       ],
                       const SizedBox(height: 24),
                       const CompanionSettingsSection(),
+                      const SizedBox(height: 12),
+                      const PortableArchivePanel(),
                       const SizedBox(height: 12),
                       const NativeWorkspaceBrowserButton(
                         path: '/app/settings',
@@ -807,6 +810,28 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
                       Expanded(
                         child: AnimatedSwitcher(
                           duration: const Duration(milliseconds: 140),
+                          // Outgoing sections are presentation-only. Close
+                          // private work before their fade-out completes.
+                          layoutBuilder: (current, previous) => Stack(
+                            alignment: Alignment.topCenter,
+                            children: [
+                              for (final child in previous)
+                                TickerMode(
+                                  key: child.key,
+                                  enabled: false,
+                                  child: IgnorePointer(child: child),
+                                ),
+                              if (current != null)
+                                TickerMode(
+                                  key: current.key,
+                                  enabled: true,
+                                  child: IgnorePointer(
+                                    ignoring: false,
+                                    child: current,
+                                  ),
+                                ),
+                            ],
+                          ),
                           child: KeyedSubtree(
                             key: ValueKey('macos-settings-$macosSection'),
                             child: section,
@@ -829,6 +854,8 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
     padding: const EdgeInsets.all(22),
     children: [
       const CompanionSettingsSection(),
+      const SizedBox(height: 24),
+      const PortableArchivePanel(),
       const SizedBox(height: 24),
       const MacosSectionHeader(
         title: 'Workspace foundation',

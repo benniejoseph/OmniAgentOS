@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "synthetic": true,
+  "tenantId": "tenant-portable-fixture",
+  "actorId": "archive@example.test",
+  "exportedAt": "2026-10-05T00:00:00.000Z",
+  "generator": "scripts/generate-portable-archive-native-fixtures.ts",
+  "command": "node --import tsx scripts/generate-portable-archive-native-fixtures.ts",
+  "sourceSha256": {
+    "src/lib/data/portable-contract.ts": "78d4c7c9cf1e154f161d4a8bf59f13c7e3f0b72c237c2f6e5389aaba686330b4",
+    "src/lib/sources/contracts.ts": "7e688cef1d66a8b9c19ff139086ac5b87467ee707e829aa10bc4df9502bcc6bb",
+    "scripts/generate-portable-archive-native-fixtures.ts": "9c4ebc7c42172b1d9e68334186490ed8f8535d1f0cc8f68a6b3158b49ce32f00"
+  },
+  "fileSha256": {
+    "minimal.json": "a5f3bdb254d7a1a299de7c890a1790b0b38ebc317fe62853b0e40384fe4a6a6a",
+    "populated.json": "7ad5a259b4d11a5f7762cefe8caa0c188e0c4a985c3354a2306f5b1ae256a07e",
+    "canonical-corpus.json": "3fc8e9b9b0739459614a5da9c8972c38e512c45720e4b6bdc485e4e995b4a915"
+  },
+  "limitations": "Synthetic interoperability evidence, not a production backup or signature."
+}

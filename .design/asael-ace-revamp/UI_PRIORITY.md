@@ -2,17 +2,41 @@
 
 The owner explicitly prioritized the UI revamp and ATLAS, asking to stabilize the current release and return to connector expansion afterward. The full implementation plan remains in scope; this changes execution order.
 
-Software releases through PR60 are accepted and merged. Quality and Monitoring
-passed all sixteen hosted checks at `51b48d927f707d035e726729ef04eb58555f2d2a`,
-including 1,292 Flutter cases, and merged as
-`45977bded2317bfa04b89b18cc11c971d58f3085`. The accepted, built and merged full Git
-trees are identical. Universal private Mac 1.23.18+53 is verified, with SHA256
-`fd6596167fd7e9c4bb7382c041eab2d8c3d71153ae01e02b29969367322035b4`.
+Software releases through PR61 are accepted and merged. Security passed all sixteen
+hosted checks at `2278462b14a09d5d40b122cacf1266fe43e53549`, including 1,360
+Flutter cases, and merged as `27570a30ef84fe81ec0f954033293117ef1ac831`.
+Accepted, built and merged full Git trees are identical. Universal private Mac
+1.23.19+54 is verified with SHA256
+`38d34712ba33515f8737920a455d5a703c5c46053b9d8ae8d808fda1855967e0`.
 Production remains unchanged; private signing is not Apple notarization.
 Connector work is preserved in
 `codex/native-connector-controls` and is deferred until after this UI/ATLAS priority.
 
-## Native Security — implementation and local validation checkpoint
+## Native Settings archive v2 — implementation checkpoint
+
+The next slice adds an explicit desktop destination-before-download archive action,
+with strict asset-free v2 schema, exact owner/tenant binding, local content/section/
+manifest/archive verification and unchanged-byte scoped save. It consumes the
+existing published GET and removes that full export from the generic Workspace
+auto-load list. It adds no restore, encrypted assets, native phone saving, server
+operation or migration; mobile keeps the fixed Settings browser handoff.
+
+The bounded transport, verifier, authority, controller, isolate, panel and scoped
+save checks pass all 739 focused cases, including eighteen byte-transport cases
+and 547 server-authored canonical JSON parity cases. Four Settings integration
+cases pass, including immediate export invalidation while the outgoing General
+section is still mounted during its fade. Full Flutter analysis is clean. Four
+actual-widget captures cover light/dark desktop, mobile browser fallback at 200%
+text and the saved receipt on a narrow desktop at 200%. Root and independent
+review found no concrete visual defect. Matching sources, the temporary harness,
+images and receipt are archived externally under `native-archive-visual`; these
+synthetic captures do not establish physical-device acceptance.
+
+App `1.23.20+55` identifies this slice. Private packaging and exact-head hosted
+acceptance remain release gates. No database migration is added. Connector
+expansion must use the next free build, at least 56, after UI/ATLAS priority.
+
+## Native Security — accepted PR61 checkpoint
 
 Security now uses typed access/rule, audit, storage-isolation and retention views
 over four existing authorized GET operations. It preserves manager entry,
@@ -39,11 +63,12 @@ externally under `native-security-visual`; these fixtures are not device accepta
 Nineteen web operational contract cases and scoped lint pass. The maintained desktop
 and phone browser run passed all 140 checks, including the real RBAC
 shape and empty-policy state. Private packaging and exact-head hosted acceptance
-are recorded in the release evidence after completion.
+are complete through PR61: all sixteen hosted checks and 1,360 Flutter cases passed.
+The accepted, built and merged Git trees are identical.
 
 App `1.23.19+54` identifies this slice and retains native v39; compatible production
 distribution requires the matching server promotion. Settings archive v2 is the next
-native UI slice. Connector expansion must use the next free build, at least 55,
+native UI slice. Connector expansion must use the next free build, at least 56,
 after the remaining UI and ATLAS work.
 
 ## Native Quality and Monitoring — 5 October implementation checkpoint
@@ -82,7 +107,7 @@ checkpoint. Private packaging and exact-head hosted acceptance are complete
 through PR60; all sixteen hosted checks passed and the full Flutter suite passed
 1,292 cases. Accepted head, build source and merged tree are identical.
 The app retains native v39 and requires the matching server promotion before
-compatible production distribution. Connector work must use the next free build, at least 55.
+compatible production distribution. Connector work must use the next free build, at least 56.
 
 ## Native scoped content search — 5 October accepted
 
@@ -103,7 +128,7 @@ navigation retains the existing draft safeguards.
 Native contract v39 publishes these three existing GET routes, retaining frozen
 v38 and v37 artifacts. It introduces no mutation enrollment or database migration.
 App `1.23.17+52` identifies this follow-up. The deferred connector checkpoint must
-rebase its contract publication beyond v39 and use the next free build, at least 55.
+rebase its contract publication beyond v39 and use the next free build, at least 56.
 
 Independent source review has no unresolved concrete authority/navigation finding.
 Contract generation/check and 44 focused contract/authentication cases pass, as
@@ -129,7 +154,7 @@ presentations, encoded identities, unavailable Results, Back navigation, fresh
 history reads, malformed identities and button semantics. Full Flutter analysis is
 clean. This checkpoint adds no database migration or API contract version.
 App `1.23.16+51` identifies the native follow-up; the deferred connector checkpoint
-must use the next free build, at least 55. Packaging and exact-head hosted acceptance are separate
+must use the next free build, at least 56. Packaging and exact-head hosted acceptance are separate
 release gates, and physical-device acceptance remains pending.
 
 Visual thesis: a warm, precise conversation workspace with a quiet graphite rail, readable typography, restrained gold and an expressive umber eagle.
