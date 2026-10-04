@@ -34,7 +34,9 @@ void main() {
       },
     });
     expect(result.body, 'Deployment complete');
-    expect(result.tone, ResultTone.success);
+    expect(result.tone, ResultTone.neutral);
+    expect(result.statusLabel, 'Completed · outcome unverified');
+    expect(result.verifiedOutcome, isFalse);
     expect(result.verified, isTrue);
   });
 

@@ -152,6 +152,8 @@
 .dialogHeader > .iconButton { flex: 0 0 auto; }
 .dialogTitle { margin-block: 0.5rem; }
 .dialogHeader p + p { margin-block-start: 0.5rem; }
+.linkedRecording { min-inline-size: 0; border-block: 1px solid var(--line); padding-block: 1rem; margin-block-end: 1.5rem; }
+.linkedRecording > p { margin-block-start: .75rem; }
 .dialogContent { display: grid; min-inline-size: 0; }
 .transcriptSection,
 .segmentSection,

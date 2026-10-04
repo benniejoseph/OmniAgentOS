@@ -52,6 +52,11 @@ class ApiInboxRepository implements InboxRepository {
     NotificationAction action, {
     int? snoozeMinutes,
   }) async {
+    if (!notification.allows(action)) {
+      throw const FormatException(
+        'Responsibility notices cannot snooze or complete a reminder.',
+      );
+    }
     await api.patchJson(
       NativePaths.notificationsAcknowledge(notification.id),
       data: {'action': action.apiValue, 'minutes': ?snoozeMinutes},

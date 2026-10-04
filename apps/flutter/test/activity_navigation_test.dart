@@ -11,6 +11,8 @@ import 'package:asael/features/inbox/inbox.dart';
 import 'package:asael/features/inbox/inbox_providers.dart';
 import 'package:asael/features/results/results.dart';
 import 'package:asael/features/results/results_providers.dart';
+import 'package:asael/features/results/results_repository_contracts.dart';
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -36,6 +38,7 @@ void main() {
         '/capture',
         '/projects',
         '/activity',
+        '/responsibilities',
         '/knowledge',
         '/agents',
         '/meetings',
@@ -176,10 +179,50 @@ void main() {
       await tester.pumpAndSettle();
       expect(repository.details, ['agent:$id']);
       expect(repository.mutations, isEmpty);
-      expect(find.text('This linked result is unavailable.'), findsOneWidget);
+      expect(
+        find.textContaining(
+          'This exact record is unavailable or no longer visible.',
+        ),
+        findsOneWidget,
+      );
     },
     variant: TargetPlatformVariant.only(TargetPlatform.android),
   );
+
+  for (final kind in ['tool', 'workflow', 'slo_policy']) {
+    testWidgets('Results route preserves exact $kind approval identity', (
+      tester,
+    ) async {
+      const key = 'approval:outside/window%2Fencoded:Ω';
+      final repository = _ReadOnlyResults();
+      final container = ProviderContainer(
+        overrides: [
+          sessionControllerProvider.overrideWith(_Sessions.new),
+          appInitialLocationProvider.overrideWithValue(
+            '/results/${Uri.encodeComponent(key)}?kind=$kind',
+          ),
+          resultsRepositoryProvider.overrideWithValue(repository),
+          reconnectCoordinatorProvider.overrideWithValue(
+            ReconnectCoordinator(() async => const [], const Stream.empty()),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+      await container.read(sessionControllerProvider.future);
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: const _RouterHarness(),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(repository.details, [key]);
+      expect(repository.kinds, [kind]);
+      expect(find.text('Open Inbox'), findsOneWidget);
+      expect(repository.mutations, isEmpty);
+      expect(tester.takeException(), isNull);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.android));
+  }
 
   testWidgets(
     'actual native approval route selects only its exact kind and ID',
@@ -248,7 +291,19 @@ class _Sessions extends SessionController {
   );
 }
 
-class _ReadOnlyResults implements ResultsRepository {
+class _ReadOnlyResults
+    implements ResultsRepository, FreshResultDetailRepository {
+  final kinds = <String?>[];
+  @override
+  Future<ResultItem?> detailFresh(
+    String key,
+    CancelToken cancel, {
+    String? approvalKind,
+  }) {
+    kinds.add(approvalKind);
+    return detail(key);
+  }
+
   final details = <String>[];
   final mutations = <String>[];
   @override

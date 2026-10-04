@@ -17,11 +17,13 @@ class MacosInboxView extends StatefulWidget {
     required this.controller,
     this.focusApprovalId,
     this.focusApprovalKind,
+    this.onOpenResponsibility,
   });
 
   final InboxController controller;
   final String? focusApprovalId;
   final String? focusApprovalKind;
+  final ValueChanged<String>? onOpenResponsibility;
 
   @override
   State<MacosInboxView> createState() => _MacosInboxViewState();
@@ -141,6 +143,7 @@ class _MacosInboxViewState extends State<MacosInboxView> {
             inspector: _section == _InboxSection.notifications
                 ? _NotificationInspector(
                     notification: selectedNotification,
+                    onOpenResponsibility: widget.onOpenResponsibility,
                     busy:
                         selectedNotification != null &&
                         widget.controller.updatingNotifications.contains(
@@ -1216,11 +1219,13 @@ class _NotificationInspector extends StatelessWidget {
     required this.notification,
     required this.busy,
     required this.onAction,
+    this.onOpenResponsibility,
   });
 
   final PersonalNotification? notification;
   final bool busy;
   final NotificationActionCallback? onAction;
+  final ValueChanged<String>? onOpenResponsibility;
 
   @override
   Widget build(BuildContext context) {
@@ -1251,7 +1256,7 @@ class _NotificationInspector extends StatelessWidget {
           const SizedBox(height: 14),
           _InspectorFactLine(
             icon: Icons.schedule_rounded,
-            label: 'Due',
+            label: item.isResponsibilityChange ? 'Recorded in inbox' : 'Due',
             value:
                 '${MaterialLocalizations.of(context).formatMediumDate(due)} at ${MaterialLocalizations.of(context).formatTimeOfDay(TimeOfDay.fromDateTime(due))}',
           ),
@@ -1291,33 +1296,44 @@ class _NotificationInspector extends StatelessWidget {
                   ),
                 ),
               if (item.isUnread) const SizedBox(width: 8),
-              Expanded(
-                child: OutlinedButton.icon(
-                  key: const Key('macos-notification-snooze'),
-                  onPressed: busy
-                      ? null
-                      : () => onAction?.call(
-                          NotificationAction.snooze,
-                          snoozeMinutes: 15,
-                        ),
-                  icon: const Icon(Icons.snooze_rounded),
-                  label: const Text('Snooze 15m'),
+              if (item.kind == 'reminder')
+                Expanded(
+                  child: OutlinedButton.icon(
+                    key: const Key('macos-notification-snooze'),
+                    onPressed: busy
+                        ? null
+                        : () => onAction?.call(
+                            NotificationAction.snooze,
+                            snoozeMinutes: 15,
+                          ),
+                    icon: const Icon(Icons.snooze_rounded),
+                    label: const Text('Snooze 15m'),
+                  ),
                 ),
-              ),
             ],
           ),
           const SizedBox(height: 8),
-          SizedBox(
-            width: double.infinity,
-            child: FilledButton.icon(
-              key: const Key('macos-notification-complete'),
-              onPressed: busy
-                  ? null
-                  : () => onAction?.call(NotificationAction.complete),
-              icon: const Icon(Icons.check_rounded),
-              label: const Text('Complete notification'),
+          if (item.kind == 'reminder')
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                key: const Key('macos-notification-complete'),
+                onPressed: busy
+                    ? null
+                    : () => onAction?.call(NotificationAction.complete),
+                icon: const Icon(Icons.check_rounded),
+                label: const Text('Complete notification'),
+              ),
             ),
-          ),
+          if (item.responsibilityId != null)
+            OutlinedButton.icon(
+              key: const Key('macos-notification-responsibility'),
+              onPressed: busy || onOpenResponsibility == null
+                  ? null
+                  : () => onOpenResponsibility!(item.responsibilityId!),
+              icon: const Icon(Icons.open_in_new),
+              label: const Text('Open Responsibility'),
+            ),
           const SizedBox(height: 4),
           SizedBox(
             width: double.infinity,

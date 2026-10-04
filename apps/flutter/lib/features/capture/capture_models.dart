@@ -1,5 +1,7 @@
 import 'dart:typed_data';
 
+import 'capture_projection.dart';
+
 const captureAttachmentMaxBytes = 5 * 1024 * 1024;
 const captureBatchMaxFiles = 25;
 const captureBatchConcurrency = 3;
@@ -27,7 +29,9 @@ class CaptureDraft {
     if (content.length > 20000) {
       return 'Notes must be 20,000 characters or shorter.';
     }
-    if (title.length > 240) return 'Titles must be 240 characters or shorter.';
+    if (title.length > 240) {
+      return 'Titles must be 240 characters or shorter.';
+    }
     if (tags.length > 50 || tags.any((tag) => tag.trim().length > 80)) {
       return 'Use at most 50 tags, each 80 characters or shorter.';
     }
@@ -64,6 +68,8 @@ class CaptureReceipt {
     this.jobStatus = 'queued',
     this.progressStage,
     this.lastError,
+    this.source,
+    this.asset,
   });
 
   final String jobId, title;
@@ -71,6 +77,8 @@ class CaptureReceipt {
   final String jobStatus;
   final String? progressStage;
   final String? lastError;
+  final String? source;
+  final CaptureAssetSnapshot? asset;
 }
 
 class CaptureJobSnapshot {
@@ -79,12 +87,14 @@ class CaptureJobSnapshot {
     required this.status,
     this.progressStage,
     this.lastError,
+    this.documentId,
   });
 
   final String id;
   final String status;
   final String? progressStage;
   final String? lastError;
+  final String? documentId;
 }
 
 enum CaptureBatchState { queued, uploading, processing, completed, failed }
@@ -99,6 +109,9 @@ class CaptureBatchItem {
     this.progressStage,
     this.detail,
     this.retryable = false,
+    this.outcomeUnconfirmed = false,
+    this.asset,
+    this.source,
   });
 
   final String id;
@@ -109,6 +122,9 @@ class CaptureBatchItem {
   final String? progressStage;
   final String? detail;
   final bool retryable;
+  final bool outcomeUnconfirmed;
+  final CaptureAssetSnapshot? asset;
+  final String? source;
 
   CaptureBatchItem copyWith({
     CaptureBatchState? state,
@@ -116,6 +132,9 @@ class CaptureBatchItem {
     String? progressStage,
     String? detail,
     bool? retryable,
+    bool? outcomeUnconfirmed,
+    CaptureAssetSnapshot? asset,
+    String? source,
   }) => CaptureBatchItem(
     id: id,
     name: name,
@@ -125,6 +144,9 @@ class CaptureBatchItem {
     progressStage: progressStage ?? this.progressStage,
     detail: detail,
     retryable: retryable ?? this.retryable,
+    outcomeUnconfirmed: outcomeUnconfirmed ?? this.outcomeUnconfirmed,
+    asset: asset ?? this.asset,
+    source: source ?? this.source,
   );
 }
 

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useId, useMemo, useRef, useState, type RefObject } from "react";
+import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type RefObject } from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -36,6 +36,9 @@ import type {
   WorkspaceLibraryKind,
 } from "@/lib/library/contracts";
 import { useContentSearchLocation } from "@/components/app-shell/content-search-location";
+import { useWorkspaceSession } from "@/components/app-shell/session-context";
+import { workspaceOwnerScope } from "@/components/app-shell/workspace-owner-scope";
+import { createLibraryReadAccess } from "@/components/workspace-library-request-state";
 import styles from "@/components/workspace-library.module.css";
 
 type WorkspaceLibraryProps = Readonly<{
@@ -80,7 +83,21 @@ const allKinds: readonly WorkspaceLibraryKind[] = [
   "generated_artifact",
 ];
 
-export function WorkspaceLibrary({
+function subscribeVisibility(listener: () => void) {
+  document.addEventListener("visibilitychange", listener);
+  return () => document.removeEventListener("visibilitychange", listener);
+}
+const visibleSnapshot = () => document.visibilityState !== "hidden";
+const serverVisibleSnapshot = () => false;
+
+export function WorkspaceLibrary(props: WorkspaceLibraryProps) {
+  const { session, status, role } = useWorkspaceSession();
+  const scope = status === "ready" ? workspaceOwnerScope(session, role) : "";
+  if (!scope || !session?.context?.tenantId) return <section className={clsx(styles.shell, props.className)} aria-label={props.title || "Workspace library"}><p className={styles.description}>Library access is unavailable until the current session is verified.</p></section>;
+  return <WorkspaceLibraryBody key={scope} {...props} tenantId={session.context.tenantId} />;
+}
+
+function WorkspaceLibraryBody({
   title = "Workspace library",
   description = "Find sources and outputs, inspect their versions, and open the work they support.",
   kinds,
@@ -90,7 +107,9 @@ export function WorkspaceLibrary({
   refreshKey,
   className,
   searchScope,
-}: WorkspaceLibraryProps) {
+  tenantId,
+}: WorkspaceLibraryProps & { tenantId: string }) {
+  const visible = useSyncExternalStore(subscribeVisibility, visibleSnapshot, serverVisibleSnapshot);
   const headingId = useId();
   const searchLocation = useContentSearchLocation();
   const exactId = searchScope ? new URLSearchParams(searchLocation.split("?")[1]).get("libraryItem") : null;
@@ -117,11 +136,14 @@ export function WorkspaceLibrary({
   const [hasLoaded, setHasLoaded] = useState(false);
   const [error, setError] = useState<string>();
   const [reloadNonce, setReloadNonce] = useState(0);
+  const [readAccess] = useState(createLibraryReadAccess);
+  const [accessBlocked, setAccessBlocked] = useState(false);
   const [view, setView] = useState<LibraryView>("list");
   const [selectedId, setSelectedId] = useState<string>();
   const [copiedCitation, setCopiedCitation] = useState<string>();
   const [clipboardNotice, setClipboardNotice] = useState("");
   const inspectorRef = useRef<HTMLDivElement>(null);
+  const exactInlineRef = useRef<HTMLDivElement>(null);
   const selectionFrameRef = useRef<number | undefined>(undefined);
   const effectiveProjectId = projectId || urlProjectId;
   const requestHref = useMemo(() => workspaceLibraryQueryHref({
@@ -152,7 +174,10 @@ export function WorkspaceLibrary({
   }, [availableKinds, projectId]);
 
   useEffect(() => {
-    const controller = new AbortController();
+    if (!visible) return;
+    const token = readAccess.begin();
+    if (!token) return;
+    const { controller } = token;
     const timer = window.setTimeout(async () => {
       setState("loading");
       try {
@@ -160,70 +185,84 @@ export function WorkspaceLibrary({
           cache: "no-store",
           signal: controller.signal,
         });
-        const body = await response.json().catch(() => ({})) as Partial<LibraryPayload> & { error?: string };
-        if (!response.ok) throw new Error(body.error || "Workspace library could not be loaded.");
-        if (controller.signal.aborted) return;
-        setPayload({
-          items: Array.isArray(body.items) ? body.items : [],
-          total: typeof body.total === "number" ? body.total : 0,
-          totalIsLowerBound: Boolean(body.totalIsLowerBound),
-          nextOffset: typeof body.nextOffset === "number" ? body.nextOffset : null,
-          countsByKind: body.countsByKind || {},
-          countsAreLowerBound: Boolean(body.countsAreLowerBound),
-        });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          if (readAccess.current(token) && visibleSnapshot() && [401, 403].includes(response.status)) {
+            readAccess.revoke();
+            setAccessBlocked(true);
+            setPayload({ items: [], total: 0, totalIsLowerBound: false, nextOffset: null, countsByKind: {}, countsAreLowerBound: false });
+            setHasLoaded(false);
+            setExactRead(undefined);
+            setError("Library access could not be verified. Retry after checking your current session.");
+            setState("error");
+            return;
+          }
+          throw new Error(body.error || "Workspace library could not be loaded.");
+        }
+        const { readLibraryList } = await import("@/components/workspace-library-read");
+        if (!readAccess.current(token) || !visibleSnapshot()) return;
+        setPayload(readLibraryList(body, { tenantId, limit: Math.min(100, Math.max(1, Math.trunc(limit))), offset }));
         setDisplayedOffset(offset);
         setHasLoaded(true);
         setError(undefined);
         setState("ready");
       } catch (loadError) {
-        if (controller.signal.aborted) return;
+        if (!readAccess.current(token) || !visibleSnapshot()) return;
         setError(loadError instanceof Error ? loadError.message : "Workspace library could not be loaded.");
         setState("error");
       }
     }, query ? 220 : 0);
     return () => {
       window.clearTimeout(timer);
-      controller.abort();
+      readAccess.cancel(token);
     };
-  }, [offset, query, refreshKey, reloadNonce, requestHref]);
+  }, [limit, offset, query, readAccess, refreshKey, reloadNonce, requestHref, tenantId, visible]);
 
   useEffect(() => {
-    if (!exactId || !searchScope) return;
-    const controller = new AbortController();
+    if (!exactId || !searchScope || !visible) return;
+    const token = readAccess.begin();
+    if (!token) return;
+    const { controller } = token;
     const timer = window.setTimeout(async () => {
       setExactRead({ scope: searchScope, id: exactId, status: "loading" });
       setSelectedId(exactId);
       try {
         const response = await fetch(`/api/library/${encodeURIComponent(exactId)}`, { cache: "no-store", signal: controller.signal });
-        const body = await response.json();
+        const body = await response.json().catch(() => ({}));
+        if (!readAccess.current(token) || !visibleSnapshot()) return;
+        if (response.status === 401) {
+          readAccess.revoke(); setAccessBlocked(true); setExactRead(undefined);
+          setPayload({ items: [], total: 0, totalIsLowerBound: false, nextOffset: null, countsByKind: {}, countsAreLowerBound: false });
+          setHasLoaded(false); setState("error"); setError("Library access could not be verified. Retry after checking your current session.");
+          return;
+        }
         if (!response.ok) throw new Error(body.error || "Library item could not be opened.");
         // Exact opening needs full validation; ordinary Capture/Results visits
         // do not need to download the server schema runtime.
-        const { parseWorkspaceLibraryItem } = await import("@/lib/library/contracts");
-        if (controller.signal.aborted) return;
-        const item = parseWorkspaceLibraryItem(body.item);
-        if (item.id !== exactId) throw new Error("Library returned a different item.");
-        if (controller.signal.aborted) return;
+        const { readLibraryItem } = await import("@/components/workspace-library-read");
+        if (!readAccess.current(token) || !visibleSnapshot()) return;
+        const item = readLibraryItem(body.item, tenantId, exactId);
         setExactRead({ scope: searchScope, id: exactId, status: "ready", item });
         window.requestAnimationFrame(() => {
-          if (!controller.signal.aborted && inspectorRef.current?.dataset.libraryItemId === exactId) {
-            inspectorRef.current.focus({ preventScroll: true });
-            inspectorRef.current.scrollIntoView({ block: "nearest" });
+          const surface = inspectorRef.current?.getClientRects().length ? inspectorRef.current : exactInlineRef.current;
+          if (readAccess.current(token) && visibleSnapshot() && surface?.dataset.libraryItemId === exactId) {
+            surface.focus({ preventScroll: true });
+            surface.scrollIntoView({ block: "nearest" });
           }
         });
       } catch (error) {
-        if (!controller.signal.aborted) setExactRead({ scope: searchScope, id: exactId, status: "error", error: error instanceof Error ? error.message : "Library item could not be opened." });
+        if (readAccess.current(token) && visibleSnapshot()) setExactRead({ scope: searchScope, id: exactId, status: "error", error: error instanceof Error ? error.message : "Library item could not be opened." });
       }
     }, 0);
-    return () => { window.clearTimeout(timer); controller.abort(); };
-  }, [exactId, searchScope, reloadNonce]);
+    return () => { window.clearTimeout(timer); readAccess.cancel(token); };
+  }, [exactId, readAccess, searchScope, reloadNonce, tenantId, visible]);
 
   const shownKinds = hasLoaded ? availableKinds.filter((candidate) =>
     payload.countsByKind[candidate] || candidate === kind,
   ) : [];
   const currentExactRead = exactRead?.id === exactId && exactRead?.scope === searchScope ? exactRead : undefined;
   const usingExactItem = Boolean(exactId && (selectedId === exactId || !currentExactRead));
-  const exactLoading = usingExactItem && (!currentExactRead || currentExactRead.status === "loading");
+  const exactLoading = !accessBlocked && usingExactItem && (!currentExactRead || currentExactRead.status === "loading");
   const exactError = usingExactItem && currentExactRead?.status === "error" ? currentExactRead.error : undefined;
   const selectedItem = usingExactItem
     ? currentExactRead?.status === "ready" ? currentExactRead.item : undefined
@@ -281,7 +320,7 @@ export function WorkspaceLibrary({
   }
 
   function showNextPage() {
-    if (payload.nextOffset === null) return;
+    if (payload.nextOffset === null || payload.nextOffset > 10_000) return;
     setOffsetHistory((history) => [...history, offset]);
     changePage(payload.nextOffset);
   }
@@ -303,6 +342,10 @@ export function WorkspaceLibrary({
     setOffsetHistory([]);
     setSelectedId(undefined);
     syncLibraryLocation({ query: "", kind: "all", projectId: effectiveProjectId, offset: 0 }, compact);
+  }
+
+  function retryLibraryRead() {
+    readAccess.retry(); setAccessBlocked(false); setReloadNonce((value) => value + 1);
   }
 
   async function copyCitation(reference: string) {
@@ -386,7 +429,7 @@ export function WorkspaceLibrary({
       {state === "error" ? (
         <div className={styles.error} role="alert">
           <span><CircleAlert size={16} aria-hidden="true" /> {error}</span>
-          <button type="button" onClick={() => setReloadNonce((value) => value + 1)}>
+          <button type="button" onClick={retryLibraryRead}>
             <RefreshCw size={14} aria-hidden="true" /> Retry
           </button>
         </div>
@@ -489,6 +532,12 @@ export function WorkspaceLibrary({
               />
             ) : null}
 
+            {usingExactItem && selectedItem && !payload.items.some((item) => item.id === selectedItem.id) ? <div ref={exactInlineRef} className={styles.exactInline} data-library-item-id={selectedItem.id} data-library-exact-inline role="region" aria-label={`Exact Library item: ${selectedItem.title}`} tabIndex={-1}>
+              <h3>{selectedItem.title}</h3><p className={styles.description}>This exact item is outside the returned list page.</p>
+              <MobileLibraryDetails item={selectedItem} copiedCitation={copiedCitation} onCopy={(reference) => void copyCitation(reference)} />
+              <LibraryOpenLink item={selectedItem} />
+            </div> : null}
+
             {payload.items.length && (offset > 0 || offsetHistory.length > 0 || payload.nextOffset !== null) ? (
               <div className={styles.pager} aria-label="Library pages">
                 <span>{state !== "ready" ? "Last loaded: " : "Showing "}{visibleStart}–{visibleEnd}</span>
@@ -503,18 +552,19 @@ export function WorkspaceLibrary({
                   <button
                     type="button"
                     onClick={showNextPage}
-                    disabled={payload.nextOffset === null || state === "loading"}
+                    disabled={payload.nextOffset === null || payload.nextOffset > 10_000 || state === "loading"}
                   >
                     Next <ArrowRight size={14} aria-hidden="true" />
                   </button>
                 </div>
               </div>
             ) : null}
+            {payload.nextOffset !== null && payload.nextOffset > 10_000 ? <p className={styles.description}>The bounded browsing limit has been reached. Narrow the search to inspect more sources.</p> : null}
           </div>
 
           {exactId && (exactLoading || exactError) ? <div role={exactError ? "alert" : "status"}>
             <p>{exactError || "Opening exact Library item…"}</p>
-            {exactError ? <button type="button" onClick={() => setReloadNonce((value) => value + 1)}>Retry exact item</button> : null}
+            {exactError ? <button type="button" onClick={retryLibraryRead}>Retry exact item</button> : null}
           </div> : null}
           <WorkspaceLibraryInspector
             item={selectedItem}
@@ -569,6 +619,7 @@ function CompactLibrary({
                 <span key={`${link.kind}:${link.id}`} title={link.id}>{link.label}</span>
               ))}
             </div>
+            <div className={styles.compactIdentity}><LibraryIdentity item={item} /></div>
           </article>
         );
       })}
@@ -666,7 +717,6 @@ function MobileLibraryDetails({
   copiedCitation?: string;
   onCopy: (reference: string) => void;
 }) {
-  const citation = item.citationRefs[0];
   const relatedLinks = item.links.filter((link) => link.kind !== "source");
   return (
     <div className={styles.mobileDetails} aria-label={`Details for ${item.title}`}>
@@ -677,6 +727,7 @@ function MobileLibraryDetails({
         <div><dt>Version</dt><dd>v{item.currentVersion.versionNumber} of {item.versionCount}</dd></div>
         <div><dt>Access</dt><dd>{scopeLabel(item.scope.visibility)}</dd></div>
       </dl>
+      <LibraryIdentity item={item} />
       {item.tags.length ? (
         <div className={styles.mobileTags} aria-label="Tags">
           {item.tags.slice(0, 6).map((tag) => <span key={tag}>{tag}</span>)}
@@ -691,13 +742,7 @@ function MobileLibraryDetails({
           ))}
         </div>
       ) : null}
-      <div className={styles.mobileCitation}>
-        <code>{citation}</code>
-        <button type="button" onClick={() => onCopy(citation)}>
-          {copiedCitation === citation ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
-          {copiedCitation === citation ? "Copied" : "Copy citation"}
-        </button>
-      </div>
+      <LibraryCitations item={item} copiedCitation={copiedCitation} onCopy={onCopy} />
     </div>
   );
 }
@@ -724,7 +769,6 @@ function WorkspaceLibraryInspector({
       </aside>
     );
   }
-  const citation = item.citationRefs[0];
   const relatedLinks = item.links.filter((link) => link.kind !== "source");
   return (
     <aside className={styles.inspector} aria-label="Quick look">
@@ -752,6 +796,7 @@ function WorkspaceLibraryInspector({
           <div><dt>Size</dt><dd>{workspaceLibraryVersionSize(item.currentVersion)}</dd></div>
           <div><dt>Access</dt><dd><LockKeyhole size={12} aria-hidden="true" /> {scopeLabel(item.scope.visibility)}</dd></div>
         </dl>
+        <LibraryIdentity item={item} />
 
         {item.tags.length ? (
           <div className={styles.tagBlock}>
@@ -773,19 +818,35 @@ function WorkspaceLibraryInspector({
           </div>
         ) : null}
 
-        <div className={styles.citationBlock}>
-          <div><p>Citation</p><span>Stable source reference</span></div>
-          <code title={citation}>{citation}</code>
-          <button type="button" onClick={() => onCopy(citation)} aria-label="Copy citation">
-            {copiedCitation === citation ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
-            {copiedCitation === citation ? "Copied" : "Copy"}
-          </button>
-        </div>
+        <LibraryCitations item={item} copiedCitation={copiedCitation} onCopy={onCopy} />
 
         <LibraryOpenLink item={item} inspector />
       </div>
     </aside>
   );
+}
+
+function LibraryIdentity({ item }: { item: WorkspaceLibraryItem }) {
+  return <details className={styles.identityDisclosure}>
+    <summary>Current version and source identities</summary>
+    <p>This read supplies the current version. Earlier version content is not included.</p>
+    <dl>{[
+      ["Library item", item.id], ["Source", item.sourceId], ["Source authority", item.sourceAuthority],
+      ["Version ID", item.currentVersion.versionId], ["Content SHA-256", item.currentVersion.contentSha256],
+      ["Source revision", item.currentVersion.sourceRevisionId ?? "No source revision supplied"],
+      ["Version created", item.currentVersion.createdAt], ["Media type", item.currentVersion.mediaType],
+    ].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
+    <p>Source citations</p><ul>{item.citationRefs.map((reference) => <li key={reference}><code>{reference}</code></li>)}</ul>
+  </details>;
+}
+
+function LibraryCitations({ item, copiedCitation, onCopy }: { item: WorkspaceLibraryItem; copiedCitation?: string; onCopy: (value: string) => void }) {
+  return <div className={styles.citations} aria-label="Source citations">{item.citationRefs.map((citation, index) => <div className={styles.citationBlock} key={citation}>
+    <div><p>Citation {index + 1}</p><span>Stable source reference</span></div><code>{citation}</code>
+    <button type="button" onClick={() => onCopy(citation)} aria-label={`Copy citation ${index + 1}`}>
+      {copiedCitation === citation ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}{copiedCitation === citation ? "Copied" : "Copy citation"}
+    </button>
+  </div>)}</div>;
 }
 
 function LibraryOpenLink({

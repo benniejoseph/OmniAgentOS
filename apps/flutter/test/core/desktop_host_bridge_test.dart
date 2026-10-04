@@ -4,6 +4,50 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('exact workspace selections retain only their allowed identity parameter', () {
+    for (final route in [
+      '/results/approval%3Aoutside%2Fwindow?kind=tool',
+      '/results/approval:outside%2Fwindow?kind=workflow',
+      '/results/approval%3aoutside%2Fwindow?kind=slo_policy',
+      '/projects/project%2Fone?workItemId=task%2Fone',
+      '/knowledge?memory=memory%2Fone',
+      '/activity',
+      '/responsibilities',
+      '/accounts',
+      '/accounts/customer-account:${List.filled(64, 'a').join()}',
+      '/accounts/customer-account%3A${List.filled(64, 'b').join()}',
+      '/customers/customer-account%3a${List.filled(64, 'c').join()}',
+      '/responsibilities/responsibility%3A${List.filled(64, 'a').join()}',
+      '/responsibilities/responsibility:${List.filled(64, 'b').join()}',
+    ]) {
+      expect(DesktopHostBridge.isWorkspaceRoute(route), true, reason: route);
+    }
+    for (final route in [
+      '/results/agent%3Aone?kind=tool',
+      '/results/approval%3Aone?kind=other',
+      '/results/approval%3Aone?kind=tool&kind=workflow',
+      '/results/approval%3Aone?kind=tool&next=outside',
+      '/knowledge?memory=',
+      '/knowledge?memory=one#fragment',
+      '/projects/one?workItemId=one&next=outside',
+      '/capture?memory=one',
+      '/responsibilities/other',
+      '/customers',
+      '/accounts/other',
+      '/accounts/customer-account%253A${List.filled(64, 'a').join()}',
+      '/accounts/customer-account:${List.filled(64, 'A').join()}',
+      '/customers/customer-account:${List.filled(63, 'a').join()}',
+      '/accounts/customer-account:${List.filled(64, 'a').join()}?owner=other',
+      '/customers/customer-account:${List.filled(64, 'a').join()}#other',
+      '/responsibilities/responsibility%253A${List.filled(64, 'a').join()}',
+      '/responsibilities/responsibility%3A${List.filled(64, 'A').join()}',
+      '/responsibilities/responsibility%3A${List.filled(64, 'a').join()}?owner=other',
+      '/responsibilities/responsibility%3A${List.filled(64, 'a').join()}#other',
+    ]) {
+      expect(DesktopHostBridge.isWorkspaceRoute(route), false, reason: route);
+    }
+  });
+
   TestWidgetsFlutterBinding.ensureInitialized();
 
   test('accepts only a validated native initial workspace route', () {

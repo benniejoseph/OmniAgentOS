@@ -1,63 +1,104 @@
 import 'package:asael/features/meetings/meetings.dart';
+import 'package:asael/features/meetings/meetings_snapshots.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'meetings_test_support.dart';
+
 void main() {
-  test('decodes meeting schedule, consent, outcomes, and evidence', () {
-    final meeting = Meeting.fromJson({
-      'meetingId': 'meeting:11111111-1111-4111-8111-111111111111',
-      'title': 'Launch review',
-      'summary': 'Review go-live evidence.',
-      'status': 'scheduled',
-      'scheduledStartAt': '2026-09-08T04:00:00.000Z',
-      'scheduledEndAt': '2026-09-08T04:30:00.000Z',
-      'timezone': 'Asia/Kolkata',
-      'effectiveAccessClass': 'project_members',
-      'revision': 2,
-      'participants': [
-        {
-          'participantId': 'participant-1',
-          'displayName': 'Bennie',
-          'role': 'organizer',
-          'response': 'accepted',
-          'attendeeConsent': 'granted',
-          'recordingConsent': 'granted',
-        },
-      ],
-      'decisions': [
-        {'decisionId': 'decision-1', 'summary': 'Proceed with release'},
-      ],
-      'commitments': [
-        {'commitmentId': 'commitment-1', 'summary': 'Monitor rollout'},
-      ],
-      'followUps': [
-        {
-          'followUpId': 'followup-1',
-          'label': 'Publish release notes',
-          'status': 'accepted',
-        },
-      ],
-      'sourceLinks': [
-        {
-          'linkId': 'link-1',
-          'label': 'Release brief',
-          'kind': 'source_revision',
-          'mediaRole': 'reference',
-        },
-      ],
-    });
-
-    expect(meeting.isActive, isTrue);
+  test('requires exact revision, consent and source provenance without defaulting missing metadata', () {
+    final meeting = Meeting.fromJson(meetingJson(source: true));
+    expect(meeting.revisionId, '$meetingTestId:v2');
     expect(meeting.participants.single.recordingConsent, 'granted');
-    expect(meeting.decisions.single.label, 'Proceed with release');
-    expect(meeting.commitments.single.label, 'Monitor rollout');
-    expect(meeting.followUps.single.status, 'accepted');
-    expect(meeting.evidence.single.label, 'Release brief');
-  });
-
-  test('rejects a meeting without canonical identity and schedule', () {
+    expect(Meeting.fromJson(meetingJson()).recordingConsentConfirmed, isFalse);
+    expect(meeting.evidence.single.revisionSha256, meetingDigest);
     expect(
-      () => Meeting.fromJson({'title': 'Incomplete'}),
+      () => Meeting.fromJson(meetingJson()..remove('participants')),
       throwsFormatException,
+    );
+    expect(
+      () => Meeting.fromJson(meetingJson()..['revision'] = 3),
+      throwsFormatException,
+    );
+    expect(
+      () => Meeting.fromJson(
+        meetingJson()..['scheduledStartAt'] = '2026-02-31T10:00:00.000Z',
+      ),
+      throwsFormatException,
+    );
+  });
+  test(
+    'rejects duplicate identities, fabricated consent and wider linked access',
+    () {
+      final duplicate = meetingJson();
+      (duplicate['participants'] as List).add(
+        (duplicate['participants'] as List).first,
+      );
+      expect(() => Meeting.fromJson(duplicate), throwsFormatException);
+      final consent = meetingJson();
+      consent['participants'][0]['recordingConsent'] = 'granted';
+      expect(() => Meeting.fromJson(consent), throwsFormatException);
+      expect(
+        () => Meeting.fromJson(
+          meetingJson(source: true)
+            ..['effectiveAccessClass'] = 'workspace_members',
+        ),
+        throwsFormatException,
+      );
+    },
+  );
+  test(
+    'detail rejects wrong target, missing projections and changed raw evidence',
+    () {
+      expect(
+        () => MeetingDetailSnapshot.parse(
+          meetingDetailJson(),
+          id: meetingOtherId,
+          tenantId: meetingOwner.tenantId,
+        ),
+        throwsFormatException,
+      );
+      final missing = meetingDetailJson(pending: true)..['linkedSources'] = [];
+      expect(
+        () => MeetingDetailSnapshot.parse(
+          missing,
+          id: meetingTestId,
+          tenantId: meetingOwner.tenantId,
+        ),
+        throwsFormatException,
+      );
+      final changed = meetingDetailJson(pending: true);
+      changed['linkedSources'][0]['revisionState'] = 'changed';
+      expect(
+        () => MeetingDetailSnapshot.parse(
+          changed,
+          id: meetingTestId,
+          tenantId: meetingOwner.tenantId,
+        ),
+        throwsFormatException,
+      );
+      expect(meetingDetail(pending: true).sources.single.transcript, '');
+    },
+  );
+  test('list requires declared coverage and exact tenant/workspace, preserving true empty', () {
+    expect(
+      () => MeetingsSnapshot.parse({
+        'context': meetingContextJson(),
+      }, tenantId: meetingOwner.tenantId),
+      throwsFormatException,
+    );
+    expect(
+      () => MeetingsSnapshot.parse({
+        'context': meetingContextJson(),
+        'meetings': [meetingJson()],
+      }, tenantId: 'foreign'),
+      throwsFormatException,
+    );
+    expect(
+      MeetingsSnapshot.parse({
+        'context': meetingContextJson(),
+        'meetings': [],
+      }, tenantId: meetingOwner.tenantId).meetings,
+      isEmpty,
     );
   });
 }

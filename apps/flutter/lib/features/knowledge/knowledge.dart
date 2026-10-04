@@ -1,10 +1,12 @@
-import 'dart:math' as math;
+import 'package:flutter/foundation.dart';
 
-import 'package:flutter/material.dart';
+import 'knowledge_contracts.dart';
+export 'knowledge_view.dart';
 
 typedef Json = Map<String, dynamic>;
-List<String> _ss(Object? v) =>
-    (v as List? ?? const []).map((e) => e.toString()).toList();
+List<String> _ss(Object? v) => List<String>.unmodifiable(
+  (v as List? ?? const []).map((e) => e.toString()),
+);
 
 class MemoryRecord {
   const MemoryRecord({
@@ -27,9 +29,13 @@ class MemoryRecord {
     this.contradictionOfId,
     this.createdAt,
     this.updatedAt,
+    this.metadata = const MemoryReadMetadata(),
+    this.tenantId,
   });
   final String id, title, content, type, scope, source, claimStatus, assertedBy;
   final String category, tier;
+  final String? tenantId;
+  final MemoryReadMetadata metadata;
   final List<String> tags, evidenceRefs;
   final int evidenceCount;
   final double importance, confidence;
@@ -37,7 +43,9 @@ class MemoryRecord {
   final DateTime? createdAt;
   final DateTime? updatedAt;
   factory MemoryRecord.fromJson(Json j) => MemoryRecord(
-    id: '${j['id']}',
+    id: knowledgeIdentity(j['id'], 'Memory'),
+    tenantId: j['tenantId'] as String?,
+    metadata: MemoryReadMetadata.fromJson(j),
     title: '${j['title'] ?? 'Memory'}',
     content: '${j['content'] ?? ''}',
     type: '${j['type'] ?? 'fact'}',
@@ -71,13 +79,22 @@ class KnowledgeItem {
     required this.category,
     required this.chunkCount,
     required this.totalCharacters,
+    this.sourceType = 'not_reported',
+    this.hasCanonicalLineage = false,
+    this.indexedAt,
   });
   final String id, title, content, source, kind, category;
   final int chunkCount, totalCharacters;
+  final String sourceType;
+  final bool hasCanonicalLineage;
+  final DateTime? indexedAt;
   final List<String> tags;
   factory KnowledgeItem.fromJson(Json j, {String kind = 'document'}) =>
       KnowledgeItem(
-        id: '${j['id']}',
+        id: knowledgeIdentity(j['id'], 'Knowledge source'),
+        sourceType: '${j['sourceType'] ?? 'not_reported'}',
+        hasCanonicalLineage: j['hasCanonicalLineage'] == true,
+        indexedAt: DateTime.tryParse('${j['indexedAt'] ?? ''}'),
         title: '${j['title'] ?? j['documentTitle'] ?? 'Knowledge'}',
         content: '${j['content'] ?? j['text'] ?? j['summary'] ?? ''}',
         source: '${j['sourceLabel'] ?? j['source'] ?? j['sourceUri'] ?? ''}',
@@ -104,7 +121,7 @@ class GraphNode {
   final int sourceCount;
   final List<String> tags;
   factory GraphNode.fromJson(Json j) => GraphNode(
-    id: '${j['id']}',
+    id: knowledgeIdentity(j['id'], 'Relationship point'),
     label: '${j['label'] ?? 'Node'}',
     kind: '${j['kind'] ?? 'concept'}',
     weight: (j['weight'] as num?)?.toDouble() ?? 0,
@@ -124,8 +141,8 @@ class GraphEdge {
   final String source, target, relation;
   final double weight;
   factory GraphEdge.fromJson(Json j) => GraphEdge(
-    source: '${j['sourceNodeId']}',
-    target: '${j['targetNodeId']}',
+    source: knowledgeIdentity(j['sourceNodeId'], 'Relationship origin'),
+    target: knowledgeIdentity(j['targetNodeId'], 'Relationship destination'),
     relation: '${j['relation']}',
     weight: (j['weight'] as num?)?.toDouble() ?? 0,
   );
@@ -139,6 +156,10 @@ class KnowledgeState {
     required this.edges,
     this.stats = const {},
     this.overview = const {},
+    this.memoryCursor,
+    this.knowledgeCursor,
+    this.memoryCatalogTotal,
+    this.knowledgeCatalogTotal,
   });
   final List<MemoryRecord> memories;
   final List<KnowledgeItem> knowledge;
@@ -146,6 +167,46 @@ class KnowledgeState {
   final List<GraphEdge> edges;
   final Json stats;
   final Json overview;
+  final String? memoryCursor, knowledgeCursor;
+  final int? memoryCatalogTotal, knowledgeCatalogTotal;
+
+  KnowledgeState withMemoryPage(KnowledgePage<MemoryRecord> page) {
+    final byId = {for (final item in memories) item.id: item};
+    for (final item in page.items) {
+      byId[item.id] = item;
+    }
+    return KnowledgeState(
+      memories: List.unmodifiable(byId.values),
+      knowledge: knowledge,
+      nodes: nodes,
+      edges: edges,
+      stats: stats,
+      overview: overview,
+      memoryCursor: page.nextCursor,
+      knowledgeCursor: knowledgeCursor,
+      memoryCatalogTotal: page.catalogTotal,
+      knowledgeCatalogTotal: knowledgeCatalogTotal,
+    );
+  }
+
+  KnowledgeState withKnowledgePage(KnowledgePage<KnowledgeItem> page) {
+    final byId = {for (final item in knowledge) item.id: item};
+    for (final item in page.items) {
+      byId[item.id] = item;
+    }
+    return KnowledgeState(
+      memories: memories,
+      knowledge: List.unmodifiable(byId.values),
+      nodes: nodes,
+      edges: edges,
+      stats: stats,
+      overview: overview,
+      memoryCursor: memoryCursor,
+      knowledgeCursor: page.nextCursor,
+      memoryCatalogTotal: memoryCatalogTotal,
+      knowledgeCatalogTotal: page.catalogTotal,
+    );
+  }
 }
 
 class MemoryForgetPreview {
@@ -156,16 +217,26 @@ class MemoryForgetPreview {
     required this.graphNodeCount,
     required this.graphEdgeCount,
     required this.retrievalTraceCount,
+    this.memoryId,
+    this.generatedAt,
+    this.details = const {},
   });
   final String expectedReceiptManifestSha256, guarantee;
   final int descendantMemoryCount, graphNodeCount, graphEdgeCount;
   final int retrievalTraceCount;
+  final String? memoryId, generatedAt;
+  final Json details;
 
   factory MemoryForgetPreview.fromJson(Json json) {
     final impact = json['impact'] is Map
         ? Map<String, dynamic>.from(json['impact'] as Map)
         : const <String, dynamic>{};
     return MemoryForgetPreview(
+      memoryId: json['memory'] is Map
+          ? (json['memory'] as Map)['id'] as String?
+          : null,
+      generatedAt: json['generatedAt'] as String?,
+      details: freezeKnowledgeJson(json) as Json,
       expectedReceiptManifestSha256:
           '${json['expectedReceiptManifestSha256'] ?? ''}',
       guarantee: '${json['guarantee'] ?? 'best_effort'}',
@@ -190,927 +261,263 @@ abstract interface class KnowledgeRepository {
   Future<void> deleteConnectedSource(String source);
 }
 
+abstract interface class PagedKnowledgeRepository {
+  Future<KnowledgeState> loadWorkspace(KnowledgeQuery query);
+  Future<KnowledgePage<MemoryRecord>> loadMemoryPage(
+    KnowledgeQuery query,
+    String cursor,
+  );
+  Future<KnowledgePage<KnowledgeItem>> loadKnowledgePage(
+    KnowledgeQuery query,
+    String cursor,
+  );
+}
+
+/// One controller belongs to one authenticated owner, role, and API instance.
+/// Disposed controllers cannot expose private projections or publish late reads.
 class KnowledgeController extends ChangeNotifier {
   KnowledgeController(
     this.repository, {
     required this.canManage,
     required this.mutationsAvailable,
+    this.enabled = true,
   });
   final KnowledgeRepository repository;
-  final bool canManage;
-  final bool mutationsAvailable;
-  bool get canMutate => canManage && mutationsAvailable;
+  final bool canManage, mutationsAvailable, enabled;
+  bool _disposed = false;
+  int _generation = 0;
+  bool get available => enabled && !_disposed;
+  bool get canMutate => available && canManage && mutationsAvailable;
   KnowledgeState? state;
-  bool loading = false;
-  Object? error;
-  String query = '', type = 'all';
+  bool loading = false, loadingMoreMemory = false, loadingMoreKnowledge = false;
+  Object? error, memoryPageError, knowledgePageError;
+  String query = '', type = 'all', tier = 'all', claimState = 'all';
+  KnowledgeQuery get selection =>
+      KnowledgeQuery(query: query, tier: tier, state: claimState);
   Future<void>? _refreshOperation;
-
-  Future<void> refresh() {
-    final active = _refreshOperation;
-    if (active != null) return active;
-
-    final operation = Future<void>.microtask(_performRefresh);
-    late final Future<void> tracked;
-    tracked = operation.whenComplete(() {
-      if (identical(_refreshOperation, tracked)) _refreshOperation = null;
-    });
-    _refreshOperation = tracked;
-    return tracked;
+  String? _refreshFingerprint;
+  final Set<String> _memoryCursors = {}, _knowledgeCursors = {};
+  static const maximumRetainedItems = 200;
+  bool get canLoadMoreMemory =>
+      available &&
+      !loading &&
+      !loadingMoreMemory &&
+      state?.memoryCursor != null &&
+      (state?.memories.length ?? 0) <= maximumRetainedItems - 40;
+  bool get canLoadMoreKnowledge =>
+      available &&
+      !loading &&
+      !loadingMoreKnowledge &&
+      state?.knowledgeCursor != null &&
+      (state?.knowledge.length ?? 0) <= maximumRetainedItems - 40;
+  void _publish() {
+    if (!_disposed) notifyListeners();
   }
 
-  Future<void> _performRefresh() async {
-    loading = true;
-    error = null;
-    notifyListeners();
-    try {
-      while (true) {
-        final requestedQuery = query;
-        final requestedType = type;
-        final next = await repository.load(
-          query: requestedQuery,
-          type: requestedType,
-        );
-        if (requestedQuery == query && requestedType == type) {
-          state = next;
-          break;
-        }
-      }
-    } catch (e) {
-      error = e;
-    } finally {
-      loading = false;
-      notifyListeners();
+  bool _current(int generation) => available && generation == _generation;
+  void _requireAvailable() {
+    if (!available) {
+      throw StateError('This knowledge session is no longer available.');
     }
   }
 
-  Future<void> search(String v) async {
-    query = v.trim();
+  Future<void> refresh() {
+    if (!available) return Future.value();
+    final fingerprint = '${selection.fingerprint}\u0000$type';
+    if (_refreshOperation != null && _refreshFingerprint == fingerprint) {
+      return _refreshOperation!;
+    }
+    final generation = ++_generation;
+    final requested = selection;
+    final requestedType = type;
+    _refreshFingerprint = fingerprint;
+    loading = true;
+    loadingMoreMemory = loadingMoreKnowledge = false;
+    error = memoryPageError = knowledgePageError = null;
+    _publish();
+    final operation = _performRefresh(generation, requested, requestedType);
+    _refreshOperation = operation;
+    return operation;
+  }
+
+  Future<void> _performRefresh(
+    int generation,
+    KnowledgeQuery requested,
+    String requestedType,
+  ) async {
+    try {
+      final repo = repository;
+      final next = repo is PagedKnowledgeRepository
+          ? await (repo as PagedKnowledgeRepository).loadWorkspace(requested)
+          : await repo.load(query: requested.query, type: requestedType);
+      if (!_current(generation)) return;
+      state = next;
+      _memoryCursors.clear();
+      _knowledgeCursors.clear();
+    } catch (failure) {
+      if (_current(generation)) error = failure;
+    } finally {
+      if (_current(generation)) {
+        loading = false;
+        _refreshOperation = null;
+        _refreshFingerprint = null;
+        _publish();
+      }
+    }
+  }
+
+  Future<void> search(String value) async {
+    _requireAvailable();
+    final next = value.trim();
+    if (next.length > 4000) {
+      throw const FormatException('Search is limited to 4,000 characters.');
+    }
+    if (query != next) state = null;
+    query = next;
     await refresh();
   }
 
-  Future<void> add(Json v) async {
-    if (!canMutate) throw StateError('Memory changes are not available here.');
-    await repository.addMemory(v);
+  Future<void> filter({String? memoryTier, String? stateFilter}) async {
+    _requireAvailable();
+    tier = memoryTier ?? tier;
+    claimState = stateFilter ?? claimState;
+    state = null;
     await refresh();
   }
 
-  Future<void> correct(String id, Json v) async {
-    if (!canMutate) throw StateError('Memory changes are not available here.');
-    await repository.correctMemory(id, v);
+  Future<void> loadMoreMemory() async {
+    if (!canLoadMoreMemory || repository is! PagedKnowledgeRepository) return;
+    final cursor = state!.memoryCursor!;
+    final generation = _generation;
+    loadingMoreMemory = true;
+    memoryPageError = null;
+    _publish();
+    try {
+      if (_memoryCursors.contains(cursor)) {
+        throw const FormatException(
+          'The live memory cursor repeated. Refresh to restart.',
+        );
+      }
+      final page = await (repository as PagedKnowledgeRepository)
+          .loadMemoryPage(selection, cursor);
+      if (!_current(generation)) return;
+      if (page.nextCursor == cursor) {
+        throw const FormatException('The live memory cursor did not advance.');
+      }
+      _memoryCursors.add(cursor);
+      state = state!.withMemoryPage(page);
+    } catch (failure) {
+      if (_current(generation)) memoryPageError = failure;
+    } finally {
+      if (_current(generation)) {
+        loadingMoreMemory = false;
+        _publish();
+      }
+    }
+  }
+
+  Future<void> loadMoreKnowledge() async {
+    if (!canLoadMoreKnowledge || repository is! PagedKnowledgeRepository) {
+      return;
+    }
+    final cursor = state!.knowledgeCursor!;
+    final generation = _generation;
+    loadingMoreKnowledge = true;
+    knowledgePageError = null;
+    _publish();
+    try {
+      if (_knowledgeCursors.contains(cursor)) {
+        throw const FormatException(
+          'The live source cursor repeated. Refresh to restart.',
+        );
+      }
+      final page = await (repository as PagedKnowledgeRepository)
+          .loadKnowledgePage(selection, cursor);
+      if (!_current(generation)) return;
+      if (page.nextCursor == cursor) {
+        throw const FormatException('The live source cursor did not advance.');
+      }
+      _knowledgeCursors.add(cursor);
+      state = state!.withKnowledgePage(page);
+    } catch (failure) {
+      if (_current(generation)) knowledgePageError = failure;
+    } finally {
+      if (_current(generation)) {
+        loadingMoreKnowledge = false;
+        _publish();
+      }
+    }
+  }
+
+  Future<MemoryRecord> inspect(String id) async {
+    _requireAvailable();
+    knowledgeIdentity(id, 'Selected memory');
+    final exact = await repository.getMemory(id);
+    _requireAvailable();
+    if (exact.id != id) {
+      throw const FormatException('The selected memory identity changed.');
+    }
+    return exact;
+  }
+
+  Future<MemoryForgetPreview> previewForget(String id) async {
+    _requireAvailable();
+    if (!canManage) {
+      throw StateError(
+        'Memory impact previews require memory management permission.',
+      );
+    }
+    final preview = await repository.previewForgetMemory(id);
+    _requireAvailable();
+    if (preview.memoryId != null && preview.memoryId != id) {
+      throw const FormatException(
+        'The impact preview belongs to another memory.',
+      );
+    }
+    return preview;
+  }
+
+  Future<void> add(Json value) async {
+    _requireMutation();
+    await repository.addMemory(freezeKnowledgeJson(value) as Json);
+    _requireAvailable();
     await refresh();
   }
 
-  Future<MemoryRecord> inspect(String id) => repository.getMemory(id);
+  Future<void> correct(String id, Json value) async {
+    _requireMutation();
+    await repository.correctMemory(id, freezeKnowledgeJson(value) as Json);
+    _requireAvailable();
+    await refresh();
+  }
 
-  Future<MemoryForgetPreview> previewForget(String id) =>
-      repository.previewForgetMemory(id);
-
-  Future<void> forget(String id, String expectedManifestSha256) async {
-    if (!canMutate) throw StateError('Memory changes are not available here.');
-    await repository.forgetMemory(id, expectedManifestSha256);
+  Future<void> forget(String id, String digest) async {
+    _requireMutation();
+    await repository.forgetMemory(id, digest);
+    _requireAvailable();
     await refresh();
   }
 
   Future<void> rebuild() async {
-    if (!canMutate) throw StateError('Memory changes are not available here.');
+    _requireMutation();
     await repository.rebuildGraph();
+    _requireAvailable();
     await refresh();
   }
-}
 
-class KnowledgeView extends StatefulWidget {
-  const KnowledgeView({super.key, required this.controller});
-  final KnowledgeController controller;
-  @override
-  State<KnowledgeView> createState() => _KnowledgeViewState();
-}
-
-class _KnowledgeViewState extends State<KnowledgeView>
-    with SingleTickerProviderStateMixin {
-  late final TabController tabs;
-  final search = TextEditingController();
-  String memoryCategory = 'all', knowledgeCategory = 'all';
-  double universeAngle = 0;
-  @override
-  void initState() {
-    super.initState();
-    tabs = TabController(length: 3, vsync: this);
-    if (widget.controller.state == null) widget.controller.refresh();
+  void _requireMutation() {
+    if (!canMutate) throw StateError('Memory changes are not available here.');
   }
 
   @override
   void dispose() {
-    tabs.dispose();
-    search.dispose();
+    if (_disposed) return;
+    _disposed = true;
+    ++_generation;
+    state = null;
+    error = null;
+    // Owned inspector routes listen to this fence before ChangeNotifier closes.
+    notifyListeners();
     super.dispose();
   }
-
-  @override
-  Widget build(BuildContext context) => ListenableBuilder(
-    listenable: widget.controller,
-    builder: (_, _) {
-      final c = widget.controller, s = c.state;
-      return Scaffold(
-        appBar: AppBar(
-          title: const Text('Memory observatory'),
-          bottom: TabBar(
-            controller: tabs,
-            tabs: const [
-              Tab(text: 'Memory'),
-              Tab(text: 'Knowledge'),
-              Tab(text: 'Universe'),
-            ],
-          ),
-          actions: [
-            if (c.canMutate)
-              IconButton(
-                tooltip: 'Add memory',
-                onPressed: _add,
-                icon: const Icon(Icons.add_rounded),
-              ),
-            IconButton(
-              onPressed: c.refresh,
-              icon: const Icon(Icons.refresh_rounded),
-            ),
-          ],
-        ),
-        body: Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-              child: SearchBar(
-                controller: search,
-                hintText: 'Search memory and knowledge',
-                leading: const Icon(Icons.search_rounded),
-                trailing: [
-                  if (search.text.isNotEmpty)
-                    IconButton(
-                      onPressed: () {
-                        search.clear();
-                        c.search('');
-                        setState(() {});
-                      },
-                      icon: const Icon(Icons.close_rounded),
-                    ),
-                ],
-                onSubmitted: c.search,
-                onChanged: (_) => setState(() {}),
-              ),
-            ),
-            if (s != null) _StewardStrip(s.overview),
-            Expanded(
-              child: c.loading && s == null
-                  ? const _KnowledgeSkeleton()
-                  : c.error != null && s == null
-                  ? Center(
-                      child: FilledButton.tonal(
-                        onPressed: c.refresh,
-                        child: const Text('Reconnect knowledge'),
-                      ),
-                    )
-                  : AnimatedSwitcher(
-                      duration: _knowledgeMotion(context),
-                      switchInCurve: Curves.easeOutQuart,
-                      child: TabBarView(
-                        key: ValueKey(s),
-                        controller: tabs,
-                        children: [
-                          _memory(s?.memories ?? const []),
-                          _knowledge(s?.knowledge ?? const []),
-                          _graph(
-                            s?.nodes ?? const [],
-                            s?.edges ?? const [],
-                            s?.stats ?? const {},
-                          ),
-                        ],
-                      ),
-                    ),
-            ),
-          ],
-        ),
-      );
-    },
-  );
-  Widget _memory(List<MemoryRecord> values) {
-    if (values.isEmpty) return const _Empty('No memories match this view');
-    final categories = values.map((item) => item.category).toSet().toList()
-      ..sort();
-    final filtered = memoryCategory == 'all'
-        ? values
-        : values.where((item) => item.category == memoryCategory).toList();
-    return Column(
-      children: [
-        _CategoryStrip(
-          categories: categories,
-          selected: memoryCategory,
-          count: (category) => category == 'all'
-              ? values.length
-              : values.where((item) => item.category == category).length,
-          onSelected: (value) => setState(() => memoryCategory = value),
-        ),
-        Expanded(
-          child: LayoutBuilder(
-            builder: (context, box) {
-              final columns = box.maxWidth >= 920 ? 2 : 1;
-              return GridView.builder(
-                padding: EdgeInsets.symmetric(
-                  horizontal: box.maxWidth >= 920 ? 28 : 16,
-                  vertical: 16,
-                ),
-                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: columns,
-                  mainAxisExtent: 154,
-                  crossAxisSpacing: 12,
-                  mainAxisSpacing: 12,
-                ),
-                itemCount: filtered.length,
-                itemBuilder: (_, i) {
-                  final m = filtered[i];
-                  return Card(
-                    clipBehavior: Clip.antiAlias,
-                    child: ListTile(
-                      contentPadding: const EdgeInsets.symmetric(vertical: 6),
-                      leading: Icon(
-                        m.claimStatus == 'active'
-                            ? Icons.memory_rounded
-                            : Icons.history_toggle_off_rounded,
-                      ),
-                      title: Text(m.title),
-                      subtitle: Text(
-                        '${_label(m.category)} · ${_label(m.tier)}\n${m.claimStatus} · ${m.evidenceCount} evidence links',
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      isThreeLine: true,
-                      trailing:
-                          widget.controller.canMutate &&
-                              m.claimStatus != 'forgotten'
-                          ? PopupMenuButton<String>(
-                              onSelected: (v) => v == 'forget'
-                                  ? _forget(m)
-                                  : _correct(
-                                      m,
-                                      contradiction: v == 'contradict',
-                                    ),
-                              itemBuilder: (_) => const [
-                                PopupMenuItem(
-                                  value: 'correct',
-                                  child: Text('Correct'),
-                                ),
-                                PopupMenuItem(
-                                  value: 'contradict',
-                                  child: Text('Contradict'),
-                                ),
-                                PopupMenuItem(
-                                  value: 'forget',
-                                  child: Text('Forget'),
-                                ),
-                              ],
-                            )
-                          : null,
-                      onTap: () => _inspect(m),
-                    ),
-                  );
-                },
-              );
-            },
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _knowledge(List<KnowledgeItem> values) {
-    if (values.isEmpty) return const _Empty('No indexed knowledge matches');
-    final categories = values.map((item) => item.category).toSet().toList()
-      ..sort();
-    final filtered = knowledgeCategory == 'all'
-        ? values
-        : values.where((item) => item.category == knowledgeCategory).toList();
-    return Column(
-      children: [
-        _CategoryStrip(
-          categories: categories,
-          selected: knowledgeCategory,
-          count: (category) => category == 'all'
-              ? values.length
-              : values.where((item) => item.category == category).length,
-          onSelected: (value) => setState(() => knowledgeCategory = value),
-        ),
-        Expanded(
-          child: ListView.builder(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            itemCount: filtered.length,
-            itemBuilder: (_, i) {
-              final k = filtered[i];
-              return Card(
-                clipBehavior: Clip.antiAlias,
-                child: ListTile(
-                  contentPadding: const EdgeInsets.all(14),
-                  leading: Icon(
-                    k.kind == 'document'
-                        ? Icons.description_outlined
-                        : Icons.segment_rounded,
-                  ),
-                  title: Text(k.title),
-                  subtitle: Text(
-                    '${_label(k.category)} · ${k.source}\n${k.chunkCount} chunks · ${_textSize(k.totalCharacters)}',
-                    maxLines: 2,
-                  ),
-                  isThreeLine: true,
-                ),
-              );
-            },
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _graph(
-    List<GraphNode> nodes,
-    List<GraphEdge> edges,
-    Json stats,
-  ) => CustomScrollView(
-    slivers: [
-      SliverToBoxAdapter(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-          child: GestureDetector(
-            onPanUpdate: (detail) =>
-                setState(() => universeAngle += detail.delta.dx * .008),
-            child: Container(
-              height: 260,
-              clipBehavior: Clip.antiAlias,
-              decoration: BoxDecoration(
-                color: const Color(0xFF071318),
-                borderRadius: BorderRadius.circular(24),
-              ),
-              child: CustomPaint(
-                painter: _UniversePainter(
-                  nodes: nodes.take(100).toList(),
-                  edges: edges,
-                  angle: universeAngle,
-                ),
-                child: const Align(
-                  alignment: Alignment.bottomLeft,
-                  child: Padding(
-                    padding: EdgeInsets.all(14),
-                    child: Text(
-                      'Drag to rotate the relationship space',
-                      style: TextStyle(color: Color(0xFFA5C2BA), fontSize: 12),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
-      ),
-      SliverToBoxAdapter(
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Row(
-            children: [
-              Expanded(
-                child: _Metric('${stats['nodes'] ?? nodes.length}', 'nodes'),
-              ),
-              Expanded(
-                child: _Metric('${stats['edges'] ?? edges.length}', 'edges'),
-              ),
-              Expanded(
-                child: _Metric('${stats['communities'] ?? '—'}', 'communities'),
-              ),
-              if (widget.controller.canMutate)
-                IconButton.filledTonal(
-                  tooltip: 'Rebuild graph',
-                  onPressed: () => _run(widget.controller.rebuild),
-                  icon: const Icon(Icons.sync_rounded),
-                ),
-            ],
-          ),
-        ),
-      ),
-      nodes.isEmpty
-          ? const SliverFillRemaining(
-              child: _Empty('Graph builds from durable memory'),
-            )
-          : SliverList.builder(
-              itemCount: nodes.length,
-              itemBuilder: (_, i) {
-                final n = nodes[i];
-                final links = edges
-                    .where((e) => e.source == n.id || e.target == n.id)
-                    .length;
-                return ListTile(
-                  leading: CircleAvatar(
-                    radius: 8 + 6 * n.weight.clamp(0, 1),
-                    child: const SizedBox(),
-                  ),
-                  title: Text(n.label),
-                  subtitle: Text(
-                    '${n.kind} · $links links · ${n.sourceCount} sources',
-                  ),
-                  onTap: () => showModalBottomSheet(
-                    context: context,
-                    showDragHandle: true,
-                    builder: (_) => _Sheet(
-                      title: n.label,
-                      body: n.summary.isEmpty
-                          ? 'No summary available.'
-                          : n.summary,
-                      meta:
-                          '${n.kind} · weight ${n.weight.toStringAsFixed(2)} · ${n.tags.join(', ')}',
-                    ),
-                  ),
-                );
-              },
-            ),
-    ],
-  );
-  Future<void> _inspect(MemoryRecord indexed) async {
-    try {
-      final m = await widget.controller.inspect(indexed.id);
-      if (!mounted) return;
-      await showModalBottomSheet(
-        context: context,
-        showDragHandle: true,
-        isScrollControlled: true,
-        builder: (_) => _Sheet(
-          title: m.title,
-          body: m.content,
-          meta:
-              '${m.type} · ${m.scope} · ${m.claimStatus}\nAsserted by ${m.assertedBy} · confidence ${(m.confidence * 100).round()}%\nSource: ${m.source}\nEvidence: ${m.evidenceRefs.join(', ')}${m.supersedesId == null ? '' : '\nSupersedes: ${m.supersedesId}'}${m.contradictionOfId == null ? '' : '\nContradicts: ${m.contradictionOfId}'}',
-        ),
-      );
-    } catch (error) {
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('$error')));
-      }
-    }
-  }
-
-  Future<void> _add() async {
-    final v = await showDialog<Json>(
-      context: context,
-      builder: (_) => const _MemoryDialog(),
-    );
-    if (v != null) await _run(() => widget.controller.add(v));
-  }
-
-  Future<void> _correct(MemoryRecord m, {required bool contradiction}) async {
-    late final MemoryRecord exact;
-    try {
-      exact = await widget.controller.inspect(m.id);
-    } catch (error) {
-      _showError(error);
-      return;
-    }
-    if (!mounted) return;
-    final v = await showDialog<Json>(
-      context: context,
-      builder: (_) =>
-          _MemoryDialog(memory: exact, contradiction: contradiction),
-    );
-    if (v != null) await _run(() => widget.controller.correct(m.id, v));
-  }
-
-  Future<void> _forget(MemoryRecord m) async {
-    late final MemoryForgetPreview preview;
-    try {
-      preview = await widget.controller.previewForget(m.id);
-    } catch (error) {
-      _showError(error);
-      return;
-    }
-    if (!mounted) return;
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Forget this memory?'),
-        content: Text(
-          '${m.title}\n\nThis also removes ${preview.descendantMemoryCount} derived memories, '
-          '${preview.graphNodeCount} graph points, ${preview.graphEdgeCount} links, '
-          'and ${preview.retrievalTraceCount} recall traces. A deletion receipt will be kept.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Forget'),
-          ),
-        ],
-      ),
-    );
-    if (ok == true) {
-      await _run(
-        () => widget.controller.forget(
-          m.id,
-          preview.expectedReceiptManifestSha256,
-        ),
-      );
-    }
-  }
-
-  Future<void> _run(Future<void> Function() f) async {
-    try {
-      await f();
-    } catch (e) {
-      _showError(e);
-    }
-  }
-
-  void _showError(Object error) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text('$error')));
-  }
-}
-
-class _MemoryDialog extends StatefulWidget {
-  const _MemoryDialog({this.memory, this.contradiction = false});
-  final MemoryRecord? memory;
-  final bool contradiction;
-  @override
-  State<_MemoryDialog> createState() => _MemoryDialogState();
-}
-
-class _MemoryDialogState extends State<_MemoryDialog> {
-  late final title = TextEditingController(text: widget.memory?.title);
-  late final content = TextEditingController(text: widget.memory?.content);
-  late final tags = TextEditingController(text: widget.memory?.tags.join(', '));
-  String type = 'fact';
-  double importance = .7, confidence = .8;
-  @override
-  void initState() {
-    super.initState();
-    type = widget.memory?.type ?? 'fact';
-    importance = widget.memory?.importance ?? .7;
-    confidence = widget.memory?.confidence ?? .8;
-  }
-
-  @override
-  Widget build(BuildContext context) => AlertDialog(
-    title: Text(
-      widget.memory == null
-          ? 'Add memory'
-          : widget.contradiction
-          ? 'Contradict memory'
-          : 'Correct memory',
-    ),
-    content: SizedBox(
-      width: 520,
-      child: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: title,
-              decoration: const InputDecoration(labelText: 'Title'),
-            ),
-            TextField(
-              controller: content,
-              maxLines: 6,
-              decoration: const InputDecoration(labelText: 'Content'),
-            ),
-            if (widget.memory == null) ...[
-              DropdownButtonFormField<String>(
-                initialValue: type,
-                decoration: const InputDecoration(labelText: 'Type'),
-                items:
-                    const [
-                          'preference',
-                          'fact',
-                          'episode',
-                          'procedure',
-                          'knowledge',
-                          'decision',
-                          'task',
-                        ]
-                        .map((v) => DropdownMenuItem(value: v, child: Text(v)))
-                        .toList(),
-                onChanged: (v) => setState(() => type = v!),
-              ),
-              TextField(
-                controller: tags,
-                decoration: const InputDecoration(
-                  labelText: 'Tags, comma separated',
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text('Importance ${(importance * 100).round()}%'),
-              Slider(
-                value: importance,
-                onChanged: (v) => setState(() => importance = v),
-              ),
-            ],
-            Text('Confidence ${(confidence * 100).round()}%'),
-            Slider(
-              value: confidence,
-              onChanged: (v) => setState(() => confidence = v),
-            ),
-          ],
-        ),
-      ),
-    ),
-    actions: [
-      TextButton(
-        onPressed: () => Navigator.pop(context),
-        child: const Text('Cancel'),
-      ),
-      FilledButton(
-        onPressed: () {
-          if (title.text.trim().isEmpty || content.text.trim().isEmpty) return;
-          final j = <String, dynamic>{
-            'title': title.text.trim(),
-            'content': content.text.trim(),
-            'confidence': confidence,
-          };
-          if (widget.memory == null) {
-            j.addAll({
-              'type': type,
-              'tags': tags.text
-                  .split(',')
-                  .map((e) => e.trim())
-                  .where((e) => e.isNotEmpty)
-                  .toList(),
-              'importance': importance,
-              'evidenceRefs': <String>[],
-            });
-          } else if (widget.contradiction) {
-            j['contradiction'] = true;
-          }
-          Navigator.pop(context, j);
-        },
-        child: const Text('Save'),
-      ),
-    ],
-  );
-}
-
-class _StewardStrip extends StatelessWidget {
-  const _StewardStrip(this.overview);
-  final Json overview;
-
-  @override
-  Widget build(BuildContext context) {
-    final summary = overview['summary'] is Map
-        ? Map<String, dynamic>.from(overview['summary'] as Map)
-        : const <String, dynamic>{};
-    final steward = overview['steward'] is Map
-        ? Map<String, dynamic>.from(overview['steward'] as Map)
-        : const <String, dynamic>{};
-    final health = (steward['healthScore'] as num?)?.toInt();
-    return Container(
-      margin: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.primaryContainer
-            .withValues(alpha: .44),
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(
-          color: Theme.of(context).colorScheme.primary.withValues(alpha: .2),
-        ),
-      ),
-      child: Row(
-        children: [
-          CircleAvatar(
-            backgroundColor: Theme.of(context).colorScheme.surface,
-            child: const Icon(Icons.smart_toy_outlined),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'Mnemosyne · memory steward',
-                  style: TextStyle(fontWeight: FontWeight.w700),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  '${summary['durableMemories'] ?? 0} memories · '
-                  '${summary['knowledgeDocuments'] ?? 0} sources · '
-                  '${summary['pendingReviews'] ?? 0} reviews',
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-              ],
-            ),
-          ),
-          if (health != null)
-            Column(
-              children: [
-                Text(
-                  '$health',
-                  style: Theme.of(context).textTheme.titleMedium
-                      ?.copyWith(fontWeight: FontWeight.w800),
-                ),
-                Text('health', style: Theme.of(context).textTheme.labelSmall),
-              ],
-            ),
-        ],
-      ),
-    );
-  }
-}
-
-class _CategoryStrip extends StatelessWidget {
-  const _CategoryStrip({
-    required this.categories,
-    required this.selected,
-    required this.count,
-    required this.onSelected,
-  });
-  final List<String> categories;
-  final String selected;
-  final int Function(String category) count;
-  final ValueChanged<String> onSelected;
-
-  @override
-  Widget build(BuildContext context) => SizedBox(
-    height: 54,
-    child: ListView(
-      scrollDirection: Axis.horizontal,
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 6),
-      children: [
-        for (final category in ['all', ...categories])
-          Padding(
-            padding: const EdgeInsets.only(right: 7),
-            child: FilterChip(
-              selected: selected == category,
-              label: Text('${_label(category)}  ${count(category)}'),
-              onSelected: (_) => onSelected(category),
-            ),
-          ),
-      ],
-    ),
-  );
-}
-
-class _UniversePainter extends CustomPainter {
-  const _UniversePainter({
-    required this.nodes,
-    required this.edges,
-    required this.angle,
-  });
-  final List<GraphNode> nodes;
-  final List<GraphEdge> edges;
-  final double angle;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final center = Offset(size.width / 2, size.height / 2 - 5);
-    final points = <String, ({Offset point, double depth, GraphNode node})>{};
-    for (var index = 0; index < nodes.length; index += 1) {
-      final node = nodes[index];
-      final theta = index * 2.399963 + (node.id.hashCode % 97) / 97;
-      final radius = 22 + math.sqrt(index + 1) * 12;
-      final x = math.cos(theta) * radius;
-      final y = math.sin(theta * 1.7) * math.min(62, radius * .48);
-      final z = math.sin(theta) * radius;
-      final rotatedX = x * math.cos(angle) + z * math.sin(angle);
-      final rotatedZ = -x * math.sin(angle) + z * math.cos(angle);
-      final perspective = 520 / (520 + rotatedZ);
-      points[node.id] = (
-        point: center + Offset(rotatedX * perspective, y * perspective),
-        depth: rotatedZ,
-        node: node,
-      );
-    }
-
-    final linePaint = Paint()
-      ..color = const Color(0xFF76D8BD).withValues(alpha: .17)
-      ..strokeWidth = .7;
-    for (final edge in edges.take(400)) {
-      final source = points[edge.source], target = points[edge.target];
-      if (source != null && target != null) {
-        canvas.drawLine(source.point, target.point, linePaint);
-      }
-    }
-
-    final ordered = points.values.toList()
-      ..sort((left, right) => right.depth.compareTo(left.depth));
-    for (final item in ordered) {
-      final color = _graphColor(item.node.kind);
-      final radius = 2.5 + item.node.weight.clamp(0, 1) * 4.5;
-      canvas.drawCircle(
-        item.point,
-        radius + 5,
-        Paint()..color = color.withValues(alpha: .08),
-      );
-      canvas.drawCircle(item.point, radius, Paint()..color = color);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant _UniversePainter oldDelegate) =>
-      oldDelegate.angle != angle ||
-      oldDelegate.nodes != nodes ||
-      oldDelegate.edges != edges;
-}
-
-Color _graphColor(String kind) => switch (kind) {
-  'tag' => const Color(0xFFFFD18A),
-  'system' => const Color(0xFF99C7FF),
-  'workflow' => const Color(0xFFD4B4FF),
-  'tool' => const Color(0xFFFF9FAE),
-  'memory' => const Color(0xFFFFF4C6),
-  'trace' => const Color(0xFF91A6C9),
-  _ => const Color(0xFF90EAD0),
-};
-
-String _label(String value) => value
-    .split('_')
-    .map(
-      (part) =>
-          part.isEmpty ? part : '${part[0].toUpperCase()}${part.substring(1)}',
-    )
-    .join(' ');
-
-String _textSize(int characters) {
-  if (characters < 1000) return '$characters characters';
-  if (characters < 1000000) {
-    return '${(characters / 1000).toStringAsFixed(1)}k characters';
-  }
-  return '${(characters / 1000000).toStringAsFixed(1)}m characters';
-}
-
-class _Metric extends StatelessWidget {
-  const _Metric(this.value, this.label);
-  final String value, label;
-  @override
-  Widget build(BuildContext context) => Semantics(
-    label: '$label: $value',
-    child: Container(
-      margin: const EdgeInsets.only(right: 8),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(value, style: Theme.of(context).textTheme.titleLarge),
-          Text(label, style: Theme.of(context).textTheme.labelSmall),
-        ],
-      ),
-    ),
-  );
-}
-
-Duration _knowledgeMotion(BuildContext context) =>
-    MediaQuery.maybeOf(context)?.disableAnimations == true
-    ? Duration.zero
-    : const Duration(milliseconds: 190);
-
-class _KnowledgeSkeleton extends StatelessWidget {
-  const _KnowledgeSkeleton();
-  @override
-  Widget build(BuildContext context) => ListView.builder(
-    padding: const EdgeInsets.all(16),
-    itemCount: 6,
-    itemBuilder: (_, i) => Container(
-      height: 112,
-      margin: const EdgeInsets.only(bottom: 12),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerHighest
-            .withValues(alpha: .55),
-        borderRadius: BorderRadius.circular(14),
-      ),
-    ),
-  );
-}
-
-class _Sheet extends StatelessWidget {
-  const _Sheet({required this.title, required this.body, required this.meta});
-  final String title, body, meta;
-  @override
-  Widget build(BuildContext context) => SafeArea(
-    child: SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(24, 0, 24, 32),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(title, style: Theme.of(context).textTheme.headlineSmall),
-          const SizedBox(height: 8),
-          Text(meta, style: Theme.of(context).textTheme.bodySmall),
-          const SizedBox(height: 20),
-          SelectableText(body),
-        ],
-      ),
-    ),
-  );
-}
-
-class _Empty extends StatelessWidget {
-  const _Empty(this.text);
-  final String text;
-  @override
-  Widget build(BuildContext context) => Center(child: Text(text));
 }

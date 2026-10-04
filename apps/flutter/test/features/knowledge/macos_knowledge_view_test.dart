@@ -229,7 +229,8 @@ void main() {
     await tester.tap(find.byKey(const Key('macos-graph-node-n1')));
     await tester.pump();
     expect(find.text('Connected concepts (2)'), findsOneWidget);
-    expect(find.text('Applies To'), findsOneWidget);
+    expect(find.textContaining('Applies To'), findsOneWidget);
+    expect(find.textContaining('n2'), findsWidgets);
 
     await tester.tap(find.byKey(const Key('macos-knowledge-rebuild-graph')));
     await tester.pumpAndSettle();

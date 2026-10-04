@@ -287,6 +287,48 @@ complete progress traces, and zero duplicate effects, false successes,
 unfenced writes, or generic failure mutations. It invokes only the governed
 `runs.list` read and grants no mutation or external-effect authority.
 
+## Native controller replacement gate
+
+An owner-scoped native controller must synchronously cancel reads, fence writes,
+and clear private visible state when its repository, session, role, deployment,
+or biometric authority changes. Provider disposal performs that invalidation
+without notifying the widget tree from inside Riverpod teardown. It must also
+fence an outgoing controller before a replacement provider rebuild completes;
+waiting for a later UI notification is insufficient.
+
+Riverpod invalidation runs disposal callbacks before replacing the outgoing
+Ref, so `ref.mounted` alone does not establish current access. After dependency
+reads, check both the Ref and the access state. Repository admission must also
+recheck disposed/readable state after an authority probe returns. Regression
+tests invalidate synchronously inside a probe before rebuild, retain framework
+error collection, and assert that no new read or mutation is dispatched.
+
+Mounted route tests replace the actual provider, including replacement under
+the same owner, and assert that old editor contents and late responses cannot
+reappear. Stateful editors and page-storage entries bind controller identity
+where retained state would otherwise outlive the dependency. Focused provider
+tests collect Flutter framework errors as failures; a passing assertion count
+with disposal or build-time exceptions is not a successful validation.
+
+## Native protected-storage recovery gate
+
+macOS windows have separate Flutter engines. An isolate-local queue or Dart
+file lock cannot establish an application-wide storage transaction. Protected
+draft CAS and Capture append/delete operations use the shared host broker with
+fixed namespace addresses, bounded ciphertext, a root kernel lock and exact
+byte comparisons. Reads that can feed an upload join that broker as well.
+Legacy cleanup is an exact authenticated deletion, never recursive pruning or
+a filename-based claim that a file belongs to the current owner.
+
+Timeouts and lost responses do not establish whether a write or deletion
+completed. Keep the immutable request and accepted receipts, block another
+effect, and reconcile by authenticated read without repeating the operation.
+Capture entries restored after controller or application replacement require
+explicit same-key retry; loading the queue never uploads them. Regression
+coverage includes separate writers, quota races, replacement controllers and
+process termination before/after publication. Those checks establish the
+tested process-crash boundaries, not a power-loss durability certification.
+
 ## Transitional paths expire
 
 Every shadow, canary, legacy, versioned and retired path is registered in

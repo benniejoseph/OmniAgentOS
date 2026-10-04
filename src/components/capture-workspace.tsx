@@ -20,7 +20,7 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { clsx } from "clsx";
 import { ConnectedSources, type OAuthGrantItem, type OAuthProviderItem } from "@/components/capture/connected-sources";
 import { LongRecordingStudio, type LongRecordingDraft } from "@/components/capture/long-recording-studio";
@@ -45,6 +45,9 @@ import {
 } from "@/lib/capture/offline";
 import { googleWorkspaceCapabilitiesForScopes } from "@/lib/connectors/google-workspace-capabilities";
 import { workspaceOwnerScope } from "@/components/app-shell/workspace-owner-scope";
+import { useContentSearchLocation } from "@/components/app-shell/content-search-location";
+import { recordingIdFromLocation } from "@/components/capture/recording-selection";
+import { createReindexGate, freezeReindexSubmission, readReindexReceipt, reindexReceiptLabel, runReindexBatch, type ReindexRow } from "@/components/capture/reindex-state";
 import styles from "./capture-workspace.module.css";
 
 type DocumentItem = {
@@ -61,6 +64,9 @@ type KnowledgeStats = { documents: number; chunks: number; characters: number; e
 
 type CaptureAsset = {
   id: string;
+  tenantId: string;
+  actorId: string;
+  contentSha256: string;
   filename: string;
   mediaType: string;
   extension: string;
@@ -122,7 +128,11 @@ type CaptureBatchItem = {
 
 export function CaptureWorkspace() {
   const { session, status } = useWorkspaceSession();
-  const [mode, setMode] = useState<CaptureMode>("note");
+  const location = useContentSearchLocation();
+  const linkedRecordingId = recordingIdFromLocation(location);
+  const [modeChoice, setModeChoice] = useState<{ mode: CaptureMode; recording: string | null | undefined }>({ mode: "note", recording: undefined });
+  const mode = linkedRecordingId !== undefined && modeChoice.recording !== linkedRecordingId ? "record" : modeChoice.mode;
+  const setMode = (next: CaptureMode) => setModeChoice({ mode: next, recording: linkedRecordingId });
   const [recordingDraft, setRecordingDraft] = useState<LongRecordingDraft>({
     title: "",
     tags: "",
@@ -158,14 +168,24 @@ export function CaptureWorkspace() {
   const [libraryQuery, setLibraryQuery] = useState("");
   const [sourceFilter, setSourceFilter] = useState("all");
   const [deletingAsset, setDeletingAsset] = useState<string>();
-  const [reindexingAssetIds, setReindexingAssetIds] = useState<Set<string>>(
-    () => new Set(),
-  );
+  const [reindexGate] = useState(createReindexGate);
+  const [reindexRun, setReindexRun] = useState<{ scope: string; rows: readonly ReindexRow[]; busy: boolean }>();
   const inputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const completedJobRef = useRef<string | undefined>(undefined);
   const workspaceLoadControllerRef = useRef<AbortController | null>(null);
   const captureBlocked = permissionMessage(session, status, "write.memory");
+  const captureScope = status === "ready" ? workspaceOwnerScope(session, session?.context?.role || "viewer") : "";
+  const reindexScope = !captureBlocked ? captureScope : "";
+  useLayoutEffect(() => {
+    reindexGate.enter(reindexScope);
+    return () => reindexGate.dispose();
+  }, [reindexGate, reindexScope]);
+  const currentReindex = reindexRun?.scope === reindexScope ? reindexRun : undefined;
+  const reindexingAssetIds = useMemo(() => new Set(currentReindex?.busy ? currentReindex.rows.filter((row) => row.state === "waiting" || row.state === "sending").map((row) => row.submission.target.id) : []), [currentReindex]);
+  const unconfirmedAssetIds = useMemo(() => new Set(currentReindex?.rows.filter((row) => row.state === "unconfirmed").map((row) => row.submission.target.id)), [currentReindex]);
+  const reindexBlocked = captureBlocked || (!captureScope ? "Verify the current session before indexing." :
+    loadingWorkspace || !sourceReads.assets.loaded || sourceReads.assets.error ? "Refresh original files and access before indexing." : undefined);
   const visualBlocked = permissionMessage(session, status, "run.agent");
   const offlineOwner = useMemo<OfflineCaptureOwner | undefined>(() => {
     const tenantId = session?.context?.tenantId;
@@ -430,9 +450,9 @@ export function CaptureWorkspace() {
       asset.manageable === true &&
       asset.indexable === true &&
       !activelyProcessingAssetIds.has(asset.id) &&
-      !reindexingAssetIds.has(asset.id)
+      !reindexingAssetIds.has(asset.id) && !unconfirmedAssetIds.has(asset.id)
     )
-    .slice(0, 50), [activelyProcessingAssetIds, filteredAssets, reindexingAssetIds]);
+    .slice(0, 50), [activelyProcessingAssetIds, filteredAssets, reindexingAssetIds, unconfirmedAssetIds]);
 
   const batchCounts = useMemo(() => summarizeBatch(batchItems), [batchItems]);
   const durableQueue = useMemo(() => {
@@ -678,69 +698,81 @@ export function CaptureWorkspace() {
   }
 
   async function reindexAssets(targets: readonly CaptureAsset[]) {
-    if (captureBlocked) {
-      setCaptureNotice({ tone: "error", text: captureBlocked });
+    if (reindexBlocked || !session?.context?.tenantId || !session.context.actorId) {
+      setCaptureNotice({ tone: "error", text: reindexBlocked || "Current source ownership is unavailable." });
       return;
     }
     const eligible = targets.filter((asset) =>
       asset.manageable === true &&
       asset.indexable === true &&
       !activelyProcessingAssetIds.has(asset.id) &&
-      !reindexingAssetIds.has(asset.id)
+      !reindexingAssetIds.has(asset.id) && !reindexGate.held(reindexScope, asset.id)
     ).slice(0, 50);
     if (!eligible.length) {
       setCaptureNotice({ tone: "warning", text: "Every matching original is already queued or cannot be indexed." });
       return;
     }
-    setCaptureNotice(undefined);
-    setReindexingAssetIds((current) => new Set([
-      ...current,
-      ...eligible.map((asset) => asset.id),
-    ]));
+    const token = reindexGate.begin(reindexScope);
+    if (!token) return;
+    let rows: ReindexRow[];
     try {
-      const results = await runCaptureBatch(eligible, async (asset) => {
+      rows = [...reindexGate.heldRows(reindexScope), ...eligible.map((asset): ReindexRow => ({ state: "waiting", submission: freezeReindexSubmission(asset, {
+        tenantId: session.context!.tenantId!, actorId: session.context!.actorId!,
+      }, `capture-reindex-${crypto.randomUUID()}`) }))];
+    } catch {
+      reindexGate.finish(token);
+      setCaptureNotice({ tone: "error", text: "The exact source identity is unavailable. Refresh original files before indexing." });
+      return;
+    }
+    setCaptureNotice(undefined);
+    setReindexRun({ scope: reindexScope, rows, busy: true });
+    const current = () => reindexGate.current(token);
+    let admit = true;
+    const update = (index: number, row: ReindexRow) => {
+      rows[index] = row;
+      reindexGate.hold(token, row);
+      if (current()) setReindexRun({ scope: token.scope, rows: [...rows], busy: true });
+    };
+    try {
+      const waiting = rows.flatMap((row, index) => row.state === "waiting" ? [{ submission: row.submission, index }] : []);
+      await runReindexBatch(waiting, () => current() && admit, async ({ submission, index }) => {
+        update(index, { submission, state: "sending" });
         try {
           const response = await fetch(
-            `/api/capture/assets/${encodeURIComponent(asset.id)}`,
+            `/api/capture/assets/${encodeURIComponent(submission.target.id)}`,
             {
               method: "POST",
               headers: {
                 "content-type": "application/json",
-                "idempotency-key": `capture-reindex-${asset.id}-${crypto.randomUUID()}`,
+                "idempotency-key": submission.key,
               },
-              body: "{}",
+              body: submission.body,
             },
           );
-          const payload = (await response.json().catch(() => ({}))) as {
-            error?: string;
-          };
+          const payload: unknown = await response.json().catch(() => undefined);
+          if (!current()) return;
           if (!response.ok) {
-            throw new Error(payload.error || `${asset.filename} could not be queued.`);
+            const refused = [400, 401, 403, 404, 409, 413, 422, 429].includes(response.status);
+            if (response.status === 401 || response.status === 403) {
+              admit = false;
+              rows = rows.map((row) => row.state === "waiting" ? { ...row, state: "not_sent", message: "Later requests were stopped after an access refusal." } : row);
+            }
+            update(index, { submission, state: refused ? "refused" : "unconfirmed", message: refused ? `The server refused this request (${response.status}).` : "The response did not confirm acceptance. Refresh status before another request." });
+            return;
           }
-          return { asset, queued: true as const };
+          const receipt = await readReindexReceipt(payload, submission);
+          if (current()) update(index, { submission, state: "accepted", receipt });
         } catch (error) {
-          return {
-            asset,
-            queued: false as const,
-            error: error instanceof Error ? error.message : `${asset.filename} could not be queued.`,
-          };
+          if (current()) update(index, { submission, state: "unconfirmed", message: error instanceof Error ? error.message : "Acceptance is unknown. Refresh status before another request." });
         }
       });
-      const queued = results.filter((result) => result.queued).length;
-      const failed = results.length - queued;
-      setCaptureNotice({
-        tone: failed ? "warning" : "success",
-        text: failed
-          ? `${queued} original${queued === 1 ? "" : "s"} queued; ${failed} need attention. The existing files were kept.`
-          : `${queued} original${queued === 1 ? " is" : "s are"} queued for fresh extraction, RAG, memory, and graph links.`,
-      });
-      await loadWorkspace();
     } finally {
-      setReindexingAssetIds((current) => {
-        const next = new Set(current);
-        for (const asset of eligible) next.delete(asset.id);
-        return next;
-      });
+      if (current()) {
+        setReindexRun({ scope: token.scope, rows: [...rows], busy: false });
+        reindexGate.finish(token);
+        // Accepted receipts settle before the independent, fallible source read.
+        void loadWorkspace();
+      }
     }
   }
 
@@ -795,7 +827,7 @@ export function CaptureWorkspace() {
           </div>
 
           {mode === "record" ? (
-            <LongRecordingStudio draft={recordingDraft} onDraftChange={setRecordingDraft} disabledReason={captureBlocked} onJob={(job) => { completedJobRef.current = undefined; setActiveJob(job); }} onIndexed={loadWorkspace} />
+            <LongRecordingStudio key={captureScope || "unavailable"} requestedRecordingId={linkedRecordingId} readEnabled={Boolean(captureScope)} requestOwner={session?.context?.tenantId && session.context.actorId ? { tenantId: session.context.tenantId, actorId: session.context.actorId } : undefined} draft={recordingDraft} onDraftChange={setRecordingDraft} disabledReason={captureBlocked} onJob={(job) => { completedJobRef.current = undefined; setActiveJob(job); }} onIndexed={loadWorkspace} />
           ) : (
             <div className={styles.editor}>
               {mode === "note" ? (
@@ -1004,15 +1036,30 @@ export function CaptureWorkspace() {
           <button
             type="button"
             onClick={() => void reindexAssets(reindexableAssets)}
-            disabled={!reindexableAssets.length || Boolean(captureBlocked)}
+            disabled={!reindexableAssets.length || Boolean(reindexBlocked) || Boolean(currentReindex?.busy)}
             aria-describedby="capture-reindex-help"
             className={styles.button}
           >
             {reindexingAssetIds.size ? <Loader2 size={16} className={styles.spinner} aria-hidden="true" /> : <RefreshCw size={16} aria-hidden="true" />}
-            {reindexingAssetIds.size ? `Queueing ${reindexingAssetIds.size}` : `Re-index ${reindexableAssets.length} shown`}
+            {reindexingAssetIds.size ? `Submitting ${reindexingAssetIds.size}` : `Re-index ${reindexableAssets.length} shown`}
           </button>
         </div>
-        <p id="capture-reindex-help" className={styles.supporting}>{captureBlocked || "Re-index up to 50 shown originals that you manage, support indexing, and have no active job in this view."}</p>
+        <p id="capture-reindex-help" className={styles.supporting}>{reindexBlocked || "Re-index up to 50 shown originals that you manage, support indexing, and have no active job in this view."}</p>
+        {currentReindex ? <section className={styles.reindexReceipts} aria-label="Indexing request receipts" aria-busy={currentReindex.busy}>
+          <div className={styles.sectionHeader}><h3 className={styles.itemTitle}>Indexing request receipts</h3><button type="button" className={styles.button} onClick={() => void loadWorkspace()} disabled={loadingWorkspace || currentReindex.busy}>Refresh source status</button></div>
+          <p className={styles.supporting} role="status">{currentReindex.busy ? "Submitting the reviewed originals. Leaving Capture stops later local requests; already-sent server work may continue." : `${currentReindex.rows.filter((row) => row.receipt).length} confirmed receipts from ${currentReindex.rows.length} requests. The source list refresh is separate.`}</p>
+          {unconfirmedAssetIds.size ? <p className={styles.supporting}>A new request is held for each original with unconfirmed acceptance in this view. Its exact key is retained below. Refreshing source status does not verify that request.</p> : null}
+          <ul>{currentReindex.rows.map((row) => <li key={row.submission.key} data-reindex-asset={row.submission.target.id}>
+            <h4 className={styles.itemTitle}>{row.submission.target.filename}</h4>
+            <p>{row.receipt ? reindexReceiptLabel(row.receipt) : { waiting: "Waiting to send", sending: "Awaiting receipt", accepted: "Receipt confirmed", unconfirmed: "Acceptance unconfirmed", refused: "Request refused", not_sent: "Not sent" }[row.state]}</p>
+            {row.message ? <p className={styles.supporting}>{row.message}</p> : null}
+            <details><summary>Exact request and receipt</summary><dl>
+              <div><dt>Original ID</dt><dd>{row.submission.target.id}</dd></div><div><dt>Original SHA-256</dt><dd>{row.submission.target.contentSha256}</dd></div>
+              <div><dt>Request key</dt><dd>{row.submission.key}</dd></div><div><dt>Submitted body</dt><dd>{row.submission.body}</dd></div>
+              {row.receipt ? <><div><dt>Job ID</dt><dd>{row.receipt.jobId}</dd></div><div><dt>Receipt SHA-256</dt><dd>{row.receipt.receiptSha256}</dd></div></> : null}
+            </dl></details>
+          </li>)}</ul>
+        </section> : null}
 
         <div className={styles.sourceLists}>
           <section className={styles.sourceList} aria-labelledby="capture-originals-title">
@@ -1036,7 +1083,7 @@ export function CaptureWorkspace() {
                     {asset.manageable === true && asset.indexable === true && activelyProcessingAssetIds.has(asset.id) ? <p className={styles.supporting}>Re-indexing is unavailable while this job is queued or running.</p> : null}
                   </div>
                   <div className={styles.assetActions}>
-                    {asset.manageable === true && asset.indexable === true && !captureBlocked ? <button type="button" onClick={() => void reindexAssets([asset])} disabled={activelyProcessingAssetIds.has(asset.id) || reindexingAssetIds.has(asset.id)} className={styles.button} aria-label={`Re-index ${asset.filename}`}>{reindexingAssetIds.has(asset.id) ? <Loader2 size={16} className={styles.spinner} aria-hidden="true" /> : <RefreshCw size={16} aria-hidden="true" />}Re-index</button> : null}
+                    {asset.manageable === true && asset.indexable === true && !captureBlocked ? <button type="button" onClick={() => void reindexAssets([asset])} disabled={activelyProcessingAssetIds.has(asset.id) || unconfirmedAssetIds.has(asset.id) || Boolean(currentReindex?.busy) || Boolean(reindexBlocked)} className={styles.button} aria-label={`Re-index ${asset.filename}`}>{reindexingAssetIds.has(asset.id) ? <Loader2 size={16} className={styles.spinner} aria-hidden="true" /> : <RefreshCw size={16} aria-hidden="true" />}Re-index</button> : null}
                     {asset.contentAvailable === true ? <a href={`/api/capture/assets/${encodeURIComponent(asset.id)}?content=1&download=1`} className={styles.button} aria-label={`Download ${asset.filename}`}><Download size={16} aria-hidden="true" />Download</a> : null}
                     {asset.manageable === true && !captureBlocked ? <button type="button" onClick={() => void deleteAsset(asset.id)} disabled={deletingAsset === asset.id} className={styles.button} aria-label={`Delete ${asset.filename}`}>{deletingAsset === asset.id ? <Loader2 size={16} className={styles.spinner} aria-hidden="true" /> : <Trash2 size={16} aria-hidden="true" />}{deletingAsset === asset.id ? "Deleting…" : "Delete"}</button> : null}
                   </div>

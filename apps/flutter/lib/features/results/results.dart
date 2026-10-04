@@ -1,25 +1,10 @@
 import 'package:flutter/foundation.dart';
 
-typedef Json = Map<String, dynamic>;
-String _s(Object? v, [String fallback = '']) =>
-    v == null ? fallback : v.toString();
-Json _map(Object? v) =>
-    v is Map ? Map<String, dynamic>.from(v) : <String, dynamic>{};
-Object? _path(Object? source, String path) {
-  Object? value = source;
-  for (final key in path.split('.')) {
-    value = _map(value)[key];
-  }
-  return value;
-}
+import 'result_contracts.dart';
+import 'result_projection.dart';
+export 'results_controller.dart' show ResultsController;
 
-DateTime? _firstDate(List<Object?> values) {
-  for (final v in values) {
-    final d = DateTime.tryParse(_s(v));
-    if (d != null) return d;
-  }
-  return null;
-}
+typedef Json = Map<String, dynamic>;
 
 enum ResultKind { agent, workflow, approval }
 
@@ -37,155 +22,89 @@ class ResultItem {
     this.timestamp,
     this.groundingStatus = 'unavailable',
     this.evidence = const [],
+    this.metadata = const {},
+    this.canonical,
+    this.approvalKind,
+    this.threadId,
   });
   final String key, title, status, body, meta, groundingStatus;
   final ResultKind kind;
   final ResultTone tone;
   final DateTime? timestamp;
   final List<String> evidence;
+  final Map<String, String> metadata;
+  final ResultCanonical? canonical;
+  final String? approvalKind, threadId;
+  String get selectionIdentity =>
+      kind == ResultKind.approval ? '$key:$approvalKind' : key;
   bool get canCancel =>
       kind == ResultKind.agent &&
       const {
+        'queued',
         'running',
         'waiting_approval',
+        'waiting_clarification',
         'resuming',
-      }.contains(status.toLowerCase());
-  bool get verified => groundingStatus == 'verified';
-  static ResultTone toneFor(String status) {
-    final s = status.toLowerCase();
-    if (const {
-      'healthy',
-      'passed',
-      'success',
-      'completed',
-      'executed',
-      'approved',
-      'ready',
-    }.contains(s)) {
-      return ResultTone.success;
-    }
-    if (const {
-      'warning',
-      'waiting_approval',
-      'queued',
-      'running',
-      'paused',
-      'pending',
-      'degraded',
-      'dry_run',
-    }.contains(s)) {
-      return ResultTone.warning;
-    }
-    if (const {
-      'error',
-      'failed',
-      'blocked',
-      'denied',
-      'unhealthy',
-      'rejected',
-      'timeout',
-      'timed_out',
-      'open',
-    }.contains(s)) {
-      return ResultTone.danger;
-    }
-    return ResultTone.neutral;
-  }
+      }.contains(status);
 
-  factory ResultItem.agent(Json j) {
-    final status = _s(j['status'], 'unknown'),
-        grounding = _map(j['grounding']),
-        groundingStatus = _s(grounding['status'], 'unavailable'),
-        at = _firstDate([
-          j['completedAt'],
-          j['updatedAt'],
-          j['startedAt'],
-          j['createdAt'],
-        ]);
-    final refs =
-        ((grounding['citations'] ?? grounding['sources']) as List? ?? const [])
-            .map((e) => _s(_map(e)['url'], _s(e)))
-            .where((e) => e.isNotEmpty)
-            .toList();
-    return ResultItem(
-      key: 'agent:${_s(j['id'])}',
-      kind: ResultKind.agent,
-      title: _s(j['prompt'], 'Agent run'),
-      status: status,
-      body: _s(
-        j['response'] ?? j['error'],
-        _terminal(status)
-            ? 'No result text was stored.'
-            : 'Execution is still in progress.',
-      ),
-      meta: '${_s(j['mode'], 'agent')} · ${_grounding(groundingStatus)}',
-      tone: toneFor(status),
-      timestamp: at,
-      groundingStatus: groundingStatus,
-      evidence: refs,
-    );
-  }
-  factory ResultItem.workflow(Json j) {
-    final status = _s(j['status'], 'unknown'),
-        at = _firstDate([j['completedAt'], j['updatedAt'], j['createdAt']]);
-    return ResultItem(
-      key: 'workflow:${_s(j['id'])}',
-      kind: ResultKind.workflow,
-      title: _s(j['goal'], 'Workflow'),
-      status: status,
-      body: _s(
-        _path(j, 'result.report') ?? j['error'],
-        _terminal(status)
-            ? 'No final report was stored.'
-            : 'Workflow is still in progress.',
-      ),
-      meta: _s(j['currentStep'], 'workflow'),
-      tone: toneFor(status),
-      timestamp: at,
-      evidence: (((_path(j, 'result.evidenceRefs') as List?) ?? const [])
-          .map(_s)
-          .toList()),
-      groundingStatus: _s(
-        _path(j, 'result.verification.status'),
-        'unavailable',
-      ),
-    );
-  }
-  factory ResultItem.approval(Json j) {
-    final status = _s(j['status'], 'waiting_approval');
-    return ResultItem(
-      key: 'approval:${_s(j['id'])}',
-      kind: ResultKind.approval,
-      title: _s(j['title'], 'Approval required'),
-      status: status,
-      body: _s(
-        j['reason'] ?? _path(j, 'record.error'),
-        'Work is paused for operator review.',
-      ),
-      meta:
-          '${_s(j['kind'], 'approval')} · risk ${_s(j['riskLevel'], 'unknown')}',
-      tone: toneFor(status),
-      timestamp: _firstDate([j['updatedAt'], j['createdAt']]),
-    );
-  }
-  static bool _terminal(String s) => const {
-    'completed',
-    'failed',
-    'blocked',
-    'rejected',
-    'canceled',
-    'timeout',
-    'timed_out',
-  }.contains(s.toLowerCase());
-  static String _grounding(String s) => s == 'verified'
-      ? 'citations verified'
-      : s == 'missing'
-      ? 'citation needed'
-      : s == 'invalid'
-      ? 'invalid citation'
-      : s == 'not_required'
-      ? 'no retrieved sources'
-      : 'grounding unavailable';
+  /// Citation verification does not prove the requested outcome succeeded.
+  bool get verified => groundingStatus == 'verified';
+  bool get verifiedOutcome => canonical?.status == 'succeeded';
+  String get statusLabel =>
+      canonical?.label ??
+      (status == 'completed'
+          ? 'Completed · outcome unverified'
+          : status.replaceAll('_', ' '));
+  String get groundingLabel => kind == ResultKind.workflow
+      ? 'Returned verification: $groundingStatus'
+      : switch (groundingStatus) {
+          'verified' => 'Citations verified',
+          'missing' => 'Citation needed',
+          'invalid' => 'Invalid citation',
+          'not_required' => 'No retrieved sources required',
+          'unavailable' => 'Grounding unavailable',
+          _ => 'Grounding: $groundingStatus',
+        };
+  static ResultTone toneFor(String status) => switch (status) {
+    'succeeded' => ResultTone.success,
+    'waiting_approval' ||
+    'waiting_clarification' ||
+    'queued' ||
+    'running' ||
+    'resuming' ||
+    'paused' ||
+    'pending' ||
+    'partial' => ResultTone.warning,
+    'failed' ||
+    'blocked' ||
+    'denied' ||
+    'rejected' ||
+    'error' ||
+    'timed_out' => ResultTone.danger,
+    _ => ResultTone.neutral,
+  };
+  factory ResultItem._parsed(ParsedResult value) => ResultItem(
+    key: value.key.value,
+    kind: ResultKind.values.byName(value.key.kind),
+    title: value.title,
+    status: value.status,
+    body: value.body,
+    meta: value.meta,
+    tone: toneFor(value.canonical?.status ?? value.status),
+    timestamp: value.timestamp,
+    groundingStatus: value.grounding,
+    evidence: value.evidence,
+    metadata: value.metadata,
+    canonical: value.canonical,
+    approvalKind: value.approvalKind,
+    threadId: value.threadId,
+  );
+  factory ResultItem.agent(Json value) =>
+      ResultItem._parsed(ParsedResult.agent(value));
+  factory ResultItem.workflow(Json value) =>
+      ResultItem._parsed(ParsedResult.workflow(value));
+  factory ResultItem.approval(Json value) =>
+      ResultItem._parsed(ParsedResult.approval(value));
 }
 
 class EvaluationResult {
@@ -197,14 +116,29 @@ class EvaluationResult {
     required this.total,
   });
   final String id, suite, status;
-  final int passed, total;
-  factory EvaluationResult.fromJson(Json j) => EvaluationResult(
-    id: _s(j['id']),
-    suite: _s(j['suite'], 'Evaluation suite'),
-    status: _s(j['status'], 'unknown'),
-    passed: (_path(j, 'summary.passed') as num?)?.toInt() ?? 0,
-    total: (_path(j, 'summary.total') as num?)?.toInt() ?? 0,
-  );
+  final int? passed, total;
+  String get countLabel => passed == null || total == null
+      ? 'Counts unavailable'
+      : '$passed / $total passed';
+  factory EvaluationResult.fromJson(Json value) {
+    final summary = value['summary'] == null
+        ? null
+        : resultRecord(value['summary']);
+    final passed = summary?['passed'] == null
+        ? null
+        : resultCount(summary?['passed']);
+    final total = summary?['total'] == null
+        ? null
+        : resultCount(summary?['total']);
+    resultRequire(passed == null || total == null || passed <= total);
+    return EvaluationResult(
+      id: resultText(value['id'], maximum: 200),
+      suite: resultText(value['suite']),
+      status: resultText(value['status'], maximum: 160),
+      passed: passed,
+      total: total,
+    );
+  }
 }
 
 enum GeneratedArtifactKind { document, presentation, spreadsheet, pdf }
@@ -387,7 +321,9 @@ bool _generatedArtifactFilenameMatches(
   String filename,
   GeneratedArtifactKind kind,
 ) {
-  if (filename.contains('/') || filename.contains(r'\')) return false;
+  if (filename.contains('/') || filename.contains(r'\')) {
+    return false;
+  }
   final extension = switch (kind) {
     GeneratedArtifactKind.document => '.docx',
     GeneratedArtifactKind.presentation => '.pptx',
@@ -433,104 +369,4 @@ abstract interface class GeneratedArtifactResultsRepository {
   Future<Uint8List> downloadGeneratedArtifact(
     GeneratedArtifactSummary artifact,
   );
-}
-
-class ResultsController extends ChangeNotifier {
-  ResultsController(this.repository);
-  final ResultsRepository repository;
-  Future<void>? _refreshing;
-  ResultsSnapshot? snapshot;
-  bool loading = false;
-  Object? error;
-  String query = '';
-  ResultKind? kind;
-  String? status;
-  Future<void> refresh() {
-    final refreshing = _refreshing;
-    if (refreshing != null) return refreshing;
-    final operation = _refresh();
-    _refreshing = operation;
-    return operation.whenComplete(() {
-      if (identical(_refreshing, operation)) _refreshing = null;
-    });
-  }
-
-  Future<void> _refresh() async {
-    loading = true;
-    error = null;
-    notifyListeners();
-    try {
-      final source = repository;
-      final progressive = source is ProgressiveResultsRepository
-          ? source as ProgressiveResultsRepository
-          : null;
-      if (progressive != null) {
-        final primary = await progressive.listPrimary();
-        snapshot = primary;
-        notifyListeners();
-        final generated = await progressive.listGeneratedArtifacts();
-        snapshot = ResultsSnapshot(
-          items: primary.items,
-          evaluations: primary.evaluations,
-          sourceErrors: [
-            ...primary.sourceErrors,
-            if (generated.sourceError != null) generated.sourceError!,
-          ],
-          createdFiles: generated.files,
-        );
-      } else {
-        snapshot = await source.list();
-      }
-    } catch (e) {
-      error = e;
-    } finally {
-      loading = false;
-      notifyListeners();
-    }
-  }
-
-  void filter({
-    String? search,
-    ResultKind? resultKind,
-    String? resultStatus,
-    bool clearKind = false,
-  }) {
-    if (search != null) query = search;
-    if (clearKind) {
-      kind = null;
-    } else if (resultKind != null) {
-      kind = resultKind;
-    }
-    if (resultStatus != null) {
-      status = resultStatus.isEmpty ? null : resultStatus;
-    }
-    notifyListeners();
-  }
-
-  List<ResultItem> get filtered {
-    final q = query.toLowerCase();
-    return (snapshot?.items ?? const [])
-        .where(
-          (r) =>
-              (kind == null || r.kind == kind) &&
-              (status == null || r.status == status) &&
-              (q.isEmpty ||
-                  r.title.toLowerCase().contains(q) ||
-                  r.body.toLowerCase().contains(q)),
-        )
-        .toList();
-  }
-
-  Future<Uint8List> downloadCreatedFile(GeneratedArtifactSummary artifact) {
-    final source = repository is GeneratedArtifactResultsRepository
-        ? repository as GeneratedArtifactResultsRepository
-        : null;
-    if (source == null) {
-      throw StateError('Generated file downloads are unavailable.');
-    }
-    if (!artifact.ready) {
-      throw StateError('This generated file is not ready to download.');
-    }
-    return source.downloadGeneratedArtifact(artifact);
-  }
 }

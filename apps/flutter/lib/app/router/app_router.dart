@@ -29,10 +29,7 @@ import '../../features/computer_use/local_computer.dart';
 import '../../features/companion/companion_entry.dart';
 import '../../features/companion/companion_models.dart';
 import '../../features/companion/companion_providers.dart';
-import '../../features/customers/accounts_view.dart';
-import '../../features/customers/customer_detail.dart';
-import '../../features/customers/macos_accounts_view.dart';
-import '../../features/customers/macos_customer_detail_view.dart';
+import '../../features/customers/accounts_workspace.dart';
 import '../../features/inbox/macos_inbox_view.dart';
 import '../../features/inbox/inbox.dart';
 import '../../features/inbox/inbox_providers.dart';
@@ -42,10 +39,7 @@ import '../../features/knowledge/knowledge_providers.dart';
 import '../../features/markets/markets_view.dart';
 import '../../features/payments/macos_payments_view.dart';
 import '../../features/payments/payments_view.dart';
-import '../../features/meetings/macos_meetings_view.dart';
-import '../../features/meetings/macos_meeting_detail_view.dart';
-import '../../features/meetings/meetings_providers.dart';
-import '../../features/meetings/meetings_view.dart';
+import '../../features/meetings/meetings_page.dart';
 import '../../features/projects/macos_project_detail_view.dart';
 import '../../features/projects/projects_providers.dart';
 import '../../features/projects/macos_projects_view.dart';
@@ -54,6 +48,8 @@ import '../../features/results/macos_result_detail_view.dart';
 import '../../features/results/results_providers.dart';
 import '../../features/results/macos_results_view.dart';
 import '../../features/results/results_view.dart';
+import '../../features/responsibilities/responsibility_providers.dart';
+import '../../features/responsibilities/responsibility_workspace.dart';
 import '../../features/settings/admin_console.dart';
 import '../../features/settings/macos_admin_workspace_view.dart';
 import '../../features/settings/model_settings_view.dart';
@@ -88,11 +84,19 @@ bool isSafeInitialAppLocation(String route) {
           decoded.split('/').any((part) => part == '.' || part == '..')) {
         return false;
       }
-      final next = Uri.decodeComponent(decoded);
+      // Decode escaped byte runs for the safety check without feeding already
+      // decoded Unicode (or a literal percent in an opaque ID) back into Uri.
+      // The original route is returned unchanged to GoRouter for one decode.
+      final next = decoded.replaceAllMapped(
+        RegExp(r'(?:%[0-9a-fA-F]{2})+'),
+        (match) => Uri.decodeComponent(match[0]!),
+      );
       if (next == decoded) break;
       decoded = next;
     }
   } on FormatException {
+    return false;
+  } on ArgumentError {
     return false;
   }
   if (DesktopHostBridge.isWorkspaceRoute(route)) return true;
@@ -147,6 +151,248 @@ class ProviderBoundActivityRoute extends ConsumerWidget {
     controller: ref.watch(activityControllerProvider.select((value) => value)),
     onOpen: (location) => context.push(location),
   );
+}
+
+void _openResponsibility(BuildContext context, String id) {
+  if (RegExp(r'^responsibility:[a-f0-9]{64}$').hasMatch(id)) {
+    context.push('/responsibilities/${Uri.encodeComponent(id)}');
+  }
+}
+
+class ProviderBoundResponsibilityRoute extends ConsumerWidget {
+  const ProviderBoundResponsibilityRoute({super.key, this.focusId});
+  final String? focusId;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    if (focusId != null &&
+        !RegExp(r'^responsibility:[a-f0-9]{64}$').hasMatch(focusId!)) {
+      return const Scaffold(
+        body: Center(child: Text('This Responsibility link is invalid.')),
+      );
+    }
+    return ResponsibilityWorkspaceView(
+      controller: ref.watch(
+        responsibilityControllerProvider.select((value) => value),
+      ),
+      focusId: focusId,
+      onOpenResponsibility: (id) => _openResponsibility(context, id),
+      onNewDraft: () => context.go('/responsibilities'),
+    );
+  }
+}
+
+class ProviderBoundAccountsRoute extends StatelessWidget {
+  const ProviderBoundAccountsRoute({super.key, this.id});
+  final String? id;
+
+  @override
+  Widget build(BuildContext context) {
+    if (id != null &&
+        !RegExp(r'^customer-account:[a-f0-9]{64}$').hasMatch(id!)) {
+      return const Scaffold(
+        body: Center(child: Text('This customer account link is invalid.')),
+      );
+    }
+    return NativeAccountsView(
+      accountId: id,
+      onOpen: (account) =>
+          context.push('/accounts/${Uri.encodeComponent(account.id)}'),
+    );
+  }
+}
+
+class ProviderBoundMeetingsRoute extends StatelessWidget {
+  const ProviderBoundMeetingsRoute({super.key});
+
+  @override
+  Widget build(BuildContext context) => NativeMeetingsPage(
+    desktop: usesMacosPresentation(),
+    onOpen: (meeting) =>
+        context.push('/meetings/${Uri.encodeComponent(meeting.id)}'),
+  );
+}
+
+class ProviderBoundMeetingRoute extends StatelessWidget {
+  const ProviderBoundMeetingRoute({super.key, required this.id});
+  final String id;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!RegExp(
+      r'^meeting:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+    ).hasMatch(id)) {
+      return const Scaffold(
+        body: Center(child: Text('This Meeting link is invalid.')),
+      );
+    }
+    return NativeMeetingDetailPage(id: id, desktop: usesMacosPresentation());
+  }
+}
+
+class ProviderBoundKnowledgeRoute extends ConsumerWidget {
+  const ProviderBoundKnowledgeRoute({super.key, this.initialMemoryId});
+  final String? initialMemoryId;
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final controller = ref.watch(
+      knowledgeControllerProvider.select((value) => value),
+    );
+    return usesMacosPresentation()
+        ? MacosKnowledgeView(
+            controller: controller,
+            initialMemoryId: initialMemoryId,
+          )
+        : KnowledgeView(
+            controller: controller,
+            initialMemoryId: initialMemoryId,
+          );
+  }
+}
+
+class ProviderBoundCaptureRoute extends ConsumerWidget {
+  const ProviderBoundCaptureRoute({super.key});
+  @override
+  Widget build(BuildContext context, WidgetRef ref) => CaptureView(
+    controller: ref.watch(captureControllerProvider.select((value) => value)),
+    onOpenKnowledge: () => context.go('/knowledge'),
+  );
+}
+
+class ProviderBoundProjectsRoute extends ConsumerWidget {
+  const ProviderBoundProjectsRoute({super.key});
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final controller = ref.watch(
+      projectsControllerProvider.select((value) => value),
+    );
+    return usesMacosPresentation()
+        ? MacosProjectsView(
+            controller: controller,
+            onOpenResponsibilities: () => context.go('/responsibilities'),
+            onOpen: (project) =>
+                context.push('/projects/${Uri.encodeComponent(project.id)}'),
+          )
+        : ProjectsView(
+            controller: controller,
+            onOpenResponsibilities: () => context.go('/responsibilities'),
+            onOpen: (project) =>
+                context.push('/projects/${Uri.encodeComponent(project.id)}'),
+          );
+  }
+}
+
+class ProviderBoundResultsRoute extends ConsumerWidget {
+  const ProviderBoundResultsRoute({super.key});
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final controller = ref.watch(
+      resultsControllerProvider.select((value) => value),
+    );
+    void open(String key, String? kind) {
+      final query = kind == null
+          ? ''
+          : '?kind=${Uri.encodeQueryComponent(kind)}';
+      context.push('/results/${Uri.encodeComponent(key)}$query');
+    }
+
+    return usesMacosPresentation()
+        ? MacosResultsView(
+            controller: controller,
+            onOpen: (result) => open(result.key, result.approvalKind),
+          )
+        : ResultsView(
+            controller: controller,
+            onOpen: (result) => open(result.key, result.approvalKind),
+          );
+  }
+}
+
+class ProviderBoundResultRoute extends ConsumerWidget {
+  const ProviderBoundResultRoute({
+    super.key,
+    required this.keyValue,
+    this.approvalKind,
+  });
+  final String keyValue;
+  final String? approvalKind;
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    // Repository replacement also follows API client replacement and disposal.
+    final repository = ref.watch(resultsRepositoryProvider);
+    return usesMacosPresentation()
+        ? MacosResultDetailView(
+            keyValue: keyValue,
+            approvalKind: approvalKind,
+            repository: repository,
+            onOpenInbox: () => context.go('/inbox'),
+            onReturnToWork: () => context.go('/projects'),
+          )
+        : ResultDetailView(
+            keyValue: keyValue,
+            approvalKind: approvalKind,
+            repository: repository,
+            onOpenInbox: () => context.go('/inbox'),
+            onReturnToWork: () => context.go('/projects'),
+          );
+  }
+}
+
+class ProviderBoundProjectRoute extends ConsumerWidget {
+  const ProviderBoundProjectRoute({
+    super.key,
+    required this.id,
+    this.focusWorkItemId,
+    this.initiallyBuild = false,
+    this.focusArtifactId,
+  });
+  final String id;
+  final String? focusWorkItemId, focusArtifactId;
+  final bool initiallyBuild;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final repository = ref.watch(projectsRepositoryProvider);
+    final api = ref.watch(apiClientProvider);
+    void inspectResult(String key) =>
+        context.push('/results/${Uri.encodeComponent(key)}');
+    void updateBuilderLocation(bool visible, String? artifact) {
+      final query = <String, String>{
+        if (visible) 'view': 'build',
+        if (visible && artifact != null) 'artifact': artifact,
+        'workItemId': ?focusWorkItemId,
+      };
+      final location =
+          '/projects/${Uri.encodeComponent(id)}${query.isEmpty ? '' : '?${Uri(queryParameters: query).query}'}';
+      if (GoRouterState.of(context).uri.toString() != location) {
+        // A tab selection is a declarative location update. Imperative replace
+        // keeps the old URL with GoRouter's default URL reflection setting.
+        Router.neglect(context, () => context.go(location));
+      }
+    }
+
+    return usesMacosPresentation()
+        ? MacosProjectDetailView(
+            id: id,
+            repository: repository,
+            api: api,
+            focusWorkItemId: focusWorkItemId,
+            initiallyBuild: initiallyBuild,
+            focusArtifactId: focusArtifactId,
+            onBuilderLocationChanged: updateBuilderLocation,
+            onInspectResult: inspectResult,
+          )
+        : ProjectDetailView(
+            id: id,
+            repository: repository,
+            api: api,
+            focusWorkItemId: focusWorkItemId,
+            initiallyBuild: initiallyBuild,
+            focusArtifactId: focusArtifactId,
+            onBuilderLocationChanged: updateBuilderLocation,
+            onInspectResult: inspectResult,
+          );
+  }
 }
 
 @visibleForTesting
@@ -221,6 +467,9 @@ class ProviderBoundTalkRoute extends ConsumerWidget {
         : null,
     onQuickEntryReady: onQuickEntryReady,
     onExitQuickEntry: onExitQuickEntry,
+    onOpenResponsibilities: quickEntry || ambientVoice
+        ? null
+        : () => context.go('/responsibilities'),
     companionController: ref.watch(
       companionControllerProvider.select((value) => value),
     ),
@@ -379,15 +628,8 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(path: '/missions/:id', redirect: (_, _) => '/projects'),
       GoRoute(
         path: '/customers/:id',
-        builder: (_, state) => usesMacosPresentation()
-            ? MacosCustomerDetailView(
-                id: state.pathParameters['id']!,
-                api: ref.read(apiClientProvider),
-              )
-            : CustomerDetailView(
-                id: state.pathParameters['id']!,
-                api: ref.read(apiClientProvider),
-              ),
+        builder: (_, state) =>
+            ProviderBoundAccountsRoute(id: state.pathParameters['id']!),
       ),
       StatefulShellRoute.indexedStack(
         builder: (_, _, shell) => AdaptiveShell(navigationShell: shell),
@@ -416,54 +658,23 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                       requestedThreadId: state.uri.queryParameters['thread'],
                     ),
                     '/activity' => const ProviderBoundActivityRoute(),
-                    '/capture' => CaptureView(
-                      controller: ref.read(captureControllerProvider),
-                    ),
-                    '/projects' =>
-                      usesMacosPresentation()
-                          ? MacosProjectsView(
-                              controller: ref.read(projectsControllerProvider),
-                              onOpen: (project) =>
-                                  context.push('/projects/${project.id}'),
-                            )
-                          : ProjectsView(
-                              controller: ref.read(projectsControllerProvider),
-                              onOpen: (project) =>
-                                  context.push('/projects/${project.id}'),
-                            ),
-                    '/meetings' =>
-                      usesMacosPresentation()
-                          ? MacosMeetingsView(
-                              controller: ref.read(meetingsControllerProvider),
-                              onOpen: (meeting) =>
-                                  context.push('/meetings/${meeting.id}'),
-                            )
-                          : MeetingsView(
-                              controller: ref.read(meetingsControllerProvider),
-                              onOpen: (meeting) =>
-                                  context.push('/meetings/${meeting.id}'),
-                            ),
-                    '/results' =>
-                      usesMacosPresentation()
-                          ? MacosResultsView(
-                              controller: ref.read(resultsControllerProvider),
-                              onOpen: (result) => context.push(
-                                '/results/${Uri.encodeComponent(result.key)}',
-                              ),
-                            )
-                          : ResultsView(
-                              controller: ref.read(resultsControllerProvider),
-                              onOpen: (result) => context.push(
-                                '/results/${Uri.encodeComponent(result.key)}',
-                              ),
-                            ),
+                    '/responsibilities' =>
+                      const ProviderBoundResponsibilityRoute(),
+                    '/capture' => const ProviderBoundCaptureRoute(),
+                    '/projects' => const ProviderBoundProjectsRoute(),
+                    '/meetings' => const ProviderBoundMeetingsRoute(),
+                    '/results' => const ProviderBoundResultsRoute(),
                     '/inbox' =>
                       usesMacosPresentation()
                           ? MacosInboxView(
                               controller: ref.read(inboxControllerProvider),
+                              onOpenResponsibility: (id) =>
+                                  _openResponsibility(context, id),
                             )
                           : InboxView(
                               controller: ref.read(inboxControllerProvider),
+                              onOpenResponsibility: (id) =>
+                                  _openResponsibility(context, id),
                             ),
                     '/agents' =>
                       usesMacosPresentation()
@@ -503,26 +714,10 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                                   .read(agentCouncilControllerProvider)
                                   .refresh,
                             ),
-                    '/knowledge' =>
-                      usesMacosPresentation()
-                          ? MacosKnowledgeView(
-                              controller: ref.read(knowledgeControllerProvider),
-                            )
-                          : KnowledgeView(
-                              controller: ref.read(knowledgeControllerProvider),
-                            ),
-                    '/accounts' =>
-                      usesMacosPresentation()
-                          ? MacosAccountsView(
-                              api: ref.read(apiClientProvider),
-                              onOpen: (account) =>
-                                  context.push('/accounts/${account.id}'),
-                            )
-                          : AccountsView(
-                              api: ref.read(apiClientProvider),
-                              onOpen: (account) =>
-                                  context.push('/accounts/${account.id}'),
-                            ),
+                    '/knowledge' => ProviderBoundKnowledgeRoute(
+                      initialMemoryId: state.uri.queryParameters['memory'],
+                    ),
+                    '/accounts' => const ProviderBoundAccountsRoute(),
                     '/markets' => MarketsView(api: ref.read(apiClientProvider)),
                     '/payments' =>
                       usesMacosPresentation()
@@ -577,85 +772,60 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                       ? [
                           GoRoute(
                             path: ':id',
-                            builder: (_, state) => usesMacosPresentation()
-                                ? MacosCustomerDetailView(
-                                    id: state.pathParameters['id']!,
-                                    api: ref.read(apiClientProvider),
-                                  )
-                                : CustomerDetailView(
-                                    id: state.pathParameters['id']!,
-                                    api: ref.read(apiClientProvider),
-                                  ),
+                            builder: (_, state) => ProviderBoundAccountsRoute(
+                              id: state.pathParameters['id']!,
+                            ),
                           ),
                         ]
                       : destination.path == '/projects'
                       ? [
                           GoRoute(
                             path: ':id',
-                            builder: (_, state) => usesMacosPresentation()
-                                ? MacosProjectDetailView(
-                                    id: state.pathParameters['id']!,
-                                    repository: ref.read(
-                                      projectsRepositoryProvider,
-                                    ),
-                                    api: ref.read(apiClientProvider),
-                                    focusWorkItemId:
-                                        state.uri.queryParameters['workItemId'],
-                                  )
-                                : ProjectDetailView(
-                                    id: state.pathParameters['id']!,
-                                    repository: ref.read(
-                                      projectsRepositoryProvider,
-                                    ),
-                                    api: ref.read(apiClientProvider),
-                                    focusWorkItemId:
-                                        state.uri.queryParameters['workItemId'],
-                                  ),
+                            builder: (_, state) => ProviderBoundProjectRoute(
+                              id: state.pathParameters['id']!,
+                              focusWorkItemId:
+                                  state.uri.queryParameters['workItemId'],
+                              initiallyBuild:
+                                  state.uri.queryParameters['view'] == 'build',
+                              focusArtifactId:
+                                  state.uri.queryParameters['artifact'],
+                            ),
                           ),
                         ]
                       : destination.path == '/results'
                       ? [
                           GoRoute(
                             path: ':key',
-                            builder: (_, state) => usesMacosPresentation()
-                                ? MacosResultDetailView(
-                                    keyValue: state.pathParameters['key']!,
-                                    repository: ref.read(
-                                      resultsRepositoryProvider,
-                                    ),
-                                  )
-                                : ResultDetailView(
-                                    keyValue: state.pathParameters['key']!,
-                                    repository: ref.read(
-                                      resultsRepositoryProvider,
-                                    ),
-                                  ),
+                            builder: (_, state) => ProviderBoundResultRoute(
+                              keyValue: state.pathParameters['key']!,
+                              approvalKind: state.uri.queryParameters['kind'],
+                            ),
+                          ),
+                        ]
+                      : destination.path == '/responsibilities'
+                      ? [
+                          GoRoute(
+                            path: ':id',
+                            builder: (_, state) =>
+                                ProviderBoundResponsibilityRoute(
+                                  focusId: state.pathParameters['id']!,
+                                ),
                           ),
                         ]
                       : destination.path == '/meetings'
                       ? [
                           GoRoute(
                             path: ':id',
-                            builder: (_, state) => usesMacosPresentation()
-                                ? MacosMeetingDetailView(
-                                    id: state.pathParameters['id']!,
-                                    repository: ref.read(
-                                      meetingsRepositoryProvider,
-                                    ),
-                                  )
-                                : MeetingDetailView(
-                                    id: state.pathParameters['id']!,
-                                    repository: ref.read(
-                                      meetingsRepositoryProvider,
-                                    ),
-                                  ),
+                            builder: (_, state) => ProviderBoundMeetingRoute(
+                              id: state.pathParameters['id']!,
+                            ),
                           ),
                         ]
                       : destination.path == '/inbox'
                       ? [
                           GoRoute(
                             path: 'approvals/:id',
-                            builder: (_, state) => usesMacosPresentation()
+                            builder: (context, state) => usesMacosPresentation()
                                 ? MacosInboxView(
                                     controller: ref.read(
                                       inboxControllerProvider,
@@ -663,6 +833,8 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                                     focusApprovalId: state.pathParameters['id'],
                                     focusApprovalKind:
                                         state.uri.queryParameters['kind'],
+                                    onOpenResponsibility: (id) =>
+                                        _openResponsibility(context, id),
                                   )
                                 : InboxView(
                                     controller: ref.read(
@@ -671,6 +843,8 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                                     focusApprovalId: state.pathParameters['id'],
                                     focusApprovalKind:
                                         state.uri.queryParameters['kind'],
+                                    onOpenResponsibility: (id) =>
+                                        _openResponsibility(context, id),
                                   ),
                           ),
                         ]

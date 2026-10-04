@@ -12,6 +12,17 @@
   overflow-wrap: anywhere;
   --capture-focus-surface: var(--background);
 }
+.reindexReceipts { min-inline-size: 0; margin-block: 1.5rem; border-block: 1px solid var(--line); padding-block: 1rem; }
+.reindexReceipts > p { margin-block: .75rem; }
+.reindexReceipts ul { margin: 0; padding: 0; list-style: none; }
+.reindexReceipts li { min-inline-size: 0; padding-block: 1rem; border-block-start: 1px solid var(--line); }
+.reindexReceipts li > p { margin-block-start: .5rem; }
+.reindexReceipts summary { min-block-size: 2.75rem; padding-block: .75rem; cursor: pointer; }
+.reindexReceipts dl { display: grid; gap: .75rem; min-inline-size: 0; }
+.reindexReceipts dt { color: var(--muted); font-size: .8125rem; line-height: 1.5385; }
+.reindexReceipts dd { font-family: var(--font-mono); font-size: .8125rem; line-height: 1.5385; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.reindexReceipts summary:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+@media (pointer: coarse) { .reindexReceipts summary { min-block-size: 3rem; } }
 
 .header,
 .sectionHeader,

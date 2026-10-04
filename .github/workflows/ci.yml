@@ -80,7 +80,7 @@ jobs:
       matrix:
         include:
           - group: work
-            suites: app_builder content_search responsibilities missions
+            suites: app_builder content_search responsibilities missions capture_library
           - group: specialists
             suites: markets agents capabilities workflows
           - group: operations
