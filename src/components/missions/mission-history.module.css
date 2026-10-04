@@ -1,0 +1,81 @@
+.shell { container-type: inline-size; min-inline-size: 0; padding: 1rem; background: var(--background); color: var(--foreground); font-family: var(--font-sans), sans-serif; font-size: .875rem; line-height: 1.45; overflow-wrap: anywhere; }
+.shell *, .shell *::before, .shell *::after { box-sizing: border-box; min-inline-size: 0; }
+.shell :where(h1, h2, h3, h4, p, ul, ol, dl, dd) { margin: 0; }
+.shell :where(h1, h2, h3, h4, strong) { font-weight: 600; }
+.shell h1 { font-size: 1.75rem; line-height: 1.286; letter-spacing: -.02em; }
+.shell h2 { font-size: 1.25rem; line-height: 1.4; }
+.shell :where(h3, h4) { font-size: 1rem; line-height: 1.5; }
+.shell :where(p, span, strong, code, dd, a, small, time, pre) { overflow-wrap: anywhere; }
+.shell :where(button, input, select) { font: inherit; color: inherit; background: var(--surface); border: 1px solid var(--line-strong); border-radius: .5rem; min-block-size: 2.75rem; padding: .5rem .75rem; }
+.shell :where(input, select) { inline-size: 100%; }
+.shell :where(button, summary, a) { touch-action: manipulation; }
+.shell :where(button, summary) { cursor: pointer; }
+.shell :where(button:disabled) { cursor: not-allowed; opacity: 1; background: var(--surface-raised); color: var(--muted); }
+.shell :where(button:not(:disabled):hover) { background: var(--surface-raised); }
+.shell :where(a) { color: var(--accent); text-decoration: underline; text-underline-offset: .2em; }
+.shell :where(button, input, select, a, summary, [tabindex]):focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+.shell :where(code, pre) { font-family: var(--font-mono), monospace; user-select: text; }
+.shell :where(code, small, dt, time) { font-size: .8125rem; line-height: 1.54; }
+.header, .sectionHeader, .pagination { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: .75rem; }
+.header { border-block-end: 1px solid var(--line); padding-block-end: 1.25rem; }
+.header > div { flex: 1 1 20rem; }
+.header p { color: var(--muted); max-inline-size: 68ch; margin-block-start: .5rem; }
+.header .eyebrow { margin-block: 0 .375rem; font-size: .8125rem; }
+.button { display: inline-flex; align-items: center; justify-content: center; min-block-size: 2.75rem; padding: .5rem .75rem; border: 1px solid var(--line-strong); border-radius: .5rem; background: var(--surface); color: var(--foreground); font-weight: 500; text-decoration: none !important; }
+.boundary { margin-block: 1rem; padding-inline-start: .75rem; border-inline-start: 3px solid var(--line-strong); color: var(--muted); max-inline-size: 85ch; }
+.layout { display: grid; gap: 1.5rem; align-items: start; }
+.ledger, .record { min-inline-size: 0; }
+.record { border-block-start: 1px solid var(--line); padding-block-start: 1.25rem; }
+.sectionHeader { align-items: center; margin-block-end: .75rem; }
+.sectionHeader h2, .sectionHeader h3 { flex: 1 1 10rem; }
+.filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 13rem), 1fr)); gap: .75rem; margin-block: 1rem; }
+.filters label { display: grid; gap: .375rem; }
+.support { font-size: .8125rem; line-height: 1.54; color: var(--muted); }
+.live:empty { display: none; }
+.live { margin-block: .5rem; color: var(--muted); }
+.notice { margin-block: .75rem; padding: .875rem; background: var(--warning-surface); color: var(--foreground); border-inline-start: 3px solid var(--warning); }
+.notice button { margin-block-start: .75rem; }
+.empty { padding-block: 1.5rem; color: var(--muted); }
+.rows { list-style: none; padding: 0; margin-block-start: .75rem !important; }
+.rows > li { border-block-end: 1px solid var(--line); }
+.missionRow { display: grid; gap: .375rem; padding: 1rem .75rem; border-inline-start: 3px solid transparent; color: var(--foreground) !important; text-decoration: none !important; min-block-size: 3rem; }
+.missionRow:hover { background: var(--surface-raised); }
+.missionRow[aria-current] { border-inline-start-color: var(--accent); background: var(--accent-surface); }
+.missionRow span, .missionRow small { color: var(--muted); }
+.detail { display: grid; gap: .875rem; }
+.recordTitle { font-size: 1.5rem !important; line-height: 1.333 !important; }
+.reading { font-size: 1rem; line-height: 1.65; white-space: pre-wrap; max-inline-size: 72ch; }
+.state { font-weight: 600; }
+.fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 13rem), 1fr)); gap: .75rem 1rem; }
+.fields dt { color: var(--muted); margin-block-end: .125rem; }
+.fields dd { white-space: pre-wrap; user-select: text; }
+.subsection { padding-block: 1rem; border-block-start: 1px solid var(--line); }
+.subsection > h3 { margin-block-end: .5rem; }
+.task, .artifact, .attempt { border-block-end: 1px solid var(--line); padding-block: .875rem; }
+.task summary { min-block-size: 2.75rem; padding-block: .5rem; }
+.task summary strong { margin-inline-end: .75rem; }
+.task summary span { display: inline-block; color: var(--muted); }
+.taskBody { display: grid; gap: .75rem; padding-block: .75rem; }
+.evidence { margin-block-start: .5rem; }
+.evidence summary { min-block-size: 2.75rem; padding-block: .625rem; }
+.evidence pre { max-inline-size: 100%; white-space: pre-wrap; word-break: break-word; background: var(--surface-raised); padding: 1rem; font-size: .8125rem; line-height: 1.6; border: 1px solid var(--line); border-radius: .5rem; }
+.artifact, .attempt { display: grid; gap: .75rem; }
+.artifact .button, .attempt .button { justify-self: start; }
+.event { display: grid; gap: .375rem; padding-block: .875rem; }
+.event > span, .event time { color: var(--muted); }
+.pagination { align-items: center; margin-block-start: 1rem; }
+.pagination + p { margin-block-start: .75rem; }
+@container (min-width: 64rem) {
+  .layout { grid-template-columns: minmax(17rem, .72fr) minmax(0, 1.8fr); }
+  .record { border-block-start: 0; padding-block-start: 0; border-inline-start: 1px solid var(--line); padding-inline-start: 1.5rem; }
+}
+@media (pointer: coarse) {
+  .shell :is(button, input, select, summary), .shell .button { min-block-size: 3rem; }
+}
+@media (forced-colors: active) {
+  .shell :where(button, input, select), .button { border-color: ButtonText; }
+  .missionRow[aria-current] { border-inline-start-color: Highlight; outline: 1px solid Highlight; }
+  .notice { border-color: CanvasText; }
+  .shell :where(button, input, select, a, summary, [tabindex]):focus-visible { outline-color: Highlight; }
+}
+@media (prefers-reduced-motion: reduce) { .shell *, .shell *::before, .shell *::after { scroll-behavior: auto; animation: none; transition: none; } }

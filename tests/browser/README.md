@@ -131,3 +131,15 @@ These suites include theme, narrow-width, text scaling, keyboard and accessibili
 checks. WebAuthn, payment, provider, connector and browser downloads use synthetic
 fixtures; passing them does not establish a hardware signer, external effect or
 production deployment. Public legal meaning is preserved by source review.
+`missions.py` exercises the actual legacy history routes with GET-only synthetic
+Mission fixtures. It checks readable summaries, an exact bookmark outside the
+50-row list, independent task/evidence/event failures, summary-only access,
+canonical unverified status, bounded event cursors, URL filters and return links.
+Hidden views and replaced routes cancel pending reads; malformed reads remain
+retryable and only authoritative missing/denied bookmarks fall back to Work.
+The mounted account-refresh control reproves canonical owner and role changes;
+held responses from the previous scope cannot restore private evidence or
+start further reads, and exact bookmarks and URL filters remain intact.
+Desktop and phone checks cover themes, 320px reflow, 200% text, focus and axe.
+No legacy executor, review mutation, provider or evidence destination is invoked.
+This suite runs serially in the work-family job within its existing time limit.
