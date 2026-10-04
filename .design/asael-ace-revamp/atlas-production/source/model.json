@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "name": "ATLAS_ROUGH_01",
+  "status": "SCULPT_02_UNREVIEWED_SOURCE",
+  "creativeRevision": "sculpt-02-eyelids-layered-plumage-eight-states",
+  "exportEvidence": "Rough-01 exports and measurements are stale for this revision. Require a matching creativeRevision and source hashes in export-manifest.json before using new outputs. Source alone establishes no export, visual approval or measurement.",
+  "coordinates": "Arbitrary model units. Y up, Z forward, X character left. Overall height about 3 units; not a physical scale claim.",
+  "sourceExpectedSha256": "876591c5a2b739df99d6aab647554dc53bcab97d55bf0c3e0864e39e1c98c070",
+  "palette": {
+    "umber": "#513829", "feather": "#604331", "featherLight": "#73513c", "deep": "#38271f",
+    "throat": "#ded2ba", "throatLight": "#e8dcc6", "gold": "#c79735", "beakLight": "#d7ad53", "beakShadow": "#90651f",
+    "collar": "#292a2c", "collarEdge": "#42413e", "eyeWhite": "#e5dccb", "iris": "#c89129", "pupil": "#191715"
+  },
+  "radialSegments": 36,
+  "bodyProfile": [[0.38,0.11,0.14,-0.01],[0.54,0.23,0.22,-0.015],[0.77,0.32,0.29,-0.015],[1.03,0.40,0.33,-0.012],[1.30,0.425,0.34,-0.012],[1.51,0.39,0.31,-0.015],[1.70,0.325,0.265,-0.012],[1.89,0.247,0.215,-0.005],[2.07,0.214,0.202,0],[2.24,0.213,0.20,0],[2.43,0.237,0.221,0],[2.60,0.256,0.23,0]],
+  "headProfile": [[2.37,0.227,0.208,0],[2.47,0.268,0.226,0],[2.59,0.307,0.247,-0.004],[2.69,0.326,0.26,-0.012],[2.77,0.329,0.267,-0.017],[2.85,0.318,0.25,-0.02],[2.93,0.28,0.224,-0.025],[2.995,0.207,0.17,-0.028],[3.034,0.113,0.104,-0.028],[3.044,0.018,0.021,-0.028]],
+  "throatProfile": [[1.88,0.016,0.217],[1.98,0.078,0.223],[2.10,0.111,0.22],[2.25,0.148,0.227],[2.40,0.193,0.253],[2.53,0.226,0.276],[2.62,0.21,0.281],[2.68,0.129,0.277]],
+  "rig": [
+    {"name":"Root","parent":null,"position":[0,0,0]},
+    {"name":"Spine","parent":"Root","position":[0,1.25,0]},
+    {"name":"Neck","parent":"Spine","position":[0,1.92,0]},
+    {"name":"Head","parent":"Neck","position":[0,2.48,0]},
+    {"name":"Jaw","parent":"Head","position":[0,2.55,0.25]},
+    {"name":"BrowLeft","parent":"Head","position":[0.16,2.821,0.231]},
+    {"name":"BrowRight","parent":"Head","position":[-0.16,2.821,0.231]},
+    {"name":"UpperLidLeft","parent":"Head","position":[0.162,2.753,0.222]},
+    {"name":"UpperLidRight","parent":"Head","position":[-0.162,2.753,0.222]},
+    {"name":"WingLeft","parent":"Spine","position":[0.34,1.64,0]},
+    {"name":"WingTipLeft","parent":"WingLeft","position":[0.44,1.06,0.02]},
+    {"name":"WingRight","parent":"Spine","position":[-0.34,1.64,0]},
+    {"name":"WingTipRight","parent":"WingRight","position":[-0.44,1.06,0.02]},
+    {"name":"Tail","parent":"Root","position":[0,0.72,-0.21]}
+  ],
+  "poses": {
+    "available": {},
+    "listening": {"Head":[-2,4,-6],"BrowLeft":[-5,0,-4],"BrowRight":[-2,0,1],"UpperLidLeft":[-8,0,0],"UpperLidRight":[-8,0,0]},
+    "responding": {"Head":[-1,1,0],"Jaw":[4,0,0],"BrowLeft":[-2,0,-1],"BrowRight":[-2,0,1]},
+    "working": {"Head":[3,-6,0],"UpperLidLeft":[7,0,0],"UpperLidRight":[7,0,0]},
+    "needs_you": {"Head":[-1,3,2],"BrowLeft":[-9,0,-9],"BrowRight":[0,0,2],"UpperLidLeft":[-16,0,0],"UpperLidRight":[-3,0,0],"WingRight":[0,0,3]},
+    "blocked": {"Head":[3,0,-2],"BrowLeft":[-3,0,-3],"BrowRight":[-3,0,3],"UpperLidLeft":[8,0,0],"UpperLidRight":[8,0,0]},
+    "completed": {"Head":[-1,0,-2],"UpperLidLeft":[12,0,0],"UpperLidRight":[12,0,0],"WingLeft":[0,-9,-14],"WingTipLeft":[0,0,-7]},
+    "paused": {"Head":[4,0,0],"UpperLidLeft":[24,0,0],"UpperLidRight":[24,0,0],"WingLeft":[0,0,1],"WingRight":[0,0,-1]}
+  },
+  "statePerformances": {
+    "available": {"duration":0.6,"intent":"A single soft blink and settle; available idle itself is still.","keys":[{"time":0,"pose":{}},{"time":0.12,"pose":{"UpperLidLeft":[68,0,0],"UpperLidRight":[68,0,0]}},{"time":0.25,"pose":{"UpperLidLeft":[4,0,0],"UpperLidRight":[4,0,0]}},{"time":0.6,"state":"available"}]},
+    "listening": {"duration":0.64,"intent":"Small inquisitive tilt with more open lids, then a held attentive pose.","keys":[{"time":0,"pose":{}},{"time":0.16,"pose":{"Head":[-1,2,-3],"UpperLidLeft":[-5,0,0],"UpperLidRight":[-5,0,0]}},{"time":0.38,"pose":{"Head":[-2,5,-7],"BrowLeft":[-5,0,-4],"UpperLidLeft":[-8,0,0],"UpperLidRight":[-8,0,0]}},{"time":0.64,"state":"listening"}]},
+    "responding": {"duration":1.12,"intent":"One understated illustrative phrase gesture. No audio synchronization is claimed; playback state must remain authoritative.","keys":[{"time":0,"pose":{}},{"time":0.12,"pose":{"Head":[-1,0,0],"Jaw":[9,0,0]}},{"time":0.28,"pose":{"Head":[-1,1,0],"Jaw":[2,0,0]}},{"time":0.43,"pose":{"Head":[-2,1,-1],"Jaw":[12,0,0],"WingLeft":[0,0,-4]}},{"time":0.61,"pose":{"Head":[-1,1,0],"Jaw":[5,0,0]}},{"time":0.78,"pose":{"Head":[0,1,0],"Jaw":[0,0,0]}},{"time":1.12,"state":"responding"}]},
+    "working": {"duration":0.66,"intent":"Briefly orient toward the work, then hold; no thinking loop.","keys":[{"time":0,"pose":{}},{"time":0.18,"pose":{"Head":[1,-3,0]}},{"time":0.39,"pose":{"Head":[4,-7,0],"UpperLidLeft":[9,0,0],"UpperLidRight":[9,0,0]}},{"time":0.66,"state":"working"}]},
+    "needs_you": {"duration":0.9,"intent":"Dry, asymmetric eyebrow question; one small double-take, then wait.","keys":[{"time":0,"pose":{}},{"time":0.08,"pose":{"Head":[2,-2,0]}},{"time":0.34,"pose":{"Head":[-3,7,3],"BrowLeft":[-12,0,-12],"BrowRight":[0,0,3],"UpperLidLeft":[-20,0,0],"UpperLidRight":[-5,0,0]}},{"time":0.48,"pose":{"Head":[-2,5,2],"BrowLeft":[-10,0,-10],"UpperLidLeft":[-18,0,0]}},{"time":0.9,"state":"needs_you"}]},
+    "blocked": {"duration":0.72,"intent":"A calm small lower-and-settle; no alarm, shiver or blame expression.","keys":[{"time":0,"pose":{}},{"time":0.2,"pose":{"Head":[1,0,-1],"UpperLidLeft":[5,0,0],"UpperLidRight":[5,0,0]}},{"time":0.43,"pose":{"Head":[4,0,-2],"BrowLeft":[-3,0,-3],"BrowRight":[-3,0,3]}},{"time":0.72,"state":"blocked"}]},
+    "completed": {"duration":0.9,"intent":"One satisfied nod and compact wing-to-breast gesture, only for confirmed completion identity.","keys":[{"time":0,"pose":{}},{"time":0.08,"pose":{"Head":[-3,0,0],"UpperLidLeft":[6,0,0],"UpperLidRight":[6,0,0]}},{"time":0.34,"pose":{"Head":[7,0,1],"WingLeft":[0,-12,-27],"WingTipLeft":[0,0,-18],"UpperLidLeft":[18,0,0],"UpperLidRight":[18,0,0]}},{"time":0.48,"pose":{"Head":[3,0,-1],"WingLeft":[0,-11,-22],"WingTipLeft":[0,0,-12]}},{"time":0.9,"state":"completed"}]},
+    "paused": {"duration":0.66,"intent":"Quiet lids and folded wings settle into a static pause; no sleeping or breathing loop.","keys":[{"time":0,"pose":{}},{"time":0.22,"pose":{"Head":[2,0,0],"UpperLidLeft":[14,0,0],"UpperLidRight":[14,0,0]}},{"time":0.44,"pose":{"Head":[5,0,0],"UpperLidLeft":[27,0,0],"UpperLidRight":[27,0,0]}},{"time":0.66,"state":"paused"}]}
+  },
+  "cameras": {
+    "portrait": {"target":[0,2.42,0],"height":1.42},
+    "full": {"target":[0,1.53,0],"height":3.42},
+    "angles": {"front":0,"three_quarter":30,"profile":90}
+  }
+}

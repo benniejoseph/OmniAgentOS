@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" width="1600" height="1050" viewBox="0 0 1600 1050" role="img" aria-labelledby="title desc">
+<title id="title">ATLAS — sculpt 02 construction intent</title>
+<desc id="desc">Interpretive front, profile and three-quarter intent for recessed eyes, soft eyelids and brows, swept feather fans, layered tapered plumage and a continuous pale throat under one charcoal collar. These editable vectors are not model renders or production approval.</desc>
+<defs>
+  <g id="front-body" stroke-linejoin="round">
+    <g id="front-tail" fill="#38271f"><path d="M116 370 88 489 139 464 156 491 177 375Z"/></g>
+    <g id="front-feet" fill="#c79735" stroke="#806019" stroke-width="2"><path d="M112 451 110 484 83 493 88 500 118 494 135 502 140 495 125 482 126 452Z"/><path d="M168 451 170 484 148 497 155 502 178 493 209 500 215 493 184 482 181 452Z"/></g>
+    <path id="front-torso" fill="#513829" d="M121 142Q108 180 101 210C76 231 74 292 86 343L115 458Q149 481 182 458L214 333C226 280 219 231 197 213Q187 180 179 141Z"/>
+    <path id="front-throat" fill="#ded2ba" d="M119 137Q107 164 105 211L117 205 114 229 128 222 131 248 145 237 151 259 163 240 178 226 185 210 198 212Q192 171 178 137Z"/>
+    <g id="front-collar" fill="#292a2c"><path d="M105 203Q150 213 194 202L197 216Q150 227 102 217Z"/><path d="m118 218-12 28 18-6 4-23Z"/></g>
+    <g id="front-wing-left" fill="#513829" stroke="#38271f" stroke-width="1.2">
+      <path d="M100 230C73 231 64 255 67 291Q71 365 100 416Q109 423 116 405L115 327Z"/>
+      <path d="M73 276Q67 338 88 393Q95 392 96 378Q81 319 87 276Z" fill="#604331"/>
+      <path d="M83 275Q78 347 101 408Q107 412 108 396L99 276Z"/><path d="M96 285Q92 348 111 414Q118 415 118 400L113 282Z" fill="#604331"/>
+      <path d="M78 236Q69 247 73 274Q84 274 93 249Q99 239 96 232Z" fill="#73513c"/>
+      <path d="M85 251Q75 264 79 293Q91 293 101 266Q105 255 100 246Z"/>
+      <path d="M92 271Q83 290 90 316Q103 311 110 291Q112 278 105 263Z" fill="#604331"/>
+      <path d="M101 289Q94 311 101 331Q113 325 117 308L112 285Z"/>
+    </g>
+    <g id="front-wing-right"><use href="#front-wing-left" transform="translate(301 0) scale(-1 1)"/></g>
+    <g id="front-breast-feathers" fill="#604331" opacity="1">
+      <path d="M117 261Q129 253 139 266Q139 285 130 301Q117 291 117 261ZM146 265Q157 256 168 271Q167 291 158 307Q146 294 146 265ZM174 268Q186 262 193 277Q189 299 180 308Q171 293 174 268Z"/>
+      <path d="M126 307Q138 298 149 313Q149 333 139 349Q125 334 126 307ZM156 313Q168 304 179 319Q175 342 166 354Q154 337 156 313Z"/>
+      <path d="M132 357Q143 347 155 363Q155 386 145 397Q133 383 132 357ZM159 361Q170 356 177 373Q173 390 163 403Q155 383 159 361ZM145 406Q158 398 167 415Q164 435 154 446Q144 430 145 406Z"/>
+    </g>
+  </g>
+  <g id="front-head-base">
+    <path fill="#513829" d="M110 79C124 58 163 53 182 68Q195 81 196 100L193 129Q187 152 178 160Q150 175 118 158C105 147 100 127 101 109Q99 89 110 79Z"/>
+    <g fill="#604331"><path d="M164 64Q188 76 205 67Q201 83 185 87Q174 82 164 64Z"/><path d="M176 80Q191 89 206 82Q201 98 187 99Q179 93 176 80Z"/><path d="M108 119Q105 139 119 158Q130 162 127 150Q115 139 116 120Z"/></g>
+    <path fill="#ded2ba" d="M110 124Q149 109 187 125L181 159 167 171 151 188 139 171 119 162Z"/>
+  </g>
+  <g id="front-eyes">
+    <path d="M105 99Q124 86 147 100L144 117Q124 129 108 115Z M152 100Q173 85 195 99L191 116Q173 128 155 117Z" fill="#38271f"/>
+    <path d="M111 103Q126 96 142 103Q144 117 128 119Q111 119 111 103Z M158 103Q173 96 188 103Q189 119 173 119Q156 118 158 103Z" fill="#e5dccb"/>
+    <circle cx="132" cy="107" r="7" fill="#c89129"/><circle cx="168" cy="107" r="7" fill="#c89129"/>
+    <ellipse cx="132" cy="107" rx="3.5" ry="5" fill="#191715"/><ellipse cx="168" cy="107" rx="3.5" ry="5" fill="#191715"/>
+    <circle cx="130" cy="104" r="2" fill="#e5dccb"/><circle cx="166" cy="104" r="2" fill="#e5dccb"/>
+  </g>
+  <g id="front-brows"><path fill="#513829" d="M106 97Q125 91 145 99L143 105Q125 101 110 107ZM155 99Q173 91 193 96L189 106Q173 101 157 105Z"/><path fill="#38271f" d="M106 91Q124 84 145 94L144 99Q124 93 108 99ZM155 94Q177 84 194 91L192 98Q173 93 156 100Z"/><path fill="#73513c" d="M111 90Q122 82 130 86Q140 85 145 94Q127 88 111 94ZM157 93Q168 83 178 86Q189 85 196 90Q180 88 157 98Z"/></g>
+  <g id="front-beak"><path fill="#d7ad53" stroke="#b17c22" stroke-width="1.5" d="M149 110Q134 119 133 141L144 139 150 155 158 139 169 140Q167 121 149 110Z"/><path fill="#c79735" d="m138 143 12 16 13-16-13 7Z"/><path d="m136 142 12-5 16 5" fill="none" stroke="#806019" stroke-width="2"/></g>
+  <g id="front-head"><use href="#front-head-base"/><use href="#front-eyes"/><use href="#front-brows"/><use href="#front-beak"/></g>
+  <g id="front-atlas"><use href="#front-body"/><use href="#front-head"/></g>
+  <g id="profile-atlas">
+    <path fill="#38271f" d="m110 363-49 129 91-42 23 12 50-95Z"/>
+    <path fill="#c79735" d="m144 441 0 44 51 10-3 8-58-7-16 8-5-7 17-14-3-43Z"/>
+    <path fill="#513829" d="M135 140Q139 176 122 211C77 251 84 337 109 394L130 463 159 458Q187 398 201 331Q207 271 178 220L164 145Z"/>
+    <path fill="#ded2ba" d="M164 141Q178 180 178 220L174 231 167 247 157 236 152 220 149 215 154 159Z"/>
+    <path fill="#292a2c" d="m133 204 45 1 3 14-48 0Z"/><path fill="#292a2c" d="m165 218-6 21 12-5 2-17Z"/>
+    <path fill="#38271f" stroke="#694733" stroke-width="2" d="M125 228Q74 245 99 350L122 402 125 378 138 410 137 382 153 410 165 335Q165 281 125 228Z"/>
+    <path d="m119 271 16 89m-30-75 18 82m12-105 12 85" fill="none" stroke="#694733" stroke-width="2"/>
+    <path fill="#513829" d="M123 81Q146 55 174 69Q192 84 192 106L181 158 147 170Q121 152 118 128L115 109Q112 91 123 81Z"/>
+    <path fill="#604331" d="M142 68Q126 85 110 81Q111 92 125 96Q114 101 104 97Q107 112 122 112L134 104Z"/>
+    <path fill="#ded2ba" d="m167 118 22 4-10 40-24 29-9-39Z"/>
+    <path fill="#38271f" d="M158 98Q176 88 192 99L190 116Q172 123 159 113Z"/>
+    <path fill="#e5dccb" d="M164 103Q177 97 188 103Q188 116 177 117Q165 115 164 103Z"/><ellipse cx="179" cy="109" rx="5" ry="7" fill="#c89129"/><ellipse cx="181" cy="110" rx="2.5" ry="5" fill="#191715"/>
+    <path fill="#513829" d="M159 99Q176 93 191 99L190 104Q176 100 163 105Z"/><path fill="#38271f" d="M159 94Q177 88 193 95L191 100Q174 95 162 101Z"/>
+    <path fill="#d7ad53" stroke="#806019" stroke-width="1.5" d="M191 112Q217 115 227 136L226 151 215 143 191 136 182 130Z"/>
+    <path fill="#c79735" d="m191 137 22 7-17 8-11-13Z"/>
+  </g>
+  <g id="three-quarter-atlas">
+    <use href="#front-body" transform="translate(10 0) scale(.92 1)"/>
+    <path fill="#513829" d="M112 77Q133 58 160 59Q186 62 193 82Q201 102 194 127L187 156Q159 174 121 157L105 122Q99 95 112 77Z"/>
+    <path fill="#604331" d="M172 66Q192 79 207 73Q205 88 190 91Q199 96 209 91Q207 105 193 110L181 92Z"/>
+    <path fill="#ded2ba" d="M122 129Q153 115 189 128L181 159 163 183 150 171 128 165Z"/>
+    <ellipse cx="130" cy="108" rx="12" ry="12" fill="#e5dccb"/><ellipse cx="173" cy="107" rx="17" ry="12" fill="#e5dccb"/>
+    <ellipse cx="135" cy="109" rx="5" ry="7" fill="#c89129"/><circle cx="177" cy="109" r="7" fill="#c89129"/>
+    <ellipse cx="136" cy="109" rx="2.5" ry="5" fill="#191715"/><ellipse cx="178" cy="109" rx="3.5" ry="5" fill="#191715"/>
+    <path fill="#513829" d="M116 98Q130 92 143 100L141 105Q128 100 117 106ZM155 98Q174 91 192 98L190 106Q174 100 157 106Z"/><path fill="#38271f" d="M116 92Q130 87 142 95L141 100Q128 95 117 101ZM155 93Q176 86 194 94L192 100Q174 95 156 101Z"/>
+    <path fill="#d7ad53" stroke="#806019" stroke-width="1.5" d="M151 116Q171 118 188 138L186 154 176 146 148 144 140 137Z"/><path fill="#c79735" d="m149 145 28 2-17 11Z"/>
+  </g>
+</defs>
+<rect width="1600" height="1050" fill="#faf9f6"/>
+<g font-family="Arial,sans-serif" fill="#242321">
+  <text x="64" y="65" font-size="36" font-weight="700">ATLAS / SCULPT 02 CONSTRUCTION INTENT</text>
+  <text x="64" y="102" font-size="20">Editable vectors · Interpretive turnarounds · Not production geometry or rendered proof</text>
+  <g stroke="#ddd8d0" stroke-width="1"><path d="M64 220H1536M64 370H1536M64 540H1536M64 690H1536M64 815H1536"/></g>
+  <g font-size="16" fill="#69645e"><text x="64" y="205">Crown</text><text x="64" y="356">Collar</text><text x="64" y="526">Wing fold</text><text x="64" y="800">Ground</text></g>
+  <g id="view-front" transform="translate(130 110) scale(1.4)"><use href="#front-atlas"/></g>
+  <g id="view-profile" transform="translate(660 110) scale(1.4)"><use href="#profile-atlas"/></g>
+  <g id="view-three-quarter" transform="translate(1120 110) scale(1.4)"><use href="#three-quarter-atlas"/></g>
+  <g font-size="23" font-weight="700"><text x="255" y="865">Front</text><text x="805" y="865">Profile</text><text x="1235" y="865">Three-quarter</text></g>
+  <g font-size="18"><text x="64" y="925">Keep: tapered umber silhouette · pale throat · hooked gold beak · recessed amber eyes · one charcoal collar.</text><text x="64" y="958">Revision: soft eyelids and neutral brows · swept crown fans · overlapping rounded coverts and tapering primaries.</text><text x="64" y="991">Source-only intent. Existing rough-01 exports are stale. Compare actual new front/profile and 36/72/108px renders before approval.</text></g>
+</g>
+</svg>

@@ -1624,3 +1624,48 @@ Memory serving-role rerun passed 11 cases including concurrent replay and forget
 cleanup. That fixture now explicitly enrolls lifecycle maintenance, while the
 read adapter withholds lifecycle review for records without that existing
 purpose. No record-purpose list or RLS policy was widened.
+
+## ATLAS bounded adapters and neutral delivery — 4 October 2026
+
+Web/native bounded poster-and-sprite adapters are implemented with exact state
+admission, completion deduplication, interruption and static fallback. Production
+still uses the approved neutral portrait. The public manifest returns only
+`{"schemaVersion":1,"status":"awaiting-art-review"}`; web reads revalidate with
+`no-cache`. No sculpt-02 artwork has been published or accepted.
+
+Root passed 26 web adapter unit cases, full Flutter analysis with no issues, and
+all 37 companion cases in `atlas-companion-final-regression.log` (the prior
+15-case result was a subset). The full adapter web build passed in
+`atlas-adapter-final-web-build.log` before the later manifest/cache adjustment;
+the subsequent package remains pending. Nine Node geometry/lifecycle checks
+and three Python tool tests also passed for the sculpt-02 source workbench.
+
+The actual sculpt export has 104 artifacts, 14 bones and 12 clips: eight states
+and four inspection aliases. Visual review found insufficient likeness in the
+neck/throat, eyes, feather volumes, crown and feet. Source/export tooling and
+an explicit hash-verifying publisher exist; final art acceptance does not.
+The archived rough-01 performance comparison does not measure this revision.
+Details and exact evidence boundaries are in `atlas-production/README.md`,
+`ART_REVIEW.md`, `MEASUREMENTS.md` and `PERFORMANCE_PLAN.md`. A functional release
+with approved static ATLAS is permitted; full-plan completion, physical-device
+performance and final animated delivery remain open.
+
+## Native Meeting relationship selection — 4 October 2026
+
+The native Meeting editor can add Library sources and Entity Registry links
+through the existing v34 read contracts and protected Meeting draft. The source
+picker excludes project and Mission artifacts, re-reads the exact current item,
+and rejects a changed version before returning. The editor rechecks the current
+workspace identity, controller generation and Meeting version after navigation.
+Connected sources retain their exact revision ID; Capture sources retain their
+source ID for the existing server snapshot resolution. Duplicates and collection
+limits are checked before journalling. No consent, invitation or server mutation
+is inferred from picking a reference. Command attachment semantics are preserved.
+
+Full Flutter analysis passed with no issues. All 30 focused Meeting form/editor,
+relationship-selection and Library cases passed in
+`atlas-meeting-selection-regression.log`. This slice needs no contract bump or
+new migration. Calendar synchronization and media processing remain outside
+native mutation enrollment. Local Webpack does not emit the Turbopack route
+budget report, so that check remains with the hosted production build; no budget
+was changed. The local server-trace check passed.

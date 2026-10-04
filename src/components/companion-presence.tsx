@@ -2,14 +2,20 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useState, useSyncExternalStore } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useWorkspaceSession } from "@/components/app-shell/session-context";
 import { useCompanionPreferences } from "@/components/use-companion-preferences";
 import { effectiveCompanionMotion } from "@/lib/companion/model";
 import { companionPresentation, type CompanionWork } from "@/lib/companion/presentation";
+import {
+  ATLAS_ASSET_ROOT, ATLAS_NEUTRAL_POSTER, atlasFrameAt, createAtlasPlaybackGate, fetchAtlasManifest,
+  type AtlasManifest, type AtlasTheme,
+} from "@/lib/companion/atlas-assets";
 import styles from "./companion-presence.module.css";
 
 type PresenceProps = {
+  /** Exact selected conversation; this is a presentation boundary, not authority. */
+  conversationId?: string;
   work?: CompanionWork;
   microphoneActive?: boolean;
   playbackActive?: boolean;
@@ -21,30 +27,122 @@ type PresenceProps = {
 
 export function CompanionPresence(props: PresenceProps) {
   const { session, status } = useWorkspaceSession();
+  const manifest = useAtlasManifest();
   const tenantId = session?.context?.tenantId;
   const actorId = session?.context?.actorId;
-  const scope = status === "ready" && tenantId && actorId ? JSON.stringify([tenantId, actorId]) : undefined;
-  return <ScopedPresence key={scope ?? "unavailable"} {...props} scope={scope} />;
+  const scope = status === "ready" && tenantId && actorId
+    ? JSON.stringify([tenantId, actorId, session?.user?.id, session?.context?.role, session?.membership?.role]) : undefined;
+  const conversationId = props.conversationId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(props.conversationId)
+    ? props.conversationId : undefined;
+  return <ScopedPresence key={JSON.stringify([scope, conversationId])} {...props} conversationId={conversationId} scope={scope} manifest={manifest} />;
 }
 
-function ScopedPresence({ scope, showHome = true, onOpenHome, homeDisabledReason, ...input }: PresenceProps & { scope?: string }) {
+function ScopedPresence({ scope, conversationId, manifest, showHome = true, onOpenHome, homeDisabledReason, ...input }: PresenceProps & { scope?: string; manifest?: AtlasManifest }) {
   const read = useCompanionPreferences(scope);
   const [assetFailed, setAssetFailed] = useState(false);
+  const [failedPosters, setFailedPosters] = useState<ReadonlySet<string>>(() => new Set());
+  const playback = useRef(() => {});
+  const [gate] = useState(createAtlasPlaybackGate);
+  const sectionRef = useRef<HTMLElement>(null);
+  const posterRef = useRef<HTMLSpanElement>(null);
+  const spriteRef = useRef<HTMLSpanElement>(null);
+  const [onScreen, setOnScreen] = useState(false);
   const pageVisible = useSyncExternalStore(subscribeVisibility, visibleSnapshot, () => false);
   const reduced = useSyncExternalStore(subscribeMotion, motionSnapshot, () => true);
+  const theme = useSyncExternalStore(subscribeTheme, themeSnapshot, () => "light" as const);
   const presentation = companionPresentation(input);
   const preferences = read.response?.snapshot.preferences;
   const motion = effectiveCompanionMotion(preferences?.motion ?? "off", reduced);
   const intensity = preferences?.intensity ?? "quiet";
   const showPortrait = Boolean(read.state === "ready" && preferences?.visible && pageVisible && !assetFailed);
+  const clip = manifest?.states[presentation.state];
+  const assets = clip?.[theme];
+  const selectedPoster = assets ? `${ATLAS_ASSET_ROOT}${assets.poster}?v=${assets.posterSha256}` : ATLAS_NEUTRAL_POSTER;
+  const poster = failedPosters.has(selectedPoster) ? ATLAS_NEUTRAL_POSTER : selectedPoster;
+  const eligible = Boolean(scope && showPortrait && onScreen && motion === "full" && intensity !== "quiet" && clip && assets && !failedPosters.has(selectedPoster));
+  const preferenceIdentity = JSON.stringify([read.state, read.response?.snapshot.revision, preferences]);
+  const { state, work: { state: workState, runId, completionIdentity } } = presentation;
+
+  useEffect(() => {
+    const section = sectionRef.current;
+    if (!section || typeof IntersectionObserver === "undefined") return;
+    const observer = new IntersectionObserver(([entry]) => {
+      const visible = Boolean(entry?.isIntersecting);
+      if (!visible) playback.current();
+      setOnScreen(visible);
+    });
+    observer.observe(section);
+    return () => { observer.disconnect(); playback.current(); };
+  }, [playback]);
+
+  useLayoutEffect(() => {
+    const admitted = gate.observe({ state, work: { state: workState, runId, completionIdentity, label: "", detail: "" }, eligible, hasConversation: Boolean(conversationId) });
+    const sprite = spriteRef.current;
+    const portrait = posterRef.current;
+    if (!admitted || !clip || !assets || !sprite || !portrait) return;
+    let current = true;
+    let timer: number | undefined;
+    const image = new window.Image();
+    const url = `${ATLAS_ASSET_ROOT}${assets.sprite}?v=${assets.spriteSha256}`;
+    const rows = Math.ceil(clip.frameCount / 4);
+    const stop = () => {
+      current = false;
+      if (timer !== undefined) window.clearTimeout(timer);
+      image.onload = null;
+      image.onerror = null;
+      image.removeAttribute("src");
+      sprite.style.display = "none";
+      sprite.style.backgroundImage = "none";
+      portrait.style.display = "block";
+    };
+    playback.current = stop;
+    const interrupt = () => { if (!visibleSnapshot() || motionSnapshot() || themeSnapshot() !== theme) stop(); };
+    document.addEventListener("visibilitychange", interrupt);
+    const media = window.matchMedia("(prefers-reduced-motion: reduce)");
+    media.addEventListener("change", interrupt);
+    const themeObserver = new MutationObserver(interrupt);
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    image.onerror = stop;
+    image.onload = () => {
+      if (!current || !sprite.isConnected || !visibleSnapshot() || motionSnapshot() || themeSnapshot() !== theme
+        || image.naturalWidth !== 1024 || image.naturalHeight !== rows * 256) { stop(); return; }
+      const started = performance.now();
+      sprite.style.backgroundImage = `url("${url}")`;
+      sprite.style.backgroundSize = `144px ${rows * 36}px`;
+      portrait.style.display = "none";
+      sprite.style.display = "block";
+      const tick = () => {
+        if (!current) return;
+        const elapsed = performance.now() - started;
+        const frame = atlasFrameAt(clip, elapsed);
+        if (frame.done) { stop(); return; }
+        sprite.style.backgroundPosition = `${-(frame.index % 4) * 36}px ${-Math.floor(frame.index / 4) * 36}px`;
+        timer = window.setTimeout(tick, Math.min(50 - elapsed % 50, clip.durationMs - elapsed));
+      };
+      tick();
+    };
+    image.src = url;
+    return () => {
+      stop();
+      document.removeEventListener("visibilitychange", interrupt);
+      media.removeEventListener("change", interrupt);
+      themeObserver.disconnect();
+    };
+  }, [assets, clip, completionIdentity, conversationId, eligible, gate, playback, preferenceIdentity, runId, state, theme, workState]);
+
   const home = read.response?.home;
   return (
-    <section className={styles.presence} aria-label="ATLAS companion status" data-testid="companion-presence"
+    <section ref={sectionRef} className={styles.presence} aria-label="ATLAS companion status" data-testid="companion-presence"
       data-companion-state={presentation.state} data-companion-motion={motion} data-companion-intensity={intensity}
       data-companion-preferences={read.state} data-companion-portrait={showPortrait ? "visible" : assetFailed ? "unavailable" : "hidden"}>
       <span className={styles.portrait} aria-hidden="true">
-        {showPortrait ? <Image src="/companion/atlas-neutral.png" alt="" width={108} height={108} unoptimized loading="lazy"
-          className={styles.image} onError={() => setAssetFailed(true)} /> : null}
+        <span ref={posterRef}>{showPortrait ? <Image key={poster} src={poster} alt="" width={108} height={108} unoptimized loading="lazy"
+          className={styles.image} onError={() => {
+            playback.current();
+            if (poster === ATLAS_NEUTRAL_POSTER) setAssetFailed(true);
+            else setFailedPosters((current) => new Set([...current, poster]));
+          }} /> : null}</span>
+        <span ref={spriteRef} style={{ display: "none", width: 36, height: 36, backgroundRepeat: "no-repeat" }} />
       </span>
       <div className={styles.copy}>
         <p className={styles.status}><span className={styles.name}>ATLAS</span><span>{presentation.label}</span></p>
@@ -52,7 +150,7 @@ function ScopedPresence({ scope, showHome = true, onOpenHome, homeDisabledReason
         {(input.microphoneActive || input.playbackActive || input.speechPreparing) && input.work && input.work.state !== "available" ? <p className={styles.detail}>Work: {input.work.label}. {input.work.detail}</p> : null}
         {!input.microphoneActive && !input.playbackActive && !input.speechPreparing && presentation.work.label !== presentation.label ? <p className={styles.detail}>{presentation.work.label}</p> : null}
         {presentation.work.runId ? <p className={styles.identity}>Run <code>{presentation.work.runId}</code></p> : null}
-        {intensity !== "quiet" ? <p className={styles.caption}>Presentation companion{intensity === "expressive" ? " · Static portrait" : ""}</p> : null}
+        {intensity !== "quiet" ? <p className={styles.caption}>Presentation companion</p> : null}
         {read.state === "unavailable" ? <p className={styles.detail}>Companion preferences unavailable. Status and controls remain available.</p> : null}
         {assetFailed && preferences?.visible ? <p className={styles.detail}>Portrait unavailable.</p> : null}
       </div>
@@ -74,3 +172,19 @@ function subscribeVisibility(notify: () => void) { document.addEventListener("vi
 function visibleSnapshot() { return document.visibilityState === "visible"; }
 function subscribeMotion(notify: () => void) { const query = window.matchMedia("(prefers-reduced-motion: reduce)"); query.addEventListener("change", notify); return () => query.removeEventListener("change", notify); }
 function motionSnapshot() { return window.matchMedia("(prefers-reduced-motion: reduce)").matches; }
+function subscribeTheme(notify: () => void) { const observer = new MutationObserver(notify); observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] }); return () => observer.disconnect(); }
+function themeSnapshot(): AtlasTheme { return document.documentElement.dataset.theme === "dark" ? "dark" : "light"; }
+
+function useAtlasManifest() {
+  const [manifest, setManifest] = useState<AtlasManifest>();
+  useEffect(() => {
+    const controller = new AbortController();
+    let current = true;
+    const timeout = window.setTimeout(() => controller.abort(), 10_000);
+    void fetchAtlasManifest(controller.signal).then((result) => {
+      if (current && !controller.signal.aborted) setManifest(result);
+    }).catch(() => undefined).finally(() => window.clearTimeout(timeout));
+    return () => { current = false; controller.abort(); window.clearTimeout(timeout); };
+  }, []);
+  return manifest;
+}

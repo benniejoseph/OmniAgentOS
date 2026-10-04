@@ -416,7 +416,7 @@ class _AccountsWorkspaceState extends State<AccountsWorkspace> {
                   ],
                   const SizedBox(height: 20),
                   const Text(
-                    'Available here: account identity, current facts, provenance, conflicts and bounded portfolio intelligence. Creation, editing, CRM sync, health evaluation and workflows require separately published native contracts.',
+                    'Review account identity, current facts, provenance, conflicts, health, intelligence, workflows and Salesforce status. Authorized operators can create and revise accounts here; these actions do not start CRM sync or evaluate health.',
                   ),
                 ],
               ),

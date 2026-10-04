@@ -982,7 +982,7 @@ export function VoiceMode({
               </button>
             </header>
 
-            <CompanionPresence showHome={false} microphoneActive={microphoneOpen} playbackActive={replyAudioPlaying}
+            <CompanionPresence conversationId={conversationId} showHome={false} microphoneActive={microphoneOpen} playbackActive={replyAudioPlaying}
               speechPreparing={phase === "replying" && !replyAudioPlaying}
               work={companionWork({ status: phase === "approval" ? "waiting_approval"
                 : phase === "review" ? "review" : phase === "reconnecting" ? "reconnecting"

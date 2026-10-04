@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1130" viewBox="0 0 1600 1130" role="img" aria-labelledby="title desc">
+<title id="title">ATLAS — eight state performance construction sheet</title>
+<desc id="desc">Editable expression intent for available, listening, responding, working, needs you, blocked, completed and paused. These vector portraits describe source acting choices, not rendered model evidence or runtime state.</desc>
+<defs>
+  <clipPath id="portrait"><rect width="332" height="310" rx="2"/></clipPath>
+  <clipPath id="left-brow"><rect x="100" y="70" width="49" height="45"/></clipPath>
+  <clipPath id="right-brow"><rect x="151" y="70" width="49" height="45"/></clipPath>
+  <g id="portrait-available"><use href="model-sheet.svg#front-atlas"/></g>
+  <g id="portrait-listening">
+    <use href="model-sheet.svg#front-body"/>
+    <g transform="rotate(-6 150 165)"><use href="model-sheet.svg#front-head-base"/><use href="model-sheet.svg#front-eyes"/><use href="model-sheet.svg#front-brows" transform="translate(0 -2)"/><use href="model-sheet.svg#front-beak"/></g>
+  </g>
+  <g id="portrait-responding">
+    <use href="model-sheet.svg#front-body"/><use href="model-sheet.svg#front-head-base"/><use href="model-sheet.svg#front-eyes"/><use href="model-sheet.svg#front-brows"/>
+    <path fill="#38271f" d="m138 135 27 0-14 31Z"/><use href="model-sheet.svg#front-beak" transform="translate(0 -3)"/><path fill="#c79735" d="m140 151 11 16 12-16-12 6Z"/>
+  </g>
+  <g id="portrait-working"><use href="model-sheet.svg#front-body"/><g transform="translate(-3 2) rotate(2 150 165)"><use href="model-sheet.svg#front-head"/></g></g>
+  <g id="portrait-needs-you">
+    <use href="model-sheet.svg#front-body"/>
+    <g transform="rotate(2 150 165)"><use href="model-sheet.svg#front-head-base"/><use href="model-sheet.svg#front-eyes"/><g transform="translate(0 -5)"><use href="model-sheet.svg#front-brows" clip-path="url(#left-brow)"/></g><use href="model-sheet.svg#front-brows" clip-path="url(#right-brow)"/><use href="model-sheet.svg#front-beak"/></g>
+  </g>
+  <g id="portrait-blocked"><use href="model-sheet.svg#front-body"/><g transform="translate(0 3) rotate(-2 150 165)"><use href="model-sheet.svg#front-head"/></g></g>
+  <g id="portrait-completed">
+    <use href="model-sheet.svg#front-body"/>
+    <g fill="#604331" stroke="#38271f" stroke-width="1.2"><path d="M80 248Q87 220 108 220Q131 225 152 245Q162 256 153 263Q124 262 105 249Q91 253 80 248Z"/><path d="M102 228Q123 231 143 249Q153 258 151 264Q126 252 102 243Z" fill="#73513c"/></g>
+    <g transform="rotate(-2 150 165)"><use href="model-sheet.svg#front-head"/><path fill="#513829" d="M110 103Q127 101 143 105L142 110Q126 106 112 111ZM158 105Q175 101 188 103L187 111Q174 107 159 111Z"/></g>
+  </g>
+  <g id="portrait-paused">
+    <use href="model-sheet.svg#front-body"/><g transform="translate(0 4)"><use href="model-sheet.svg#front-head"/><path fill="#513829" d="M109 103Q126 100 144 105L141 114Q126 108 113 114ZM157 105Q174 100 189 103L186 114Q173 109 160 114Z"/></g>
+  </g>
+</defs>
+<rect width="1600" height="1130" fill="#faf9f6"/>
+<g font-family="Arial,sans-serif" fill="#242321">
+  <text x="64" y="60" font-size="34" font-weight="700">ATLAS / EIGHT STATE PERFORMANCE INTENTS</text>
+  <text x="64" y="96" font-size="20">Sculpt 02 source · Recessed eyes, soft lids and brows · One eagle, one collar · Not model renders</text>
+  <g transform="translate(64 130)"><g clip-path="url(#portrait)"><rect width="332" height="310" fill="#f0ede6"/><use href="#portrait-available" transform="translate(-59 -66) scale(1.5)"/></g><text y="346" font-size="23" font-weight="700">available · 600ms</text><text y="379" font-size="18">One soft blink, then still.</text></g>
+  <g transform="translate(444 130)"><g clip-path="url(#portrait)"><rect width="332" height="310" fill="#f0ede6"/><use href="#portrait-listening" transform="translate(-59 -66) scale(1.5)"/></g><text y="346" font-size="23" font-weight="700">listening · 640ms</text><text y="379" font-size="18">Inquisitive tilt; hold attention.</text></g>
+  <g transform="translate(824 130)"><g clip-path="url(#portrait)"><rect width="332" height="310" fill="#f0ede6"/><use href="#portrait-responding" transform="translate(-59 -66) scale(1.5)"/></g><text y="346" font-size="23" font-weight="700">responding · 1120ms</text><text y="379" font-size="18">Small illustrative phrase gesture.</text></g>
+  <g transform="translate(1204 130)"><g clip-path="url(#portrait)"><rect width="332" height="310" fill="#f0ede6"/><use href="#portrait-working" transform="translate(-59 -66) scale(1.5)"/></g><text y="346" font-size="23" font-weight="700">working · 660ms</text><text y="379" font-size="18">Orient once, then focus.</text></g>
+  <g transform="translate(64 558)"><g clip-path="url(#portrait)"><rect width="332" height="310" fill="#f0ede6"/><use href="#portrait-needs-you" transform="translate(-59 -66) scale(1.5)"/></g><text y="346" font-size="23" font-weight="700">needs_you · 900ms</text><text y="379" font-size="18">One dry eyebrow question.</text></g>
+  <g transform="translate(444 558)"><g clip-path="url(#portrait)"><rect width="332" height="310" fill="#f0ede6"/><use href="#portrait-blocked" transform="translate(-59 -66) scale(1.5)"/></g><text y="346" font-size="23" font-weight="700">blocked · 720ms</text><text y="379" font-size="18">Calm pause; no alarm or blame.</text></g>
+  <g transform="translate(824 558)"><g clip-path="url(#portrait)"><rect width="332" height="310" fill="#f0ede6"/><use href="#portrait-completed" transform="translate(-59 -66) scale(1.5)"/></g><text y="346" font-size="23" font-weight="700">completed · 900ms</text><text y="379" font-size="18">Nod and compact wing gesture.</text></g>
+  <g transform="translate(1204 558)"><g clip-path="url(#portrait)"><rect width="332" height="310" fill="#f0ede6"/><use href="#portrait-paused" transform="translate(-59 -66) scale(1.5)"/></g><text y="346" font-size="23" font-weight="700">paused · 660ms</text><text y="379" font-size="18">Relaxed lids and folded wings.</text></g>
+  <path d="M64 974H1536" stroke="#ddd8d0"/>
+  <text x="64" y="1010" font-size="19">Interruptions replace the gesture. Quiet / reduced motion use the held static pose; hidden or offscreen cancels frame work.</text>
+  <text x="64" y="1043" font-size="19">No idle loops. Responding is not lip sync. Completion acting requires a confirmed runtime completion identity.</text>
+  <text x="64" y="1076" font-size="18" fill="#69645e">Eight timelines are authored in source. Existing rough-01 exports are stale; export, visual review and device measurements remain pending.</text>
+</g>
+</svg>

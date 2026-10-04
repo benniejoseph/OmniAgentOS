@@ -287,6 +287,21 @@ String? verifiedCompanionCompletion(Object? value, String? runId) {
 
 class CompanionReactionLedger {
   final _seen = <String>{};
+  final _observedRuns = <String>{};
+
+  /// A historical terminal read cannot introduce a celebration. Completion is
+  /// consumed even while hidden, quiet, unavailable, or overridden by audio.
+  bool observe(CompanionWork work, {required bool allowReaction}) {
+    final run = work.runId;
+    if (run != null &&
+        const {'working', 'needs_you', 'paused'}.contains(work.state) &&
+        _observedRuns.length < 128) {
+      _observedRuns.add(run);
+    }
+    final fresh = accept(work);
+    return fresh && allowReaction && _observedRuns.contains(run);
+  }
+
   bool accept(CompanionWork work) =>
       work.state == 'completed' &&
       work.completionIdentity != null &&
