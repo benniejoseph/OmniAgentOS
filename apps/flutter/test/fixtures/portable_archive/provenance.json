@@ -9,7 +9,7 @@
   "sourceSha256": {
     "src/lib/data/portable-contract.ts": "78d4c7c9cf1e154f161d4a8bf59f13c7e3f0b72c237c2f6e5389aaba686330b4",
     "src/lib/sources/contracts.ts": "7e688cef1d66a8b9c19ff139086ac5b87467ee707e829aa10bc4df9502bcc6bb",
-    "scripts/generate-portable-archive-native-fixtures.ts": "5d7dd1d9fe17fee047dadea9f8c9618b34fc351fc7867b23a2bbd37b39cb5638"
+    "scripts/generate-portable-archive-native-fixtures.ts": "9c4ebc7c42172b1d9e68334186490ed8f8535d1f0cc8f68a6b3158b49ce32f00"
   },
   "fileSha256": {
     "minimal.json": "a5f3bdb254d7a1a299de7c890a1790b0b38ebc317fe62853b0e40384fe4a6a6a",

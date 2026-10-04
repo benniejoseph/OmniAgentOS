@@ -109,11 +109,11 @@ add("escaping", JSON.stringify('"\\/\b\f\n\r\t\u0000\u001f\u2028\u2029🦉\ud800
 add("unicode-not-normalized", JSON.stringify(["é", "e\u0301", "Å", "A\u030a"]));
 // Cover deterministic binary64 neighborhoods without relying on Dart's number
 // printer to create the expected result. No random/account material is used.
-let bits = 0x6a09e667f3bcc909n;
+let bits = BigInt("0x6a09e667f3bcc909");
 for (let index = 0; index < 512; index++) {
-  bits ^= bits << 13n;
-  bits ^= bits >> 7n;
-  bits ^= bits << 17n;
+  bits ^= bits << BigInt(13);
+  bits ^= bits >> BigInt(7);
+  bits ^= bits << BigInt(17);
   bits = BigInt.asUintN(64, bits);
   const buffer = Buffer.alloc(8);
   buffer.writeBigUInt64BE(bits);
