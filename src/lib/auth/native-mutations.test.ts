@@ -51,15 +51,27 @@ describe("native mutation capability enrollment", () => {
       }
     }
   });
-  it("requires a freshly attested v34 client for Account and Memory mutations", () => {
+  it("retains v34 floors for Account and Memory mutations on both supported clients", () => {
     for (const capability of ["customers.records.manage", "memory.records.write", "memory.lifecycle.write"] as const) {
       for (const platform of ["android", "ios", "macos"] as const) {
-        expect(nativeMutationEnrollment(context(34, undefined, platform), capability, asOf))
-          .toEqual({ state: "active", minimumContractVersion: 34 });
-        for (const client of [context(33, undefined, platform), context(35, undefined, platform),
+        for (const version of [NATIVE_API_PREVIOUS_VERSION, NATIVE_API_CURRENT_VERSION]) {
+          expect(nativeMutationEnrollment(context(version, undefined, platform), capability, asOf))
+            .toEqual({ state: "active", minimumContractVersion: 34 });
+        }
+        for (const client of [context(33, undefined, platform), context(NATIVE_API_CURRENT_VERSION + 1, undefined, platform),
           context(34, "2026-01-01T00:00:00.000Z", platform), { source: "session" as const }, { source: "mobile" as const }]) {
           expect(nativeMutationEnrollment(client, capability, asOf)).toMatchObject({ state: "held" });
         }
+      }
+    }
+  });
+  it("enrolls reconciliation decisions only on a fresh v35 client", () => {
+    for (const platform of ["android", "ios", "macos"] as const) {
+      expect(nativeMutationEnrollment(context(35, undefined, platform), "memory.reconciliation.resolve", asOf))
+        .toEqual({ state: "active", minimumContractVersion: 35 });
+      for (const client of [context(34, undefined, platform), context(36, undefined, platform),
+        context(35, "2026-01-01T00:00:00.000Z", platform), { source: "session" as const }, { source: "mobile" as const }]) {
+        expect(nativeMutationEnrollment(client, "memory.reconciliation.resolve", asOf)).toMatchObject({ state: "held", minimumContractVersion: 35 });
       }
     }
   });

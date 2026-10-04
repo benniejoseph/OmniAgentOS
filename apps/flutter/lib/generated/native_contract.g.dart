@@ -3,9 +3,9 @@
 
 abstract final class NativeContract {
   static const id = 'asael.native-api';
-  static const currentVersion = 34;
-  static const previousVersion = 33;
-  static const supportedVersions = <int>[34, 33];
+  static const currentVersion = 35;
+  static const previousVersion = 34;
+  static const supportedVersions = <int>[35, 34];
   static const discoveryPath = '/api/mobile/contracts';
   static const operationIds = <String>{
     'auth.login',
@@ -191,6 +191,9 @@ abstract final class NativeContract {
     'memory.delete',
     'memory.lifecycle.get',
     'memory.lifecycle.change',
+    'memory.reconciliation.list',
+    'memory.reconciliation.read',
+    'memory.reconciliation.resolve',
   };
 
   static bool supports(int version) => supportedVersions.contains(version);
@@ -806,6 +809,31 @@ abstract final class NativePaths {
   static String memoryDelete(String id) => '/api/memory/${Uri.encodeComponent(id)}';
   static String memoryLifecycleGet(String id) => '/api/memory/${Uri.encodeComponent(id)}/lifecycle';
   static String memoryLifecycleChange(String id) => '/api/memory/${Uri.encodeComponent(id)}/lifecycle';
+  static String memoryReconciliationList({required String contract, String? status, int? limit}) {
+    final path = '/api/memory/reconciliation';
+    final query = <String, String>{
+      'contract': contract,
+      'status': ?status,
+      if (limit != null) 'limit': limit.toString(),
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static String memoryReconciliationRead(String id, {String? acceptanceKeySha256}) {
+    final path = '/api/memory/reconciliation/${Uri.encodeComponent(id)}';
+    final query = <String, String>{
+      'acceptanceKeySha256': ?acceptanceKeySha256,
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static const memoryReconciliationResolve = '/api/memory/reconciliation';
 }
 
 abstract final class NativeConversationEvents {

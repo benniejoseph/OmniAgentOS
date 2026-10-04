@@ -30,3 +30,6 @@ e800e58ffc180af8d65a868f40ae281ad46bd340:src/lib/workflows/personal-context.test
 # Verified SHA-256 pins of public native-contract v32/v33 OpenAPI documents.
 9c58a9be7461268de81c5e295d99836c559776f4:src/lib/mobile/contracts.test.ts:generic-api-key:588
 9c58a9be7461268de81c5e295d99836c559776f4:src/lib/mobile/contracts.test.ts:generic-api-key:594
+
+# Verified public native-contract integrity pin; no credential material.
+d4ad92594adc0514f3f1acac3c2ad4d29540c348:src/lib/mobile/contracts.test.ts:generic-api-key:595

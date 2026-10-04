@@ -50,7 +50,9 @@ class MemoryChangeStatus extends StatelessWidget {
                 liveRegion: true,
                 child: Text(
                   controller.changing
-                      ? 'Submitting the reviewed Memory change…'
+                      ? sent.kind == MemoryChange.review
+                            ? 'Checking the exact review decision…'
+                            : 'Submitting the reviewed Memory change…'
                       : 'Submission unconfirmed. It may already have been recorded.',
                 ),
               ),
@@ -72,7 +74,9 @@ class MemoryChangeStatus extends StatelessWidget {
               ),
               if (!controller.changing) ...[
                 Text(
-                  sent.replayable
+                  sent.kind == MemoryChange.review
+                      ? 'Recovery only reads this exact review with the saved request identity. It never sends the decision again. A visible decision without a matching acceptance does not settle this request.'
+                      : sent.replayable
                       ? 'Recovery sends the same frozen request and key. A changed impact or lost authorization may prevent recovery.'
                       : 'This operation has no exact retry receipt. Inspect the live catalogue before making another entry. This app will not resend it.',
                 ),
@@ -86,8 +90,23 @@ class MemoryChangeStatus extends StatelessWidget {
                         : null,
                     child: const Text('Recover this exact submission'),
                   ),
-                if (sent.owner.key !=
-                    controller.mutationRepository?.access.owner?.key)
+                if (sent.kind == MemoryChange.review)
+                  OutlinedButton(
+                    onPressed: controller.canRecoverReview
+                        ? controller.recoverReview
+                        : null,
+                    child: const Text('Read exact review acceptance'),
+                  ),
+                if (sent.kind == MemoryChange.review &&
+                    controller.changeError != null)
+                  Text(
+                    controller.changeError is FormatException
+                        ? (controller.changeError as FormatException).message
+                        : 'The exact acceptance could not be confirmed. The original request remains held.',
+                  ),
+                if (sent.kind != MemoryChange.review &&
+                    sent.owner.key !=
+                        controller.mutationRepository?.access.owner?.key)
                   const Text(
                     'The saved submission belongs to earlier account permissions. It remains held until that exact authority can be verified.',
                   ),

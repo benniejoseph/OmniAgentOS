@@ -9579,6 +9579,7 @@ const responsibilityNotificationsVersion = 219;
 const meetingResolutionIntentsVersion = 220;
 const customerAccountIntentsVersion = 221;
 const memoryLifecycleMutationsVersion = 222;
+const memoryReconciliationFencesVersion = 223;
 const additiveReplayVersions = [
   companionPreferencesVersion,
   responsibilityDraftsVersion,
@@ -9588,6 +9589,7 @@ const additiveReplayVersions = [
   meetingResolutionIntentsVersion,
   customerAccountIntentsVersion,
   memoryLifecycleMutationsVersion,
+  memoryReconciliationFencesVersion,
 ].filter((version) => databaseSchemaMigrations.some((migration) => migration.version === version));
 const meetingResolutionReplayTables: readonly string[] = [
   "omni_meeting_commitment_resolution_intents",

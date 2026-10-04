@@ -3,11 +3,11 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   test('retains current and previous contract compatibility', () {
-    expect(NativeContract.currentVersion, 34);
-    expect(NativeContract.previousVersion, 33);
-    expect(NativeContract.supportedVersions, [34, 33]);
-    expect(NativeContract.supports(32), isFalse);
-    expect(NativeContract.supports(35), isFalse);
+    expect(NativeContract.currentVersion, 35);
+    expect(NativeContract.previousVersion, 34);
+    expect(NativeContract.supportedVersions, [35, 34]);
+    expect(NativeContract.supports(33), isFalse);
+    expect(NativeContract.supports(36), isFalse);
     expect(
       NativePaths.meetingsList(
         workspaceId: 'workspace:one',
@@ -172,6 +172,36 @@ void main() {
       );
     },
   );
+
+  test('publishes exact private Memory review paths', () {
+    for (final operation in [
+      'memory.reconciliation.list',
+      'memory.reconciliation.read',
+      'memory.reconciliation.resolve',
+    ]) {
+      expect(NativeContract.supportsOperation(operation), isTrue);
+    }
+    expect(
+      NativePaths.memoryReconciliationList(
+        contract: 'asael-memory-reconciliation-read:1',
+        status: 'pending',
+        limit: 50,
+      ),
+      '/api/memory/reconciliation?contract=asael-memory-reconciliation-read%3A1&status=pending&limit=50',
+    );
+    final key = List.filled(64, 'a').join();
+    expect(
+      NativePaths.memoryReconciliationRead(
+        'review:one',
+        acceptanceKeySha256: key,
+      ),
+      '/api/memory/reconciliation/review%3Aone?acceptanceKeySha256=$key',
+    );
+    expect(
+      NativePaths.memoryReconciliationResolve,
+      '/api/memory/reconciliation',
+    );
+  });
 
   test('verifies advertised server compatibility with legacy fallback', () {
     expect(

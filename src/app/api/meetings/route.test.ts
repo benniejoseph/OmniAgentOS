@@ -1,3 +1,4 @@
+import { NATIVE_API_CURRENT_VERSION } from "@/lib/mobile/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -108,7 +109,7 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllEnvs());
 
-function nativeContext(version = 33, role: SecurityContext["role"] = "operator"): SecurityContext {
+function nativeContext(version: number = NATIVE_API_CURRENT_VERSION, role: SecurityContext["role"] = "operator"): SecurityContext {
   return {
     ...context, role, source: "mobile",
     native: { deviceId: "meeting-native-device", platform: "macos", appVersion: "1.0.0", buildNumber: 1,
@@ -274,7 +275,7 @@ describe("meeting routes", () => {
 
   it.each(mutations)("keeps $name held for rollback v32, viewer and stale native attestations", async (route) => {
     const stale = nativeContext(); stale.native!.clientAttestedAt = "2020-01-01T00:00:00.000Z";
-    for (const principal of [nativeContext(32), nativeContext(33, "viewer"), stale]) {
+    for (const principal of [nativeContext(32), nativeContext(NATIVE_API_CURRENT_VERSION, "viewer"), stale]) {
       authorizeAs(principal);
       const response = await route.call(mutationRequest(route));
       expect(response.status).toBe(403);

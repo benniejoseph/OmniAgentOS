@@ -274,10 +274,7 @@ class _MacosKnowledgeViewState extends State<MacosKnowledgeView> {
           KnowledgePageControls(controller: controller, memory: false),
         ],
       ),
-      _KnowledgeWorkspace.reviews => KnowledgeReviews(
-        overview: state?.overview ?? const {},
-        stale: controller.error != null,
-      ),
+      _KnowledgeWorkspace.reviews => KnowledgeReviews(controller: controller),
       _KnowledgeWorkspace.relationships => Column(
         children: [
           KnowledgeCoverage(controller: controller, graph: true),
@@ -1228,8 +1225,8 @@ class _KnowledgeInspector extends StatelessWidget {
     ),
     _KnowledgeWorkspace.reviews => const _InspectorPlaceholder(
       icon: Icons.fact_check_outlined,
-      title: 'Review availability',
-      message: 'Advisory recommendations do not authorize truth changes or background maintenance.',
+      title: 'Exact private reviews',
+      message: 'Inspect the candidate and existing claim. A current decision token and explicit review are required; downstream projections remain separate.',
     ),
     _KnowledgeWorkspace.sources =>
       source == null

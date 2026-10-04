@@ -533,7 +533,8 @@ async function settleResolution(input: {
   input.createdEntityIds.push(entity.entityId);
 }
 
-function assertCanonicalExplicitMemory(memory: MemoryRecord) {
+/** A review decision changes claim state, never the source's authorship. */
+export function explicitMemoryEntityProjectionEligible(memory: MemoryRecord): boolean {
   const reviewedCognition =
     memory.source.startsWith("cognify-reviewed:") &&
     memory.formationReason === "source_cognition" &&
@@ -542,23 +543,27 @@ function assertCanonicalExplicitMemory(memory: MemoryRecord) {
     ) &&
     memory.evidenceRefs.some((reference) => reference.startsWith("knowledge:")) &&
     memory.evidenceRefs.some((reference) => reference.startsWith("evidence:"));
-  if (
-    !memory.tenantId ||
-    !(
+  return Boolean(
+    memory.tenantId &&
+    (
       ["manual", "user-assertion"].includes(memory.source) ||
       memory.source.startsWith("correction:") ||
       reviewedCognition
-    ) ||
-    memory.assertedBy !== "user" ||
-    memory.claimStatus !== "active" ||
-    !memory.content.trim() ||
-    memory.accessBinding?.visibility !== "user_private" ||
-    memory.accessBinding.tenantId !== memory.tenantId ||
-    memory.accessBinding.ownerAgentId !== null ||
-    memory.accessBinding.workspaceId !== null ||
-    memory.accessBinding.projectId !== null ||
-    memory.accessBinding.missionId !== null
-  ) {
+    ) &&
+    memory.assertedBy === "user" &&
+    memory.claimStatus === "active" &&
+    memory.content.trim() &&
+    memory.accessBinding?.visibility === "user_private" &&
+    memory.accessBinding.tenantId === memory.tenantId &&
+    memory.accessBinding.ownerAgentId === null &&
+    memory.accessBinding.workspaceId === null &&
+    memory.accessBinding.projectId === null &&
+    memory.accessBinding.missionId === null
+  );
+}
+
+function assertCanonicalExplicitMemory(memory: MemoryRecord) {
+  if (!explicitMemoryEntityProjectionEligible(memory)) {
     throw new Error(
       "Entity extraction requires canonical active user-authored memory.",
     );

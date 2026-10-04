@@ -5,6 +5,7 @@ import '../../generated/native_contract.g.dart';
 import 'knowledge.dart';
 import 'knowledge_contracts.dart';
 import 'knowledge_mutations.dart';
+import 'knowledge_review_contracts.dart';
 
 /// The bounded catalogue never supplies mutation authority. Exact changes use
 /// the current token-bound transport and a separately reviewed submitted target.
@@ -12,7 +13,8 @@ class ApiKnowledgeRepository
     implements
         KnowledgeRepository,
         PagedKnowledgeRepository,
-        KnowledgeMutationRepository {
+        KnowledgeMutationRepository,
+        KnowledgeReviewRepository {
   ApiKnowledgeRepository(
     this.api, {
     this.expectedTenantId,
@@ -35,6 +37,103 @@ class ApiKnowledgeRepository
       NativeContract.supportsOperation(kind.operation) &&
       (kind != MemoryChange.lifecycle ||
           NativeContract.supportsOperation('memory.lifecycle.get'));
+  @override
+  bool get supportsReviews =>
+      NativeContract.supportsOperation('memory.reconciliation.list') &&
+      NativeContract.supportsOperation('memory.reconciliation.read');
+
+  Future<Json> _reviewRead(String path) async {
+    final owner = access.owner, generation = access.generation;
+    bool current() =>
+        authorityCurrent() &&
+        access.readable &&
+        owner != null &&
+        access.generation == generation &&
+        access.owner?.key == owner.key;
+    memoryRequire(
+      current() && supportsReviews,
+      'Current private Memory review access is required.',
+    );
+    final authority = NativeRequestAuthority(
+      tenantId: owner!.tenantId,
+      actorId: owner.actorId,
+      canonicalUserId: owner.userId,
+      role: owner.role,
+      apiBaseUrl: owner.apiBaseUrl,
+      isCurrent: current,
+    );
+    final raw = await api.getJsonAuthorized(
+      path,
+      authority: authority,
+      cancelToken: _lifetime,
+    );
+    memoryRequire(current(), 'Memory review authority changed.');
+    return raw;
+  }
+
+  @override
+  Future<List<MemoryReview>> listReviews({
+    String status = 'pending',
+    int limit = 50,
+  }) async {
+    memoryRequire(
+      {'pending', 'resolved', 'all'}.contains(status) &&
+          limit >= 1 &&
+          limit <= 100,
+    );
+    final owner = access.owner, generation = access.generation;
+    final raw = await _reviewRead(
+      NativePaths.memoryReconciliationList(
+        contract: memoryReviewReadContract,
+        status: status,
+        limit: limit,
+      ),
+    );
+    final result = await parseMemoryReviews(
+      raw,
+      owner!,
+      status: status,
+      limit: limit,
+    );
+    memoryRequire(
+      authorityCurrent() &&
+          access.readable &&
+          access.generation == generation &&
+          access.owner?.key == owner.key,
+    );
+    return result;
+  }
+
+  @override
+  Future<MemoryReviewRead> readReview(
+    String id, {
+    String? acceptanceKeySha256,
+  }) async {
+    memoryReviewId(id);
+    if (acceptanceKeySha256 != null) {
+      memoryHash(acceptanceKeySha256);
+    }
+    final owner = access.owner, generation = access.generation;
+    final path = NativePaths.memoryReconciliationRead(
+      id,
+      acceptanceKeySha256: acceptanceKeySha256,
+    );
+    final raw = await _reviewRead(path);
+    final result = await MemoryReviewRead.parse(
+      raw,
+      owner!,
+      id,
+      keyHash: acceptanceKeySha256,
+    );
+    memoryRequire(
+      authorityCurrent() &&
+          access.readable &&
+          access.generation == generation &&
+          access.owner?.key == owner.key,
+    );
+    return result;
+  }
+
   CancelToken _lifetime = CancelToken();
   void _accessChanged() {
     _lifetime.cancel('Knowledge authority changed.');
@@ -350,6 +449,12 @@ class ApiKnowledgeRepository
       MemoryChange.forget => await api.deleteJsonAuthorized(
         path,
         authority: authority,
+        headers: headers,
+      ),
+      MemoryChange.review => await api.patchJsonAuthorized(
+        NativePaths.memoryReconciliationResolve,
+        authority: authority,
+        data: submission.body,
         headers: headers,
       ),
     };

@@ -112,51 +112,54 @@ class _KnowledgeViewState extends State<KnowledgeView>
               )
             : Column(
                 children: [
-                  Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: TextField(
-                      controller: _search,
-                      onSubmitted: controller.search,
-                      decoration: InputDecoration(
-                        labelText: 'Search the live catalogue',
-                        helperText: 'Submit to search. Type filters apply to loaded memory rows.',
-                        prefixIcon: const Icon(Icons.search),
-                        suffixIcon: IconButton(
-                          tooltip: 'Submit catalogue search',
-                          onPressed: () => controller.search(_search.text),
-                          icon: const Icon(Icons.arrow_forward),
+                  if (_tabs.index != 2)
+                    Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: TextField(
+                        controller: _search,
+                        onSubmitted: controller.search,
+                        decoration: InputDecoration(
+                          labelText: 'Search the live catalogue',
+                          helperText: 'Submit to search. Type filters apply to loaded memory rows.',
+                          prefixIcon: const Icon(Icons.search),
+                          suffixIcon: IconButton(
+                            tooltip: 'Submit catalogue search',
+                            onPressed: () => controller.search(_search.text),
+                            icon: const Icon(Icons.arrow_forward),
+                          ),
                         ),
                       ),
                     ),
-                  ),
                   Expanded(
-                    child: controller.loading && state == null
-                        ? const Center(child: CircularProgressIndicator())
-                        : state == null
-                        ? Center(
-                            child: FilledButton.tonal(
-                              onPressed: controller.refresh,
-                              child: const Text('Retry catalogue read'),
-                            ),
-                          )
-                        : TabBarView(
-                            controller: _tabs,
-                            children: [
-                              _memory(state),
-                              _knowledge(state),
-                              KnowledgeReviews(
-                                overview: state.overview,
-                                stale: widget.controller.error != null,
-                              ),
-                              _universe(state),
-                            ],
-                          ),
+                    child: TabBarView(
+                      controller: _tabs,
+                      children: [
+                        state == null
+                            ? _catalogueUnavailable()
+                            : _memory(state),
+                        state == null
+                            ? _catalogueUnavailable()
+                            : _knowledge(state),
+                        KnowledgeReviews(controller: controller),
+                        state == null
+                            ? _catalogueUnavailable()
+                            : _universe(state),
+                      ],
+                    ),
                   ),
                 ],
               ),
       );
     },
   );
+  Widget _catalogueUnavailable() => widget.controller.loading
+      ? const Center(child: CircularProgressIndicator())
+      : Center(
+          child: FilledButton.tonal(
+            onPressed: widget.controller.refresh,
+            child: const Text('Retry catalogue read'),
+          ),
+        );
   Widget _memory(KnowledgeState state) {
     final types = state.memories.map((item) => item.type).toSet().toList()
       ..sort();

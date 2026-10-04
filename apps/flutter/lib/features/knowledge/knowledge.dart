@@ -5,6 +5,7 @@ import '../../core/network/api_exception.dart';
 import 'knowledge_contracts.dart';
 import 'knowledge_mutations.dart';
 import 'knowledge_recovery_store.dart';
+import 'knowledge_review_contracts.dart';
 export 'knowledge_view.dart';
 
 typedef Json = Map<String, dynamic>;
@@ -315,6 +316,27 @@ class KnowledgeController extends ChangeNotifier {
       repository is KnowledgeMutationRepository
       ? repository as KnowledgeMutationRepository
       : null;
+  KnowledgeReviewRepository? get reviewRepository =>
+      repository is KnowledgeReviewRepository
+      ? repository as KnowledgeReviewRepository
+      : null;
+  bool get reviewsAvailable =>
+      available && reviewRepository?.supportsReviews == true;
+  bool get canRecoverReview {
+    final sent = pendingChange, owner = mutationRepository?.access.owner;
+    if (sent == null || owner == null) {
+      return false;
+    }
+    return reviewsAvailable &&
+        recoveryReady &&
+        !recoveryBusy &&
+        !changing &&
+        sent.kind == MemoryChange.review &&
+        sent.owner.tenantId == owner.tenantId &&
+        sent.owner.userId == owner.userId &&
+        sent.owner.apiBaseUrl == owner.apiBaseUrl;
+  }
+
   bool supportsChange(MemoryChange kind) =>
       available &&
       canManage &&
@@ -393,7 +415,12 @@ class KnowledgeController extends ChangeNotifier {
       } else {
         memoryRequire(
           value['version'] == 1 &&
-              const {'pending', 'accepted', 'refused'}.contains(value['state']),
+              const {
+                'pending',
+                'accepted',
+                'refused',
+                'not_submitted',
+              }.contains(value['state']),
         );
         final sent = MemorySubmission.restore(value['submission'], owner);
         final local = pendingChange;
@@ -407,6 +434,7 @@ class KnowledgeController extends ChangeNotifier {
           final receipt = await MemoryAcceptance.parse(
             knowledgeMap(value['receipt'], 'Saved acceptance'),
             sent,
+            reviewReadOwner: MemoryAcceptance.restoredReadOwner(value, sent),
           );
           if (!current()) return;
           acceptedChange = receipt;
@@ -421,7 +449,7 @@ class KnowledgeController extends ChangeNotifier {
               'version': 1,
               'state': 'accepted',
               'submission': sent.recovery,
-              'receipt': existing.raw,
+              ...existing.recoveryReceipt,
             }, current);
             if (!current()) return;
             pendingChange = null;
@@ -431,7 +459,9 @@ class KnowledgeController extends ChangeNotifier {
           }
         } else {
           pendingChange = null;
-          changeRefusal = 'The saved request was refused before acceptance. Review current data before a new change.';
+          changeRefusal = value['state'] == 'not_submitted'
+              ? 'This saved change was stopped before sending. Review the current records before making a new decision.'
+              : 'The saved request was refused before acceptance. Review current data before a new change.';
         }
       }
       recoveryReady = true;
@@ -452,6 +482,175 @@ class KnowledgeController extends ChangeNotifier {
     final result = await repo.readLifecycle(id);
     _requireAvailable();
     return result;
+  }
+
+  Future<List<MemoryReview>> reviews({
+    String status = 'pending',
+    int limit = 50,
+  }) async {
+    _requireAvailable();
+    memoryRequire(
+      reviewsAvailable,
+      'Your private Memory reviews are unavailable. Check account access or update the app.',
+    );
+    final value = await reviewRepository!.listReviews(
+      status: status,
+      limit: limit,
+    );
+    _requireAvailable();
+    return value;
+  }
+
+  Future<MemoryReviewRead> inspectReview(String id) async {
+    _requireAvailable();
+    memoryRequire(
+      reviewsAvailable,
+      'Your private Memory reviews are unavailable. Check account access or update the app.',
+    );
+    final value = await reviewRepository!.readReview(memoryReviewId(id));
+    _requireAvailable();
+    return value;
+  }
+
+  Future<void> resolveReview(
+    MemoryReview reviewed,
+    String decision, {
+    bool Function()? isReviewCurrent,
+  }) async {
+    memoryRequire(
+      reviewsAvailable &&
+          supportsChange(MemoryChange.review) &&
+          pendingChange == null &&
+          !changing &&
+          reviewed.actionable &&
+          memoryReviewDecisions.contains(decision) &&
+          (decision != 'keep_both' || reviewed.kind == 'contradiction'),
+      'Review the exact current private targets and resolve any pending submission first.',
+    );
+    final owner = mutationRepository!.access.owner!;
+    final generation = ++_changeGeneration;
+    bool owned() =>
+        available &&
+        _changeGeneration == generation &&
+        mutationRepository?.access.owner?.key == owner.key &&
+        pendingChange == null;
+    bool current() => owned() && (isReviewCurrent?.call() ?? true);
+    changing = true;
+    changeError = null;
+    _publish();
+    try {
+      final exact = await reviewRepository!.readReview(reviewed.id);
+      if (!current()) {
+        return;
+      }
+      memoryRequire(
+        exact.review.actionable &&
+            memoryCanonical(exact.review.raw) == memoryCanonical(reviewed.raw),
+        'The review or its targets changed. Refresh and review the current records before deciding.',
+      );
+      final sent = MemorySubmission(
+        kind: MemoryChange.review,
+        owner: owner,
+        id: reviewed.id,
+        reviewEvidence: reviewed.evidence,
+        body: {
+          'contract': memoryReviewDecisionContract,
+          'reviewId': reviewed.id,
+          'decision': decision,
+          'expectedReviewToken': reviewed.token,
+        },
+      );
+      pendingChange = sent;
+      changing = false;
+      await _sendChange(sent, isAdmitted: isReviewCurrent);
+    } catch (failure) {
+      if (owned()) {
+        changeError = failure;
+        changing = false;
+        _publish();
+      }
+      rethrow;
+    } finally {
+      if (owned() && changing) {
+        changing = false;
+        _publish();
+      }
+    }
+  }
+
+  /// An uncertain review is never PATCHed again. Only a current authenticated
+  /// exact read with the original raw-key hash can establish its acceptance.
+  Future<void> recoverReview() async {
+    if (!canRecoverReview) {
+      return;
+    }
+    final sent = pendingChange!, owner = mutationRepository!.access.owner!;
+    final generation = ++_changeGeneration;
+    bool current() =>
+        available &&
+        _changeGeneration == generation &&
+        mutationRepository?.access.owner?.key == owner.key;
+    changing = true;
+    changeError = null;
+    _publish();
+    try {
+      final keyHash = await memoryShaText(sent.key);
+      if (!current()) {
+        return;
+      }
+      final read = await reviewRepository!.readReview(
+        sent.id!,
+        acceptanceKeySha256: keyHash,
+      );
+      if (!current() || !identical(pendingChange, sent)) {
+        return;
+      }
+      memoryRequire(
+        read.acceptance != null,
+        read.review.status == 'resolved'
+            ? 'A resolution is visible, but no matching native receipt confirms this submitted decision. The original request remains held.'
+            : 'This review is still pending and has no matching acceptance. The submitted outcome remains unconfirmed; no decision was resent.',
+      );
+      final accepted = await MemoryAcceptance.parse(
+        read.raw,
+        sent,
+        reviewReadOwner: owner,
+      );
+      if (!current() || !identical(pendingChange, sent)) {
+        return;
+      }
+      acceptedChange = accepted;
+      pendingChange = null;
+      recoveryReady = false;
+      recoveryBusy = true;
+      _publish();
+      try {
+        await recoveryStore!.write(owner, {
+          'version': 1,
+          'state': 'accepted',
+          'submission': sent.recovery,
+          ...accepted.recoveryReceipt,
+        }, current);
+        if (current()) {
+          recoveryReady = true;
+          _attemptedChanges.remove(sent);
+        }
+      } catch (failure) {
+        if (current()) {
+          recoveryError = failure;
+        }
+      }
+    } catch (failure) {
+      if (current()) {
+        changeError = failure;
+      }
+    } finally {
+      if (current()) {
+        changing = false;
+        recoveryBusy = false;
+        _publish();
+      }
+    }
   }
 
   Future<void> submitChange(
@@ -493,7 +692,10 @@ class KnowledgeController extends ChangeNotifier {
     await _sendChange(sent);
   }
 
-  Future<void> _sendChange(MemorySubmission sent) async {
+  Future<void> _sendChange(
+    MemorySubmission sent, {
+    bool Function()? isAdmitted,
+  }) async {
     final generation = ++_changeGeneration;
     final recovery = _attemptedChanges.contains(sent);
     changing = true;
@@ -516,9 +718,28 @@ class KnowledgeController extends ChangeNotifier {
         'submission': sent.recovery,
       }, current);
       if (!current()) return;
+      if (!(isAdmitted?.call() ?? true)) {
+        // No transport was called. Persist this definite local cancellation;
+        // a failed acknowledgement keeps the original journal held instead.
+        await recoveryStore!.write(sent.owner, {
+          'version': 1,
+          'state': 'not_submitted',
+          'submission': sent.recovery,
+        }, current);
+        if (current()) {
+          pendingChange = null;
+          changing = false;
+          changeRefusal = 'This saved change was stopped before sending. Review the current records before making a new decision.';
+          _publish();
+        }
+        return;
+      }
       _attemptedChanges.add(sent);
       dispatched = true;
-      final accepted = await mutationRepository!.submit(sent, current);
+      final accepted = await mutationRepository!.submit(
+        sent,
+        () => current() && (isAdmitted?.call() ?? true),
+      );
       if (!current()) return;
       acceptedChange = accepted;
       pendingChange = null;
@@ -531,7 +752,7 @@ class KnowledgeController extends ChangeNotifier {
           'version': 1,
           'state': 'accepted',
           'submission': sent.recovery,
-          'receipt': accepted.raw,
+          ...accepted.recoveryReceipt,
         }, ownerCurrent);
         if (ownerCurrent()) {
           recoveryReady = true;
@@ -557,7 +778,8 @@ class KnowledgeController extends ChangeNotifier {
         }
         // A later refusal cannot erase uncertainty about an earlier request.
         final status = failure is ApiException ? failure.statusCode : null;
-        if (!recovery &&
+        if (sent.kind != MemoryChange.review &&
+            !recovery &&
             (const {400, 413, 415}.contains(status) ||
                 sent.replayable &&
                     const {401, 403, 404, 409, 428}.contains(status))) {
