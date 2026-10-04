@@ -8,6 +8,7 @@ import {
   FolderKanban,
   Loader2,
   Paperclip,
+  Plus,
   Play,
   Puzzle,
   Search,
@@ -103,6 +104,7 @@ export function CommandComposerField({
   value,
   disabled,
   placeholder,
+  showAttachmentButton = false,
   selected,
   onChange,
   onSubmit,
@@ -113,6 +115,7 @@ export function CommandComposerField({
   value: string;
   disabled: boolean;
   placeholder: string;
+  showAttachmentButton?: boolean;
   selected: readonly CommandContextCatalogItem[];
   onChange: (value: string) => void;
   onSubmit: () => void;
@@ -393,6 +396,7 @@ export function CommandComposerField({
         type="file"
         aria-label="Attach files to conversation"
         multiple
+        disabled={disabled || uploading}
         className="sr-only"
         onChange={(event) => void uploadFiles(event.currentTarget.files)}
         tabIndex={-1}
@@ -427,7 +431,20 @@ export function CommandComposerField({
         </div>
       ) : null}
 
-      <label className="block">
+      <div className="flex items-end">
+      {showAttachmentButton ? (
+        <button
+          type="button"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={disabled || uploading}
+          className="mb-0.5 grid size-10 shrink-0 place-items-center rounded-xl text-muted transition hover:bg-surface-raised hover:text-foreground disabled:cursor-not-allowed"
+          aria-label={uploading ? "Uploading attachments" : "Attach files"}
+          title={uploading ? "Uploading attachments" : "Attach files"}
+        >
+          {uploading ? <Loader2 size={17} className="animate-spin" aria-hidden="true" /> : <Plus size={19} aria-hidden="true" />}
+        </button>
+      ) : null}
+      <label className="block min-w-0 flex-1">
         <span className="sr-only">Message Asael</span>
         <textarea
           ref={textareaRef}
@@ -480,6 +497,7 @@ export function CommandComposerField({
           aria-activedescendant={trigger ? activeOptionId : undefined}
         />
       </label>
+      </div>
 
       {trigger && menuLayout && typeof document !== "undefined" ? createPortal(
         <div

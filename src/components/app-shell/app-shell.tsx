@@ -52,7 +52,7 @@ export function AppShell({
   const { session, status: sessionStatus, error: sessionError, role, signOut } = useWorkspaceSession();
   const inboxCount = useInboxCount()?.pending;
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [desktopNavCollapsed, setDesktopNavCollapsed] = useState(initialDesktopNavCollapsed ?? false);
+  const [desktopNavCollapsed, setDesktopNavCollapsed] = useState(initialDesktopNavCollapsed ?? true);
   const [signingOut, setSigningOut] = useState(false);
   const [signOutError, setSignOutError] = useState<string>();
   const menuButtonRef = useRef<HTMLButtonElement>(null);
@@ -199,7 +199,7 @@ export function AppShell({
             {!desktopNavCollapsed ? (
               <span className="min-w-0">
                 <span className="block truncate text-sm font-semibold tracking-tight">Asael</span>
-                <span className="block truncate text-xs text-muted">Your second brain</span>
+                <span className="block truncate text-xs text-muted">Your workspace</span>
               </span>
             ) : null}
           </Link>
@@ -277,17 +277,13 @@ export function AppShell({
               </button>
               <div className="min-w-0">
                 <p className="truncate text-sm font-semibold">{activeItem?.label || "Workspace"}</p>
-                <p className="hidden truncate text-xs text-muted sm:block">
-                  {activeItem?.description || "Give the agent work and review the outcome."}
-                </p>
               </div>
             </div>
             <div className={clsx("flex items-center gap-2", styles.headerActions)}>
               <CommandPalette session={session} sessionStatus={sessionStatus} role={role} />
               <InboxHeaderLink count={inboxCount} pathname={pathname} />
               <NotificationCenter />
-              <span className="hidden md:inline-flex"><ThemeToggle /></span>
-              <span className="inline-flex md:hidden"><ThemeToggle compact /></span>
+              <span className={styles.quietTheme}><ThemeToggle compact /></span>
             </div>
           </div>
         </header>

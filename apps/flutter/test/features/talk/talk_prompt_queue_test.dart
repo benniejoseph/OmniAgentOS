@@ -28,8 +28,7 @@ void main() {
         );
         await tester.enterText(composer, 'An unsent request to keep');
         if (width < 1000) {
-          await tester.tap(find.byTooltip('What Asael is doing'));
-          await tester.pumpAndSettle();
+          await _openConversationAction(tester, 'What Asael is doing');
         }
         await tester.tap(find.byKey(const Key('talk-responsibilities')));
         await tester.pumpAndSettle();
@@ -65,10 +64,11 @@ void main() {
 
       expect(controller.artifacts, isEmpty);
       expect(find.byTooltip('Run artifacts'), findsNothing);
-      expect(find.byTooltip('Prompt queue'), findsOneWidget);
-
-      await tester.tap(find.byTooltip('Prompt queue'));
-      await tester.pumpAndSettle();
+      expect(
+        find.byTooltip('Conversation actions').hitTestable(),
+        findsOneWidget,
+      );
+      await _openConversationAction(tester, 'Prompt queue');
 
       expect(find.text('Prompt queue'), findsOneWidget);
       expect(find.text('Queue is clear'), findsOneWidget);
@@ -105,7 +105,7 @@ void main() {
   });
 
   testWidgets(
-    'Conversation beside the sidebar keeps the prompt queue in its toolbar',
+    'Conversation beside the sidebar keeps the prompt queue in its toolbar menu',
     (tester) async {
       debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
       addTearDown(() => debugDefaultTargetPlatformOverride = null);
@@ -120,17 +120,28 @@ void main() {
       await tester.pumpWidget(_talkApp(controller, sidebarWidth: 238));
       await tester.pumpAndSettle();
 
-      // Talk has too little room for its rail, so the toolbar keeps the queue.
+      // Talk has too little room for its rail, so its menu keeps the queue reachable.
       expect(find.text('What Asael is doing'), findsNothing);
-      expect(find.byTooltip('Prompt queue'), findsOneWidget);
-      await tester.tap(find.byTooltip('Prompt queue'));
-      await tester.pumpAndSettle();
+      expect(
+        find.byTooltip('Conversation actions').hitTestable(),
+        findsOneWidget,
+      );
+      await _openConversationAction(tester, 'Prompt queue');
 
       expect(find.text('Queue is clear'), findsOneWidget);
       expect(tester.takeException(), isNull);
       debugDefaultTargetPlatformOverride = null;
     },
   );
+}
+
+Future<void> _openConversationAction(WidgetTester tester, String label) async {
+  await tester.tap(find.byTooltip('Conversation actions'));
+  await tester.pumpAndSettle();
+  final action = find.text(label).hitTestable();
+  expect(action, findsOneWidget);
+  await tester.tap(action);
+  await tester.pumpAndSettle();
 }
 
 /// Talk in the Mac theme, beside a sidebar of [sidebarWidth] when there is

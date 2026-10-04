@@ -1,5 +1,42 @@
 # ATLAS actual-art review — 4 October 2026
 
+**Sculpt-04 improves the rough prototype but remains unaccepted for publication.**
+Root inspected the actual front, three-quarter, profile and blink sequence beside
+the approved reference. The shorter throat, larger iris and quieter chest are
+visible improvements. The pale field is still an angular bib; wing and thigh
+volumes read as attached ovals, the side silhouette is tubular, and the feather
+finish remains faceted. The front beak needs more convincing volume. Closing lids
+bulge away from the face and retain a pale rim. These issues need a deliberate
+topology/material pass rather than acceptance based on feature names or palette.
+
+The matching sculpt-04 export has 104 artifacts, 23,254 vertices, 41,580 triangles,
+14 bones, 12 clips and a 1,750,516-byte GLB. All nine geometry/lifecycle checks pass,
+including semantic eyelid/mandible deformation checks at their original movement
+thresholds. Actual source and output are archived as `atlas-sculpt-04-review.tar.gz`.
+The transparent sprite's RGB values outside the character are not opacity;
+sampled background alpha is zero. No character bundle was published or deployed.
+The current UI keeps the approved concept portrait while final art remains open.
+
+## Previous sculpt-03 review
+
+**Sculpt-03 is also unaccepted for publication.** Root rendered and inspected the
+actual front and three-quarter views beside the approved concept. The continuous
+anatomy and integrated eyelids improve the construction, but the pale throat still
+reads as a long rectangular beard, the collar as a horizontal ring, and the large
+uniform feathers as tiled leaves. The neck is too narrow relative to the shoulders;
+eyes and feet are too small. The golden beak needs stronger volume and hook from
+the front. These are visible likeness gaps, not only missing validation.
+
+The exact sculpt-03 export contains 104 artifacts. Its GLB measures 1,786,956 bytes,
+23,436 vertices and 43,642 triangles, with 14 bones and 12 clips. Source and matching
+output are archived as `atlas-sculpt-03-review.tar.gz` in the release evidence
+directory. Seven of nine geometry/lifecycle checks passed; two topology-specific
+deformation checks need to select the new eyelid and mandible vertices correctly.
+Neither that test adjustment nor successful structural export will accept the art.
+The next source pass is in progress; the approved neutral portrait remains active.
+
+## Previous sculpt-02 review
+
 **Sculpt-02 is insufficient for final likeness and is not accepted for publication.** Root inspected actual output from creative revision `sculpt-02-eyelids-layered-plumage-eight-states` against the approved original eagle reference. The export completed; its 104 artifacts, 14 bones and 12 clips establish an authored construction and delivery candidate, not an approved character.
 
 The current rendered model still differs materially from the study:

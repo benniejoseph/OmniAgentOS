@@ -110,6 +110,24 @@
   background: var(--background);
 }
 
+.headerIdentity > button,
+.quietTheme :global(button) {
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+
+.headerIdentity > button:hover,
+.quietTheme :global(button:hover) {
+  color: var(--foreground);
+  background: var(--surface-raised);
+}
+
+.quietTheme {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
 .topBar {
   min-height: calc(var(--app-header-height) - 1px);
   gap: 0.5rem;

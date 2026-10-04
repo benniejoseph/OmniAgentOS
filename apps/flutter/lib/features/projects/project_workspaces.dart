@@ -601,15 +601,69 @@ class _ProjectDocumentWorkspaceState extends State<ProjectDocumentWorkspace> {
     super.dispose();
   }
 
-  Widget _header(Project p) => Column(
+  Widget _readingPane(Widget child) => Align(
+    alignment: Alignment.topCenter,
+    child: ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 880),
+      child: child,
+    ),
+  );
+
+  Widget _details({
+    required String identity,
+    required String title,
+    required List<Widget> children,
+  }) => ExpansionTile(
+    key: PageStorageKey<Object>((identity, c, _scope)),
+    title: Text(title),
+    tilePadding: EdgeInsets.zero,
+    childrenPadding: EdgeInsets.zero,
+    shape: const Border(),
+    collapsedShape: const Border(),
+    expansionAnimationStyle: MediaQuery.disableAnimationsOf(context)
+        ? AnimationStyle.noAnimation
+        : const AnimationStyle(duration: Duration(milliseconds: 180)),
+    children: children,
+  );
+
+  Widget _header(Project p, String pane) => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
-      Text(p.title, style: Theme.of(context).textTheme.headlineSmall),
+      Semantics(
+        header: true,
+        child: Text(p.title, style: Theme.of(context).textTheme.headlineSmall),
+      ),
       const SizedBox(height: 8),
-      SelectableText(p.objective),
-      Text('${p.status} · execution ${p.executionStatus}'),
-      ExpansionTile(
-        title: const Text('Exact project identity'),
+      SelectableText(
+        p.objective,
+        style: Theme.of(context).textTheme.bodyLarge?.copyWith(height: 1.5),
+      ),
+      const SizedBox(height: 8),
+      Wrap(
+        spacing: 16,
+        runSpacing: 4,
+        children: [
+          Text('${p.status} · execution ${p.executionStatus}'),
+          Text('${p.completedTasks} of ${p.tasks.length} tasks completed'),
+        ],
+      ),
+      const SizedBox(height: 4),
+      Text(
+        'Closed tasks and legacy completion do not prove a verified outcome.',
+        style: Theme.of(context).textTheme.bodySmall
+            ?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
+      ),
+      _Notice(c.readLabel),
+      if (c.readError != null) _Notice(c.readError!, danger: true),
+      if (c.blocked != null) _Notice(c.blocked!),
+      if (c.actionError != null) _Notice(c.actionError!, danger: true),
+      if (c.acting)
+        _Notice(
+          '${c.action}… Leaving this view does not cancel work already sent to the server.',
+        ),
+      _details(
+        identity: 'project-identity-$pane-${p.id}',
+        title: 'Exact project identity',
         children: [
           _Metadata({
             'Project ID': p.id,
@@ -621,18 +675,6 @@ class _ProjectDocumentWorkspaceState extends State<ProjectDocumentWorkspace> {
           }),
         ],
       ),
-      Text('${p.completedTasks} of ${p.tasks.length} tasks completed'),
-      const Text(
-        'Closed tasks and legacy completion do not prove a verified outcome.',
-      ),
-      _Notice(c.readLabel),
-      if (c.readError != null) _Notice(c.readError!, danger: true),
-      if (c.blocked != null) _Notice(c.blocked!),
-      if (c.actionError != null) _Notice(c.actionError!, danger: true),
-      if (c.acting)
-        _Notice(
-          '${c.action}… Leaving this view does not cancel work already sent to the server.',
-        ),
       if (c.receipt case final receipt?)
         _Panel(
           child: Column(
@@ -645,12 +687,19 @@ class _ProjectDocumentWorkspaceState extends State<ProjectDocumentWorkspace> {
               const Text(
                 'This accepted response is separate from the current detail read.',
               ),
-              _Metadata({
-                'Project ID': receipt.projectId,
-                'Returned resource ID': receipt.resourceId,
-                'Confirmed locally at': receipt.confirmedAt.toIso8601String(),
-                'Returned details': receipt.detail,
-              }),
+              _details(
+                identity: 'project-receipt-$pane-${p.id}',
+                title: 'Accepted response details',
+                children: [
+                  _Metadata({
+                    'Project ID': receipt.projectId,
+                    'Returned resource ID': receipt.resourceId,
+                    'Confirmed locally at': receipt.confirmedAt
+                        .toIso8601String(),
+                    'Returned details': receipt.detail,
+                  }),
+                ],
+              ),
             ],
           ),
         ),
@@ -700,9 +749,9 @@ class _ProjectDocumentWorkspaceState extends State<ProjectDocumentWorkspace> {
                 child: IndexedStack(
                   index: _tab,
                   children: [
-                    _plan(p),
-                    _execution(p),
-                    _artifacts(p),
+                    _readingPane(_plan(p)),
+                    _readingPane(_execution(p)),
+                    _readingPane(_artifacts(p)),
                     _buildVisited ? _builder(p) : const SizedBox.shrink(),
                   ],
                 ),
@@ -806,7 +855,7 @@ class _ProjectDocumentWorkspaceState extends State<ProjectDocumentWorkspace> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        _header(p),
+        _header(p, 'plan'),
         const SizedBox(height: 16),
         TextField(
           controller: _planning,
@@ -881,67 +930,46 @@ class _ProjectDocumentWorkspaceState extends State<ProjectDocumentWorkspace> {
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(task.title, style: Theme.of(context).textTheme.titleMedium),
+        Semantics(
+          header: true,
+          child: Text(
+            task.title,
+            style: Theme.of(context).textTheme.titleMedium,
+          ),
+        ),
+        if (task.detail.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          SelectableText(task.detail),
+        ],
+        const SizedBox(height: 12),
+        Wrap(
+          spacing: 16,
+          runSpacing: 4,
+          children: [
+            Text('Task · ${task.status}'),
+            Text('Priority · ${task.priority}'),
+            Text('Executing Agent · ${task.agentId}'),
+            if (task.dueAt != null)
+              Text('Due · ${task.dueAt!.toIso8601String()}'),
+          ],
+        ),
         const SizedBox(height: 8),
-        SelectableText(task.detail),
-        _Metadata({
-          'Work item ID': task.id,
-          'Executing Agent': task.agentId,
-          'Priority': task.priority,
-          'Task state': task.status,
-          'Outcome': task.outcomeLabel,
-          'Workflow': task.executionLabel,
-          'Workflow run ID': task.workflowRunId ?? 'Not started',
-          'Dependency IDs': task.dependsOn.isEmpty
-              ? 'None returned'
-              : task.dependsOn.join('\n'),
-          'Origin': task.origin,
-          'Due': task.dueAt?.toIso8601String() ?? 'Not set',
-          'Last changed': task.updatedAt?.toIso8601String() ?? 'Not reported',
-          'Dispatch attempt': '${task.dispatchAttempt}',
-          'AI cost': task.surface?.costLabel ?? 'Cost unavailable',
-        }),
+        Text(
+          task.outcomeLabel,
+          style: Theme.of(context).textTheme.bodyMedium
+              ?.copyWith(fontWeight: FontWeight.w500),
+        ),
+        Text('Workflow · ${task.executionLabel}'),
         if (task.executionError != null)
           _Notice(task.executionError!, danger: true),
-        if (task.surface case final surface?)
-          ExpansionTile(
-            title: const Text('Canonical identity, usage and evidence'),
-            childrenPadding: const EdgeInsets.all(12),
-            children: [
-              _Metadata({
-                'Workspace ID': surface.workspaceId ?? 'Local projection',
-                'Persistence': surface.persistence,
-                'Status revision': '${surface.revision}',
-                'Projection digest':
-                    surface.projectionSha256 ?? 'Not persisted',
-                'Source revision digest':
-                    surface.sourceRevisionSha256 ?? 'Not persisted',
-                'Current step': surface.currentStep ?? 'Not reported',
-                'Progress': surface.progressPercent == null
-                    ? 'Unavailable'
-                    : '${surface.progressPercent}%',
-                'Usage receipts': '${surface.usageReceiptCount}',
-                'Unknown-cost receipts': '${surface.unknownCostReceiptCount}',
-                'Recorded tokens': '${surface.totalTokens}',
-                'Assigned principals': surface.agents
-                    .map(
-                      (a) =>
-                          '${a['agentId']} · ${a['principalId'] ?? 'principal not reported'} · generation ${a['principalGeneration'] ?? 'not reported'}',
-                    )
-                    .join('\n'),
-                'Artifact identities': surface.artifactMetadata
-                    .map(
-                      (a) =>
-                          '${a['artifactId']} · ${a['evidenceCount']} evidence references',
-                    )
-                    .join('\n'),
-              }),
-            ],
-          ),
         if (task.movementBlocked)
-          const Text(
-            'Task movement is unavailable while its workflow is active or its current status is unknown.',
+          const Padding(
+            padding: EdgeInsets.only(top: 8),
+            child: Text(
+              'Task movement is unavailable while its workflow is active or its current status is unknown.',
+            ),
           ),
+        const SizedBox(height: 12),
         Wrap(
           spacing: 8,
           runSpacing: 8,
@@ -975,6 +1003,64 @@ class _ProjectDocumentWorkspaceState extends State<ProjectDocumentWorkspace> {
               ),
           ],
         ),
+        _details(
+          identity: 'task-details-${task.id}',
+          title: 'Exact task details',
+          children: [
+            _Metadata({
+              'Work item ID': task.id,
+              'Executing Agent': task.agentId,
+              'Priority': task.priority,
+              'Task state': task.status,
+              'Outcome': task.outcomeLabel,
+              'Workflow': task.executionLabel,
+              'Workflow run ID': task.workflowRunId ?? 'Not started',
+              'Dependency IDs': task.dependsOn.isEmpty
+                  ? 'None returned'
+                  : task.dependsOn.join('\n'),
+              'Origin': task.origin,
+              'Due': task.dueAt?.toIso8601String() ?? 'Not set',
+              'Last changed':
+                  task.updatedAt?.toIso8601String() ?? 'Not reported',
+              'Dispatch attempt': '${task.dispatchAttempt}',
+              'AI cost': task.surface?.costLabel ?? 'Cost unavailable',
+            }),
+            if (task.surface case final surface?) ...[
+              Text(
+                'Canonical identity, usage and evidence',
+                style: Theme.of(context).textTheme.titleSmall,
+              ),
+              _Metadata({
+                'Workspace ID': surface.workspaceId ?? 'Local projection',
+                'Persistence': surface.persistence,
+                'Status revision': '${surface.revision}',
+                'Projection digest':
+                    surface.projectionSha256 ?? 'Not persisted',
+                'Source revision digest':
+                    surface.sourceRevisionSha256 ?? 'Not persisted',
+                'Current step': surface.currentStep ?? 'Not reported',
+                'Progress': surface.progressPercent == null
+                    ? 'Unavailable'
+                    : '${surface.progressPercent}%',
+                'Usage receipts': '${surface.usageReceiptCount}',
+                'Unknown-cost receipts': '${surface.unknownCostReceiptCount}',
+                'Recorded tokens': '${surface.totalTokens}',
+                'Assigned principals': surface.agents
+                    .map(
+                      (a) =>
+                          '${a['agentId']} · ${a['principalId'] ?? 'principal not reported'} · generation ${a['principalGeneration'] ?? 'not reported'}',
+                    )
+                    .join('\n'),
+                'Artifact identities': surface.artifactMetadata
+                    .map(
+                      (a) =>
+                          '${a['artifactId']} · ${a['evidenceCount']} evidence references',
+                    )
+                    .join('\n'),
+              }),
+            ],
+          ],
+        ),
       ],
     ),
   );
@@ -983,7 +1069,7 @@ class _ProjectDocumentWorkspaceState extends State<ProjectDocumentWorkspace> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        _header(p),
+        _header(p, 'execution'),
         _Panel(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -1159,7 +1245,7 @@ class _ProjectDocumentWorkspaceState extends State<ProjectDocumentWorkspace> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        _header(p),
+        _header(p, 'artifacts'),
         if (p.artifacts.isEmpty)
           const _Notice(
             'No artifacts were returned in this successful project snapshot.',

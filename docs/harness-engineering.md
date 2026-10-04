@@ -310,6 +310,11 @@ where retained state would otherwise outlive the dependency. Focused provider
 tests collect Flutter framework errors as failures; a passing assertion count
 with disposal or build-time exceptions is not a successful validation.
 
+An expansion tile and any nested scroll view need distinct, namespaced
+`PageStorageKey` values. Otherwise the tile's boolean expansion state and the
+scroll view's numeric offset can collide. Exercise the expanded content in
+widget checks so the shared storage path is read, not only the collapsed tile.
+
 ## Native protected-storage recovery gate
 
 macOS windows have separate Flutter engines. An isolate-local queue or Dart

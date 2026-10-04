@@ -597,10 +597,10 @@ class _TalkCommandComposerState extends State<TalkCommandComposer> {
         : activeIndex.clamp(0, items.length - 1);
     final menuTitle = trigger?.symbol == '/'
         ? 'Choose an approach or Skill'
-        : 'Add context to this command';
+        : 'Add context';
     final menuDescription = trigger?.symbol == '/'
         ? 'Pick a working style or reusable Skill.'
-        : 'Files and capabilities are attached exactly; actions still follow approvals.';
+        : 'Choose a file, project, person, or capability.';
     return Focus(
       onKeyEvent: _handleKey,
       child: Column(
@@ -730,7 +730,10 @@ class _TalkCommandComposerState extends State<TalkCommandComposer> {
                   if (items.isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.fromLTRB(12, 6, 12, 9),
-                      child: Row(
+                      child: Wrap(
+                        alignment: WrapAlignment.spaceBetween,
+                        spacing: 16,
+                        runSpacing: 4,
                         children: [
                           Text(
                             '↑↓ choose  ·  Enter add  ·  Esc close',
@@ -741,7 +744,6 @@ class _TalkCommandComposerState extends State<TalkCommandComposer> {
                                       .onSurfaceVariant,
                                 ),
                           ),
-                          const Spacer(),
                           Text(
                             '${widget.selected.length} attached',
                             style: Theme.of(context).textTheme.labelSmall
@@ -783,30 +785,38 @@ class _TalkCommandComposerState extends State<TalkCommandComposer> {
             enabled: !widget.disabled,
             minLines: widget.minLines,
             maxLines: widget.maxLines,
+            style: Theme.of(context).textTheme.bodyLarge
+                ?.copyWith(fontSize: 16, height: 1.45),
             textInputAction: TextInputAction.send,
             onSubmitted: widget.onSubmitted,
             decoration: InputDecoration(
               hintText: widget.hintText,
-              helperText: '/ approaches + Skills  ·  @ Files, Agents, Projects, Skills, Extensions + Connections',
-              helperMaxLines: 2,
               filled: true,
-              suffixIcon: widget.suffixIcon,
-            ),
-          ),
-          Align(
-            alignment: AlignmentDirectional.centerStart,
-            child: TextButton.icon(
-              key: const Key('command-attach-library'),
-              onPressed: widget.disabled || _pickingLibrary
-                  ? null
-                  : _pickLibrary,
-              style: TextButton.styleFrom(minimumSize: const Size(48, 48)),
-              icon: const Icon(Icons.attach_file, size: 18),
-              label: Text(
-                _pickingLibrary
+              fillColor: Theme.of(context).colorScheme.surfaceContainerLowest,
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 16,
+                vertical: 16,
+              ),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(16),
+                borderSide: BorderSide(
+                  color: Theme.of(context).colorScheme.outlineVariant,
+                ),
+              ),
+              prefixIcon: IconButton(
+                key: const Key('command-attach-library'),
+                tooltip: _pickingLibrary
                     ? 'Choosing Library context…'
                     : 'Attach from Library',
+                onPressed: widget.disabled || _pickingLibrary
+                    ? null
+                    : _pickLibrary,
+                icon: const Icon(Icons.add_rounded, size: 22),
               ),
+              suffixIcon: widget.suffixIcon,
             ),
           ),
           if (_libraryNotice != null)

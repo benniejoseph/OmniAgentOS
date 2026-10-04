@@ -131,8 +131,8 @@ def navigate(page, origin, path):
 
 
 def select_theme(page, theme, coarse):
-    if coarse:
-        control = page.get_by_role("button", name=re.compile(r"^Theme: "))
+    control = page.get_by_role("button", name=re.compile(r"^Theme: "))
+    if control.count() == 1 and control.is_visible():
         for _ in range(3):
             if control.get_attribute("aria-label").startswith(f"Theme: {theme.title()}."):
                 break
@@ -141,6 +141,14 @@ def select_theme(page, theme, coarse):
     else:
         page.get_by_role("button", name=f"{theme.title()} theme", exact=True).click()
     page.wait_for_function("theme=>document.documentElement.dataset.theme===theme", arg=theme)
+
+
+def set_conversation_options(page, expanded):
+    summary = page.locator('summary[aria-label="Conversation options"]')
+    expect(summary).to_be_visible()
+    disclosure = summary.locator("..")
+    if (disclosure.get_attribute("open") is not None) != expanded:
+        summary.click()
 
 
 def exercise(browser, origin, credentials, checks, coarse):
@@ -172,10 +180,15 @@ def exercise(browser, origin, credentials, checks, coarse):
             page.wait_for_timeout(50)
         checks.check("Hydrated conversation loaded its selected thread", f"/api/threads/{THREAD_ID}" in fixtures.reads)
         field.fill(PROMPT)
+        set_conversation_options(page, True)
         page.get_by_role("button", name="Map view", exact=True).click()
+        set_conversation_options(page, True)
         page.get_by_role("button", name="Chat view", exact=True).click()
+        set_conversation_options(page, False)
         expect(field).to_have_value(PROMPT)
         checks.check("Draft survives Chat/Map", True)
+        label = "phone" if coarse else "desktop"
+        select_theme(page, "light", coarse)
         trigger = page.get_by_role("button", name="Start voice mode with Asael")
         trigger.click()
         dialog = page.get_by_role("dialog", name="Realtime voice to Asael")
@@ -184,6 +197,15 @@ def exercise(browser, origin, credentials, checks, coarse):
         for _ in range(12):
             page.keyboard.press("Tab")
             checks.check("Voice focus remains in dialog", dialog.evaluate("el=>el.contains(document.activeElement)"))
+        checks.snapshot(page, f"voice-{label}-light", coarse)
+        page.keyboard.press("Escape")
+        expect(dialog).to_have_count(0)
+        expect(trigger).to_be_focused()
+        expect(field).to_have_value(PROMPT)
+        select_theme(page, "dark", coarse)
+        trigger.click()
+        expect(dialog).to_be_visible()
+        checks.snapshot(page, f"voice-{label}-dark", coarse)
         page.keyboard.press("Escape")
         expect(dialog).to_have_count(0)
         expect(trigger).to_be_focused()
@@ -193,7 +215,6 @@ def exercise(browser, origin, credentials, checks, coarse):
         expect(field).to_have_value("")
         checks.check("One bounded conversation submission", fixtures.sent and len(fixtures.writes) == 1)
         checks.check("Response markup stays text", page.evaluate("window.untrustedContentRan") is False)
-        label = "phone" if coarse else "desktop"
         for theme in ("light", "dark"):
             select_theme(page, theme, coarse)
             checks.snapshot(page, f"command-{label}-{theme}", coarse)
@@ -297,6 +318,7 @@ def exercise_scope(browser, origin, credentials, checks):
 
         page.evaluate("window.__assistantScopeDocument='same-mounted-document'")
         fixture.plan_read("/api/auth/session", session, hold="same-owner")
+        set_conversation_options(page, True)
         page.get_by_role("button", name="Refresh account access", exact=True).click()
         scope_until(page, lambda: "same-owner" in fixture.held, "Same-owner access check was not held")
         expect(field).to_have_count(0)
@@ -334,9 +356,11 @@ def exercise_scope(browser, origin, credentials, checks):
             if label == "Canonical replacement":
                 # Simulate an asynchronous account-access refresh while the
                 # modal owns focus, through the real refresh control/provider.
+                # The control remains mounted inside the closed disclosure.
                 # This dispatches a DOM click; no React state or callback is replaced.
-                page.get_by_role("button", name="Refresh account access", exact=True).dispatch_event("click")
+                page.get_by_role("button", name="Refresh account access", exact=True, include_hidden=True).dispatch_event("click")
             else:
+                set_conversation_options(page, True)
                 page.get_by_role("button", name="Refresh account access", exact=True).click()
             scope_until(page, lambda: "replacement-access" in fixture.held, "Replacement access check was not held")
             expect(field).to_have_count(0)

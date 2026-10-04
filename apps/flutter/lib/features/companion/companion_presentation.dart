@@ -37,12 +37,12 @@ CompanionWork companionWork({
         ? result(
             'available',
             'Outcome unverified',
-            'Work ended without a confirmed verified outcome.',
+            'The work ended, but its result could not be confirmed.',
           )
         : CompanionWork(
             'completed',
             'Completed',
-            'The recorded outcome is verified.',
+            'The result has been confirmed.',
             runId: runId,
             completionIdentity: identity,
           );
@@ -51,7 +51,7 @@ CompanionWork companionWork({
     'waiting_approval' => result(
       'needs_you',
       'Needs approval',
-      'Review the exact governed action.',
+      'Review the proposed action before it continues.',
     ),
     'waiting_clarification' || 'review' => result(
       'needs_you',
@@ -62,11 +62,11 @@ CompanionWork companionWork({
     'running' ||
     'resuming' => result('working', 'Working', 'Work is in progress.'),
     'paused' => result('paused', 'Paused', 'Work is paused.'),
-    'canceled' => result('paused', 'Canceled', 'The run was canceled.'),
+    'canceled' => result('paused', 'Canceled', 'This work was canceled.'),
     'failed' || 'blocked' => result(
       'blocked',
       'Needs attention',
-      'Review the recorded failure and recovery controls.',
+      'Open the activity details to see what happened and what you can do next.',
     ),
     'reconnecting' => result(
       'blocked',
@@ -79,12 +79,12 @@ CompanionWork companionWork({
           : result(
               'blocked',
               'Status unavailable',
-              'Current run status is unavailable.',
+              'The current work status could not be confirmed.',
             ),
     _ => result(
       'blocked',
       'Status unavailable',
-      'This status does not confirm a completed outcome.',
+      'The result has not been confirmed.',
     ),
   };
 }

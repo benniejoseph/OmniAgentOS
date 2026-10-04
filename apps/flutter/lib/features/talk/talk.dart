@@ -3296,6 +3296,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   bool ambientConsentAccepted = false;
   String strategy = 'auto';
   String commandMode = 'orchestrate';
+  bool composerOptionsExpanded = false;
   final commandReferences = <TalkCommandContextReference>[];
   TalkCommandModelCatalog? commandModelCatalog;
   String? commandModelChoiceId;
@@ -3416,6 +3417,10 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
         CompanionPresence(
           preferences: preferences?.preferences,
           work: widget.controller.companionStatus,
+          statusDetail: widget.controller.status == null
+              ? null
+              : _humanCommandStatus(widget.controller.status!),
+          showPortrait: widget.controller.messages.isNotEmpty,
           reactionScope: widget.controller.threadId == null
               ? null
               : (
@@ -3433,7 +3438,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
               ? () => unawaited(_openCompanionConversation(homeId))
               : null,
           homeDisabledReason: openingCompanionHome
-              ? 'Opening the exact owned conversation…'
+              ? 'Opening your conversation…'
               : homeId != null
               ? blocked
               : preferences?.preferences.preferredThreadId != null
@@ -3510,6 +3515,9 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   @override
   void didUpdateWidget(covariant TalkView oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller) {
+      composerOptionsExpanded = false;
+    }
     if (oldWidget.companionController != widget.companionController) {
       oldWidget.companionController?.removeListener(_handleCompanionChanged);
       widget.companionController?.addListener(_handleCompanionChanged);
@@ -4767,7 +4775,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                                       ),
                                     ),
                                     Text(
-                                      'Start governed work from anywhere',
+                                      'Start a request from anywhere',
                                       style: TextStyle(fontSize: 11.5),
                                     ),
                                   ],
@@ -4878,7 +4886,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                               Expanded(
                                 child: Text(
                                   widget.controller.status ??
-                                      '${executionTarget.label} · governed · Esc to close',
+                                      '${executionTarget.label} · Esc to close',
                                   overflow: TextOverflow.ellipsis,
                                   style: TextStyle(
                                     color: scheme.onSurfaceVariant,
@@ -4922,15 +4930,14 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
 
   Widget _buildWorkspace(BuildContext context, {required bool railVisible}) {
     final macos = usesMacosPresentation();
-    final mac = MacosThemeColors.of(context);
     return Scaffold(
       appBar: AppBar(
-        toolbarHeight: macos ? 52 : null,
-        titleSpacing: macos ? 18 : null,
+        toolbarHeight: 56,
+        titleSpacing: 20,
         title: ListenableBuilder(
           listenable: widget.controller,
           builder: (_, _) => Text(
-            widget.controller.selectedThread?.title ?? 'Conversation',
+            widget.controller.selectedThread?.title ?? 'Assistant',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
           ),
@@ -4942,13 +4949,6 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
               onPressed: () => unawaited(_openAmbientFromToolbar()),
               icon: const Icon(Icons.graphic_eq_rounded),
             ),
-          if (appDesktopHostBridge.supported)
-            IconButton(
-              tooltip: 'Open a new Conversation window',
-              onPressed: () =>
-                  appDesktopHostBridge.openWorkspaceWindow('/talk'),
-              icon: const Icon(Icons.open_in_new_rounded),
-            ),
           if (widget.controller.conversationHistorySupported)
             IconButton(
               tooltip: 'Conversation history',
@@ -4957,78 +4957,64 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
             ),
           ListenableBuilder(
             listenable: widget.controller,
-            builder: (_, _) {
-              if (railVisible) return const SizedBox.shrink();
-              return Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  IconButton(
-                    tooltip: 'What Asael is doing',
-                    onPressed: () => _openRailSheet(_TalkRailSection.activity),
-                    icon: widget.controller.activities.isEmpty
-                        ? const Icon(Icons.bolt_outlined)
-                        : Badge.count(
-                            count: widget.controller.activities.length,
-                            child: const Icon(Icons.bolt_outlined),
-                          ),
-                  ),
-                  if (widget.controller.artifacts.isNotEmpty)
-                    IconButton(
-                      tooltip: 'Run artifacts',
-                      onPressed: _openArtifactsSheet,
-                      icon: Badge.count(
-                        count: widget.controller.artifacts.length,
-                        child: const Icon(Icons.auto_awesome_mosaic_outlined),
-                      ),
-                    ),
-                  IconButton(
-                    tooltip: 'Prompt queue',
-                    onPressed: _openPromptQueueSheet,
-                    icon: widget.controller.promptQueue.isEmpty
-                        ? const Icon(Icons.playlist_play_rounded)
-                        : Badge.count(
-                            count: widget.controller.promptQueue.length,
-                            child: const Icon(Icons.playlist_play_rounded),
-                          ),
-                  ),
-                ],
-              );
-            },
-          ),
-          Padding(
-            padding: const EdgeInsets.only(right: 12),
-            child: Center(
-              child: Tooltip(
-                message: macos
-                    ? 'Your work stays inside Asael\'s protected, approval-aware execution boundary.'
-                    : 'Actions are governed by approvals and policy.',
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 6,
-                  ),
-                  decoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.surfaceContainerHigh,
-                    borderRadius: BorderRadius.circular(macos ? 6 : 99),
-                    border: macos ? Border.all(color: mac.divider) : null,
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        macos
-                            ? Icons.lock_outline_rounded
-                            : Icons.shield_outlined,
-                        size: 15,
-                      ),
-                      const SizedBox(width: 5),
-                      Text(macos ? 'Private & protected' : 'Governed'),
-                    ],
+            builder: (_, _) => PopupMenuButton<_TalkWorkspaceAction>(
+              tooltip: 'Conversation actions',
+              icon: const Icon(Icons.more_horiz_rounded),
+              onSelected: (action) {
+                switch (action) {
+                  case _TalkWorkspaceAction.activity:
+                    _openRailSheet(_TalkRailSection.activity);
+                  case _TalkWorkspaceAction.artifacts:
+                    _openArtifactsSheet();
+                  case _TalkWorkspaceAction.queue:
+                    _openPromptQueueSheet();
+                  case _TalkWorkspaceAction.newWindow:
+                    unawaited(
+                      appDesktopHostBridge.openWorkspaceWindow('/talk'),
+                    );
+                }
+              },
+              itemBuilder: (_) => [
+                PopupMenuItem(
+                  value: _TalkWorkspaceAction.activity,
+                  child: ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.bolt_outlined),
+                    title: const Text('What Asael is doing'),
+                    trailing: Text('${widget.controller.activities.length}'),
                   ),
                 ),
-              ),
+                PopupMenuItem(
+                  value: _TalkWorkspaceAction.artifacts,
+                  child: ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.auto_awesome_mosaic_outlined),
+                    title: const Text('Run artifacts'),
+                    trailing: Text('${widget.controller.artifacts.length}'),
+                  ),
+                ),
+                PopupMenuItem(
+                  value: _TalkWorkspaceAction.queue,
+                  child: ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.playlist_play_rounded),
+                    title: const Text('Prompt queue'),
+                    trailing: Text('${widget.controller.promptQueue.length}'),
+                  ),
+                ),
+                if (appDesktopHostBridge.supported)
+                  const PopupMenuItem(
+                    value: _TalkWorkspaceAction.newWindow,
+                    child: ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(Icons.open_in_new_rounded),
+                      title: Text('Open a new Conversation window'),
+                    ),
+                  ),
+              ],
             ),
           ),
+          const SizedBox(width: 8),
         ],
       ),
       body: ListenableBuilder(
@@ -5043,49 +5029,59 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                 if (widget.companionController != null ||
                     widget.requestedThreadId != null)
                   _buildCompanionPresence(),
-                AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 180),
-                  transitionBuilder: (child, animation) => FadeTransition(
-                    opacity: animation,
-                    child: SizeTransition(
-                      sizeFactor: animation,
-                      alignment: Alignment.topCenter,
-                      child: child,
+                if (widget.companionController == null &&
+                    widget.requestedThreadId == null)
+                  AnimatedSwitcher(
+                    duration: MediaQuery.disableAnimationsOf(context)
+                        ? Duration.zero
+                        : const Duration(milliseconds: 180),
+                    transitionBuilder: (child, animation) => FadeTransition(
+                      opacity: animation,
+                      child: SizeTransition(
+                        sizeFactor: animation,
+                        alignment: Alignment.topCenter,
+                        child: child,
+                      ),
                     ),
-                  ),
-                  child: widget.controller.status != null
-                      ? Container(
-                          key: ValueKey(widget.controller.status),
-                          width: double.infinity,
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 18,
-                            vertical: 9,
-                          ),
-                          color: Theme.of(context)
-                              .colorScheme
-                              .surfaceContainerLow,
-                          child: Row(
-                            children: [
-                              _CommandLiveGlyph(
-                                preferences: widget
-                                    .companionController
-                                    ?.current
-                                    ?.preferences,
-                                scopeKey: (
-                                  widget.controller,
-                                  widget.controller.threadId,
+                    child: widget.controller.status != null
+                        ? Container(
+                            key: ValueKey(widget.controller.status),
+                            width: double.infinity,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 18,
+                              vertical: 9,
+                            ),
+                            color: Theme.of(context)
+                                .colorScheme
+                                .surfaceContainerLow,
+                            child: Row(
+                              children: [
+                                _CommandLiveGlyph(
+                                  preferences: widget
+                                      .companionController
+                                      ?.current
+                                      ?.preferences,
+                                  scopeKey: (
+                                    widget.controller,
+                                    widget.controller.threadId,
+                                  ),
                                 ),
-                              ),
-                              const SizedBox(width: 10),
-                              Text(
-                                _humanCommandStatus(widget.controller.status!),
-                                style: Theme.of(context).textTheme.labelLarge,
-                              ),
-                            ],
-                          ),
-                        )
-                      : const SizedBox.shrink(key: ValueKey('idle')),
-                ),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Text(
+                                    _humanCommandStatus(
+                                      widget.controller.status!,
+                                    ),
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .labelLarge,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          )
+                        : const SizedBox.shrink(key: ValueKey('idle')),
+                  ),
                 TalkThreadProjectionBanner(controller: widget.controller),
                 Expanded(
                   child: widget.controller.messages.isEmpty
@@ -5123,167 +5119,170 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                                     artifact.kind == 'computer' ||
                                     artifact.kind == 'terminal');
                             return Align(
-                              alignment: m.role == TalkRole.user
-                                  ? Alignment.centerRight
-                                  : Alignment.centerLeft,
-                              child: Container(
+                              alignment: Alignment.topCenter,
+                              child: ConstrainedBox(
                                 constraints: const BoxConstraints(
-                                  maxWidth: 760,
+                                  maxWidth: 700,
                                 ),
-                                margin: EdgeInsets.only(
-                                  bottom: macos ? 10 : 14,
-                                ),
-                                padding: EdgeInsets.symmetric(
-                                  horizontal: macos ? 14 : 16,
-                                  vertical: macos ? 11 : 14,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: m.role == TalkRole.user
-                                      ? Theme.of(context)
-                                            .colorScheme
-                                            .primaryContainer
-                                      : Theme.of(context)
-                                            .colorScheme
-                                            .surfaceContainerHigh,
-                                  borderRadius: BorderRadius.only(
-                                    topLeft: Radius.circular(macos ? 9 : 20),
-                                    topRight: Radius.circular(macos ? 9 : 20),
-                                    bottomLeft: Radius.circular(
-                                      macos
-                                          ? (m.role == TalkRole.user ? 9 : 4)
-                                          : (m.role == TalkRole.user ? 20 : 6),
+                                child: Align(
+                                  alignment: m.role == TalkRole.user
+                                      ? Alignment.centerRight
+                                      : Alignment.centerLeft,
+                                  child: Container(
+                                    width: m.role == TalkRole.assistant
+                                        ? double.infinity
+                                        : null,
+                                    constraints: BoxConstraints(
+                                      maxWidth: m.role == TalkRole.user
+                                          ? 580
+                                          : 700,
                                     ),
-                                    bottomRight: Radius.circular(
-                                      macos
-                                          ? (m.role == TalkRole.user ? 4 : 9)
-                                          : (m.role == TalkRole.user ? 6 : 20),
+                                    margin: const EdgeInsets.only(bottom: 28),
+                                    padding: EdgeInsets.symmetric(
+                                      horizontal: m.role == TalkRole.user
+                                          ? 18
+                                          : 0,
+                                      vertical: m.role == TalkRole.user
+                                          ? 14
+                                          : 4,
                                     ),
-                                  ),
-                                  border: m.failed
-                                      ? Border.all(
-                                          color: Theme.of(context)
-                                              .colorScheme
-                                              .error,
-                                        )
-                                      : macos
-                                      ? Border.all(color: mac.divider)
-                                      : null,
-                                ),
-                                child: m.streaming && m.text.isEmpty
-                                    ? AtlasPortrait(
-                                        state: 'working',
-                                        size: 38,
-                                        preferences: widget
-                                            .companionController
-                                            ?.current
-                                            ?.preferences,
-                                        scopeKey: (
-                                          widget.controller,
-                                          widget.controller.threadId,
-                                        ),
-                                      )
-                                    : Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          if (m.role == TalkRole.assistant)
-                                            TalkRichMessage(
-                                              text: m.text,
-                                              failed: m.failed,
-                                            )
-                                          else
-                                            SelectableText(m.text),
-                                          if (showArtifact) ...[
-                                            const SizedBox(height: 12),
-                                            _TalkInlineArtifactPreview(
-                                              artifact: artifact,
-                                              content: artifactContent,
-                                            ),
-                                          ],
-                                          if (m.role == TalkRole.assistant &&
-                                              !m.streaming &&
-                                              m.text.isNotEmpty) ...[
-                                            const SizedBox(height: 9),
-                                            Divider(
-                                              height: 1,
+                                    decoration: BoxDecoration(
+                                      color: m.role == TalkRole.user
+                                          ? Theme.of(context)
+                                                .colorScheme
+                                                .surfaceContainerHigh
+                                          : Colors.transparent,
+                                      borderRadius: BorderRadius.circular(16),
+                                      border: m.failed
+                                          ? Border.all(
                                               color: Theme.of(context)
                                                   .colorScheme
-                                                  .outlineVariant,
+                                                  .error,
+                                            )
+                                          : null,
+                                    ),
+                                    child: m.streaming && m.text.isEmpty
+                                        ? AtlasPortrait(
+                                            state: 'working',
+                                            size: 38,
+                                            preferences: widget
+                                                .companionController
+                                                ?.current
+                                                ?.preferences,
+                                            scopeKey: (
+                                              widget.controller,
+                                              widget.controller.threadId,
                                             ),
-                                            const SizedBox(height: 5),
-                                            Wrap(
-                                              spacing: 4,
-                                              runSpacing: 4,
-                                              children: [
-                                                TextButton.icon(
-                                                  onPressed: () =>
-                                                      _copyAssistantResponse(
-                                                        m.text,
+                                          )
+                                        : Column(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.start,
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              if (m.role == TalkRole.assistant)
+                                                TalkRichMessage(
+                                                  text: m.text,
+                                                  failed: m.failed,
+                                                )
+                                              else
+                                                SelectableText(
+                                                  m.text,
+                                                  style: Theme.of(context)
+                                                      .textTheme
+                                                      .bodyLarge
+                                                      ?.copyWith(
+                                                        fontSize: 16,
+                                                        height: 1.55,
                                                       ),
+                                                ),
+                                              if (showArtifact) ...[
+                                                const SizedBox(height: 12),
+                                                _TalkInlineArtifactPreview(
+                                                  artifact: artifact,
+                                                  content: artifactContent,
+                                                ),
+                                              ],
+                                              if (m.role ==
+                                                      TalkRole.assistant &&
+                                                  !m.streaming &&
+                                                  m.text.isNotEmpty) ...[
+                                                const SizedBox(height: 9),
+                                                Wrap(
+                                                  spacing: 4,
+                                                  runSpacing: 4,
+                                                  children: [
+                                                    TextButton.icon(
+                                                      onPressed: () =>
+                                                          _copyAssistantResponse(
+                                                            m.text,
+                                                          ),
+                                                      icon: const Icon(
+                                                        Icons.copy_rounded,
+                                                        size: 15,
+                                                      ),
+                                                      label: const Text(
+                                                        'Copy answer',
+                                                      ),
+                                                    ),
+                                                    if (i ==
+                                                            widget
+                                                                    .controller
+                                                                    .messages
+                                                                    .length -
+                                                                1 &&
+                                                        widget
+                                                            .controller
+                                                            .activities
+                                                            .isNotEmpty)
+                                                      TextButton.icon(
+                                                        onPressed: () =>
+                                                            _openRailSheet(
+                                                              _TalkRailSection
+                                                                  .activity,
+                                                            ),
+                                                        icon: const Icon(
+                                                          Icons.bolt_outlined,
+                                                          size: 15,
+                                                        ),
+                                                        label: const Text(
+                                                          'View work',
+                                                        ),
+                                                      ),
+                                                  ],
+                                                ),
+                                              ],
+                                              if (m.failed &&
+                                                  i ==
+                                                      widget
+                                                              .controller
+                                                              .messages
+                                                              .length -
+                                                          1) ...[
+                                                const SizedBox(height: 8),
+                                                TextButton.icon(
+                                                  onPressed:
+                                                      widget.controller.canRetry
+                                                      ? widget
+                                                            .controller
+                                                            .retryLast
+                                                      : null,
                                                   icon: const Icon(
-                                                    Icons.copy_rounded,
-                                                    size: 15,
+                                                    Icons.refresh_rounded,
                                                   ),
-                                                  label: const Text(
-                                                    'Copy answer',
+                                                  label: Text(
+                                                    widget
+                                                                .controller
+                                                                ._retryAssignedAgent ==
+                                                            null
+                                                        ? 'Retry'
+                                                        : 'Retry as ${widget.controller._retryAssignedAgent!.name}',
                                                   ),
                                                 ),
-                                                if (i ==
-                                                        widget
-                                                                .controller
-                                                                .messages
-                                                                .length -
-                                                            1 &&
-                                                    widget
-                                                        .controller
-                                                        .activities
-                                                        .isNotEmpty)
-                                                  TextButton.icon(
-                                                    onPressed: () =>
-                                                        _openRailSheet(
-                                                          _TalkRailSection
-                                                              .activity,
-                                                        ),
-                                                    icon: const Icon(
-                                                      Icons.bolt_outlined,
-                                                      size: 15,
-                                                    ),
-                                                    label: const Text(
-                                                      'View work',
-                                                    ),
-                                                  ),
                                               ],
-                                            ),
-                                          ],
-                                          if (m.failed &&
-                                              i ==
-                                                  widget
-                                                          .controller
-                                                          .messages
-                                                          .length -
-                                                      1) ...[
-                                            const SizedBox(height: 8),
-                                            TextButton.icon(
-                                              onPressed:
-                                                  widget.controller.canRetry
-                                                  ? widget.controller.retryLast
-                                                  : null,
-                                              icon: const Icon(
-                                                Icons.refresh_rounded,
-                                              ),
-                                              label: Text(
-                                                widget
-                                                            .controller
-                                                            ._retryAssignedAgent ==
-                                                        null
-                                                    ? 'Retry'
-                                                    : 'Retry as ${widget.controller._retryAssignedAgent!.name}',
-                                              ),
-                                            ),
-                                          ],
-                                        ],
-                                      ),
+                                            ],
+                                          ),
+                                  ),
+                                ),
                               ),
                             );
                           },
@@ -5292,270 +5291,327 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                 SafeArea(
                   top: false,
                   child: Container(
-                    margin: EdgeInsets.fromLTRB(
-                      macos ? 16 : 10,
-                      0,
-                      macos ? 16 : 10,
-                      macos ? 12 : 8,
-                    ),
-                    padding: EdgeInsets.fromLTRB(
-                      macos ? 12 : 14,
-                      macos ? 10 : 12,
-                      macos ? 12 : 14,
-                      macos ? 12 : 14,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.surface,
-                      borderRadius: BorderRadius.circular(macos ? 10 : 24),
-                      border: macos ? Border.all(color: mac.divider) : null,
-                      boxShadow: macos
-                          ? const []
-                          : [
-                              BoxShadow(
-                                color: Colors.black.withValues(alpha: .07),
-                                blurRadius: 24,
-                                offset: const Offset(0, 8),
-                              ),
-                            ],
-                    ),
+                    constraints: const BoxConstraints(maxWidth: 732),
+                    margin: EdgeInsets.fromLTRB(12, 0, 12, macos ? 12 : 8),
+                    padding: const EdgeInsets.only(top: 4),
                     child: Center(
                       child: ConstrainedBox(
-                        constraints: const BoxConstraints(maxWidth: 820),
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Align(
-                              alignment: Alignment.centerLeft,
-                              child: Wrap(
-                                spacing: 10,
-                                runSpacing: 8,
-                                crossAxisAlignment: WrapCrossAlignment.center,
-                                children: [
-                                  if (assignedAgent != null)
-                                    InputChip(
-                                      key: const ValueKey(
-                                        'talk-assigned-agent',
-                                      ),
-                                      avatar: const Icon(
-                                        Icons.smart_toy_outlined,
-                                        size: 17,
-                                      ),
-                                      label: Text(
-                                        '${assignedAgent.name} · selected Agent',
-                                      ),
-                                      tooltip:
-                                          'Commands run directly as ${assignedAgent.name}',
-                                      onDeleted: widget.controller.sending
-                                          ? null
-                                          : clearAssignedAgent,
+                        constraints: BoxConstraints(
+                          maxWidth: 700,
+                          maxHeight: math.max(0, constraints.maxHeight * .6),
+                        ),
+                        child: SingleChildScrollView(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Align(
+                                alignment: Alignment.centerLeft,
+                                child: Semantics(
+                                  expanded: composerOptionsExpanded,
+                                  child: TextButton.icon(
+                                    key: const ValueKey(
+                                      'talk-composer-options',
                                     ),
-                                  SegmentedButton<String>(
-                                    segments: [
-                                      ButtonSegment(
-                                        value: 'auto',
-                                        label: Text(
-                                          macos ? 'Use a team' : 'Orchestrate',
-                                        ),
-                                        tooltip: macos
-                                            ? 'Let Asael bring in specialists when they help'
-                                            : null,
-                                        icon: const Icon(
-                                          Icons.groups_2_outlined,
-                                          size: 16,
-                                        ),
+                                    onPressed: () => setState(
+                                      () => composerOptionsExpanded =
+                                          !composerOptionsExpanded,
+                                    ),
+                                    icon: Icon(
+                                      composerOptionsExpanded
+                                          ? Icons.expand_less_rounded
+                                          : Icons.tune_rounded,
+                                      size: 18,
+                                    ),
+                                    label: Text(
+                                      assignedAgent != null
+                                          ? '${assignedAgent.name} · Options and context'
+                                          : executionTarget ==
+                                                TalkExecutionTarget.thisMac
+                                          ? 'This Mac · Options and context'
+                                          : 'Options and context',
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              if (composerOptionsExpanded)
+                                ConstrainedBox(
+                                  constraints: BoxConstraints(
+                                    maxHeight: constraints.maxHeight * .3 > 240
+                                        ? 240
+                                        : constraints.maxHeight * .3,
+                                  ),
+                                  child: SingleChildScrollView(
+                                    child: Align(
+                                      alignment: Alignment.centerLeft,
+                                      child: Wrap(
+                                        spacing: 10,
+                                        runSpacing: 8,
+                                        crossAxisAlignment:
+                                            WrapCrossAlignment.center,
+                                        children: [
+                                          if (assignedAgent != null)
+                                            InputChip(
+                                              key: const ValueKey(
+                                                'talk-assigned-agent',
+                                              ),
+                                              avatar: const Icon(
+                                                Icons.smart_toy_outlined,
+                                                size: 17,
+                                              ),
+                                              label: Text(
+                                                '${assignedAgent.name} · selected Agent',
+                                              ),
+                                              tooltip:
+                                                  'Commands run directly as ${assignedAgent.name}',
+                                              onDeleted:
+                                                  widget.controller.sending
+                                                  ? null
+                                                  : clearAssignedAgent,
+                                            ),
+                                          SegmentedButton<String>(
+                                            direction:
+                                                MediaQuery.textScalerOf(context)
+                                                        .scale(14) >
+                                                    20
+                                                ? Axis.vertical
+                                                : Axis.horizontal,
+                                            segments: [
+                                              ButtonSegment(
+                                                value: 'auto',
+                                                label: Text('Use a team'),
+                                                tooltip: macos
+                                                    ? 'Let Asael bring in specialists when they help'
+                                                    : null,
+                                                icon: const Icon(
+                                                  Icons.groups_2_outlined,
+                                                  size: 16,
+                                                ),
+                                              ),
+                                              ButtonSegment(
+                                                value: 'direct',
+                                                label: Text('Work alone'),
+                                                tooltip: macos
+                                                    ? 'Keep this request with one agent'
+                                                    : null,
+                                                icon: const Icon(
+                                                  Icons.person_outline_rounded,
+                                                  size: 16,
+                                                ),
+                                              ),
+                                            ],
+                                            selected: {
+                                              assignedAgent == null
+                                                  ? strategy
+                                                  : 'direct',
+                                            },
+                                            showSelectedIcon: false,
+                                            style: const ButtonStyle(
+                                              visualDensity:
+                                                  VisualDensity.compact,
+                                            ),
+                                            onSelectionChanged:
+                                                assignedAgent != null
+                                                ? null
+                                                : (value) => setState(
+                                                    () =>
+                                                        strategy = value.first,
+                                                  ),
+                                          ),
+                                          _ModelThinkingControls(
+                                            catalog: commandModelCatalog,
+                                            selectedChoiceId:
+                                                commandModelChoiceId,
+                                            reasoningLevel:
+                                                commandReasoningLevel,
+                                            loading: commandModelLoading,
+                                            error: commandModelError,
+                                            onModelChanged: selectCommandModel,
+                                            onReasoningChanged:
+                                                selectCommandReasoning,
+                                            onRefresh: () => unawaited(
+                                              loadCommandModelCatalog(),
+                                            ),
+                                          ),
+                                          _ExecutionTargetMenu(
+                                            value: executionTarget,
+                                            localComputer: widget.localComputer,
+                                            onChanged: selectExecutionTarget,
+                                          ),
+                                        ],
                                       ),
-                                      ButtonSegment(
-                                        value: 'direct',
-                                        label: Text(
-                                          macos ? 'Work alone' : 'Direct',
-                                        ),
-                                        tooltip: macos
-                                            ? 'Keep this request with one agent'
-                                            : null,
-                                        icon: const Icon(
-                                          Icons.person_outline_rounded,
-                                          size: 16,
+                                    ),
+                                  ),
+                                ),
+                              if (composerOptionsExpanded)
+                                const Padding(
+                                  padding: EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                    vertical: 8,
+                                  ),
+                                  child: Text(
+                                    'Type / for an approach or Skill, @ to choose context, or + to attach from Library.',
+                                    style: TextStyle(fontSize: 13, height: 1.4),
+                                  ),
+                                ),
+                              const SizedBox(height: 8),
+                              if (macos &&
+                                  (startingVoiceDraft ||
+                                      recording ||
+                                      finalizingVoiceDraft ||
+                                      widget.controller.transcribing ||
+                                      voiceErrorMessage != null ||
+                                      voiceDraftNotice != null))
+                                Padding(
+                                  padding: const EdgeInsets.only(bottom: 8),
+                                  child: _VoiceDraftFeedback(
+                                    preferences: widget
+                                        .companionController
+                                        ?.current
+                                        ?.preferences,
+                                    scopeKey: (
+                                      widget.controller,
+                                      widget.controller.threadId,
+                                    ),
+                                    starting: startingVoiceDraft,
+                                    recording: recording,
+                                    finalizing: finalizingVoiceDraft,
+                                    transcribing:
+                                        widget.controller.transcribing,
+                                    level: voiceLevel,
+                                    error: voiceErrorMessage,
+                                    notice: voiceDraftNotice,
+                                    onDismiss: voiceDraftBusy
+                                        ? null
+                                        : _dismissVoiceFeedback,
+                                    onRecordAgain:
+                                        voiceErrorMessage == null ||
+                                            widget.controller.sending ||
+                                            widget.controller.transcribing
+                                        ? null
+                                        : _retryVoiceDraft,
+                                  ),
+                                ),
+                              if (!macos &&
+                                  (startingVoiceDraft ||
+                                      recording ||
+                                      finalizingVoiceDraft ||
+                                      widget.controller.transcribing))
+                                Padding(
+                                  padding: const EdgeInsets.only(bottom: 8),
+                                  child: Row(
+                                    children: [
+                                      Icon(
+                                        recording
+                                            ? Icons.mic_rounded
+                                            : Icons.graphic_eq,
+                                        color: recording
+                                            ? Theme.of(context)
+                                                  .colorScheme
+                                                  .error
+                                            : Theme.of(context)
+                                                  .colorScheme
+                                                  .primary,
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: Text(
+                                          startingVoiceDraft
+                                              ? 'Opening the microphone…'
+                                              : recording
+                                              ? 'Recording · tap stop to review transcript'
+                                              : finalizingVoiceDraft
+                                              ? 'Finishing the recording…'
+                                              : 'Turning voice into an editable draft…',
                                         ),
                                       ),
                                     ],
-                                    selected: {
-                                      assignedAgent == null
-                                          ? strategy
-                                          : 'direct',
-                                    },
-                                    showSelectedIcon: false,
-                                    style: const ButtonStyle(
-                                      visualDensity: VisualDensity.compact,
-                                    ),
-                                    onSelectionChanged: assignedAgent != null
-                                        ? null
-                                        : (value) => setState(
-                                            () => strategy = value.first,
-                                          ),
                                   ),
-                                  _ModelThinkingControls(
-                                    catalog: commandModelCatalog,
-                                    selectedChoiceId: commandModelChoiceId,
-                                    reasoningLevel: commandReasoningLevel,
-                                    loading: commandModelLoading,
-                                    error: commandModelError,
-                                    onModelChanged: selectCommandModel,
-                                    onReasoningChanged: selectCommandReasoning,
-                                    onRefresh: () =>
-                                        unawaited(loadCommandModelCatalog()),
-                                  ),
-                                  _ExecutionTargetMenu(
-                                    value: executionTarget,
-                                    localComputer: widget.localComputer,
-                                    onChanged: selectExecutionTarget,
-                                  ),
-                                ],
-                              ),
-                            ),
-                            const SizedBox(height: 8),
-                            if (macos &&
-                                (startingVoiceDraft ||
-                                    recording ||
-                                    finalizingVoiceDraft ||
-                                    widget.controller.transcribing ||
-                                    voiceErrorMessage != null ||
-                                    voiceDraftNotice != null))
-                              Padding(
-                                padding: const EdgeInsets.only(bottom: 8),
-                                child: _VoiceDraftFeedback(
-                                  preferences: widget
-                                      .companionController
-                                      ?.current
-                                      ?.preferences,
-                                  scopeKey: (
-                                    widget.controller,
-                                    widget.controller.threadId,
-                                  ),
-                                  starting: startingVoiceDraft,
-                                  recording: recording,
-                                  finalizing: finalizingVoiceDraft,
-                                  transcribing: widget.controller.transcribing,
-                                  level: voiceLevel,
-                                  error: voiceErrorMessage,
-                                  notice: voiceDraftNotice,
-                                  onDismiss: voiceDraftBusy
-                                      ? null
-                                      : _dismissVoiceFeedback,
-                                  onRecordAgain:
-                                      voiceErrorMessage == null ||
-                                          widget.controller.sending ||
-                                          widget.controller.transcribing
-                                      ? null
-                                      : _retryVoiceDraft,
                                 ),
-                              ),
-                            if (!macos &&
-                                (startingVoiceDraft ||
-                                    recording ||
-                                    finalizingVoiceDraft ||
-                                    widget.controller.transcribing))
-                              Padding(
-                                padding: const EdgeInsets.only(bottom: 8),
-                                child: Row(
+                              if (!macos && voiceErrorMessage != null)
+                                Padding(
+                                  padding: const EdgeInsets.only(bottom: 8),
+                                  child: Align(
+                                    alignment: Alignment.centerLeft,
+                                    child: Text(
+                                      voiceErrorMessage,
+                                      style: TextStyle(
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .error,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              TalkCommandComposer(
+                                controller: input,
+                                focusNode: inputFocus,
+                                selected: commandReferences,
+                                catalogLoader:
+                                    widget.controller.loadCommandContextCatalog,
+                                onSelected: selectCommandReference,
+                                onRemoved: removeCommandReference,
+                                onApproach: selectCommandApproach,
+                                autofocus:
+                                    !kIsWeb &&
+                                    defaultTargetPlatform ==
+                                        TargetPlatform.macOS,
+                                minLines: 1,
+                                maxLines: 5,
+                                onSubmitted: voiceDraftBusy
+                                    ? null
+                                    : (_) => submit(),
+                                hintText: 'Message Asael…',
+                                suffixIcon: Row(
+                                  mainAxisSize: MainAxisSize.min,
                                   children: [
-                                    Icon(
-                                      recording
-                                          ? Icons.mic_rounded
-                                          : Icons.graphic_eq,
+                                    IconButton(
+                                      tooltip: startingVoiceDraft
+                                          ? 'Opening microphone'
+                                          : finalizingVoiceDraft
+                                          ? 'Finishing voice draft'
+                                          : recording
+                                          ? 'Stop and transcribe voice draft'
+                                          : 'Record voice draft',
+                                      onPressed:
+                                          widget.controller.sending ||
+                                              widget.controller.transcribing ||
+                                              startingVoiceDraft ||
+                                              finalizingVoiceDraft
+                                          ? null
+                                          : toggleVoiceDraft,
                                       color: recording
                                           ? Theme.of(context).colorScheme.error
-                                          : Theme.of(context)
-                                                .colorScheme
-                                                .primary,
+                                          : null,
+                                      icon: Icon(
+                                        recording
+                                            ? Icons.stop_circle_outlined
+                                            : Icons.mic_none_rounded,
+                                      ),
                                     ),
-                                    const SizedBox(width: 8),
-                                    Text(
-                                      startingVoiceDraft
-                                          ? 'Opening the microphone…'
-                                          : recording
-                                          ? 'Recording · tap stop to review transcript'
-                                          : finalizingVoiceDraft
-                                          ? 'Finishing the recording…'
-                                          : 'Turning voice into an editable draft…',
+                                    IconButton(
+                                      tooltip: widget.controller.sending
+                                          ? 'Add to prompt queue'
+                                          : 'Send message',
+                                      onPressed: voiceDraftBusy ? null : submit,
+                                      style: IconButton.styleFrom(
+                                        backgroundColor: Theme.of(context)
+                                            .colorScheme
+                                            .primary,
+                                        foregroundColor: Theme.of(context)
+                                            .colorScheme
+                                            .onPrimary,
+                                      ),
+                                      icon: Icon(
+                                        widget.controller.sending
+                                            ? Icons.playlist_add_rounded
+                                            : Icons.arrow_upward_rounded,
+                                      ),
                                     ),
                                   ],
                                 ),
                               ),
-                            if (!macos && voiceErrorMessage != null)
-                              Padding(
-                                padding: const EdgeInsets.only(bottom: 8),
-                                child: Align(
-                                  alignment: Alignment.centerLeft,
-                                  child: Text(
-                                    voiceErrorMessage,
-                                    style: TextStyle(
-                                      color: Theme.of(context)
-                                          .colorScheme
-                                          .error,
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            TalkCommandComposer(
-                              controller: input,
-                              focusNode: inputFocus,
-                              selected: commandReferences,
-                              catalogLoader:
-                                  widget.controller.loadCommandContextCatalog,
-                              onSelected: selectCommandReference,
-                              onRemoved: removeCommandReference,
-                              onApproach: selectCommandApproach,
-                              autofocus:
-                                  !kIsWeb &&
-                                  defaultTargetPlatform == TargetPlatform.macOS,
-                              minLines: 1,
-                              maxLines: 5,
-                              onSubmitted: voiceDraftBusy
-                                  ? null
-                                  : (_) => submit(),
-                              hintText: 'Describe an outcome or ask a question',
-                              suffixIcon: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  IconButton(
-                                    tooltip: startingVoiceDraft
-                                        ? 'Opening microphone'
-                                        : finalizingVoiceDraft
-                                        ? 'Finishing voice draft'
-                                        : recording
-                                        ? 'Stop and transcribe voice draft'
-                                        : 'Record voice draft',
-                                    onPressed:
-                                        widget.controller.sending ||
-                                            widget.controller.transcribing ||
-                                            startingVoiceDraft ||
-                                            finalizingVoiceDraft
-                                        ? null
-                                        : toggleVoiceDraft,
-                                    color: recording
-                                        ? Theme.of(context).colorScheme.error
-                                        : null,
-                                    icon: Icon(
-                                      recording
-                                          ? Icons.stop_circle_outlined
-                                          : Icons.mic_none_rounded,
-                                    ),
-                                  ),
-                                  IconButton(
-                                    tooltip: widget.controller.sending
-                                        ? 'Add to prompt queue'
-                                        : 'Send message',
-                                    onPressed: voiceDraftBusy ? null : submit,
-                                    icon: Icon(
-                                      widget.controller.sending
-                                          ? Icons.playlist_add_rounded
-                                          : Icons.arrow_upward_rounded,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ],
+                            ],
+                          ),
                         ),
                       ),
                     ),
@@ -5614,6 +5670,8 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
 const double _talkRailBreakpoint = 1180;
 
 enum _TalkRailSection { activity, artifacts, queue }
+
+enum _TalkWorkspaceAction { activity, artifacts, queue, newWindow }
 
 class _TalkInlineArtifactPreview extends StatelessWidget {
   const _TalkInlineArtifactPreview({
@@ -6193,7 +6251,7 @@ class _ExecutionTargetMenu extends StatelessWidget {
         child: PopupMenuButton<String>(
           key: const ValueKey('talk-execution-target'),
           initialValue: 'target:${value.name}',
-          constraints: const BoxConstraints(minWidth: 340, maxWidth: 420),
+          constraints: const BoxConstraints(minWidth: 260, maxWidth: 420),
           tooltip: 'Choose how Asael can work',
           onSelected: (selection) {
             if (selection == 'target:agent') {
@@ -7947,7 +8005,6 @@ class _TalkEmpty extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final macos = usesMacosPresentation();
     // Centred when it fits, and scrollable when the keyboard or a larger
     // text size leaves less room than it needs.
     return LayoutBuilder(
@@ -7956,54 +8013,45 @@ class _TalkEmpty extends StatelessWidget {
           constraints: BoxConstraints(minHeight: constraints.maxHeight),
           child: Center(
             child: Padding(
-              padding: const EdgeInsets.all(32),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (macos)
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 440),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
                     AtlasPortrait(
                       state: loading ? 'working' : 'available',
-                      size: 132,
+                      size: 96,
                       preferences: preferences,
                       scopeKey: scopeKey,
-                    )
-                  else if (loading)
-                    const SizedBox.square(
-                      dimension: 38,
-                      child: CircularProgressIndicator(strokeWidth: 2.5),
-                    )
-                  else
-                    const AsaelMark(size: 52),
-                  SizedBox(height: macos ? 14 : 20),
-                  Text(
-                    loading
-                        ? 'Opening conversation'
-                        : selectedThread
-                        ? 'This conversation is empty'
-                        : 'What needs to move?',
-                    style: Theme.of(context).textTheme.headlineSmall,
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    loading
-                        ? macos
-                              ? 'Bringing your latest messages back into view.'
-                              : 'Reading the latest public message projection.'
-                        : selectedThread
-                        ? 'Send a message to continue this durable conversation.'
-                        : macos
-                        ? 'Ask naturally. Asael can work alone, bring in specialists, or use this Mac when you choose.'
-                        : 'Ask a question or describe an outcome. Asael will keep plans, evidence, and approvals connected.',
-                    textAlign: TextAlign.center,
-                    style: macos
-                        ? TextStyle(
-                            color: Theme.of(context)
-                                .colorScheme
-                                .onSurfaceVariant,
-                          )
-                        : null,
-                  ),
-                ],
+                    ),
+                    const SizedBox(height: 20),
+                    Text(
+                      loading
+                          ? 'Opening conversation'
+                          : selectedThread
+                          ? 'This conversation is empty'
+                          : 'How can I help?',
+                      textAlign: TextAlign.center,
+                      style: Theme.of(context).textTheme.headlineSmall
+                          ?.copyWith(fontWeight: FontWeight.w500),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      loading
+                          ? 'Bringing your latest messages back into view.'
+                          : selectedThread
+                          ? 'Send a message to continue this conversation.'
+                          : 'Ask a question, make a plan, or bring something you want to work on.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        fontSize: 16,
+                        height: 1.5,
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
           ),

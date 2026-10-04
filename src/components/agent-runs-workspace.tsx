@@ -12,6 +12,7 @@ import {
   Brain,
   Check,
   CheckCircle2,
+  ChevronDown,
   ChevronRight,
   Clock3,
   Database,
@@ -25,8 +26,8 @@ import {
   ImageIcon,
   Loader2,
   Map as MapIcon,
-  MessageSquareText,
   MessagesSquare,
+  MoreHorizontal,
   Pause,
   Pencil,
   PanelLeftClose,
@@ -35,6 +36,7 @@ import {
   Plus,
   RefreshCw,
   ShieldCheck,
+  SlidersHorizontal,
   Sparkles,
   Square,
   TerminalSquare,
@@ -3405,17 +3407,7 @@ function OwnedAgentRunsWorkspace({
       data-testid="work-workspace"
     >
       <section className={workspaceStyles.topbar}>
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className={clsx("min-w-0", workspaceStyles.pageIdentity)}>
-            <div>
-              <h1>Assistant</h1>
-            </div>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <button type="button" className="action-button" onClick={() => void refreshAccountAccess()}>Refresh account access</button>
-            <StatusPill label={runPosture.label} tone={runPosture.tone} />
-          </div>
-        </div>
+        <h1 className="sr-only">Assistant conversation</h1>
 
         {error ? (
           <div className="mt-4 rounded-md border border-danger/35 bg-danger/10 p-3 text-sm text-danger" role="alert">
@@ -3502,9 +3494,6 @@ function OwnedAgentRunsWorkspace({
                     <PanelLeftOpen size={16} aria-hidden="true" />
                   </button>
                 ) : null}
-                <span className={workspaceStyles.conversationIcon} aria-hidden="true">
-                  {conversationView === "map" ? <MapIcon size={16} aria-hidden="true" /> : <MessageSquareText size={16} aria-hidden="true" />}
-                </span>
                 <div className="min-w-0">
                   <h2 className="truncate text-sm font-semibold">
                     {conversationView === "map" ? "Conversation map" : threads.find((thread) => thread.id === threadId)?.title || "New conversation"}
@@ -3513,38 +3502,49 @@ function OwnedAgentRunsWorkspace({
                 </div>
               </div>
               <div className={workspaceStyles.headerActions}>
+                <button type="button" onClick={newThread} className="grid size-9 place-items-center rounded-full text-muted transition hover:bg-surface-raised hover:text-foreground" aria-label="New conversation" title="New conversation">
+                  <Plus size={16} aria-hidden="true" />
+                </button>
+                <details className={workspaceStyles.conversationMenu}>
+                <summary aria-label="Conversation options" title="Conversation options">
+                  <MoreHorizontal size={18} aria-hidden="true" />
+                </summary>
+                <div className={workspaceStyles.conversationMenuPanel}>
+                <StatusPill label={runPosture.label} tone={runPosture.tone} />
                 <div className={workspaceStyles.viewSwitch} role="group" aria-label="Conversation view">
                   <button type="button" onClick={() => setConversationView("chat")} aria-label="Chat view" aria-pressed={conversationView === "chat"}>
-                    <MessagesSquare size={13} aria-hidden="true" /><span className="hidden sm:inline">Chat</span>
+                    <MessagesSquare size={13} aria-hidden="true" /><span>Chat</span>
                   </button>
                   <button type="button" onClick={() => setConversationView("map")} aria-label="Map view" aria-pressed={conversationView === "map"}>
-                    <MapIcon size={13} aria-hidden="true" /><span className="hidden sm:inline">Map</span>
+                    <MapIcon size={13} aria-hidden="true" /><span>Map</span>
                   </button>
                 </div>
                 {threadId ? (
                   <button type="button" onClick={() => openTaskDetails("memory")} className="inline-flex min-h-9 items-center gap-1.5 rounded-full px-2.5 text-xs font-semibold text-muted transition hover:bg-surface-raised hover:text-foreground" aria-haspopup="dialog" title="Conversation memory">
                     <Database size={14} aria-hidden="true" />
-                    <span className="hidden sm:inline">Memory</span>
+                    <span>Memory</span>
                     {conversationMemories.length ? <span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-xs text-primary">{conversationMemories.length}</span> : null}
                   </button>
                 ) : null}
-                <button type="button" onClick={newThread} className="grid size-9 place-items-center rounded-full text-muted transition hover:bg-surface-raised hover:text-foreground" aria-label="New conversation" title="New conversation">
-                  <Plus size={16} aria-hidden="true" />
-                </button>
                 <button
                   type="button"
                   onClick={() => openTaskDetails(activityVisible ? "execute" : "context")}
-                  className="grid size-9 place-items-center rounded-full text-muted transition hover:bg-surface-raised hover:text-foreground"
+                  className="inline-flex min-h-9 items-center gap-2 rounded-full px-2.5 text-xs font-semibold text-muted transition hover:bg-surface-raised hover:text-foreground"
                   aria-haspopup="dialog"
                   aria-label="Open conversation details"
                   title="Conversation details"
                 >
                   <Brain size={15} aria-hidden="true" />
+                  Conversation details
                 </button>
+                <button type="button" className="inline-flex min-h-9 items-center gap-2 rounded-full px-2.5 text-xs font-semibold text-muted transition hover:bg-surface-raised hover:text-foreground" onClick={() => void refreshAccountAccess()}><RefreshCw size={14} aria-hidden="true" />Refresh account access</button>
+                </div>
+                </details>
               </div>
             </header>
 
             <CompanionPresence
+              layout={conversationView === "chat" && !turns.length && !currentAssistantResponse && !activityVisible ? "greeting" : "compact"}
               conversationId={threadId || undefined}
               onOpenHome={(id) => void openCompanionHome(id)}
               homeDisabledReason={homeSelecting ? "Opening your home conversation…"
@@ -3663,7 +3663,7 @@ function OwnedAgentRunsWorkspace({
                         workspaceArtifactState={runMediaProjection.workspaceArtifactState}
                       />
                     </div>
-                    <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-line/70 pt-3">
+                    <div className={workspaceStyles.responseActions}>
                       <button
                         type="button"
                         onClick={() => void listenToResponse(currentAssistantResponse)}
@@ -4667,7 +4667,7 @@ export const TranscriptTurn = memo(function TranscriptTurn({
     <article className={clsx("flex", workspaceStyles.turn, turn.role === "user" ? "justify-end" : "justify-start")}>
       {turn.role === "user" ? (
         <div className={workspaceStyles.userBubble}>
-          <p className="mb-1 text-[13px] font-medium text-muted">You</p>
+          <p className="sr-only">You</p>
           <p className="whitespace-pre-wrap text-base leading-relaxed">{turn.content}</p>
         </div>
       ) : (
@@ -5761,7 +5761,7 @@ function PromptQueuePanel({
   onRefresh: () => void;
   onRecover: () => void;
 }) {
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(false);
   const [editingId, setEditingId] = useState("");
   const [editValue, setEditValue] = useState("");
   if (!items.length && !error && !uncertain) return null;
@@ -5771,22 +5771,21 @@ function PromptQueuePanel({
   return (
     <section className={workspaceStyles.queueDock} aria-labelledby="prompt-queue-title">
       <div className={workspaceStyles.queueCard}>
-        <header className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+        <header className="flex flex-wrap items-center justify-between gap-2 px-2 py-1">
           <button
             type="button"
             onClick={() => setExpanded((current) => !current)}
-            className="flex min-w-0 items-center gap-3 text-left"
+            className="flex min-h-10 min-w-0 items-center gap-2 text-left"
             aria-expanded={expanded}
           >
-            <span className="grid size-9 shrink-0 place-items-center rounded-full bg-primary/10 text-primary">
-              <Clock3 size={16} aria-hidden="true" />
-            </span>
-            <span className="min-w-0">
-              <span id="prompt-queue-title" className="block text-sm font-semibold">Prompt queue</span>
-              <span className="block truncate text-xs text-muted">
-                {items.filter((item) => item.state === "queued").length} ready · {uncertain ? "change unconfirmed" : error ? "last confirmed snapshot" : "last server-confirmed snapshot"}
+            <Clock3 size={14} className="shrink-0 text-muted" aria-hidden="true" />
+            <span className="flex min-w-0 flex-wrap items-baseline gap-x-2">
+              <span id="prompt-queue-title" className="text-xs font-medium">Prompt queue</span>
+              <span className="text-xs text-muted">
+                {items.filter((item) => item.state === "queued").length} ready{uncertain ? " · change unconfirmed" : error ? " · last confirmed snapshot" : ""}
               </span>
             </span>
+            <ChevronDown size={12} className={clsx("shrink-0 text-muted", expanded && "rotate-180")} aria-hidden="true" />
           </button>
           <button
             type="button"
@@ -6062,27 +6061,16 @@ function GoalStage({
       <div className={workspaceStyles.composerWidth}>
         <h2 id="command-composer-title" className="sr-only">Message Asael</h2>
         <div className={workspaceStyles.composer}>
-          {preferredAgent ? (
-            <div className="flex items-center justify-between gap-3 border-b border-line/70 px-3 py-1.5">
-              <span className="min-w-0 truncate text-xs text-muted" title={`${preferredAgent.visualIdentity} Voice: ${preferredAgent.voice}`}>
-                Working with <strong className="font-semibold text-foreground">{preferredAgent.name}</strong>
-                <span> · {preferredAgent.role}</span>
-              </span>
-              <button type="button" onClick={onClearPreferredAgent} className="min-h-8 rounded-full px-2 text-xs font-semibold text-primary hover:bg-primary/10">
-                Route automatically
-              </button>
-            </div>
-          ) : null}
-
           <div className={workspaceStyles.composerField}>
           <CommandComposerField
             value={goal}
             disabled={draftLocked}
+            showAttachmentButton
             placeholder={activeRun
-              ? "Add the next prompt… · / Skills · @ context"
+              ? "Add the next prompt…"
               : hasConversation
-                ? "Ask a follow-up… · / Skills · @ context"
-                : "Message Asael… · / Skills · @ context"}
+                ? "Ask a follow-up…"
+                : "Message Asael…"}
             selected={commandReferences}
             onChange={onGoalChange}
             onSubmit={() => {
@@ -6098,6 +6086,67 @@ function GoalStage({
           </div>
 
           <div className={workspaceStyles.composerToolbar}>
+            <div className={workspaceStyles.composerActions}>
+              <VoiceMode
+                onOpen={onVoiceOpen}
+                isAuthorityCurrent={isVoiceAuthorityCurrent}
+                authorityScope={voiceAuthorityScope}
+                onContinueInText={onVoiceContinueInText}
+                disabled={draftLocked || contextLoading || Boolean(voiceDisabledReason)}
+                disabledReason={voiceDisabledReason}
+                agentName={preferredAgent?.name || "Asael"}
+                agentVoice={preferredAgent?.voice}
+                conversationId={voiceConversationId}
+                mode={mode}
+                onConversationBound={onVoiceConversationBound}
+                onTranscript={onVoiceTranscript}
+              />
+              {activeRun ? <button
+                type="button"
+                onClick={onQueue}
+                disabled={draftLocked || goalMissing || Boolean(runDisabledReason) || queueLocked}
+                title={goalMissing ? "Write a message first." : "Add to the persistent prompt queue"}
+                className="grid shrink-0 place-items-center rounded-full bg-primary/10 text-primary transition hover:bg-primary/15 disabled:cursor-not-allowed"
+                aria-label="Add prompt to queue"
+              >
+                <Clock3 size={14} aria-hidden="true" />
+              </button> : null}
+              {loading === "agent" ? (
+                <button type="button" onClick={onStop} className={workspaceStyles.sendButton} aria-label="Stop response">
+                  <Square size={13} aria-hidden="true" />
+                </button>
+              ) : activeRun ? null : (
+                <button
+                  type="button"
+                  onClick={onAgent}
+                  disabled={draftLocked || goalMissing || Boolean(runDisabledReason)}
+                  title={goalMissing ? "Write a message first." : runDisabledReason}
+                  className={workspaceStyles.sendButton}
+                  aria-label={hasConversation ? "Send follow-up" : "Send message"}
+                >
+                  <ArrowUp size={17} aria-hidden="true" />
+                </button>
+              )}
+            </div>
+            <details className={workspaceStyles.composerAdvanced}>
+              <summary>
+                <SlidersHorizontal size={13} aria-hidden="true" />
+                <span>Options</span>
+                {preferredAgent ? <span className={workspaceStyles.optionSelection}>{preferredAgent.name}</span> : null}
+                {!approvalRequired ? <span className={workspaceStyles.approvalNotice}>Approvals off</span> : null}
+                <ChevronDown size={12} className={workspaceStyles.disclosureChevron} aria-hidden="true" />
+                <span className={workspaceStyles.composerHint}>/ Skills <span aria-hidden="true">·</span> @ Context</span>
+              </summary>
+              {preferredAgent ? (
+                <div className={workspaceStyles.agentSelection}>
+                  <span title={`${preferredAgent.visualIdentity} Voice: ${preferredAgent.voice}`}>
+                    Working with <strong>{preferredAgent.name}</strong> · {preferredAgent.role}
+                  </span>
+                  <button type="button" onClick={onClearPreferredAgent} className="min-h-8 rounded-full px-2 text-xs font-semibold text-primary hover:bg-primary/10">
+                    Route automatically
+                  </button>
+                </div>
+              ) : null}
             <div className={workspaceStyles.composerOptions}>
               <label className="sr-only" htmlFor="command-mode">Approach</label>
               <select
@@ -6148,7 +6197,7 @@ function GoalStage({
                 title={`Approvals ${approvalRequired ? "on" : "off"}`}
               >
                 <ShieldCheck size={12} aria-hidden="true" />
-                <span className="hidden md:inline">Approvals {approvalRequired ? "on" : "off"}</span>
+                <span>Approvals {approvalRequired ? "on" : "off"}</span>
               </button>
               <label className="sr-only" htmlFor="command-context-scope">Context scope</label>
               <select
@@ -6183,14 +6232,7 @@ function GoalStage({
                 )}
               >
                 {contextLoading ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <Brain size={13} aria-hidden="true" />}
-                <span className="hidden md:inline">{contextLabel}</span>
-                {contextReady ? (
-                  <span className="md:hidden">
-                    {contextScope === "explicit_selection"
-                      ? `${contextSelectedCount}/${contextTotalCount}`
-                      : "Scope"}
-                  </span>
-                ) : null}
+                <span>{contextLabel}</span>
               </button>
               <button
                 type="button"
@@ -6201,7 +6243,7 @@ function GoalStage({
                 className="inline-flex min-h-8 shrink-0 items-center gap-1.5 rounded-full bg-surface-raised px-2.5 text-xs font-semibold text-muted transition hover:text-foreground disabled:opacity-50"
               >
                 {loading === "plan" ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <GitBranch size={13} aria-hidden="true" />}
-                <span className="hidden sm:inline">Plan</span>
+                <span>Plan</span>
               </button>
               {workflowReady || (workflowStarted && workflowInProgress) ? (
                 <button
@@ -6214,51 +6256,19 @@ function GoalStage({
                   {workflowStarted ? "Workflow active" : "Start plan"}
                 </button>
               ) : null}
-            </div>
-
-            <div className={workspaceStyles.composerActions}>
-              <VoiceMode
-                onOpen={onVoiceOpen}
-                isAuthorityCurrent={isVoiceAuthorityCurrent}
-                authorityScope={voiceAuthorityScope}
-                onContinueInText={onVoiceContinueInText}
-                disabled={draftLocked || contextLoading || Boolean(voiceDisabledReason)}
-                disabledReason={voiceDisabledReason}
-                agentName={preferredAgent?.name || "Asael"}
-                agentVoice={preferredAgent?.voice}
-                conversationId={voiceConversationId}
-                mode={mode}
-                onConversationBound={onVoiceConversationBound}
-                onTranscript={onVoiceTranscript}
-              />
               <button
                 type="button"
                 onClick={onQueue}
                 disabled={draftLocked || goalMissing || Boolean(runDisabledReason) || queueLocked}
                 title={goalMissing ? "Write a message first." : "Add to the persistent prompt queue"}
-                className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-full bg-primary/10 px-3 text-xs font-semibold text-primary transition hover:bg-primary/15 disabled:cursor-not-allowed disabled:opacity-35"
+                className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-full bg-surface-raised px-3 text-xs font-semibold text-muted transition hover:text-foreground disabled:cursor-not-allowed"
                 aria-label="Add prompt to queue"
               >
                 <Clock3 size={14} aria-hidden="true" />
-                <span className="hidden sm:inline">Queue</span>
+                Add to queue
               </button>
-              {loading === "agent" ? (
-                <button type="button" onClick={onStop} className={workspaceStyles.sendButton} aria-label="Stop response">
-                  <Square size={13} aria-hidden="true" />
-                </button>
-              ) : activeRun ? null : (
-                <button
-                  type="button"
-                  onClick={onAgent}
-                  disabled={draftLocked || goalMissing || Boolean(runDisabledReason)}
-                  title={goalMissing ? "Write a message first." : runDisabledReason}
-                  className={workspaceStyles.sendButton}
-                  aria-label={hasConversation ? "Send follow-up" : "Send message"}
-                >
-                  <ArrowUp size={17} aria-hidden="true" />
-                </button>
-              )}
             </div>
+            </details>
           </div>
         </div>
         {workflowInProgress ? <p className="mt-1.5 px-2 text-center text-xs leading-4 text-muted">This conversation is locked while active work finishes. New messages can be added to the persistent queue.</p> : null}
@@ -6317,11 +6327,11 @@ function RunFeedbackPanel({
   const [correction, setCorrection] = useState(feedback?.correction || "");
 
   return (
-    <section className="mt-4 rounded-xl border border-line/80 bg-background px-3 py-3" aria-labelledby="run-feedback-title">
+    <details className={workspaceStyles.feedback}>
+      <summary><span>Response feedback</span><ChevronDown size={12} className={workspaceStyles.disclosureChevron} aria-hidden="true" />{feedback ? <span className="text-xs text-muted">Saved</span> : null}</summary>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <p id="run-feedback-title" className="text-sm font-semibold">Help Asael improve</p>
-          <p className="mt-1 text-xs text-muted">Was this response useful?</p>
+          <p className="text-xs text-muted">Was this response useful?</p>
         </div>
         <div className="flex gap-2">
           <button
@@ -6391,7 +6401,7 @@ function RunFeedbackPanel({
           {feedback.verdict === "useful" ? "Useful outcome saved." : "Correction saved."} You can change this anytime.
         </p>
       ) : null}
-    </section>
+    </details>
   );
 }
 

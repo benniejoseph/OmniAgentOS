@@ -120,13 +120,20 @@ void main() {
           (id: 'project-1', title: 'Mobile launch', completed: 4, total: 6),
         ],
       );
+    addTearDown(controller.dispose);
 
     await pumpPhone(tester, TodayView(controller: controller));
 
-    expect(find.text('YOUR DAYBOOK'), findsOneWidget);
-    expect(find.text('OPERATING LINE'), findsOneWidget);
-    expect(find.text('1 open'), findsOneWidget);
-    expect(find.text('DAILY BRIEF'), findsOneWidget);
+    expect(find.text('Today'), findsOneWidget);
+    expect(find.text('Add focus').hitTestable(), findsOneWidget);
+    expect(find.text('Refresh brief').hitTestable(), findsOneWidget);
+    expect(find.text('1 open · 0 complete'), findsOneWidget);
+    expect(find.text('Daily brief'), findsOneWidget);
+    expect(find.text('Notification receipt is still pending'), findsOneWidget);
+    final suggestions = find.text('Suggested focus');
+    expect(suggestions.hitTestable(), findsOneWidget);
+    await tester.tap(suggestions);
+    await tester.pumpAndSettle();
     expect(find.text('Verify Android build'), findsOneWidget);
     await tester.drag(find.byType(CustomScrollView), const Offset(0, -400));
     await tester.pump();
@@ -135,23 +142,26 @@ void main() {
   });
 
   testWidgets(
-    'Conversation keeps mode choice and composer visible on a phone',
+    'Conversation keeps its composer visible and mode choices reachable on a phone',
     (tester) async {
+      final controller = TalkController(_TalkRepository());
+      addTearDown(controller.dispose);
       await pumpPhone(
         tester,
-        TalkView(
-          controller: TalkController(_TalkRepository()),
-          voiceRecorder: _VoiceRecorder(),
-        ),
+        TalkView(controller: controller, voiceRecorder: _VoiceRecorder()),
         themeMode: ThemeMode.dark,
       );
 
-      expect(find.text('Conversation'), findsOneWidget);
-      expect(find.text('Governed'), findsOneWidget);
-      expect(find.text('What needs to move?'), findsOneWidget);
-      expect(find.text('Orchestrate'), findsOneWidget);
-      expect(find.text('Direct'), findsOneWidget);
-      expect(find.byTooltip('Send message'), findsOneWidget);
+      expect(find.text('Assistant'), findsOneWidget);
+      expect(find.text('How can I help?'), findsOneWidget);
+      expect(find.byTooltip('Send message').hitTestable(), findsOneWidget);
+      final options = find.byKey(const ValueKey('talk-composer-options'));
+      expect(options.hitTestable(), findsOneWidget);
+      await tester.tap(options);
+      await tester.pumpAndSettle();
+      expect(find.text('Use a team').hitTestable(), findsOneWidget);
+      expect(find.text('Work alone').hitTestable(), findsOneWidget);
+      expect(find.byTooltip('Send message').hitTestable(), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
   );

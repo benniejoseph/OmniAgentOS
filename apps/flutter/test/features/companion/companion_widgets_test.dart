@@ -35,8 +35,13 @@ void main() {
       final geometry = tester.getSize(
         find.byKey(const ValueKey('companion-presence')),
       );
+      await tester.tap(find.text('Queued'));
+      await tester.pumpAndSettle();
+      expect(find.text('Open home conversation').hitTestable(), findsOneWidget);
       await tester.tap(find.text('Open home conversation'));
       expect(homes, 1);
+      await tester.tap(find.text('Queued'));
+      await tester.pumpAndSettle();
       await tester.pumpWidget(
         view(const CompanionPreferences(visible: false, intensity: 'quiet')),
       );
@@ -45,6 +50,9 @@ void main() {
         tester.getSize(find.byKey(const ValueKey('companion-presence'))),
         geometry,
       );
+      await tester.tap(find.text('Queued'));
+      await tester.pumpAndSettle();
+      expect(find.text('Open home conversation').hitTestable(), findsOneWidget);
       expect(
         tester
             .getSize(find.widgetWithText(TextButton, 'Open home conversation'))
@@ -74,10 +82,9 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(find.text('Available'), findsOneWidget);
-      expect(
-        find.text('Static ATLAS · reduced motion preference'),
-        findsOneWidget,
-      );
+      await tester.tap(find.text('Available'));
+      await tester.pumpAndSettle();
+      expect(find.text('ATLAS motion: reduced.'), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
   );

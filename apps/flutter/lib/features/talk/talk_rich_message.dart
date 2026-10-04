@@ -37,7 +37,7 @@ class _TalkRichMessageState extends State<TalkRichMessage> {
           for (var index = 0; index < blocks.length; index += 1)
             Padding(
               padding: EdgeInsets.only(
-                bottom: index == blocks.length - 1 ? 0 : 12,
+                bottom: index == blocks.length - 1 ? 0 : 16,
               ),
               child: _RichBlockView(
                 block: blocks[index],
@@ -247,8 +247,9 @@ class _RichBlockView extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
-    final body = theme.textTheme.bodyMedium?.copyWith(
-      height: 1.52,
+    final body = theme.textTheme.bodyLarge?.copyWith(
+      fontSize: 16,
+      height: 1.6,
       color: failed ? scheme.error : scheme.onSurface,
     );
 
@@ -258,15 +259,15 @@ class _RichBlockView extends StatelessWidget {
         text: text,
         style: switch (level) {
           1 => theme.textTheme.titleLarge?.copyWith(
-            fontWeight: FontWeight.w700,
+            fontWeight: FontWeight.w600,
             height: 1.25,
           ),
           2 => theme.textTheme.titleMedium?.copyWith(
-            fontWeight: FontWeight.w700,
+            fontWeight: FontWeight.w600,
             height: 1.3,
           ),
           _ => theme.textTheme.titleSmall?.copyWith(
-            fontWeight: FontWeight.w700,
+            fontWeight: FontWeight.w600,
             height: 1.35,
           ),
         },
@@ -286,17 +287,15 @@ class _RichBlockView extends StatelessWidget {
         ],
       ),
       _QuoteBlock(:final text) => Container(
-        padding: const EdgeInsets.all(12),
+        padding: const EdgeInsets.fromLTRB(16, 4, 0, 4),
         decoration: BoxDecoration(
-          color: scheme.surfaceContainerLow,
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: scheme.outlineVariant),
+          border: Border(
+            left: BorderSide(color: scheme.outlineVariant, width: 2),
+          ),
         ),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Icon(Icons.format_quote_rounded, size: 18, color: scheme.primary),
-            const SizedBox(width: 9),
             Expanded(
               child: _RichInlineText(
                 text: text,
