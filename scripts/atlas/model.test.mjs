@@ -1,17 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {Vector3} from 'three';
+import {Vector3,SRGBColorSpace,LinearFilter,ClampToEdgeWrapping} from 'three';
 import {createAtlas} from '../../.design/asael-ace-revamp/atlas-production/source/atlas-model.mjs';
 import {STATE_NAMES,CLIP_NAMES,createPlaybackGate,validateSequence,sequenceIndex} from '../../.design/asael-ace-revamp/atlas-production/web/lifecycle.mjs';
 const config=JSON.parse(await readFile(new URL('../../.design/asael-ace-revamp/atlas-production/source/model.json',import.meta.url),'utf8'));
-const release = model => {model.mesh.geometry.dispose();model.mesh.material.dispose();model.mesh.skeleton.dispose();};
+const release = model => {model.mesh.geometry.dispose();model.mesh.material.map?.dispose();model.mesh.material.dispose();model.mesh.skeleton.dispose();};
 
 test('procedural geometry is finite, indexed and deterministically bound to the 14-bone eyelid rig',()=>{
   const a=createAtlas(config),b=createAtlas(config);
   try{
     assert.equal(a.bones.length,14);assert.equal(new Set(a.bones.map(bone=>bone.name)).size,14);
-    for(const name of ['position','normal','color','skinIndex','skinWeight']){
+    for(const name of ['position','normal','color','uv','skinIndex','skinWeight']){
       const values=a.mesh.geometry.getAttribute(name).array;
       assert.ok(Array.from(values).every(Number.isFinite),name);
       assert.deepEqual(values,b.mesh.geometry.getAttribute(name).array,name);
@@ -24,7 +24,43 @@ test('procedural geometry is finite, indexed and deterministically bound to the 
       assert.ok(Math.abs(sum-1)<0.00001);
     }
     for(const definition of config.rig)if(definition.parent)assert.equal(a.bones.find(bone=>bone.name===definition.name).parent.name,definition.parent);
-    assert.equal(a.root.userData.sourceExpectedSha256,config.sourceExpectedSha256);assert.equal(a.stats.textures,0);
+    assert.equal(a.root.userData.sourceExpectedSha256,config.sourceExpectedSha256);assert.equal(a.stats.textures,1);
+    const map=a.mesh.material.map;
+    assert.ok(map.isDataTexture);assert.equal(map.image.width,512);assert.equal(map.image.height,512);
+    assert.equal(map.image.data.byteLength,1024*1024);assert.deepEqual(map.image.data,b.mesh.material.map.image.data);
+    assert.equal(map.colorSpace,SRGBColorSpace);assert.equal(map.flipY,false);assert.equal(map.generateMipmaps,false);
+    assert.equal(map.minFilter,LinearFilter);assert.equal(map.magFilter,LinearFilter);
+    assert.equal(map.wrapS,ClampToEdgeWrapping);assert.equal(map.wrapT,ClampToEdgeWrapping);
+    assert.equal(geometry.getAttribute('uv').count,geometry.getAttribute('position').count);
+    assert.ok(Array.from(geometry.getAttribute('uv').array).every(value=>value>=0&&value<=1));
+    for(let i=3;i<map.image.data.length;i+=4)assert.equal(map.image.data[i],255,'opaque color map');
+    // Probe triangle interiors: correct vertex colors alone cannot catch a UV
+    // interpolation that pulls the throat's pale field onto the head or back.
+    const continuous=a.root.userData.parts.filter(part=>['continuous_eagle_silhouette','continuous_directional_plumage'].includes(part.name));
+    assert.equal(continuous.length,2);
+    const position=geometry.getAttribute('position'),uv=geometry.getAttribute('uv');
+    const umber=Number.parseInt(config.palette.umber.slice(1),16),base=[(umber>>16)&255,(umber>>8)&255,umber&255];
+    const probes=[[1/3,1/3,1/3],[.75,.125,.125],[.125,.75,.125],[.125,.125,.75]];
+    let upperHeadTriangles=0,rearTriangles=0;const sampledParts=new Set();
+    for(let offset=0;offset<geometry.index.count;offset+=3){
+      const triangle=[geometry.index.getX(offset),geometry.index.getX(offset+1),geometry.index.getX(offset+2)];
+      const part=continuous.find(value=>triangle.every(index=>index>=value.vertexStart&&index<value.vertexStart+value.vertexCount));
+      if(!part)continue;
+      const upperHead=triangle.every(index=>position.getY(index)>2.76),rear=triangle.every(index=>position.getZ(index)<=0);
+      if(!upperHead&&!rear)continue;
+      if(upperHead)upperHeadTriangles++;if(rear)rearTriangles++;sampledParts.add(part.name);
+      for(const barycentric of probes){
+        const u=triangle.reduce((sum,index,corner)=>sum+uv.getX(index)*barycentric[corner],0);
+        const v=triangle.reduce((sum,index,corner)=>sum+uv.getY(index)*barycentric[corner],0);
+        const x=Math.max(0,Math.min(map.image.width-1,Math.floor(u*map.image.width)));
+        const y=Math.max(0,Math.min(map.image.height-1,Math.floor(v*map.image.height)));
+        const texel=(y*map.image.width+x)*4;
+        for(let channel=0;channel<3;channel++)assert.ok(Math.abs(map.image.data[texel+channel]-base[channel])<=1,
+          `${part.name} triangle ${offset/3} must sample base umber above the throat and on the rear`);
+      }
+    }
+    assert.ok(upperHeadTriangles>0&&rearTriangles>0,'both excluded pale-field regions must be sampled');
+    assert.equal(sampledParts.size,2,'both continuous layers must contribute interior samples');
   }finally{release(a);release(b);}
 });
 

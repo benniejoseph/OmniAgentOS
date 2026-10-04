@@ -1,4 +1,36 @@
-# ATLAS sculpt 04, wing 02 — retained mesh-contact checkpoint
+# ATLAS sculpt 04, finish 02 — retained color and crown refinement
+
+Current status: **local refinement retained; full character and natural acting unaccepted**. Creative revision: `sculpt-04-finish-02-seam-safe-color`.
+
+Root inspected all 40 comparisons against wing02, covering full/portrait, speech, listening and completed samples in front, three-quarter, profile and rear views. The throat staircase is removed and the shorter crown reads more compactly. The large pale head/crown artifacts from finish01 are gone. Independent review agrees with retention; faint horizontal temple dashes, isolated torso cuts, coarse wing joints, fine eye edges and overall finish remain open. Comparison archive SHA256: `7e23f81183edab49ea4c14dbc15254d29cc474ea8b2552342b827153b3ac81c3`.
+
+Exact parity measures 27,543 vertices (+303 seam copies), 49,844 triangles (unchanged), fourteen bones, twelve clips, one material, one 512 × 512 texture and 167 parts. The two continuous layers duplicate 126 and 177 shared front/back vertices respectively. All 149,532 ordered triangle corners preserve skin bindings; all non-crown positions/normals, all 159 other part arrays/relative indices, rig, poses and all 168 clip tracks remain exact. The deterministic texture stores 1,048,576 decoded RGBA bytes; this is not a GPU allocation measurement.
+
+The first exported reload exposed a lab CSP issue: ImageBitmapLoader's blob fetch was blocked, and the loader silently displayed the continuous layers without their map. That failed comparison is preserved in `finish02-glb-parity`, archive SHA256 `6a999c17d5a7cfd1b9d3f2e11ad4d09992c30571dc32a8582556b61137b345e7`. The local lab now permits its embedded blob fetch and rejects a GLB unless its one 512 × 512 color map actually decoded.
+
+After correction, 40 procedural/reloaded captures show the same geometry and one texture in each mode. Eight full/portrait rest pairs are pixel-identical. The remaining twelve pairs differ at 0–10 pixels per image, at most one channel value; 31 pixels differ across all twenty pairs. No page/console/network errors were recorded. Hide, explicit reload and disposal complete in both modes. Matching source and helper are preserved in `finish02-glb-parity-fixed`, archive SHA256 `2ddabd3f42dcd61ebad801f2d18558a164f2555134d64628b5e529bd9b1b5bad`. Resource reclamation, physical-device performance and final motion are not established by these observations.
+
+Full-export measurements and archive identity belong in `../ART_REVIEW.md` and the matching `output/export-manifest.json`; require all source hashes to match. This stable source record does not approve publication. The authoring/rejected-candidate records below remain history.
+
+## Finish 02 authoring record — before comparison
+
+Status: **unreviewed candidate**. Creative revision: `sculpt-04-finish-02-seam-safe-color`. Retained wing-02 is the exact baseline.
+
+Finish01 removed the throat staircase, but actual front/side comparisons found new pale lines around the crown and upper head. Eight isolated renders showed the texture-only variant contains the lines while the crown-only variant does not. Triangles joining top-chart front UVs to bottom-chart back UVs interpolate through the pale throat region. The 40-frame comparison and 8-frame isolation are preserved, including matching source, in `finish01-comparison` (archive SHA256 `17d24d8a0da40e59c3c52b104847ff527f18e615729303bdbb6a28566e37430c`) and `finish01-isolation-comparison` (archive SHA256 `d5bfcc1787fd6637e9b92d3f578aeff85ca8c2491bfbf0997351611a21133b75`). Finish01 is rejected as-is.
+
+Finish02 assigns a consistent mapping to each triangle. Front triangles project x/y; fully rear triangles sample the plain umber row. Only vertices shared by both mappings are duplicated, within their original two continuous parts. Ordered triangle positions, normals and skin inputs remain unchanged; the six crown geometries retain the shorter candidate ends. The same deterministic embedded 512 × 512 map, material and all clips remain. Actual counts, scoped parity, matching comparisons and exported appearance remain pending.
+
+## Finish 01 rejected candidate history
+
+Status: **unreviewed candidate**. Creative revision: `sculpt-04-finish-01-throat-color-crown`. Retained wing-02 is the exact baseline.
+
+The unchanged throat contour is sampled into a deterministic 512 × 512 RGBA color chart. The two continuous body layers receive matching planar UVs and retain their scalar vertex-tone variation. All other parts sample a padded white patch and keep their original vertex colors. Rear vertices use the chart's plain umber row. The map uses sRGB-encoded bytes, sRGB interpretation, linear filtering, clamped wrapping, no mipmaps and no vertical flip. It is embedded as PNG in the GLB; no external texture fetch is introduced. Decoded RGBA storage is 1,048,576 bytes by arithmetic, not a measured GPU allocation.
+
+Only the six crown pieces change positions and derived normals: their last two control points shorten the swept ends and reduce terminal rise. Roots, widths, depths, grids, tone values and Head binding remain. All other positions/normals, complete indices, skin bindings, rig, poses and clips are intended to remain exact; expected topology delta is zero. The texture replaces the old zero-texture contract with one bounded embedded texture, and viewer cleanup now disposes unique maps and closes unique bitmap images.
+
+Matching visual comparisons, exact part parity, structural checks, procedural-versus-reloaded export appearance and full export are pending. No visible improvement, full-character acceptance or production publication is claimed by this authoring record.
+
+## Wing 02 retained mesh-contact checkpoint
 
 Current status: **local refinements reviewed; full character and natural state acting unaccepted**. Creative revision: `sculpt-04-wing-02-mesh-contact`.
 

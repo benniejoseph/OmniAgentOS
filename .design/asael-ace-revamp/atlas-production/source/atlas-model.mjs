@@ -1,4 +1,4 @@
-/** ATLAS sculpt 04, wing 02 — retained covert mesh-contact refinement; full character unaccepted.
+/** ATLAS sculpt 04, finish 02 — retained seam-safe color and compact crown.
  * No raster planes, generated imagery, physics, audio, providers or app imports.
  * Geometry is deterministic; Three UUIDs are internal and not provenance IDs.
  */
@@ -74,6 +74,25 @@ function throatMask(profile) {
     const fade=clamp(distance/.060);
     return fade*fade*(3-2*fade);
   };
+}
+
+/** A bounded color chart samples the existing contour independently of triangles. */
+function throatColorChart(config) {
+  const size=512,chart=480,data=new Uint8Array(size*size*4).fill(255);
+  const mask=throatMask(config.throatProfile),base=new THREE.Color(config.palette.umber);
+  const pale=new THREE.Color(config.palette.throat),color=new THREE.Color();
+  for(let row=0;row<chart;row++)for(let column=0;column<chart;column++) {
+    const x=-.46+.92*column/(chart-1),y=2.08+.68*row/(chart-1);
+    color.copy(base).lerp(pale,mask({x,y,z:1})).convertLinearToSRGB();
+    const index=(row*size+column)*4;
+    data[index]=Math.round(color.r*255);data[index+1]=Math.round(color.g*255);data[index+2]=Math.round(color.b*255);
+  }
+  const texture=new THREE.DataTexture(data,size,size,THREE.RGBAFormat,THREE.UnsignedByteType);
+  texture.name='ATLAS_authored_throat_color';texture.colorSpace=THREE.SRGBColorSpace;
+  texture.flipY=false;texture.minFilter=THREE.LinearFilter;texture.magFilter=THREE.LinearFilter;
+  texture.wrapS=THREE.ClampToEdgeWrapping;texture.wrapT=THREE.ClampToEdgeWrapping;
+  texture.generateMipmaps=false;texture.needsUpdate=true;
+  return texture;
 }
 
 // Z, mouth-edge Y, half-width, ridge height. The broad mouth corners end
@@ -550,29 +569,78 @@ export function createAtlas(config) {
     byName.set(definition.name, bone); worldRest.set(definition.name, rest); boneIndex.set(definition.name, index);
     return bone;
   });
-  const p = [], n = [], colors = [], joints = [], weights = [], indices = [], parts = [];
+  const p = [], n = [], colors = [], uv = [], joints = [], weights = [], indices = [], parts = [];
   const color = new THREE.Color(), point = new THREE.Vector3(), normal = new THREE.Vector3();
-  const throatWeight=throatMask(config.throatProfile);
   const spineWeight = (y) => {
     if (y < 0.65) return [['Root', 1]];
     if (y < 1.96) return [['Spine', 1]];
     const neck = clamp((y - 1.96) / 0.35), head = clamp((y - 2.39) / 0.21);
     return head > 0 ? [['Neck',1-head],['Head',head]] : [['Spine',1-neck],['Neck',neck]];
   };
+  function splitThroatChartUV(mesh) {
+    const vertices=mesh.getAttribute('position'),index=mesh.index;
+    const usage=new Uint8Array(vertices.count),front=new Uint8Array(index.count/3);
+    for(let triangle=0;triangle<front.length;triangle++) {
+      const start=triangle*3,a=index.getX(start),b=index.getX(start+1),c=index.getX(start+2);
+      front[triangle]=vertices.getZ(a)>0||vertices.getZ(b)>0||vertices.getZ(c)>0?1:0;
+      const mode=front[triangle]?1:2;
+      usage[a]|=mode;usage[b]|=mode;usage[c]|=mode;
+    }
+    const shared=[],backCopies=new Int32Array(vertices.count).fill(-1);
+    for(let i=0;i<vertices.count;i++)if(usage[i]===3) {
+      backCopies[i]=vertices.count+shared.length;shared.push(i);
+    }
+    // Copy existing attribute values exactly; a UV seam must not recompute normals
+    // or change the position/tone inputs used later for skin binding and color.
+    for(const [name,attribute] of Object.entries(mesh.attributes)) {
+      const values=new attribute.array.constructor((vertices.count+shared.length)*attribute.itemSize);
+      values.set(attribute.array);
+      for(let i=0;i<shared.length;i++) {
+        const start=shared[i]*attribute.itemSize;
+        values.set(attribute.array.subarray(start,start+attribute.itemSize),(vertices.count+i)*attribute.itemSize);
+      }
+      const copied=new THREE.BufferAttribute(values,attribute.itemSize,attribute.normalized);
+      copied.name=attribute.name;copied.setUsage(attribute.usage);mesh.setAttribute(name,copied);
+    }
+    const coordinates=new Float32Array((vertices.count+shared.length)*2);
+    for(let i=0;i<vertices.count;i++) {
+      coordinates[i*2]=(.5+479*clamp((vertices.getX(i)+.46)/.92))/512;
+      coordinates[i*2+1]=(.5+479*(usage[i]===2?0:clamp((vertices.getY(i)-2.08)/.68)))/512;
+    }
+    for(let i=0;i<shared.length;i++) {
+      coordinates[(vertices.count+i)*2]=coordinates[shared[i]*2];
+      coordinates[(vertices.count+i)*2+1]=.5/512;
+    }
+    const remapped=Array.from(index.array);
+    for(let triangle=0;triangle<front.length;triangle++)if(!front[triangle])for(let corner=0;corner<3;corner++) {
+      const offset=triangle*3+corner,copy=backCopies[remapped[offset]];
+      if(copy>=0)remapped[offset]=copy;
+    }
+    mesh.setIndex(remapped);mesh.setAttribute('uv',new THREE.BufferAttribute(coordinates,2));
+  }
   function append(name, mesh, shade, bone, position = [0,0,0], scale = [1,1,1], rotation = [0,0,0]) {
+    const hasThroat=name==='continuous_eagle_silhouette'||name==='continuous_directional_plumage';
+    // Both continuous layers append in world-rest coordinates with identity transforms.
+    if(hasThroat)splitThroatChartUV(mesh);
     const matrix = new THREE.Matrix4().compose(new THREE.Vector3(...position), quaternion(rotation), new THREE.Vector3(...scale));
     const normalMatrix = new THREE.Matrix3().getNormalMatrix(matrix), offset = p.length / 3;
     const vertices = mesh.getAttribute('position'), normals = mesh.getAttribute('normal'), tones=mesh.getAttribute('tone');
+    const chartUV=hasThroat?mesh.getAttribute('uv'):null;
     const lidHeadWeights=bone==='UpperLidLeft'||bone==='UpperLidRight'?mesh.getAttribute('lidHeadWeight'):null;
     color.set(config.palette[shade]);
-    const hasThroat=name==='continuous_eagle_silhouette'||name==='continuous_directional_plumage';
-    const throatPale=hasThroat?new THREE.Color(config.palette.throat):null,throatColor=hasThroat?color.clone():null;
     for (let i = 0; i < vertices.count; i++) {
       point.fromBufferAttribute(vertices, i).applyMatrix4(matrix);
       normal.fromBufferAttribute(normals, i).applyMatrix3(normalMatrix).normalize();
       const tone=tones?.getX(i)??1;
-      const vertexColor=throatColor?throatColor.copy(color).lerp(throatPale,throatWeight(point)):color;
-      p.push(point.x,point.y,point.z); n.push(normal.x,normal.y,normal.z); colors.push(vertexColor.r*tone,vertexColor.g*tone,vertexColor.b*tone);
+      p.push(point.x,point.y,point.z); n.push(normal.x,normal.y,normal.z);
+      if(hasThroat) {
+        colors.push(tone,tone,tone);
+        uv.push(chartUV.getX(i),chartUV.getY(i));
+      } else {
+        colors.push(color.r*tone,color.g*tone,color.b*tone);
+        // Other parts retain their vertex palette through a padded white region.
+        uv.push(504/512,504/512);
+      }
       const influences = lidHeadWeights
         ? [['Head',lidHeadWeights.getX(i)],[bone,1-lidHeadWeights.getX(i)]]
         : typeof bone === 'function' ? bone(point.y) : [[bone,1]];
@@ -636,13 +704,13 @@ export function createAtlas(config) {
       [.020,.027,.025,.002],[.014,.020,.016,.001],16,8,true),'umber',`Brow${suffix}`);
     for(let j=0;j<2;j++) append(`temple_tuft_${suffix}_${j}`,plumageTuft(silhouette,2.817-j*.073,side*(1.08+j*.25),.16,.040,side*.18),
       'umber','Head');
-    // A combed crown: broad roots travel over the cranium and turn upward only
-    // at the rear tips. A handful of authored sweeps replaces the radial spikes.
+    // A compact combed crown keeps its broad roots, with a shallow rear lift
+    // and slightly staggered ends instead of long, strongly upturned spikes.
     for(let j=0;j<3;j++) append(`authored_crown_${suffix}_${j}`,sweepVolume([
       [side*(.035+j*.078),2.962-j*.027,.125-j*.020],
       [side*(.054+j*.070),3.027-j*.025,.025-j*.020],
-      [side*(.108+j*.058),3.047-j*.026,-.129-j*.030],
-      [side*(.188+j*.037),3.072-j*.019,-.247-j*.048]],
+      [side*(.108+j*.058),3.043-j*.026,-.112-j*.024],
+      [side*(.188+j*.037),3.052-j*.028,-.190-j*.028+(j===1?.008:0)]],
       [.069-j*.008,.067-j*.007,.037-j*.003,.0015],[.017,.022,.015,.001],14,8,true),'umber','Head');
     ellipsoid(`nostril_${suffix}`,'beakShadow','Head',[side*.101,2.666,.323],[.012,.005,.004],[0,side*30,side*12],12);
 
@@ -679,10 +747,11 @@ export function createAtlas(config) {
   const merged = geometry(p,indices);
   merged.setAttribute('normal',new THREE.Float32BufferAttribute(n,3));
   merged.setAttribute('color',new THREE.Float32BufferAttribute(colors,3));
+  merged.setAttribute('uv',new THREE.Float32BufferAttribute(uv,2));
   merged.setAttribute('skinIndex',new THREE.Uint16BufferAttribute(joints,4));
   merged.setAttribute('skinWeight',new THREE.Float32BufferAttribute(weights,4));
-  const material = new THREE.MeshStandardMaterial({vertexColors:true,roughness:.86,metalness:0,side:THREE.DoubleSide});
-  material.name = 'ATLAS_ROUGH_matte_vertex_palette';
+  const material = new THREE.MeshStandardMaterial({vertexColors:true,map:throatColorChart(config),roughness:.86,metalness:0,side:THREE.DoubleSide});
+  material.name = 'ATLAS_ROUGH_matte_authored_color';
   const mesh = new THREE.SkinnedMesh(merged,material); mesh.name = 'ATLAS_ROUGH_skinned_mesh';
   // The bounded prototype does not use stale rest-pose bounds for clip culling.
   mesh.frustumCulled = false; root.add(mesh); root.updateMatrixWorld(true);
@@ -713,5 +782,5 @@ export function createAtlas(config) {
     clip('speech_test',1.6,Array.from({length:17},(_,i)=>({time:i/10,pose:{Jaw:[i===16?0:[0,13,5,19,0,9,16,3][i%8],0,0],Head:[i===16?0:Math.sin(i*.5)*1.5,0,0]}}))),
     clip('satisfied_nod',.90,[{time:0,pose:{}},{time:.08,pose:{Head:[-3,0,0]}},{time:.34,pose:{Head:[8,0,0],WingLeft:[0,0,-6],WingRight:[0,0,6]}},{time:.48,pose:{Head:[5,0,0]}},{time:.90,pose:{}}]),
   ];
-  return {root,mesh,bones,clips,reset,pose,stats:{vertices:p.length/3,triangles:indices.length/3,bones:bones.length,materials:1,textures:0,parts:parts.length}};
+  return {root,mesh,bones,clips,reset,pose,stats:{vertices:p.length/3,triangles:indices.length/3,bones:bones.length,materials:1,textures:1,parts:parts.length}};
 }

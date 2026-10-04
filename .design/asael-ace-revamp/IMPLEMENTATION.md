@@ -5,10 +5,10 @@ PR54 (priority UI / app 1.23.13+48), PR55 (static full-body greeting /
 app 1.23.14+49) and PR56 (scoped language/motion intensity / app 1.23.15+50)
 are accepted and merged, each after all 16 hosted checks passed. The private
 Mac package is verified through 1.23.15 (50), from PR56's exact accepted source.
-The last complete matching 3D export and visual review is wing-02, with all
-nine final structure/lifecycle checks passing and the full model still unaccepted.
-It retains completed-02's breast fold and wing-02's underform contact/lower-tail
-compression. Rejected throat-05/06 studies were fully reverted. Primary-01,
+The last complete matching 3D export is finish-02, with all nine final
+model/lifecycle checks and nine static tool tests passing. Comparison, corrected
+GLB reload and all 80 exported state stills retain the local color/crown improvement;
+the full model and natural acting remain unaccepted. Wing-02, primary-01,
 completed-01, eyelid-03, throat-04 and beak-02 are historical checkpoints;
 throat-03 was rejected for its coarse staircase boundary. PR57's expanded web
 Voice shared player is accepted and merged after all 14 applicable hosted checks
@@ -1660,28 +1660,43 @@ That historical package-preparation checkpoint is superseded by the signed
 packages and hosted acceptance below. Nine Node geometry/lifecycle checks and
 three Python tool tests also passed for the sculpt-02 source workbench.
 
-The last complete matching wing-02 export at
-`2026-10-04T19:37:43.326236+00:00` (5 October in IST) binds
-`sculpt-04-wing-02-mesh-contact` and has 104 artifacts,
-27,240 vertices, 49,844 triangles, 14 bones and 12 clips: eight states and
-four inspection aliases, in a 2,039,724-byte GLB. All nine final structure/lifecycle
-checks passed. Matching source/output is archived as `atlas-wing-02-review.tar.gz`.
-Root verified all 17 source hashes, all 104 artifact hashes/bytes and 139 archive
-members in `atlas-wing-02-export-verification.json`; exact manifest/archive
-hashes are recorded in `atlas-production/MEASUREMENTS.md`.
+The last complete matching finish-02 export at
+`2026-10-04T20:07:57.362206+00:00` (5 October in IST) binds
+`sculpt-04-finish-02-seam-safe-color` and has 104 artifacts,
+27,543 vertices, 49,844 triangles, 14 bones and 12 clips in a 2,321,804-byte GLB.
+It has one material, one embedded 512 × 512 RGBA8 color texture and zero external
+resources. All nine final model/lifecycle checks and nine static tool tests passed.
+Matching source/output is archived as `atlas-finish-02-review.tar.gz`.
+Root verified all 17 source hashes, 104 artifact hashes/bytes and 146 archive
+members in `atlas-finish-02-export-verification.json`; exact hashes and comparison
+details are recorded in `atlas-production/MEASUREMENTS.md`.
 
-Completed-02's breast fold was retained after 60 actual comparisons. Exactly one
-`WingTipLeft` quaternion track changed; geometry and the other 11 clips were exact.
-Wing-02's underform contact and lower-tail compression were then retained after
-60 actual comparisons and an independent rest/peak/portrait review, removing the
-dangling spur. Its 24 changed coverts leave the other 143 parts, all topology,
-rig, poses, clips and palette exact against completed-02.
+Forty comparisons against wing-02 retained the smooth throat, shorter six-piece
+crown and removal of finish-01's large pale head cracks. Texture-only isolation
+had traced those rejected cracks to UV interpolation. Finish-02 duplicates 303
+seam vertices (126 silhouette, 177 plumage), preserving 149,532 ordered
+triangle-corner skin bindings, non-crown positions/normals, all 159 other part
+arrays/relative indices, rig, poses and all 12 clips/168 tracks.
 
-Throat-05 and throat-06 were each rejected after 30 comparisons and fully reverted.
-Diagnostics found interpolation bands even in isolated layers; wing-02's original
-throat is restored exactly. Throat/lid edges, torso cut-like accents, the sharp
-crown, overall finish/likeness, all-state acting, delivery-size readability and
-device performance remain unaccepted. No final art publication is claimed.
+The first reload's CSP-blocked blob fetch displayed a white body without its map;
+that diagnostic remains preserved. The lab now allows the embedded blob fetch
+and requires a decoded map. Forty corrected procedural/GLB captures have one
+texture per mode: eight rest pairs are pixel-identical, and twelve other pairs
+differ at 0–10 pixels per image, at most one channel value, totaling 31 pixels.
+Page/console/network errors are zero; hide, reload and disposal pass. Map/bitmap
+cleanup is deduplicated, but allocation and resource reclamation are unmeasured.
+
+Root reviewed all 80 exported state stills (eight states × five samples × two
+themes) in four review sheets. Smooth throat, no new large pale head/crown
+breakthrough and coherent completion fold/return were retained. Faint temple
+dashes, body/eye/wing finish, overall likeness, natural acting, delivery-size
+readability and device performance remain unaccepted. Still review is not
+natural-motion or device approval; no final art publication is claimed.
+
+Wing-02 is retained in `atlas-wing-02-review.tar.gz`. Its completed-02 breast fold
+and wing-contact/lower-tail improvements each had 60 comparisons; the rejected
+30-comparison throat-05/06 studies were reverted at that historical checkpoint.
+Exact parity, full-export metadata and hashes remain in MEASUREMENTS.md.
 
 Primary-01 is retained in `atlas-primary-01-review.tar.gz`, with its 48-capture
 review, exact 16-part comparison, metadata and hashes preserved in MEASUREMENTS.md.
@@ -1706,7 +1721,7 @@ its 18 comparison captures showed an improved beak without accepting the full
 model. Throat-03 was rejected for its coarse staircase boundary. Historical
 sculpt-04 passed all nine geometry/lifecycle checks. Source/export tooling and
 an explicit hash-verifying publisher exist; final art acceptance does not.
-The archived rough-01 performance comparison does not measure wing-02.
+The archived rough-01 performance comparison does not measure finish-02.
 Details and exact evidence boundaries are in `atlas-production/README.md`,
 `ART_REVIEW.md`, `MEASUREMENTS.md` and `PERFORMANCE_PLAN.md`. A functional release
 with approved static ATLAS is permitted; full-plan completion, physical-device
@@ -1980,7 +1995,9 @@ was healthy at about 11:04 UTC on
 `production-health-ui-priority.json`. The owner release environment still needs
 the migration-owner connection, active gateway token and paid/admin smoke
 credentials. A read-only probe at 18:13 UTC on 4 October still found that release
-environment absent. Private signing and ready packages do not replace those gates.
+environment absent. Root's health check at 20:06:33.112533 UTC on 4 October
+confirmed healthy production on the unchanged `a06aa78b` revision. Private signing
+and ready packages do not replace those gates.
 
 Connector expansion at `ba468e7f` is parked and not merged. Scoped personality
 implementation is accepted through PR56. Final 3D likeness, state acting,

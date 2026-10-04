@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "name": "ATLAS_ROUGH_01",
-  "status": "SCULPT_04_WING_02_RETAINED_LOCAL_REFINEMENT",
-  "creativeRevision": "sculpt-04-wing-02-mesh-contact",
-  "exportEvidence": "Completed-02 and wing-02 are retained after 60 matching comparisons each and exact scoped parity. Only the completed child-wing track and twenty-four coverts change relative to primary-01; topology, rig, poses, other clips and all other geometry remain exact. Two later throat sampling candidates were rejected after actual comparison and fully reverted. Full-export measurements and archive identity belong in ../ART_REVIEW.md and a matching export-manifest.json; require the creativeRevision and every current source hash to match. The full character and natural state acting remain unaccepted; no production art/state publication is implied.",
+  "status": "SCULPT_04_FINISH_02_RETAINED_LOCAL_REFINEMENT",
+  "creativeRevision": "sculpt-04-finish-02-seam-safe-color",
+  "exportEvidence": "Finish-02 retained after 40 matching wing-02 comparisons and 40 procedural/GLB reload captures. The throat boundary is smooth and large crown/head interpolation seams are removed; fine temple dashes, body/eye finish and final character acting remain open. The one embedded 512px color map uses 303 duplicated UV seam vertices without changing triangle count, surface shape outside six crown parts, geometric skin bindings, rig, poses or all 12 clips. Reloaded rest captures are pixel-identical; posed captures differ at 0-10 pixels per image by at most one channel value. Full-export measurements and archive identity belong in ../ART_REVIEW.md and a matching export-manifest.json; require the creativeRevision and every current source hash to match. Full-character acceptance and production publication remain pending.",
   "coordinates": "Arbitrary model units. Y up, Z forward, X character left. Overall height about 3 units; not a physical scale claim.",
   "sourceExpectedSha256": "876591c5a2b739df99d6aab647554dc53bcab97d55bf0c3e0864e39e1c98c070",
   "palette": {

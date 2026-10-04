@@ -214,7 +214,7 @@ def main() -> None:
                 'exportedAtUtc': datetime.now(timezone.utc).isoformat(),
                 'approvedReference': {'path': str(reference.relative_to(REPO)), 'sha256': EXPECTED_REFERENCE, 'provenanceSha256': digest(provenance), 'kind': reference_metadata['kind']},
                 'creativeRevision': config.get('creativeRevision', 'rough-01'),
-                'technique': 'Deterministic procedural skinned geometry, editable skeleton and authored quaternion clips; no generated imagery or raster planes.',
+                'technique': 'Deterministic procedural skinned geometry, editable skeleton, authored quaternion clips and one embedded 512px procedural color chart; no generated imagery or raster planes.',
                 'parameters': {'seed': 0, 'randomness': 'none', 'radialSegments': config['radialSegments'], 'glb': {'binary': True, 'trs': True, 'onlyVisible': True, 'animations': list(config['statePerformances']) + ['rest', 'quick_reaction', 'speech_test', 'satisfied_nod']}, 'raster': {'pixelRatio': 1, 'webpQuality': .9, 'sequenceFramesPerTheme': 19, 'sequenceSamplingHz': 20}, 'stateDelivery': {'manifest': 'output/atlas-v1/manifest.json', 'frameSize': FRAME_SIZE, 'fps': FPS, 'columns': COLUMNS, 'alpha': 'renderer RGBA; no backdrop compositor', 'encoding': 'lossless WebP', 'loop': False}, 'lighting': {'hemisphereIntensity': 2.1, 'keyIntensity': 3, 'fillIntensity': 1.2}, 'toneMapping': 'ACESFilmic', 'exposure': 1, 'colorSpace': 'sRGB'},
                 'runtime': {'threeVersion': three_version, 'chromiumVersion': browser.version, 'headless': True, 'renderer': measured['renderer']},
                 'geometry': measured['geometry'],

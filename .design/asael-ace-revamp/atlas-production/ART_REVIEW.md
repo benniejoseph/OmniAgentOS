@@ -1,6 +1,22 @@
 # ATLAS actual-art review — 5 October 2026 (IST)
 
-## Wing02 — latest matching full export, character still unaccepted
+## Finish02 — latest matching full export, character still unaccepted
+
+The retained color/crown refinement is exported as `sculpt-04-finish-02-seam-safe-color` at `2026-10-04T20:07:57.362206+00:00`. All seventeen source hashes, 104 artifact hashes/byte lengths and 146 archive members were verified. The GLB is 2,321,804 bytes, with 27,543 vertices, 49,844 triangles, fourteen bones, twelve clips, one material and one embedded 512 × 512 RGBA8 PNG. There are no external image or buffer resources. Nine final model/lifecycle checks and nine static-tool tests pass.
+
+The throat staircase is removed by a deterministic color texture. Six crown ends are shorter. Front/back texture seams duplicate 303 vertices, preserving every ordered triangle and skin binding outside the declared crown geometry change. The other 159 parts, rig, poses and all 168 clip tracks remain exact. Root reviewed forty matching wing02 comparisons; independent review agrees with local retention. Fine temple dashes, torso cuts, eye edges, wing-joint finish, overall likeness and natural acting remain open.
+
+Finish01 was rejected for bright crown/head lines. Eight isolation captures confirmed texture interpolation caused them. Finish02's triangle-consistent mapping removes the large lines. Comparison archive: `finish02-comparison/matching-source-and-baseline.tar.gz`, SHA256 `7e23f81183edab49ea4c14dbc15254d29cc474ea8b2552342b827153b3ac81c3`.
+
+An actual exported reload also caught a blocked local blob fetch that silently omitted the color map. The lab CSP now admits its embedded image fetch, and GLB loading fails unless the one 512 × 512 map decoded. The failed diagnostic is preserved in `finish02-glb-parity`. Forty corrected procedural/reloaded captures contain one texture in each mode: eight rest pairs are pixel-identical; twelve posed pairs differ at 0–10 pixels each by at most one channel value (31 differing pixels total). No page, console or network errors were recorded. Hide, reload and disposal complete in both modes; actual allocation reclamation remains unmeasured. Corrected comparison archive SHA256: `2ddabd3f42dcd61ebad801f2d18558a164f2555134d64628b5e529bd9b1b5bad`.
+
+Root inspected eighty exported state samples across all eight states and both themes. The smooth throat remains, with no new large pale head/crown breakthrough in those frames; the completed fold/return remains coherent. These stills do not establish motion quality, delivery-size or physical-device acceptance. Matching sprite archive: `finish02-state-review/matching-source-and-baseline.tar.gz`, SHA256 `dee010d2abde804667543cd5f3b71835522e4f54cd197cbd382ddfae16f798b0`.
+
+Full archive: `atlas-finish-02-review.tar.gz`, SHA256 `3c9f954a2d0bbd8c179e447c30214bf17af5fc5c697bf859d72fddc00d47520a`. Receipt: `atlas-finish-02-export-verification.json`. Export-manifest SHA256: `6932d66e120c84b62000b4dc44664389d029cf564b3c4a4f3c3629a51af1a5e1`; raster-manifest SHA256: `3c84431f9f5256122bef5f975fcc5e0844c8c90bbcb8af9ee690a9b3cf27893d`.
+
+This is a retained local art checkpoint. The final character remains unaccepted and unpublished; the approved portrait/static greeting remain active. The previous checkpoints below are history.
+
+## Wing02 — previous matching full export
 
 The retained breast-fold trajectory and actual-mesh covert fitting are exported
 together as `sculpt-04-wing-02-mesh-contact` at

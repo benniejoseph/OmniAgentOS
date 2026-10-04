@@ -37,13 +37,30 @@ function stopLoop() {
   animationFrame = null; loopRunning = false; lastFrame = null; clipStart = null;
   mixer?.stopAllAction(); gate.cancel();
 }
+function modelResources(root) {
+  const geometries=new Set(), materials=new Set(), textures=new Set(), skeletons=new Set();
+  root.traverse(node=>{
+    if(node.geometry)geometries.add(node.geometry);
+    if(node.material)for(const value of(Array.isArray(node.material)?node.material:[node.material]))materials.add(value);
+    if(node.skeleton)skeletons.add(node.skeleton);
+  });
+  for(const material of materials)for(const value of Object.values(material))if(value?.isTexture)textures.add(value);
+  return {geometries,materials,textures,skeletons};
+}
+function disposeModel(root) {
+  const {geometries,materials,textures,skeletons}=modelResources(root), bitmaps=new Set();
+  for(const texture of textures)for(const image of(Array.isArray(texture.image)?texture.image:[texture.image]))if(typeof image?.close==='function')bitmaps.add(image);
+  for(const value of geometries)value.dispose();
+  for(const value of textures)value.dispose();
+  for(const value of materials)value.dispose();
+  for(const value of skeletons)value.dispose();
+  for(const value of bitmaps)value.close();
+}
 function disposeResources() {
   stopLoop(); aborter?.abort(); aborter = null;
   if (model) {
     mixer?.stopAllAction(); mixer?.uncacheRoot(model.root);
-    const geometries=new Set(), materials=new Set(), skeletons=new Set();
-    model.root.traverse((node)=>{if(node.geometry)geometries.add(node.geometry);if(node.material)for(const value of (Array.isArray(node.material)?node.material:[node.material]))materials.add(value);if(node.skeleton)skeletons.add(node.skeleton);});
-    for(const value of geometries)value.dispose(); for(const value of materials)value.dispose(); for(const value of skeletons)value.dispose();
+    disposeModel(model.root);
   }
   const previousRenderer=renderer;renderer=null;previousRenderer?.dispose();previousRenderer?.forceContextLoss();model=null;scene=null;camera=null;mixer=null;rests.clear();
   for(const url of objectUrls)URL.revokeObjectURL(url); objectUrls.clear(); frames=[]; sequence=null; sequenceCanvas=null; sequenceContext=null;
@@ -153,14 +170,21 @@ async function load() {
         const response=await fetch('/output/atlas-rough.glb',{signal});if(!response.ok)throw Error(`Exported GLB unavailable (${response.status}).`);
         const bytes=await response.arrayBuffer();if(!current(token))return false;
         const gltf=await new GLTFLoader().parseAsync(bytes,'/output/');
-        if(!current(token)){gltf.scene.traverse(node=>{node.geometry?.dispose();node.skeleton?.dispose();if(node.material)for(const material of(Array.isArray(node.material)?node.material:[node.material]))material.dispose();});return false;}
+        if(!current(token)){disposeModel(gltf.scene);return false;}
         model={root:gltf.scene,clips:gltf.animations};
         if(!CLIP_NAMES.every(name=>model.clips.some(clip=>clip.name===name)))throw Error('GLB is missing the authored rough clips.');
       }
       phase('modelBuildOrParseMs',modelStart);
       let vertices=0,triangles=0,bones=0;model.root.traverse(node=>{if(node.isBone){bones++;rests.set(node,{position:node.position.clone(),quaternion:node.quaternion.clone(),scale:node.scale.clone()});}if(node.isMesh){node.frustumCulled=false;vertices+=node.geometry.attributes.position.count;triangles+=(node.geometry.index?.count??node.geometry.attributes.position.count)/3;}});
       if(bones!==config.rig.length || vertices===0)throw Error('Unexpected model rig or empty geometry.');
-      samples.geometry={vertices,triangles,bones};scene.add(model.root);mixer=new THREE.AnimationMixer(model.root);
+      const resources=modelResources(model.root);
+      if(mode==='glb') {
+        const [material]=resources.materials, texture=material?.map, image=texture?.image;
+        const width=image?.naturalWidth??image?.width, height=image?.naturalHeight??image?.height;
+        if(resources.materials.size!==1||resources.textures.size!==1||!texture?.isTexture||width!==512||height!==512)
+          throw Error('GLB color map did not load: expected one material and one decoded 512x512 texture.');
+      }
+      samples.geometry={vertices,triangles,bones,materials:resources.materials.size,textures:resources.textures.size};scene.add(model.root);mixer=new THREE.AnimationMixer(model.root);
       renderer=new THREE.WebGLRenderer({antialias:true,alpha:captureAlpha,preserveDrawingBuffer:true,powerPreference:'low-power'});renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1;
       const ownedRenderer=renderer;
       ownedRenderer.domElement.addEventListener('webglcontextlost',()=>{
