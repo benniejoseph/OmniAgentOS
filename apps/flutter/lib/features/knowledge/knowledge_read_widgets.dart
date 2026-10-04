@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 
-import '../../generated/native_contract.g.dart';
 import 'knowledge.dart';
 import 'knowledge_mutations.dart';
 import 'knowledge_mutation_widgets.dart';
+export 'knowledge_reviews.dart';
 
 class KnowledgeCoverage extends StatelessWidget {
   const KnowledgeCoverage({
@@ -529,70 +529,6 @@ class MemoryImpactDetails extends StatelessWidget {
           ),
         if (preview.guarantee == 'best_effort')
           const Text('Best effort is not a verified rollback barrier.'),
-      ],
-    );
-  }
-}
-
-class KnowledgeReviews extends StatelessWidget {
-  const KnowledgeReviews({
-    super.key,
-    required this.overview,
-    this.stale = false,
-  });
-  final Json overview;
-  final bool stale;
-  @override
-  Widget build(BuildContext context) {
-    final summary = overview['summary'] as Map? ?? const {};
-    final steward = overview['steward'] as Map? ?? const {};
-    final recommendations = steward['recommendations'] is List
-        ? steward['recommendations'] as List
-        : const [];
-    return ListView(
-      padding: const EdgeInsets.all(20),
-      children: [
-        Text('Memory reviews', style: Theme.of(context).textTheme.titleLarge),
-        if (stale)
-          const Text('Refresh failed. This advisory view may be stale.'),
-        Text(
-          '${summary['pendingReviews'] ?? 'Unavailable'} pending in the observed catalogue',
-        ),
-        const SizedBox(height: 12),
-        const Text(
-          'The memory steward proposes changes. This view does not execute maintenance or change historical truth.',
-        ),
-        const SizedBox(height: 12),
-        Text(
-          'Review decisions, promotions, source mapping, consent and maintenance are not published in native contract ${NativeContract.currentVersion}. Use the authenticated web Memory workspace for supported review workflows.',
-        ),
-        const SizedBox(height: 16),
-        if (recommendations.isEmpty)
-          const Text(
-            'No advisory recommendations were returned. This does not establish that the review queue is empty.',
-          ),
-        for (final item in recommendations.whereType<Map>().take(20))
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    '${item['title'] ?? 'Advisory recommendation'}',
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
-                  Text('${item['detail'] ?? ''}'),
-                  Text(
-                    'Affected count: ${item['affectedCount'] ?? 'not reported'}',
-                  ),
-                  SelectableText('Reference: ${item['id'] ?? 'not reported'}'),
-                ],
-              ),
-            ),
-          ),
-        if (recommendations.length > 20)
-          const Text('Showing the first 20 advisory recommendations.'),
       ],
     );
   }

@@ -103,6 +103,18 @@ import {
   type MemoryReconciliationDecision,
   type MemoryReconciliationReview,
 } from "@/lib/memory/reconciliation";
+import {
+  MemoryReconciliationNativeError,
+  memoryReconciliationNativeAcceptanceSchema,
+  memoryReconciliationNativeIdSchema,
+  memoryReconciliationNativeIntent,
+  memoryReconciliationNativeTargetSchema,
+  memoryReconciliationNativeToken,
+  memoryReconciliationNativeTokensEqual,
+  type MemoryReconciliationNativeAcceptance,
+  type MemoryReconciliationNativeRequest,
+  type MemoryReconciliationNativeTargets,
+} from "@/lib/memory/reconciliation-native-contracts";
 
 export type CreateMemoryInput = {
   id?: string;
@@ -626,9 +638,15 @@ const MEMORY_CONTENT_DIGEST_RULES: readonly EventDigestRule[] = Object.freeze([
       digestFields: [
         "candidateTitleHmac", "candidateContentHmac",
         "candidateTitleSha256", "candidateContentSha256",
+        "nativeAcceptance",
       ],
     }),
   ),
+  {
+    type: "memory.reconciliation.resolved",
+    idField: "existingMemoryId",
+    digestFields: ["nativeAcceptance"],
+  },
   {
     type: "memory.corrected",
     idField: "correctedMemoryId",
@@ -1888,6 +1906,310 @@ export async function getMemoryReconciliationStats(
     pending: reviews.filter((review) => review.status === "pending").length,
     resolved: reviews.filter((review) => review.status === "resolved").length,
   };
+}
+
+export type MemoryReconciliationNativeAuthority = Readonly<{
+  tenantId: string;
+  ownerActorId: string;
+  accessScope: DatabaseMemoryAccessScope;
+  executionScope: ExecutionScope;
+}>;
+
+export type PrivateMemoryReconciliationRead = Readonly<{
+  review: MemoryReconciliationReview;
+  reviewToken: string | null;
+  acceptance: MemoryReconciliationNativeAcceptance | null;
+}>;
+
+function validateNativeReconciliationAuthority(authority: MemoryReconciliationNativeAuthority, purpose: string) {
+  const scope = parseDatabaseMemoryAccessScope(authority.accessScope);
+  const execution = parsePersistedExecutionScope(authority.executionScope);
+  if (!execution || !/^actor:[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(authority.ownerActorId) ||
+    scope.tenantId !== authority.tenantId || scope.initiatingActorId !== authority.ownerActorId ||
+    scope.executingPrincipalType !== "user" || scope.executingPrincipalId !== authority.ownerActorId ||
+    scope.purposeId !== purpose || scope.purpose !== execution.purpose ||
+    scope.workspaceId !== null || scope.projectId !== null || scope.missionId !== null ||
+    scope.contextGrantIds.length || scope.capabilityGrantIds.length ||
+    execution.tenantId !== authority.tenantId || execution.initiatingActorId !== authority.ownerActorId ||
+    execution.executingPrincipalType !== "user" || execution.executingPrincipalId !== authority.ownerActorId ||
+    execution.workspaceId !== null || execution.projectId !== null || execution.missionId !== null ||
+    execution.contextGrantIds.length || execution.capabilityGrantIds.length || execution.delegationId !== null) {
+    throw new MemoryReconciliationNativeError("memory_reconciliation_authority_invalid", 403, "Current private Memory authority is required.");
+  }
+  return scope;
+}
+
+async function nativeReconciliationTransaction<T>(
+  authority: MemoryReconciliationNativeAuthority,
+  purpose: string,
+  work: (sql: MemorySqlClient) => Promise<T>,
+): Promise<T> {
+  const scope = validateNativeReconciliationAuthority(authority, purpose);
+  if (!hasDatabaseUrl()) {
+    throw new MemoryReconciliationNativeError("memory_reconciliation_storage_unavailable", 503, "Durable private Memory reconciliation is unavailable.");
+  }
+  await ensureDatabaseSchema();
+  return getSql().transaction(async (sql: MemorySqlClient) => {
+    await setTransactionLocalDatabaseMemoryAccessScope(sql, scope);
+    return work(sql);
+  }) as Promise<T>;
+}
+
+function nativeReconciliationMemoryAllowed(row: Record<string, unknown>, authority: MemoryReconciliationNativeAuthority) {
+  return row.tenant_id === authority.tenantId && row.access_contract_version === 1 &&
+    row.access_state === "scope_bound" && row.visibility === "user_private" &&
+    row.owner_actor_id === authority.ownerActorId && row.owner_agent_id == null &&
+    row.workspace_id == null && row.project_id == null && row.mission_id == null &&
+    row.claim_status !== "forgotten" && !row.forgotten_at &&
+    textArray(row.allowed_purpose_ids).includes(MEMORY_PURPOSE_IDS.read);
+}
+
+function nativeReconciliationCurrent(
+  row: Record<string, unknown>, authority: MemoryReconciliationNativeAuthority,
+): { review: MemoryReconciliationReview; candidateRow: Record<string, unknown>; existingRow: Record<string, unknown> | undefined } | null {
+  const candidateRow = databaseRecord(row.candidate_memory);
+  const existingRow = databaseRecord(row.existing_memory);
+  if (!memoryReconciliationNativeIdSchema.safeParse(row.id).success ||
+    !memoryReconciliationNativeIdSchema.safeParse(row.candidate_memory_id).success ||
+    (row.existing_memory_id != null && !memoryReconciliationNativeIdSchema.safeParse(row.existing_memory_id).success) ||
+    row.tenant_id !== authority.tenantId || row.owner_actor_id !== authority.ownerActorId ||
+    !candidateRow || !nativeReconciliationMemoryAllowed(candidateRow, authority) ||
+    candidateRow.id !== row.candidate_memory_id ||
+    (row.existing_memory_id && (!existingRow || existingRow.id !== row.existing_memory_id ||
+      !nativeReconciliationMemoryAllowed(existingRow, authority)))) return null;
+  return { review: memoryReconciliationReviewFromRow(row), candidateRow, existingRow };
+}
+
+async function nativeReconciliationTargets(
+  sql: MemorySqlClient, authority: MemoryReconciliationNativeAuthority,
+  current: NonNullable<ReturnType<typeof nativeReconciliationCurrent>>, lock: boolean,
+): Promise<MemoryReconciliationNativeTargets> {
+  const ids = [current.review.candidate.id, ...(current.review.existing ? [current.review.existing.id] : [])].sort();
+  // The narrow metadata reader validates the existing read/correct boundary.
+  // Its parent locks also fence a lifecycle row that does not exist yet.
+  const rows = await sql`SELECT * FROM public.omni_memory_reconciliation_lifecycle_snapshot_v1(
+    ${authority.tenantId}, ${authority.ownerActorId}, ${ids}::TEXT[], ${lock})`;
+  const revisions = new Map(rows.map((row) => [String(row.memory_id), Number(row.lifecycle_revision)]));
+  const target = (row: Record<string, unknown>) => {
+    const memoryId = String(row.id);
+    if (!revisions.has(memoryId)) throw new Error("Private Memory lifecycle snapshot is incomplete.");
+    return memoryReconciliationNativeTargetSchema.parse({
+      memoryId, claimStatus: row.claim_status, targetRevision: Number(row.lifecycle_target_revision),
+      lifecycleRevision: revisions.get(memoryId),
+    });
+  };
+  return { candidate: target(current.candidateRow), existing: current.existingRow ? target(current.existingRow) : null };
+}
+
+function nativeReconciliationReviewToken(
+  authority: MemoryReconciliationNativeAuthority,
+  current: NonNullable<ReturnType<typeof nativeReconciliationCurrent>>,
+  targets: MemoryReconciliationNativeTargets,
+) {
+  if (current.review.status !== "pending" || targets.candidate.claimStatus !== "candidate" ||
+    (current.review.kind === "contradiction" && targets.existing?.claimStatus !== "active") ||
+    ![current.candidateRow, ...(current.existingRow ? [current.existingRow] : [])]
+      .every((row) => textArray(row.allowed_purpose_ids).includes(MEMORY_PURPOSE_IDS.correct))) return null;
+  return memoryReconciliationNativeToken({
+    tenantId: authority.tenantId, ownerActorId: authority.ownerActorId,
+    reviewId: current.review.id, kind: current.review.kind, status: "pending", targets,
+  });
+}
+
+function nativeAcceptanceFromEvent(row: Record<string, unknown>, review: MemoryReconciliationReview) {
+  const payload = databaseRecord(row.payload);
+  const stored = databaseRecord(payload?.nativeAcceptance);
+  if (!stored || payload?.digestsForgottenAt) return null;
+  // Tokens are non-secret keyed metadata, but the general event redactor
+  // deliberately removes Token-named fields. Store its digest under this alias.
+  const { expectedReviewSha256, ...rest } = stored;
+  const parsed = memoryReconciliationNativeAcceptanceSchema.safeParse({ ...rest, expectedReviewToken: expectedReviewSha256 });
+  if (!parsed.success) throw new Error("Stored Memory reconciliation acceptance is invalid.");
+  const acceptance = parsed.data;
+  if (row.id !== acceptance.id || row.type !== "memory.reconciliation.resolved" ||
+    row.tenant_id !== review.tenantId || row.actor_id !== review.ownerActorId ||
+    row.stream_id !== `memory-reconciliation:${review.id}` ||
+    acceptance.tenantId !== review.tenantId || acceptance.ownerActorId !== review.ownerActorId ||
+    acceptance.reviewId !== review.id || acceptance.candidateMemoryId !== review.candidate.id ||
+    acceptance.existingMemoryId !== (review.existing?.id ?? null) ||
+    review.status !== "resolved" || acceptance.decision !== review.decision ||
+    acceptance.resolvedAt !== review.resolvedAt || payload.reviewId !== review.id ||
+    payload.candidateMemoryId !== review.candidate.id ||
+    payload.existingMemoryId !== (review.existing?.id ?? null) || payload.decision !== review.decision) {
+    throw new Error("Stored Memory reconciliation acceptance does not match its authorized review.");
+  }
+  return acceptance;
+}
+
+async function nativeReconciliationRead(
+  sql: MemorySqlClient, authority: MemoryReconciliationNativeAuthority, row: Record<string, unknown>,
+): Promise<PrivateMemoryReconciliationRead | null> {
+  const current = nativeReconciliationCurrent(row, authority);
+  if (!current) return null;
+  const targets = await nativeReconciliationTargets(sql, authority, current, false);
+  const events = current.review.status === "resolved" ? await sql`
+    SELECT id, tenant_id, actor_id, stream_id, type, payload FROM omni_events
+    WHERE tenant_id = ${authority.tenantId} AND actor_id = ${authority.ownerActorId}
+      AND stream_id = ${`memory-reconciliation:${current.review.id}`} AND type = 'memory.reconciliation.resolved'
+      AND payload ->> 'reviewId' = ${current.review.id}
+    ORDER BY seq DESC LIMIT 1
+  ` : [];
+  return {
+    review: current.review, reviewToken: nativeReconciliationReviewToken(authority, current, targets),
+    acceptance: events[0] ? nativeAcceptanceFromEvent(events[0], current.review) : null,
+  };
+}
+
+async function nativeReconciliationRow(sql: MemorySqlClient, authority: MemoryReconciliationNativeAuthority, reviewId: string) {
+  const rows = await sql`
+    SELECT review.*, to_jsonb(candidate) AS candidate_memory, to_jsonb(existing) AS existing_memory
+    FROM omni_memory_reconciliation_reviews review
+    JOIN omni_memories candidate ON candidate.tenant_id = review.tenant_id AND candidate.id = review.candidate_memory_id
+    LEFT JOIN omni_memories existing ON existing.tenant_id = review.tenant_id AND existing.id = review.existing_memory_id
+    WHERE review.tenant_id = ${authority.tenantId} AND review.owner_actor_id = ${authority.ownerActorId}
+      AND review.id = ${reviewId} LIMIT 1
+  `;
+  return rows[0];
+}
+
+/** Exact canonical-private read; no legacy lane or bounded-list search. */
+export async function getPrivateMemoryReconciliationReview(authority: MemoryReconciliationNativeAuthority, reviewId: string) {
+  memoryReconciliationNativeIdSchema.parse(reviewId);
+  return nativeReconciliationTransaction(authority, MEMORY_PURPOSE_IDS.read, async (sql) => {
+    const row = await nativeReconciliationRow(sql, authority, reviewId);
+    return row ? nativeReconciliationRead(sql, authority, row) : null;
+  });
+}
+
+export async function listPrivateMemoryReconciliationReviews(
+  authority: MemoryReconciliationNativeAuthority,
+  options: { status?: "pending" | "resolved" | "all"; limit?: number } = {},
+): Promise<PrivateMemoryReconciliationRead[]> {
+  const status = options.status === "resolved" || options.status === "all" ? options.status : "pending";
+  const limit = Math.min(Math.max(Math.trunc(options.limit || 100), 1), 100);
+  return nativeReconciliationTransaction(authority, MEMORY_PURPOSE_IDS.read, async (sql) => {
+    const rows = await sql`
+      SELECT review.*, to_jsonb(candidate) AS candidate_memory, to_jsonb(existing) AS existing_memory
+      FROM omni_memory_reconciliation_reviews review
+      JOIN omni_memories candidate ON candidate.tenant_id = review.tenant_id AND candidate.id = review.candidate_memory_id
+      LEFT JOIN omni_memories existing ON existing.tenant_id = review.tenant_id AND existing.id = review.existing_memory_id
+      WHERE review.tenant_id = ${authority.tenantId} AND review.owner_actor_id = ${authority.ownerActorId}
+        AND (${status} = 'all' OR review.status = ${status})
+        AND candidate.access_contract_version = 1 AND candidate.visibility = 'user_private'
+        AND candidate.owner_actor_id = ${authority.ownerActorId} AND candidate.claim_status <> 'forgotten'
+        AND candidate.allowed_purpose_ids @> ARRAY['memory.read.v1']::TEXT[]
+        AND (review.existing_memory_id IS NULL OR (existing.access_contract_version = 1
+          AND existing.visibility = 'user_private' AND existing.owner_actor_id = ${authority.ownerActorId}
+          AND existing.claim_status <> 'forgotten' AND existing.allowed_purpose_ids @> ARRAY['memory.read.v1']::TEXT[]))
+      ORDER BY (review.status = 'pending') DESC, review.updated_at DESC, review.id LIMIT ${limit}
+    `;
+    const result: PrivateMemoryReconciliationRead[] = [];
+    for (const row of rows) {
+      const value = await nativeReconciliationRead(sql, authority, row);
+      if (value) result.push(value);
+    }
+    return result;
+  });
+}
+
+/** Atomic native admission. Exact accepted replay never rewrites claims or events. */
+export async function resolvePrivateMemoryReconciliationReview(input: {
+  authority: MemoryReconciliationNativeAuthority; reviewId: string;
+  idempotencyKey: string; request: MemoryReconciliationNativeRequest;
+}): Promise<PrivateMemoryReconciliationRead & { acceptance: MemoryReconciliationNativeAcceptance; newlyApplied: boolean }> {
+  const { authority, reviewId } = input;
+  const intent = memoryReconciliationNativeIntent({ ...input, tenantId: authority.tenantId, ownerActorId: authority.ownerActorId });
+  return nativeReconciliationTransaction(authority, MEMORY_PURPOSE_IDS.correct, async (sql) => {
+    await sql`SELECT pg_advisory_xact_lock(hashtextextended(${`memory-graph:${authority.tenantId}`}, 0))`;
+    await sql`SELECT pg_advisory_xact_lock(hashtextextended(${`memory-reconciliation:${authority.tenantId}:${authority.ownerActorId}:${intent.keySha256}`}, 0))`;
+    const reviews = await sql`SELECT * FROM omni_memory_reconciliation_reviews
+      WHERE tenant_id = ${authority.tenantId} AND owner_actor_id = ${authority.ownerActorId} AND id = ${reviewId} FOR UPDATE`;
+    if (!reviews[0]) throw new MemoryReconciliationNativeError("memory_reconciliation_unavailable", 404, "Current private Memory review was not found.");
+    const ids = [String(reviews[0].candidate_memory_id), ...(reviews[0].existing_memory_id ? [String(reviews[0].existing_memory_id)] : [])].sort();
+    const memories = await sql`SELECT * FROM omni_memories
+      WHERE tenant_id = ${authority.tenantId} AND id = ANY(${ids}::TEXT[]) ORDER BY id FOR UPDATE`;
+    const current = nativeReconciliationCurrent({
+      ...reviews[0], candidate_memory: memories.find((row) => row.id === reviews[0].candidate_memory_id),
+      existing_memory: memories.find((row) => row.id === reviews[0].existing_memory_id),
+    }, authority);
+    if (!current || ![current.candidateRow, ...(current.existingRow ? [current.existingRow] : [])]
+      .every((row) => textArray(row.allowed_purpose_ids).includes(MEMORY_PURPOSE_IDS.correct))) {
+      throw new MemoryReconciliationNativeError("memory_reconciliation_unavailable", 404, "Current private Memory review was not found.");
+    }
+    const priorRows = await sql`SELECT id, tenant_id, actor_id, stream_id, type, payload FROM omni_events
+      WHERE tenant_id = ${authority.tenantId} AND actor_id = ${authority.ownerActorId} AND id = ${intent.acceptanceId} LIMIT 1`;
+    if (priorRows[0]) {
+      const priorPayload = databaseRecord(priorRows[0].payload);
+      if (!priorPayload?.nativeAcceptance || priorPayload.digestsForgottenAt) {
+        throw new MemoryReconciliationNativeError("memory_reconciliation_replay_forgotten", 409, "This acceptance was forgotten and cannot be replayed.");
+      }
+      if (priorPayload.reviewId !== reviewId) {
+        throw new MemoryReconciliationNativeError("memory_reconciliation_key_conflict", 409, "This key was accepted for a different review request.");
+      }
+      const acceptance = nativeAcceptanceFromEvent(priorRows[0], current.review);
+      if (!acceptance || acceptance.id !== intent.acceptanceId || acceptance.requestSha256 !== intent.requestSha256 ||
+        acceptance.idempotencyKeySha256 !== intent.keySha256 || acceptance.decision !== intent.request.decision ||
+        !memoryReconciliationNativeTokensEqual(acceptance.expectedReviewToken, intent.request.expectedReviewToken)) {
+        throw new MemoryReconciliationNativeError("memory_reconciliation_key_conflict", 409, "This key was accepted for a different review request.");
+      }
+      return { review: current.review, reviewToken: null, acceptance, newlyApplied: false };
+    }
+    if (current.review.status !== "pending") {
+      throw new MemoryReconciliationNativeError("memory_reconciliation_already_resolved", 409, "This review already has a decision. Read its exact acceptance before continuing.");
+    }
+    const before = await nativeReconciliationTargets(sql, authority, current, true);
+    const token = nativeReconciliationReviewToken(authority, current, before);
+    if (!token || !memoryReconciliationNativeTokensEqual(token, intent.request.expectedReviewToken)) {
+      throw new MemoryReconciliationNativeError("memory_reconciliation_target_changed", 409, "The review targets changed. Read them again before deciding.");
+    }
+    if (current.review.kind === "confirmation" && intent.request.decision === "keep_both") {
+      throw new MemoryReconciliationNativeError("memory_reconciliation_decision_invalid", 400, "A confirmation review has no existing claim to keep.");
+    }
+    const resolution = memoryReconciliationResolution(current.review.kind, intent.request.decision);
+    const clock = await sql`SELECT clock_timestamp() AS now`;
+    if (!clock[0]?.now) throw new Error("Memory reconciliation clock is unavailable.");
+    const now = normalizeDate(clock[0].now);
+    const candidateRows = await sql`UPDATE omni_memories SET claim_status = ${resolution.candidateStatus},
+      valid_from = CASE WHEN ${resolution.candidateStatus} = 'active' THEN COALESCE(valid_from, ${now}) ELSE valid_from END,
+      valid_to = CASE WHEN ${resolution.closeCandidateValidity} THEN ${now} ELSE valid_to END, updated_at = ${now}
+      WHERE tenant_id = ${authority.tenantId} AND id = ${current.review.candidate.id} AND claim_status = 'candidate' RETURNING *`;
+    let existingRow = current.existingRow;
+    if (current.review.existing && resolution.existingStatus) {
+      const updated = await sql`UPDATE omni_memories SET claim_status = ${resolution.existingStatus},
+        valid_to = CASE WHEN ${resolution.closeExistingValidity} THEN ${now} ELSE valid_to END, updated_at = ${now}
+        WHERE tenant_id = ${authority.tenantId} AND id = ${current.review.existing.id} AND claim_status = 'active' RETURNING *`;
+      if (!updated[0]) throw new Error("Memory reconciliation existing claim disappeared.");
+      existingRow = updated[0];
+    }
+    const resolvedRows = await sql`UPDATE omni_memory_reconciliation_reviews SET status = 'resolved',
+      decision = ${intent.request.decision}, resolved_by = ${authority.ownerActorId}, resolved_at = ${now}, updated_at = ${now}
+      WHERE tenant_id = ${authority.tenantId} AND owner_actor_id = ${authority.ownerActorId} AND id = ${reviewId} AND status = 'pending' RETURNING *`;
+    const updated = resolvedRows[0] && nativeReconciliationCurrent({
+      ...resolvedRows[0], candidate_memory: candidateRows[0], existing_memory: existingRow,
+    }, authority);
+    if (!updated) throw new Error("Memory reconciliation accepted target disappeared.");
+    const after = await nativeReconciliationTargets(sql, authority, updated, true);
+    const acceptance = memoryReconciliationNativeAcceptanceSchema.parse({
+      contract: "asael-memory-reconciliation-acceptance:1", id: intent.acceptanceId,
+      tenantId: authority.tenantId, ownerActorId: authority.ownerActorId, reviewId,
+      candidateMemoryId: current.review.candidate.id, existingMemoryId: current.review.existing?.id ?? null,
+      decision: intent.request.decision, idempotencyKeySha256: intent.keySha256, requestSha256: intent.requestSha256,
+      expectedReviewToken: intent.request.expectedReviewToken, resolvedAt: now, before, after,
+    });
+    const { expectedReviewToken, ...persistedAcceptance } = acceptance;
+    await appendScopedDomainEvent({
+      id: acceptance.id, streamId: `memory-reconciliation:${reviewId}`, type: "memory.reconciliation.resolved",
+      executionScope: authority.executionScope,
+      payload: {
+        schemaVersion: 2, reviewId, kind: current.review.kind, decision: intent.request.decision,
+        candidateMemoryId: current.review.candidate.id, existingMemoryId: current.review.existing?.id ?? null,
+        candidateClaimStatus: resolution.candidateStatus, existingClaimStatus: resolution.existingStatus ?? null,
+        ...candidateTextDigests(authority.tenantId, current.review.candidate),
+        nativeAcceptance: { ...persistedAcceptance, expectedReviewSha256: expectedReviewToken },
+      },
+    }, { sql });
+    return { review: updated.review, reviewToken: null, acceptance, newlyApplied: true };
+  });
 }
 
 export async function resolveMemoryReconciliationReview(

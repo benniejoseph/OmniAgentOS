@@ -19,17 +19,17 @@ const checkOnly = process.argv.includes("--check");
 // The previous contract and the one archive before it, byte for byte. When a
 // new contract ships, the oldest entry goes, and its directory with it.
 const frozenDocumentSha256ByVersion = Object.freeze({
-  32: Object.freeze({
-    "openapi.json": "c0c97a2c76ea047c9d29f7ddfa53d9e93923ed5eef93b2a14b89f7cd2ace7b6d", // gitleaks:allow -- public artifact integrity digest
-    "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
-    "fixtures.json": "f234f15036114da197fac2bbaf8041343235b7cc79ad775e1f2499fdaa83f79c", // gitleaks:allow -- public artifact integrity digest
-    "manifest.json": "ca895e229d5f3b8bc1648ec1131d0903d31f991f3566a78f38566ee5a6d1ea5d", // gitleaks:allow -- public artifact integrity digest
-  }),
   33: Object.freeze({
     "openapi.json": "10be81a8dc2a713d4f85ae84a5585d5a899905f4331953b74dbedff963712aee", // gitleaks:allow -- public artifact integrity digest
     "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
     "fixtures.json": "292b6e6681f5046246afb440b556d4f08196d50e8377ef1cbd27eb5480483994", // gitleaks:allow -- public artifact integrity digest
     "manifest.json": "9ea3092df3d97eb6cc8aa72fb7f34f82b3ebeb4cdd3b8e00af38308faafb8e2f", // gitleaks:allow -- public artifact integrity digest
+  }),
+  34: Object.freeze({
+    "openapi.json": "9d9c35c0085c9f1d5473ce26e0d77d86e5188b8c33ab7061308eb3c7750d62fe", // gitleaks:allow -- public artifact integrity digest
+    "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
+    "fixtures.json": "081a006740ef7603fd13e783317cb009e52c6e288b35dda4958dce3dc174e2cf", // gitleaks:allow -- public artifact integrity digest
+    "manifest.json": "3079eb94d3b21c75feffc715b8bc445090fdb02458681ab06a78bfc6257422e5", // gitleaks:allow -- public artifact integrity digest
   }),
 });
 
@@ -429,6 +429,7 @@ function openApiQueryParameterSchema(parameter: NativeQueryParameter) {
     type: "string",
     ...(parameter.minLength !== undefined ? { minLength: parameter.minLength } : {}),
     ...(parameter.maxLength !== undefined ? { maxLength: parameter.maxLength } : {}),
+    ...(parameter.pattern !== undefined ? { pattern: parameter.pattern } : {}),
     ...(parameter.enumValues?.length ? { enum: [...parameter.enumValues] } : {}),
     ...(parameter.defaultValue !== undefined ? { default: parameter.defaultValue } : {}),
   };

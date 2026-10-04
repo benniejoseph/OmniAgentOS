@@ -36,6 +36,7 @@ import { nativeLibraryHistoryContractSchemas } from "@/lib/mobile/library-histor
 import { entityOptionsContractSchemas, entityOptionsQueryMetadata } from "@/lib/entities/options-contracts";
 import { nativeMarketReadContractSchemas } from "@/lib/mobile/market-contracts";
 import { nativeMemoryMutationSchemas } from "@/lib/mobile/memory-mutation-contracts";
+import { nativeMemoryReconciliationSchemas } from "@/lib/mobile/memory-reconciliation-contracts";
 
 import { pluginManifestSchema } from "@/lib/plugins/contracts";
 import {
@@ -45,10 +46,10 @@ import {
 import { voiceCommandInputSchema } from "@/lib/voice/command-input";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 34 as const;
-// v33 remains byte-frozen. v34 adds bounded personal-data and specialist
-// projections, with separately enrolled exact native mutation capabilities.
-export const NATIVE_API_PREVIOUS_VERSION = 33 as const;
+export const NATIVE_API_CURRENT_VERSION = 35 as const;
+// v34 remains byte-frozen. v35 adds scoped private Memory reconciliation
+// with exact decision acceptance and read-only recovery.
+export const NATIVE_API_PREVIOUS_VERSION = 34 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -812,6 +813,7 @@ export type NativeQueryParameter = Readonly<{
   required?: boolean;
   minLength?: number;
   maxLength?: number;
+  pattern?: string;
   minimum?: number;
   maximum?: number;
   enumValues?: readonly string[];
@@ -1903,6 +1905,35 @@ const v34Operations: readonly NativeOperation[] = [
   operation("memory.lifecycle.change", "PATCH", "/api/memory/{id}/lifecycle", "Pin, unpin, archive or restore one exact reviewed lifecycle intent with durable acceptance.", "bearer", "NativeMemoryLifecycleRequest", "NativeMemoryLifecycleChangeResponse", memoryMutationOptions),
 ];
 
+const memoryReconciliationReadOptions = {
+  ...privateReadOptions,
+  queryPolicy: "exact",
+  errorResponseSchema: "NativeMemoryReconciliationError",
+  errorStatuses: [400, 401, 403, 404, 409, 503],
+} as const satisfies Partial<NativeOperation>;
+const v35Operations: readonly NativeOperation[] = [
+  ...v34Operations,
+  operation("memory.reconciliation.list", "GET", "/api/memory/reconciliation", "Read bounded currently authorized private Memory reviews without granting correction authority.", "bearer", undefined, "NativeMemoryReconciliationListResponse", {
+    ...memoryReconciliationReadOptions,
+    queryParameters: [
+      queryParameter("contract", "string", { required: true, enumValues: ["asael-memory-reconciliation-read:1"] }),
+      queryParameter("status", "string", { enumValues: ["pending", "resolved", "all"], defaultValue: "pending" }),
+      queryParameter("limit", "integer", { minimum: 1, maximum: 100, defaultValue: 50 }),
+    ],
+  }),
+  operation("memory.reconciliation.read", "GET", "/api/memory/reconciliation/{id}", "Read one exact authorized review and matching acceptance without repeating a decision or projection.", "bearer", undefined, "NativeMemoryReconciliationReadResponse", {
+    ...memoryReconciliationReadOptions,
+    pathParameters: [{ name: "id", minLength: 1, maxLength: 200, pattern: "^[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$" }],
+    queryParameters: [queryParameter("acceptanceKeySha256", "string", { minLength: 64, maxLength: 64, pattern: "^[a-f0-9]{64}$" })],
+  }),
+  operation("memory.reconciliation.resolve", "PATCH", "/api/memory/reconciliation", "Resolve one revision-bound private Memory review with atomic decision acceptance and separately reported projection outcomes.", "bearer", "NativeMemoryReconciliationDecisionRequest", "NativeMemoryReconciliationDecisionResponse", {
+    ...memoryReconciliationReadOptions,
+    headerParameters: pluginMutationHeaders,
+    requestBodyMaxBytes: 4096,
+    errorStatuses: [400, 401, 403, 404, 409, 413, 415, 503],
+  }),
+];
+
 const nativeCompanionPreferencesResponseSchema = z.object({
   schemaVersion: z.literal(1), contract: z.literal(COMPANION_PREFERENCES_CONTRACT),
   snapshot: z.object({
@@ -1933,6 +1964,7 @@ export const nativeContractSchemas = Object.freeze({
   ...entityOptionsContractSchemas,
   ...nativeMarketReadContractSchemas,
   ...nativeMemoryMutationSchemas,
+  ...nativeMemoryReconciliationSchemas,
   NativeCompanionPreferencesRequest: companionChangeSchema,
   NativeCompanionPreferencesResponse: nativeCompanionPreferencesResponseSchema,
   JsonObject: jsonObject,
@@ -2063,6 +2095,7 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 32) return v32Operations;
   if (version === 33) return v33Operations;
   if (version === 34) return v34Operations;
+  if (version === 35) return v35Operations;
   return undefined;
 }
 

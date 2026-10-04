@@ -1346,5 +1346,12 @@
     "checksum": "35264a49f7eaf88153a1e83f1a35e6baa7933c21277977c6c5442d5341677a1b",
     "file": "20261005103000_memory_lifecycle_mutations.sql",
     "sha256": "35264a49f7eaf88153a1e83f1a35e6baa7933c21277977c6c5442d5341677a1b"
+  },
+  {
+    "version": 223,
+    "name": "memory_reconciliation_native_fences_v1",
+    "checksum": "c6eb6a4e6550aa5585b2c15fd417e8fca797b232b9dc12d25459e9ebcf08b27a",
+    "file": "20261005110000_memory_reconciliation_native_fences.sql",
+    "sha256": "c6eb6a4e6550aa5585b2c15fd417e8fca797b232b9dc12d25459e9ebcf08b27a"
   }
 ]

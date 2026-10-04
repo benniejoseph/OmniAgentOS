@@ -37,28 +37,37 @@ Set these through the platform secret/configuration store, never in source contr
 - `OMNIAGENT_NATIVE_MIN_ANDROID_VERSION`, `OMNIAGENT_NATIVE_MIN_IOS_VERSION`, and `OMNIAGENT_NATIVE_MIN_MACOS_VERSION`: optional stable `major.minor.patch` minimums for native compatibility telemetry. An absent or empty value defaults to `1.0.0`; a malformed configured value invalidates the policy and holds adoption unavailable. These settings do not authorize Agent enrollment.
 
 Native contract artifacts are committed immutable release inputs. This release
-advertises v34 as current and retains v33 as the rollback-compatible previous
-version. V32 remains a byte-frozen, unadvertised archive. Older documents leave
+advertises v35 as current and retains v34 as the rollback-compatible previous
+version. V33 remains a byte-frozen, unadvertised archive. Older documents leave
 the three-version retention window only in a reviewed contract release; a
-Vercel deployment never deletes an archive. Do not retire v33 until the v34
+Vercel deployment never deletes an archive. Do not retire v34 until the v35
 rollback window closes. Published versions are never regenerated in place.
-Run `npm run check:native-contracts` to verify the generated v34 OpenAPI, event
-schema, fixtures, manifests and Dart SDK, plus the frozen v32/v33 hashes. This
-reviewed publication retires the v31 public documents.
+Run `npm run check:native-contracts` to verify the generated v35 OpenAPI, event
+schema, fixtures, manifests and Dart SDK, plus the frozen v33/v34 hashes. This
+reviewed publication retires the v32 public documents.
 
-V31 added owner-bound Companion presentation preferences, v32 added bounded
-Responsibilities, and v33 adds typed Meeting reads plus separately enrolled
-record, proposal and exact commitment-decision mutations. Existing capabilities
-retain their own minimum versions: Companion 31 and Responsibilities 32. Each
-Meeting mutation requires 33, fresh attestation and its original permission.
-Calendar sync, recording completion and source audio receive no new authority.
+V35 adds canonical private Memory review list/read/decision operations. Existing
+capabilities retain their floors: Companion 31, Responsibilities 32, Meetings 33,
+Account records and Memory records/lifecycle 34. Reconciliation decisions require
+35, fresh attestation, write permission and the already enrolled correction
+purpose; read permission alone grants no decision token. Calendar sync,
+recording completion and source audio receive no new authority.
 
-Advertising v34/v33 makes v32 clients `upgrade_required` and holds their native
-mutations. Deploy the v34 server before installing a v34 native build; that
-build fails bootstrap against a server advertising only v33/v32. An installed
-v33 client keeps its existing operations through the rollback window and cannot
-enter the new v34 mutations. A repository merge does not establish that
+Advertising v35/v34 makes v33 clients `upgrade_required` and holds their native
+mutations. Deploy the v35 server before installing a v35 native build; that
+build fails bootstrap against a server advertising only v34/v33. An installed
+v34 client keeps its existing operations through the rollback window and cannot
+enter v35 reconciliation decisions. A repository merge does not establish that
 this compatibility pair has been promoted to production.
+
+Migration 223 (`memory_reconciliation_native_fences_v1`) follows schema 222. It
+adds a lifecycle parent-lock trigger and a narrowly scoped metadata reader for
+read/correct purposes, without changing lifecycle mutation permissions or record
+purpose defaults. Apply and verify it during the existing backup/quiescence
+release procedure before starting the new serving code. Native acceptance is
+stored atomically in the existing typed event stream; no parallel mutable receipt
+store is introduced. All existing and new lifecycle upserts take the parent
+Memory lock before they contend for a lifecycle row.
 
 ### Memory forget lineage closure (v207)
 

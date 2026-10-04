@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
-import { nativeContractSchemas, nativeOperationsForVersion } from "./contracts";
+import { NATIVE_API_CURRENT_VERSION, nativeContractSchemas, nativeOperationsForVersion } from "./contracts";
 
 const expected = [
   ["meetings.list", "GET", "/api/meetings", undefined, "NativeMeetingListResponse"],
@@ -33,9 +33,9 @@ describe("native v33 Meeting publication", () => {
   });
 
   it("generates bounded scoped paths, exact status envelopes and private receipts", async () => {
-    const prior = JSON.parse(await readFile(new URL("../../../public/native-contracts/v32/openapi.json", import.meta.url), "utf8"));
-    const wire = JSON.parse(await readFile(new URL("../../../public/native-contracts/v33/openapi.json", import.meta.url), "utf8"));
-    for (const operation of nativeOperationsForVersion(32)!.filter(({ id }) => !id.startsWith("meetings."))) {
+    const prior = JSON.parse(await readFile(new URL("../../../public/native-contracts/v33/openapi.json", import.meta.url), "utf8"));
+    const wire = JSON.parse(await readFile(new URL(`../../../public/native-contracts/v${NATIVE_API_CURRENT_VERSION}/openapi.json`, import.meta.url), "utf8"));
+    for (const operation of nativeOperationsForVersion(33)!.filter(({ id }) => id.startsWith("meetings."))) {
       expect(wire.paths[operation.path][operation.method.toLowerCase()], operation.id).toEqual(prior.paths[operation.path][operation.method.toLowerCase()]);
     }
     for (const operation of nativeOperationsForVersion(33)!.filter(({ id }) => id.startsWith("meetings."))) {

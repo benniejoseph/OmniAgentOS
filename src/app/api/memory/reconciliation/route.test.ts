@@ -11,6 +11,8 @@ const mocks = vi.hoisted(() => {
     queueGraph: vi.fn(),
     projectEntities: vi.fn(),
     retireEntities: vi.fn(),
+    nativeList: vi.fn(),
+    nativeResolve: vi.fn(),
   };
 });
 
@@ -42,6 +44,12 @@ vi.mock("@/lib/entities/extraction", () => ({
 
 vi.mock("@/lib/entities/store", () => ({
   retireEntityMemoryLineage: mocks.retireEntities,
+}));
+
+vi.mock("@/lib/app-services/memory-reconciliation", async (original) => ({
+  ...(await original<typeof import("@/lib/app-services/memory-reconciliation")>()),
+  listMemoryReconciliationService: mocks.nativeList,
+  resolveMemoryReconciliationService: mocks.nativeResolve,
 }));
 
 import { GET, PATCH } from "@/app/api/memory/reconciliation/route";
@@ -122,6 +130,7 @@ describe("memory reconciliation API", () => {
     expect(payload.reviews[0]).not.toHaveProperty("ownerActorId");
     expect(payload.reviews[0]).not.toHaveProperty("resolvedBy");
     expect(payload.reviews[0].candidate).not.toHaveProperty("embedding");
+    expect(payload.reviews[0].candidate).not.toHaveProperty("accessBinding");
     expect(payload.reviews[0].existing).not.toHaveProperty("embedding");
   });
 
@@ -203,5 +212,64 @@ describe("memory reconciliation API", () => {
     ));
 
     expect(response.status).toBe(409);
+  });
+
+  it("requires mobile collection reads to opt into the bounded private contract", async () => {
+    mocks.authorize.mockResolvedValue({ ...context, source: "mobile" });
+    const response = await GET(new Request("http://localhost/api/memory/reconciliation?status=all"));
+    expect(response.status).toBe(400);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(mocks.list).not.toHaveBeenCalled();
+  });
+
+  it("uses only the native service for a bounded native list", async () => {
+    mocks.authorize.mockResolvedValue({ ...context, source: "mobile" });
+    mocks.nativeList.mockResolvedValue({ data: { reviews: [] }, receipt: { operation: "memory.reconciliation.list" } });
+    const response = await GET(new Request("http://localhost/api/memory/reconciliation?contract=asael-memory-reconciliation-read:1&limit=5"));
+    expect(response.status).toBe(200);
+    expect(mocks.nativeList).toHaveBeenCalledWith(expect.anything(), { contract: "asael-memory-reconciliation-read:1", status: "pending", limit: 5 });
+    expect(mocks.list).not.toHaveBeenCalled();
+  });
+
+  it.each(["&limit=101", "&limit=1&limit=2", "&status=unknown", "&ownerActorId=other", "&limit=1.5"])("rejects unsupported native query %s before storage", async (suffix) => {
+    const response = await GET(new Request(`http://localhost/api/memory/reconciliation?contract=asael-memory-reconciliation-read:1${suffix}`));
+    expect(response.status).toBe(400); expect(mocks.nativeList).not.toHaveBeenCalled(); expect(mocks.list).not.toHaveBeenCalled();
+  });
+
+  const nativeBody = { contract: "asael-memory-reconciliation-decision:1", reviewId: "review-a", decision: "confirm_candidate", expectedReviewToken: "a".repeat(64) };
+  function nativePatch(body: unknown = nativeBody, headers: Record<string, string> = {}, suffix = "") {
+    return new Request(`http://localhost/api/memory/reconciliation${suffix}`, { method: "PATCH", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body) });
+  }
+  it("requires a standard stable key before authorizing a native change", async () => {
+    const response = await PATCH(nativePatch(nativeBody, { "x-idempotency-key": "legacy-key" }));
+    expect(response.status).toBe(400); expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(mocks.authorize).not.toHaveBeenCalled(); expect(mocks.resolve).not.toHaveBeenCalled(); expect(mocks.nativeResolve).not.toHaveBeenCalled();
+  });
+  it("refuses aliases and oversized decision bodies before effects", async () => {
+    for (const request of [nativePatch(nativeBody, { "Idempotency-Key": "key" }, "?owner=other"),
+      nativePatch({ ...nativeBody, content: "x".repeat(4_096) }, { "Idempotency-Key": "key" })]) {
+      const response = await PATCH(request);
+      expect([400, 413]).toContain(response.status); expect(response.headers.get("cache-control")).toBe("private, no-store");
+    }
+    expect(mocks.nativeResolve).not.toHaveBeenCalled(); expect(mocks.resolve).not.toHaveBeenCalled();
+  });
+  it("enrolls the exact native capability and never falls through to a legacy resolver", async () => {
+    mocks.authorize.mockResolvedValue({ ...context, source: "mobile" });
+    mocks.nativeResolve.mockResolvedValue({ data: { replayed: false }, receipt: { operation: "memory.reconciliation.resolve" } });
+    const response = await PATCH(nativePatch(nativeBody, { "Idempotency-Key": "native-key" }));
+    expect(response.status).toBe(200);
+    expect(mocks.authorize).toHaveBeenCalledWith(expect.objectContaining({ action: "write.memory", nativeMutationCapability: "memory.reconciliation.resolve", resourceId: "review-a" }));
+    expect(mocks.nativeResolve).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey: "native-key" }), nativeBody);
+    expect(mocks.resolve).not.toHaveBeenCalled();
+  });
+  it("refuses a mobile caller's legacy mutation envelope", async () => {
+    mocks.authorize.mockResolvedValue({ ...context, source: "mobile" });
+    const response = await PATCH(nativePatch({ reviewId: "review-a", decision: "confirm_candidate" }));
+    expect(response.status).toBe(400); expect(mocks.resolve).not.toHaveBeenCalled(); expect(mocks.nativeResolve).not.toHaveBeenCalled();
+  });
+  it("keeps authorization errors private", async () => {
+    mocks.authorize.mockRejectedValue(new Error("unauthorized"));
+    const response = await PATCH(nativePatch(nativeBody, { "Idempotency-Key": "native-key" }));
+    expect(response.status).toBe(403); expect(response.headers.get("cache-control")).toBe("private, no-store");
   });
 });

@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import '../../core/network/api_client.dart';
 import '../auth/domain/app_session.dart';
 import 'knowledge_contracts.dart';
+import 'knowledge_review_contracts.dart';
 
 void memoryRequire(
   bool condition, [
@@ -139,7 +140,7 @@ class KnowledgeAccess extends ChangeNotifier {
   }
 }
 
-enum MemoryChange { create, correct, lifecycle, forget }
+enum MemoryChange { create, correct, lifecycle, forget, review }
 
 extension MemoryChangeOperation on MemoryChange {
   String get operation => switch (this) {
@@ -147,12 +148,14 @@ extension MemoryChangeOperation on MemoryChange {
     MemoryChange.correct => 'memory.update',
     MemoryChange.lifecycle => 'memory.lifecycle.change',
     MemoryChange.forget => 'memory.delete',
+    MemoryChange.review => 'memory.reconciliation.resolve',
   };
   String get service => switch (this) {
     MemoryChange.create => 'memory.write',
     MemoryChange.correct => 'memory.correct',
     MemoryChange.lifecycle => 'memory.lifecycle',
     MemoryChange.forget => 'memory.forget',
+    MemoryChange.review => 'memory.reconciliation.resolve',
   };
 }
 
@@ -163,8 +166,12 @@ class MemorySubmission {
     required KnowledgeJson body,
     this.id,
     this.previewDigest,
+    KnowledgeJson? reviewEvidence,
     String? key,
   }) : body = freezeKnowledgeJson(body) as KnowledgeJson,
+       reviewEvidence = reviewEvidence == null
+           ? null
+           : freezeKnowledgeJson(reviewEvidence) as KnowledgeJson,
        key =
            key ??
            'native-memory-${List.generate(24, (_) => Random.secure().nextInt(256).toRadixString(16).padLeft(2, '0')).join()}' {
@@ -214,10 +221,42 @@ class MemorySubmission {
       memoryRequire(body.isEmpty);
       memoryHash(previewDigest);
     }
+    if (kind == MemoryChange.review) {
+      memoryRequire(
+        body.length == 4 &&
+            body['contract'] == memoryReviewDecisionContract &&
+            memoryReviewId(body['reviewId']) == id &&
+            memoryReviewDecisions.contains(body['decision']),
+      );
+      memoryHash(body['expectedReviewToken']);
+      final evidence = this.reviewEvidence;
+      memoryRequire(
+        evidence != null &&
+            evidence.length == 3 &&
+            evidence.keys.every(
+              const {'kind', 'candidateMemoryId', 'existingMemoryId'}.contains,
+            ) &&
+            const {'confirmation', 'contradiction'}.contains(evidence['kind']),
+      );
+      memoryReviewId(evidence!['candidateMemoryId']);
+      if (evidence['existingMemoryId'] != null) {
+        memoryReviewId(evidence['existingMemoryId']);
+      }
+      memoryRequire(
+        (evidence['kind'] == 'contradiction') ==
+                (evidence['existingMemoryId'] != null) &&
+            evidence['candidateMemoryId'] != evidence['existingMemoryId'] &&
+            (evidence['kind'] == 'contradiction' ||
+                body['decision'] != 'keep_both'),
+      );
+    } else {
+      memoryRequire(reviewEvidence == null);
+    }
   }
   final MemoryChange kind;
   final KnowledgeOwner owner;
   final KnowledgeJson body;
+  final KnowledgeJson? reviewEvidence;
   final String? id, previewDigest;
   final String key;
   bool get replayable =>
@@ -228,6 +267,7 @@ class MemorySubmission {
     'key': key,
     'id': id,
     'previewDigest': previewDigest,
+    if (reviewEvidence != null) 'reviewEvidence': reviewEvidence,
     'owner': {
       'tenantId': owner.tenantId,
       'actorId': owner.actorId,
@@ -268,6 +308,9 @@ class MemorySubmission {
       key: key,
       id: raw['id'] as String?,
       previewDigest: raw['previewDigest'] as String?,
+      reviewEvidence: raw['reviewEvidence'] == null
+          ? null
+          : knowledgeMap(raw['reviewEvidence'], 'Saved review targets'),
     );
   }
 }
@@ -372,15 +415,90 @@ class MemoryAcceptance {
     this.submission,
     this.raw,
     this.memoryId,
-    this.description,
-  );
+    this.description, {
+    this.reviewReadOwner,
+  });
   final MemorySubmission submission;
   final KnowledgeJson raw;
   final String memoryId, description;
+  // Historical evidence for a GET receipt, never a current permission grant.
+  final KnowledgeOwner? reviewReadOwner;
+  KnowledgeJson get recoveryReceipt => {
+    'receipt': raw,
+    if (reviewReadOwner != null)
+      'receiptReadScope': {
+        'actorId': reviewReadOwner!.actorId,
+        'role': reviewReadOwner!.role,
+      },
+  };
+  static KnowledgeOwner? restoredReadOwner(
+    KnowledgeJson envelope,
+    MemorySubmission sent,
+  ) {
+    if (!envelope.containsKey('receiptReadScope')) {
+      return null;
+    }
+    final scope = knowledgeMap(
+      envelope['receiptReadScope'],
+      'Saved review receipt scope',
+    );
+    memoryRequire(
+      sent.kind == MemoryChange.review &&
+          scope.length == 2 &&
+          scope.keys.every(const {'actorId', 'role'}.contains) &&
+          scope['actorId'] is String &&
+          (scope['actorId'] as String).isNotEmpty &&
+          (scope['actorId'] as String).length <= 256 &&
+          const {
+            'viewer',
+            'operator',
+            'admin',
+            'system',
+          }.contains(scope['role']),
+    );
+    return KnowledgeOwner(
+      sent.owner.tenantId,
+      scope['actorId'] as String,
+      sent.owner.userId,
+      scope['role'] as String,
+      sent.owner.apiBaseUrl,
+    );
+  }
+
   static Future<MemoryAcceptance> parse(
     KnowledgeJson raw,
-    MemorySubmission sent,
-  ) async {
+    MemorySubmission sent, {
+    KnowledgeOwner? reviewReadOwner,
+  }) async {
+    if (sent.kind == MemoryChange.review) {
+      final mutation = raw.containsKey('projections');
+      final owner = reviewReadOwner ?? sent.owner;
+      memoryRequire(
+        (!mutation || reviewReadOwner == null) &&
+            owner.tenantId == sent.owner.tenantId &&
+            owner.userId == sent.owner.userId &&
+            owner.apiBaseUrl == sent.owner.apiBaseUrl,
+      );
+      final read = await MemoryReviewRead.parse(
+        raw,
+        owner,
+        sent.id!,
+        keyHash: await memoryShaText(sent.key),
+        sent: sent,
+        mutation: mutation,
+      );
+      memoryRequire(
+        read.acceptance != null,
+        'No matching native acceptance has confirmed this review decision.',
+      );
+      return MemoryAcceptance(
+        sent,
+        read.raw,
+        read.review.candidate.id,
+        'Review decision recorded: ${sent.body['decision']}. Downstream projection status is separate from this saved decision.',
+        reviewReadOwner: mutation ? null : owner,
+      );
+    }
     final service = knowledgeMap(raw['serviceReceipt'], 'Application receipt');
     memoryRequire(
       service['schemaVersion'] == 1 &&

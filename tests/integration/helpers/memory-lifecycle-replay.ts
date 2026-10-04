@@ -1,9 +1,17 @@
 import type postgres from "postgres";
 import { expect } from "vitest";
 
-/** Remove only an empty v222 ledger from a disposable historical fixture.
+/** Remove only empty v222/v223 additions from a disposable historical fixture.
  * Real acceptance evidence is never erased to make a migration replay pass. */
 export async function removeEmptyMemoryLifecycleForReplay(sql: postgres.TransactionSql) {
+  const later = await sql`SELECT EXISTS(SELECT 1 FROM public.omni_schema_version WHERE version=223) AS installed`;
+  if (later[0]?.installed) {
+    expect(await sql`SELECT count(*)::int AS receipts FROM public.omni_events
+      WHERE type='memory.reconciliation.resolved' AND payload ? 'nativeAcceptance'`).toEqual([{ receipts: 0 }]);
+    await sql`DROP TRIGGER aa_omni_memory_lifecycle_parent_lock ON public.omni_memory_lifecycle_states`;
+    await sql`DROP FUNCTION public.omni_memory_lifecycle_parent_lock_v1()`;
+    await sql`DROP FUNCTION public.omni_memory_reconciliation_lifecycle_snapshot_v1(TEXT,TEXT,TEXT[],BOOLEAN)`;
+  }
   expect(await sql`SELECT count(*)::int AS receipts
     FROM public.omni_memory_lifecycle_mutations`).toEqual([{ receipts: 0 }]);
   await sql`DROP TRIGGER omni_memory_deletion_receipts_lifecycle_scrub ON public.omni_memory_deletion_receipts`;

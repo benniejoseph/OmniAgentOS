@@ -181,18 +181,13 @@ void main() {
     },
   );
   testWidgets(
-    'reviews distinguish missing queue data from zero and assert no automatic truth changes',
+    'unavailable canonical review contracts do not turn catalogue advice into a queue or decision authority',
     (tester) async {
-      await tester.pumpWidget(_app(const KnowledgeReviews(overview: {})));
-      expect(find.textContaining('Unavailable pending'), findsOneWidget);
+      final controller = _controller(_Repository());
+      addTearDown(controller.dispose);
+      await tester.pumpWidget(_app(KnowledgeReviews(controller: controller)));
       expect(
-        find.textContaining(
-          'does not establish that the review queue is empty',
-        ),
-        findsOneWidget,
-      );
-      expect(
-        find.textContaining('does not execute maintenance'),
+        find.textContaining('Check account access or update the app'),
         findsOneWidget,
       );
       expect(find.byType(FilledButton), findsNothing);

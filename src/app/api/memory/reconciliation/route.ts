@@ -1,5 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import { createAppServiceCaller, createRequestMutationAppServiceCaller } from "@/lib/app-services/contracts";
+import {
+  listMemoryReconciliationService,
+  publicMemoryReconciliationReview,
+  resolveMemoryReconciliationService,
+} from "@/lib/app-services/memory-reconciliation";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { projectExplicitMemoryEntities } from "@/lib/entities/extraction";
 import { retireEntityMemoryLineage } from "@/lib/entities/store";
@@ -8,6 +14,7 @@ import {
   parseBoundedInteger,
   parseJsonBody,
 } from "@/lib/http/body";
+import { IdempotencyKeyError, idempotencyKeyErrorResponse, requiredRequestIdempotencyKey } from "@/lib/http/idempotency-key";
 import { MEMORY_PURPOSE_IDS } from "@/lib/memory/access-binding";
 import {
   indexUserPrivateMemoryGraphRecords,
@@ -17,6 +24,8 @@ import {
   memoryReconciliationDecisionSchema,
   type MemoryReconciliationReview,
 } from "@/lib/memory/reconciliation";
+import { MemoryReconciliationNativeError, memoryReconciliationNativeRequestSchema } from "@/lib/memory/reconciliation-native-contracts";
+import { nativeMemoryReconciliationQuerySchema } from "@/lib/mobile/memory-reconciliation-contracts";
 import { requestMemoryAccessFromSecurityContext } from "@/lib/memory/request-access";
 import {
   listMemoryReconciliationReviews,
@@ -49,9 +58,22 @@ async function GETHandler(request: Request) {
       resourceType: "memory_reconciliation",
     });
   } catch (error) {
-    return forbiddenResponse(error);
+    return privateResponse(forbiddenResponse(error));
   }
   const url = new URL(request.url);
+  if (context.source === "mobile" || url.searchParams.has("contract")) {
+    const params = [...url.searchParams];
+    const raw: Record<string, unknown> = Object.fromEntries(params);
+    if (typeof raw.limit === "string" && /^[1-9]\d{0,2}$/.test(raw.limit)) raw.limit = Number(raw.limit);
+    const query = nativeMemoryReconciliationQuerySchema.safeParse(raw);
+    if (new Set(params.map(([key]) => key)).size !== params.length || !query.success) {
+      return Response.json({ error: "Invalid native Memory reconciliation query." }, { status: 400, headers: privateNoStoreHeaders });
+    }
+    try {
+      const result = await listMemoryReconciliationService(createAppServiceCaller({ context }), query.data);
+      return Response.json({ ...result.data, serviceReceipt: result.receipt }, { headers: privateNoStoreHeaders });
+    } catch (error) { return nativeFailure(error); }
+  }
   const requestedStatus = url.searchParams.get("status");
   const status = requestedStatus === "pending" || requestedStatus === "resolved"
     ? requestedStatus
@@ -86,11 +108,13 @@ async function GETHandler(request: Request) {
 async function PATCHHandler(request: Request) {
   let body: unknown;
   try {
-    body = await parseJsonBody(request);
+    body = await parseJsonBody(request, 4_096);
   } catch (error) {
-    return jsonBodyErrorResponse(error);
+    const response = jsonBodyErrorResponse(error);
+    response.headers.set("cache-control", privateNoStoreHeaders["cache-control"]);
+    return response;
   }
-  const parsed = resolutionSchema.safeParse(body);
+  const parsed = resolutionSchema.or(memoryReconciliationNativeRequestSchema).safeParse(body);
   if (!parsed.success) {
     return Response.json({
       error: "Invalid memory reconciliation decision",
@@ -98,17 +122,47 @@ async function PATCHHandler(request: Request) {
     }, { status: 400, headers: privateNoStoreHeaders });
   }
 
+  if ("contract" in parsed.data) {
+    if ([...new URL(request.url).searchParams].length) {
+      return Response.json({ error: "Native Memory reconciliation decisions do not accept query parameters." }, { status: 400, headers: privateNoStoreHeaders });
+    }
+    try { requiredRequestIdempotencyKey(request); }
+    catch (error) {
+      if (error instanceof IdempotencyKeyError) return idempotencyKeyErrorResponse(error);
+      throw error;
+    }
+  }
+
   let context;
   try {
     context = await authorizeRequest({
       request,
       action: "write.memory",
+      nativeMutationCapability: "memory.reconciliation.resolve",
       resourceType: "memory_reconciliation",
       resourceId: parsed.data.reviewId,
       metadata: { decision: parsed.data.decision },
     });
   } catch (error) {
-    return forbiddenResponse(error);
+    return privateResponse(forbiddenResponse(error));
+  }
+  if ("contract" in parsed.data) {
+    try {
+      const result = await resolveMemoryReconciliationService(
+        createRequestMutationAppServiceCaller(request, context, {
+          purpose: "api.memory.reconciliation.native.resolve",
+          causationId: parsed.data.reviewId,
+        }),
+        parsed.data,
+      );
+      return Response.json({ ...result.data, serviceReceipt: result.receipt }, { headers: privateNoStoreHeaders });
+    } catch (error) { return nativeFailure(error); }
+  }
+  if (context.source === "mobile") {
+    return Response.json({
+      error: "Native Memory reconciliation decisions require the reviewed revision contract.",
+      code: "memory_reconciliation_contract_required",
+    }, { status: 400, headers: privateNoStoreHeaders });
   }
   const correlationId = request.headers.get("x-idempotency-key")?.trim()
     .slice(0, 200) || request.headers.get("x-request-id")?.trim().slice(0, 200) ||
@@ -215,25 +269,13 @@ function mergeReviews(
     .slice(0, limit);
 }
 
-function publicMemoryReconciliationReview(review: MemoryReconciliationReview) {
-  const {
-    ownerActorId: _ownerActorId,
-    resolvedBy: _resolvedBy,
-    candidate,
-    existing,
-    ...publicReview
-  } = review;
-  void _ownerActorId;
-  void _resolvedBy;
-  return {
-    ...publicReview,
-    candidate: publicMemory(candidate),
-    ...(existing ? { existing: publicMemory(existing) } : {}),
-  };
+function nativeFailure(error: unknown) {
+  return error instanceof MemoryReconciliationNativeError
+    ? Response.json({ error: error.message, code: error.code }, { status: error.status, headers: privateNoStoreHeaders })
+    : Response.json({ error: "Memory reconciliation is temporarily unavailable.", code: "memory_reconciliation_unavailable" }, { status: 503, headers: privateNoStoreHeaders });
 }
 
-function publicMemory<T extends { embedding?: number[] }>(memory: T) {
-  const result = { ...memory };
-  delete result.embedding;
-  return result;
+function privateResponse(response: Response) {
+  response.headers.set("cache-control", privateNoStoreHeaders["cache-control"]);
+  return response;
 }

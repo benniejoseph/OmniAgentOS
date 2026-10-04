@@ -25,6 +25,7 @@ export const NATIVE_MUTATION_CAPABILITIES = [
   "customers.records.manage",
   "memory.records.write",
   "memory.lifecycle.write",
+  "memory.reconciliation.resolve",
   "meetings.commitments.propose",
   "meetings.commitments.resolve",
   "evidence.cancel",
@@ -107,6 +108,7 @@ export function nativeMutationCapabilityPolicy(
 }
 
 function minimumVersion(capability: NativeMutationCapability) {
+  if (capability === "memory.reconciliation.resolve") return 35;
   if (capability === "customers.records.manage" || capability === "memory.records.write" ||
     capability === "memory.lifecycle.write") return 34;
   if (capability === "meetings.records.manage" || capability === "meetings.commitments.propose" ||
