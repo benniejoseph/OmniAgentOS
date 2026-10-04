@@ -7,6 +7,7 @@ import '../auth/application/session_controller.dart';
 import '../../core/network/native_workspace_access.dart';
 import 'automation_controller.dart';
 import 'automation_models.dart';
+import 'automation_open_run_button.dart';
 import 'automation_providers.dart';
 
 /// Touch-first Automation Studio used by Android.
@@ -14,9 +15,14 @@ import 'automation_providers.dart';
 /// It shares the same controller and exact management projections as macOS,
 /// while using sheets and stacked cards instead of desktop split panes.
 class AutomationStudioView extends ConsumerStatefulWidget {
-  const AutomationStudioView({super.key, this.initialSection});
+  const AutomationStudioView({
+    super.key,
+    this.initialSection,
+    this.onSectionChanged,
+  });
 
   final String? initialSection;
+  final ValueChanged<String>? onSectionChanged;
 
   @override
   ConsumerState<AutomationStudioView> createState() =>
@@ -24,10 +30,23 @@ class AutomationStudioView extends ConsumerStatefulWidget {
 }
 
 class _AutomationStudioViewState extends ConsumerState<AutomationStudioView> {
-  late int _tabIndex =
-      const {'overview', 'automations', null}.contains(widget.initialSection)
-      ? 0
-      : 1;
+  late int _tabIndex = _tabForSection(widget.initialSection);
+
+  static int _tabForSection(String? section) =>
+      const {'overview', 'automations', null}.contains(section) ? 0 : 1;
+
+  @override
+  void didUpdateWidget(covariant AutomationStudioView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.initialSection != widget.initialSection) {
+      _tabIndex = _tabForSection(widget.initialSection);
+    }
+  }
+
+  void _selectTab(int value) {
+    setState(() => _tabIndex = value);
+    widget.onSectionChanged?.call(value == 0 ? 'automations' : 'skills');
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -72,7 +91,7 @@ class _AutomationStudioViewState extends ConsumerState<AutomationStudioView> {
           child: NavigationBar(
             height: 48,
             selectedIndex: _tabIndex,
-            onDestinationSelected: (value) => setState(() => _tabIndex = value),
+            onDestinationSelected: _selectTab,
             destinations: const [
               NavigationDestination(
                 icon: Icon(Icons.schedule_outlined),
@@ -187,6 +206,9 @@ class _PortableAutomations extends StatelessWidget {
                     subtitle: Text(
                       '${_plain(run.mode)} · ${_plain(run.status)}',
                     ),
+                    trailing: run.resultKey == null
+                        ? null
+                        : AutomationOpenRunButton(resultKey: run.resultKey!),
                   ),
                 ),
             ],
@@ -351,6 +373,9 @@ class _PortableScheduleDetail extends StatelessWidget {
               if (occurrence.failureCode != null)
                 'Failure code': occurrence.failureCode!,
             },
+            action: occurrence.resultKey == null
+                ? null
+                : AutomationOpenRunButton(resultKey: occurrence.resultKey!),
           ),
       const SizedBox(height: 20),
       _PortableSectionHeader(
@@ -760,10 +785,12 @@ class _PortableEvidenceCard extends StatelessWidget {
     required this.title,
     required this.subtitle,
     required this.fields,
+    this.action,
   });
 
   final String title, subtitle;
   final Map<String, String> fields;
+  final Widget? action;
 
   @override
   Widget build(BuildContext context) => Card(
@@ -798,6 +825,8 @@ class _PortableEvidenceCard extends StatelessWidget {
               ],
             ),
           ),
+        if (action != null)
+          Align(alignment: Alignment.centerRight, child: action!),
       ],
     ),
   );

@@ -12,6 +12,7 @@ import '../auth/application/biometric_session_lock_controller.dart';
 import '../auth/application/session_controller.dart';
 import 'automation_controller.dart';
 import 'automation_models.dart';
+import 'automation_open_run_button.dart';
 import 'automation_providers.dart';
 
 enum AutomationStudioSection {
@@ -34,9 +35,14 @@ enum AutomationStudioSection {
 }
 
 class MacosAutomationStudioView extends ConsumerStatefulWidget {
-  const MacosAutomationStudioView({super.key, this.initialSection});
+  const MacosAutomationStudioView({
+    super.key,
+    this.initialSection,
+    this.onSectionChanged,
+  });
 
   final String? initialSection;
+  final ValueChanged<String>? onSectionChanged;
 
   @override
   ConsumerState<MacosAutomationStudioView> createState() =>
@@ -49,6 +55,11 @@ class _MacosAutomationStudioViewState
     widget.initialSection,
   );
   final _manifestController = TextEditingController();
+
+  void _selectSection(AutomationStudioSection section) {
+    setState(() => _section = section);
+    widget.onSectionChanged?.call(section.id);
+  }
 
   @override
   void didUpdateWidget(covariant MacosAutomationStudioView oldWidget) {
@@ -96,10 +107,7 @@ class _MacosAutomationStudioViewState
               : const Icon(Icons.refresh_rounded),
         ),
       ],
-      toolbar: _SectionStrip(
-        selected: _section,
-        onSelected: (section) => setState(() => _section = section),
-      ),
+      toolbar: _SectionStrip(selected: _section, onSelected: _selectSection),
       body: Column(
         children: [
           if (controller.error != null || controller.notice != null)
@@ -132,7 +140,7 @@ class _MacosAutomationStudioViewState
   ) => switch (_section) {
     AutomationStudioSection.overview => _OverviewSection(
       controller: controller,
-      onOpen: (section) => setState(() => _section = section),
+      onOpen: _selectSection,
     ),
     AutomationStudioSection.automations => _AutomationsSection(
       snapshot: controller.snapshot,
@@ -462,6 +470,9 @@ class _AutomationsSection extends StatelessWidget {
                 title: run.title,
                 detail: '${_plain(run.mode)}${_timeSuffix(run.updatedAt)}',
                 status: run.status,
+                action: run.resultKey == null
+                    ? null
+                    : AutomationOpenRunButton(resultKey: run.resultKey!),
               ),
           ],
         ),
@@ -652,6 +663,13 @@ class _ScheduleOccurrences extends StatelessWidget {
                   ),
                   if (item.workflowRunId != null)
                     SelectableText('Workflow run ${item.workflowRunId}'),
+                  if (item.resultKey != null)
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: AutomationOpenRunButton(
+                        resultKey: item.resultKey!,
+                      ),
+                    ),
                   SelectableText(
                     'Authority ${item.authoritySha256}',
                     style: Theme.of(context).textTheme.labelSmall,

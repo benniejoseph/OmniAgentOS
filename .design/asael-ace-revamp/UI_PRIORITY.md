@@ -3,8 +3,25 @@
 The owner explicitly prioritized the UI revamp and ATLAS, asking to stabilize the current release and return to connector expansion afterward. The full implementation plan remains in scope; this changes execution order.
 
 PR53 is stabilized and merged with all sixteen hosted checks passing. The UI, static greeting and personality releases are accepted through PR56.
-Expanded Voice playback is the next bounded follow-up. Connector work is preserved in
+Expanded Voice playback is accepted through PR57. Connector work is preserved in
 `codex/native-connector-controls` and is deferred until after this UI/ATLAS priority.
+
+## Native Automation run navigation — 5 October checkpoint
+
+Recent workflow runs and schedule-occurrence history now expose an accessible
+Open run action in both native presentations. It opens the existing authorized
+Results detail using the exact validated workflow identity. Missing or malformed
+identities receive no action. Returning preserves the selected Automation section;
+protected inventory and history still dispose while hidden and are read again on
+deliberate reopening. Explicit section URLs remain authoritative.
+
+Six focused integration cases pass through the actual app router, covering both
+presentations, encoded identities, unavailable Results, Back navigation, fresh
+history reads, malformed identities and button semantics. Full Flutter analysis is
+clean. This checkpoint adds no database migration or API contract version.
+App `1.23.16+51` identifies the native follow-up; the deferred connector checkpoint
+must use build 52 or later. Packaging and exact-head hosted acceptance are separate
+release gates, and physical-device acceptance remains pending.
 
 Visual thesis: a warm, precise conversation workspace with a quiet graphite rail, readable typography, restrained gold and an expressive umber eagle.
 
