@@ -44,6 +44,10 @@ import {
   evaluateAndSaveCustomerHealth,
   getCurrentCustomerHealthScore,
 } from "@/lib/customer-success/health-store";
+import {
+  CUSTOMER_ACCOUNT_FACT_LIMIT,
+  CustomerAccountProjectionLimitError,
+} from "@/lib/customer-success/store";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 
 const accountId = customerAccountId({ tenantId, workspaceId, idempotencyKey: "health-account" });
@@ -55,6 +59,53 @@ beforeEach(() => {
 });
 
 describe("customer health score store", () => {
+  it("bounds heads with matching DISTINCT collation and preserves unknown health when none remain eligible", async () => {
+    const accountSnapshot = account();
+    mocks.responses.push(
+      [], [{ account_snapshot: accountSnapshot }], [], [], [],
+      [{ evaluated_at: now, history_count: 10_003 }], [], [], [],
+    );
+    const score = await evaluateAndSaveCustomerHealth({
+      authority: mutationAuthority("health-no-eligible-heads"),
+      accountId,
+      expectedAccountRevision: accountSnapshot.revision,
+      expectedAccountSha256: accountSnapshot.accountSha256,
+      evaluationId: customerHealthEvaluationId({ accountId, idempotencyKey: "health-no-eligible-heads" }),
+    });
+    expect(score).toMatchObject({ status: "unknown", scoreBasisPoints: null, confidenceBasisPoints: 0, coverageBasisPoints: 0 });
+    expect(score.factors).toHaveLength(4);
+    for (const factor of score.factors) {
+      expect(factor).toMatchObject({ evidence: [], evidenceState: "missing", scoreBasisPoints: null });
+    }
+    const query = mocks.queries[4];
+    expect(query.text).toMatch(/SELECT DISTINCT ON \(fact_id COLLATE "C"\)[\s\S]+ORDER BY fact_id COLLATE "C", revision DESC[\s\S]+\) AS latest_readable_facts[\s\S]+WHERE fact_snapshot->>'state' = 'active'[\s\S]+ORDER BY fact_id COLLATE "C"[\s\S]+LIMIT \?/);
+    expect(query.text).toContain("allowed_purpose_ids @> ARRAY['customer_success.account.read']::TEXT[]");
+    expect(query.text).toContain("fact_snapshot->'source'->'allowedPurposeIds' @> to_jsonb(ARRAY['customer_success.account.read']::TEXT[])");
+    expect(query.values).toEqual([tenantId, workspaceId, accountId, CUSTOMER_ACCOUNT_FACT_LIMIT + 1]);
+    expect(mocks.event).toHaveBeenCalledWith(expect.objectContaining({
+      payload: expect.objectContaining({ status: "unknown", scoreBasisPoints: null }),
+    }), expect.anything());
+  });
+
+  it("rejects the overflow sentinel before decoding evidence, reading history, or writing any score", async () => {
+    const accountSnapshot = account();
+    mocks.responses.push(
+      [], [{ account_snapshot: accountSnapshot }], [], [],
+      Array.from({ length: CUSTOMER_ACCOUNT_FACT_LIMIT + 1 }, () => ({ fact_snapshot: null })),
+    );
+    await expect(evaluateAndSaveCustomerHealth({
+      authority: mutationAuthority("health-overflow"),
+      accountId,
+      expectedAccountRevision: accountSnapshot.revision,
+      expectedAccountSha256: accountSnapshot.accountSha256,
+      evaluationId: customerHealthEvaluationId({ accountId, idempotencyKey: "health-overflow" }),
+    })).rejects.toBeInstanceOf(CustomerAccountProjectionLimitError);
+    expect(mocks.queries).toHaveLength(5);
+    expect(mocks.queries.some((query) => query.text.includes("clock_timestamp") || query.text.includes("history_count"))).toBe(false);
+    expect(mocks.queries.some((query) => /\b(?:INSERT|UPDATE|DELETE)\s+(?:INTO|FROM|omni_)/.test(query.text))).toBe(false);
+    expect(mocks.event).not.toHaveBeenCalled();
+  });
+
   it("persists policy, immutable score revision, current projection, and typed event", async () => {
     const accountSnapshot = account();
     const factSnapshot = fact();

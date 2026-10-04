@@ -184,6 +184,7 @@ const resetAllowed = process.env.OMNIAGENT_INTEGRATION_DATABASE_RESET === "true"
 const requirePgvector =
   process.env.OMNIAGENT_INTEGRATION_REQUIRE_PGVECTOR !== "false";
 const databaseDescribe = databaseUrl && resetAllowed ? describe : describe.skip;
+const latestSchemaVersion = databaseSchemaMigrations.at(-1)!.version;
 const rlsRole = "omniagent_integration_rls";
 const runtimeRole = "omniagent_integration_runtime";
 const maintenanceRole = "omniagent_integration_maintenance";
@@ -6098,7 +6099,7 @@ databaseDescribe("Postgres schema integration", () => {
     const manifest = JSON.parse(
       fs.readFileSync(path.join(process.cwd(), "schema-migrations.json"), "utf8"),
     ) as unknown[];
-    const version = databaseSchemaMigrations.at(-1)!.version + 1;
+    const version = latestSchemaVersion + 1;
     const name = "migration_lock_probe_v1";
     const file = "20990101000000_migration_lock_probe.sql";
     const placeholder = "0".repeat(64);
@@ -9379,7 +9380,7 @@ databaseDescribe("Postgres schema integration", () => {
 
     // A serving release accepts a later version; the check after a migration
     // does not.
-    const latest = databaseSchemaMigrations.at(-1)!.version;
+    const latest = latestSchemaVersion;
     await admin`
       INSERT INTO omni_schema_version (version, name, checksum)
       VALUES (${latest + 1}, 'later_release_v1', ${"f".repeat(64)})
@@ -9575,6 +9576,16 @@ const responsibilityObservationsVersion = 217;
 const responsibilityRuntimeVersion = 218;
 const responsibilityNotificationsVersion = 219;
 const meetingResolutionIntentsVersion = 220;
+const customerAccountIntentsVersion = 221;
+const additiveReplayVersions = [
+  companionPreferencesVersion,
+  responsibilityDraftsVersion,
+  responsibilityObservationsVersion,
+  responsibilityRuntimeVersion,
+  responsibilityNotificationsVersion,
+  meetingResolutionIntentsVersion,
+  customerAccountIntentsVersion,
+].filter((version) => databaseSchemaMigrations.some((migration) => migration.version === version));
 const meetingResolutionReplayTables: readonly string[] = [
   "omni_meeting_commitment_resolution_intents",
   "omni_meeting_commitment_resolution_progress",
@@ -9913,10 +9924,11 @@ function withoutScopeInitplans(expression: string) {
 }
 
 // Ledger-only verification probes keep the catalog intact. Historical replay
-// also removes v215–v220 additive objects: their CREATE statements must encounter
-// the actual predecessor schema, not tables left behind after a ledger reset.
-// This is only for this suite's empty, disposable preference/draft tables.
-// A later migration or seeded data requires an explicit fixture adaptation.
+// also removes the registered additive objects listed below: their CREATE/ALTER
+// statements must encounter the actual predecessor schema, not objects left
+// behind after a ledger reset. Latest-version checks derive from the manifest;
+// new physical additions still require explicit teardown and restoration here.
+// This is only for this suite's empty tables and unpopulated intent columns.
 async function withMigrationsPendingFrom<T>(
   client: ReturnType<typeof postgres>,
   version: number,
@@ -9927,7 +9939,10 @@ async function withMigrationsPendingFrom<T>(
     SELECT version, name, checksum, applied_at
     FROM omni_schema_version
     WHERE version >= ${version}
+    ORDER BY version
   `;
+  expect(recorded.map(({ version, name, checksum }) => ({ version, name, checksum })))
+    .toEqual(databaseSchemaMigrations.filter((migration) => migration.version >= version));
   expect(recorded.map((row) => row.version)).toContain(version);
   if (replay) {
     expect(recorded.map((row) => row.version)).toContain(companionPreferencesVersion);
@@ -9936,10 +9951,22 @@ async function withMigrationsPendingFrom<T>(
     expect(recorded.map((row) => row.version)).toContain(responsibilityRuntimeVersion);
     expect(recorded.map((row) => row.version)).toContain(responsibilityNotificationsVersion);
     expect(recorded.map((row) => row.version)).toContain(meetingResolutionIntentsVersion);
-    expect(recorded.every((row) => row.version <= meetingResolutionIntentsVersion)).toBe(true);
   }
   await client.begin(async (transaction) => {
     if (replay) {
+      if (additiveReplayVersions.includes(customerAccountIntentsVersion)) {
+        expect(await transaction`
+          SELECT count(*)::int AS populated_intents
+          FROM public.omni_customer_account_revisions
+          WHERE request_intent IS NOT NULL OR request_sha256 IS NOT NULL
+        `).toEqual([{ populated_intents: 0 }]);
+        await transaction`
+          ALTER TABLE public.omni_customer_account_revisions
+            DROP CONSTRAINT omni_customer_account_exact_intent,
+            DROP COLUMN request_intent,
+            DROP COLUMN request_sha256
+        `;
+      }
       await removeEmptyResponsibilityRuntimeForReplay(transaction);
       expect(await transaction`
         SELECT (SELECT count(*)::int FROM public.omni_responsibility_observations) AS observations,
@@ -9981,9 +10008,9 @@ async function withMigrationsPendingFrom<T>(
     return await operation();
   } finally {
     for (const row of recorded) {
-      // A replay that stopped before v215–v220 must restore objects through the
-      // unmodified migration, not mark absent tables as already migrated.
-      if (replay && (row.version === companionPreferencesVersion || row.version === responsibilityDraftsVersion || row.version === responsibilityObservationsVersion || row.version === responsibilityRuntimeVersion || row.version === responsibilityNotificationsVersion || row.version === meetingResolutionIntentsVersion)) continue;
+      // Recreate removed objects through their unmodified migrations; a marker
+      // alone would falsely claim the absent tables/columns had been restored.
+      if (replay && additiveReplayVersions.includes(row.version)) continue;
       await client`
         INSERT INTO omni_schema_version (version, name, checksum, applied_at)
         SELECT ${row.version}::int, ${row.name}::text, ${row.checksum}::text,
@@ -9995,9 +10022,32 @@ async function withMigrationsPendingFrom<T>(
     }
     if (replay) {
       const restored = await client`
-        SELECT version FROM omni_schema_version WHERE version = ${meetingResolutionIntentsVersion}
+        SELECT version FROM omni_schema_version
+        WHERE version = ANY(${additiveReplayVersions}::int[])
+        ORDER BY version
       `;
-      if (!restored.length) await migrateWithFreshClient();
+      if (restored.length !== additiveReplayVersions.length) await migrateWithFreshClient();
+      expect(await client`
+        SELECT version, name, checksum FROM omni_schema_version
+        WHERE version IS NOT NULL ORDER BY version
+      `).toEqual(databaseSchemaMigrations);
+      if (additiveReplayVersions.includes(customerAccountIntentsVersion)) {
+        expect(await client`
+          SELECT column_name, data_type, is_nullable
+          FROM information_schema.columns
+          WHERE table_schema = 'public' AND table_name = 'omni_customer_account_revisions'
+            AND column_name IN ('request_intent', 'request_sha256')
+          ORDER BY column_name
+        `).toEqual([
+          { column_name: "request_intent", data_type: "jsonb", is_nullable: "YES" },
+          { column_name: "request_sha256", data_type: "text", is_nullable: "YES" },
+        ]);
+        expect(await client`
+          SELECT convalidated FROM pg_constraint
+          WHERE conrelid = 'public.omni_customer_account_revisions'::regclass
+            AND conname = 'omni_customer_account_exact_intent'
+        `).toEqual([{ convalidated: true }]);
+      }
       expect(await client`
         SELECT to_regclass('public.omni_meeting_commitment_resolution_intents') IS NOT NULL AS intents,
           to_regclass('public.omni_meeting_commitment_resolution_progress') IS NOT NULL AS progress,

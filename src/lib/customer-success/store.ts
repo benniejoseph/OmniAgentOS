@@ -21,11 +21,28 @@ import {
 } from "@/lib/customer-success/contracts";
 import { appendScopedDomainEvent } from "@/lib/events/store";
 import {
+  buildCustomerAccountMutationAcceptance,
+  buildCustomerAccountMutationIntent,
+  customerAccountMutationIntentSchema,
+  type CustomerAccountMutationIntent,
+  type CustomerAccountMutationRequest,
+} from "@/lib/customer-success/account-mutation-contracts";
+import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
+import {
   parsePersistedExecutionScope,
   type ExecutionScope,
 } from "@/lib/security/execution-scope";
 
 type CustomerSql = ReturnType<typeof getSql>;
+
+export const CUSTOMER_ACCOUNT_FACT_LIMIT = 5_000;
+
+export class CustomerAccountProjectionLimitError extends Error {
+  constructor() {
+    super("Customer account exceeds the 5,000 readable fact limit; no partial Account 360 was returned.");
+    this.name = "CustomerAccountProjectionLimitError";
+  }
+}
 
 export type CustomerAccountReadAuthority = Readonly<{
   tenantId: string;
@@ -112,7 +129,7 @@ export async function getCustomerAccount360(
   );
 }
 
-export async function saveCustomerAccount(input: {
+type CustomerAccountSaveInput = {
   authority: CustomerAccountMutationAuthority;
   accountId: string;
   mutationId: string;
@@ -122,7 +139,12 @@ export async function saveCustomerAccount(input: {
   accountOwner: CustomerFactOwner;
   crmPermissions: CustomerCrmPermissions;
   organizationEntityId?: string | null;
-}): Promise<CustomerAccountRevision> {
+};
+
+// Legacy internal writers (including Salesforce configuration/projection) retain
+// their existing contract. Only submitCustomerAccountMutation admits the new
+// exact create/revise intent protocol.
+export async function saveCustomerAccount(input: CustomerAccountSaveInput): Promise<CustomerAccountRevision> {
   requireDatabase();
   await ensureDatabaseSchema();
   assertMutationAuthority(input.authority);
@@ -171,6 +193,93 @@ export async function saveCustomerAccount(input: {
       if (current && current.ownerActorId !== authority.canonicalActorId) {
         throw new CustomerAccountConflictError("Customer account ownership cannot be transferred implicitly.");
       }
+      return persistCustomerAccountRevision(sql, input, current);
+    }) as Promise<CustomerAccountRevision>,
+  );
+}
+
+export async function submitCustomerAccountMutation(input: {
+  authority: CustomerAccountMutationAuthority;
+  accountId?: string;
+  request: CustomerAccountMutationRequest;
+}) {
+  requireDatabase();
+  await ensureDatabaseSchema();
+  assertMutationAuthority(input.authority);
+  const { authority } = input;
+  const intent = buildCustomerAccountMutationIntent({ ...authority, accountId: input.accountId, request: input.request });
+  const requestSha256 = canonicalJsonSha256(intent);
+  return runWithDatabaseActorScope(authority.tenantId, authority.readableActorIds, () => getSql().transaction(async (sql: CustomerSql) => {
+    await sql`SELECT pg_advisory_xact_lock(hashtextextended(${`${authority.tenantId}:${authority.workspaceId}:${intent.accountId}`}, 0))`;
+    // Reauthorize after waiting for admission, including replays. These authority
+    // tables are SELECT-only for serving roles; do not widen grants to lock them.
+    const membership = await sql`
+      SELECT membership.access_level
+      FROM omni_tenant_workspaces workspace
+      JOIN omni_tenant_workspace_memberships membership
+        ON membership.tenant_id = workspace.tenant_id AND membership.workspace_id = workspace.workspace_id
+        AND membership.subject_kind = 'user' AND membership.subject_actor_id = ${authority.canonicalActorId}
+        AND membership.state = 'active' AND membership.access_level IN ('contributor', 'manager')
+      WHERE workspace.tenant_id = ${authority.tenantId} AND workspace.workspace_id = ${authority.workspaceId}
+        AND workspace.state = 'active'
+      LIMIT 2
+    `;
+    if (membership.length !== 1) throw new CustomerAccountConflictError("Current workspace write access is required.");
+    const currentRows = await sql`
+      SELECT account_snapshot FROM omni_customer_accounts
+      WHERE tenant_id = ${authority.tenantId} AND workspace_id = ${authority.workspaceId}
+        AND account_id = ${intent.accountId} AND owner_actor_id = ${authority.canonicalActorId}
+        AND allowed_purpose_ids @> ARRAY[${authority.purposeId}]::TEXT[]
+      FOR UPDATE
+    `;
+    const current = currentRows[0] ? customerAccountRevisionSchema.parse(currentRows[0].account_snapshot) : undefined;
+    if (current && (current.tenantId !== authority.tenantId || current.workspaceId !== authority.workspaceId || current.accountId !== intent.accountId || current.ownerActorId !== authority.canonicalActorId)) throw new CustomerAccountConflictError("Current account ownership is unavailable.");
+    // Never inspect an accepted revision without its currently owned projection.
+    if (!current && intent.request.operation === "account.revise") throw new CustomerAccountNotFoundError();
+    if (!current) {
+      const occupied = await sql`
+        SELECT account_id FROM omni_customer_accounts
+        WHERE tenant_id = ${authority.tenantId} AND workspace_id = ${authority.workspaceId}
+          AND account_id = ${intent.accountId}
+        LIMIT 1
+      `;
+      if (occupied[0]) throw new CustomerAccountConflictError("Customer account identity is already assigned.");
+    }
+    if (current) {
+      const accepted = await sql`
+        SELECT account_snapshot, request_intent, request_sha256 FROM omni_customer_account_revisions
+        WHERE tenant_id = ${authority.tenantId} AND workspace_id = ${authority.workspaceId}
+          AND account_id = ${intent.accountId} AND mutation_id = ${intent.mutationId}
+          AND owner_actor_id = ${authority.canonicalActorId}
+        LIMIT 1
+      `;
+      if (accepted[0]) {
+        const stored = customerAccountMutationIntentSchema.safeParse(accepted[0].request_intent);
+        if (!stored.success || accepted[0].request_sha256 !== requestSha256 || canonicalJsonSha256(stored.data) !== requestSha256) throw new CustomerAccountConflictError("This key has no matching exact accepted account intent. Inspect the account before making a new decision.");
+        const account = customerAccountRevisionSchema.parse(accepted[0].account_snapshot);
+        return { account, acceptance: buildCustomerAccountMutationAcceptance(stored.data, account) };
+      }
+    }
+    const request = intent.request;
+    if (request.operation === "account.create" && current) throw new CustomerAccountConflictError("Customer account already exists.");
+    if (request.operation === "account.revise" && current?.revision !== request.expectedRevision) throw new CustomerAccountConflictError("Customer account changed. Refresh and try again.");
+    const account = await persistCustomerAccountRevision(sql, {
+      authority, accountId: intent.accountId, mutationId: intent.mutationId,
+      name: request.name ?? current!.name, lifecycle: request.lifecycle ?? current!.lifecycle,
+      organizationEntityId: request.organizationEntityId === undefined ? current!.organizationEntityId : request.organizationEntityId,
+      accountOwner: request.accountOwner ?? current!.accountOwner,
+      crmPermissions: {
+        readScope: "workspace_members", writeScope: "account_owner",
+        externalWriteState: current?.crmPermissions.externalWriteState ?? "disabled",
+        customerDataPurposeIds: request.customerDataPurposeIds ?? current!.crmPermissions.customerDataPurposeIds,
+      },
+    }, current, intent);
+    return { account, acceptance: buildCustomerAccountMutationAcceptance(intent, account) };
+  }) as Promise<{ account: CustomerAccountRevision; acceptance: ReturnType<typeof buildCustomerAccountMutationAcceptance> }>);
+}
+
+async function persistCustomerAccountRevision(sql: CustomerSql, input: CustomerAccountSaveInput, current?: CustomerAccountRevision, intent?: CustomerAccountMutationIntent) {
+      const { authority } = input;
       const clock = await sql`SELECT clock_timestamp() AS revised_at`;
       const revisedAt = timestamp(clock[0]?.revised_at);
       const account = buildCustomerAccountRevision({
@@ -191,7 +300,22 @@ export async function saveCustomerAccount(input: {
         revisedByActorId: authority.canonicalActorId,
         revisedAt,
       });
-      await sql`
+      if (intent) {
+        // Validate before any INSERT; immutable intent, revision, projection and
+        // typed event all commit or roll back on this one managed transaction.
+        buildCustomerAccountMutationAcceptance(intent, account);
+        await sql`
+          INSERT INTO omni_customer_account_revisions (
+            tenant_id, workspace_id, account_id, revision_id, revision, mutation_id,
+            owner_actor_id, allowed_purpose_ids, account_sha256, account_snapshot, revised_at,
+            request_intent, request_sha256
+          ) VALUES (
+            ${authority.tenantId}, ${authority.workspaceId}, ${account.accountId}, ${account.revisionId}, ${account.revision}, ${account.mutationId},
+            ${account.ownerActorId}, ${account.crmPermissions.customerDataPurposeIds}, ${account.accountSha256}, ${account}::JSONB, ${account.revisedAt},
+            ${intent}::JSONB, ${canonicalJsonSha256(intent)}
+          )
+        `;
+      } else await sql`
         INSERT INTO omni_customer_account_revisions (
           tenant_id, workspace_id, account_id, revision_id, revision,
           mutation_id, owner_actor_id, allowed_purpose_ids,
@@ -257,8 +381,6 @@ export async function saveCustomerAccount(input: {
         },
       }, { sql });
       return account;
-    }) as Promise<CustomerAccountRevision>,
-  );
 }
 
 export async function recordCustomerFact(input: {
@@ -418,14 +540,27 @@ async function readAccount360(
   if (!accountRows[0]) return undefined;
   const account = customerAccountRevisionSchema.parse(accountRows[0].account_snapshot);
   const factRows = await sql`
-    SELECT DISTINCT ON (fact_id) fact_snapshot
-    FROM omni_customer_fact_revisions
-    WHERE tenant_id = ${authority.tenantId}
-      AND workspace_id = ${authority.workspaceId}
-      AND account_id = ${accountId}
-      AND allowed_purpose_ids @> ARRAY[${authority.purposeId}]::TEXT[]
-    ORDER BY fact_id COLLATE "C", revision DESC
+    SELECT fact_snapshot
+    FROM (
+      SELECT DISTINCT ON (fact_id COLLATE "C") fact_id, fact_snapshot
+      FROM omni_customer_fact_revisions
+      WHERE tenant_id = ${authority.tenantId}
+        AND workspace_id = ${authority.workspaceId}
+        AND account_id = ${accountId}
+        AND allowed_purpose_ids @> ARRAY[${authority.purposeId}]::TEXT[]
+      ORDER BY fact_id COLLATE "C", revision DESC
+    ) AS latest_readable_facts
+    WHERE fact_snapshot->>'state' = 'active'
+      AND fact_snapshot->'source'->'allowedPurposeIds' @> to_jsonb(ARRAY[${authority.purposeId}]::TEXT[])
+    ORDER BY fact_id COLLATE "C"
+    LIMIT ${CUSTOMER_ACCOUNT_FACT_LIMIT + 1}
   `;
+  // Filter after choosing the latest readable revision, so retracted heads do
+  // not resurrect old facts. The extra row detects overflow, never a partial
+  // projection. This bounds returned rows; the database still resolves heads.
+  if (factRows.length > CUSTOMER_ACCOUNT_FACT_LIMIT) {
+    throw new CustomerAccountProjectionLimitError();
+  }
   const historyRows = await sql`
     SELECT (
       (SELECT count(*) FROM omni_customer_account_revisions

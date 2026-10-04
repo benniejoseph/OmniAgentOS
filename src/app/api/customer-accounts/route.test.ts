@@ -93,6 +93,20 @@ beforeEach(() => {
 });
 
 describe("customer Account 360 routes", () => {
+  it("passes additive immutable acceptance through both write handlers while preserving the original accepted account", async () => {
+    const accepted = { ...account.account, revision: 2, name: "Accepted before later revisions" };
+    const acceptance = { contract: "customer-account-mutation-acceptance:1", revision: 2, requestSha256: "d".repeat(64) };
+    mocks.revise.mockResolvedValue({ data: { context: { workspaceId: "workspace:a" }, account: accepted, acceptance }, receipt: { operation: "app.customer_accounts.revise" } });
+    const createAcceptance = { ...acceptance, revision: 1 };
+    mocks.create.mockResolvedValue({ data: { context: { workspaceId: "workspace:a" }, account: account.account, acceptance: createAcceptance }, receipt: { operation: "app.customer_accounts.create" } });
+    const created = await POSTAccount(new Request("http://localhost/api/customer-accounts", { method: "POST", headers: { "content-type": "application/json", "idempotency-key": "accepted-create" }, body: JSON.stringify({ name: "Acme", accountOwner: { ownerKind: "actor", ownerId: `actor:${context.auth.userId}`, displayName: "Owner" } }) }));
+    const revised = await PATCHAccount(new Request(`http://localhost/api/customer-accounts/${accountId}`, { method: "PATCH", headers: { "content-type": "application/json", "idempotency-key": "accepted-revise" }, body: JSON.stringify({ expectedRevision: 1, lifecycle: "at_risk" }) }), { params: Promise.resolve({ id: encodeURIComponent(accountId) }) });
+    expect([created.status, revised.status]).toEqual([201, 200]);
+    expect(await created.json()).toEqual({ context: { workspaceId: "workspace:a" }, account: account.account, acceptance: createAcceptance, serviceReceipt: { operation: "app.customer_accounts.create" } });
+    expect(await revised.json()).toEqual({ context: { workspaceId: "workspace:a" }, account: accepted, acceptance, serviceReceipt: { operation: "app.customer_accounts.revise" } });
+    expect(revised.headers.get("cache-control")).toBe("private, no-store");
+    expect(mocks.show).not.toHaveBeenCalled();
+  });
   it("lists and reads account projections with private no-store semantics", async () => {
     const list = await GETAccounts(new Request(
       "http://localhost/api/customer-accounts?lifecycle=active&limit=20",

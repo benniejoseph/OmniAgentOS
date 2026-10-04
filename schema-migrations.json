@@ -1332,5 +1332,12 @@
     "checksum": "45e63154aeaca286c2da9d898873be0e26fa3a2412ab58ac22a373d1f759339b",
     "file": "20261004200000_meeting_commitment_resolution_intents.sql",
     "sha256": "45e63154aeaca286c2da9d898873be0e26fa3a2412ab58ac22a373d1f759339b"
+  },
+  {
+    "version": 221,
+    "name": "customer_account_mutation_intents_v1",
+    "checksum": "aaa8677534825332f55e5765c5b6829766a5b7fed8b6f11a1c3762c17aa922ae",
+    "file": "20261004210000_customer_account_mutation_intents.sql",
+    "sha256": "aaa8677534825332f55e5765c5b6829766a5b7fed8b6f11a1c3762c17aa922ae"
   }
 ]

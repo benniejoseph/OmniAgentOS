@@ -22,6 +22,7 @@ const requirePlainRestore = process.env.CI === "true";
 const manifest = JSON.parse(fs.readFileSync("schema-migrations.json", "utf8")) as Array<{
   version: number; name: string; checksum: string; file?: string;
 }>;
+const registeredMarkers = manifest.map(({ version, name, checksum }) => ({ version, name, checksum }));
 const migration = (version: number) => {
   const row = manifest.find((item) => item.version === version)!;
   const source = fs.readFileSync(path.join("supabase/migrations", row.file!), "utf8");
@@ -79,10 +80,26 @@ async function rollbackOnly(admin: ReturnType<typeof postgres>, operation: (tran
 // These historical fixtures always roll back. Remove the exact later additive
 // schema together with its ledger so the target migration sees its predecessor.
 // Never make production CREATE statements idempotent to accommodate a fixture.
+// The ledger follows the manifest; new physical additions still need reviewed
+// teardown here before their marker can be removed from a historical fixture.
 async function prepareHistoricalReplay(transaction: Transaction, version: 213 | 214) {
   expect(await transaction`
-    SELECT max(version)::int AS latest FROM public.omni_schema_version
-  `).toEqual([{ latest: 220 }]);
+    SELECT version, name, checksum FROM public.omni_schema_version
+    WHERE version IS NOT NULL ORDER BY version
+  `).toEqual(registeredMarkers);
+  if (manifest.some((migration) => migration.version === 221)) {
+    expect(await transaction`
+      SELECT count(*)::int AS populated_intents
+      FROM public.omni_customer_account_revisions
+      WHERE request_intent IS NOT NULL OR request_sha256 IS NOT NULL
+    `).toEqual([{ populated_intents: 0 }]);
+    await transaction`
+      ALTER TABLE public.omni_customer_account_revisions
+        DROP CONSTRAINT omni_customer_account_exact_intent,
+        DROP COLUMN request_intent,
+        DROP COLUMN request_sha256
+    `;
+  }
   await removeEmptyResponsibilityRuntimeForReplay(transaction);
   expect(await transaction`
     SELECT (SELECT count(*)::int FROM public.omni_responsibility_observations) AS observations,
