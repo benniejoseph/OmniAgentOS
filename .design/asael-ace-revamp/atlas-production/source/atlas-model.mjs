@@ -1,4 +1,4 @@
-/** ATLAS sculpt 04, feather 02 — retained local angular color-surface refinement.
+/** ATLAS sculpt 04, feather 03 — retained local short torso-vane paint refinement.
  * No raster planes, generated imagery, physics, audio, providers or app imports.
  * Geometry is deterministic; Three UUIDs are internal and not provenance IDs.
  */
@@ -149,10 +149,15 @@ function featherMotifs() {
 /** Paint bounded stamps into one continuous chart-X/rest-Y scalar field.
  * Chart X spans each angular half-circumference; it is not physical rest X.
  */
-function featherColorField() {
+function featherColorField(motifs,shortVanes=false) {
   const columns=480,rows=944,sum=new Float32Array(columns*rows),weight=new Float32Array(columns*rows);
   const ys=Float64Array.from({length:rows},(_,row)=>row<464?.38+1.70*row/464:2.08+.995*(row-464)/479);
-  for(const motif of featherMotifs()) {
+  for(const original of motifs) {
+    // Reshape only accepted stamps after placement. Never feed broader vanes
+    // back into exclusion sampling, or move the retained centers/directions.
+    const motif=shortVanes?{...original,width:original.width*1.18,length:original.length*.75,
+      bend:original.bend*1.18,barbs:original.barbs.map(barb=>({...barb,x:barb.x*1.18,
+        y:barb.y*.75,attachment:barb.attachment*.75,width:barb.width*1.08}))}:original;
     const reach=motif.width*.6+Math.abs(motif.bend),tipX=motif.x+motif.sin*motif.length,tipY=motif.y-motif.cos*motif.length;
     const left=Math.max(0,Math.floor((Math.min(motif.x,tipX)-reach+.46)/.92*479));
     const right=Math.min(479,Math.ceil((Math.max(motif.x,tipX)+reach+.46)/.92*479));
@@ -166,7 +171,7 @@ function featherColorField() {
       const halfWidth=motif.width*.5*(.90+.10*Math.sin(Math.PI*t))*(1-t)**.6,u=lateral/halfWidth;
       if(Math.abs(u)>=1)continue;
       const opacity=featherEase(t/.20)*featherEase((1-t)/.10)*featherEase((1-Math.abs(u))/.30);
-      const light=(u-motif.lightSide*.28)/.42,shadow=(u+motif.lightSide*.35)/.52;
+      const light=(u-motif.lightSide*.28)/(shortVanes?.60:.42),shadow=(u+motif.lightSide*.35)/(shortVanes?.64:.52);
       let tone=motif.highlight*Math.exp(-light*light)-motif.shadow*Math.exp(-shadow*shadow);
       for(const barb of motif.barbs) {
         const by=along-barb.attachment,projection=(lateral*barb.x+by*barb.y)/(barb.x*barb.x+barb.y*barb.y);
@@ -175,7 +180,12 @@ function featherColorField() {
         if(distance>=barb.width)continue;
         tone+=barb.strength*featherEase(1-distance/barb.width)*featherEase(projection/.18)*featherEase((1-projection)/.25);
       }
-      tone-=motif.terminal*Math.exp(-(((t-.85)/.09)**2))*Math.exp(-((u/.55)**2));
+      if(shortVanes) {
+        // The same marked minority gains a soft curved tip; no new placement,
+        // full outline or shaft is introduced.
+        const tip=.88-.16*u*u;
+        tone-=motif.terminal*1.6*Math.exp(-(((t-tip)/.065)**2))*Math.exp(-((u/.82)**2));
+      } else tone-=motif.terminal*Math.exp(-(((t-.85)/.09)**2))*Math.exp(-((u/.55)**2));
       const index=row*columns+column;
       sum[index]+=tone*opacity;weight[index]+=opacity;
     }
@@ -188,6 +198,20 @@ function featherColorField() {
     sum[index]=(sum[index]/Math.max(1,weight[index])+underpaint)*boundary;
   }
   return {values:sum,ys};
+}
+
+/** Preserve the accepted upper field exactly; blend revised paint below collar. */
+function torsoVaneColorField() {
+  const motifs=featherMotifs(),retained=featherColorField(motifs),vanes=featherColorField(motifs,true);
+  for(let row=0;row<retained.ys.length&&retained.ys[row]<2.02;row++) {
+    const blend=1-featherEase((retained.ys[row]-1.90)/.12);
+    for(let column=0;column<480;column++) {
+      const index=row*480+column;
+      retained.values[index]=blend===1?vanes.values[index]
+        :retained.values[index]+(vanes.values[index]-retained.values[index])*blend;
+    }
+  }
+  return retained;
 }
 
 /** Both islands share feather data; only the original front throat mask adds pale. */
@@ -203,7 +227,7 @@ function plumageColorAtlas(config,profile) {
     const index=(row*size+column)*4;
     data[index]=Math.round(color.r*255);data[index+1]=Math.round(color.g*255);data[index+2]=Math.round(color.b*255);
   }
-  const field=featherColorField(),radii=Float64Array.from(field.ys,y=>profileAt(profile,y)[1]);
+  const field=torsoVaneColorField(),radii=Float64Array.from(field.ys,y=>profileAt(profile,y)[1]);
   for(let row=0;row<field.ys.length;row++)for(let column=0;column<chart;column++) {
     const angle=-Math.PI/2+Math.PI*column/(chart-1),y=field.ys[row],tone=field.values[row*chart+column];
     const head=featherEase((y-2.38)/.36),low=.76+.04*head,high=1.22-.05*head;

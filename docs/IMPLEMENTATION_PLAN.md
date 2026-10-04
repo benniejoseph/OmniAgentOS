@@ -564,7 +564,7 @@ on `52e54d2cd14ccc4501d23b46367e94dcd9e30b16`, merged at 20:43:05 UTC on
 `3616583ca5151a8373355e2f7f7b35df22739c05439965e0c37983018c79de9f`.
 No production promotion or whole-program completion is claimed.
 
-## Current ATLAS face-01 / feather-02 checkpoint — 5 October 2026 (IST)
+## Historical ATLAS face-01 / feather-02 checkpoint — 5 October 2026 (IST)
 
 Face-01 and `sculpt-04-feather-02-angular-color` are retained local refinements
 after root and independent review of 72 face and 96 feather comparisons. The
@@ -599,9 +599,40 @@ physical-device performance, final artwork and 3D/state-bundle publication remai
 open. The approved static portrait/greeting remains the delivery fallback.
 Production promotion and the remaining implementation program are separate gates.
 
-Native scoped content search is in open PR59 at
-`2d4c1410b400f2d72e1ca7e3ec9ed6471ce8ed49`, publishing native v39 / app 1.23.17+52.
-All 59 focused native cases, full Flutter analysis, 44 contract checks and three
-visual captures pass. Hosted CI and private Mac52 packaging are running; it is not
-yet accepted, merged or deployed. Parked connector work must rebase its contract
-publication and use build 53 or later. No new production promotion is claimed.
+## Current ATLAS feather-03 checkpoint — 5 October 2026 (IST)
+
+Root and independent review retain `sculpt-04-feather-03-short-vanes` after 96
+comparison captures. Shorter, broader painted torso vanes reduce the hair-like
+chest/flank appearance in close-up, without new scales, repeated rows or a visible
+collar transition in the reviewed samples. The gain is small at full-body size;
+soft mottling, layered relief, smooth-wing contrast and final likeness remain open.
+
+Exact parity changes only 298,806 lower-atlas pixels against retained feather-02.
+All 167 parts, every mesh attribute including UVs, rig, poses and 168 tracks remain
+identical; full-width rows 480–1023 retain exact bytes. All nine model/lifecycle
+checks pass. Comparison archive SHA-256 is
+`28a93ff1b23bb545cbade400b9991662801b6ae3467e29a027ab9137f15f69dc`.
+The complete export at `2026-10-04T21:45:36.836138+00:00` verifies 17 source hashes,
+104 artifact hashes/bytes and 166 archive members. Its GLB is 2,969,080 bytes,
+with unchanged geometry/rig/map counts and zero external resources. Archive
+SHA-256 is `a46db9540d3541c050cff22257ea4770f6692e10a78ab7e5665bc5edca1ea753`;
+exact manifest hashes and receipt are in
+[ATLAS measurements](../.design/asael-ace-revamp/atlas-production/MEASUREMENTS.md).
+Twenty-four source/GLB captures form 12 pairs: eight full/working pairs and three
+completed pairs are exact; completed front differs at six pixels by at most one
+channel value. Hide/reload/dispose pass without errors. The ten static tool checks
+remain feather-02 evidence on unchanged scripts and were not rerun.
+The old 80-state review remains finish-02 evidence. Final art, continuous motion,
+shimmer, physical-device performance and 3D/state-bundle publication remain open.
+
+Native scoped content search is in open PR59 at corrected candidate
+`608368ed679e483105198e62966f02dac198b662`, publishing native v39 / app 1.23.17+52.
+The 59 focused native cases, Flutter analysis, 44 contract checks and three visual
+captures pass. Two older test expectations were corrected; the full Flutter
+check now passes while remaining hosted checks run. Mac52 is verified with
+SHA-256 `f52edbd1dc200e55b86dc9ced5e8ef7d9b335fe27d118fe8929a7456376d5fa7`,
+built from `2d4c1410b400f2d72e1ca7e3ec9ed6471ce8ed49`; application and packaging
+inputs are identical in the corrected candidate, which changes only the two test
+files. It is not yet accepted, merged or deployed. Parked connector work must
+rebase its contract publication and use build 53 or later. No new production
+promotion is claimed.

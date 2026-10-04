@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
 import {readFile} from 'node:fs/promises';
 import {Color,Vector3,SRGBColorSpace,LinearFilter,ClampToEdgeWrapping} from 'three';
 import {createAtlas} from '../../.design/asael-ace-revamp/atlas-production/source/atlas-model.mjs';
@@ -28,6 +29,12 @@ test('procedural geometry is finite, indexed and deterministically bound to the 
     const map=a.mesh.material.map;
     assert.ok(map.isDataTexture);assert.equal(map.image.width,1024);assert.equal(map.image.height,1024);
     assert.equal(map.image.data.byteLength,4194304);assert.deepEqual(map.image.data,b.mesh.material.map.image.data);
+    // Public retained feather-02 image digest, full-width RGBA rows 480–1023.
+    const retainedUpperSha256='2ffac06903676fb1451b46e492ba17ba4d8b8d49f7fc955ad98e4d958c99d0e4'; // gitleaks:allow -- public image digest
+    const upperBytes=map.image.data.subarray(480*1024*4);
+    assert.equal(upperBytes.byteLength,2228224);
+    assert.equal(createHash('sha256').update(upperBytes).digest('hex'),retainedUpperSha256,
+      'torso paint must preserve the entire retained head/throat chart, upper gutters and white patch');
     assert.equal(map.colorSpace,SRGBColorSpace);assert.equal(map.flipY,false);assert.equal(map.generateMipmaps,false);
     assert.equal(map.minFilter,LinearFilter);assert.equal(map.magFilter,LinearFilter);
     assert.equal(map.wrapS,ClampToEdgeWrapping);assert.equal(map.wrapT,ClampToEdgeWrapping);

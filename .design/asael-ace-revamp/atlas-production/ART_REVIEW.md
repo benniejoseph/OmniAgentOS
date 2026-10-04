@@ -1,6 +1,20 @@
 # ATLAS actual-art review — 5 October 2026 (IST)
 
-## FACE01 and FEATHER02 — latest matching full export, character still unaccepted
+## FEATHER03 — latest matching full export, character still unaccepted
+
+The retained torso-vane refinement is exported as `sculpt-04-feather-03-short-vanes` at `2026-10-04T21:45:36.836138+00:00`. All seventeen source hashes, 104 artifact hashes/byte lengths and 166 archive members verify. The self-contained GLB is 2,969,080 bytes, retaining 27,543 vertices, 49,844 triangles, fourteen bones, twelve clips, one material and one embedded 1024 × 1024 RGBA8 PNG. Nine current model/lifecycle checks pass; the unchanged static-tool scripts retain their ten passing FEATHER02 checks.
+
+Accepted stamp centers, directions and placement decisions stay exact. The painted torso vanes are 25% shorter and 18% broader with wider soft highlights and curved tips on the same selected minority. A smooth fade restores original paint over Y=1.90–2.02. Exact comparison preserves every mesh attribute, UV, part, index, rig, pose and all 168 tracks; only 298,806 lower-atlas pixels change. All full-width bytes in rows 480–1023, including head/throat/gutters/white patch, are identical to FEATHER02. Front/rear body image bytes match.
+
+Root reviewed full, working/torso and completed sheets. Independent review inspected all twelve light/dark/large/small sheets and original torso views from four angles plus completed profiles. Both retain a modest improvement: chest and flank are less hair-like without visible hard scales, repeated rows, woodgrain loops or a below-collar transition. The gain is clearest close up and subtle at full-body scale; 36/72-pixel samples show no obvious new speckling or face-readability loss. Soft mottling, clearly layered feather relief, smooth-wing contrast, face/wing integration and final likeness remain open.
+
+Twenty-four current source/embedded-GLB captures cover full, working torso and completed in four views. All eight full/working pairs are pixel-identical. Completed front differs in six pixels by at most one channel value; the other three pairs are exact. Hide/reload/dispose passes with no page/console/rejected-network errors. These are bounded still and lifecycle observations, not motion, shimmer, performance or final-art acceptance. FEATHER02's broader 56-capture face/pose comparison and finish02's older 80-state review remain distinct historical evidence.
+
+Comparison archive: `feather03-comparison/matching-source-and-baseline.tar.gz`, SHA256 `28a93ff1b23bb545cbade400b9991662801b6ae3467e29a027ab9137f15f69dc`. GLB archive: `feather03-glb-parity/matching-source-and-baseline.tar.gz`, SHA256 `8aa84168b5d61c3d7cd4345df2e098d5eacba6a6f08277a77a3d695c09fc129e`. Full archive: `atlas-feather-03-review.tar.gz`, SHA256 `a46db9540d3541c050cff22257ea4770f6692e10a78ab7e5665bc5edca1ea753`. Receipt: `atlas-feather-03-export-verification.json`. Export-manifest SHA256: `590ce12d1c6182c536b47f3b8b8ca866c2cb70a7c3794ff130ef79d15b5b61f4`; raster-manifest SHA256: `b34a1ace69c9fc717a2d9cc7938cf7227803bb03bd64f115fdc29ef02a44466a`.
+
+This retained local refinement is not publication approval. The approved portrait/static greeting remain active. Final character finish, natural acting, physical-device acceptance and publication are pending.
+
+## FACE01 and FEATHER02 — previous matching full export, character still unaccepted
 
 The retained eye integration and angular feather-color pass are exported as `sculpt-04-feather-02-angular-color` at `2026-10-04T21:32:27.157894+00:00`. All seventeen source hashes, 104 artifact hashes/byte lengths and 163 archive members verify. The GLB is 2,985,740 bytes: 27,543 vertices, 49,844 triangles, fourteen bones, twelve clips, one material and one embedded 1024 × 1024 RGBA8 PNG. Nine model/lifecycle and ten static-tool checks pass. This is a local art checkpoint; the final character is unaccepted and unpublished.
 

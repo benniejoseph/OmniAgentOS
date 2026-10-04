@@ -6,10 +6,13 @@ app 1.23.14+49) and PR56 (scoped language/motion intensity / app 1.23.15+50)
 are accepted and merged, each after all 16 hosted checks passed. The private
 Mac package is now verified through PR58's 1.23.16 (51), from exact accepted
 source `52e54d2cd14ccc4501d23b46367e94dcd9e30b16`.
-Face-01 and feather-02 are retained local art refinements after 72 face and 96
-feather comparisons. Nine current model/lifecycle checks, ten static tool checks
-and 56 source/GLB captures pass. The matching feather-02 export verifies 17 sources,
-104 artifacts and 163 archive members; grain-02 is historical. The 80-state review remains finish-02 evidence, without a
+Feather-03 is the current retained torso-paint refinement after 96 comparisons.
+All nine model/lifecycle checks pass. Exactly 298,806 lower-atlas pixels change
+against feather-02; all mesh attributes, UVs, rig, poses, clips and upper-chart
+bytes remain identical. The complete feather-03 export verifies 17 sources,
+104 artifacts and 166 archive members, with a 2,969,080-byte GLB. Twenty-four
+source/GLB captures pass bounded appearance comparison. Feather-02 is historical.
+The 80-state review remains finish-02 evidence, without a
 rerun. Final feather/face/wing finish, likeness, shimmer, natural acting and device
 acceptance remain open. Earlier exports are historical checkpoints; feather-01
 was rejected for side/profile texture stretching. PR57's expanded web
@@ -20,11 +23,16 @@ priorities through PR58 are accepted. No
 preparation and validation boundaries; the final release checkpoints record
 their later acceptance without completing whole-task gates.
 
-PR59's native scoped content search is open at
-`2d4c1410b400f2d72e1ca7e3ec9ed6471ce8ed49`, with native v39 / app 1.23.17+52.
+PR59's native scoped content search is open at corrected candidate
+`608368ed679e483105198e62966f02dac198b662`, with native v39 / app 1.23.17+52.
 All 59 focused native cases, full Flutter analysis, 44 contract checks and three
-visual captures pass. Hosted CI and private Mac52 packaging are running; this
-checkpoint is not yet accepted, merged or deployed. Connector expansion remains
+visual captures pass; after correcting two older test expectations, the full
+Flutter check passes and remaining hosted checks are running. The private Mac52
+package is verified with SHA-256
+`f52edbd1dc200e55b86dc9ced5e8ef7d9b335fe27d118fe8929a7456376d5fa7`,
+built from `2d4c1410b400f2d72e1ca7e3ec9ed6471ce8ed49`. Only those test files
+differ in the corrected candidate; application and packaging inputs match.
+This checkpoint is not yet accepted, merged or deployed. Connector expansion remains
 parked and must rebase its contract version and use build 53 or later when resumed.
 
 ## First web slice — merged, 3 October 2026
@@ -1669,7 +1677,37 @@ That historical package-preparation checkpoint is superseded by the signed
 packages and hosted acceptance below. Nine Node geometry/lifecycle checks and
 three Python tool tests also passed for the sculpt-02 source workbench.
 
-### Current face-01 and feather-02 retained refinements
+### Current feather-03 retained torso paint
+
+Root and independent review retained `sculpt-04-feather-03-short-vanes` after
+96 comparison captures. The same accepted stamp list produces shorter, broader
+torso vanes and soft curved tip accents, fading back to retained paint below
+the collar. Close-up chest/flank marks are less hair-like; no new scales,
+repeated rows or conspicuous collar transition were found. The full-size gain
+is small. Soft mottling, layered relief and smooth-wing contrast remain open.
+
+Exact parity changes 298,806 lower-atlas pixels only. All 167 parts' attributes,
+including positions, normals, colors, UVs, indices and skin, remain exact against
+feather-02; rig, poses and all 168 tracks are unchanged. Full-width rows 480–1023
+are byte-identical, guarded by the retained upper-region hash. Nine current
+model/lifecycle checks pass. Comparison archive SHA-256 is
+`28a93ff1b23bb545cbade400b9991662801b6ae3467e29a027ab9137f15f69dc`.
+The matching complete export at `2026-10-04T21:45:36.836138+00:00` verifies
+17 source hashes, 104 artifact hashes/bytes and 166 archive members. Its GLB is
+2,969,080 bytes, retaining all geometry/rig/map counts and zero external resources.
+Archive SHA-256 is
+`a46db9540d3541c050cff22257ea4770f6692e10a78ab7e5665bc5edca1ea753`;
+exact manifest hashes and receipt are in `atlas-production/MEASUREMENTS.md`.
+
+Twenty-four source/GLB captures form 12 pairs across full, working-torso and
+completed views. Eight full/working pairs and three completed pairs are exact;
+completed front differs at six pixels, at most one channel value. Hide/reload/
+dispose pass without errors. Nine current model/lifecycle checks pass; the ten
+static tool checks remain feather-02 evidence on unchanged scripts, without a
+rerun. The 80-state review remains finish-02 evidence. No final-art, motion,
+performance or publication acceptance follows from this local improvement.
+
+### Historical face-01 and feather-02 retained refinements
 
 Root and independent review retain face-01's quieter lower lids, broader fitted
 brows and sampled completed-expression settle across 72 comparisons. Only four
