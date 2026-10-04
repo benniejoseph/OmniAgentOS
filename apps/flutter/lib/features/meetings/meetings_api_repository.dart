@@ -5,6 +5,7 @@ import '../../generated/native_contract.g.dart';
 import 'meetings.dart';
 import 'meetings_access.dart';
 import 'meetings_calendar_contracts.dart';
+import 'meetings_recording_contracts.dart';
 import 'meetings_commitments.dart';
 import 'meetings_snapshots.dart';
 import 'meetings_mutations.dart';
@@ -48,8 +49,24 @@ abstract interface class CalendarMeetingsRepository
   });
 }
 
+abstract interface class RecordingMeetingsRepository
+    implements LiveMeetingsRepository {
+  Future<Json> recordingReview(Json scope, CancelToken cancel);
+  Future<Json> recordingProcessing(
+    MeetingRecordingSubmission submitted,
+    CancelToken cancel,
+  );
+  Future<Json> recordingProcess(
+    MeetingRecordingSubmission submitted, {
+    required bool Function() isCurrent,
+  });
+}
+
 class ApiMeetingsRepository
-    implements MutatingMeetingsRepository, CalendarMeetingsRepository {
+    implements
+        MutatingMeetingsRepository,
+        CalendarMeetingsRepository,
+        RecordingMeetingsRepository {
   ApiMeetingsRepository(
     this.api, {
     required this.access,
@@ -106,7 +123,9 @@ class ApiMeetingsRepository
             receipt['action'] == 'read' &&
             receipt['accessMode'] == 'read' &&
             receipt['resourceType'] ==
-                (operation.startsWith('meetings.calendar.')
+                (operation.startsWith('app.meetings.recordings.')
+                    ? 'capture_recording'
+                    : operation.startsWith('meetings.calendar.')
                     ? 'meeting_calendar'
                     : operation == 'app.meetings.commitments.list'
                     ? 'meeting_commitment'
@@ -388,5 +407,77 @@ class ApiMeetingsRepository
     _disposed = true;
     access.removeListener(_changed);
     _changed();
+  }
+
+  @override
+  Future<Json> recordingReview(Json scope, CancelToken cancel) => _read(
+    NativePaths.meetingsRecordingsReview(
+      scope['recordingId'] as String,
+      workspaceId: scope['workspaceId'] as String,
+      meetingId: scope['meetingId'] as String,
+    ),
+    cancel,
+    const {},
+    available: access.supports('meetings.recordings.review'),
+    operation: 'app.meetings.recordings.review',
+  );
+
+  @override
+  Future<Json> recordingProcessing(
+    MeetingRecordingSubmission submitted,
+    CancelToken cancel,
+  ) => _read(
+    NativePaths.meetingsRecordingsProcessingGet(
+      submitted.recordingId,
+      submitted.keySha256,
+      workspaceId: submitted.scope['workspaceId'] as String,
+      meetingId: submitted.scope['meetingId'] as String,
+    ),
+    cancel,
+    const {},
+    available: access.supports('meetings.recordings.processing.get'),
+    operation: 'app.meetings.recordings.processing.show',
+  );
+
+  @override
+  Future<Json> recordingProcess(
+    MeetingRecordingSubmission submitted, {
+    required bool Function() isCurrent,
+  }) async {
+    final owner = access.owner, generation = access.generation;
+    bool current() =>
+        authorityCurrent() &&
+        access.generation == generation &&
+        access.owner?.key == submitted.ownerKey &&
+        owner?.canManage == true &&
+        access.supports('meetings.recordings.process') &&
+        isCurrent();
+    if (_writeBusy || owner == null || !current()) {
+      throw StateError('The exact recording submission is unavailable.');
+    }
+    _writeBusy = true;
+    try {
+      final result = await api.postJsonAuthorized(
+        NativePaths.meetingsRecordingsProcess(submitted.recordingId),
+        authority: NativeRequestAuthority(
+          tenantId: owner.tenantId,
+          actorId: owner.actorId,
+          canonicalUserId: owner.userId,
+          role: owner.role,
+          apiBaseUrl: api.apiBaseUrl,
+          isCurrent: current,
+        ),
+        data: submitted.body,
+        headers: {'Idempotency-Key': submitted.key},
+      );
+      if (!current()) {
+        throw StateError(
+          'Recording authority changed. Check the saved request using its exact read.',
+        );
+      }
+      return result;
+    } finally {
+      _writeBusy = false;
+    }
   }
 }

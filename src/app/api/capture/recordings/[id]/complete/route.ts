@@ -1,5 +1,7 @@
 import { z } from "zod";
-import { createAppServiceCaller } from "@/lib/app-services/contracts";
+import { createAppServiceCaller, createRequestMutationAppServiceCaller } from "@/lib/app-services/contracts";
+import { processMeetingRecordingService } from "@/lib/app-services/meeting-recordings";
+import { meetingRecordingProcessRequestSchema } from "@/lib/capture/meeting-recording-native-contracts";
 import { showMeetingService } from "@/lib/app-services/meetings";
 import { captureExecutionScopeFromSecurityContext } from "@/lib/capture/execution-scope";
 import {
@@ -18,10 +20,12 @@ import {
 } from "@/lib/capture/recordings";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { requiredRequestIdempotencyKey } from "@/lib/http/idempotency-key";
 import { serverErrorResponse } from "@/lib/http/errors";
 import { projectOperationJobStatus } from "@/lib/operations/job-queue";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import type { SecurityContext } from "@/lib/security/types";
+import { nativeRecordingFailure, privateRecordingResponse } from "../../native-processing-http";
 
 export const runtime = "nodejs";
 export const POST = withDatabaseRequestScope(POSTHandler);
@@ -49,19 +53,34 @@ async function POSTHandler(
     context = await authorizeRequest({
       request,
       action: "write.memory",
+      nativeMutationCapability: "meetings.recordings.process",
       resourceType: "capture_recording",
       resourceId: id,
       metadata: { operation: "process_media" },
     });
   } catch (error) {
-    return forbiddenResponse(error);
+    return privateRecordingResponse(forbiddenResponse(error));
   }
+  const byteBoundCopy = request.clone();
   let body: unknown;
   try {
     body = await parseJsonBody(request, 100_000);
   } catch (error) {
-    return jsonBodyErrorResponse(error);
+    return privateRecordingResponse(jsonBodyErrorResponse(error));
   }
+  if (body && typeof body === "object" && "contract" in body) {
+    try {
+      if ([...new URL(request.url).searchParams].length) return Response.json({ error: "Native recording processing does not accept query parameters." }, { status: 400, headers: privateNoStoreHeaders });
+      if ((await byteBoundCopy.arrayBuffer()).byteLength > 32_768) return Response.json({ error: "Native recording processing request is too large." }, { status: 413, headers: privateNoStoreHeaders });
+      requiredRequestIdempotencyKey(request);
+      const native = meetingRecordingProcessRequestSchema.parse(body);
+      const result = await processMeetingRecordingService(createRequestMutationAppServiceCaller(request, context, {
+        purpose: "api.meeting-recording.process", workspaceId: native.workspaceId, causationId: id,
+      }), id, native);
+      return Response.json({ ...result.data, serviceReceipt: result.receipt }, { status: result.data.replayed ? 200 : 202, headers: privateNoStoreHeaders });
+    } catch (error) { return nativeRecordingFailure(error); }
+  }
+  if (context.source === "mobile") return Response.json({ error: "Native recording processing requires the reviewed processing contract.", code: "meeting_recording_contract_required" }, { status: 400, headers: privateNoStoreHeaders });
   const parsed = completeRecordingSchema.safeParse(body);
   if (!parsed.success) {
     return Response.json(

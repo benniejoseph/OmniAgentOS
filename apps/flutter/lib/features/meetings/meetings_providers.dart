@@ -13,12 +13,26 @@ import 'meetings_api_repository.dart';
 import 'meetings_action_controller.dart';
 import 'meetings_draft_store.dart';
 import 'meetings_calendar_controller.dart';
+import 'meetings_recording_controller.dart';
 
 final meetingDraftStoreProvider = Provider<MeetingDraftStore>(
   (ref) => EncryptedMeetingDraftStore(
     ref.watch(secureSessionStoreProvider).readOrCreateOfflineProjectionSecret,
   ),
 );
+final meetingRecordingControllerProvider =
+    Provider.autoDispose<MeetingRecordingController?>((ref) {
+      final repository = ref.watch(meetingsRepositoryProvider);
+      if (repository is! RecordingMeetingsRepository) {
+        return null;
+      }
+      final controller = MeetingRecordingController(
+        repository,
+        ref.watch(meetingDraftStoreProvider),
+      );
+      ref.onDispose(controller.dispose);
+      return controller;
+    });
 final meetingCalendarControllerProvider =
     Provider.autoDispose<MeetingCalendarController?>((ref) {
       final repository = ref.watch(meetingsRepositoryProvider);
@@ -68,6 +82,9 @@ final meetingsRepositoryProvider = Provider.autoDispose<MeetingsRepository>((
         'meetings.calendar.get',
         'meetings.calendar.sync',
         'meetings.calendar.sync.get',
+        'meetings.recordings.review',
+        'meetings.recordings.process',
+        'meetings.recordings.processing.get',
       ])
         if (NativeContract.supportsOperation(operation)) operation,
     },

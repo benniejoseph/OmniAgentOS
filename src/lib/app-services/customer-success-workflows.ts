@@ -21,6 +21,7 @@ import {
 } from "@/lib/customer-success/workflow-contracts";
 import {
   CustomerSuccessWorkflowConflictError,
+  findCustomerSuccessWorkflowOutcomeReplay,
   getCustomerSuccessWorkflowRun,
   listCustomerSuccessWorkflowRuns,
   saveCustomerSuccessWorkflowOutcome,
@@ -36,6 +37,20 @@ import { createProject, createProjectTasks } from "@/lib/projects/store";
 import { redactSensitive } from "@/lib/security/context";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
+import {
+  CUSTOMER_SUCCESS_WORKFLOW_NATIVE_READ_CONTRACT,
+  customerSuccessWorkflowNativeStartRequestSchema, customerSuccessWorkflowNativeOutcomeRequestSchema,
+  type CustomerSuccessWorkflowNativeRequest,
+} from "@/lib/customer-success/workflow-mutation-contracts";
+import {
+  submitCustomerSuccessWorkflowNativeStart, submitCustomerSuccessWorkflowNativeOutcome,
+  getCustomerSuccessWorkflowNativeRun, readCustomerSuccessWorkflowNativeAcceptance,
+} from "@/lib/customer-success/workflow-native-store";
+import {
+  nativeCustomerWorkflowAcceptanceReadResponseForScopeSchema, nativeCustomerWorkflowMutationResponseForScopeSchema,
+  nativeCustomerWorkflowProjectProgressSchema, nativeCustomerWorkflowReadQuerySchema, nativeCustomerWorkflowRunReadResponseForScopeSchema,
+} from "@/lib/mobile/customer-workflow-mutation-contracts";
+import { canonicalAuthUserActorFromSecurityContext } from "@/lib/security/canonical-actor";
 
 const workspaceSelectionSchema = z.object({
   workspaceId: z.string().trim().min(1).max(240).optional(),
@@ -75,6 +90,121 @@ export const customerSuccessWorkflowOutcomeServiceInputSchema = workspaceSelecti
   artifactReceipts: z.array(artifactReceiptDraftSchema).max(20).default([]),
   nextAction: z.string().trim().min(1).max(500),
 }).strict();
+
+export const customerSuccessWorkflowNativeStartServiceInputSchema = customerSuccessWorkflowNativeStartRequestSchema.extend({ accountId: accountIdSchema }).strict();
+export const customerSuccessWorkflowNativeOutcomeServiceInputSchema = customerSuccessWorkflowNativeOutcomeRequestSchema.extend({ accountId: accountIdSchema }).strict();
+export const customerSuccessWorkflowNativeReadServiceInputSchema = nativeCustomerWorkflowReadQuerySchema.extend({ accountId: accountIdSchema, runId: runIdSchema }).strict();
+export const customerSuccessWorkflowNativeAcceptanceReadServiceInputSchema = customerSuccessWorkflowNativeReadServiceInputSchema.extend({ keySha256: sha256Schema }).strict();
+
+/** Native setup owns one atomic store admission; it never enters the legacy project/task loop. */
+export async function startCustomerSuccessWorkflowNativeService(caller: AppServiceCaller,
+  input: z.input<typeof customerSuccessWorkflowNativeStartServiceInputSchema>) {
+  const { accountId, ...request } = customerSuccessWorkflowNativeStartServiceInputSchema.parse(input);
+  return mutateNativeWorkflow(caller, accountId, request);
+}
+
+export async function recordCustomerSuccessWorkflowNativeOutcomeService(caller: AppServiceCaller,
+  input: z.input<typeof customerSuccessWorkflowNativeOutcomeServiceInputSchema>) {
+  const { accountId, ...request } = customerSuccessWorkflowNativeOutcomeServiceInputSchema.parse(input);
+  return mutateNativeWorkflow(caller, accountId, request);
+}
+
+async function mutateNativeWorkflow(caller: AppServiceCaller, accountId: string, request: CustomerSuccessWorkflowNativeRequest) {
+  const start = request.contract === "customer-success-workflow-start-request:1";
+  const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract(start
+    ? "app.customer_accounts.workflows.start" : "app.customer_accounts.workflows.outcome.record"));
+  const canonicalActorId = nativeWorkflowCaller(caller, { workspaceId: request.workspaceId,
+    causationId: start ? accountId : request.runId, operation: start ? "start" : "outcome" });
+  if (canonicalJsonSha256(redactSensitive(request)) !== canonicalJsonSha256(request)) {
+    throw new CustomerSuccessWorkflowConflictError("Workflow input contains sensitive material that cannot be saved as the exact reviewed request.");
+  }
+  const access = await workflowAccess(caller, request.workspaceId, "write");
+  requireNativeWorkflowAccess(access, canonicalActorId, request.workspaceId);
+  requireWorkflowWrite(access);
+  const authority = { ...mutationAuthority(caller, access, start ? "customer.success.workflow.start" : "customer.success.workflow.outcome"),
+    readableActorIds: [canonicalActorId] };
+  const committed = request.contract === "customer-success-workflow-start-request:1"
+    ? await submitCustomerSuccessWorkflowNativeStart({ authority, accountId, request })
+    : await submitCustomerSuccessWorkflowNativeOutcome({ authority, accountId, request });
+  const result = completeAppServiceCall(authorized, {
+    contract: CUSTOMER_SUCCESS_WORKFLOW_NATIVE_READ_CONTRACT, context: publicWorkflowContext(access),
+    currentAccount: committed.currentAccount, acceptance: committed.acceptance, replayed: committed.replayed,
+  }, { resourceCount: 1 });
+  nativeCustomerWorkflowMutationResponseForScopeSchema({ tenantId: caller.context.tenantId, workspaceId: request.workspaceId,
+    canonicalActorId, requestActorId: caller.context.actorId, role: caller.context.role, accountId,
+    executionScope: caller.executionScope!, idempotencyKey: caller.idempotencyKey!, request,
+  }).parse({ ...result.data, serviceReceipt: result.receipt });
+  return result;
+}
+
+export async function readCustomerSuccessWorkflowNativeAcceptanceService(caller: AppServiceCaller,
+  input: z.input<typeof customerSuccessWorkflowNativeAcceptanceReadServiceInputSchema>) {
+  const value = customerSuccessWorkflowNativeAcceptanceReadServiceInputSchema.parse(input);
+  const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.customer_accounts.workflows.mutations.show"));
+  const canonicalActorId = nativeWorkflowCaller(caller);
+  const access = await workflowAccess(caller, value.workspaceId, "read");
+  requireNativeWorkflowAccess(access, canonicalActorId, value.workspaceId);
+  const current = await readCustomerSuccessWorkflowNativeAcceptance({ ...readAuthority(caller, access), readableActorIds: [canonicalActorId] }, value);
+  if (!current) throw new CustomerSuccessWorkflowConflictError("Current owned Account workflow was not found.");
+  const result = completeAppServiceCall(authorized, { contract: CUSTOMER_SUCCESS_WORKFLOW_NATIVE_READ_CONTRACT,
+    context: publicWorkflowContext(access), currentAccount: current.currentAccount, acceptance: current.acceptance,
+  }, { resourceCount: current.acceptance ? 1 : 0 });
+  nativeCustomerWorkflowAcceptanceReadResponseForScopeSchema({ ...value, tenantId: caller.context.tenantId,
+    canonicalActorId, requestActorId: caller.context.actorId, role: caller.context.role,
+  }).parse({ ...result.data, serviceReceipt: result.receipt });
+  return result;
+}
+
+export async function showCustomerSuccessWorkflowNativeService(caller: AppServiceCaller,
+  input: z.input<typeof customerSuccessWorkflowNativeReadServiceInputSchema>) {
+  const value = customerSuccessWorkflowNativeReadServiceInputSchema.parse(input);
+  const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.customer_accounts.workflows.show"));
+  const canonicalActorId = nativeWorkflowCaller(caller);
+  const access = await workflowAccess(caller, value.workspaceId, "read");
+  requireNativeWorkflowAccess(access, canonicalActorId, value.workspaceId);
+  const current = await getCustomerSuccessWorkflowNativeRun({ ...readAuthority(caller, access), readableActorIds: [canonicalActorId] }, value);
+  if (!current) throw new CustomerSuccessWorkflowConflictError("Current owned Account workflow was not found.");
+  const candidate = getCustomerSuccessWorkflowDefinition(current.run.workflowId);
+  const definition = candidate.definitionSha256 === current.run.definitionSha256 ? candidate : null;
+  let projectProgress: z.infer<typeof nativeCustomerWorkflowProjectProgressSchema> = { state: "unavailable" };
+  try {
+    const project = (await showProjectService(caller, { projectId: current.run.projectId, taskLimit: 100, artifactLimit: 100 })).data.project;
+    if (project) {
+      const mapped = new Set(current.run.projectTaskIds.map((task) => task.projectTaskId));
+      const progress = nativeCustomerWorkflowProjectProgressSchema.safeParse({
+        state: "available", projectId: project.id, status: project.status, autonomyMode: project.autonomyMode, executionStatus: project.executionStatus,
+        tasks: project.tasks.filter((task) => mapped.has(task.id)).map((task) => ({ id: task.id, title: task.title, status: task.status })),
+        artifacts: project.artifacts.map((artifact) => ({ id: artifact.id, title: artifact.title, status: artifact.status, evidenceRefs: artifact.evidenceRefs })),
+        artifactsMayBeIncomplete: project.artifacts.length >= 100,
+      });
+      if (progress.success && Buffer.byteLength(JSON.stringify(progress.data), "utf8") <= 512_000) projectProgress = progress.data;
+    }
+  } catch { /* Current project progress cannot erase the immutable workflow or its acceptance. */ }
+  const result = completeAppServiceCall(authorized, { contract: CUSTOMER_SUCCESS_WORKFLOW_NATIVE_READ_CONTRACT,
+    context: publicWorkflowContext(access), currentAccount: current.currentAccount, run: current.run,
+    definition, definitionAvailability: definition ? "available" as const : "unavailable" as const, projectProgress,
+  }, { resourceCount: 1 });
+  nativeCustomerWorkflowRunReadResponseForScopeSchema({ ...value, tenantId: caller.context.tenantId,
+    canonicalActorId, requestActorId: caller.context.actorId, role: caller.context.role,
+  }).parse({ ...result.data, serviceReceipt: result.receipt });
+  return result;
+}
+
+function nativeWorkflowCaller(caller: AppServiceCaller, mutation?: { workspaceId: string; causationId: string; operation: "start" | "outcome" }) {
+  const canonical = canonicalAuthUserActorFromSecurityContext(caller.context), scope = caller.executionScope;
+  if (!canonical || (mutation ? !scope || !caller.idempotencyKey ||
+    scope.tenantId !== caller.context.tenantId || scope.initiatingActorId !== caller.context.actorId ||
+    scope.executingPrincipalType !== "user" || scope.executingPrincipalId !== caller.context.actorId ||
+    scope.workspaceId !== mutation.workspaceId || scope.projectId !== null || scope.missionId !== null ||
+    scope.delegationId !== null || scope.contextGrantIds.length > 0 || scope.capabilityGrantIds.length > 0 ||
+    scope.causationId !== mutation.causationId || scope.purpose !== `api.customer-success-workflow.${mutation.operation}`
+    : scope !== undefined || caller.idempotencyKey !== undefined)) throw new CustomerAccountWriteDeniedError();
+  return canonical.actorId;
+}
+function requireNativeWorkflowAccess(access: RequestSharedMemoryAccessV1, canonicalActorId: string, workspaceId: string) {
+  if (access.actorBinding.canonicalActorId !== canonicalActorId || access.authority.workspaceId !== workspaceId ||
+    access.authority.initiatingActorId !== canonicalActorId) throw new CustomerAccountWriteDeniedError();
+}
 
 export async function listCustomerSuccessWorkflowsService(
   caller: AppServiceCaller,
@@ -253,6 +383,21 @@ export async function recordCustomerSuccessWorkflowOutcomeService(
   );
   const access = await workflowAccess(caller, value.workspaceId, "write");
   requireWorkflowWrite(access);
+  const authority = mutationAuthority(caller, access, "customer.success.workflow.outcome");
+  const replay = await findCustomerSuccessWorkflowOutcomeReplay({
+    authority, accountId: value.accountId, runId: value.runId, expectedRevision: value.expectedRevision,
+    status: value.status, summary: value.summary, artifactReceipts: value.artifactReceipts, nextAction: value.nextAction,
+  });
+  if (replay) {
+    // The immutable acceptance precedes fresh artifact validation and timestamp
+    // creation. Legacy callers still receive their established display shape.
+    const definition = getCustomerSuccessWorkflowDefinition(replay.workflowId);
+    if (definition.definitionSha256 !== replay.definitionSha256) {
+      throw new CustomerSuccessWorkflowConflictError("The exact workflow definition is unavailable in this release.");
+    }
+    const project = await requireProject(caller, replay.projectId);
+    return completeAppServiceCall(authorized, { context: publicWorkflowContext(access), definition, run: replay, project });
+  }
   const current = await getCustomerSuccessWorkflowRun(
     readAuthority(caller, access),
     value.runId,
@@ -278,7 +423,7 @@ export async function recordCustomerSuccessWorkflowOutcomeService(
   }
   validateCompletedWorkflowArtifacts({ definition, outcome });
   const run = await saveCustomerSuccessWorkflowOutcome({
-    authority: mutationAuthority(caller, access, "customer.success.workflow.outcome"),
+    authority,
     runId: current.runId,
     expectedRevision: value.expectedRevision,
     outcome,

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { requireLegacyCaptureProcessing, withCaptureNativeProcessingFence } from "@/lib/capture/native-processing-fence";
 import {
   captureMediaProcessingRequestSchema,
   captureSegmentMediaTranscriptSchema,
@@ -74,6 +75,8 @@ export type CaptureMediaKnowledgeEnqueuer = (input: {
   recording: CaptureRecordingDetail;
   output: CaptureMediaOutput;
   executionScope: ExecutionScope;
+  nativeAcceptanceId?: string;
+  nativeParentJobId?: string;
 }) => Promise<{ id: string }>;
 
 export async function enqueueCaptureSegmentTranscriptionJob(input: {
@@ -84,6 +87,7 @@ export async function enqueueCaptureSegmentTranscriptionJob(input: {
   languageHints: string[];
   executionScope: ExecutionScope;
 }) {
+  return withCaptureNativeProcessingFence(input, async () => {
   requireExecutionOwner(input.tenantId, input.actorId, input.executionScope);
   const request = segmentJobRequestSchema.parse({
     schemaVersion: 1,
@@ -122,6 +126,7 @@ export async function enqueueCaptureSegmentTranscriptionJob(input: {
     return requeued || job;
   }
   return job;
+  });
 }
 
 export async function enqueueCaptureMediaProcessingJob(input: {
@@ -131,6 +136,7 @@ export async function enqueueCaptureMediaProcessingJob(input: {
   request: CaptureMediaProcessingRequest;
   executionScope: ExecutionScope;
 }) {
+  return withCaptureNativeProcessingFence({ ...input, recordingId: input.recording.id }, async () => {
   requireExecutionOwner(input.tenantId, input.actorId, input.executionScope);
   const processing = captureMediaProcessingRequestSchema.parse(input.request);
   if (
@@ -174,13 +180,19 @@ export async function enqueueCaptureMediaProcessingJob(input: {
     return requeued || job;
   }
   return job;
+  });
 }
 
 export async function executeCaptureMediaSegmentJob(
   job: OperationJobRecord,
   abortSignal: AbortSignal,
 ) {
+  if (job.payload.nativeAcceptanceId) {
+    const { executeNativeMeetingRecordingSegment } = await import("@/lib/capture/meeting-recording-native-jobs");
+    return executeNativeMeetingRecordingSegment(job, abortSignal);
+  }
   const request = segmentJobRequestSchema.parse(job.payload.request);
+  await requireLegacyCaptureProcessing(request.recordingId, { tenantId: job.tenantId, actorId: request.actorId });
   const executionScope = backgroundExecutionScope(job, request.actorId,
     "capture.media.segment.transcribe.background");
   const recording = await getCaptureRecording(request.recordingId, {
@@ -278,7 +290,12 @@ export async function executeCaptureMediaProcessingJob(
   abortSignal: AbortSignal,
   enqueueKnowledge: CaptureMediaKnowledgeEnqueuer,
 ): Promise<Record<string, unknown> | CaptureMediaDeferredResult> {
+  if (job.payload.nativeAcceptanceId) {
+    const { executeNativeMeetingRecordingProcessing } = await import("@/lib/capture/meeting-recording-native-jobs");
+    return executeNativeMeetingRecordingProcessing(job, abortSignal, enqueueKnowledge);
+  }
   const request = finalizationJobRequestSchema.parse(job.payload.request);
+  await requireLegacyCaptureProcessing(request.processing.recordingId, { tenantId: job.tenantId, actorId: request.actorId });
   const executionScope = backgroundExecutionScope(job, request.actorId,
     "capture.media.recording.process.background");
   const recording = await getCaptureRecording(request.processing.recordingId, {
@@ -447,7 +464,7 @@ export function renderCaptureMediaKnowledge(output: CaptureMediaOutput) {
   ].join("\n\n").slice(0, 900_000);
 }
 
-function recordingTurns(
+export function recordingTurns(
   recording: CaptureRecordingDetail,
   request: CaptureMediaProcessingRequest,
 ) {

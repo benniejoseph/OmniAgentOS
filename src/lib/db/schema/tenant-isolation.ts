@@ -242,6 +242,13 @@ export const tenantPolicyTables = [
  * alone: another permissive policy would admit rows their policies refuse.
  */
 export const migrationScopedTenantTables = [
+  "omni_knowledge_native_cognition_builds",
+  "omni_knowledge_native_cognition_effects",
+  "omni_native_private_memory_actions",
+  "omni_salesforce_native_actions",
+  "omni_meeting_recording_processing_acceptances",
+  "omni_meeting_recording_processing_effects",
+  "omni_agent_skill_native_mutations",
   "omni_meeting_calendar_sync_acceptances",
   "omni_memory_lifecycle_mutations",
   "omni_meeting_commitment_resolution_intents",

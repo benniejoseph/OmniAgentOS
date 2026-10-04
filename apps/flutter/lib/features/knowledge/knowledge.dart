@@ -7,6 +7,11 @@ import 'knowledge_consent_contracts.dart';
 import 'knowledge_mutations.dart';
 import 'knowledge_recovery_store.dart';
 import 'knowledge_review_contracts.dart';
+import 'knowledge_promotion_contracts.dart';
+import 'knowledge_private_action_contracts.dart';
+import 'knowledge_graph_contracts.dart';
+import 'knowledge_maintenance_contracts.dart';
+import 'knowledge_build_contracts.dart';
 export 'knowledge_view.dart';
 
 typedef Json = Map<String, dynamic>;
@@ -329,16 +334,98 @@ class KnowledgeController extends ChangeNotifier {
       : null;
   bool get consentAvailable =>
       available && consentRepository?.supportsConsent == true;
+  KnowledgePromotionRepository? get promotionRepository =>
+      repository is KnowledgePromotionRepository
+      ? repository as KnowledgePromotionRepository
+      : null;
+  bool get promotionsAvailable =>
+      available && promotionRepository?.supportsPromotions == true;
+  KnowledgePrivateActionRepository? get privateActionRepository =>
+      repository is KnowledgePrivateActionRepository
+      ? repository as KnowledgePrivateActionRepository
+      : null;
+  bool get sourceMapsAvailable =>
+      available && privateActionRepository?.supportsSourceMaps == true;
+  bool get canRecoverSourceMap =>
+      _canRecoverReadOnlyChange(MemoryChange.sourceMap);
+  bool get sourceDeletionAvailable =>
+      available && privateActionRepository?.supportsSourceDeletion == true;
+  KnowledgeGraphRepository? get graphRepository =>
+      repository is KnowledgeGraphRepository
+      ? repository as KnowledgeGraphRepository
+      : null;
+  bool get advancedGraphAvailable =>
+      available && graphRepository?.supportsAdvancedGraph == true;
+  Future<KnowledgeGraphRead> inspectGraph(
+    String view,
+    KnowledgeJson query,
+  ) async {
+    _requireAvailable();
+    memoryRequire(
+      advancedGraphAvailable,
+      'Advanced private graph reads are unavailable.',
+    );
+    final generation = _generation;
+    final result = await graphRepository!.readGraph(
+      view,
+      validatePrivateGraphQuery(view, query),
+    );
+    _requireAvailable();
+    memoryRequire(generation == _generation, 'Private graph access changed.');
+    return result;
+  }
+
+  bool get canRecoverSourceDeletion =>
+      _canRecoverReadOnlyChange(MemoryChange.sourceDelete);
+  KnowledgeMaintenanceRepository? get maintenanceRepository =>
+      repository is KnowledgeMaintenanceRepository
+      ? repository as KnowledgeMaintenanceRepository
+      : null;
+  KnowledgeBuildRepository? get buildRepository =>
+      repository is KnowledgeBuildRepository
+      ? repository as KnowledgeBuildRepository
+      : null;
+  bool maintenanceAvailable(String kind) =>
+      available && maintenanceRepository?.supportsMaintenance(kind) == true;
+  bool get buildsAvailable =>
+      available && buildRepository?.supportsBuilds == true;
+  bool canRecoverPrivateOperation(MemoryChange kind) =>
+      const {
+        MemoryChange.maintenance,
+        MemoryChange.graphRebuild,
+        MemoryChange.cognitionBuild,
+      }.contains(kind) &&
+      _canRecoverReadOnlyChange(kind);
+  Future<void> recoverPrivateOperation(MemoryChange kind) async {
+    memoryRequire(
+      const {
+        MemoryChange.maintenance,
+        MemoryChange.graphRebuild,
+        MemoryChange.cognitionBuild,
+      }.contains(kind),
+    );
+    await _recoverReadOnlyChange(kind);
+  }
+
   bool get canRecoverReview => _canRecoverReadOnlyChange(MemoryChange.review);
   bool get canRecoverConsent => _canRecoverReadOnlyChange(MemoryChange.consent);
+  bool get canRecoverPromotion =>
+      _canRecoverReadOnlyChange(MemoryChange.promotion);
   bool _canRecoverReadOnlyChange(MemoryChange kind) {
     final sent = pendingChange, owner = mutationRepository?.access.owner;
     if (sent == null || owner == null) {
       return false;
     }
-    return (kind == MemoryChange.review
-            ? reviewsAvailable
-            : consentAvailable) &&
+    return (switch (kind) {
+          MemoryChange.review => reviewsAvailable,
+          MemoryChange.promotion => promotionsAvailable,
+          MemoryChange.sourceMap => sourceMapsAvailable,
+          MemoryChange.sourceDelete => sourceDeletionAvailable,
+          MemoryChange.maintenance => maintenanceAvailable('maintenance'),
+          MemoryChange.graphRebuild => maintenanceAvailable('graph'),
+          MemoryChange.cognitionBuild => buildsAvailable,
+          _ => consentAvailable,
+        }) &&
         recoveryReady &&
         !recoveryBusy &&
         !changing &&
@@ -659,10 +746,430 @@ class KnowledgeController extends ChangeNotifier {
     }
   }
 
+  Future<List<MemoryPromotionSummary>> promotions({
+    String status = 'pending',
+    int limit = 25,
+  }) async {
+    _requireAvailable();
+    memoryRequire(
+      promotionsAvailable,
+      'Private promotion reviews are unavailable. Check access or update the app.',
+    );
+    final result = await promotionRepository!.listPromotions(
+      status: status,
+      limit: limit,
+    );
+    _requireAvailable();
+    return result;
+  }
+
+  Future<MemoryPromotionRead> inspectPromotion(String id) async {
+    _requireAvailable();
+    memoryRequire(
+      promotionsAvailable,
+      'Private promotion reviews are unavailable. Check access or update the app.',
+    );
+    final result = await promotionRepository!.readPromotion(memoryReviewId(id));
+    _requireAvailable();
+    return result;
+  }
+
+  Future<void> decidePromotion(
+    MemoryPromotionReview reviewed,
+    String decision, {
+    required bool Function() isReviewCurrent,
+  }) async {
+    memoryRequire(
+      promotionsAvailable &&
+          supportsChange(MemoryChange.promotion) &&
+          pendingChange == null &&
+          !changing &&
+          reviewed.status == 'pending' &&
+          reviewed.token != null &&
+          reviewed.allowedDecisions.contains(decision) &&
+          isReviewCurrent(),
+      'Read the exact promotion sources and resolve any pending submission before deciding.',
+    );
+    final owner = mutationRepository!.access.owner!,
+        generation = ++_changeGeneration;
+    bool owned() =>
+        available &&
+        _changeGeneration == generation &&
+        mutationRepository?.access.owner?.key == owner.key &&
+        pendingChange == null;
+    bool current() => owned() && isReviewCurrent();
+    changing = true;
+    changeError = null;
+    _publish();
+    try {
+      final exact = await promotionRepository!.readPromotion(reviewed.id);
+      if (!current()) {
+        return;
+      }
+      memoryRequire(
+        exact.review.token != null &&
+            exact.review.allowedDecisions.contains(decision) &&
+            memoryCanonical(exact.review.raw) == memoryCanonical(reviewed.raw),
+        'The promotion sources or policy changed. Refresh and review them before deciding.',
+      );
+      final sent = MemorySubmission(
+        kind: MemoryChange.promotion,
+        owner: owner,
+        id: reviewed.id,
+        body: reviewed.decisionBody(decision),
+        promotionEvidence: reviewed.evidence,
+      );
+      pendingChange = sent;
+      changing = false;
+      await _sendChange(sent, isAdmitted: isReviewCurrent);
+    } catch (failure) {
+      if (owned()) {
+        changeError = failure;
+      }
+      rethrow;
+    } finally {
+      if (owned() && changing) {
+        changing = false;
+        _publish();
+      }
+    }
+  }
+
+  Future<List<KnowledgeSourceMap>> sourceMaps({
+    String status = 'pending_review',
+    int limit = 25,
+  }) async {
+    _requireAvailable();
+    memoryRequire(
+      sourceMapsAvailable,
+      'Private source-map reviews are unavailable.',
+    );
+    final rows = await privateActionRepository!.listSourceMaps(
+      status: status,
+      limit: limit,
+    );
+    _requireAvailable();
+    return rows;
+  }
+
+  Future<KnowledgeSourceMapRead> inspectSourceMap(String id) async {
+    _requireAvailable();
+    memoryRequire(
+      sourceMapsAvailable,
+      'Private source-map reviews are unavailable.',
+    );
+    final result = await privateActionRepository!.readSourceMap(
+      sourceMapId(id),
+    );
+    _requireAvailable();
+    return result;
+  }
+
+  Future<void> decideSourceMap(
+    KnowledgeSourceMap reviewed,
+    String decision, {
+    required bool Function() isReviewCurrent,
+  }) async {
+    memoryRequire(
+      sourceMapsAvailable &&
+          supportsChange(MemoryChange.sourceMap) &&
+          pendingChange == null &&
+          !changing &&
+          reviewed.pin != null &&
+          reviewed.allowed.contains(decision) &&
+          isReviewCurrent(),
+      'Read the exact source map and resolve pending requests before deciding.',
+    );
+    final owner = mutationRepository!.access.owner!,
+        generation = ++_changeGeneration;
+    bool owned() =>
+        available &&
+        _changeGeneration == generation &&
+        mutationRepository?.access.owner?.key == owner.key &&
+        pendingChange == null;
+    bool current() => owned() && isReviewCurrent();
+    changing = true;
+    changeError = null;
+    _publish();
+    try {
+      final exact = await privateActionRepository!.readSourceMap(reviewed.id);
+      if (!current()) {
+        return;
+      }
+      memoryRequire(
+        exact.review.pin != null &&
+            exact.review.allowed.contains(decision) &&
+            privateActionSame(exact.review.raw, reviewed.raw),
+        'Source content, retention, or review authority changed. Refresh and review it again.',
+      );
+      final sent = MemorySubmission(
+        kind: MemoryChange.sourceMap,
+        owner: owner,
+        id: reviewed.id,
+        body: reviewed.decisionBody(decision),
+      );
+      pendingChange = sent;
+      changing = false;
+      await _sendChange(sent, isAdmitted: isReviewCurrent);
+    } catch (failure) {
+      if (owned()) {
+        changeError = failure;
+      }
+      rethrow;
+    } finally {
+      if (owned() && changing) {
+        changing = false;
+        _publish();
+      }
+    }
+  }
+
+  Future<KnowledgeSourceDeletionReview> inspectSourceDeletion(
+    String kind,
+  ) async {
+    _requireAvailable();
+    memoryRequire(
+      sourceDeletionAvailable,
+      'Local source deletion review is unavailable.',
+    );
+    final result = await privateActionRepository!.reviewSourceDeletion(
+      privateSourceKind(kind),
+    );
+    _requireAvailable();
+    return result;
+  }
+
+  Future<void> deleteReviewedSource(
+    KnowledgeSourceDeletionReview reviewed, {
+    required bool Function() isReviewCurrent,
+  }) async {
+    memoryRequire(
+      sourceDeletionAvailable &&
+          supportsChange(MemoryChange.sourceDelete) &&
+          pendingChange == null &&
+          !changing &&
+          reviewed.eligible &&
+          reviewed.pin != null &&
+          isReviewCurrent(),
+      'Read the complete local source manifest before deleting.',
+    );
+    final owner = mutationRepository!.access.owner!,
+        generation = ++_changeGeneration;
+    bool owned() =>
+        available &&
+        _changeGeneration == generation &&
+        mutationRepository?.access.owner?.key == owner.key &&
+        pendingChange == null;
+    bool current() => owned() && isReviewCurrent();
+    changing = true;
+    changeError = null;
+    _publish();
+    try {
+      final exact = await privateActionRepository!.reviewSourceDeletion(
+            reviewed.kind,
+          ),
+          target = await sourceDeletionTarget(reviewed.kind);
+      if (!current()) {
+        return;
+      }
+      memoryRequire(
+        exact.eligible && privateActionSame(exact.review, reviewed.review),
+        'Local source content or deletion impact changed. Review the refreshed manifest.',
+      );
+      final sent = MemorySubmission(
+        kind: MemoryChange.sourceDelete,
+        owner: owner,
+        id: target,
+        body: reviewed.decisionBody,
+      );
+      pendingChange = sent;
+      changing = false;
+      await _sendChange(sent, isAdmitted: isReviewCurrent);
+    } catch (failure) {
+      if (owned()) {
+        changeError = failure;
+      }
+      rethrow;
+    } finally {
+      if (owned() && changing) {
+        changing = false;
+        _publish();
+      }
+    }
+  }
+
   /// These uncertain decisions are never PATCHed again. Only an authenticated
   /// exact read with the original raw-key hash can establish acceptance.
   Future<void> recoverReview() => _recoverReadOnlyChange(MemoryChange.review);
   Future<void> recoverConsent() => _recoverReadOnlyChange(MemoryChange.consent);
+  Future<void> recoverPromotion() =>
+      _recoverReadOnlyChange(MemoryChange.promotion);
+  Future<void> recoverSourceMap() =>
+      _recoverReadOnlyChange(MemoryChange.sourceMap);
+  Future<void> recoverSourceDeletion() =>
+      _recoverReadOnlyChange(MemoryChange.sourceDelete);
+  Future<KnowledgeMaintenanceReview> inspectMaintenance(String kind) async {
+    _requireAvailable();
+    memoryRequire(maintenanceAvailable(kind));
+    final generation = _generation;
+    final result = await maintenanceRepository!.reviewMaintenance(kind);
+    _requireAvailable();
+    memoryRequire(generation == _generation);
+    return result;
+  }
+
+  Future<KnowledgeBuildReview> inspectBuild(String documentId) async {
+    _requireAvailable();
+    memoryRequire(buildsAvailable);
+    final generation = _generation;
+    final result = await buildRepository!.reviewBuild(
+      privateActionId(documentId),
+    );
+    _requireAvailable();
+    memoryRequire(generation == _generation);
+    return result;
+  }
+
+  Future<KnowledgeBuildRead> inspectBuildProcessing(
+    MemoryAcceptance accepted,
+  ) async {
+    _requireAvailable();
+    memoryRequire(
+      buildsAvailable &&
+          accepted.submission.kind == MemoryChange.cognitionBuild,
+    );
+    final owner = mutationRepository!.access.owner!,
+        sent = accepted.submission,
+        generation = _generation;
+    memoryRequire(
+      sent.owner.tenantId == owner.tenantId &&
+          sent.owner.userId == owner.userId &&
+          sent.owner.actorId == owner.actorId &&
+          sent.owner.apiBaseUrl == owner.apiBaseUrl,
+    );
+    final keyHash = await privateActionKey(sent);
+    final read = await buildRepository!.readBuild(sent.id!, keyHash);
+    final result = await KnowledgeBuildRead.parse(
+      read.raw,
+      owner,
+      sent.id!,
+      keyHash: keyHash,
+      sent: sent,
+    );
+    memoryRequire(
+      result.acceptance != null &&
+          privateActionSame(result.acceptance, accepted.raw['acceptance']),
+      'This read cannot confirm the saved build. Its accepted receipt remains valid.',
+    );
+    _requireAvailable();
+    memoryRequire(
+      generation == _generation &&
+          mutationRepository?.access.owner?.key == owner.key,
+    );
+    return result;
+  }
+
+  Future<void> runReviewedMaintenance(
+    KnowledgeMaintenanceReview reviewed, {
+    required bool Function() isReviewCurrent,
+  }) async {
+    final kind = reviewed.kind == 'maintenance'
+        ? MemoryChange.maintenance
+        : MemoryChange.graphRebuild;
+    memoryRequire(
+      reviewed.eligible &&
+          reviewed.pin != null &&
+          maintenanceAvailable(reviewed.kind),
+    );
+    await _preparePrivateOperation(
+      kind,
+      isReviewCurrent: isReviewCurrent,
+      prepare: (owner) async {
+        final exact = await maintenanceRepository!.reviewMaintenance(
+          reviewed.kind,
+        );
+        memoryRequire(
+          exact.eligible && privateActionSame(exact.review, reviewed.review),
+          'Private Memory inventory or policy changed. Review the current plan again.',
+        );
+        return MemorySubmission(
+          kind: kind,
+          owner: owner,
+          id: await deterministicTarget(owner, reviewed.kind),
+          body: reviewed.decisionBody,
+        );
+      },
+    );
+  }
+
+  Future<void> buildReviewedDocument(
+    KnowledgeBuildReview reviewed, {
+    required bool Function() isReviewCurrent,
+  }) async {
+    memoryRequire(reviewed.eligible && buildsAvailable);
+    await _preparePrivateOperation(
+      MemoryChange.cognitionBuild,
+      isReviewCurrent: isReviewCurrent,
+      prepare: (owner) async {
+        final exact = await buildRepository!.reviewBuild(reviewed.id);
+        memoryRequire(
+          exact.eligible && privateActionSame(exact.review, reviewed.review),
+          'The source, model or build plan changed. Review the current document again.',
+        );
+        return MemorySubmission(
+          kind: MemoryChange.cognitionBuild,
+          owner: owner,
+          id: reviewed.id,
+          body: reviewed.decisionBody,
+        );
+      },
+    );
+  }
+
+  Future<void> _preparePrivateOperation(
+    MemoryChange kind, {
+    required bool Function() isReviewCurrent,
+    required Future<MemorySubmission> Function(KnowledgeOwner owner) prepare,
+  }) async {
+    memoryRequire(
+      supportsChange(kind) &&
+          pendingChange == null &&
+          !changing &&
+          isReviewCurrent(),
+      'Review the current action and resolve any held submission first.',
+    );
+    final owner = mutationRepository!.access.owner!,
+        generation = ++_changeGeneration;
+    bool owned() =>
+        available &&
+        _changeGeneration == generation &&
+        mutationRepository?.access.owner?.key == owner.key &&
+        pendingChange == null;
+    bool current() => owned() && isReviewCurrent();
+    changing = true;
+    changeError = null;
+    _publish();
+    try {
+      final sent = await prepare(owner);
+      if (!current()) {
+        return;
+      }
+      pendingChange = sent;
+      changing = false;
+      await _sendChange(sent, isAdmitted: isReviewCurrent);
+    } catch (failure) {
+      if (owned()) {
+        changeError = failure;
+      }
+      rethrow;
+    } finally {
+      if (owned() && changing) {
+        changing = false;
+        _publish();
+      }
+    }
+  }
+
   Future<void> _recoverReadOnlyChange(MemoryChange kind) async {
     if (!_canRecoverReadOnlyChange(kind)) {
       return;
@@ -677,12 +1184,59 @@ class KnowledgeController extends ChangeNotifier {
     changeError = null;
     _publish();
     try {
-      final keyHash = await memoryShaText(sent.key);
+      final keyHash =
+          const {
+            MemoryChange.sourceMap,
+            MemoryChange.sourceDelete,
+            MemoryChange.maintenance,
+            MemoryChange.graphRebuild,
+            MemoryChange.cognitionBuild,
+          }.contains(kind)
+          ? await privateActionKey(sent)
+          : await memoryShaText(sent.key);
       if (!current()) {
         return;
       }
       late final KnowledgeJson raw;
-      if (kind == MemoryChange.review) {
+      if (kind == MemoryChange.maintenance ||
+          kind == MemoryChange.graphRebuild) {
+        final read = await maintenanceRepository!.readMaintenance(
+          kind == MemoryChange.maintenance ? 'maintenance' : 'graph',
+          keyHash,
+        );
+        memoryRequire(
+          read.acceptance != null,
+          'No matching acceptance is visible. The saved private action remains held and was not repeated.',
+        );
+        raw = read.raw;
+      } else if (kind == MemoryChange.cognitionBuild) {
+        final read = await buildRepository!.readBuild(sent.id!, keyHash);
+        memoryRequire(
+          read.acceptance != null,
+          'No matching build acceptance is visible. Provider work may already have started; the saved request remains held and was not repeated.',
+        );
+        raw = read.raw;
+      } else if (kind == MemoryChange.sourceDelete) {
+        final read = await privateActionRepository!.readSourceDeletion(
+          privateSourceKind((sent.body['review'] as Map)['sourceKind']),
+          keyHash,
+        );
+        memoryRequire(
+          read.acceptance != null,
+          'No matching local deletion acceptance is visible. The saved request remains held; it was not repeated.',
+        );
+        raw = read.raw;
+      } else if (kind == MemoryChange.sourceMap) {
+        final read = await privateActionRepository!.readSourceMap(
+          sent.id!,
+          keySha256: keyHash,
+        );
+        memoryRequire(
+          read.acceptance != null,
+          'No matching source-map acceptance is visible. The saved decision remains held; it was not sent again.',
+        );
+        raw = read.raw;
+      } else if (kind == MemoryChange.review) {
         final read = await reviewRepository!.readReview(
           sent.id!,
           acceptanceKeySha256: keyHash,
@@ -692,6 +1246,16 @@ class KnowledgeController extends ChangeNotifier {
           read.review.status == 'resolved'
               ? 'A resolution is visible, but no matching native receipt confirms this submitted decision. The original request remains held.'
               : 'This review is still pending and has no matching acceptance. The submitted outcome remains unconfirmed; no decision was resent.',
+        );
+        raw = read.raw;
+      } else if (kind == MemoryChange.promotion) {
+        final read = await promotionRepository!.readPromotion(
+          sent.id!,
+          acceptanceKeySha256: keyHash,
+        );
+        memoryRequire(
+          read.acceptance != null,
+          'No matching receipt confirms this promotion decision. The saved request remains held; no decision was resent.',
         );
         raw = read.raw;
       } else {
@@ -876,6 +1440,12 @@ class KnowledgeController extends ChangeNotifier {
         final status = failure is ApiException ? failure.statusCode : null;
         if (sent.kind != MemoryChange.review &&
             sent.kind != MemoryChange.consent &&
+            sent.kind != MemoryChange.promotion &&
+            sent.kind != MemoryChange.sourceMap &&
+            sent.kind != MemoryChange.sourceDelete &&
+            sent.kind != MemoryChange.maintenance &&
+            sent.kind != MemoryChange.graphRebuild &&
+            sent.kind != MemoryChange.cognitionBuild &&
             !recovery &&
             (const {400, 413, 415}.contains(status) ||
                 sent.replayable &&

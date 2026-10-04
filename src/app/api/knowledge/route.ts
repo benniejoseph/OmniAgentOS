@@ -33,6 +33,8 @@ async function DELETEHandler(request: Request) {
   } catch (error) {
     return forbiddenResponse(error);
   }
+  if (context.source === "mobile") return Response.json({ error: "Native source deletion requires the exact reviewed local source contract.",
+    code: "knowledge_source_contract_required" }, { status: 400, headers: privateNoStoreHeaders });
   const parsed = knowledgeSourceDeleteServiceInputSchema.safeParse({
     source: new URL(request.url).searchParams.get("source")?.trim(),
   });

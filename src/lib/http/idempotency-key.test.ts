@@ -31,6 +31,7 @@ const UNKEYED_ROUTE_EXPORTS = new Set([
 // also verify missing keys and mobile legacy-envelope rejection behavior.
 const CONTRACT_KEYED_ROUTE_EXPORTS = new Set([
   "src/app/api/memory/reconciliation/route.ts PATCH",
+  "src/app/api/capture/recordings/[id]/complete/route.ts POST",
 ]);
 
 function request(method: string, headers: Record<string, string> = {}) {

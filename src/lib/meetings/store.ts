@@ -580,12 +580,21 @@ async function readCaptureRecordingView(
   const row = rows[0];
   if (!row) return unavailableLinkedSource(link);
   const mediaRows = await sql`
-    SELECT *
-    FROM omni_capture_media_heads
-    WHERE tenant_id = ${authority.tenantId}
-      AND owner_actor_id = ${String(row.actor_id)}
-      AND recording_id = ${link.sourceId}
-      AND meeting_id = ${meetingId}
+    SELECT head.*
+    FROM omni_capture_media_heads head
+    WHERE head.tenant_id = ${authority.tenantId}
+      AND head.recording_id = ${link.sourceId}
+      AND head.meeting_id = ${meetingId}
+      AND (head.owner_actor_id = ${String(row.actor_id)} OR (
+        head.owner_actor_id = ${authority.canonicalActorId} AND EXISTS (
+          SELECT 1 FROM omni_meeting_recording_processing_acceptances accepted
+          WHERE accepted.tenant_id=head.tenant_id AND accepted.workspace_id=${authority.workspaceId}
+            AND accepted.meeting_id=head.meeting_id AND accepted.recording_id=head.recording_id
+            AND accepted.owner_actor_id=${String(row.actor_id)} AND accepted.canonical_actor_id=head.owner_actor_id
+            AND accepted.operation_job_id=head.operation_job_id
+            AND public.omni_native_private_memory_owner_v1(accepted.tenant_id,accepted.owner_actor_id,accepted.canonical_actor_id,FALSE)
+        )
+      ))
     LIMIT 1
   `;
   const media = mediaRows[0]
@@ -703,7 +712,7 @@ function meetingProcessedMediaView(
   });
 }
 
-function captureRecordingRevisionBody(tenantId: string, row: SqlRow) {
+export function captureRecordingRevisionBody(tenantId: string, row: SqlRow) {
   return {
     kind: "capture_recording",
     tenantId,

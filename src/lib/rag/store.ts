@@ -1706,15 +1706,17 @@ export async function getActorOwnedKnowledgeForCognition(input: {
   tenantId: string;
   actorId: string;
   documentId: string;
+  sql?: RagSqlClient;
 }): Promise<ActorOwnedCognitionSource | null> {
   const tenantId = normalizeTenantId(input.tenantId);
   const actorId = cognitionContractId(input.actorId, "actor");
   const documentId = cognitionContractId(input.documentId, "document");
   const asOfTime = new Date().toISOString();
 
-  if (hasDatabaseUrl()) {
-    await ensureDatabaseSchema();
-    const rows = await getSql()`
+  if (input.sql || hasDatabaseUrl()) {
+    if (!input.sql) await ensureDatabaseSchema();
+    const sql = input.sql || getSql();
+    const rows = await sql`
       SELECT document.*,
         LEAST(
           item.retention_expires_at,
@@ -2582,6 +2584,9 @@ async function insertKnowledgeDocumentDb(
     if (captureIngestGuard) {
       await lockActiveCaptureIngest(transaction, captureIngestGuard);
     }
+    // Serialize complete native deletion/review manifests with new documents,
+    // including canonical source repair; row locks alone cannot fence inserts.
+    await lockKnowledgeMemoryGraph(transaction, normalizeTenantId(document.tenantId));
     const insertedDocuments = await transaction`
       INSERT INTO omni_knowledge_documents (
         id, tenant_id, title, source, source_type, tags, content_hash, chunk_count, total_characters, metadata, created_at, updated_at

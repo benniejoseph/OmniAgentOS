@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { assertCaptureNativeProcessingFence } from "@/lib/capture/native-processing-fence";
 import { captureActorReadOrder } from "@/lib/capture/actor-scope";
 import {
   captureSegmentMediaTranscriptSchema,
@@ -53,7 +54,7 @@ type Owner = { tenantId: string; actorId: string };
 type CaptureRecordingListOwner = Owner & {
   requestActorBinding?: CanonicalRequestActorBindingV1;
 };
-type ScopedOwner = Owner & { executionScope: ExecutionScope };
+type ScopedOwner = Owner & { executionScope: ExecutionScope; nativeAcceptanceId?: string };
 type DeleteCaptureRecordingOptions = {
   sql?: ReturnType<typeof getSql>;
   recording?: CaptureRecordingDetail;
@@ -659,6 +660,7 @@ export async function saveCaptureSegment(input: ScopedOwner & {
 
   if (hasDatabaseUrl()) {
     const result = await getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      await assertCaptureNativeProcessingFence(sql, { tenantId: segment.tenantId, actorId: segment.actorId, recordingId: segment.recordingId });
       const inserted = await sql`
         INSERT INTO omni_capture_segments (
           id, tenant_id, actor_id, recording_id, segment_index, mime_type,
@@ -1077,6 +1079,7 @@ export async function prepareCaptureRecordingMediaProcessing(
   const completedAt = new Date().toISOString();
   if (hasDatabaseUrl()) {
     return getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      await assertCaptureNativeProcessingFence(sql, { ...owner, recordingId: id });
       const rows = await sql`
         UPDATE omni_capture_recordings
         SET status = 'processing', completed_at = ${completedAt},
@@ -1275,6 +1278,7 @@ export async function markCaptureRecordingIngestQueued(id: string, owner: Scoped
   const now = new Date().toISOString();
   if (hasDatabaseUrl()) {
     return getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      await assertCaptureNativeProcessingFence(sql, { ...owner, recordingId: id });
       const rows = await sql`
         UPDATE omni_capture_recordings
         SET ingest_job_id = ${ingestJobId}, status = 'processing', updated_at = ${now}
@@ -2195,7 +2199,7 @@ function sanitizeMetadata(value?: Record<string, unknown>) { return record(redac
 function record(value: unknown): Record<string, unknown> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
 function stringArray(value: unknown) { return Array.isArray(value) ? value.map(String) : []; }
 function optionalString(value: unknown) { const text = String(value || "").trim(); return text || undefined; }
-function iso(value: unknown) { return new Date(String(value)).toISOString(); }
+function iso(value: unknown) { return (value instanceof Date ? value : new Date(String(value))).toISOString(); }
 function optionalIso(value: unknown) { return value ? iso(value) : undefined; }
 function formatCaptureDate(value: string) { return new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" }).format(new Date(value)); }
 function sha256Text(value: string) { return createHash("sha256").update(value).digest("hex"); }

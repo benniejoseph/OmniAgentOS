@@ -484,6 +484,28 @@ export async function revokeOAuthGrant(
   await updateJsonFile<{ grants: InternalGrant[] }>(filePath(), { grants: [] }, (ledger) => ({ grants: ledger.grants.map((grant) => grant.id === existing.grant.id && grant.tenantId === tenantId && grant.actorId === actorId && grant.provider === provider ? { ...grant, status: "revoked", authorizationGeneration: Math.max(1, Number(grant.authorizationGeneration || 1)) + 1, sealedTokens, sealedSyncCursor: undefined, syncCursor: undefined, syncLeaseOwnerId: undefined, syncLeaseExpiresAt: undefined, updatedAt: now } : grant) }));
 }
 
+/** Closed native Salesforce transaction: caller holds current workspace and
+ * connection authority; this helper never opens a transaction or calls OAuth. */
+export async function revokeExactSalesforceOAuthGrantInTransaction(sql: ReturnType<typeof getSql>, input: {
+  tenantId: string; actorId: string; grantId: string; expectedAuthorizationGeneration: number;
+}) {
+  const rows = await sql`SELECT * FROM omni_oauth_grants WHERE tenant_id=${input.tenantId} AND actor_id=${input.actorId}
+    AND id=${input.grantId} AND provider='salesforce' AND status='active'
+    AND authorization_generation=${input.expectedAuthorizationGeneration} FOR UPDATE`;
+  if (rows.length !== 1 || input.expectedAuthorizationGeneration >= 2_147_483_647) throw new Error("Exact Salesforce OAuth authorization changed.");
+  const grant = internalGrantFromRow(rows[0]);
+  let providerToken: string | null = null;
+  try { const tokens = openOAuthGrantTokens(grant).tokens; providerToken = String(tokens.refresh_token || tokens.access_token || "") || null; }
+  catch { /* Local revocation remains possible when the old token cannot open. */ }
+  const sealedTokens = sealOAuthTokens({}, oauthGrantBinding(grant));
+  const updated = await sql`UPDATE omni_oauth_grants SET status='revoked',authorization_generation=authorization_generation+1,
+    sealed_tokens=${sealedTokens}::JSONB,sync_cursor=NULL,sync_lease_owner_id=NULL,sync_lease_expires_at=NULL,updated_at=clock_timestamp()
+    WHERE tenant_id=${input.tenantId} AND actor_id=${input.actorId} AND id=${input.grantId} AND provider='salesforce'
+      AND status='active' AND authorization_generation=${input.expectedAuthorizationGeneration} RETURNING id`;
+  if (updated.length !== 1) throw new Error("Exact Salesforce OAuth revocation did not commit.");
+  return { providerToken };
+}
+
 export async function getOAuthGrantSecrets(
   tenantId: string,
   actorId: string,

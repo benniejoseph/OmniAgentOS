@@ -18,15 +18,26 @@ import {
   recordSalesforceReconciliationFinding,
   settleSalesforceSyncPage,
   type SalesforceMutationAuthority,
+  type SalesforceConnection,
+  type SalesforceSyncLease,
 } from "@/lib/customer-success/salesforce-store";
 import { createExecutionScope } from "@/lib/security/execution-scope";
+
+/** Internal native admission already owns this lease. Never claim a second one. */
+export type SalesforceNativeSyncExecution = {
+  claim: { status: "claimed"; connection: SalesforceConnection; lease: SalesforceSyncLease };
+  beforeProvider: () => Promise<void>;
+  commit: <T>(work: () => Promise<T>) => Promise<T>;
+};
+const commitLocal = <T>(native: SalesforceNativeSyncExecution | undefined, work: () => Promise<T>) => native ? native.commit(work) : work();
 
 export async function syncSalesforceWorkspace(input: {
   authority: SalesforceMutationAuthority;
   abortSignal?: AbortSignal;
   maxPages?: number;
+  native?: SalesforceNativeSyncExecution;
 }) {
-  const claim = await claimSalesforceSyncLease(input.authority);
+  const claim = input.native?.claim ?? await claimSalesforceSyncLease(input.authority);
   if (claim.status === "busy") {
     return Object.freeze({
       status: "busy" as const,
@@ -64,6 +75,7 @@ export async function syncSalesforceWorkspace(input: {
           objectType,
           cursor: objectCursor,
           abortSignal: input.abortSignal,
+          nativeFence: input.native?.beforeProvider,
         });
         pages += 1;
         records += page.observations.length;
@@ -83,7 +95,7 @@ export async function syncSalesforceWorkspace(input: {
           objectCursor.watermarkExternalId = null;
           objectCursor.upperBoundAt = null;
         }
-        const settled = await settleSalesforceSyncPage({
+        const settled = await commitLocal(input.native, () => settleSalesforceSyncPage({
           authority: input.authority,
           connection,
           lease,
@@ -91,7 +103,7 @@ export async function syncSalesforceWorkspace(input: {
           cursor,
           releaseLease: false,
           healthy: false,
-        });
+        }));
         connection = settled.connection;
         advanced += settled.advanced;
         conflicts += settled.conflicts;
@@ -103,7 +115,12 @@ export async function syncSalesforceWorkspace(input: {
       const item = cursor.objects[objectType];
       return item.phase === "current" && item.nextRecordsPath === null;
     });
-    const released = await settleSalesforceSyncPage({
+    // Native projection stays inside the exact lease, grant and workspace
+    // fence. Its closed SQL graph contains no provider calls.
+    const nativeProjection = input.native ? await input.native.commit(() => projectPendingSalesforceRecords({
+      authority: input.authority, connection, limit: 500,
+    })) : null;
+    const released = await commitLocal(input.native, () => settleSalesforceSyncPage({
       authority: input.authority,
       connection,
       lease,
@@ -111,9 +128,9 @@ export async function syncSalesforceWorkspace(input: {
       cursor,
       releaseLease: true,
       healthy,
-    });
+    }));
     connection = released.connection;
-    const projection = await projectPendingSalesforceRecords({
+    const projection = nativeProjection ?? await projectPendingSalesforceRecords({
       authority: input.authority,
       connection,
       limit: 500,
@@ -151,8 +168,9 @@ export async function reconcileSalesforceWorkspace(input: {
   authority: SalesforceMutationAuthority;
   abortSignal?: AbortSignal;
   limit?: number;
+  native?: SalesforceNativeSyncExecution;
 }) {
-  const claim = await claimSalesforceSyncLease(input.authority);
+  const claim = input.native?.claim ?? await claimSalesforceSyncLease(input.authority);
   if (claim.status === "busy") {
     return Object.freeze({ status: "busy" as const, checked: 0, findings: 0 });
   }
@@ -173,10 +191,11 @@ export async function reconcileSalesforceWorkspace(input: {
         externalId: local.externalId,
         sourceKind: "reconciliation",
         abortSignal: input.abortSignal,
+        nativeFence: input.native?.beforeProvider,
       });
       if (!observation) {
         if (!local.deleted) {
-          await recordSalesforceReconciliationFinding({
+          await commitLocal(input.native, () => recordSalesforceReconciliationFinding({
             authority: input.authority,
             connectionId: connection.connectionId,
             objectType: local.objectType,
@@ -185,7 +204,7 @@ export async function reconcileSalesforceWorkspace(input: {
             remoteRevisionId: null,
             findingKind: "missing_remote",
             observedAt: new Date().toISOString(),
-          });
+          }));
           findings += 1;
         }
         continue;
@@ -199,7 +218,7 @@ export async function reconcileSalesforceWorkspace(input: {
         receivedAt: new Date().toISOString(),
       });
       if (remote.revisionId !== local.revisionId) {
-        await recordSalesforceReconciliationFinding({
+        await commitLocal(input.native, () => recordSalesforceReconciliationFinding({
           authority: input.authority,
           connectionId: connection.connectionId,
           objectType: local.objectType,
@@ -208,11 +227,11 @@ export async function reconcileSalesforceWorkspace(input: {
           remoteRevisionId: remote.revisionId,
           findingKind: "revision_mismatch",
           observedAt: new Date().toISOString(),
-        });
+        }));
         findings += 1;
       }
     }
-    await settleSalesforceSyncPage({
+    await commitLocal(input.native, () => settleSalesforceSyncPage({
       authority: input.authority,
       connection,
       lease,
@@ -220,7 +239,7 @@ export async function reconcileSalesforceWorkspace(input: {
       cursor: connection.cursor,
       releaseLease: true,
       healthy: connection.syncStatus === "healthy",
-    });
+    }));
     return Object.freeze({ status: "complete" as const, checked, findings });
   } catch (error) {
     await failSalesforceSync({

@@ -49,6 +49,7 @@ class NativeMeetingDetailPage extends ConsumerWidget {
       workspaceId: workspaceId,
       repository: repository,
       actions: ref.watch(meetingActionControllerProvider(id)),
+      recordings: ref.watch(meetingRecordingControllerProvider),
       desktop: desktop,
       active: active,
     );

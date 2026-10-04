@@ -1,0 +1,82 @@
+import type postgres from "postgres";
+import { expect } from "vitest";
+
+export async function removeEmptyNativeKnowledgeCognitionBuildsForReplay(sql: postgres.TransactionSql) {
+  expect(await sql`SELECT (SELECT count(*)::int FROM public.omni_knowledge_native_cognition_builds) AS builds,
+    (SELECT count(*)::int FROM public.omni_knowledge_native_cognition_effects) AS effects`).toEqual([{ builds: 0, effects: 0 }]);
+  await sql`DROP POLICY omni_native_cognition_build_event_actor ON public.omni_events`;
+  await sql`DROP TABLE public.omni_knowledge_native_cognition_effects`;
+  await sql`DROP TABLE public.omni_knowledge_native_cognition_builds`;
+  await sql`DROP FUNCTION public.omni_protect_native_cognition_effect_v1()`;
+  await sql`DROP FUNCTION public.omni_protect_native_cognition_build_v1()`;
+  await sql`DROP FUNCTION public.omni_native_cognition_build_valid_v1(JSONB,JSONB,JSONB)`;
+}
+
+export async function removeEmptyNativePrivateMemoryActionsForReplay(sql: postgres.TransactionSql) {
+  expect(await sql`SELECT count(*)::int AS acceptances FROM public.omni_native_private_memory_actions`).toEqual([{ acceptances: 0 }]);
+  await sql`DROP TRIGGER omni_memory_lifecycle_graph_statement_lock ON public.omni_memory_lifecycle_states`;
+  await sql`DROP TRIGGER omni_retrieval_traces_delete_graph_statement_lock ON public.omni_retrieval_traces`;
+  await sql`DROP POLICY omni_native_private_memory_event_actor ON public.omni_events`;
+  await sql`DROP TRIGGER omni_native_private_memory_forget ON public.omni_memories`;
+  await sql`DROP TABLE public.omni_native_private_memory_actions`;
+  await sql`DROP FUNCTION public.omni_native_private_memory_forget_v1()`;
+  await sql`DROP FUNCTION public.omni_native_private_memory_immutable_v1()`;
+  await sql`DROP FUNCTION public.omni_native_private_memory_action_valid_v1(TEXT,JSONB,JSONB)`;
+  await sql`DROP FUNCTION public.omni_native_private_memory_action_valid_233_v1(TEXT,JSONB,JSONB)`;
+  await sql`DROP FUNCTION public.omni_native_knowledge_deletion_lineage_v1(TEXT,TEXT,TEXT,TEXT,TEXT[],BOOLEAN,TIMESTAMPTZ)`;
+  await sql`DROP FUNCTION public.omni_native_private_memory_owner_v1(TEXT,TEXT,TEXT,BOOLEAN)`;
+}
+
+export async function removeEmptySalesforceNativeActionsForReplay(sql: postgres.TransactionSql) {
+  expect(await sql`SELECT count(*)::int AS acceptances FROM public.omni_salesforce_native_actions`).toEqual([{ acceptances: 0 }]);
+  await sql`DROP POLICY omni_salesforce_native_event_actor ON public.omni_events`;
+  await sql`DROP TABLE public.omni_salesforce_native_actions`;
+  await sql`DROP FUNCTION public.omni_protect_salesforce_native_action_v1()`;
+}
+
+/** Only empty disposable fixtures may recreate these actual predecessor schemas. */
+export async function removeEmptyCustomerWorkflowIntentsForReplay(sql: postgres.TransactionSql) {
+  expect(await sql`SELECT count(*)::int AS intents FROM public.omni_customer_success_workflow_run_revisions
+    WHERE native_intent IS NOT NULL OR native_intent_sha256 IS NOT NULL`).toEqual([{ intents: 0 }]);
+  await sql`DROP TRIGGER omni_customer_workflow_native_intent_validate ON public.omni_customer_success_workflow_run_revisions`;
+  await sql`DROP FUNCTION public.omni_validate_customer_workflow_native_intent_v1()`;
+  await sql`ALTER TABLE public.omni_customer_success_workflow_run_revisions
+    DROP CONSTRAINT omni_customer_workflow_exact_native_intent, DROP COLUMN native_intent, DROP COLUMN native_intent_sha256`;
+}
+
+export async function removeEmptyAgentSkillMutationsForReplay(sql: postgres.TransactionSql) {
+  expect(await sql`SELECT count(*)::int AS acceptances FROM public.omni_agent_skill_native_mutations`).toEqual([{ acceptances: 0 }]);
+  await sql`DROP POLICY omni_agent_skill_native_event_actor ON public.omni_events`;
+  await sql`DROP TABLE public.omni_agent_skill_native_mutations`;
+  await sql`DROP FUNCTION public.omni_agent_skill_native_immutable_v1()`;
+  await sql`DROP TRIGGER aa_omni_moltbook_agent_parent_lock ON public.omni_moltbook_connections`;
+  await sql`DROP FUNCTION public.omni_lock_moltbook_agent_parent_v1()`;
+  await sql`DO $restore$ BEGIN
+    IF EXISTS(SELECT 1 FROM pg_roles WHERE rolname='omni_runtime') THEN
+      REVOKE EXECUTE ON FUNCTION public.omni_agent_persona_v1_is_valid(JSONB) FROM omni_runtime;
+    END IF;
+    IF EXISTS(SELECT 1 FROM pg_roles WHERE rolname='omni_maintenance') THEN
+      REVOKE EXECUTE ON FUNCTION public.omni_agent_persona_v1_is_valid(JSONB) FROM omni_maintenance;
+    END IF;
+  END $restore$`;
+}
+
+export async function removeEmptyMeetingRecordingProcessingForReplay(sql: postgres.TransactionSql) {
+  expect(await sql`SELECT (SELECT count(*)::int FROM public.omni_meeting_recording_processing_acceptances) AS acceptances,
+    (SELECT count(*)::int FROM public.omni_meeting_recording_processing_effects) AS effects`).toEqual([{ acceptances: 0, effects: 0 }]);
+  await sql`DROP POLICY omni_native_recording_event_actor ON public.omni_events`;
+  await sql`DROP TABLE public.omni_meeting_recording_processing_effects`;
+  await sql`DROP TABLE public.omni_meeting_recording_processing_acceptances`;
+  await sql`DROP FUNCTION public.omni_protect_native_recording_effect_v1()`;
+  await sql`DROP FUNCTION public.omni_protect_native_recording_acceptance_v1()`;
+}
+
+export async function removeEmptyCustomerFactIntentsForReplay(sql: postgres.TransactionSql) {
+  expect(await sql`SELECT count(*)::int AS intents FROM public.omni_customer_fact_revisions
+    WHERE native_intent IS NOT NULL OR native_intent_sha256 IS NOT NULL`).toEqual([{ intents: 0 }]);
+  await sql`DROP TRIGGER omni_customer_fact_native_intent_validate ON public.omni_customer_fact_revisions`;
+  await sql`DROP FUNCTION public.omni_validate_customer_fact_native_intent_v1()`;
+  await sql`DROP INDEX public.omni_customer_fact_native_key`;
+  await sql`ALTER TABLE public.omni_customer_fact_revisions DROP CONSTRAINT omni_customer_fact_native_intent,
+    DROP COLUMN native_intent, DROP COLUMN native_intent_sha256`;
+}

@@ -17,7 +17,8 @@ abstract interface class SpecialistRecoveryStore {
   });
 }
 
-/// Content-free decision recovery only. No queued or replayable operation.
+/// Encrypted decision recovery. Exact native intents are evidence for receipt
+/// reads, never a queue of replayable operations.
 /// Unknown outcomes are never aged out or pruned to make room for another write.
 class EncryptedSpecialistRecoveryStore implements SpecialistRecoveryStore {
   EncryptedSpecialistRecoveryStore(

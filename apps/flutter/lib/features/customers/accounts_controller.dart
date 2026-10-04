@@ -34,7 +34,10 @@ class AccountsController extends ChangeNotifier {
     repository.access.addListener(_authorityChanged);
     if (recovery != null &&
         (repository is AccountsMutationRepository ||
-            repository is AccountsHealthRepository)) {
+            repository is AccountsHealthRepository ||
+            repository is AccountsWorkflowRepository ||
+            repository is AccountsFactRepository ||
+            repository is AccountsSalesforceRepository)) {
       actions = AccountsMutationController(
         repository,
         recovery,

@@ -30,6 +30,7 @@ import {
 import { MEMORY_PURPOSE_IDS } from "@/lib/memory/access-binding";
 import { requestMemoryAccessFromSecurityContext } from "@/lib/memory/request-access";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
+import { submitMemoryDeterministicNativeHttp } from "@/lib/memory/deterministic-native-http";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
@@ -602,10 +603,11 @@ function publicTemporalRelation(
 async function POSTHandler(request: Request) {
   let body: unknown;
   try {
-    body = await parseJsonBody(request);
+    body = await parseJsonBody(request, 8192);
   } catch (error) {
     return jsonBodyErrorResponse(error);
   }
+  if (body && typeof body === "object" && "contract" in body) return submitMemoryDeterministicNativeHttp(request, "graph", body);
   const parsed = rebuildSchema.safeParse(body);
 
   if (!parsed.success) {

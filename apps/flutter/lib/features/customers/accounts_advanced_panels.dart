@@ -4,6 +4,7 @@ import 'accounts_advanced_contracts.dart';
 import 'accounts_contracts.dart';
 import 'accounts_controller.dart';
 import 'accounts_health_review.dart';
+import 'accounts_workflow_review.dart';
 
 class AccountsAdvancedPanels extends StatelessWidget {
   const AccountsAdvancedPanels({super.key, required this.controller});
@@ -47,7 +48,7 @@ class _AdvancedPanel extends StatelessWidget {
               AccountAdvancedKind.health => 'The current health score and retained history are separate reads. A missing score is unknown health. Up to 20 scores are requested; no complete-history claim.',
               AccountAdvancedKind.intelligence => 'Bounded risks, meeting commitments, approvals and timeline. Suggestions are advisory and confer no action authority.',
               AccountAdvancedKind.workflows => 'Up to 50 existing workflow runs and their recorded outcomes. Reading this panel starts no workflow or external action.',
-              AccountAdvancedKind.salesforce => 'Workspace-wide connection observations, up to 50 reconciliation findings and 25 write observations. This panel does not connect, sync or replay provider writes.',
+              AccountAdvancedKind.salesforce => 'Review bounded connection and write evidence here. Use Salesforce connection actions to connect, sync or disconnect.',
             }),
             Wrap(
               spacing: 8,
@@ -85,6 +86,14 @@ class _AdvancedPanel extends StatelessWidget {
                   'customers.health.evaluate',
                 ))
               AccountHealthReview(
+                key: ValueKey(controller),
+                controller: controller,
+              ),
+            if (kind == AccountAdvancedKind.workflows &&
+                controller.repository.access.operations.contains(
+                  'customers.workflows.get',
+                ))
+              AccountWorkflowReview(
                 key: ValueKey(controller),
                 controller: controller,
               ),

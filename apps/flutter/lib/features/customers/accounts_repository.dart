@@ -11,6 +11,9 @@ import 'accounts_contracts.dart';
 import 'accounts_mutation_contracts.dart';
 import 'accounts_advanced_contracts.dart';
 import 'accounts_health_contracts.dart';
+import 'accounts_workflow_contracts.dart';
+import 'accounts_fact_contracts.dart';
+import 'accounts_salesforce_contracts.dart';
 
 class AccountsAccess extends ChangeNotifier {
   AccountsAccess({
@@ -92,12 +95,58 @@ abstract interface class AccountsHealthRepository {
   );
 }
 
+abstract interface class AccountsFactRepository {
+  Future<AccountFactAcceptance> mutateFact(
+    AccountFactIntent intent, {
+    required bool Function() isCurrent,
+  });
+  Future<AccountFactAcceptance> readFactAcceptance(
+    AccountFactIntent intent,
+    CancelToken cancel,
+  );
+}
+
+abstract interface class AccountsSalesforceRepository {
+  Future<AccountSalesforceRead> reviewSalesforce(
+    String workspace,
+    CancelToken cancel,
+  );
+  Future<AccountSalesforceRead> submitSalesforce(
+    AccountSalesforceIntent intent, {
+    required bool Function() isCurrent,
+  });
+  Future<AccountSalesforceRead> readSalesforceAction(
+    AccountSalesforceIntent intent,
+    CancelToken cancel,
+  );
+}
+
+abstract interface class AccountsWorkflowRepository {
+  Future<AccountWorkflowAcceptance> mutateWorkflow(
+    AccountWorkflowIntent intent, {
+    required bool Function() isCurrent,
+  });
+  Future<AccountWorkflowAcceptance> readWorkflowAcceptance(
+    AccountWorkflowIntent intent,
+    CancelToken cancel,
+  );
+  Future<AccountWorkflowRun> readWorkflow(
+    String accountId,
+    String runId,
+    String workspaceId,
+    CancelToken cancel,
+  );
+}
+
 class ApiAccountsRepository
     implements
         AccountsRepository,
         AccountsMutationRepository,
         AccountsAdvancedRepository,
-        AccountsHealthRepository {
+        AccountsHealthRepository,
+        AccountsWorkflowRepository,
+        AccountsFactRepository,
+        AccountsSalesforceRepository {
   ApiAccountsRepository(
     this.api, {
     required this.access,
@@ -372,6 +421,257 @@ class ApiAccountsRepository
       },
     );
   }
+
+  @override
+  Future<AccountFactAcceptance> mutateFact(
+    AccountFactIntent intent, {
+    required bool Function() isCurrent,
+  }) async {
+    final generation = access.generation;
+    bool current() =>
+        authorityCurrent() &&
+        generation == access.generation &&
+        access.owner?.key == intent.owner.key &&
+        isCurrent();
+    accountRequire(
+      current() &&
+          intent.owner.role != 'viewer' &&
+          access.operations.contains('customers.facts.record'),
+    );
+    final authority = NativeRequestAuthority(
+      tenantId: intent.owner.tenantId,
+      actorId: intent.owner.actorId,
+      canonicalUserId: intent.owner.userId,
+      role: intent.owner.role,
+      apiBaseUrl: intent.owner.apiScope,
+      isCurrent: current,
+    );
+    final raw = await api.postJsonAuthorized(
+      NativePaths.customersFactsRecord(intent.accountId),
+      authority: authority,
+      data: intent.body,
+      headers: {'Idempotency-Key': intent.key},
+    );
+    accountRequire(
+      current(),
+      'Account fact access changed. The outcome remains unconfirmed.',
+    );
+    final result = await AccountFactAcceptance.parse(
+      raw,
+      intent,
+      mutation: true,
+    );
+    accountRequire(
+      current(),
+      'Account fact access changed. The outcome remains unconfirmed.',
+    );
+    return result;
+  }
+
+  @override
+  Future<AccountSalesforceRead> reviewSalesforce(
+    String workspace,
+    CancelToken cancel,
+  ) => _read(
+    'customers.salesforce.actions.review',
+    NativePaths.customersSalesforceActionsReview(workspaceId: workspace),
+    cancel,
+    const {},
+    (row, owner) =>
+        AccountSalesforceRead.parse(row, owner, workspace, kind: 'review'),
+  );
+
+  @override
+  Future<AccountSalesforceRead> submitSalesforce(
+    AccountSalesforceIntent intent, {
+    required bool Function() isCurrent,
+  }) async {
+    final generation = access.generation;
+    bool current() =>
+        authorityCurrent() &&
+        generation == access.generation &&
+        access.owner?.key == intent.owner.key &&
+        isCurrent();
+    accountRequire(
+      current() &&
+          intent.owner.role != 'viewer' &&
+          access.operations.contains('customers.salesforce.actions.submit'),
+    );
+    final authority = NativeRequestAuthority(
+      tenantId: intent.owner.tenantId,
+      actorId: intent.owner.actorId,
+      canonicalUserId: intent.owner.userId,
+      role: intent.owner.role,
+      apiBaseUrl: intent.owner.apiScope,
+      isCurrent: current,
+    );
+    final raw = await api.postJsonAuthorized(
+      NativePaths.customersSalesforceActionsSubmit,
+      authority: authority,
+      data: intent.body,
+      headers: {'Idempotency-Key': intent.key},
+    );
+    accountRequire(
+      current(),
+      'Salesforce authority changed. The outcome remains unconfirmed.',
+    );
+    final result = await AccountSalesforceRead.parse(
+      raw,
+      intent.owner,
+      intent.workspaceId,
+      kind: 'mutation',
+      intent: intent,
+    );
+    accountRequire(
+      current(),
+      'Salesforce authority changed. The outcome remains unconfirmed.',
+    );
+    return result;
+  }
+
+  @override
+  Future<AccountSalesforceRead> readSalesforceAction(
+    AccountSalesforceIntent intent,
+    CancelToken cancel,
+  ) {
+    accountRequire(access.owner?.key == intent.owner.key);
+    return _read(
+      'customers.salesforce.actions.get',
+      NativePaths.customersSalesforceActionsGet(
+        intent.keySha256,
+        workspaceId: intent.workspaceId,
+      ),
+      cancel,
+      const {},
+      (row, owner) {
+        accountRequire(owner.key == intent.owner.key);
+        return AccountSalesforceRead.parse(
+          row,
+          owner,
+          intent.workspaceId,
+          kind: 'read',
+          intent: intent,
+        );
+      },
+    );
+  }
+
+  @override
+  Future<AccountFactAcceptance> readFactAcceptance(
+    AccountFactIntent intent,
+    CancelToken cancel,
+  ) {
+    accountRequire(access.owner?.key == intent.owner.key);
+    return _read(
+      'customers.facts.acceptance.get',
+      NativePaths.customersFactsAcceptanceGet(
+        intent.accountId,
+        intent.identity['idempotencyKeySha256'] as String,
+        workspaceId: intent.workspaceId,
+      ),
+      cancel,
+      const {},
+      (row, owner) {
+        accountRequire(owner.key == intent.owner.key);
+        return AccountFactAcceptance.parse(row, intent, mutation: false);
+      },
+    );
+  }
+
+  @override
+  Future<AccountWorkflowAcceptance> mutateWorkflow(
+    AccountWorkflowIntent intent, {
+    required bool Function() isCurrent,
+  }) async {
+    final generation = access.generation;
+    bool current() =>
+        authorityCurrent() &&
+        generation == access.generation &&
+        access.owner?.key == intent.owner.key &&
+        isCurrent();
+    accountRequire(
+      current() &&
+          intent.owner.role != 'viewer' &&
+          access.operations.contains(intent.operation),
+    );
+    final authority = NativeRequestAuthority(
+      tenantId: intent.owner.tenantId,
+      actorId: intent.owner.actorId,
+      canonicalUserId: intent.owner.userId,
+      role: intent.owner.role,
+      apiBaseUrl: intent.owner.apiScope,
+      isCurrent: current,
+    );
+    final raw = intent.start
+        ? await api.postJsonAuthorized(
+            NativePaths.customersWorkflowsStart(intent.account),
+            authority: authority,
+            data: intent.body,
+            headers: {'Idempotency-Key': intent.key},
+          )
+        : await api.patchJsonAuthorized(
+            NativePaths.customersWorkflowsOutcome(intent.account),
+            authority: authority,
+            data: intent.body,
+            headers: {'Idempotency-Key': intent.key},
+          );
+    accountRequire(
+      current(),
+      'Account workflow access changed. Its outcome remains unconfirmed.',
+    );
+    final result = await AccountWorkflowAcceptance.parse(
+      raw,
+      intent,
+      mutation: true,
+    );
+    accountRequire(
+      current(),
+      'Account workflow access changed. Its outcome remains unconfirmed.',
+    );
+    return result;
+  }
+
+  @override
+  Future<AccountWorkflowAcceptance> readWorkflowAcceptance(
+    AccountWorkflowIntent intent,
+    CancelToken cancel,
+  ) {
+    accountRequire(access.owner?.key == intent.owner.key);
+    return _read(
+      'customers.workflows.mutations.get',
+      NativePaths.customersWorkflowsMutationsGet(
+        intent.account,
+        intent.runId,
+        intent.identity['idempotencyKeySha256'] as String,
+        workspaceId: intent.workspaceId,
+      ),
+      cancel,
+      const {},
+      (row, owner) {
+        accountRequire(owner.key == intent.owner.key);
+        return AccountWorkflowAcceptance.parse(row, intent, mutation: false);
+      },
+    );
+  }
+
+  @override
+  Future<AccountWorkflowRun> readWorkflow(
+    String accountId,
+    String runId,
+    String workspaceId,
+    CancelToken cancel,
+  ) => _read(
+    'customers.workflows.get',
+    NativePaths.customersWorkflowsGet(
+      accountId,
+      runId,
+      workspaceId: workspaceId,
+    ),
+    cancel,
+    const {},
+    (row, owner) =>
+        AccountWorkflowRun.parse(row, owner, workspaceId, accountId, runId),
+  );
 
   @override
   Future<AccountAdvancedRead> advanced(

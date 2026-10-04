@@ -62,6 +62,7 @@ export async function ingestTextDocument({
   deferMemoryGraphIndex = false,
   reuseExactCommittedRevision = false,
   onProgress,
+  beforeEmbeddingProvider,
 }: {
   idempotencyKey?: string;
   tenantId?: string;
@@ -85,6 +86,7 @@ export async function ingestTextDocument({
    */
   reuseExactCommittedRevision?: boolean;
   onProgress?: (progress: KnowledgeIngestProgress) => void | Promise<void>;
+  beforeEmbeddingProvider?: () => Promise<void>;
 }) {
   if ((usageScope?.actorId || captureIngestGuard?.actorId) && !sourceLineage) {
     throw new Error(
@@ -150,6 +152,7 @@ export async function ingestTextDocument({
         chunks.map((chunk) => chunk.content),
         abortSignal,
         usageScope,
+        beforeEmbeddingProvider,
       );
   abortSignal?.throwIfAborted();
   await onProgress?.({ stage: "knowledge", chunkCount: chunks.length });
@@ -170,7 +173,7 @@ export async function ingestTextDocument({
         embedding: embeddings?.[chunk.index],
       })),
     });
-  if (canonicalSourceWrite) {
+  if (canonicalSourceWrite && !captureIngestGuard?.nativeRecording) {
     await onProgress?.({ stage: "entities", chunkCount: chunks.length });
     abortSignal?.throwIfAborted();
     await projectCanonicalEvidenceEntities({
@@ -321,10 +324,15 @@ async function embedKnowledgeTexts(
   input: string[],
   abortSignal?: AbortSignal,
   usageScope?: AiUsageScope,
+  beforeProvider?: () => Promise<void>,
 ) {
+  let preflightRejected = false;
   try {
-    return await embedTexts(input, abortSignal, usageScope);
+    return beforeProvider ? await embedTexts(input, abortSignal, usageScope, async () => {
+      try { await beforeProvider(); } catch (error) { preflightRejected = true; throw error; }
+    }) : await embedTexts(input, abortSignal, usageScope);
   } catch (error) {
+    if (preflightRejected) throw error;
     if (abortSignal?.aborted) throw abortSignal.reason || error;
     // Lexical RAG and durable memory remain useful when the optional vector
     // provider is unavailable; a later re-index can add embeddings.

@@ -73,6 +73,7 @@ type GraphReadOptions = {
   tenantId?: string;
   accessScope?: DatabaseMemoryAccessScope;
 };
+type GraphInspectionReadOptions = GraphReadOptions & { privateOnly?: boolean };
 
 type GraphSqlClient = ReturnType<typeof getSql>;
 
@@ -418,6 +419,45 @@ async function rebuildMemoryGraphForTenant(
     await saveGraphBuild(build);
     throw error;
   }
+}
+
+/** Pure complete-cohort admission measurement; never truncates the aggregate. */
+export function privateMemoryGraphProjectionWithinBounds(memories: MemoryRecord[], traceRows: Record<string, unknown>[], tenantId: string) {
+  const aggregate = aggregateGraphByAccessCohort(memories, traceRows.map(traceSeedFromRow), tenantId);
+  return aggregate.nodes.size <= MEMORY_GRAPH_NODE_LIMIT && aggregate.edges.size <= MEMORY_GRAPH_EDGE_LIMIT;
+}
+
+/** Native closed transaction seam. The caller holds the source graph fence,
+ * validates its complete read manifest and installs only this owner's write
+ * scope. No failure record or provider work escapes the accepting transaction. */
+export async function rebuildPrivateMemoryGraphInTransaction(sql: GraphSqlClient, input: {
+  tenantId: string; ownerActorId: string; memories: MemoryRecord[]; traceRows: Record<string, unknown>[];
+  writeScope: DatabaseMemoryAccessScope; source: string;
+}) {
+  const scope = requireUserPrivateGraphAccessScope(input.writeScope, input.tenantId, [MEMORY_PURPOSE_IDS.write]);
+  if (scope.initiatingActorId !== input.ownerActorId || input.memories.length > 2000 || input.traceRows.length > 1000) throw new Error("Private graph source authority or bound differs.");
+  const traces = input.traceRows.map(traceSeedFromRow);
+  for (const record of [...input.memories, ...traces]) {
+    const binding = record.accessBinding;
+    if (!binding || binding.state !== "scope_bound" || binding.visibility !== "user_private" || binding.ownerActorId !== input.ownerActorId ||
+      binding.ownerAgentId || binding.workspaceId || binding.projectId || binding.missionId || !binding.allowedPurposeIds.includes(MEMORY_PURPOSE_IDS.read)) {
+      throw new Error("Private graph cannot project another source cohort.");
+    }
+  }
+  const aggregate = aggregateGraphByAccessCohort(input.memories, traces, input.tenantId);
+  if (aggregate.nodes.size > MEMORY_GRAPH_NODE_LIMIT || aggregate.edges.size > MEMORY_GRAPH_EDGE_LIMIT) throw new Error("Complete private graph exceeds the supported projection bound.");
+  await setGraphDeletionBarriersImmediate(sql);
+  await sql`DELETE FROM omni_memory_graph_edges WHERE tenant_id=${input.tenantId} AND owner_actor_id=${input.ownerActorId}
+    AND access_contract_version=1 AND access_state='scope_bound' AND visibility='user_private'
+    AND owner_agent_id IS NULL AND workspace_id IS NULL AND project_id IS NULL AND mission_id IS NULL`;
+  await sql`DELETE FROM omni_memory_graph_nodes WHERE tenant_id=${input.tenantId} AND owner_actor_id=${input.ownerActorId}
+    AND access_contract_version=1 AND access_state='scope_bound' AND visibility='user_private'
+    AND owner_agent_id IS NULL AND workspace_id IS NULL AND project_id IS NULL AND mission_id IS NULL`;
+  await upsertGraphNodes([...aggregate.nodes.values()], sql);
+  await upsertGraphEdges([...aggregate.edges.values()], sql);
+  const result = { memoryCount: input.memories.length, traceCount: traces.length, nodeCount: aggregate.nodes.size, edgeCount: aggregate.edges.size };
+  await insertGraphBuild(buildRecord({ tenantId: input.tenantId, status: "completed", source: input.source, ...result, latencyMs: 0 }), sql);
+  return result;
 }
 
 async function collectMemoryGraphAggregate(
@@ -970,11 +1010,11 @@ async function searchMemoryGraphRows(
 
 export async function listMemoryGraphNodes(
   limit = 100,
-  options: GraphReadOptions = {},
+  options: GraphInspectionReadOptions = {},
 ) {
   const tenantId = normalizeTenantId(options.tenantId);
   return runWithDatabaseTenantScope(tenantId, () =>
-    listMemoryGraphNodesForTenant(limit, tenantId, options.accessScope),
+    listMemoryGraphNodesForTenant(limit, tenantId, options.accessScope, options.privateOnly),
   );
 }
 
@@ -982,11 +1022,16 @@ async function listMemoryGraphNodesForTenant(
   limit: number,
   tenantId: string,
   accessScope?: DatabaseMemoryAccessScope,
+  privateOnly = false,
 ) {
+  if (privateOnly) {
+    if (!accessScope) throw new Error("Private graph reading requires current owner scope.");
+    requireUserPrivateGraphAccessScope(accessScope, tenantId, [MEMORY_PURPOSE_IDS.read, MEMORY_PURPOSE_IDS.retrieve]);
+  }
   const boundedLimit = Math.min(Math.max(limit, 1), MEMORY_GRAPH_NODE_LIMIT);
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const legacyRows = await getSql()`
+    const legacyRows = privateOnly ? [] : await getSql()`
       SELECT node.*
       FROM omni_memory_graph_nodes node
       WHERE node.tenant_id = ${tenantId}
@@ -1008,6 +1053,7 @@ async function listMemoryGraphNodesForTenant(
             SELECT node.*
             FROM omni_memory_graph_nodes node
             WHERE node.tenant_id = ${tenantId}
+              AND (NOT ${privateOnly} OR (node.access_contract_version = 1 AND node.visibility = 'user_private' AND node.owner_actor_id = ${accessScope.initiatingActorId}))
               AND NOT EXISTS (
                 SELECT 1 FROM omni_memory_lifecycle_states lifecycle
                 WHERE lifecycle.tenant_id = node.tenant_id
@@ -1030,6 +1076,7 @@ async function listMemoryGraphNodesForTenant(
   return (await readGraphLedger()).nodes
     .filter((node) =>
       graphTenantId(node) === tenantId &&
+      (!privateOnly || node.accessBinding?.visibility === "user_private") &&
       graphRecordVisibleForScope(node, accessScope)
     )
     .map((node) => ({ ...node, tenantId }))
@@ -1039,7 +1086,7 @@ async function listMemoryGraphNodesForTenant(
 
 export async function getMemoryGraphNode(
   id: string,
-  options: GraphReadOptions = {},
+  options: GraphInspectionReadOptions = {},
 ) {
   const nodeIdValue = id.trim();
   if (
@@ -1050,6 +1097,10 @@ export async function getMemoryGraphNode(
     throw new Error("Memory graph node id is invalid.");
   }
   const tenantId = normalizeTenantId(options.tenantId);
+  if (options.privateOnly) {
+    if (!options.accessScope) throw new Error("Private graph reading requires current owner scope.");
+    requireUserPrivateGraphAccessScope(options.accessScope, tenantId, [MEMORY_PURPOSE_IDS.read, MEMORY_PURPOSE_IDS.retrieve]);
+  }
   return runWithDatabaseTenantScope(tenantId, async () => {
     if (hasDatabaseUrl()) {
       await ensureDatabaseSchema();
@@ -1058,6 +1109,7 @@ export async function getMemoryGraphNode(
         FROM omni_memory_graph_nodes node
         WHERE node.tenant_id = ${tenantId}
           AND node.id = ${nodeIdValue}
+          AND (NOT ${options.privateOnly === true} OR (node.access_contract_version = 1 AND node.visibility = 'user_private' AND node.owner_actor_id = ${options.accessScope?.initiatingActorId ?? ""}))
           AND NOT EXISTS (
             SELECT 1 FROM omni_memory_lifecycle_states lifecycle
             WHERE lifecycle.tenant_id = node.tenant_id
@@ -1066,7 +1118,7 @@ export async function getMemoryGraphNode(
           )
         LIMIT 1
       `;
-      const legacyRows = await readNode(getSql());
+      const legacyRows = options.privateOnly ? [] : await readNode(getSql());
       const scopedRows = options.accessScope
         ? await runWithGraphAccessScope(
             options.accessScope,
@@ -1086,6 +1138,7 @@ export async function getMemoryGraphNode(
     const node = (await readGraphLedger()).nodes.find((candidate) =>
       candidate.id === nodeIdValue &&
       graphTenantId(candidate) === tenantId &&
+      (!options.privateOnly || candidate.accessBinding?.visibility === "user_private") &&
       graphRecordVisibleForScope(candidate, options.accessScope)
     );
     return node ? { ...node, tenantId } : null;
@@ -1094,11 +1147,11 @@ export async function getMemoryGraphNode(
 
 export async function listMemoryGraphEdges(
   limit = 200,
-  options: GraphReadOptions = {},
+  options: GraphInspectionReadOptions = {},
 ) {
   const tenantId = normalizeTenantId(options.tenantId);
   return runWithDatabaseTenantScope(tenantId, () =>
-    listMemoryGraphEdgesForTenant(limit, tenantId, options.accessScope),
+    listMemoryGraphEdgesForTenant(limit, tenantId, options.accessScope, options.privateOnly),
   );
 }
 
@@ -1106,11 +1159,16 @@ async function listMemoryGraphEdgesForTenant(
   limit: number,
   tenantId: string,
   accessScope?: DatabaseMemoryAccessScope,
+  privateOnly = false,
 ) {
+  if (privateOnly) {
+    if (!accessScope) throw new Error("Private graph reading requires current owner scope.");
+    requireUserPrivateGraphAccessScope(accessScope, tenantId, [MEMORY_PURPOSE_IDS.read, MEMORY_PURPOSE_IDS.retrieve]);
+  }
   const boundedLimit = Math.min(Math.max(limit, 1), MEMORY_GRAPH_EDGE_LIMIT);
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const legacyRows = await getSql()`
+    const legacyRows = privateOnly ? [] : await getSql()`
       SELECT edge.*
       FROM omni_memory_graph_edges edge
       WHERE edge.tenant_id = ${tenantId}
@@ -1132,6 +1190,7 @@ async function listMemoryGraphEdgesForTenant(
             SELECT edge.*
             FROM omni_memory_graph_edges edge
             WHERE edge.tenant_id = ${tenantId}
+              AND (NOT ${privateOnly} OR (edge.access_contract_version = 1 AND edge.visibility = 'user_private' AND edge.owner_actor_id = ${accessScope.initiatingActorId}))
               AND NOT EXISTS (
                 SELECT 1 FROM omni_memory_lifecycle_states lifecycle
                 WHERE lifecycle.tenant_id = edge.tenant_id
@@ -1154,6 +1213,7 @@ async function listMemoryGraphEdgesForTenant(
   return (await readGraphLedger()).edges
     .filter((edge) =>
       graphTenantId(edge) === tenantId &&
+      (!privateOnly || edge.accessBinding?.visibility === "user_private") &&
       graphRecordVisibleForScope(edge, accessScope)
     )
     .map((edge) => ({ ...edge, tenantId }))

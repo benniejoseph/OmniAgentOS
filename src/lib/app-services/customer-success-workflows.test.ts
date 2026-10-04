@@ -7,9 +7,15 @@ const mocks = vi.hoisted(() => ({
   getRun: vi.fn(),
   saveStart: vi.fn(),
   saveOutcome: vi.fn(),
+  replayOutcome: vi.fn(),
   createProject: vi.fn(),
   createTasks: vi.fn(),
   showProject: vi.fn(),
+  nativeStart: vi.fn(), nativeOutcome: vi.fn(), nativeRun: vi.fn(), nativeAcceptance: vi.fn(),
+}));
+vi.mock("@/lib/customer-success/workflow-native-store", () => ({
+  submitCustomerSuccessWorkflowNativeStart: mocks.nativeStart, submitCustomerSuccessWorkflowNativeOutcome: mocks.nativeOutcome,
+  getCustomerSuccessWorkflowNativeRun: mocks.nativeRun, readCustomerSuccessWorkflowNativeAcceptance: mocks.nativeAcceptance,
 }));
 
 vi.mock("@/lib/memory/shared-context", async (importOriginal) => ({
@@ -25,6 +31,7 @@ vi.mock("@/lib/customer-success/workflow-store", async (importOriginal) => ({
   getCustomerSuccessWorkflowRun: mocks.getRun,
   saveCustomerSuccessWorkflowStart: mocks.saveStart,
   saveCustomerSuccessWorkflowOutcome: mocks.saveOutcome,
+  findCustomerSuccessWorkflowOutcomeReplay: mocks.replayOutcome,
 }));
 vi.mock("@/lib/projects/store", () => ({
   createProject: mocks.createProject,
@@ -38,6 +45,8 @@ import {
   listCustomerSuccessWorkflowsService,
   recordCustomerSuccessWorkflowOutcomeService,
   startCustomerSuccessWorkflowService,
+  startCustomerSuccessWorkflowNativeService, recordCustomerSuccessWorkflowNativeOutcomeService,
+  showCustomerSuccessWorkflowNativeService, readCustomerSuccessWorkflowNativeAcceptanceService,
 } from "@/lib/app-services/customer-success-workflows";
 import { createAppServiceCaller } from "@/lib/app-services/contracts";
 import {
@@ -45,7 +54,9 @@ import {
   buildCustomerSuccessWorkflowRunRevision,
   customerSuccessRunId,
   getCustomerSuccessWorkflowDefinition,
+  CUSTOMER_SUCCESS_WORKFLOW_IDS,
 } from "@/lib/customer-success/workflow-contracts";
+import { workflowAccess, workflowActorId, workflowCaller, workflowFixture } from "@/lib/customer-success/workflow-mutation.test-fixtures";
 import { projectTaskIdForIdempotencyKey } from "@/lib/projects/events";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import type { SecurityContext } from "@/lib/security/types";
@@ -104,11 +115,13 @@ function caller(idempotencyKey?: string) {
 }
 
 beforeEach(() => {
+  mocks.nativeStart.mockReset(); mocks.nativeOutcome.mockReset(); mocks.nativeRun.mockReset(); mocks.nativeAcceptance.mockReset();
   mocks.requestAccess.mockReset().mockResolvedValue(access());
   mocks.getAccount.mockReset().mockResolvedValue({ account: account() });
   mocks.listRuns.mockReset().mockResolvedValue([]);
   mocks.getRun.mockReset().mockResolvedValue(undefined);
   mocks.saveStart.mockReset().mockImplementation(async ({ run }) => run);
+  mocks.replayOutcome.mockReset().mockResolvedValue(null);
   mocks.saveOutcome.mockReset().mockImplementation(async ({ outcome, expectedRevision }) => ({
     ...workflowRun(),
     revision: expectedRevision + 1,
@@ -136,7 +149,84 @@ beforeEach(() => {
   });
 });
 
+describe("native workflow app-service boundary", () => {
+  it.each(CUSTOMER_SUCCESS_WORKFLOW_IDS)("uses the atomic native store for %s without partial setup calls", async (workflowId) => {
+    const fixture = workflowFixture(workflowId);
+    mocks.requestAccess.mockResolvedValue(workflowAccess()); mocks.nativeStart.mockResolvedValue(fixture.committed);
+    const result = await startCustomerSuccessWorkflowNativeService(workflowCaller("start"), { accountId: fixture.accountId, ...fixture.start });
+    expect(result.data.acceptance).toEqual(fixture.acceptance);
+    expect(mocks.nativeStart.mock.calls[0][0].authority).toMatchObject({ canonicalActorId: workflowActorId, readableActorIds: [workflowActorId],
+      executionScope: { purpose: "customer.success.workflow.start", causationId: fixture.accountId, executingPrincipalId: workflowActorId } });
+    expect(mocks.createProject).not.toHaveBeenCalled(); expect(mocks.createTasks).not.toHaveBeenCalled(); expect(mocks.saveStart).not.toHaveBeenCalled();
+    expect(mocks.showProject).not.toHaveBeenCalled();
+  });
+  it("returns stable outcome acceptance without a later artifact or definition read", async () => {
+    const fixture = workflowFixture("risk_escalation", "outcome");
+    mocks.requestAccess.mockResolvedValue(workflowAccess()); mocks.nativeOutcome.mockResolvedValue({ ...fixture.committed, replayed: true,
+      currentAccount: { ...fixture.currentAccount, revision: 5, revisionId: `${fixture.accountId}:v5`, accountSha256: "e".repeat(64) } });
+    const result = await recordCustomerSuccessWorkflowNativeOutcomeService(workflowCaller("outcome"), { accountId: fixture.accountId, ...fixture.outcome });
+    expect(result.data.replayed).toBe(true); expect(result.data.acceptance.runAccountRevision).toBe(3);
+    expect(result.data.acceptance.reviewedAccountRevision).toBe(4); expect(result.data.currentAccount.revision).toBe(5);
+    expect(mocks.getRun).not.toHaveBeenCalled(); expect(mocks.showProject).not.toHaveBeenCalled(); expect(mocks.saveOutcome).not.toHaveBeenCalled();
+  });
+  it("returns a nullable exact receipt with reader authority and never reads a project", async () => {
+    const fixture = workflowFixture(); mocks.requestAccess.mockResolvedValue(workflowAccess(false));
+    mocks.nativeAcceptance.mockResolvedValue({ currentAccount: fixture.currentAccount, acceptance: null });
+    const caller = workflowCaller();
+    const result = await readCustomerSuccessWorkflowNativeAcceptanceService({ ...caller, context: { ...caller.context, role: "viewer" } }, {
+      workspaceId: fixture.workspaceId, accountId: fixture.accountId, runId: fixture.run.runId, keySha256: fixture.intent.idempotencyKeySha256,
+    });
+    expect(result.data.acceptance).toBeNull(); expect(result.receipt.resourceCount).toBe(0);
+    expect(mocks.nativeAcceptance.mock.calls[0][0].readableActorIds).toEqual([workflowActorId]);
+    expect(mocks.showProject).not.toHaveBeenCalled();
+  });
+  it("keeps current run available when optional project progress fails", async () => {
+    const fixture = workflowFixture(); mocks.requestAccess.mockResolvedValue(workflowAccess(false));
+    mocks.nativeRun.mockResolvedValue({ currentAccount: fixture.currentAccount, run: fixture.run }); mocks.showProject.mockRejectedValue(new Error("unavailable"));
+    const result = await showCustomerSuccessWorkflowNativeService(workflowCaller(), { workspaceId: fixture.workspaceId, accountId: fixture.accountId, runId: fixture.run.runId });
+    expect(result.data.run).toEqual(fixture.run); expect(result.data.projectProgress).toEqual({ state: "unavailable" });
+    expect(mocks.nativeStart).not.toHaveBeenCalled(); expect(mocks.nativeOutcome).not.toHaveBeenCalled();
+  });
+  it("rejects silent redaction and nonhuman or mismatched request authority before submission", async () => {
+    const fixture = workflowFixture(); mocks.requestAccess.mockResolvedValue(workflowAccess());
+    await expect(startCustomerSuccessWorkflowNativeService(workflowCaller("start"), { accountId: fixture.accountId,
+      ...fixture.start, input: { ...fixture.start.input, objective: `Bearer ${"a".repeat(32)}` } })).rejects.toThrow("sensitive material");
+    for (const override of [{ executingPrincipalType: "agent" }, { executingPrincipalId: "other" }, { workspaceId: "workspace:other" },
+      { delegationId: "delegation:other" }, { contextGrantIds: ["grant:other"] }, { capabilityGrantIds: ["grant:other"] },
+      { causationId: "another-account" }, { purpose: "project.execute" }]) {
+      const caller = workflowCaller("start");
+      await expect(startCustomerSuccessWorkflowNativeService({ ...caller, executionScope: { ...caller.executionScope!, ...override } } as typeof caller,
+        { accountId: fixture.accountId, ...fixture.start })).rejects.toThrow();
+    }
+    expect(mocks.nativeStart).not.toHaveBeenCalled();
+  });
+  it("rejects an inconsistent post-commit receipt without inventing a refusal", async () => {
+    const fixture = workflowFixture(); mocks.requestAccess.mockResolvedValue(workflowAccess());
+    mocks.nativeStart.mockResolvedValue({ ...fixture.committed, currentAccount: { ...fixture.currentAccount, accountSha256: "f".repeat(64) } });
+    await expect(startCustomerSuccessWorkflowNativeService(workflowCaller("start"), { accountId: fixture.accountId, ...fixture.start })).rejects.not.toHaveProperty("admission");
+  });
+});
+
 describe("customer-success workflow app services", () => {
+  it("returns the original accepted legacy outcome before fresh artifact checks or another timestamp", async () => {
+    const { schemaVersion, contractVersion, runRevisionId, previousRunRevisionId, inputSha256, runSha256, ...body } = workflowRun();
+    void [schemaVersion, contractVersion, runRevisionId, previousRunRevisionId, inputSha256, runSha256];
+    const semantics = { status: "blocked" as const, summary: "Waiting for customer confirmation.",
+      artifactReceipts: [{ artifactKey: "risk_brief", projectArtifactId: "artifact-no-longer-listed", evidenceKeys: ["risk_signal"], evidenceRefs: ["fact:risk:v1"] }],
+      nextAction: "Confirm the customer decision." };
+    const accepted = buildCustomerSuccessWorkflowRunRevision({ ...body, revision: 2,
+      outcome: buildCustomerSuccessOutcomeReceipt({ ...semantics, recordedByActorId: canonicalActorId, recordedAt: "2026-09-07T01:00:00.000Z" }) });
+    mocks.replayOutcome.mockResolvedValue(accepted);
+    mocks.showProject.mockResolvedValue({ data: { project: { id: accepted.projectId, tasks: [], artifacts: [] } } });
+    const result = await recordCustomerSuccessWorkflowOutcomeService(caller("accepted-outcome"), {
+      accountId, runId: accepted.runId, expectedRevision: 1, ...semantics,
+    });
+    expect(result.data.run).toBe(accepted);
+    expect(result.data.run.outcome.recordedAt).toBe("2026-09-07T01:00:00.000Z");
+    expect(result.data.project).not.toBeNull(); expect(result.data.definition).not.toBeNull();
+    expect(mocks.replayOutcome).toHaveBeenCalledWith(expect.objectContaining({ accountId, runId: accepted.runId, expectedRevision: 1, ...semantics }));
+    expect(mocks.getRun).not.toHaveBeenCalled(); expect(mocks.saveOutcome).not.toHaveBeenCalled();
+  });
   it("lists the complete pinned pack and account runs through workspace authority", async () => {
     const result = await listCustomerSuccessWorkflowsService(caller(), {
       accountId,

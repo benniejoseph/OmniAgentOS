@@ -4325,7 +4325,8 @@ async function updateInsertedMemoryVectors(
   }
 }
 
-function memoryFromRow(row: Record<string, unknown>): MemoryRecord {
+/** Shared decoder for transaction-owned private Memory operations. */
+export function memoryFromRow(row: Record<string, unknown>): MemoryRecord {
   const accessBinding = memoryAccessBindingFromRow(row);
   return sanitizeMemoryRecord({
     id: String(row.id),

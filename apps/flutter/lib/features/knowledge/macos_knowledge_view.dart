@@ -6,11 +6,27 @@ import '../../app/macos/macos_page_scaffold.dart';
 import '../../app/theme/macos_app_theme.dart';
 import 'knowledge.dart';
 import 'knowledge_consent_view.dart';
+import 'knowledge_promotion_view.dart';
+import 'knowledge_source_map_view.dart';
+import 'knowledge_source_deletion_view.dart';
+import 'knowledge_graph_view.dart';
+import 'knowledge_operations_view.dart';
 import 'knowledge_read_widgets.dart';
 import 'knowledge_mutations.dart';
 import 'knowledge_mutation_widgets.dart';
 
-enum _KnowledgeWorkspace { memories, sources, reviews, relationships, recall }
+enum _KnowledgeWorkspace {
+  memories,
+  sources,
+  reviews,
+  relationships,
+  recall,
+  promotions,
+  sourceMaps,
+  sourceCleanup,
+  graphExplorer,
+  privateActions,
+}
 
 /// A desktop knowledge browser for macOS.
 ///
@@ -194,6 +210,11 @@ class _MacosKnowledgeViewState extends State<MacosKnowledgeView> {
                   _KnowledgeWorkspace.relationships => nodes.length,
                   _KnowledgeWorkspace.reviews => 0,
                   _KnowledgeWorkspace.recall => 0,
+                  _KnowledgeWorkspace.promotions => 0,
+                  _KnowledgeWorkspace.sourceMaps => 0,
+                  _KnowledgeWorkspace.sourceCleanup => 0,
+                  _KnowledgeWorkspace.graphExplorer => 0,
+                  _KnowledgeWorkspace.privateActions => 0,
                 },
                 onWorkspaceChanged: _selectWorkspace,
                 onSearchChanged: (_) => setState(() {}),
@@ -231,6 +252,21 @@ class _MacosKnowledgeViewState extends State<MacosKnowledgeView> {
     final controller = widget.controller;
     if (_workspace == _KnowledgeWorkspace.recall) {
       return KnowledgePersonalRecall(controller: controller);
+    }
+    if (_workspace == _KnowledgeWorkspace.promotions) {
+      return KnowledgePromotions(controller: controller);
+    }
+    if (_workspace == _KnowledgeWorkspace.sourceMaps) {
+      return KnowledgeSourceMaps(controller: controller);
+    }
+    if (_workspace == _KnowledgeWorkspace.sourceCleanup) {
+      return KnowledgeSourceCleanup(controller: controller);
+    }
+    if (_workspace == _KnowledgeWorkspace.graphExplorer) {
+      return KnowledgeGraphExplorer(controller: controller);
+    }
+    if (_workspace == _KnowledgeWorkspace.privateActions) {
+      return KnowledgeOperations(controller: controller);
     }
     if (state == null && controller.loading) {
       return const MacosLoadingList(rows: 9);
@@ -283,6 +319,21 @@ class _MacosKnowledgeViewState extends State<MacosKnowledgeView> {
       _KnowledgeWorkspace.recall => KnowledgePersonalRecall(
         controller: controller,
       ),
+      _KnowledgeWorkspace.promotions => KnowledgePromotions(
+        controller: controller,
+      ),
+      _KnowledgeWorkspace.sourceMaps => KnowledgeSourceMaps(
+        controller: controller,
+      ),
+      _KnowledgeWorkspace.sourceCleanup => KnowledgeSourceCleanup(
+        controller: controller,
+      ),
+      _KnowledgeWorkspace.graphExplorer => KnowledgeGraphExplorer(
+        controller: controller,
+      ),
+      _KnowledgeWorkspace.privateActions => KnowledgeOperations(
+        controller: controller,
+      ),
       _KnowledgeWorkspace.relationships => Column(
         children: [
           KnowledgeCoverage(controller: controller, graph: true),
@@ -319,6 +370,11 @@ class _MacosKnowledgeViewState extends State<MacosKnowledgeView> {
         ),
       _KnowledgeWorkspace.reviews => const <String>[],
       _KnowledgeWorkspace.recall => const <String>[],
+      _KnowledgeWorkspace.promotions => const <String>[],
+      _KnowledgeWorkspace.sourceMaps => const <String>[],
+      _KnowledgeWorkspace.sourceCleanup => const <String>[],
+      _KnowledgeWorkspace.graphExplorer => const <String>[],
+      _KnowledgeWorkspace.privateActions => const <String>[],
       _KnowledgeWorkspace.relationships =>
         (state?.nodes ?? const <GraphNode>[]).map((item) => item.kind),
     };
@@ -450,6 +506,11 @@ class _KnowledgeToolbar extends StatelessWidget {
                 _KnowledgeWorkspace.reviews: 'Reviews',
                 _KnowledgeWorkspace.relationships: 'Relationships',
                 _KnowledgeWorkspace.recall: 'Personal recall',
+                _KnowledgeWorkspace.promotions: 'Promotions',
+                _KnowledgeWorkspace.sourceMaps: 'Source maps',
+                _KnowledgeWorkspace.sourceCleanup: 'Source cleanup',
+                _KnowledgeWorkspace.graphExplorer: 'Graph explorer',
+                _KnowledgeWorkspace.privateActions: 'Private actions',
               }.entries)
                 ChoiceChip(
                   label: Text(entry.value),
@@ -464,7 +525,12 @@ class _KnowledgeToolbar extends StatelessWidget {
                 ),
             ],
           ),
-          if (workspace != _KnowledgeWorkspace.recall) ...[
+          if (workspace != _KnowledgeWorkspace.recall &&
+              workspace != _KnowledgeWorkspace.promotions &&
+              workspace != _KnowledgeWorkspace.sourceMaps &&
+              workspace != _KnowledgeWorkspace.sourceCleanup &&
+              workspace != _KnowledgeWorkspace.graphExplorer &&
+              workspace != _KnowledgeWorkspace.privateActions) ...[
             const SizedBox(width: 12),
             SizedBox(
               width: compact ? 220 : 290,
@@ -480,6 +546,13 @@ class _KnowledgeToolbar extends StatelessWidget {
                     _KnowledgeWorkspace.relationships => 'Find a concept',
                     _KnowledgeWorkspace.reviews => 'Search catalogue',
                     _KnowledgeWorkspace.recall => 'Personal recall',
+                    _KnowledgeWorkspace.promotions => 'Promotion reviews',
+                    _KnowledgeWorkspace.sourceMaps => 'Source-map reviews',
+                    _KnowledgeWorkspace.sourceCleanup => 'Local source cleanup',
+                    _KnowledgeWorkspace.graphExplorer =>
+                      'Private graph explorer',
+                    _KnowledgeWorkspace.privateActions =>
+                      'Private Memory actions',
                   },
                   prefixIcon: const Icon(Icons.search_rounded, size: 17),
                   suffixIcon: searchController.text.isEmpty
@@ -1252,6 +1325,31 @@ class _KnowledgeInspector extends StatelessWidget {
       title: 'Your personal recall choice',
       message: 'Read the current notice and explicitly enable or disable personal automatic recall. A saved decision receipt is separate from the latest setting.',
     ),
+    _KnowledgeWorkspace.promotions => const _InspectorPlaceholder(
+      icon: Icons.rule_outlined,
+      title: 'Review repeated evidence',
+      message: 'Inspect the canonical content and exact source identities before promoting or dismissing. A saved decision remains separate from downstream projections.',
+    ),
+    _KnowledgeWorkspace.sourceMaps => const _InspectorPlaceholder(
+      icon: Icons.account_tree_outlined,
+      title: 'Review private source maps',
+      message: 'Inspect exact source evidence and retention before confirming or dismissing a candidate. Saved decisions and relationship projections are separate.',
+    ),
+    _KnowledgeWorkspace.sourceCleanup => const _InspectorPlaceholder(
+      icon: Icons.delete_outline,
+      title: 'Review local source cleanup',
+      message: 'Inspect the complete bounded manifest before deleting private imports. Upstream sources remain unchanged and future imports may reappear.',
+    ),
+    _KnowledgeWorkspace.graphExplorer => const _InspectorPlaceholder(
+      icon: Icons.travel_explore,
+      title: 'Explore current private evidence',
+      message: 'Select an exact node or entity, inspect temporal revisions, or trace a bounded relationship path. Graph reads never start maintenance or other actions.',
+    ),
+    _KnowledgeWorkspace.privateActions => const _InspectorPlaceholder(
+      icon: Icons.fact_check_outlined,
+      title: 'Review before running',
+      message: 'Maintenance, graph rebuilds and model builds use an exact current plan. Saved acceptance and current processing are separate; recovery never repeats an uncertain action.',
+    ),
     _KnowledgeWorkspace.sources =>
       source == null
           ? const _InspectorPlaceholder(
@@ -1294,7 +1392,7 @@ class _SourceInspector extends StatelessWidget {
       ),
       Text('Indexed: ${source.indexedAt?.toIso8601String() ?? "not reported"}'),
       const Text(
-        'Catalogue metadata only. Exact source content and source deletion are not included in this view.',
+        'Catalogue metadata only. Use Source cleanup to review deletion of eligible private local imports.',
       ),
       const SizedBox(height: 5),
       Text(

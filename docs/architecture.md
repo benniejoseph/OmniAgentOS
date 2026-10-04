@@ -125,7 +125,7 @@ Key properties:
 - Text deltas stream to the client immediately but persist to the run ledger in batches.
 
 P9.1 inserts a transport-neutral application-service boundary between product
-callers and domain stores. Later phases extend it to 208 active `app.*`
+callers and domain stores. Later phases extend it to 247 active `app.*`
 operations, listed in `APP_SERVICE_OPERATION_CONTRACTS` in
 `src/lib/app-services/registry.ts`, across the workspace, project, work-item,
 asset, memory, Agent, Skill, run, workflow, connector, settings, Today, and
@@ -2967,3 +2967,11 @@ committed usage; existing read-only runtime records keep their original
 none-authority fields. Web and native v32 consume the same typed projections.
 Older native clients omit the new notification kind before limits, counts and
 bulk updates are evaluated. There is no external delivery in this contract.
+
+
+The checked managed transaction adapter also joins the closed, reviewed native
+Account workflow graph (project, tasks, canonical Work, run and events), and the
+native Agent/Skill catalog graph (definition, identity lifecycle, Trash,
+immutable acceptance and events). Callers use the adopted client inside the
+callback. No provider call or new execution authority enters those transactions;
+current owner, membership and review pins are rechecked under their domain locks.

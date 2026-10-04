@@ -9,6 +9,10 @@ import '../auth/domain/app_session.dart';
 import 'knowledge_contracts.dart';
 import 'knowledge_consent_contracts.dart';
 import 'knowledge_review_contracts.dart';
+import 'knowledge_promotion_contracts.dart';
+import 'knowledge_private_action_contracts.dart';
+import 'knowledge_maintenance_contracts.dart';
+import 'knowledge_build_contracts.dart';
 
 void memoryRequire(
   bool condition, [
@@ -141,7 +145,20 @@ class KnowledgeAccess extends ChangeNotifier {
   }
 }
 
-enum MemoryChange { create, correct, lifecycle, forget, review, consent }
+enum MemoryChange {
+  create,
+  correct,
+  lifecycle,
+  forget,
+  review,
+  consent,
+  promotion,
+  sourceMap,
+  sourceDelete,
+  maintenance,
+  graphRebuild,
+  cognitionBuild,
+}
 
 extension MemoryChangeOperation on MemoryChange {
   String get operation => switch (this) {
@@ -151,6 +168,12 @@ extension MemoryChangeOperation on MemoryChange {
     MemoryChange.forget => 'memory.delete',
     MemoryChange.review => 'memory.reconciliation.resolve',
     MemoryChange.consent => 'memory.personal-context-consent.decide',
+    MemoryChange.promotion => 'memory.promotions.decide',
+    MemoryChange.sourceMap => 'knowledge.cognification.decide',
+    MemoryChange.sourceDelete => 'knowledge.sources.delete',
+    MemoryChange.maintenance => 'memory.maintenance.run',
+    MemoryChange.graphRebuild => 'memory.graph.rebuild',
+    MemoryChange.cognitionBuild => 'knowledge.cognification.build',
   };
   String get service => switch (this) {
     MemoryChange.create => 'memory.write',
@@ -159,6 +182,12 @@ extension MemoryChangeOperation on MemoryChange {
     MemoryChange.forget => 'memory.forget',
     MemoryChange.review => 'memory.reconciliation.resolve',
     MemoryChange.consent => 'memory.personal-context-consent.decide',
+    MemoryChange.promotion => 'memory.promotions.decide',
+    MemoryChange.sourceMap => 'app.knowledge.cognification.native.decide',
+    MemoryChange.sourceDelete => 'app.knowledge.sources.native.delete',
+    MemoryChange.maintenance => 'app.memory.maintenance.native.run',
+    MemoryChange.graphRebuild => 'app.memory.graph.native.rebuild.run',
+    MemoryChange.cognitionBuild => 'app.knowledge.cognification.native.build',
   };
 }
 
@@ -171,6 +200,7 @@ class MemorySubmission {
     this.previewDigest,
     KnowledgeJson? reviewEvidence,
     KnowledgeJson? consentNotice,
+    KnowledgeJson? promotionEvidence,
     String? key,
   }) : body = freezeKnowledgeJson(body) as KnowledgeJson,
        reviewEvidence = reviewEvidence == null
@@ -179,10 +209,19 @@ class MemorySubmission {
        consentNotice = consentNotice == null
            ? null
            : freezeKnowledgeJson(consentNotice) as KnowledgeJson,
+       promotionEvidence = promotionEvidence == null
+           ? null
+           : freezeKnowledgeJson(promotionEvidence) as KnowledgeJson,
        key =
            key ??
            'native-memory-${List.generate(24, (_) => Random.secure().nextInt(256).toRadixString(16).padLeft(2, '0')).join()}' {
-    if (id != null) knowledgeIdentity(id, 'Exact memory', maximum: 200);
+    if (id != null) {
+      knowledgeIdentity(
+        id,
+        'Exact memory',
+        maximum: kind == MemoryChange.cognitionBuild ? 320 : 200,
+      );
+    }
     memoryRequire(kind == MemoryChange.create || id != null);
     if (kind == MemoryChange.create || kind == MemoryChange.correct) {
       for (final field in ['title', 'content']) {
@@ -264,12 +303,34 @@ class MemorySubmission {
     } else {
       memoryRequire(consentNotice == null);
     }
+    if (kind == MemoryChange.promotion) {
+      validateMemoryPromotionSubmission(this.body, id, this.promotionEvidence);
+    } else {
+      memoryRequire(promotionEvidence == null);
+    }
+    if (kind == MemoryChange.sourceMap) {
+      validateSourceMapRequest(this.body, id);
+    }
+    if (kind == MemoryChange.sourceDelete) {
+      validateSourceDeletionRequest(this.body, id);
+    }
+    if (kind == MemoryChange.maintenance || kind == MemoryChange.graphRebuild) {
+      validateDeterministicRequest(
+        this.body,
+        id,
+        kind == MemoryChange.maintenance ? 'maintenance' : 'graph',
+      );
+    }
+    if (kind == MemoryChange.cognitionBuild) {
+      validateCognitionBuildRequest(this.body, id);
+    }
   }
   final MemoryChange kind;
   final KnowledgeOwner owner;
   final KnowledgeJson body;
   final KnowledgeJson? reviewEvidence;
   final KnowledgeJson? consentNotice;
+  final KnowledgeJson? promotionEvidence;
   final String? id, previewDigest;
   final String key;
   bool get replayable =>
@@ -282,6 +343,7 @@ class MemorySubmission {
     'previewDigest': previewDigest,
     if (reviewEvidence != null) 'reviewEvidence': reviewEvidence,
     if (consentNotice != null) 'consentNotice': consentNotice,
+    if (promotionEvidence != null) 'promotionEvidence': promotionEvidence,
     'owner': {
       'tenantId': owner.tenantId,
       'actorId': owner.actorId,
@@ -300,7 +362,7 @@ class MemorySubmission {
     );
     final owner = KnowledgeOwner(
       current.tenantId,
-      knowledgeIdentity(saved['actorId'], 'Saved actor'),
+      knowledgeIdentity(saved['actorId'], 'Saved actor', maximum: 320),
       current.userId,
       knowledgeIdentity(saved['role'], 'Saved role'),
       current.apiBaseUrl,
@@ -328,6 +390,9 @@ class MemorySubmission {
       consentNotice: raw['consentNotice'] == null
           ? null
           : knowledgeMap(raw['consentNotice'], 'Saved personal recall notice'),
+      promotionEvidence: raw['promotionEvidence'] == null
+          ? null
+          : knowledgeMap(raw['promotionEvidence'], 'Saved promotion sources'),
     );
   }
 }
@@ -460,12 +525,30 @@ class MemoryAcceptance {
       'Saved review receipt scope',
     );
     memoryRequire(
-      const {MemoryChange.review, MemoryChange.consent}.contains(sent.kind) &&
+      const {
+            MemoryChange.review,
+            MemoryChange.consent,
+            MemoryChange.promotion,
+            MemoryChange.sourceMap,
+            MemoryChange.sourceDelete,
+            MemoryChange.maintenance,
+            MemoryChange.graphRebuild,
+            MemoryChange.cognitionBuild,
+          }.contains(sent.kind) &&
           scope.length == 2 &&
           scope.keys.every(const {'actorId', 'role'}.contains) &&
           scope['actorId'] is String &&
           (scope['actorId'] as String).isNotEmpty &&
-          (scope['actorId'] as String).length <= 256 &&
+          (scope['actorId'] as String).length <=
+              (const {
+                    MemoryChange.sourceMap,
+                    MemoryChange.sourceDelete,
+                    MemoryChange.maintenance,
+                    MemoryChange.graphRebuild,
+                    MemoryChange.cognitionBuild,
+                  }.contains(sent.kind)
+                  ? 320
+                  : 256) &&
           const {
             'viewer',
             'operator',
@@ -487,6 +570,161 @@ class MemoryAcceptance {
     MemorySubmission sent, {
     KnowledgeOwner? reviewReadOwner,
   }) async {
+    if (const {
+      MemoryChange.maintenance,
+      MemoryChange.graphRebuild,
+      MemoryChange.cognitionBuild,
+    }.contains(sent.kind)) {
+      final mutation = raw.containsKey('replayed'),
+          owner = reviewReadOwner ?? sent.owner;
+      memoryRequire(
+        (!mutation || reviewReadOwner == null) &&
+            owner.tenantId == sent.owner.tenantId &&
+            owner.userId == sent.owner.userId &&
+            owner.apiBaseUrl == sent.owner.apiBaseUrl &&
+            owner.actorId == sent.owner.actorId,
+      );
+      final keyHash = await privateActionKey(sent);
+      late final KnowledgeJson? accepted;
+      late final KnowledgeJson result;
+      late final String description;
+      if (sent.kind == MemoryChange.cognitionBuild) {
+        final read = await KnowledgeBuildRead.parse(
+          raw,
+          owner,
+          sent.id!,
+          keyHash: keyHash,
+          sent: sent,
+          mutation: mutation,
+        );
+        accepted = read.acceptance;
+        result = read.raw;
+        description =
+            'Source-map build accepted. Provider processing is ${read.processing?['phase'] ?? 'unconfirmed'}; generated source maps still need separate review.';
+      } else {
+        final maintenance = sent.kind == MemoryChange.maintenance;
+        final read = await KnowledgeMaintenanceRead.parse(
+          raw,
+          owner,
+          maintenance ? 'maintenance' : 'graph',
+          keyHash: keyHash,
+          sent: sent,
+          mutation: mutation,
+        );
+        accepted = read.acceptance;
+        result = read.raw;
+        description = maintenance
+            ? 'Private Memory maintenance recorded. Its saved report describes this commit; promotion candidates still require review.'
+            : 'Private graph rebuild recorded. The receipt describes this build; current graph reads are separate.';
+      }
+      memoryRequire(
+        accepted != null,
+        'No matching acceptance confirms this saved action. The request remains held.',
+      );
+      return MemoryAcceptance(
+        sent,
+        result,
+        accepted!['id'] as String,
+        description,
+        reviewReadOwner: mutation ? null : owner,
+      );
+    }
+    if (sent.kind == MemoryChange.sourceDelete) {
+      final mutation = raw.containsKey('replayed'),
+          owner = reviewReadOwner ?? sent.owner;
+      memoryRequire(
+        (!mutation || reviewReadOwner == null) &&
+            owner.tenantId == sent.owner.tenantId &&
+            owner.userId == sent.owner.userId &&
+            owner.apiBaseUrl == sent.owner.apiBaseUrl &&
+            owner.actorId == sent.owner.actorId,
+      );
+      final result = await KnowledgeSourceDeletionRead.parse(
+        raw,
+        owner,
+        privateSourceKind((sent.body['review'] as Map)['sourceKind']),
+        keyHash: await privateActionKey(sent),
+        sent: sent,
+        mutation: mutation,
+      );
+      memoryRequire(
+        result.acceptance != null,
+        'No matching receipt confirms this local source deletion.',
+      );
+      final counts = result.acceptance!['result'] as Map;
+      return MemoryAcceptance(
+        sent,
+        result.raw,
+        result.acceptance!['id'] as String,
+        'Local source cleanup recorded: ${counts['documents']} documents and ${counts['memories']} derived memories deleted. Upstream content remains unchanged and future imports may reappear.',
+        reviewReadOwner: mutation ? null : owner,
+      );
+    }
+    if (sent.kind == MemoryChange.sourceMap) {
+      final mutation = raw.containsKey('replayed'),
+          owner = reviewReadOwner ?? sent.owner;
+      memoryRequire(
+        (!mutation || reviewReadOwner == null) &&
+            owner.tenantId == sent.owner.tenantId &&
+            owner.userId == sent.owner.userId &&
+            owner.apiBaseUrl == sent.owner.apiBaseUrl &&
+            owner.actorId == sent.owner.actorId,
+      );
+      final result = await KnowledgeSourceMapRead.parse(
+        raw,
+        owner,
+        sent.id!,
+        keyHash: await privateActionKey(sent),
+        sent: sent,
+        mutation: mutation,
+      );
+      memoryRequire(
+        result.acceptance != null,
+        'No matching receipt confirms this source-map decision.',
+      );
+      return MemoryAcceptance(
+        sent,
+        result.raw,
+        (result.acceptance!['result'] as Map)['memoryId'] as String? ??
+            sent.id!,
+        sent.body['decision'] == 'confirm'
+            ? 'Source-map decision saved as a private memory. Relationship projection status is reported separately.'
+            : 'Source-map review dismissed. The source remains unchanged.',
+        reviewReadOwner: mutation ? null : owner,
+      );
+    }
+    if (sent.kind == MemoryChange.promotion) {
+      final mutation = raw.containsKey('projections');
+      final owner = reviewReadOwner ?? sent.owner;
+      memoryRequire(
+        (!mutation || reviewReadOwner == null) &&
+            owner.tenantId == sent.owner.tenantId &&
+            owner.userId == sent.owner.userId &&
+            owner.apiBaseUrl == sent.owner.apiBaseUrl,
+      );
+      final read = await MemoryPromotionRead.parse(
+        raw,
+        owner,
+        sent.id!,
+        keyHash: await memoryShaText(sent.key),
+        sent: sent,
+        mutation: mutation,
+      );
+      memoryRequire(
+        read.acceptance != null,
+        'No matching receipt has confirmed this promotion decision.',
+      );
+      return MemoryAcceptance(
+        sent,
+        read.raw,
+        read.acceptance!['promotedMemoryId'] as String? ??
+            read.review.canonical.id,
+        sent.body['decision'] == 'promote'
+            ? 'Promotion recorded as a procedural memory. Graph and entity projections are reported separately.'
+            : 'Promotion review dismissed. The source memories remain unchanged.',
+        reviewReadOwner: mutation ? null : owner,
+      );
+    }
     if (sent.kind == MemoryChange.consent) {
       final mutation = raw.containsKey('replayed');
       final owner = reviewReadOwner ?? sent.owner;

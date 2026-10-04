@@ -945,10 +945,12 @@ class AgentsView extends StatefulWidget {
     required this.controller,
     this.liveWork,
     this.onRefreshLiveWork,
+    this.onCatalogDecision,
   });
   final AgentsController controller;
   final Widget? liveWork;
   final Future<void> Function()? onRefreshLiveWork;
+  final Future<void> Function(String operation, String? id)? onCatalogDecision;
   @override
   State<AgentsView> createState() => _AgentsViewState();
 }
@@ -1129,6 +1131,11 @@ class _AgentsViewState extends State<AgentsView>
                             PopupMenuButton<String>(
                               onSelected: (v) => v == 'edit'
                                   ? _editAgent(a)
+                                  : widget.onCatalogDecision != null
+                                  ? widget.onCatalogDecision!(
+                                      'agent.delete',
+                                      a.id,
+                                    )
                                   : _confirmDelete(
                                       a.name,
                                       () => widget.controller.removeAgent(a.id),
@@ -1178,6 +1185,8 @@ class _AgentsViewState extends State<AgentsView>
                   : PopupMenuButton<String>(
                       onSelected: (v) => v == 'edit'
                           ? _editSkill(s)
+                          : widget.onCatalogDecision != null
+                          ? widget.onCatalogDecision!('skill.delete', s.id)
                           : _confirmDelete(
                               s.name,
                               () => widget.controller.removeSkill(s.id),
@@ -1299,6 +1308,10 @@ class _AgentsViewState extends State<AgentsView>
   }
 
   Future<void> _editSkill([AgentSkill? s]) async {
+    if (widget.onCatalogDecision case final decide?) {
+      await decide(s == null ? 'skill.create' : 'skill.update', s?.id);
+      return;
+    }
     final result = await showDialog<Json>(
       context: context,
       useRootNavigator: false,

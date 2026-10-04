@@ -40,6 +40,18 @@ beforeEach(() => {
 });
 
 describe("background media diarization", () => {
+  it("native once-only mode never falls back after an uncertain provider response", async () => {
+    mocks.create.mockRejectedValue(new Error("Unconfirmed provider response"));
+    await expect(transcribeCaptureMediaDiarized(new File([new Uint8Array([1])], "recording.webm", { type: "audio/webm" }),
+      ["en-US"], undefined, undefined, { singleAttempt: true })).rejects.toThrow("Unconfirmed provider response");
+    expect(mocks.create).toHaveBeenCalledOnce();
+  });
+  it("rechecks native authority inside the credential callback before any provider request", async () => {
+    const beforeProvider = vi.fn(async () => { throw new Error("Recording consent changed"); });
+    await expect(transcribeCaptureMediaDiarized(new File([new Uint8Array([1])], "recording.webm", { type: "audio/webm" }),
+      ["en-US"], undefined, undefined, { singleAttempt: true, beforeProvider })).rejects.toThrow("Recording consent changed");
+    expect(beforeProvider).toHaveBeenCalledOnce(); expect(mocks.create).not.toHaveBeenCalled(); expect(mocks.usage).not.toHaveBeenCalled();
+  });
   it("returns bounded speaker turns with timestamps and language labels", async () => {
     mocks.create.mockResolvedValue({
       duration: 4,

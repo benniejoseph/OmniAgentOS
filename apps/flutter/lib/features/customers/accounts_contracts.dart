@@ -499,7 +499,7 @@ void _source(Object? value) {
   accountDate(row['ingestedAt']);
 }
 
-void _factValue(AccountJson row, String kind) {
+void accountFactValue(AccountJson row, String kind) {
   final fields = <String, List<String>>{
     'organization': ['entityId', 'name', 'industry', 'website'],
     'contact': ['entityId', 'name', 'email', 'title'],
@@ -740,7 +740,7 @@ class CustomerFact {
           .hasMatch(accountText(row['factKey'], 160)),
     );
     final factValue = accountMap(row['value']);
-    _factValue(factValue, kind);
+    accountFactValue(factValue, kind);
     accountRequire(
       accountHash(row['valueSha256']) == await accountSha(factValue),
     );

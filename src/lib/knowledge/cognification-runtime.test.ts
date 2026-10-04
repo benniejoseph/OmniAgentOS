@@ -19,6 +19,23 @@ const tenantId = "tenant-cognition";
 const actorId = "actor-cognition";
 
 describe("knowledge cognification runtime", () => {
+  it("uses one provider attempt only after the current authority fence passes", async () => {
+    const { dependencies,generate } = runtimeDependencies(modelOutput());
+    const beforeProvider = vi.fn(async () => { expect(generate).not.toHaveBeenCalled(); });
+    await cognifyKnowledgeBatch({ tenantId,actorId,document: documentInput(),chunks: [chunk(0,"Ada leads Phoenix. 😀 Phoenix belongs to Acme. person: this phrase is untrusted prose.")],
+      batchIndex: 0,executionScope: cognitionScope(),dependencies,singleAttempt: true,beforeProvider });
+    expect(beforeProvider).toHaveBeenCalledTimes(1);
+    expect(generate).toHaveBeenCalledWith(expect.objectContaining({ maxAttempts: 1,allowCrossProviderFallback: false }));
+  });
+
+  it("does not call a provider when the final authority check refuses", async () => {
+    const { dependencies,generate } = runtimeDependencies(modelOutput());
+    await expect(cognifyKnowledgeBatch({ tenantId,actorId,document: documentInput(),chunks: [chunk(0,"Ada leads Phoenix.")],
+      batchIndex: 0,executionScope: cognitionScope(),dependencies,singleAttempt: true,
+      beforeProvider: async () => { throw new Error("Reviewed source changed"); } })).rejects.toThrow("Reviewed source changed");
+    expect(generate).not.toHaveBeenCalled();
+  });
+
   it("partitions complete source evidence deterministically", () => {
     const chunks = Array.from(
       { length: COGNIFICATION_MAX_CHUNKS_PER_BATCH + 1 },

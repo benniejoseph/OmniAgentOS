@@ -32,12 +32,25 @@ import { nativeCustomerContractSchemas } from "@/lib/mobile/customer-contracts";
 import { nativeCustomerDetailContractSchemas } from "@/lib/mobile/customer-detail-contracts";
 import { nativeCustomerMutationContractSchemas } from "@/lib/mobile/customer-mutation-contracts";
 import { nativeCustomerHealthMutationSchemas } from "@/lib/mobile/customer-health-mutation-contracts";
+import { nativeCustomerWorkflowMutationSchemas } from "@/lib/mobile/customer-workflow-mutation-contracts";
+import { nativeAgentSkillMutationSchemas } from "@/lib/mobile/agent-skill-mutation-contracts";
+import { nativeMeetingRecordingSchemas } from "@/lib/mobile/meeting-recording-contracts";
+import { nativeCustomerFactMutationSchemas } from "@/lib/mobile/customer-fact-mutation-contracts";
+import { nativeSalesforceActionSchemas } from "@/lib/mobile/salesforce-native-contracts";
+import { nativeKnowledgeCognificationSchemas } from "@/lib/mobile/knowledge-cognification-contracts";
+import { nativeKnowledgeSourceDeletionSchemas } from "@/lib/mobile/knowledge-source-deletion-contracts";
+import { nativeMemoryGraphReadSchemas } from "@/lib/mobile/memory-graph-read-contracts";
+import { nativeMemoryMaintenanceSchemas, nativeMemoryGraphRebuildSchemas } from "@/lib/mobile/memory-deterministic-contracts";
+import { nativeKnowledgeCognitionBuildSchemas } from "@/lib/mobile/knowledge-cognition-build-contracts";
+import { entityRelationTypeIdSchema } from "@/lib/entities/ontology";
+import { relationEpistemicKindSchema } from "@/lib/entities/temporal-claims";
 import { nativeLibraryContractSchemas, nativeLibraryListQueryMetadata } from "@/lib/mobile/library-contracts";
 import { nativeLibraryHistoryContractSchemas } from "@/lib/mobile/library-history-contracts";
 import { entityOptionsContractSchemas, entityOptionsQueryMetadata } from "@/lib/entities/options-contracts";
 import { nativeMarketReadContractSchemas } from "@/lib/mobile/market-contracts";
 import { nativeMemoryMutationSchemas } from "@/lib/mobile/memory-mutation-contracts";
 import { nativeMemoryReconciliationSchemas } from "@/lib/mobile/memory-reconciliation-contracts";
+import { nativeMemoryPromotionSchemas } from "@/lib/mobile/memory-promotion-contracts";
 import { nativePersonalContextConsentSchemas } from "@/lib/mobile/personal-context-consent-contracts";
 import { nativeMeetingCalendarSchemas } from "@/lib/mobile/meeting-calendar-contracts";
 
@@ -49,10 +62,10 @@ import {
 import { voiceCommandInputSchema } from "@/lib/voice/command-input";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 37 as const;
-// v36 remains byte-frozen. v37 adds deterministic Account health evaluation
-// with immutable intent and exact receipt recovery.
-export const NATIVE_API_PREVIOUS_VERSION = 36 as const;
+export const NATIVE_API_CURRENT_VERSION = 38 as const;
+// v37 remains byte-frozen. v38 adds reviewed native mutations with
+// immutable intent and exact acceptance recovery across these domain surfaces.
+export const NATIVE_API_PREVIOUS_VERSION = 37 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -792,7 +805,7 @@ export type NativeOperation = Readonly<{
   mediaType?: "application/json" | "text/event-stream" | "multipart/form-data";
   responseMediaType?: "application/json" | "text/event-stream" | "audio/pcm";
   responseHeaders?: readonly NativeResponseHeader[];
-  successStatuses?: readonly (200 | 201)[];
+  successStatuses?: readonly (200 | 201 | 202)[];
   errorStatuses?: readonly (400 | 401 | 403 | 404 | 409 | 413 | 415 | 428 | 500 | 503)[];
   errorResponseSchema?: string;
   pathParameters?: readonly NativePathParameter[];
@@ -1989,6 +2002,245 @@ const v37Operations: readonly NativeOperation[] = [
   }),
 ];
 
+const memoryPromotionOptions = {
+  ...privateReadOptions, queryPolicy: "exact",
+  errorResponseSchema: "NativeMemoryPromotionError",
+  errorStatuses: [400, 401, 403, 404, 409, 500, 503],
+} as const satisfies Partial<NativeOperation>;
+const customerWorkflowOptions = {
+  ...customerDetailOptions, queryPolicy: "exact",
+  errorResponseSchema: "NativeCustomerWorkflowError",
+  errorStatuses: [400, 401, 403, 404, 409, 500, 503],
+} as const satisfies Partial<NativeOperation>;
+const customerWorkflowRunParameters = [
+  ...customerDetailOptions.pathParameters,
+  { name: "runId", minLength: 85, maxLength: 85, pattern: "^customer-success-run:[a-f0-9]{64}$" },
+] as const;
+const agentSkillNativeOptions = {
+  ...privateReadOptions, queryPolicy: "exact",
+  errorResponseSchema: "NativeAgentSkillError",
+  errorStatuses: [400, 401, 403, 404, 409, 500, 503],
+} as const satisfies Partial<NativeOperation>;
+const agentSkillNativeDetailOptions = {
+  ...agentSkillNativeOptions,
+  pathParameters: [{ name: "id", minLength: 1, maxLength: 200, pattern: "^[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$" }],
+} as const satisfies Partial<NativeOperation>;
+const agentSkillNativeWriteOptions = {
+  ...agentSkillNativeOptions, headerParameters: pluginMutationHeaders,
+  errorStatuses: [400, 401, 403, 404, 409, 413, 415, 500, 503],
+} as const satisfies Partial<NativeOperation>;
+const agentSkillNativeRecoveryOptions = {
+  ...agentSkillNativeOptions,
+  pathParameters: [{ name: "keySha256", minLength: 64, maxLength: 64, pattern: "^[a-f0-9]{64}$" }],
+} as const satisfies Partial<NativeOperation>;
+const meetingRecordingOptions = {
+  ...privateReadOptions, queryPolicy: "exact", errorResponseSchema: "NativeMeetingRecordingError",
+  errorStatuses: [400, 401, 403, 404, 409, 500, 503],
+  pathParameters: [{ name: "id", minLength: 1, maxLength: 200, pattern: "^[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$" }],
+} as const satisfies Partial<NativeOperation>;
+const meetingRecordingQuery = [
+  queryParameter("workspaceId", "string", { required: true, minLength: 11, maxLength: 240, pattern: "^workspace:[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$" }),
+  queryParameter("meetingId", "string", { required: true, minLength: 44, maxLength: 44, pattern: "^meeting:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }),
+];
+const customerFactOptions = {
+  ...customerDetailOptions, queryPolicy: "exact", errorResponseSchema: "NativeCustomerFactMutationError",
+  errorStatuses: [400, 401, 403, 404, 409, 500, 503],
+} as const satisfies Partial<NativeOperation>;
+const salesforceActionOptions = {
+  ...privateReadOptions, queryPolicy: "exact", errorResponseSchema: "NativeSalesforceActionError",
+  errorStatuses: [400, 401, 403, 404, 409, 500, 503],
+} as const satisfies Partial<NativeOperation>;
+const salesforceActionQuery = [
+  queryParameter("workspaceId", "string", { required: true, minLength: 11, maxLength: 240, pattern: "^workspace:[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$" }),
+];
+const knowledgeCognitionOptions = {
+  ...privateReadOptions, queryPolicy: "exact", errorResponseSchema: "NativeKnowledgeCognitionError",
+  errorStatuses: [400, 401, 403, 404, 409, 500, 503],
+} as const satisfies Partial<NativeOperation>;
+const knowledgeCognitionDetailOptions = {
+  ...knowledgeCognitionOptions,
+  pathParameters: [{ name: "id", minLength: 64, maxLength: 64, pattern: "^cognition_batch_[a-f0-9]{48}$" }],
+} as const satisfies Partial<NativeOperation>;
+const knowledgeSourceDeletionOptions = {
+  ...privateReadOptions, queryPolicy: "exact", errorResponseSchema: "NativeKnowledgeSourceDeletionError",
+  errorStatuses: [400, 401, 403, 404, 409, 500, 503],
+  pathParameters: [{ name: "sourceKind", minLength: 4, maxLength: 8, pattern: "^(google|mail|calendar|drive)$" }],
+} as const satisfies Partial<NativeOperation>;
+const memoryGraphReadOptions = {
+  ...privateReadOptions, queryPolicy: "exact", errorResponseSchema: "NativeMemoryGraphReadError",
+  errorStatuses: [400, 401, 403, 404, 503],
+} as const satisfies Partial<NativeOperation>;
+const memoryGraphDetailOptions = {
+  ...memoryGraphReadOptions,
+  pathParameters: [{ name: "id", minLength: 1, maxLength: 240, pattern: "^[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$" }],
+} as const satisfies Partial<NativeOperation>;
+const memoryMaintenanceOptions = {
+  ...privateReadOptions, queryPolicy: "exact", errorResponseSchema: "NativeMemoryMaintenanceError",
+  errorStatuses: [400, 401, 403, 404, 409, 500, 503],
+} as const satisfies Partial<NativeOperation>;
+const memoryGraphRebuildOptions = {
+  ...memoryMaintenanceOptions, errorResponseSchema: "NativeMemoryGraphRebuildError",
+} as const satisfies Partial<NativeOperation>;
+const knowledgeCognitionBuildOptions = {
+  ...privateReadOptions, queryPolicy: "exact", errorResponseSchema: "NativeKnowledgeCognitionBuildError",
+  errorStatuses: [400, 401, 403, 404, 409, 500, 503],
+  pathParameters: [{ name: "documentId", minLength: 1, maxLength: 320, pattern: "^[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$" }],
+} as const satisfies Partial<NativeOperation>;
+const v38Operations: readonly NativeOperation[] = [
+  ...v37Operations,
+  operation("agents.delete.review", "GET", "/api/agents/{id}/deletion-review", "Review the exact owned custom Agent and its deletion consequences.", "bearer", undefined, "NativeAgentSkillReviewResponse", agentSkillNativeDetailOptions),
+  operation("agents.delete", "DELETE", "/api/agents/{id}", "Move the exact reviewed custom Agent to Trash with atomic deletion acceptance.", "bearer", "NativeAgentSkillDeleteRequest", "NativeAgentSkillMutationResponse", {
+    ...agentSkillNativeDetailOptions, ...agentSkillNativeWriteOptions, requestBodyMaxBytes: 16384,
+  }),
+  operation("agents.mutations.get", "GET", "/api/agents/mutations/{keySha256}", "Read the exact owned Agent deletion acceptance without repeating deletion.", "bearer", undefined, "NativeAgentSkillReadResponse", agentSkillNativeRecoveryOptions),
+  operation("skills.mutation.review", "GET", "/api/skills/{id}/mutation-review", "Review an exact owned Skill and all affected Agent definitions before changing it.", "bearer", undefined, "NativeAgentSkillReviewResponse", {
+    ...agentSkillNativeDetailOptions, queryParameters: [queryParameter("operation", "string", { required: true, enumValues: ["update", "delete"] })],
+  }),
+  operation("skills.create", "POST", "/api/skills", "Create an owned custom Skill with durable atomic acceptance.", "bearer", "NativeAgentSkillCreateRequest", "NativeAgentSkillMutationResponse", {
+    ...agentSkillNativeWriteOptions, requestBodyMaxBytes: 65536, successStatuses: [200, 201],
+  }),
+  operation("skills.update", "PATCH", "/api/skills/{id}", "Update an exact reviewed owned Skill and bind the affected Agent set.", "bearer", "NativeAgentSkillUpdateRequest", "NativeAgentSkillMutationResponse", {
+    ...agentSkillNativeDetailOptions, ...agentSkillNativeWriteOptions, requestBodyMaxBytes: 65536,
+  }),
+  operation("skills.delete", "DELETE", "/api/skills/{id}", "Move an exact reviewed owned Skill to Trash with atomic acceptance and assignment evidence.", "bearer", "NativeAgentSkillDeleteRequest", "NativeAgentSkillMutationResponse", {
+    ...agentSkillNativeDetailOptions, ...agentSkillNativeWriteOptions, requestBodyMaxBytes: 16384,
+  }),
+  operation("skills.mutations.get", "GET", "/api/skills/mutations/{keySha256}", "Read one exact owned Skill mutation acceptance without repeating the change.", "bearer", undefined, "NativeAgentSkillReadResponse", agentSkillNativeRecoveryOptions),
+  operation("memory.promotions.list", "GET", "/api/memory/promotions", "Read a bounded list of currently authorized private Memory promotion reviews.", "bearer", undefined, "NativeMemoryPromotionListResponse", {
+    ...memoryPromotionOptions,
+    queryParameters: [
+      queryParameter("status", "string", { enumValues: ["pending", "resolved", "all"], defaultValue: "pending" }),
+      queryParameter("limit", "integer", { minimum: 1, maximum: 50, defaultValue: 25 }),
+    ],
+  }),
+  operation("memory.promotions.read", "GET", "/api/memory/promotions/{reviewId}", "Read one exact private promotion review and matching acceptance without repeating a decision or projection.", "bearer", undefined, "NativeMemoryPromotionReadResponse", {
+    ...memoryPromotionOptions,
+    pathParameters: [{ name: "reviewId", minLength: 1, maxLength: 200, pattern: "^[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$" }],
+    queryParameters: [queryParameter("acceptanceKeySha256", "string", { minLength: 64, maxLength: 64, pattern: "^[a-f0-9]{64}$" })],
+  }),
+  operation("memory.promotions.decide", "PATCH", "/api/memory/promotions", "Promote or dismiss the exact reviewed private Memory source set with atomic acceptance and separately reported projections.", "bearer", "NativeMemoryPromotionDecisionRequest", "NativeMemoryPromotionDecisionResponse", {
+    ...memoryPromotionOptions, headerParameters: pluginMutationHeaders,
+    requestBodyMaxBytes: 4096, errorStatuses: [400, 401, 403, 404, 409, 413, 415, 500, 503],
+  }),
+  operation("customers.workflows.start", "POST", "/api/customer-accounts/{id}/workflows", "Create the exact reviewed workflow project and task plan atomically, without executing it.", "bearer", "NativeCustomerWorkflowStartRequest", "NativeCustomerWorkflowMutationResponse", {
+    ...customerWorkflowOptions, headerParameters: pluginMutationHeaders,
+    requestBodyMaxBytes: 32768, successStatuses: [200, 201],
+    errorStatuses: [400, 401, 403, 404, 409, 413, 415, 500, 503],
+  }),
+  operation("customers.workflows.outcome", "PATCH", "/api/customer-accounts/{id}/workflows", "Record a reviewed outcome against exact Account, run, definition and artifact evidence pins.", "bearer", "NativeCustomerWorkflowOutcomeRequest", "NativeCustomerWorkflowMutationResponse", {
+    ...customerWorkflowOptions, headerParameters: pluginMutationHeaders,
+    requestBodyMaxBytes: 131072, errorStatuses: [400, 401, 403, 404, 409, 413, 415, 500, 503],
+  }),
+  operation("customers.workflows.get", "GET", "/api/customer-accounts/{id}/workflows/{runId}", "Read one exact currently authorized workflow run, pinned definition and available project progress.", "bearer", undefined, "NativeCustomerWorkflowRunReadResponse", {
+    ...customerWorkflowOptions, pathParameters: customerWorkflowRunParameters,
+    queryParameters: [queryParameter("workspaceId", "string", { required: true, minLength: 1, maxLength: 240 })],
+  }),
+  operation("customers.workflows.mutations.get", "GET", "/api/customer-accounts/{id}/workflows/{runId}/mutations/{keySha256}", "Recover an exact workflow acceptance without creating or executing a plan or repeating an outcome.", "bearer", undefined, "NativeCustomerWorkflowAcceptanceReadResponse", {
+    ...customerWorkflowOptions, pathParameters: [...customerWorkflowRunParameters,
+      { name: "keySha256", minLength: 64, maxLength: 64, pattern: "^[a-f0-9]{64}$" }],
+    queryParameters: [queryParameter("workspaceId", "string", { required: true, minLength: 1, maxLength: 240 })],
+  }),
+  operation("meetings.recordings.review", "GET", "/api/capture/recordings/{id}/processing-review", "Review an exact owned linked recording, current Meeting consent and reusable transcript checkpoints.", "bearer", undefined, "NativeMeetingRecordingReviewResponse", {
+    ...meetingRecordingOptions, queryParameters: meetingRecordingQuery,
+  }),
+  operation("meetings.recordings.process", "POST", "/api/capture/recordings/{id}/complete", "Admit the exact reviewed linked recording for processing with atomic queue acceptance and no automatic retry of uncertain provider work.", "bearer", "NativeMeetingRecordingProcessRequest", "NativeMeetingRecordingProcessResponse", {
+    ...meetingRecordingOptions, headerParameters: pluginMutationHeaders, requestBodyMaxBytes: 32768,
+    successStatuses: [200, 202], errorStatuses: [400, 401, 403, 404, 409, 413, 415, 500, 503],
+  }),
+  operation("meetings.recordings.processing.get", "GET", "/api/capture/recordings/{id}/processing/{keySha256}", "Observe exact processing acceptance and separate current media and Knowledge status without queueing or retrying work.", "bearer", undefined, "NativeMeetingRecordingReadResponse", {
+    ...meetingRecordingOptions, pathParameters: [...meetingRecordingOptions.pathParameters,
+      { name: "keySha256", minLength: 64, maxLength: 64, pattern: "^[a-f0-9]{64}$" }], queryParameters: meetingRecordingQuery,
+  }),
+  operation("customers.facts.record", "POST", "/api/customer-accounts/{id}/facts", "Create, revise or retract an exact reviewed manual Account fact with explicit operator-assertion provenance and immutable acceptance.", "bearer", "NativeCustomerFactMutationRequest", "NativeCustomerFactMutationResponse", {
+    ...customerFactOptions, headerParameters: pluginMutationHeaders, requestBodyMaxBytes: 65536, successStatuses: [200, 201],
+    errorStatuses: [400, 401, 403, 404, 409, 413, 415, 500, 503],
+  }),
+  operation("customers.facts.acceptance.get", "GET", "/api/customer-accounts/{id}/facts/acceptances/{keySha256}", "Read an exact currently authorized manual fact acceptance without recording another revision.", "bearer", undefined, "NativeCustomerFactAcceptanceReadResponse", {
+    ...customerFactOptions, pathParameters: [...customerDetailOptions.pathParameters,
+      { name: "keySha256", minLength: 64, maxLength: 64, pattern: "^[a-f0-9]{64}$" }],
+    queryParameters: [queryParameter("workspaceId", "string", { required: true, minLength: 1, maxLength: 240 })],
+  }),
+  operation("customers.salesforce.actions.review", "GET", "/api/customer-accounts/salesforce/actions", "Review the exact current owned Salesforce connection and available sync, reconciliation and disconnect actions.", "bearer", undefined, "NativeSalesforceActionReviewResponse", {
+    ...salesforceActionOptions, queryParameters: salesforceActionQuery,
+  }),
+  operation("customers.salesforce.actions.submit", "POST", "/api/customer-accounts/salesforce/actions", "Admit a reviewed Salesforce action once, preserving immutable acceptance and separately reporting provider settlement.", "bearer", "NativeSalesforceActionRequest", "NativeSalesforceActionSubmitResponse", {
+    ...salesforceActionOptions, headerParameters: pluginMutationHeaders, requestBodyMaxBytes: 16384,
+    successStatuses: [200, 201], errorStatuses: [400, 401, 403, 404, 409, 413, 415, 500, 503],
+  }),
+  operation("customers.salesforce.actions.get", "GET", "/api/customer-accounts/salesforce/actions/{keySha256}", "Observe the exact Salesforce acceptance and settlement without repeating provider work.", "bearer", undefined, "NativeSalesforceActionReadResponse", {
+    ...salesforceActionOptions, queryParameters: salesforceActionQuery,
+    pathParameters: [{ name: "keySha256", minLength: 64, maxLength: 64, pattern: "^[a-f0-9]{64}$" }],
+  }),
+  operation("knowledge.cognification.list", "GET", "/api/knowledge/cognification/reviews", "Read a bounded list of currently authorized private source-map reviews.", "bearer", undefined, "NativeKnowledgeCognitionListResponse", {
+    ...knowledgeCognitionOptions, queryParameters: [
+      queryParameter("status", "string", { enumValues: ["pending_review", "confirmed", "dismissed"], defaultValue: "pending_review" }),
+      queryParameter("limit", "integer", { minimum: 1, maximum: 50, defaultValue: 25 }),
+    ],
+  }),
+  operation("knowledge.cognification.read", "GET", "/api/knowledge/cognification/reviews/{id}", "Read an exact currently owned source map and its current source eligibility.", "bearer", undefined, "NativeKnowledgeCognitionReadResponse", knowledgeCognitionDetailOptions),
+  operation("knowledge.cognification.decide", "PATCH", "/api/knowledge/cognification/reviews/{id}", "Confirm or dismiss the exact reviewed source-map candidate and source revision with atomic acceptance.", "bearer", "NativeKnowledgeCognitionDecisionRequest", "NativeKnowledgeCognitionDecisionResponse", {
+    ...knowledgeCognitionDetailOptions, headerParameters: pluginMutationHeaders, requestBodyMaxBytes: 16384,
+    errorStatuses: [400, 401, 403, 404, 409, 413, 415, 500, 503],
+  }),
+  operation("knowledge.cognification.decisions.get", "GET", "/api/knowledge/cognification/reviews/{id}/decisions/{keySha256}", "Recover an exact source-map decision without repeating Memory writes or downstream projections.", "bearer", undefined, "NativeKnowledgeCognitionAcceptanceResponse", {
+    ...knowledgeCognitionDetailOptions, pathParameters: [...knowledgeCognitionDetailOptions.pathParameters,
+      { name: "keySha256", minLength: 64, maxLength: 64, pattern: "^[a-f0-9]{64}$" }],
+  }),
+  operation("knowledge.sources.deletion.review", "GET", "/api/knowledge/sources/{sourceKind}/deletion-review", "Review the complete supported owner-private local source deletion manifest and explicit scope limits.", "bearer", undefined, "NativeKnowledgeSourceDeletionReviewResponse", knowledgeSourceDeletionOptions),
+  operation("knowledge.sources.delete", "DELETE", "/api/knowledge/sources/{sourceKind}", "Delete the exact reviewed private local source lineage with atomic minimal acceptance and no provider deletion.", "bearer", "NativeKnowledgeSourceDeletionRequest", "NativeKnowledgeSourceDeletionResponse", {
+    ...knowledgeSourceDeletionOptions, headerParameters: pluginMutationHeaders, requestBodyMaxBytes: 8192,
+    errorStatuses: [400, 401, 403, 404, 409, 413, 415, 500, 503],
+  }),
+  operation("knowledge.sources.deletions.get", "GET", "/api/knowledge/sources/{sourceKind}/deletions/{keySha256}", "Read exact local deletion acceptance without repeating deletion or reconstructing a receipt from absent data.", "bearer", undefined, "NativeKnowledgeSourceDeletionReadResponse", {
+    ...knowledgeSourceDeletionOptions, pathParameters: [...knowledgeSourceDeletionOptions.pathParameters,
+      { name: "keySha256", minLength: 64, maxLength: 64, pattern: "^[a-f0-9]{64}$" }],
+  }),
+  operation("memory.graph.universe", "GET", "/api/memory/graph/views/universe", "Read a bounded private graph sample with explicit coverage and no tenant-wide build history.", "bearer", undefined, "NativeMemoryGraphUniverseResponse", {
+    ...memoryGraphReadOptions, queryParameters: [queryParameter("limit", "integer", { minimum: 1, maximum: 500, defaultValue: 200 })],
+  }),
+  operation("memory.graph.node", "GET", "/api/memory/graph/views/nodes/{id}", "Inspect one exact currently authorized private graph point.", "bearer", undefined, "NativeMemoryGraphNodeResponse", memoryGraphDetailOptions),
+  operation("memory.graph.entity", "GET", "/api/memory/graph/views/entities/{id}", "Inspect one exact active private entity independently of sample limits.", "bearer", undefined, "NativeMemoryGraphEntityResponse", memoryGraphDetailOptions),
+  operation("memory.graph.temporalRelations", "GET", "/api/memory/graph/views/relations", "Read bounded current or historical private relation claims with explicit temporal filters.", "bearer", undefined, "NativeMemoryGraphTemporalResponse", {
+    ...memoryGraphReadOptions, queryParameters: [
+      queryParameter("entityId", "string", { minLength: 1, maxLength: 240, pattern: "^[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$" }),
+      queryParameter("relationTypeId", "string", { enumValues: entityRelationTypeIdSchema.options }),
+      queryParameter("epistemicKind", "string", { enumValues: relationEpistemicKindSchema.options }),
+      queryParameter("validAt", "string", { minLength: 20, maxLength: 100, description: "ISO 8601 date-time with an explicit timezone offset." }),
+      queryParameter("recordedAt", "string", { minLength: 20, maxLength: 100, description: "ISO 8601 date-time with an explicit timezone offset." }),
+      queryParameter("history", "string", { enumValues: ["true", "false"], defaultValue: "false" }), queryParameter("limit", "integer", { minimum: 1, maximum: 200, defaultValue: 50 }),
+    ],
+  }),
+  operation("memory.graph.relationshipPaths", "GET", "/api/memory/graph/views/paths", "Read bounded private relationship paths backed by currently authorized evidence.", "bearer", undefined, "NativeMemoryGraphPathsResponse", {
+    ...memoryGraphReadOptions, queryParameters: [queryParameter("q", "string", { required: true, minLength: 1, maxLength: 4000 }),
+      queryParameter("maxHops", "integer", { minimum: 1, maximum: 3, defaultValue: 2 }), queryParameter("limit", "integer", { minimum: 1, maximum: 24, defaultValue: 12 })],
+  }),
+  operation("memory.maintenance.review", "GET", "/api/memory/maintenance/review", "Review the complete supported private maintenance inventory under its existing purpose permissions.", "bearer", undefined, "NativeMemoryMaintenanceReviewResponse", memoryMaintenanceOptions),
+  operation("memory.maintenance.run", "POST", "/api/memory/maintenance", "Apply the exact reviewed eligible private maintenance plan and atomically record its acceptance.", "bearer", "NativeMemoryMaintenanceRequest", "NativeMemoryMaintenanceResponse", {
+    ...memoryMaintenanceOptions, headerParameters: pluginMutationHeaders, requestBodyMaxBytes: 8192, successStatuses: [200, 201],
+    errorStatuses: [400, 401, 403, 404, 409, 413, 415, 500, 503],
+  }),
+  operation("memory.maintenance.runs.get", "GET", "/api/memory/maintenance/runs/{keySha256}", "Read the original private maintenance acceptance without applying maintenance again.", "bearer", undefined, "NativeMemoryMaintenanceReadResponse", {
+    ...memoryMaintenanceOptions, pathParameters: [{ name: "keySha256", minLength: 64, maxLength: 64, pattern: "^[a-f0-9]{64}$" }],
+  }),
+  operation("memory.graph.rebuild.review", "GET", "/api/memory/graph/rebuild-review", "Review the complete supported private graph source inventory and exact rebuild policy.", "bearer", undefined, "NativeMemoryGraphRebuildReviewResponse", memoryGraphRebuildOptions),
+  operation("memory.graph.rebuild", "POST", "/api/memory/graph", "Rebuild only the exact reviewed owner-private graph with atomic build acceptance.", "bearer", "NativeMemoryGraphRebuildRequest", "NativeMemoryGraphRebuildResponse", {
+    ...memoryGraphRebuildOptions, headerParameters: pluginMutationHeaders, requestBodyMaxBytes: 8192, successStatuses: [200, 201],
+    errorStatuses: [400, 401, 403, 404, 409, 413, 415, 500, 503],
+  }),
+  operation("memory.graph.rebuilds.get", "GET", "/api/memory/graph/rebuilds/{keySha256}", "Read the exact owner-private graph rebuild acceptance independently of tenant build history.", "bearer", undefined, "NativeMemoryGraphRebuildReadResponse", {
+    ...memoryGraphRebuildOptions, pathParameters: [{ name: "keySha256", minLength: 64, maxLength: 64, pattern: "^[a-f0-9]{64}$" }],
+  }),
+  operation("knowledge.cognification.build.review", "GET", "/api/knowledge/cognification/documents/{documentId}/build-review", "Review one currently owned document and its bounded paid source-map build plan.", "bearer", undefined, "NativeKnowledgeCognitionBuildReviewResponse", knowledgeCognitionBuildOptions),
+  operation("knowledge.cognification.build", "POST", "/api/knowledge/cognification/documents/{documentId}/build", "Accept the exact reviewed document build once and enqueue its bounded source-map work.", "bearer", "NativeKnowledgeCognitionBuildRequest", "NativeKnowledgeCognitionBuildResponse", {
+    ...knowledgeCognitionBuildOptions, headerParameters: pluginMutationHeaders, requestBodyMaxBytes: 16384, successStatuses: [202],
+    errorStatuses: [400, 401, 403, 404, 409, 413, 415, 500, 503],
+  }),
+  operation("knowledge.cognification.builds.get", "GET", "/api/knowledge/cognification/documents/{documentId}/builds/{keySha256}", "Read an exact accepted document build and its current processing state without resubmission.", "bearer", undefined, "NativeKnowledgeCognitionBuildReadResponse", {
+    ...knowledgeCognitionBuildOptions, pathParameters: [...knowledgeCognitionBuildOptions.pathParameters,
+      { name: "keySha256", minLength: 64, maxLength: 64, pattern: "^[a-f0-9]{64}$" }],
+  }),
+];
+
 const nativeCompanionPreferencesResponseSchema = z.object({
   schemaVersion: z.literal(1), contract: z.literal(COMPANION_PREFERENCES_CONTRACT),
   snapshot: z.object({
@@ -2015,12 +2267,24 @@ export const nativeContractSchemas = Object.freeze({
   ...nativeCustomerDetailContractSchemas,
   ...nativeCustomerMutationContractSchemas,
   ...nativeCustomerHealthMutationSchemas,
+  ...nativeCustomerWorkflowMutationSchemas,
+  ...nativeAgentSkillMutationSchemas,
+  ...nativeMeetingRecordingSchemas,
+  ...nativeCustomerFactMutationSchemas,
+  ...nativeSalesforceActionSchemas,
+  ...nativeKnowledgeCognificationSchemas,
+  ...nativeKnowledgeSourceDeletionSchemas,
+  ...nativeMemoryGraphReadSchemas,
+  ...nativeMemoryMaintenanceSchemas,
+  ...nativeMemoryGraphRebuildSchemas,
+  ...nativeKnowledgeCognitionBuildSchemas,
   ...nativeLibraryContractSchemas,
   ...nativeLibraryHistoryContractSchemas,
   ...entityOptionsContractSchemas,
   ...nativeMarketReadContractSchemas,
   ...nativeMemoryMutationSchemas,
   ...nativeMemoryReconciliationSchemas,
+  ...nativeMemoryPromotionSchemas,
   ...nativePersonalContextConsentSchemas,
   ...nativeMeetingCalendarSchemas,
   NativeCompanionPreferencesRequest: companionChangeSchema,
@@ -2156,6 +2420,7 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 35) return v35Operations;
   if (version === 36) return v36Operations;
   if (version === 37) return v37Operations;
+  if (version === 38) return v38Operations;
   return undefined;
 }
 

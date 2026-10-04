@@ -16,6 +16,10 @@ import type {
   CustomerAccountMutationAuthority,
   CustomerAccountReadAuthority,
 } from "@/lib/customer-success/store";
+import {
+  buildCustomerSuccessWorkflowNativeAcceptance, customerSuccessWorkflowNativeIntentSchema,
+  type CustomerSuccessWorkflowNativeIntent,
+} from "@/lib/customer-success/workflow-mutation-contracts";
 import { appendScopedDomainEvent } from "@/lib/events/store";
 import { parsePersistedExecutionScope } from "@/lib/security/execution-scope";
 import { canonicalJsonSha256, idempotencyKeySha256 } from "@/lib/tools/effect-receipt";
@@ -91,6 +95,7 @@ export async function getCustomerSuccessWorkflowRun(
 export async function saveCustomerSuccessWorkflowStart(input: {
   authority: CustomerAccountMutationAuthority;
   run: CustomerSuccessWorkflowRunRevision;
+  nativeIntent?: CustomerSuccessWorkflowNativeIntent;
 }) {
   requireDatabase();
   await ensureDatabaseSchema();
@@ -103,7 +108,13 @@ export async function saveCustomerSuccessWorkflowStart(input: {
   ) {
     throw new CustomerSuccessWorkflowConflictError("Workflow start snapshot is invalid for this authority.");
   }
-  const requestSha256 = canonicalJsonSha256({
+  const nativeIntent = input.nativeIntent ? customerSuccessWorkflowNativeIntentSchema.parse(input.nativeIntent) : null;
+  if (nativeIntent && (nativeIntent.operation !== "start" || nativeIntent.canonicalActorId !== authority.canonicalActorId ||
+    nativeIntent.idempotencyKeySha256 !== idempotencyKeySha256({ tenantId: authority.tenantId, idempotencyKey: authority.idempotencyKey }))) {
+    throw new CustomerSuccessWorkflowConflictError("Native workflow start intent is inconsistent.");
+  }
+  if (nativeIntent) buildCustomerSuccessWorkflowNativeAcceptance(nativeIntent, run);
+  const requestSha256 = nativeIntent ? canonicalJsonSha256(nativeIntent) : canonicalJsonSha256({
     accountId: run.accountId,
     accountRevisionId: run.accountRevisionId,
     accountSha256: run.accountSha256,
@@ -132,6 +143,7 @@ export async function saveCustomerSuccessWorkflowStart(input: {
         LIMIT 1
       `;
       if (replayRows[0]) {
+        if (nativeIntent) throw new CustomerSuccessWorkflowConflictError("Existing workflow setup has no newly admitted native acceptance.");
         if (String(replayRows[0].start_request_sha256) !== requestSha256) {
           throw new CustomerSuccessWorkflowConflictError(
             "Idempotency-Key is already bound to a different customer-success workflow start.",
@@ -169,14 +181,14 @@ export async function saveCustomerSuccessWorkflowStart(input: {
           revision, owner_actor_id, workflow_id, definition_sha256,
           input_sha256, project_id, outcome_status, outcome_receipt_sha256,
           run_sha256, run_snapshot, allowed_purpose_ids,
-          mutation_idempotency_sha256, mutation_request_sha256, recorded_at
+          mutation_idempotency_sha256, mutation_request_sha256, recorded_at, native_intent, native_intent_sha256
         ) VALUES (
           ${run.tenantId}, ${run.workspaceId}, ${run.accountId}, ${run.runId},
           ${run.runRevisionId}, ${run.revision}, ${run.ownerActorId},
           ${run.workflowId}, ${run.definitionSha256}, ${run.inputSha256},
           ${run.projectId}, ${run.outcome.status}, ${run.outcome.receiptSha256},
           ${run.runSha256}, ${run}::JSONB, ${run.allowedPurposeIds},
-          ${idempotencySha256}, ${requestSha256}, ${run.outcome.recordedAt}
+          ${idempotencySha256}, ${requestSha256}, ${run.outcome.recordedAt}, ${nativeIntent}::JSONB, ${nativeIntent ? requestSha256 : null}
         )
       `;
       await sql`
@@ -226,6 +238,7 @@ export async function saveCustomerSuccessWorkflowOutcome(input: {
   runId: string;
   expectedRevision: number;
   outcome: CustomerSuccessOutcomeReceipt;
+  nativeIntent?: CustomerSuccessWorkflowNativeIntent;
 }) {
   requireDatabase();
   await ensureDatabaseSchema();
@@ -234,7 +247,12 @@ export async function saveCustomerSuccessWorkflowOutcome(input: {
     tenantId: authority.tenantId,
     idempotencyKey: authority.idempotencyKey,
   });
-  const requestSha256 = canonicalJsonSha256({
+  const nativeIntent = input.nativeIntent ? customerSuccessWorkflowNativeIntentSchema.parse(input.nativeIntent) : null;
+  if (nativeIntent && (nativeIntent.operation !== "outcome" || nativeIntent.runId !== input.runId ||
+    nativeIntent.canonicalActorId !== authority.canonicalActorId || nativeIntent.idempotencyKeySha256 !== idempotencySha256)) {
+    throw new CustomerSuccessWorkflowConflictError("Native workflow outcome intent is inconsistent.");
+  }
+  const requestSha256 = nativeIntent ? canonicalJsonSha256(nativeIntent) : canonicalJsonSha256({
     runId: input.runId,
     expectedRevision: input.expectedRevision,
     outcome: input.outcome,
@@ -245,7 +263,7 @@ export async function saveCustomerSuccessWorkflowOutcome(input: {
     () => getSql().transaction(async (sql: WorkflowSql) => {
       await lockRun(sql, authority, input.runId);
       const replayRows = await sql`
-        SELECT run_snapshot, mutation_request_sha256
+        SELECT run_snapshot, mutation_request_sha256, native_intent, native_intent_sha256
         FROM omni_customer_success_workflow_run_revisions
         WHERE tenant_id = ${authority.tenantId}
           AND workspace_id = ${authority.workspaceId}
@@ -254,12 +272,22 @@ export async function saveCustomerSuccessWorkflowOutcome(input: {
         LIMIT 1
       `;
       if (replayRows[0]) {
-        if (String(replayRows[0].mutation_request_sha256) !== requestSha256) {
+        const replay = parseRun(replayRows[0].run_snapshot);
+        if (nativeIntent) {
+          const stored = customerSuccessWorkflowNativeIntentSchema.parse(replayRows[0].native_intent);
+          if (canonicalJsonSha256(stored) !== requestSha256 || replayRows[0].native_intent_sha256 !== requestSha256 ||
+            replayRows[0].mutation_request_sha256 !== requestSha256) {
+            throw new CustomerSuccessWorkflowConflictError("Idempotency-Key is already bound to a different native workflow outcome.");
+          }
+          buildCustomerSuccessWorkflowNativeAcceptance(stored, replay);
+        } else if (replayRows[0].native_intent != null || !sameOutcomeSemantics(replay, {
+          runId: input.runId, expectedRevision: input.expectedRevision, ...input.outcome,
+        }, authority.canonicalActorId)) {
           throw new CustomerSuccessWorkflowConflictError(
             "Idempotency-Key is already bound to a different workflow outcome.",
           );
         }
-        return parseRun(replayRows[0].run_snapshot);
+        return replay;
       }
       const currentRows = await sql`
         SELECT run_snapshot
@@ -301,6 +329,7 @@ export async function saveCustomerSuccessWorkflowOutcome(input: {
         revision: current.revision + 1,
         outcome: input.outcome,
       });
+      if (nativeIntent) buildCustomerSuccessWorkflowNativeAcceptance(nativeIntent, next);
       const definition = getCustomerSuccessWorkflowDefinition(next.workflowId);
       if (definition.definitionSha256 !== next.definitionSha256) {
         throw new CustomerSuccessWorkflowConflictError(
@@ -313,14 +342,14 @@ export async function saveCustomerSuccessWorkflowOutcome(input: {
           revision, owner_actor_id, workflow_id, definition_sha256,
           input_sha256, project_id, outcome_status, outcome_receipt_sha256,
           run_sha256, run_snapshot, allowed_purpose_ids,
-          mutation_idempotency_sha256, mutation_request_sha256, recorded_at
+          mutation_idempotency_sha256, mutation_request_sha256, recorded_at, native_intent, native_intent_sha256
         ) VALUES (
           ${next.tenantId}, ${next.workspaceId}, ${next.accountId}, ${next.runId},
           ${next.runRevisionId}, ${next.revision}, ${next.ownerActorId},
           ${next.workflowId}, ${next.definitionSha256}, ${next.inputSha256},
           ${next.projectId}, ${next.outcome.status}, ${next.outcome.receiptSha256},
           ${next.runSha256}, ${next}::JSONB, ${next.allowedPurposeIds},
-          ${idempotencySha256}, ${requestSha256}, ${next.outcome.recordedAt}
+          ${idempotencySha256}, ${requestSha256}, ${next.outcome.recordedAt}, ${nativeIntent}::JSONB, ${nativeIntent ? requestSha256 : null}
         )
       `;
       const updated = await sql`
@@ -360,6 +389,50 @@ export async function saveCustomerSuccessWorkflowOutcome(input: {
       return next;
     }) as Promise<CustomerSuccessWorkflowRunRevision>,
   );
+}
+
+/** Recover an immutable legacy outcome before regenerating its server time or
+ * consulting today's artifact/definition projection. Native intents are never
+ * reinterpreted as legacy requests. Current Account/workspace authority remains
+ * required even when the accepted run is historical.
+ */
+export async function findCustomerSuccessWorkflowOutcomeReplay(input: {
+  authority: CustomerAccountMutationAuthority; accountId: string; runId: string; expectedRevision: number;
+  status: "completed" | "blocked" | "cancelled"; summary: string;
+  artifactReceipts: CustomerSuccessOutcomeReceipt["artifactReceipts"]; nextAction: string;
+}): Promise<CustomerSuccessWorkflowRunRevision | null> {
+  requireDatabase(); await ensureDatabaseSchema();
+  const authority = assertMutationAuthority(input.authority, "customer.success.workflow.outcome");
+  const key = idempotencyKeySha256({ tenantId: authority.tenantId, idempotencyKey: authority.idempotencyKey });
+  return runWithDatabaseActorScope(authority.tenantId, authority.readableActorIds, async () => {
+    const rows = await getSql()`SELECT revision.run_snapshot,revision.native_intent
+      FROM omni_customer_accounts account
+      JOIN omni_tenant_workspaces workspace ON workspace.tenant_id=account.tenant_id AND workspace.workspace_id=account.workspace_id AND workspace.state='active'
+      JOIN omni_tenant_workspace_memberships membership ON membership.tenant_id=workspace.tenant_id AND membership.workspace_id=workspace.workspace_id
+        AND membership.subject_kind='user' AND membership.subject_actor_id=${authority.canonicalActorId}
+        AND membership.state='active' AND membership.access_level IN ('contributor','manager')
+      LEFT JOIN omni_customer_success_workflow_run_revisions revision ON revision.tenant_id=account.tenant_id AND revision.workspace_id=account.workspace_id
+        AND revision.owner_actor_id=${authority.canonicalActorId} AND revision.mutation_idempotency_sha256=${key}
+      WHERE account.tenant_id=${authority.tenantId} AND account.workspace_id=${authority.workspaceId} AND account.account_id=${input.accountId}
+        AND account.owner_actor_id=${authority.canonicalActorId}
+        AND account.allowed_purpose_ids @> ARRAY['customer_success.account.read','customer_success.account.manage']::TEXT[] LIMIT 2`;
+    if (rows.length !== 1) throw new CustomerSuccessWorkflowNotFoundError();
+    if (!rows[0].run_snapshot) return null;
+    const run = parseRun(rows[0].run_snapshot);
+    if (rows[0].native_intent != null || run.accountId !== input.accountId || !sameOutcomeSemantics(run, input, authority.canonicalActorId)) {
+      throw new CustomerSuccessWorkflowConflictError("Idempotency-Key is already bound to a different workflow outcome.");
+    }
+    return run;
+  });
+}
+
+function sameOutcomeSemantics(run: CustomerSuccessWorkflowRunRevision, input: {
+  runId: string; expectedRevision: number; status: CustomerSuccessOutcomeReceipt["status"]; summary: string;
+  artifactReceipts: CustomerSuccessOutcomeReceipt["artifactReceipts"]; nextAction: string;
+}, actorId: string) {
+  return run.runId === input.runId && run.revision === input.expectedRevision + 1 && run.ownerActorId === actorId &&
+    run.outcome.recordedByActorId === actorId && run.outcome.status === input.status && run.outcome.summary === input.summary &&
+    run.outcome.nextAction === input.nextAction && canonicalJsonSha256(run.outcome.artifactReceipts) === canonicalJsonSha256(input.artifactReceipts);
 }
 
 function parseRun(value: unknown) {

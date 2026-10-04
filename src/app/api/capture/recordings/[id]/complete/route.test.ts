@@ -16,6 +16,8 @@ const routeMocks = vi.hoisted(() => {
     authorizeRequest: vi.fn(),
     captureExecutionScopeFromSecurityContext: vi.fn(),
     createAppServiceCaller: vi.fn(),
+    createRequestMutationAppServiceCaller: vi.fn(),
+    processMeetingRecordingService: vi.fn(),
     showMeetingService: vi.fn(),
     prepareCaptureRecordingMediaProcessing: vi.fn(),
     enqueueCaptureMediaProcessingJob: vi.fn(),
@@ -40,7 +42,9 @@ vi.mock("@/lib/capture/execution-scope", () => ({
 }));
 vi.mock("@/lib/app-services/contracts", () => ({
   createAppServiceCaller: routeMocks.createAppServiceCaller,
+  createRequestMutationAppServiceCaller: routeMocks.createRequestMutationAppServiceCaller,
 }));
+vi.mock("@/lib/app-services/meeting-recordings", () => ({ processMeetingRecordingService: routeMocks.processMeetingRecordingService }));
 vi.mock("@/lib/app-services/meetings", () => ({
   showMeetingService: routeMocks.showMeetingService,
 }));
@@ -62,6 +66,7 @@ vi.mock("@/lib/operations/job-queue", () => ({
 }));
 
 import { POST } from "@/app/api/capture/recordings/[id]/complete/route";
+import { recordingRequest } from "@/lib/capture/meeting-recording-native.test-fixtures";
 
 const context = {
   tenantId: "tenant-a",
@@ -104,6 +109,7 @@ beforeEach(() => {
   routeMocks.authorizeRequest.mockResolvedValue(context);
   routeMocks.captureExecutionScopeFromSecurityContext.mockReturnValue(executionScope);
   routeMocks.createAppServiceCaller.mockReturnValue({ context });
+  routeMocks.createRequestMutationAppServiceCaller.mockReturnValue({ context });
   routeMocks.prepareCaptureRecordingMediaProcessing.mockResolvedValue(recording);
   routeMocks.getCaptureMediaHead.mockResolvedValue(undefined);
   routeMocks.enqueueCaptureMediaProcessingJob.mockResolvedValue({
@@ -122,6 +128,35 @@ beforeEach(() => {
 });
 
 describe("capture recording media completion", () => {
+  it("requires a stable native key, exact query and the actual bounded request bytes before dispatch", async () => {
+    for (const [suffix, key, body, status] of [
+      ["", "", JSON.stringify(recordingRequest), 400],
+      ["?retry=true", "key", JSON.stringify(recordingRequest), 400],
+      ["", "key", JSON.stringify(recordingRequest) + " ".repeat(33_000), 413],
+    ] as const) {
+      const response = await POST(new Request(`http://localhost/api/capture/recordings/recording-a/complete${suffix}`, { method: "POST",
+        headers: { "content-type": "application/json", "idempotency-key": key }, body }), { params: Promise.resolve({ id: recording.id }) });
+      expect(response.status).toBe(status); expect(response.headers.get("cache-control")).toBe("private, no-store");
+    }
+    expect(routeMocks.processMeetingRecordingService).not.toHaveBeenCalled(); expect(routeMocks.prepareCaptureRecordingMediaProcessing).not.toHaveBeenCalled();
+  });
+  it("uses the reviewed native service and capability, returning 202 first and 200 on exact replay", async () => {
+    for (const replayed of [false, true]) {
+      routeMocks.processMeetingRecordingService.mockResolvedValue({ data: { replayed }, receipt: { operation: "app.meetings.recordings.process" } });
+      const response = await POST(new Request("http://localhost/api/capture/recordings/recording-a/complete", { method: "POST",
+        headers: { "content-type": "application/json", "idempotency-key": "native-key" }, body: JSON.stringify(recordingRequest) }), { params: Promise.resolve({ id: recording.id }) });
+      expect(response.status).toBe(replayed ? 200 : 202);
+    }
+    expect(routeMocks.authorizeRequest).toHaveBeenCalledWith(expect.objectContaining({ nativeMutationCapability: "meetings.recordings.process", action: "write.memory" }));
+    expect(routeMocks.createRequestMutationAppServiceCaller).toHaveBeenCalledWith(expect.any(Request), context,
+      { purpose: "api.meeting-recording.process", workspaceId: recordingRequest.workspaceId, causationId: recording.id });
+    expect(routeMocks.prepareCaptureRecordingMediaProcessing).not.toHaveBeenCalled();
+  });
+  it("refuses native legacy bodies without changing ordinary web completion", async () => {
+    routeMocks.authorizeRequest.mockResolvedValue({ ...context, source: "mobile" });
+    const response = await POST(new Request("http://localhost/api/capture/recordings/recording-a/complete", { method: "POST" }), { params: Promise.resolve({ id: recording.id }) });
+    expect(response.status).toBe(400); expect(routeMocks.prepareCaptureRecordingMediaProcessing).not.toHaveBeenCalled();
+  });
   it("queues resumable processing without waiting for a segment transcript", async () => {
     const response = await POST(
       new Request("http://localhost/api/capture/recordings/recording-a/complete", {

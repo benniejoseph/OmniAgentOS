@@ -757,7 +757,7 @@ async function appendCognitionEvent(
   }, sql ? { sql } : {});
 }
 
-function recordFromRow(row: SqlRow): KnowledgeCognitionRecord {
+export function recordFromRow(row: SqlRow): KnowledgeCognitionRecord {
   const candidate = parseCognificationCandidateBatchV1(jsonValue(row.contract));
   const record = freezeRecord({
     candidate,

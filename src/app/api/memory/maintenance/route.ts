@@ -27,6 +27,7 @@ import {
 import { projectExplicitMemoryEntities } from "@/lib/entities/extraction";
 import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
+import { submitMemoryDeterministicNativeHttp } from "@/lib/memory/deterministic-native-http";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
@@ -85,10 +86,11 @@ async function GETHandler(request: Request) {
 async function POSTHandler(request: Request) {
   let body: unknown;
   try {
-    body = await parseJsonBody(request);
+    body = await parseJsonBody(request, 8192);
   } catch (error) {
     return jsonBodyErrorResponse(error);
   }
+  if (body && typeof body === "object" && "contract" in body) return submitMemoryDeterministicNativeHttp(request, "maintenance", body);
   const parsed = runSchema.safeParse(body);
   if (!parsed.success) {
     return Response.json({

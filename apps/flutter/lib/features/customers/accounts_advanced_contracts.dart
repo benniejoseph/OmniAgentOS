@@ -22,6 +22,7 @@ const _workflowIds = [
   'support_escalation',
   'expansion_discovery',
 ];
+const accountWorkflowIds = _workflowIds;
 const _sfObjects = [
   'Account',
   'Contact',
@@ -569,9 +570,22 @@ Future<void> _workflows(
   AccountsOwner owner,
   String workspace,
   String selected,
-) async {
+) => validateAccountWorkflowData(response, owner, workspace, selected);
+
+/// Shared strict structural validation for the pack and exact native reads.
+/// An exact read can truthfully report its original definition unavailable.
+Future<void> validateAccountWorkflowData(
+  AccountJson response,
+  AccountsOwner owner,
+  String workspace,
+  String selected, {
+  bool completePack = true,
+  bool exactOwner = false,
+}) async {
   final pack = _rows(response['pack'], 8), runs = _rows(response['runs'], 100);
-  accountRequire(pack.length == 8);
+  accountRequire(
+    completePack ? pack.length == 8 : pack.length <= 1 && runs.length <= 1,
+  );
   accountUnique(
     pack.map((row) => accountEnum(row['workflowId'], _workflowIds)),
   );
@@ -737,10 +751,19 @@ Future<void> _workflows(
     );
     accountHash(row['accountSha256']);
     accountEnum(row['workflowId'], _workflowIds);
-    accountRequire(definitions[row['workflowId']] == row['definitionSha256']);
+    accountHash(row['definitionSha256']);
+    if (completePack || definitions.isNotEmpty) {
+      accountRequire(definitions[row['workflowId']] == row['definitionSha256']);
+    }
+    if (exactOwner) {
+      accountId(row['runId'], 'customer-success-run');
+      accountInt(row['revision'], min: 1, max: 2147483647);
+      accountInt(row['accountRevision'], min: 1, max: 2147483647);
+      accountRequire(row['ownerActorId'] == 'actor:${owner.userId}');
+    }
     final input = accountMap(row['input']);
     accountRequire(input['workflowId'] == row['workflowId']);
-    _workflowInput(input);
+    accountWorkflowInput(input);
     accountRequire(row['inputSha256'] == await accountSha(input));
     accountSemanticOwner(row['owner']);
     accountId(row['ownerActorId']);
@@ -863,7 +886,7 @@ void _projectTemplate(AccountJson row) {
   }
 }
 
-void _workflowInput(AccountJson row) {
+void accountWorkflowInput(AccountJson row) {
   final kind = accountEnum(row['workflowId'], _workflowIds);
   const fields = <String, List<String>>{
     'onboarding': ['successCriteria', 'productNames', 'stakeholderIds'],

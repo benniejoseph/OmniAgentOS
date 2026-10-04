@@ -24,9 +24,20 @@ export const NATIVE_MUTATION_CAPABILITIES = [
   "meetings.records.manage",
   "customers.records.manage",
   "customers.health.evaluate",
+  "customers.facts.mutate",
+  "customers.salesforce.manage",
+  "knowledge.cognification.decide",
+  "knowledge.cognification.build",
+  "knowledge.sources.delete",
+  "memory.maintenance.run",
+  "memory.graph.rebuild",
+  "meetings.recordings.process",
+  "customers.workflows.start",
+  "customers.workflows.outcomes.manage",
   "memory.records.write",
   "memory.lifecycle.write",
   "memory.reconciliation.resolve",
+  "memory.promotions.decide",
   "memory.personal-context-consent.manage",
   "meetings.calendar.sync",
   "meetings.commitments.propose",
@@ -39,6 +50,10 @@ export const NATIVE_MUTATION_CAPABILITIES = [
   "plugins.manage",
   "agents.create",
   "agents.update",
+  "agents.delete",
+  "skills.create",
+  "skills.update",
+  "skills.delete",
   "agents.moltbook.manage",
   "agents.tasks.cancel",
   "agents.release.manage",
@@ -111,6 +126,15 @@ export function nativeMutationCapabilityPolicy(
 }
 
 function minimumVersion(capability: NativeMutationCapability) {
+  if (capability === "memory.maintenance.run" || capability === "memory.graph.rebuild") return 38;
+  if (capability === "knowledge.sources.delete") return 38;
+  if (capability === "knowledge.cognification.decide" || capability === "knowledge.cognification.build") return 38;
+  if (capability === "customers.salesforce.manage") return 38;
+  if (capability === "customers.facts.mutate" || capability === "meetings.recordings.process") return 38;
+  if (capability === "agents.delete" || capability === "skills.create" ||
+    capability === "skills.update" || capability === "skills.delete") return 38;
+  if (capability === "customers.workflows.start" || capability === "customers.workflows.outcomes.manage") return 38;
+  if (capability === "memory.promotions.decide") return 38;
   if (capability === "customers.health.evaluate") return 37;
   if (capability === "memory.personal-context-consent.manage" || capability === "meetings.calendar.sync") return 36;
   if (capability === "memory.reconciliation.resolve") return 35;
