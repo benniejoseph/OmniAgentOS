@@ -2021,6 +2021,79 @@ describe("opt-in managed transaction context", () => {
     expect(transactionCommands(pool.statements)).toEqual(["BEGIN", "ROLLBACK"]);
   }));
 
+  it.each([Object.assign(new Error("exact statement failure"), { code: "P0001" }), undefined, null, false, 0, ""])("preserves the first statement failure through failed scope restoration and blocks queued work %#", async (failure) => isolated(async (client, pool) => {
+    const restorationFailure = Object.assign(new Error("current transaction is aborted"), { code: "25P02" });
+    let scopes = 0;
+    pool.reserved.mockImplementation((parts: TemplateStringsArray, ...params: unknown[]) => {
+      const text = parts.join("?"); pool.statements.push({ text, params });
+      if (text.includes("set_config")) {
+        scopes += 1;
+        return scopes === 3 ? Promise.reject(restorationFailure) : Promise.resolve([{ ok: true }]);
+      }
+      return text.includes("failing-statement") ? Promise.reject(failure) : Promise.resolve([{ ok: true }]);
+    });
+    await expect(client.runWithDatabaseActorScope("tenant-a", ["owner", "alias"], () => client.getSql().transaction((sql: ReturnType<typeof client.getSql>) =>
+      client.runWithManagedDatabaseTransaction(sql, async () => {
+        const results = await client.runWithDatabaseActorScope("tenant-a", ["owner"], () => Promise.allSettled([
+          client.getSql()`SELECT 'failing-statement'`,
+          client.getSql()`SELECT 'queued-after-failure'`,
+        ]));
+        expect(results).toEqual([{ status: "rejected", reason: failure }, { status: "rejected", reason: failure }]);
+        return "caught but never committed";
+      })))).rejects.toBe(failure);
+    expect(scopes).toBe(3); // The raw manager still attempts restoration.
+    expect(pool.statements.some(({ text }) => text.includes("queued-after-failure"))).toBe(false);
+    expect(transactionCommands(pool.statements)).toEqual(["BEGIN", "ROLLBACK"]);
+    expect(pool.reserved.release).toHaveBeenCalledOnce();
+  }));
+
+  it("preserves a failed scoped admission when its restoration also fails", async () => isolated(async (client, pool) => {
+    const failure = new Error("narrowed scope admission failed"), restorationFailure = new Error("restoration failed");
+    let scopes = 0;
+    pool.reserved.mockImplementation((parts: TemplateStringsArray, ...params: unknown[]) => {
+      const text = parts.join("?"); pool.statements.push({ text, params });
+      if (text.includes("set_config")) {
+        scopes += 1;
+        if (scopes === 2) return Promise.reject(failure);
+        if (scopes === 3) return Promise.reject(restorationFailure);
+      }
+      return Promise.resolve([{ ok: true }]);
+    });
+    await expect(client.runWithDatabaseActorScope("tenant-a", ["owner", "alias"], () => client.getSql().transaction((sql: ReturnType<typeof client.getSql>) =>
+      client.runWithManagedDatabaseTransaction(sql, async () => {
+        const results = await client.runWithDatabaseActorScope("tenant-a", ["owner"], () => Promise.allSettled([
+          client.getSql()`SELECT 'never-admitted'`, client.getSql()`SELECT 'queued-never-admitted'`,
+        ]));
+        expect(results).toEqual([{ status: "rejected", reason: failure }, { status: "rejected", reason: failure }]);
+      })))).rejects.toBe(failure);
+    expect(scopes).toBe(3);
+    expect(pool.statements.some(({ text }) => text.includes("never-admitted"))).toBe(false);
+    expect(transactionCommands(pool.statements)).toEqual(["BEGIN", "ROLLBACK"]);
+  }));
+
+  it("fails and rolls back a successful statement when restoration alone fails, without dispatching its queued successor", async () => isolated(async (client, pool) => {
+    const failure = new Error("restoration failed after a successful statement");
+    let scopes = 0;
+    pool.reserved.mockImplementation((parts: TemplateStringsArray, ...params: unknown[]) => {
+      const text = parts.join("?"); pool.statements.push({ text, params });
+      if (text.includes("set_config") && ++scopes === 3) return Promise.reject(failure);
+      return Promise.resolve([{ ok: true }]);
+    });
+    await expect(client.runWithDatabaseActorScope("tenant-a", ["owner"], () => client.getSql().transaction((sql: ReturnType<typeof client.getSql>) =>
+      client.runWithManagedDatabaseTransaction(sql, async () => {
+        const results = await Promise.allSettled([
+          client.getSql()`INSERT INTO example VALUES ('first-only')`,
+          client.getSql()`INSERT INTO example VALUES ('never-dispatched')`,
+        ]);
+        expect(results).toEqual([{ status: "rejected", reason: failure }, { status: "rejected", reason: failure }]);
+      })))).rejects.toBe(failure);
+    expect(scopes).toBe(3);
+    expect(pool.statements.filter(({ text }) => text.includes("INSERT INTO example"))).toHaveLength(1);
+    expect(pool.statements.some(({ text }) => text.includes("never-dispatched"))).toBe(false);
+    expect(transactionCommands(pool.statements)).toEqual(["BEGIN", "ROLLBACK"]);
+    expect(pool.reserved.release).toHaveBeenCalledOnce();
+  }));
+
   it("does not commit unawaited narrower work and rejects clients escaping the callback", async () => isolated(async (client, pool) => {
     let escaped: ReturnType<typeof client.getSql> | undefined;
     await expect(client.runWithDatabaseActorScope("tenant-a", ["owner"], () => client.getSql().transaction((sql: ReturnType<typeof client.getSql>) =>

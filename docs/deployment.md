@@ -2401,3 +2401,27 @@ RBAC and fresh native attestation. Publish the paired v220 application/database
 release and v33 contracts before distributing a client that uses these writes.
 A rollback to the retained v32 client is a client-compatibility option, not
 permission to run a pre-v220 server against admitted decision records.
+
+### Customer Account mutation intent schema v221
+
+`customer_account_mutation_intents_v1` follows the exact v220 predecessor.
+It adds paired nullable request intent and digest columns to immutable Account
+revisions. Apply it through the dedicated migration job before serving the new
+create/revise application path, then retain schema verification and serving-role
+transaction evidence. No table, RLS policy or privilege expansion is introduced.
+
+The new path rechecks current canonical account ownership and Workspace write
+authority after acquiring the account admission lock. It atomically stores the
+normalized request, immutable revision, current projection and typed event. An
+identical accepted request returns its original account revision before a fresh
+CAS check; changed input and ambiguous legacy evidence are conflicts. The
+acceptance describes the original write, while the service receipt describes
+current request authority. The membership read does not serialize an independent
+authority-table revocation with the account transaction.
+
+Existing revisions and legacy internal Salesforce writers retain NULL/NULL
+intent fields and remain readable. They do not acquire exact-request replay
+guarantees. An application rollback preserves those rows but removes the new
+recovery behavior; use a compatible application for clients relying on it. Do
+not drop intent columns or rewrite immutable revisions during rollback. Native
+Account writes remain unavailable until a separate typed contract publication.

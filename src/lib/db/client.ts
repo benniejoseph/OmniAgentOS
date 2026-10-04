@@ -388,14 +388,29 @@ function createJoinedTransactionClient(context: JoinedTransactionContext): SqlCl
     const pending = context.tail.then(async () => {
       assertJoinedTransactionScope(context, scope);
       return joinedStatementDispatch.run(context.capability, async () => {
+        let operationFailed = false;
         try {
           await applyDatabaseScope(context.sql, scope);
           assertJoinedTransactionScope(context, scope);
           return await operation();
+        } catch (error) {
+          operationFailed = true;
+          // Poison admission before cleanup. In PostgreSQL a failed statement
+          // aborts the transaction, so restoration may itself fail with 25P02;
+          // that secondary diagnostic must not replace the original failure.
+          context.capability.rollbackOnly ??= { reason: error };
+          throw error;
         } finally {
           // Scope restoration belongs to the queued unit, so concurrent narrow
           // readers cannot interleave SET LOCAL with one another's query.
-          await applyDatabaseScope(context.sql, context.capability.scope);
+          try {
+            await applyDatabaseScope(context.sql, context.capability.scope);
+          } catch (error) {
+            if (!operationFailed) {
+              context.capability.rollbackOnly ??= { reason: error };
+              throw error;
+            }
+          }
         }
       });
     }).catch((error: unknown) => { context.capability.rollbackOnly ??= { reason: error }; throw error; });

@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   list: vi.fn(),
   show: vi.fn(),
   save: vi.fn(),
+  submit: vi.fn(),
   record: vi.fn(),
 }));
 
@@ -17,6 +18,7 @@ vi.mock("@/lib/customer-success/store", async (importOriginal) => ({
   listCustomerAccounts: mocks.list,
   getCustomerAccount360: mocks.show,
   saveCustomerAccount: mocks.save,
+  submitCustomerAccountMutation: mocks.submit,
   recordCustomerFact: mocks.record,
 }));
 
@@ -24,10 +26,15 @@ import {
   createCustomerAccountService,
   listCustomerAccountsService,
   recordCustomerFactService,
+  showCustomerAccountService,
+  reviseCustomerAccountService,
+  customerAccountReviseServiceInputSchema,
 } from "@/lib/app-services/customer-accounts";
 import { createAppServiceCaller } from "@/lib/app-services/contracts";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import type { SecurityContext } from "@/lib/security/types";
+import { CustomerAccountProjectionLimitError } from "@/lib/customer-success/store";
+import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
 const authUserId = "11111111-1111-4111-8111-111111111111";
 const canonicalActorId = `actor:${authUserId}`;
@@ -87,10 +94,25 @@ beforeEach(() => {
   mocks.list.mockReset().mockResolvedValue([account]);
   mocks.show.mockReset().mockResolvedValue({ account, facts: [] });
   mocks.save.mockReset().mockResolvedValue(account);
+  mocks.submit.mockReset().mockResolvedValue({ account, acceptance: { requestSha256: "d".repeat(64) } });
   mocks.record.mockReset().mockResolvedValue({ factId: `customer-fact:${"c".repeat(64)}` });
 });
 
 describe("customer Account 360 app services", () => {
+  it("propagates bounded projection overflow without issuing a partial success receipt or fallback read", async () => {
+    const overflow = new CustomerAccountProjectionLimitError();
+    mocks.show.mockRejectedValueOnce(overflow);
+    await expect(showCustomerAccountService(createAppServiceCaller({ context }), {
+      accountId: account.accountId, workspaceId,
+    })).rejects.toBe(overflow);
+    expect(mocks.show).toHaveBeenCalledWith(expect.objectContaining({
+      tenantId: context.tenantId, workspaceId, canonicalActorId, purposeId: "customer_success.account.read",
+    }), account.accountId);
+    expect(mocks.list).not.toHaveBeenCalled();
+    expect(mocks.save).not.toHaveBeenCalled();
+    expect(mocks.record).not.toHaveBeenCalled();
+  });
+
   it("lists through the canonical workspace membership boundary", async () => {
     const result = await listCustomerAccountsService(
       createAppServiceCaller({ context }),
@@ -112,19 +134,42 @@ describe("customer Account 360 app services", () => {
       accountOwner: { ownerKind: "actor", ownerId: canonicalActorId, displayName: "Owner" },
     });
     expect(result.receipt.operation).toBe("app.customer_accounts.create");
-    const saved = mocks.save.mock.calls[0][0];
-    expect(saved.accountId).toMatch(/^customer-account:[a-f0-9]{64}$/);
-    expect(saved.crmPermissions).toMatchObject({
-      readScope: "workspace_members",
-      writeScope: "account_owner",
-      externalWriteState: "disabled",
-    });
+    const saved = mocks.submit.mock.calls[0][0];
+    expect(saved.request).toEqual({ operation: "account.create", name: "Acme", lifecycle: "active", organizationEntityId: null, accountOwner: { ownerKind: "actor", ownerId: canonicalActorId, displayName: "Owner" }, customerDataPurposeIds: ["customer_success.account.manage", "customer_success.account.read"] });
+    expect(mocks.save).not.toHaveBeenCalled();
     expect(saved.authority.executionScope).toMatchObject({
       initiatingActorId: canonicalActorId,
       executingPrincipalId: canonicalActorId,
       workspaceId,
       purpose: "customer.account.manage",
     });
+    expect(result.data.acceptance).toEqual({ requestSha256: "d".repeat(64) });
+    expect(result.receipt.outcomeSha256).toBe(canonicalJsonSha256(result.data));
+  });
+
+  it("passes immutable sparse revise input to replay admission before any current Account360/fact read", async () => {
+    mocks.show.mockRejectedValue(new CustomerAccountProjectionLimitError());
+    const accepted = { account: { ...account, revision: 2 }, acceptance: { requestSha256: "e".repeat(64) } };
+    mocks.submit.mockResolvedValue(accepted);
+    const input = { accountId: account.accountId, workspaceId, expectedRevision: 1, lifecycle: "at_risk" as const };
+    const first = await reviseCustomerAccountService(caller("exact-revise"), input);
+    const replay = await reviseCustomerAccountService(caller("exact-revise"), input);
+    expect(first.data).toEqual(replay.data);
+    expect(replay.data).toMatchObject(accepted);
+    expect(mocks.submit).toHaveBeenLastCalledWith(expect.objectContaining({ accountId: account.accountId, request: { operation: "account.revise", expectedRevision: 1, lifecycle: "at_risk" } }));
+    expect(mocks.show).not.toHaveBeenCalled();
+    expect(mocks.save).not.toHaveBeenCalled();
+    expect(replay.receipt.outcomeSha256).toBe(canonicalJsonSha256(replay.data));
+  });
+
+  it("requires current workspace write access even when the store could return acceptance", async () => {
+    mocks.requestAccess.mockResolvedValue(access(false));
+    await expect(reviseCustomerAccountService(caller("accepted-revise"), { accountId: account.accountId, expectedRevision: 1, name: "Acme" })).rejects.toThrow(/owner access/);
+    expect(mocks.submit).not.toHaveBeenCalled();
+  });
+
+  it("does not count workspace or exact account identity as a patch change", () => {
+    expect(customerAccountReviseServiceInputSchema.safeParse({ accountId: account.accountId, workspaceId, expectedRevision: 1 }).success).toBe(false);
   });
 
   it("records only exact source revisions and preserves their purpose boundary", async () => {
@@ -166,5 +211,6 @@ describe("customer Account 360 app services", () => {
       accountOwner: { ownerKind: "actor", ownerId: canonicalActorId, displayName: "Owner" },
     })).rejects.toThrow(/owner access/);
     expect(mocks.save).not.toHaveBeenCalled();
+    expect(mocks.submit).not.toHaveBeenCalled();
   });
 });

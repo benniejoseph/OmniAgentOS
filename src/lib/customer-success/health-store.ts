@@ -17,8 +17,10 @@ import {
 } from "@/lib/customer-success/health-contracts";
 import { evaluateCustomerHealth } from "@/lib/customer-success/health-engine";
 import {
+  CUSTOMER_ACCOUNT_FACT_LIMIT,
   CustomerAccountConflictError,
   CustomerAccountNotFoundError,
+  CustomerAccountProjectionLimitError,
   type CustomerAccountMutationAuthority,
   type CustomerAccountReadAuthority,
 } from "@/lib/customer-success/store";
@@ -179,14 +181,27 @@ export async function evaluateAndSaveCustomerHealth(input: {
         ? customerHealthScoreSchema.parse(currentRows[0].score_snapshot)
         : undefined;
       const factRows = await sql`
-        SELECT DISTINCT ON (fact_id) fact_snapshot
-        FROM omni_customer_fact_revisions
-        WHERE tenant_id = ${authority.tenantId}
-          AND workspace_id = ${authority.workspaceId}
-          AND account_id = ${input.accountId}
-          AND allowed_purpose_ids @> ARRAY['customer_success.account.read']::TEXT[]
-        ORDER BY fact_id COLLATE "C", revision DESC
+        SELECT fact_snapshot
+        FROM (
+          SELECT DISTINCT ON (fact_id COLLATE "C") fact_id, fact_snapshot
+          FROM omni_customer_fact_revisions
+          WHERE tenant_id = ${authority.tenantId}
+            AND workspace_id = ${authority.workspaceId}
+            AND account_id = ${input.accountId}
+            AND allowed_purpose_ids @> ARRAY['customer_success.account.read']::TEXT[]
+          ORDER BY fact_id COLLATE "C", revision DESC
+        ) AS latest_readable_facts
+        WHERE fact_snapshot->>'state' = 'active'
+          AND fact_snapshot->'source'->'allowedPurposeIds' @> to_jsonb(ARRAY['customer_success.account.read']::TEXT[])
+        ORDER BY fact_id COLLATE "C"
+        LIMIT ${CUSTOMER_ACCOUNT_FACT_LIMIT + 1}
       `;
+      // Select heads before filtering eligibility: a retracted latest revision
+      // must not revive an older fact. The sentinel rejects incomplete evidence
+      // before evaluation or any persisted score, policy, or event.
+      if (factRows.length > CUSTOMER_ACCOUNT_FACT_LIMIT) {
+        throw new CustomerAccountProjectionLimitError();
+      }
       const clockRows = await sql`
         SELECT clock_timestamp() AS evaluated_at,
           (

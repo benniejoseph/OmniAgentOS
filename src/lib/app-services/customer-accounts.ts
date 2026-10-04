@@ -7,8 +7,6 @@ import {
 } from "@/lib/app-services/contracts";
 import { getAppServiceOperationContract } from "@/lib/app-services/registry";
 import {
-  customerAccountId,
-  customerCrmPermissionsSchema,
   customerFactId,
   customerFactOwnerSchema,
   customerFactSourceSchema,
@@ -16,12 +14,10 @@ import {
   customerMutationId,
 } from "@/lib/customer-success/contracts";
 import {
-  CustomerAccountConflictError,
-  CustomerAccountNotFoundError,
   getCustomerAccount360,
   listCustomerAccounts,
   recordCustomerFact,
-  saveCustomerAccount,
+  submitCustomerAccountMutation,
   type CustomerAccountMutationAuthority,
   type CustomerAccountReadAuthority,
 } from "@/lib/customer-success/store";
@@ -31,6 +27,7 @@ import {
   type RequestSharedMemoryAccessV1,
 } from "@/lib/memory/shared-context";
 import { createExecutionScope } from "@/lib/security/execution-scope";
+import { customerAccountCreateFieldsSchema, customerAccountReviseFieldsSchema } from "@/lib/customer-success/account-mutation-contracts";
 
 const workspaceSelectionSchema = z.object({
   workspaceId: z.string().trim().min(1).max(240).optional(),
@@ -54,28 +51,12 @@ export const customerAccountShowServiceInputSchema = workspaceSelectionSchema.ex
   accountId: z.string().regex(/^customer-account:[a-f0-9]{64}$/),
 }).strict();
 
-export const customerAccountCreateServiceInputSchema = workspaceSelectionSchema.extend({
-  name: z.string().trim().min(1).max(240),
-  lifecycle: lifecycleSchema.default("prospect"),
-  organizationEntityId: z.string().trim().min(1).max(240).nullable().default(null),
-  accountOwner: customerFactOwnerSchema,
-  customerDataPurposeIds: customerCrmPermissionsSchema.shape.customerDataPurposeIds
-    .default(["customer_success.account.manage", "customer_success.account.read"]),
-}).strict();
+export const customerAccountCreateServiceInputSchema = customerAccountCreateFieldsSchema.extend(workspaceSelectionSchema.shape);
 
-export const customerAccountReviseServiceInputSchema = workspaceSelectionSchema.extend({
+export const customerAccountReviseServiceInputSchema = customerAccountReviseFieldsSchema.safeExtend({
+  ...workspaceSelectionSchema.shape,
   accountId: z.string().regex(/^customer-account:[a-f0-9]{64}$/),
-  expectedRevision: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
-  name: z.string().trim().min(1).max(240).optional(),
-  lifecycle: lifecycleSchema.optional(),
-  organizationEntityId: z.string().trim().min(1).max(240).nullable().optional(),
-  accountOwner: customerFactOwnerSchema.optional(),
-  customerDataPurposeIds: customerCrmPermissionsSchema.shape.customerDataPurposeIds.optional(),
-}).strict().refine(
-  ({ accountId: _accountId, expectedRevision: _expectedRevision, workspaceId: _workspaceId, ...change }) =>
-    Object.keys(change).length > 0,
-  { message: "A customer account change is required." },
-);
+});
 
 export const customerFactRecordServiceInputSchema = workspaceSelectionSchema.extend({
   accountId: z.string().regex(/^customer-account:[a-f0-9]{64}$/),
@@ -166,33 +147,11 @@ export async function createCustomerAccountService(
   const access = await customerAccess(caller, value.workspaceId, "write");
   requireCustomerWrite(access);
   const authority = mutationAuthority(access, caller);
-  const accountId = customerAccountId({
-    tenantId: caller.context.tenantId,
-    workspaceId: access.authority.workspaceId,
-    idempotencyKey: caller.idempotencyKey!,
-  });
-  const account = await saveCustomerAccount({
-    authority,
-    accountId,
-    mutationId: customerMutationId({
-      accountId,
-      idempotencyKey: caller.idempotencyKey!,
-      operation: "account.create",
-    }),
-    name: value.name,
-    lifecycle: value.lifecycle,
-    organizationEntityId: value.organizationEntityId,
-    accountOwner: value.accountOwner,
-    crmPermissions: {
-      readScope: "workspace_members",
-      writeScope: "account_owner",
-      externalWriteState: "disabled",
-      customerDataPurposeIds: value.customerDataPurposeIds,
-    },
-  });
+  const { workspaceId: _workspaceId, ...fields } = value;
+  const accepted = await submitCustomerAccountMutation({ authority, request: { operation: "account.create", ...fields } });
   return completeAppServiceCall(authorized, {
     context: publicCustomerContext(access),
-    account,
+    ...accepted,
   });
 }
 
@@ -207,36 +166,11 @@ export async function reviseCustomerAccountService(
   );
   const access = await customerAccess(caller, value.workspaceId, "write");
   requireCustomerWrite(access);
-  const read = readAuthority(access, caller);
-  const current = await getCustomerAccount360(read, value.accountId);
-  if (!current) throw new CustomerAccountNotFoundError();
-  if (current.account.revision !== value.expectedRevision) {
-    throw new CustomerAccountConflictError("Customer account changed. Refresh and try again.");
-  }
-  const account = await saveCustomerAccount({
-    authority: mutationAuthority(access, caller),
-    accountId: value.accountId,
-    mutationId: customerMutationId({
-      accountId: value.accountId,
-      idempotencyKey: caller.idempotencyKey!,
-      operation: "account.revise",
-    }),
-    expectedRevision: value.expectedRevision,
-    name: value.name ?? current.account.name,
-    lifecycle: value.lifecycle ?? current.account.lifecycle,
-    organizationEntityId: value.organizationEntityId === undefined
-      ? current.account.organizationEntityId
-      : value.organizationEntityId,
-    accountOwner: value.accountOwner ?? current.account.accountOwner,
-    crmPermissions: {
-      ...current.account.crmPermissions,
-      customerDataPurposeIds: value.customerDataPurposeIds ??
-        current.account.crmPermissions.customerDataPurposeIds,
-    },
-  });
+  const { accountId, workspaceId: _workspaceId, ...fields } = value;
+  const accepted = await submitCustomerAccountMutation({ authority: mutationAuthority(access, caller), accountId, request: { operation: "account.revise", ...fields } });
   return completeAppServiceCall(authorized, {
     context: publicCustomerContext(access),
-    account,
+    ...accepted,
   });
 }
 
