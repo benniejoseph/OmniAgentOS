@@ -5087,6 +5087,11 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                   child: widget.controller.messages.isEmpty
                       ? _TalkEmpty(
                           selectedThread: widget.controller.hasSelectedThread,
+                          greeting:
+                              widget.controller.status == null &&
+                              !widget.controller.sending &&
+                              !voiceDraftBusy &&
+                              realtimeVoice?.isSpeechPlaying != true,
                           preferences:
                               widget.companionController?.current?.preferences,
                           scopeKey: (
@@ -7994,12 +7999,14 @@ class _TalkEmpty extends StatelessWidget {
   const _TalkEmpty({
     required this.selectedThread,
     required this.loading,
+    required this.greeting,
     this.preferences,
     this.scopeKey,
   });
 
   final bool selectedThread;
   final bool loading;
+  final bool greeting;
   final CompanionPreferences? preferences;
   final Object? scopeKey;
 
@@ -8021,7 +8028,14 @@ class _TalkEmpty extends StatelessWidget {
                   children: [
                     AtlasPortrait(
                       state: loading ? 'working' : 'available',
-                      size: 96,
+                      greeting: greeting && !loading,
+                      size: greeting && !loading && preferences?.visible == true
+                          ? constraints.maxHeight < 420 ||
+                                    MediaQuery.textScalerOf(context).scale(16) >
+                                        24
+                                ? 96
+                                : 144
+                          : 96,
                       preferences: preferences,
                       scopeKey: scopeKey,
                     ),

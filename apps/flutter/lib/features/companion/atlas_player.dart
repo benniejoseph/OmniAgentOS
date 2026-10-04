@@ -15,6 +15,7 @@ class AtlasPortrait extends StatefulWidget {
     this.state = 'available',
     this.size = 36,
     this.visible = true,
+    this.greeting = false,
     this.preferences,
     this.scopeKey,
     this.reactionKey,
@@ -22,6 +23,9 @@ class AtlasPortrait extends StatefulWidget {
   final String state;
   final double size;
   final bool visible;
+
+  /// The reviewed static full-body crop is only used for an idle greeting.
+  final bool greeting;
   final CompanionPreferences? preferences;
   final Object? scopeKey, reactionKey;
   @override
@@ -145,6 +149,8 @@ class _AtlasPortraitState extends State<AtlasPortrait>
       _allowed &&
       _onScreen;
 
+  bool get _staticGreeting => widget.greeting && widget.state == 'available';
+
   void _synchronize() {
     if (!mounted || _bundle == null) {
       return;
@@ -155,6 +161,7 @@ class _AtlasPortraitState extends State<AtlasPortrait>
       _bundle,
       _dark,
       widget.state,
+      _staticGreeting,
       widget.scopeKey,
       preference,
       _foreground,
@@ -173,7 +180,7 @@ class _AtlasPortraitState extends State<AtlasPortrait>
     }
     _configuration = next;
     _clearTexture();
-    if (visible) {
+    if (visible && !_staticGreeting) {
       unawaited(
         _load(
           sprite:
@@ -198,7 +205,7 @@ class _AtlasPortraitState extends State<AtlasPortrait>
 
   Future<void> _load({required bool sprite}) async {
     final bundle = _bundle;
-    if (bundle == null || !mounted || !_visible) {
+    if (bundle == null || !mounted || !_visible || _staticGreeting) {
       return;
     }
     _clearTexture();
@@ -273,13 +280,21 @@ class _AtlasPortraitState extends State<AtlasPortrait>
           dimension: widget.size,
           child: !visible
               ? const SizedBox.expand()
-              : image == null || clip == null
+              : _staticGreeting
               ? Image.asset(
-                  'assets/companion/atlas-neutral.png',
+                  'assets/companion/atlas-greeting.png',
+                  key: ValueKey(('atlas-greeting', widget.scopeKey)),
                   fit: BoxFit.contain,
                   excludeFromSemantics: true,
-                  errorBuilder: (_, _, _) => const SizedBox.expand(),
+                  errorBuilder: (_, _, _) => Center(
+                    child: SizedBox.square(
+                      dimension: widget.size > 96 ? 96 : widget.size,
+                      child: _neutralPortrait(),
+                    ),
+                  ),
                 )
+              : image == null || clip == null
+              ? _neutralPortrait()
               : RepaintBoundary(
                   child: CustomPaint(
                     painter: _AtlasPainter(image, clip, _sprite, _clock),
@@ -289,6 +304,13 @@ class _AtlasPortraitState extends State<AtlasPortrait>
       ),
     );
   }
+
+  Widget _neutralPortrait() => Image.asset(
+    'assets/companion/atlas-neutral.png',
+    fit: BoxFit.contain,
+    excludeFromSemantics: true,
+    errorBuilder: (_, _, _) => const SizedBox.expand(),
+  );
 }
 
 class _AtlasPainter extends CustomPainter {

@@ -199,9 +199,9 @@
 .composerWidth { inline-size: 100%; max-inline-size: 45rem; margin-inline: auto; }
 .composer {
   position: relative;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
   padding: .5rem;
   border: 1px solid var(--line-strong);
   border-radius: 1rem;
@@ -209,7 +209,7 @@
   box-shadow: 0 2px 8px rgb(24 23 21 / .04);
 }
 :global(:root[data-theme="dark"]) .composer { box-shadow: 0 4px 16px rgb(0 0 0 / .16); }
-.composerField { grid-column: 1; grid-row: 1; min-inline-size: 0; }
+.composerField { flex: 1 1 12rem; min-inline-size: 0; container: command-composer-field / inline-size; }
 .composerField textarea {
   field-sizing: content;
   min-block-size: 2.75rem;
@@ -222,7 +222,7 @@
 }
 .composerField textarea::placeholder { color: var(--muted); opacity: 1; }
 .composerToolbar { display: contents; }
-.composerAdvanced { grid-column: 1 / -1; grid-row: 2; min-inline-size: 0; margin-block-start: .25rem; }
+.composerAdvanced { flex: 1 0 100%; min-inline-size: 0; margin-block-start: .25rem; }
 .composerAdvanced > summary { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; min-block-size: 2rem; padding: .25rem .5rem; border-radius: .5rem; color: var(--muted); font-size: .75rem; cursor: pointer; list-style: none; }
 .composerAdvanced > summary::-webkit-details-marker { display: none; }
 .composerAdvanced > summary:hover { color: var(--foreground); background: var(--surface-raised); }
@@ -238,7 +238,7 @@
 .composerOptions button,
 .composerOptions select { min-block-size: 2.25rem; min-inline-size: 2.25rem; max-inline-size: 100%; border-radius: .625rem; font-size: .8125rem; font-weight: 500; line-height: 1.5385; }
 .composerOptions select { border: 1px solid var(--line-strong); }
-.composerActions { grid-column: 2; grid-row: 1; display: flex; align-items: center; justify-content: flex-end; gap: .25rem; align-self: end; margin-block-end: .125rem; }
+.composerActions { display: flex; flex: 0 0 auto; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: .25rem; align-self: end; margin-inline-start: auto; margin-block-end: .125rem; }
 .composerActions > button { min-inline-size: 2.75rem; min-block-size: 2.75rem; border-radius: .625rem; }
 .sendButton { display: grid; flex: 0 0 auto; place-items: center; color: var(--primary-ink); background: var(--primary); transition: background-color 120ms ease; }
 .sendButton:hover:not(:disabled) { background: var(--primary-hover); }
@@ -310,6 +310,30 @@
   .composerActions > button,
   .composerOptions select,
   .mobileConversationSheet button { min-inline-size: 3rem; min-block-size: 3rem; }
+}
+
+/* Icon-only controls keep a 48 CSS-pixel target as text grows. The field's
+   flex basis moves actions below a constrained draft before it can collapse. */
+@media (max-width: 30rem) {
+  .composerActions { max-inline-size: calc(100% - 48px); }
+  .composerActions > button,
+  .composerField button:is([aria-label="Attach files"], [aria-label="Uploading attachments"]) {
+    inline-size: 48px;
+    block-size: 48px;
+    min-inline-size: 48px;
+    min-block-size: 48px;
+  }
+}
+
+/* Only the field is a query container: Voice remains outside its containment.
+   Below the flex basis, the attachment joins the actions on the next row. */
+@container command-composer-field (width < 12rem) {
+  .composerField button:is([aria-label="Attach files"], [aria-label="Uploading attachments"]) {
+    position: absolute;
+    inset-block-start: 100%;
+    inset-inline-start: 0;
+    margin: 0;
+  }
 }
 @media (prefers-reduced-motion: reduce) {
   .workspace *,

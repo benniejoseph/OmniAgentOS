@@ -1,7 +1,7 @@
 name: asael
 description: Asael command center for mobile and desktop.
 publish_to: 'none'
-version: 1.23.13+48
+version: 1.23.14+49
 
 environment:
   sdk: ^3.13.0
@@ -53,5 +53,7 @@ flutter:
   assets:
     - assets/companion/atlas-neutral.png
     - assets/companion/atlas-neutral.provenance.json
+    - assets/companion/atlas-greeting.png
+    - assets/companion/atlas-greeting.provenance.json
     - assets/brand/asael-mark.png
     - assets/mascot/asael-orbit.json

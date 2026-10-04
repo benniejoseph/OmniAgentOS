@@ -71,11 +71,51 @@ the test fixture tables after bulk seeding; all ten Account projection cases
 pass locally with the original application timeout and RLS assertions intact.
 The complete corrected hosted cycle still determines release acceptance.
 
+PR54 is accepted: all sixteen hosted checks pass on
+`4e62457533a3a57a4cf4470c353a1bfe5f67a1b2`, including the production build,
+Flutter and PostgreSQL integration. It merged on 4 October 2026 at 08:29:52 UTC
+as `cab9d5f77066872ae9a9a3b4f7a68a76cc6b0ea2`.
+
+## Static full-body greeting
+
+The next bounded ATLAS change uses the already-approved first full-body pose in
+empty, idle Assistant/Talk. It retains the source's pale studio background and
+does not publish a 3D model or any state animation. Active conversations, work
+and audio keep their existing portrait presentation. The greeting is at most
+144px high, reducing to 96px on constrained screens; hidden-character preference,
+scope replacement and neutral-image fallback remain authoritative.
+
+Identical 211×432 PNGs and crop/source provenance are enrolled in web and native
+asset roots. Each PNG is 84,847 bytes, SHA256
+`cb5db22c48af8e2f883be9b256226a50b4d26f97c82e516b3c240e9aa691eb53`.
+App version `1.23.14+49` is reserved for this follow-up. Connector work must use a
+later build number when resumed. Full Flutter analysis and 21 focused cases pass;
+five native widget captures cover light/dark desktop, phone, 200% text and the
+populated state. These synthetic captures do not establish physical-device or
+microphone acceptance. All 39 focused web greeting checks pass, including
+hidden-character preference, exact neutral-image fallback and return to the
+compact conversation portrait. Visual review found and corrected draft crowding
+at 320px with 200% text: controls wrap below the draft, preserving 198px of usable
+text width and a reachable Send control above navigation. The exact hosted cycle
+remains the release gate.
+
+The private Mac greeting package `Asael-1.23.14-49-macOS.dmg` was built from
+`38839901326f7a065a25235a898aaf0195ce1529`; its SHA256 is
+`053f382551b221f1b774bf088098a25033571ac6d882df135e81bef064cd329e`.
+The later composer correction changes only web CSS and browser verification;
+packaged native application code is unchanged. Signing is local/private,
+not Apple notarization.
+
+No separate portrait/material study was saved; sculpt04 remains the latest fully
+exported, unaccepted 3D prototype. A narrow beak revision is being reviewed
+separately and is not part of this greeting release.
+
 ## ATLAS boundary
 
 Sculpt04 is exported and structurally checked: 41,580 triangles, a 1,750,516-byte
 GLB, fourteen bones and twelve clips, with all nine geometry/lifecycle checks
 passing. Actual turnaround and blink review still finds a likeness/finish gap.
-No new artwork has been published. The approved concept portrait remains active;
-the final authored model, material pass, convincing facial closure, full-body
-greeting delivery and state-performance/device acceptance remain open.
+No 3D artwork has been published. The approved concept portrait remains active,
+with the static full-body greeting implemented above. The final authored model,
+material pass, convincing facial closure, animated greeting/state delivery and
+state-performance/device acceptance remain open.
