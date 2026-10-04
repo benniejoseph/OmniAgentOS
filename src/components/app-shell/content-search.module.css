@@ -1,4 +1,10 @@
-.palette { min-width: 0; }
+.backdrop { position: fixed; inset: 0; z-index: 140; display: flex; align-items: flex-start; justify-content: center; padding: min(8dvh, 3rem) .75rem .75rem; background: var(--scrim); }
+.palette { min-width: 0; max-block-size: calc(100dvh - min(8dvh, 3rem) - .75rem); overflow-y: auto; overscroll-behavior: contain; scroll-padding-block: .75rem; }
+/* Keep the list and recovery controls reachable when text fills the header. */
+.palette > * { flex-shrink: 0; }
+.paletteHeader { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: .5rem; padding: .75rem .75rem 0; }
+.paletteHeader > h2 { overflow-wrap: anywhere; }
+.paletteDescription { grid-column: 1 / -1; overflow-wrap: anywhere; }
 .group { list-style: none; padding: 1rem 0 .25rem; border-top: 1px solid var(--line); margin-top: .5rem; }
 .heading { padding: 0 .75rem; font-size: .875rem; font-weight: 650; color: var(--foreground); }
 .coverage, .message { margin: .35rem .75rem .5rem; color: var(--muted); font-size: .8125rem; line-height: 1.5; }

@@ -42,7 +42,7 @@
 .readNotice { margin-block: .75rem; max-inline-size: 90ch; color: var(--muted); font-size: .8125rem; line-height: 1.25rem; }
 .panelHeading, .sectionIntro { margin-block-end: 1.5rem; }
 .panelHeading p, .sectionIntro p, .inventory header p, .inventoryWide header p { margin-block-start: .5rem; max-inline-size: 70ch; color: var(--muted); }
-.panelAction a, .sectionIntro > a { display: inline-flex; min-block-size: 2.75rem; align-items: center; gap: .5rem; padding: .625rem .25rem; }
+.panelAction a, .sectionIntro > a, .exportedMcp > a { display: inline-flex; min-block-size: 2.75rem; align-items: center; gap: .5rem; padding: .625rem .25rem; }
 .sectionNumber { display: none; }
 .sectionHeading { margin-block-end: 1rem; }
 .overview { display: grid; gap: 1.5rem; }
@@ -83,6 +83,9 @@
 .inventoryAction { margin-block-start: .75rem; }
 .rowAction { align-self: start; }
 .inlineError, .inlineNotice, .scheduleNotice, .scheduleError, .pluginBoundary, .exportedMcp, .scheduleBoundary, .policyNote { display: flex; align-items: flex-start; gap: .75rem; margin-block: 1rem; padding: 1rem; border-inline-start: 3px solid var(--line-strong); background: var(--surface-raised); }
+.exportedMcp { flex-wrap: wrap; }
+.exportedMcp > div { flex: 1 1 20rem; }
+.exportedMcp > a { flex: 0 1 auto; }
 .inlineError, .scheduleError, .importError { color: var(--danger); }
 .pluginBoundary p { margin-block-start: .25rem; color: var(--muted); }
 .empty { padding-block: 1.5rem; color: var(--muted); }

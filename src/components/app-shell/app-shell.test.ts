@@ -46,7 +46,11 @@ const { AppShell, CompactNavigation, MobileNavigation } = await import(
 function renderShell(pathname: string, pending: number | undefined) {
   shell.pathname = pathname;
   shell.pending = pending;
-  return renderToStaticMarkup(createElement(AppShell, { initialDesktopNavCollapsed: false }, createElement("p", null, "page")));
+  return renderToStaticMarkup(createElement(
+    AppShell,
+    { initialDesktopNavCollapsed: false } as Parameters<typeof AppShell>[0],
+    createElement("p", null, "page"),
+  ));
 }
 
 function linkTo(html: string, href: string) {

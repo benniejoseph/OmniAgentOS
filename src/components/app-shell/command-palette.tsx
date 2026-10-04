@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { Search, X } from "lucide-react";
 import { clsx } from "clsx";
@@ -24,6 +25,7 @@ export function CommandPalette({ session, sessionStatus, role }: {
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const layerRef = useRef<HTMLDivElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
@@ -90,11 +92,19 @@ export function CommandPalette({ session, sessionStatus, role }: {
     return () => document.removeEventListener("keydown", onKeyDown, true);
   }, [closePalette, open, openPalette]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open) {
       return;
     }
 
+    const layer = layerRef.current;
+    if (!layer) return;
+    // The portal is a body child, so every other body subtree is background.
+    // Restore prior inert state on close/unmount before returning focus.
+    const background = Array.from(document.body.children).filter(
+      (element): element is HTMLElement => element instanceof HTMLElement && element !== layer,
+    ).map((element) => ({ element, inert: element.inert }));
+    for (const { element } of background) element.inert = true;
     inputRef.current?.focus();
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
@@ -134,6 +144,7 @@ export function CommandPalette({ session, sessionStatus, role }: {
     document.addEventListener("keydown", onDialogKeyDown);
     return () => {
       document.removeEventListener("keydown", onDialogKeyDown);
+      for (const { element, inert } of background) element.inert = inert;
       document.body.style.overflow = previousOverflow;
     };
   }, [closePalette, open]);
@@ -166,9 +177,10 @@ export function CommandPalette({ session, sessionStatus, role }: {
         <kbd className="hidden rounded border border-line bg-background px-1.5 py-0.5 font-mono text-xs md:inline">⌘K</kbd>
       </button>
 
-      {open ? (
+      {open && typeof document !== "undefined" ? createPortal((
         <div
-          className="fixed inset-0 z-[60] flex items-start justify-center bg-black/55 p-3 pt-[8vh] sm:p-4 sm:pt-[14vh]"
+          ref={layerRef}
+          className={searchStyles.backdrop}
           role="dialog"
           aria-modal="true"
           aria-labelledby={dialogTitleId}
@@ -182,15 +194,10 @@ export function CommandPalette({ session, sessionStatus, role }: {
         >
           <div
             ref={dialogRef}
-            className={`${searchStyles.palette} w-full max-w-xl max-h-[84dvh] overflow-hidden flex flex-col rounded-lg border border-line bg-surface shadow-[0_8px_24px_oklch(0.08_0.02_245/0.32)]`}
+            className={`${searchStyles.palette} w-full max-w-xl flex flex-col rounded-lg border border-line bg-surface shadow-[0_8px_24px_oklch(0.08_0.02_245/0.32)]`}
           >
-            <div className="flex items-start justify-between gap-4 px-4 pt-4">
-              <div>
-                <h2 id={dialogTitleId} className="text-sm font-semibold">Search Asael</h2>
-                <p id={dialogDescriptionId} className="mt-1 text-xs text-muted">
-                  Find a workspace or your content. Use arrow keys to move and Enter to open.
-                </p>
-              </div>
+            <div className={searchStyles.paletteHeader}>
+              <h2 id={dialogTitleId} className="text-sm font-semibold">Search Asael</h2>
               <button
                 type="button"
                 onClick={() => closePalette()}
@@ -199,6 +206,9 @@ export function CommandPalette({ session, sessionStatus, role }: {
               >
                 <X size={17} aria-hidden="true" />
               </button>
+              <p id={dialogDescriptionId} className={`${searchStyles.paletteDescription} text-xs text-muted`}>
+                Find a workspace or your content. Use arrow keys to move and Enter to open.
+              </p>
             </div>
             <div className="flex items-center gap-2 border-b border-line px-4 py-3">
               <Search size={16} className="shrink-0 text-muted" aria-hidden="true" />
@@ -234,7 +244,7 @@ export function CommandPalette({ session, sessionStatus, role }: {
                 }}
                 placeholder="Search workspaces and your content"
                 maxLength={240}
-                className="min-h-11 w-full bg-transparent text-base outline-none placeholder:text-muted sm:text-sm"
+                className="min-h-11 min-w-0 w-full bg-transparent text-base outline-none placeholder:text-muted sm:text-sm"
                 aria-label="Search workspaces"
                 aria-autocomplete="list"
                 aria-expanded="true"
@@ -267,7 +277,7 @@ export function CommandPalette({ session, sessionStatus, role }: {
             <ContentSearchPaging groups={content.state.groups} loadingProvider={content.state.loadingProvider} more={content.more} />
           </div>
         </div>
-      ) : null}
+      ), document.body) : null}
     </>
   );
 }

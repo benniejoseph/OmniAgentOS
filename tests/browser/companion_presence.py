@@ -206,8 +206,26 @@ def exercise(browser, origin, credentials, checks, coarse):
                     page.keyboard.press("Tab")
                 expect(links.nth(index)).to_be_focused()
                 page.evaluate("()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))")
-                bounds = links.nth(index).evaluate("""el => {const box=el.getBoundingClientRect();const nav=el.closest('nav').getBoundingClientRect();return {left:box.left,right:box.right,navLeft:nav.left,navRight:nav.right,wrap:getComputedStyle(el).whiteSpace}}""")
-                checks.check("320px/200% dock keyboard destination " + str(index + 1), bounds["left"] >= bounds["navLeft"] - 1 and bounds["right"] <= bounds["navRight"] + 1 and bounds["wrap"] == "nowrap", bounds)
+                bounds = links.nth(index).evaluate("""el => {
+                  const box=el.getBoundingClientRect();
+                  const dock=el.closest('nav');
+                  const nav=dock.getBoundingClientRect();
+                  const label=el.querySelector('span');
+                  const labelBox=label.getBoundingClientRect();
+                  const range=document.createRange();range.selectNodeContents(label);
+                  const contained=(inner,outer)=>inner.left>=outer.left-1 && inner.right<=outer.right+1 && inner.top>=outer.top-1 && inner.bottom<=outer.bottom+1;
+                  const hit=document.elementFromPoint(box.left+box.width/2,box.top+box.height/2);
+                  return {label:label.textContent.trim(),left:box.left,right:box.right,navLeft:nav.left,navRight:nav.right,
+                    itemContained:contained(box,nav),labelContained:contained(labelBox,box) && [...range.getClientRects()].every(rect=>contained(rect,labelBox)),
+                    labelVisible:labelBox.width>0 && labelBox.height>0,labelOverflow:label.scrollWidth>label.clientWidth+1,
+                    hitTarget:hit===el || el.contains(hit),dockHeight:nav.height,
+                    reservedHeight:parseFloat(getComputedStyle(document.getElementById('workspace-content')).paddingBottom),
+                    dockOverflow:dock.scrollWidth>dock.clientWidth+1};
+                }""")
+                checks.check("320px/200% dock keyboard destination " + str(index + 1),
+                             bool(bounds["label"]) and bounds["itemContained"] and bounds["labelContained"] and bounds["labelVisible"] and
+                             not bounds["labelOverflow"] and not bounds["dockOverflow"] and bounds["hitTarget"] and
+                             bounds["dockHeight"] <= bounds["reservedHeight"] + 1, bounds)
             snapshot(page, checks, "presence-320-text-200", False)
             page.set_viewport_size({"width": 1440, "height": 900})
             snapshot(page, checks, "presence-text-200", False)

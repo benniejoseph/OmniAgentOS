@@ -130,19 +130,26 @@
 
 .topBar {
   min-height: calc(var(--app-header-height) - 1px);
+  flex-wrap: wrap;
   gap: 0.5rem;
   padding: 0.1875rem 1rem;
 }
 
 .headerIdentity {
-  flex: 1 1 0;
+  flex: 1 1 8rem;
   min-width: 2.75rem;
 }
 
 .headerActions {
   flex: 0 1 auto;
   flex-wrap: wrap;
+  min-width: 0;
   max-width: 100%;
+}
+
+.headerActions > button,
+.headerActions > a {
+  flex-shrink: 0;
 }
 
 .headerIdentity > button,
@@ -188,9 +195,7 @@
   border-color: var(--line);
   padding: 0.25rem 0.5rem calc(0.25rem + env(safe-area-inset-bottom, 0px));
   background: var(--background);
-  grid-template-columns: repeat(5, minmax(max-content, 1fr));
-  overflow-x: auto;
-  overscroll-behavior-x: contain;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   scroll-padding-inline: 0.5rem;
 }
 
@@ -200,12 +205,18 @@
   border-block-start: 3px solid transparent;
   border-radius: var(--radius-control);
   line-height: 1rem;
-  overflow-wrap: normal;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  text-align: center;
   scroll-margin-inline: 0.5rem;
   transition:
     background-color var(--duration-control) var(--ease-standard),
     color var(--duration-control) var(--ease-standard);
+}
+
+.mobileDock :global(a > span) {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .mobileDock :global(a[aria-current="page"]) {

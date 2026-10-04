@@ -47,6 +47,8 @@ def exercise(browser, origin, credentials, checks, coarse):
         page.on("download", lambda download: (fixture.unexpected.append({"kind": "download"}), download.cancel()))
         navigate(page, origin, "/app/command")
         search(page, "%%"); page.wait_for_timeout(350)
+        checks.check(label + ": search leaves workspace controls inert while open",
+                     page.get_by_test_id("command-palette-trigger").evaluate("el=>Boolean(el.closest('[inert]'))"))
         checks.check(label + ": punctuation never issues content search", len(fixture.requests) == 0)
         search(page, "report")
         expect(palette(page).get_by_role("option", name="Report private memory Active private memory")).to_be_visible()
@@ -68,6 +70,8 @@ def exercise(browser, origin, credentials, checks, coarse):
             page.evaluate("document.documentElement.style.fontSize='200%'")
             page.wait_for_function("() => parseFloat(getComputedStyle(document.documentElement).fontSize) >= 31")
             page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+            checks.check("phone text 200: search portal covers the navigation dock",
+                         palette(page).evaluate("el=>el.parentElement===document.body && el.contains(document.elementFromPoint(innerWidth/2,innerHeight-1))"))
             checks.snapshot(page, "content-search-phone-text-200", coarse)
             page.evaluate("document.documentElement.style.fontSize=''")
             page.set_viewport_size({"width": 390, "height": 844})
@@ -83,6 +87,8 @@ def exercise(browser, origin, credentials, checks, coarse):
         active = page.get_by_test_id("command-palette-input").get_attribute("aria-activedescendant")
         checks.check(label + ": keyboard active result remains in the list", page.locator('[id="' + active + '"]').get_attribute("role") == "option")
         page.keyboard.press("Escape"); expect(page.get_by_test_id("command-palette-trigger")).to_be_focused()
+        checks.check(label + ": closing search restores workspace interaction",
+                     page.get_by_test_id("command-palette-trigger").evaluate("el=>!el.closest('[inert]')"))
         fixture.mode = "error"; search(page, "report")
         expect(palette(page).get_by_role("button", name="Restart search", exact=True)).to_be_visible()
         search(page, "settings")

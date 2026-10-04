@@ -1251,7 +1251,15 @@ void main() {
         find.text('Private temporary preview · not kept in Conversation'),
         findsOneWidget,
       );
-      expect(find.byTooltip('Run artifacts'), findsOneWidget);
+      final actions = find.byTooltip('Conversation actions').hitTestable();
+      expect(actions, findsOneWidget);
+      await tester.tap(actions);
+      await tester.pumpAndSettle();
+      final artifacts = find.text('Run artifacts').hitTestable();
+      expect(artifacts, findsOneWidget);
+      await tester.tap(artifacts);
+      await tester.pumpAndSettle();
+      expect(find.text('Artifacts'), findsOneWidget);
       expect(
         PaintingBinding.instance.imageCache.statusForKey(imageKey).tracked,
         isTrue,
@@ -1259,6 +1267,7 @@ void main() {
 
       await tester.pump(const Duration(minutes: 6));
       expect(find.text('Screenshot from This Mac'), findsNothing);
+      expect(find.text('No artifacts yet'), findsOneWidget);
       expect(controller.artifacts, isEmpty);
       expect(
         PaintingBinding.instance.imageCache.statusForKey(imageKey).untracked,

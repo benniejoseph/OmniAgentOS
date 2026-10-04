@@ -216,6 +216,14 @@ void main() {
       );
       expect(composer, findsOneWidget);
       await tester.enterText(composer, 'Unsent draft');
+      final statusDetails = find.descendant(
+        of: find.byKey(const ValueKey('companion-presence')),
+        matching: find.byType(ExpansionTile),
+      );
+      expect(statusDetails.hitTestable(), findsOneWidget);
+      await tester.tap(statusDetails);
+      await tester.pumpAndSettle();
+      expect(find.text('Open home conversation').hitTestable(), findsOneWidget);
       repository.heldDetail = Completer<TalkThreadDetail>();
       await tester.tap(find.text('Open home conversation'));
       await tester.pump();
@@ -412,8 +420,10 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(tester.takeException(), isNull);
-    expect(find.text('What needs to move?'), findsOneWidget);
-    final description = find.textContaining('Ask a question or describe');
+    expect(find.text('How can I help?'), findsOneWidget);
+    final description = find.text(
+      'Ask a question, make a plan, or bring something you want to work on.',
+    );
     await tester.scrollUntilVisible(
       description,
       80,

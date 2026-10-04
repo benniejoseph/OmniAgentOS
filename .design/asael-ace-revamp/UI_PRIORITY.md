@@ -2,7 +2,9 @@
 
 The owner explicitly prioritized the UI revamp and ATLAS, asking to stabilize the current release and return to connector expansion afterward. The full implementation plan remains in scope; this changes execution order.
 
-The current feature release is PR53, separate from this visual branch. Connector work is preserved in `codex/native-connector-controls` and is not part of this UI release.
+PR53 is stabilized and merged with all sixteen hosted checks passing. The current
+visual release is PR54. Connector work is preserved in
+`codex/native-connector-controls` and is deferred until after this UI/ATLAS priority.
 
 Visual thesis: a warm, precise conversation workspace with a quiet graphite rail, readable typography, restrained gold and an expressive umber eagle.
 
@@ -49,6 +51,25 @@ for Android Roboto); they do not establish physical-device or microphone accepta
 App version `1.23.13+48` is reserved for this UI release. The deferred connector
 checkpoint must advance its build version when resumed. This UI change introduces
 no database migration or native API contract version.
+
+## Release correction checkpoint
+
+The universal private Mac package `Asael-1.23.13-48-macOS.dmg` was built from
+`2fe00481f8505d9ffa241fb9553e095011eb03e9`; its SHA256 is
+`d38b7787c35ee757cb443a58b41a7a7ba7df5bb99b41c4d076d46d87bd9c5c68`.
+Both architectures and version metadata are verified. Nested signatures are
+verified in local/private signing mode; this is not Apple notarization.
+
+Hosted review exposed a required-prop test typing error, outdated theme/menu
+fixtures, Search layering at 200% text and an undersized Connections link.
+Search now uses a body portal with reversible background inert state and a
+scrollable panel; phone navigation labels wrap within their columns. Native
+corrections affect tests only, so packaged application code remains unchanged.
+The affected native files pass all forty cases and the shell/palette files pass
+twelve cases. A fresh-data integration timeout is addressed by analyzing only
+the test fixture tables after bulk seeding; all ten Account projection cases
+pass locally with the original application timeout and RLS assertions intact.
+The complete corrected hosted cycle still determines release acceptance.
 
 ## ATLAS boundary
 
