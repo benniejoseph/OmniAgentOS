@@ -98,6 +98,8 @@ void main() {
         const owner = CaptureOwnerBinding(
           tenantId: 'tenant-one',
           actorId: 'actor:one',
+          canonicalUserId: 'user-one',
+          apiOrigin: 'https://capture.test',
         );
         final outbox = _MemoryOutbox();
         for (var index = 0; index < captureBatchMaxFiles - 1; index += 1) {
@@ -396,7 +398,12 @@ class _Harness {
     controller = CaptureController(
       _Repository(),
       outbox,
-      const CaptureOwnerBinding(tenantId: 'tenant-one', actorId: 'actor:one'),
+      const CaptureOwnerBinding(
+        tenantId: 'tenant-one',
+        actorId: 'actor:one',
+        canonicalUserId: 'user-one',
+        apiOrigin: 'https://capture.test',
+      ),
       batchPollInterval: Duration.zero,
       batchPollRounds: 1,
       delay: _noDelay,
@@ -546,6 +553,8 @@ class _MemoryOutbox implements CaptureOutbox {
       id: id,
       tenantId: owner.tenantId,
       actorId: owner.actorId,
+      canonicalUserId: owner.canonicalUserId,
+      apiOrigin: owner.apiOrigin,
       createdAt: DateTime.utc(2026, 9, 16),
       idempotencyKey: 'capture-offline-$id',
       draft: draft,

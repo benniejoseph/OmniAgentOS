@@ -12,11 +12,23 @@ import 'capture_controller.dart';
 import 'capture_drop_intake.dart';
 import 'capture_models.dart';
 import 'capture_outbox.dart';
+import 'capture_recording.dart';
+import 'capture_recording_panel.dart';
+import 'capture_receipt_panel.dart';
 
 export 'capture_controller.dart';
 export 'capture_models.dart';
 
 bool get _isMacOS => !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS;
+bool get _isDesktop =>
+    !kIsWeb &&
+    const {
+      TargetPlatform.macOS,
+      TargetPlatform.windows,
+      TargetPlatform.linux,
+    }.contains(defaultTargetPlatform);
+
+enum CaptureMode { note, record, upload }
 
 @visibleForTesting
 bool shouldRecoverInterruptedImagePick({
@@ -27,8 +39,15 @@ bool shouldRecoverInterruptedImagePick({
     (platform ?? defaultTargetPlatform) == TargetPlatform.android;
 
 class CaptureView extends StatefulWidget {
-  const CaptureView({super.key, required this.controller});
+  const CaptureView({
+    super.key,
+    required this.controller,
+    this.onOpenKnowledge,
+    this.recorder,
+  });
   final CaptureController controller;
+  final VoidCallback? onOpenKnowledge;
+  final CaptureRecorder? recorder;
   @override
   State<CaptureView> createState() => _CaptureViewState();
 }
@@ -46,11 +65,33 @@ class _CaptureViewState extends State<CaptureView> {
   CaptureDropSummary? dropSummary;
   bool dropping = false;
   bool picking = false;
+  CaptureMode mode = CaptureMode.note;
+  late CaptureRecordingController recording;
+  int _scopeGeneration = 0, _intakeEpoch = 0;
+  bool get _busy =>
+      !widget.controller.canWrite ||
+      widget.controller.busy ||
+      picking ||
+      dropping ||
+      recording.busy ||
+      recording.microphoneActive ||
+      !recording.microphoneStateKnown;
+  bool _current(CaptureController controller, int generation, int epoch) =>
+      mounted &&
+      identical(controller, widget.controller) &&
+      controller.current(generation) &&
+      epoch == _intakeEpoch;
 
   @override
   void initState() {
     super.initState();
     dropIntake = CaptureDropIntake(widget.controller);
+    _scopeGeneration = widget.controller.generation;
+    recording = CaptureRecordingController(
+      widget.controller,
+      widget.recorder ?? NativeCaptureRecorder(),
+    );
+    widget.controller.addListener(_authorityChanged);
     // image_picker's lost-data handoff is an Android lifecycle recovery API.
     // Calling it on macOS throws before the user has selected anything and
     // leaves Capture showing a false attachment failure on first open.
@@ -59,17 +100,58 @@ class _CaptureViewState extends State<CaptureView> {
     }
   }
 
+  void _clearDraft() {
+    _intakeEpoch++;
+    title.clear();
+    note.clear();
+    tags.clear();
+    // CaptureController snapshots admitted attachments, so clearing this UI
+    // draft cannot alter an upload already admitted by the owner-scoped queue.
+    attachment?.bytes.fillRange(0, attachment!.bytes.length, 0);
+    attachment = null;
+    attachmentKind = CaptureKind.text;
+    attachmentError = null;
+    batchFiles.clear();
+    dropSummary = null;
+    picking = dropping = false;
+  }
+
+  void _authorityChanged() {
+    if (_scopeGeneration == widget.controller.generation &&
+        widget.controller.available) {
+      return;
+    }
+    _scopeGeneration = widget.controller.generation;
+    _clearDraft();
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
   @override
   void didUpdateWidget(covariant CaptureView oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (identical(oldWidget.controller, widget.controller)) return;
+    if (identical(oldWidget.controller, widget.controller)) {
+      return;
+    }
+    oldWidget.controller.removeListener(_authorityChanged);
+    recording.dispose();
+    _clearDraft();
+    mode = CaptureMode.note;
+    _scopeGeneration = widget.controller.generation;
     dropIntake = CaptureDropIntake(widget.controller);
-    dropping = false;
-    dropSummary = null;
+    recording = CaptureRecordingController(
+      widget.controller,
+      widget.recorder ?? NativeCaptureRecorder(),
+    );
+    widget.controller.addListener(_authorityChanged);
   }
 
   @override
   void dispose() {
+    widget.controller.removeListener(_authorityChanged);
+    recording.dispose();
+    _clearDraft();
     title.dispose();
     note.dispose();
     tags.dispose();
@@ -77,69 +159,79 @@ class _CaptureViewState extends State<CaptureView> {
   }
 
   Future<void> submit() async {
+    if (_busy) {
+      return;
+    }
     if (batchFiles.isNotEmpty) {
       await submitBatch();
       return;
     }
-    final ok = await widget.controller.submit(
+    final controller = widget.controller;
+    final generation = controller.generation, epoch = ++_intakeEpoch;
+    final ok = await controller.submit(
       CaptureDraft(
         title: title.text,
         content: note.text,
         tags: tags.text
             .split(',')
-            .map((e) => e.trim())
-            .where((e) => e.isNotEmpty)
+            .map((tag) => tag.trim())
+            .where((tag) => tag.isNotEmpty)
             .toList(),
         file: attachment,
         kind: attachment == null ? CaptureKind.text : attachmentKind,
       ),
     );
-    if (ok && mounted) {
-      title.clear();
-      note.clear();
-      tags.clear();
-      setState(() {
-        attachment = null;
-        attachmentKind = CaptureKind.text;
-        attachmentError = null;
-      });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            widget.controller.lastSubmitQueued
-                ? 'Saved encrypted on this device. It will sync after reconnecting.'
-                : 'Capture queued for your knowledge base',
-          ),
-        ),
-      );
+    if (!mounted || !ok || !_current(controller, generation, epoch)) {
+      return;
     }
+    final queued = controller.lastSubmitQueued;
+    setState(_clearDraft);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          queued
+              ? 'Saved encrypted on this device. Review the queue for retry status.'
+              : 'The Capture service accepted this source. Processing is shown separately.',
+        ),
+      ),
+    );
   }
 
   Future<void> submitBatch() async {
-    final selected = List<SelectedCaptureFile>.from(batchFiles);
-    final sharedTitle = title.text.trim();
-    final sharedNote = note.text;
+    if (_busy) {
+      return;
+    }
+    final controller = widget.controller;
+    final generation = controller.generation, epoch = ++_intakeEpoch;
+    bool current() => _current(controller, generation, epoch);
+    final selected = List<SelectedCaptureFile>.from(batchFiles),
+        sharedTitle = title.text.trim(),
+        sharedNote = note.text;
     final sharedTags = tags.text
         .split(',')
         .map((tag) => tag.trim())
         .where((tag) => tag.isNotEmpty)
         .toList();
-    final result = await widget.controller.submitBatch(
+    final result = await controller.submitBatch(
       selected.map((item) => item.file.name).toList(),
       (index) async {
         final selectedFile = selected[index];
-        final currentLength = await selectedFile.file.length();
-        if (currentLength != selectedFile.length ||
-            currentLength < 1 ||
-            currentLength > captureAttachmentMaxBytes) {
+        final length = await selectedFile.file.length();
+        if (!current()) {
+          throw StateError('Capture access changed.');
+        }
+        if (length != selectedFile.length ||
+            length < 1 ||
+            length > captureAttachmentMaxBytes) {
           throw const FormatException(
             'The file changed after selection. Choose it again.',
           );
         }
         final bytes = await selectedFile.file.readAsBytes();
-        if (bytes.length != currentLength) {
+        if (!current() || bytes.length != length) {
+          bytes.fillRange(0, bytes.length, 0);
           throw const FormatException(
-            'The complete file could not be read. Choose it again.',
+            'The complete file could not be read in the current Capture session.',
           );
         }
         final filenameTitle = captureBatchTitle(selectedFile.file.name);
@@ -163,69 +255,70 @@ class _CaptureViewState extends State<CaptureView> {
         );
       },
     );
-    if (!mounted || result.queued == 0) return;
-    title.clear();
-    note.clear();
-    tags.clear();
-    setState(() {
-      batchFiles.clear();
-      attachmentError = null;
-    });
+    if (!mounted || !current() || result.queued == 0) {
+      return;
+    }
+    setState(_clearDraft);
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
-          result.failed == 0
-              ? '${result.queued} ${result.queued == 1 ? 'document' : 'documents'} encrypted and queued. Processing continues in the background.'
-              : '${result.queued} queued; ${result.failed} could not be added. Review the batch below.',
+          '${result.queued} encrypted and queued${result.failed == 0 ? '.' : '; ${result.failed} were not added.'} Review transfer and processing below.',
         ),
       ),
     );
   }
 
   Future<void> pickBatchDocuments() async {
-    if (picking || !_isMacOS) return;
+    if (_busy) {
+      return;
+    }
+    final controller = widget.controller;
+    final generation = controller.generation, epoch = ++_intakeEpoch;
+    bool current() => _current(controller, generation, epoch);
     setState(() {
       picking = true;
       attachmentError = null;
     });
     try {
       final files = await FilePicker.pickFiles(
-        dialogTitle: 'Choose documents or transcripts',
+        dialogTitle: 'Choose capture files',
         type: FileType.custom,
         allowedExtensions: captureDocumentExtensions,
       );
-      if (files.isEmpty) return;
+      if (!current() || files.isEmpty) {
+        return;
+      }
       final known = batchFiles.map((item) => item.key).toSet();
-      final available =
-          (captureBatchMaxFiles -
-                  widget.controller.pending.length -
-                  batchFiles.length)
+      final capacity =
+          (captureBatchMaxFiles - controller.pending.length - batchFiles.length)
               .clamp(0, captureBatchMaxFiles);
-      var accepted = 0;
-      var duplicate = 0;
-      var empty = 0;
-      var tooLarge = 0;
-      var full = 0;
+      var accepted = 0, duplicate = 0, empty = 0, tooLarge = 0, full = 0;
       final additions = <SelectedCaptureFile>[];
       for (final file in files) {
         final length = await file.length();
+        if (!current()) {
+          return;
+        }
         final key = captureSelectionKey(file.name, length);
         if (known.contains(key)) {
-          duplicate += 1;
+          duplicate++;
         } else if (length < 1) {
-          empty += 1;
+          empty++;
         } else if (length > captureAttachmentMaxBytes) {
-          tooLarge += 1;
-        } else if (accepted >= available) {
-          full += 1;
+          tooLarge++;
+        } else if (accepted >= capacity) {
+          full++;
         } else {
           known.add(key);
           additions.add(SelectedCaptureFile(file: file, length: length));
-          accepted += 1;
+          accepted++;
         }
       }
-      if (!mounted) return;
+      if (!current()) {
+        return;
+      }
       setState(() {
+        attachment?.bytes.fillRange(0, attachment!.bytes.length, 0);
         attachment = null;
         attachmentKind = CaptureKind.text;
         batchFiles.addAll(additions);
@@ -237,25 +330,32 @@ class _CaptureViewState extends State<CaptureView> {
         );
       });
     } catch (_) {
-      if (mounted) {
-        setState(() {
-          attachmentError = 'These files could not be selected. Choose supported documents up to 5 MB each.';
-        });
+      if (current()) {
+        setState(
+          () => attachmentError = 'These files could not be selected. Choose supported files up to 5 MB each.',
+        );
       }
     } finally {
-      if (mounted) setState(() => picking = false);
+      if (current()) {
+        setState(() => picking = false);
+      }
     }
   }
 
   Future<void> submitDroppedFiles(List<CaptureDropSource> sources) async {
-    if (dropping || _dropDisabled) return;
+    if (_busy || _dropDisabled) {
+      return;
+    }
+    final controller = widget.controller, intake = dropIntake;
+    final generation = controller.generation, epoch = ++_intakeEpoch;
+    bool current() => _current(controller, generation, epoch);
     setState(() {
       dropping = true;
       dropSummary = null;
       attachmentError = null;
     });
     try {
-      final result = await dropIntake.submit(
+      final result = await intake.submit(
         sources,
         context: CaptureDropContext(
           title: title.text,
@@ -267,90 +367,45 @@ class _CaptureViewState extends State<CaptureView> {
               .toList(),
         ),
       );
-      if (!mounted) return;
-      setState(() => dropSummary = result);
-      if (result.queued > 0) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              '${result.queued} ${result.queued == 1 ? 'file is' : 'files are'} encrypted and queued. Indexing continues in the background.',
-            ),
-          ),
-        );
+      if (current()) {
+        setState(() => dropSummary = result);
       }
     } finally {
-      if (mounted) setState(() => dropping = false);
+      if (current()) {
+        setState(() => dropping = false);
+      }
     }
   }
 
-  bool get _dropDisabled {
-    final activeTransfer = widget.controller.batchItems.any(
-      (item) =>
-          item.state == CaptureBatchState.queued ||
-          item.state == CaptureBatchState.uploading,
-    );
-    return dropping ||
-        dropIntake.busy ||
-        widget.controller.pending.length >= captureBatchMaxFiles ||
-        widget.controller.batchQueueing ||
-        widget.controller.submitting ||
-        widget.controller.syncing ||
-        activeTransfer;
-  }
-
-  Future<void> pickAttachment() async {
-    if (picking) return;
-    setState(() {
-      picking = true;
-      attachmentError = null;
-    });
-    try {
-      final file = await FilePicker.pickFile(
-        dialogTitle: 'Choose a capture file',
-        type: FileType.custom,
-        allowedExtensions: captureDocumentExtensions,
+  bool get _dropDisabled =>
+      !widget.controller.canWrite ||
+      dropping ||
+      dropIntake.busy ||
+      widget.controller.busy ||
+      widget.controller.pending.length >= captureBatchMaxFiles ||
+      widget.controller.batchItems.any(
+        (item) => const {
+          CaptureBatchState.queued,
+          CaptureBatchState.uploading,
+        }.contains(item.state),
       );
-      if (file == null) return;
-      final length = await file.length();
-      if (length == 0 || length > captureAttachmentMaxBytes) {
-        throw const FormatException('Choose a non-empty file up to 5 MB.');
-      }
-      final bytes = await file.readAsBytes();
-      if (!mounted) return;
-      setState(() {
-        batchFiles.clear();
-        attachment = CaptureAttachment(
-          name: file.name,
-          bytes: bytes,
-          contentType:
-              lookupMimeType(file.name, headerBytes: bytes) ??
-              'application/octet-stream',
-        );
-        attachmentKind = CaptureKind.file;
-      });
-    } catch (_) {
-      if (mounted) {
-        setState(() {
-          attachmentError = 'This file could not be attached. Choose a supported file up to 5 MB.';
-        });
-      }
-    } finally {
-      if (mounted) setState(() => picking = false);
-    }
-  }
 
   Future<void> pickMeetingMedia() => pickWithFilePicker(
     kind: CaptureKind.meetingMedia,
     extensions: const ['mp3', 'm4a', 'wav', 'ogg', 'mp4', 'webm'],
-    dialogTitle: 'Choose meeting audio or video',
+    dialogTitle: 'Choose audio or video',
   );
-
   Future<void> pickWithFilePicker({
     required CaptureKind kind,
     required List<String> extensions,
     required String dialogTitle,
   }) async {
-    if (picking) return;
+    if (_busy) {
+      return;
+    }
+    final controller = widget.controller;
+    final generation = controller.generation, epoch = ++_intakeEpoch;
+    bool current() => _current(controller, generation, epoch);
     setState(() {
       picking = true;
       attachmentError = null;
@@ -361,22 +416,42 @@ class _CaptureViewState extends State<CaptureView> {
         type: FileType.custom,
         allowedExtensions: extensions,
       );
-      if (file == null) return;
+      if (!current() || file == null) {
+        return;
+      }
       final length = await file.length();
-      if (length == 0 || length > captureAttachmentMaxBytes) {
+      if (!current()) {
+        return;
+      }
+      if (length < 1 || length > captureAttachmentMaxBytes) {
         throw const FormatException('Choose a non-empty file up to 5 MB.');
       }
       final bytes = await file.readAsBytes();
-      _setAttachment(file.name, bytes, kind);
+      if (bytes.length != length) {
+        bytes.fillRange(0, bytes.length, 0);
+        throw const FormatException('The file changed while reading.');
+      }
+      _setAttachment(file.name, bytes, kind, current: current);
     } catch (_) {
-      _setAttachmentError();
+      if (current()) {
+        setState(
+          () => attachmentError = 'This item could not be attached. Choose a supported file up to 5 MB.',
+        );
+      }
     } finally {
-      if (mounted) setState(() => picking = false);
+      if (current()) {
+        setState(() => picking = false);
+      }
     }
   }
 
   Future<void> pickImage(ImageSource source, CaptureKind kind) async {
-    if (picking) return;
+    if (_busy) {
+      return;
+    }
+    final controller = widget.controller;
+    final generation = controller.generation, epoch = ++_intakeEpoch;
+    bool current() => _current(controller, generation, epoch);
     setState(() {
       picking = true;
       attachmentError = null;
@@ -384,42 +459,82 @@ class _CaptureViewState extends State<CaptureView> {
     try {
       final file = await imagePicker.pickImage(
         source: source,
-        imageQuality: 90,
-        maxWidth: 2400,
         requestFullMetadata: false,
       );
-      if (file == null) return;
+      if (!current() || file == null) {
+        return;
+      }
       final length = await file.length();
-      if (length == 0 || length > captureAttachmentMaxBytes) {
+      if (!current()) {
+        return;
+      }
+      if (length < 1 || length > captureAttachmentMaxBytes) {
         throw const FormatException('Choose a non-empty image up to 5 MB.');
       }
-      _setAttachment(file.name, await file.readAsBytes(), kind);
+      final bytes = await file.readAsBytes();
+      if (bytes.length != length) {
+        bytes.fillRange(0, bytes.length, 0);
+        throw const FormatException('The image changed while reading.');
+      }
+      _setAttachment(file.name, bytes, kind, current: current);
     } catch (_) {
-      _setAttachmentError();
+      if (current()) {
+        setState(
+          () => attachmentError =
+              'This image could not be attached. Choose an image up to 5 MB.',
+        );
+      }
     } finally {
-      if (mounted) setState(() => picking = false);
+      if (current()) {
+        setState(() => picking = false);
+      }
     }
   }
 
   Future<void> recoverInterruptedImagePick() async {
+    final controller = widget.controller;
+    final generation = controller.generation, epoch = ++_intakeEpoch;
+    bool current() => _current(controller, generation, epoch);
     try {
       final recovered = await imagePicker.retrieveLostData();
-      if (recovered.isEmpty || recovered.file == null) return;
-      final file = recovered.file!;
-      final length = await file.length();
-      if (length == 0 || length > captureAttachmentMaxBytes) {
+      if (!current() || recovered.isEmpty || recovered.file == null) {
+        return;
+      }
+      final file = recovered.file!, length = await recovered.file!.length();
+      if (!current()) {
+        return;
+      }
+      if (length < 1 || length > captureAttachmentMaxBytes) {
         throw const FormatException('Choose a non-empty image up to 5 MB.');
       }
-      _setAttachment(file.name, await file.readAsBytes(), CaptureKind.image);
+      final bytes = await file.readAsBytes();
+      if (bytes.length != length) {
+        bytes.fillRange(0, bytes.length, 0);
+        throw const FormatException('The recovered image changed.');
+      }
+      _setAttachment(file.name, bytes, CaptureKind.image, current: current);
     } catch (_) {
-      _setAttachmentError();
+      if (current()) {
+        setState(
+          () => attachmentError = 'The interrupted image selection could not be recovered. Choose it again.',
+        );
+      }
     }
   }
 
-  void _setAttachment(String name, Uint8List bytes, CaptureKind kind) {
-    if (!mounted) return;
+  void _setAttachment(
+    String name,
+    Uint8List bytes,
+    CaptureKind kind, {
+    required bool Function() current,
+  }) {
+    if (!current()) {
+      bytes.fillRange(0, bytes.length, 0);
+      return;
+    }
     setState(() {
       batchFiles.clear();
+      attachment?.bytes.fillRange(0, attachment!.bytes.length, 0);
       attachment = CaptureAttachment(
         name: name,
         bytes: bytes,
@@ -432,476 +547,426 @@ class _CaptureViewState extends State<CaptureView> {
     });
   }
 
-  void _setAttachmentError() {
-    if (!mounted) return;
-    setState(() {
-      attachmentError = 'This item could not be attached. Choose a supported file up to 5 MB.';
-    });
-  }
-
   @override
   Widget build(BuildContext context) {
     final body = ListenableBuilder(
-      listenable: widget.controller,
-      builder: (_, _) => LayoutBuilder(
-        builder: (context, constraints) {
-          final wide = constraints.maxWidth >= 800;
-          final form = <Widget>[
-            Text(
-              _isMacOS ? 'New capture' : 'Capture what matters',
-              style: Theme.of(context).textTheme.headlineSmall,
-            ),
-            const SizedBox(height: 8),
-            Text(
-              _isMacOS
-                  ? 'Add context for one thought, file, or an entire document collection.'
-                  : 'Notes are queued, indexed, and kept searchable with their source.',
-              style: Theme.of(context).textTheme.bodyLarge,
-            ),
-            if (_isMacOS) ...[
-              const SizedBox(height: 18),
-              CaptureDropSurface(
-                enabled: !_dropDisabled,
-                busy: dropping || dropIntake.busy,
-                remainingCapacity:
-                    (captureBatchMaxFiles - widget.controller.pending.length)
-                        .clamp(0, captureBatchMaxFiles),
-                onDrop: submitDroppedFiles,
-              ),
-              if (dropSummary != null)
-                Padding(
-                  padding: const EdgeInsets.only(top: 8, left: 4),
-                  child: Text(
-                    dropSummary!.message,
-                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: dropSummary!.hasProblems
-                          ? Theme.of(context).colorScheme.error
-                          : Theme.of(context).colorScheme.primary,
+      listenable: Listenable.merge([widget.controller, recording]),
+      builder: (context, _) => SingleChildScrollView(
+        key: const Key('capture-workspace-scroll'),
+        padding: const EdgeInsets.all(20),
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 1120),
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final controller = widget.controller;
+                final form = Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text(
+                      'Keep the source. Add the context.',
+                      style: Theme.of(context).textTheme.headlineSmall,
                     ),
-                  ),
-                ),
-            ],
-            const SizedBox(height: 24),
-            TextField(
-              controller: title,
-              decoration: const InputDecoration(
-                labelText: 'Title',
-                helperText:
-                    'Optional; for a batch this becomes the collection label',
-                prefixIcon: Icon(Icons.title_rounded),
-              ),
-            ),
-            const SizedBox(height: 12),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                if (!_isMacOS)
-                  OutlinedButton.icon(
-                    onPressed: picking || widget.controller.submitting
-                        ? null
-                        : () => pickImage(ImageSource.camera, CaptureKind.scan),
-                    icon: const Icon(Icons.document_scanner_outlined),
-                    label: const Text('Scan page'),
-                  ),
-                if (_isMacOS)
-                  FilledButton.tonalIcon(
-                    onPressed:
-                        picking ||
-                            widget.controller.submitting ||
-                            widget.controller.batchQueueing
-                        ? null
-                        : pickBatchDocuments,
-                    icon: const Icon(Icons.library_add_outlined),
-                    label: const Text('Add documents in bulk'),
-                  ),
-                OutlinedButton.icon(
-                  onPressed: picking || widget.controller.submitting
-                      ? null
-                      : () => pickImage(ImageSource.gallery, CaptureKind.image),
-                  icon: const Icon(Icons.add_photo_alternate_outlined),
-                  label: const Text('Add image'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: picking || widget.controller.submitting
-                      ? null
-                      : pickAttachment,
-                  icon: const Icon(Icons.attach_file_rounded),
-                  label: const Text('Attach file'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: picking || widget.controller.submitting
-                      ? null
-                      : pickMeetingMedia,
-                  icon: const Icon(Icons.video_file_outlined),
-                  label: const Text('Meeting media'),
-                ),
-                if (picking)
-                  const Padding(
-                    padding: EdgeInsets.all(10),
-                    child: SizedBox.square(
-                      dimension: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
+                    const SizedBox(height: 8),
+                    const Text(
+                      'Save a note, record audio, or add files. Transfer, extraction and indexing each have their own state.',
                     ),
-                  ),
-              ],
-            ),
-            if (attachment != null)
-              Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: InputChip(
-                  avatar: const Icon(Icons.description_outlined, size: 18),
-                  label: Text(
-                    '${attachment!.name} · ${_fileSize(attachment!.bytes.length)}',
-                  ),
-                  onDeleted: widget.controller.submitting
-                      ? null
-                      : () => setState(() {
-                          attachment = null;
-                          attachmentKind = CaptureKind.text;
-                        }),
-                ),
-              ),
-            if (batchFiles.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 12),
-                child: CaptureSelectionPanel(
-                  files: batchFiles,
-                  onRemove: (item) => setState(() => batchFiles.remove(item)),
-                ),
-              ),
-            if (attachmentError != null)
-              Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Text(
-                  attachmentError!,
-                  style: TextStyle(color: Theme.of(context).colorScheme.error),
-                ),
-              ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: note,
-              minLines: 7,
-              maxLines: 16,
-              autofocus: true,
-              decoration: const InputDecoration(
-                labelText: 'Note',
-                hintText:
-                    'Paste a thought, link, meeting note, or research fragment',
-                alignLabelWithHint: true,
-                prefixIcon: Padding(
-                  padding: EdgeInsets.only(bottom: 120),
-                  child: Icon(Icons.edit_note_rounded),
-                ),
-              ),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: tags,
-              decoration: const InputDecoration(
-                labelText: 'Tags',
-                hintText: 'research, launch, idea',
-                prefixIcon: Icon(Icons.tag_rounded),
-              ),
-            ),
-            if (widget.controller.loadingOutbox)
-              const Padding(
-                padding: EdgeInsets.only(top: 12),
-                child: LinearProgressIndicator(),
-              ),
-            if (!_isMacOS && widget.controller.batchItems.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 16),
-                child: CaptureBatchProgressPanel(controller: widget.controller),
-              ),
-            if (!_isMacOS && widget.controller.pendingWithoutBatch.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 16),
-                child: _CaptureOutboxPanel(controller: widget.controller),
-              ),
-            if (widget.controller.error != null)
-              Padding(
-                padding: const EdgeInsets.only(top: 12),
-                child: Text(
-                  widget.controller.error is CaptureOutboxIntegrityException
-                      ? 'Encrypted captures could not be verified. Nothing was uploaded.'
-                      : 'Could not save this capture. Your draft is still here.',
-                  style: TextStyle(color: Theme.of(context).colorScheme.error),
-                ),
-              ),
-            if (widget.controller.syncError != null &&
-                widget.controller.pending.isEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 12),
-                child: Text(
-                  'The capture service is unavailable. Retry after reconnecting.',
-                  style: TextStyle(color: Theme.of(context).colorScheme.error),
-                ),
-              ),
-            const SizedBox(height: 20),
-            FilledButton.icon(
-              onPressed:
-                  widget.controller.submitting ||
-                      widget.controller.batchQueueing ||
-                      widget.controller.syncing
-                  ? null
-                  : submit,
-              icon:
-                  widget.controller.submitting ||
-                      widget.controller.batchQueueing
-                  ? const SizedBox.square(
-                      dimension: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.bolt_rounded),
-              label: Text(
-                widget.controller.batchQueueing
-                    ? 'Encrypting batch…'
-                    : widget.controller.submitting
-                    ? 'Saving capture…'
-                    : batchFiles.isNotEmpty
-                    ? 'Queue ${batchFiles.length} ${batchFiles.length == 1 ? 'document' : 'documents'}'
-                    : 'Save capture',
-              ),
-            ),
-          ];
-          final receipt = AnimatedSwitcher(
-            duration: const Duration(milliseconds: 220),
-            switchInCurve: Curves.easeOutCubic,
-            child: widget.controller.receipt == null
-                ? const _CaptureGuide(key: ValueKey('guide'))
-                : _CaptureSuccess(
-                    key: const ValueKey('success'),
-                    receipt: widget.controller.receipt!,
-                  ),
-          );
-          if (_isMacOS) {
-            return SingleChildScrollView(
-              padding: const EdgeInsets.all(22),
-              child: Center(
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 860),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: form,
-                  ),
-                ),
-              ),
-            );
-          }
-          return SingleChildScrollView(
-            padding: const EdgeInsets.all(20),
-            child: Center(
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 1080),
-                child: wide
-                    ? Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Expanded(
-                            flex: 3,
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.stretch,
-                              children: form,
-                            ),
+                    const SizedBox(height: 16),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        for (final value in CaptureMode.values)
+                          ChoiceChip(
+                            key: Key('capture-mode-${value.name}'),
+                            selected: mode == value,
+                            label: Text(switch (value) {
+                              CaptureMode.note => 'Note',
+                              CaptureMode.record => 'Record',
+                              CaptureMode.upload => 'Upload',
+                            }),
+                            onSelected: _busy
+                                ? null
+                                : (_) => setState(() => mode = value),
                           ),
-                          const SizedBox(width: 28),
-                          Expanded(flex: 2, child: receipt),
-                        ],
-                      )
-                    : Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                      ],
+                    ),
+                    if (!controller.available)
+                      const Padding(
+                        padding: EdgeInsets.only(top: 12),
+                        child: Text(
+                          'Capture is locked or unavailable. Sign in or unlock to continue.',
+                        ),
+                      ),
+                    if (controller.available && !controller.canWrite)
+                      const Padding(
+                        padding: EdgeInsets.only(top: 12),
+                        child: Text(
+                          'This role can inspect sources and recover or discard local copies. Saving, recording, and queue replay require write access.',
+                        ),
+                      ),
+                    const SizedBox(height: 16),
+                    TextField(
+                      key: const Key('capture-title'),
+                      controller: title,
+                      enabled: !_busy,
+                      maxLength: 240,
+                      decoration: const InputDecoration(
+                        labelText: 'Title',
+                        helperText: 'Optional; a batch uses this as its collection label',
+                      ),
+                    ),
+                    if (mode == CaptureMode.record) ...[
+                      CaptureRecordingPanel(
+                        controller: recording,
+                        onAttach: (audio) {
+                          if (!controller.canWrite) {
+                            audio.bytes.fillRange(0, audio.bytes.length, 0);
+                            return;
+                          }
+                          setState(() {
+                            attachment?.bytes.fillRange(
+                              0,
+                              attachment!.bytes.length,
+                              0,
+                            );
+                            attachment = audio;
+                            attachmentKind = CaptureKind.meetingMedia;
+                            batchFiles.clear();
+                          });
+                        },
+                      ),
+                      const SizedBox(height: 16),
+                    ],
+                    if (mode == CaptureMode.upload) ...[
+                      if (_isDesktop)
+                        CaptureDropSurface(
+                          enabled: !_dropDisabled && !_busy,
+                          busy: dropping || dropIntake.busy,
+                          remainingCapacity:
+                              (captureBatchMaxFiles - controller.pending.length)
+                                  .clamp(0, captureBatchMaxFiles),
+                          onDrop: submitDroppedFiles,
+                        ),
+                      if (dropSummary != null)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 8),
+                          child: Text(dropSummary!.message),
+                        ),
+                      const SizedBox(height: 12),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
                         children: [
-                          ...form,
-                          const SizedBox(height: 24),
-                          receipt,
+                          if (!_isDesktop)
+                            OutlinedButton.icon(
+                              onPressed: _busy
+                                  ? null
+                                  : () => pickImage(
+                                      ImageSource.camera,
+                                      CaptureKind.scan,
+                                    ),
+                              icon: const Icon(Icons.document_scanner_outlined),
+                              label: const Text('Scan page'),
+                            ),
+                          FilledButton.tonalIcon(
+                            onPressed: _busy ? null : pickBatchDocuments,
+                            icon: const Icon(Icons.library_add_outlined),
+                            label: const Text('Choose files'),
+                          ),
+                          OutlinedButton.icon(
+                            onPressed: _busy
+                                ? null
+                                : () => pickImage(
+                                    ImageSource.gallery,
+                                    CaptureKind.image,
+                                  ),
+                            icon: const Icon(Icons.image_outlined),
+                            label: const Text('Choose image'),
+                          ),
+                          OutlinedButton.icon(
+                            onPressed: _busy ? null : pickMeetingMedia,
+                            icon: const Icon(Icons.audio_file_outlined),
+                            label: const Text('Choose audio or video'),
+                          ),
                         ],
                       ),
-              ),
+                      const SizedBox(height: 8),
+                      const Text(
+                        'Up to 25 queued items, 5 MB per file and 64 MB total encrypted storage. A supported upload does not guarantee complete extraction.',
+                      ),
+                      if (picking || dropping) const LinearProgressIndicator(),
+                      const SizedBox(height: 12),
+                    ],
+                    if (attachment != null)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 12),
+                        child: InputChip(
+                          label: Text(
+                            '${attachment!.name} · ${_fileSize(attachment!.bytes.length)}',
+                          ),
+                          onDeleted: _busy
+                              ? null
+                              : () => setState(() {
+                                  attachment?.bytes.fillRange(
+                                    0,
+                                    attachment!.bytes.length,
+                                    0,
+                                  );
+                                  attachment = null;
+                                  attachmentKind = CaptureKind.text;
+                                }),
+                        ),
+                      ),
+                    if (batchFiles.isNotEmpty)
+                      CaptureSelectionPanel(
+                        files: batchFiles,
+                        onRemove: _busy
+                            ? null
+                            : (item) => setState(() => batchFiles.remove(item)),
+                      ),
+                    if (attachmentError != null)
+                      Semantics(
+                        liveRegion: true,
+                        child: Text(
+                          attachmentError!,
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.error,
+                          ),
+                        ),
+                      ),
+                    TextField(
+                      key: const Key('capture-note'),
+                      controller: note,
+                      enabled: !_busy,
+                      minLines: 4,
+                      maxLines: 12,
+                      maxLength: 20000,
+                      decoration: const InputDecoration(
+                        labelText: 'Note or context',
+                        helperText: 'A pasted or shared link stays note text. This does not fetch the linked page.',
+                        alignLabelWithHint: true,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      key: const Key('capture-tags'),
+                      controller: tags,
+                      enabled: !_busy,
+                      decoration: const InputDecoration(
+                        labelText: 'Tags',
+                        hintText: 'research, launch, idea',
+                      ),
+                    ),
+                    if (controller.loadingOutbox)
+                      const Padding(
+                        padding: EdgeInsets.only(top: 12),
+                        child: LinearProgressIndicator(),
+                      ),
+                    if (controller.error != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 12),
+                        child: Text(
+                          controller.error is CaptureOutboxIntegrityException
+                              ? 'Encrypted captures could not be verified. Nothing was uploaded.'
+                              : 'This capture could not be saved. Your draft is retained.',
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.error,
+                          ),
+                        ),
+                      ),
+                    const SizedBox(height: 20),
+                    FilledButton.icon(
+                      key: const Key('capture-submit'),
+                      onPressed: _busy ? null : submit,
+                      icon: const Icon(Icons.add_box_outlined),
+                      label: Text(
+                        controller.batchQueueing
+                            ? 'Encrypting batch…'
+                            : controller.submitting
+                            ? 'Saving capture…'
+                            : batchFiles.isNotEmpty
+                            ? 'Queue ${batchFiles.length} files'
+                            : 'Save capture',
+                      ),
+                    ),
+                  ],
+                );
+                final status = Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    CaptureReceiptPanel(
+                      controller: controller,
+                      onOpenKnowledge: widget.onOpenKnowledge,
+                    ),
+                    if (controller.batchItems.isNotEmpty) ...[
+                      const SizedBox(height: 16),
+                      CaptureBatchProgressPanel(controller: controller),
+                    ],
+                    if (controller.pendingWithoutBatch.isNotEmpty) ...[
+                      const SizedBox(height: 16),
+                      _CaptureOutboxPanel(controller: controller),
+                    ],
+                    if (controller.supportsLegacyRecovery &&
+                        (controller.legacyInventory == null ||
+                            controller.legacyInventory!.count > 0 ||
+                            controller.legacyInventory!.unreadableCount > 0 ||
+                            controller.legacyInventory!.limited ||
+                            controller.legacyCleanupNotice != null)) ...[
+                      const SizedBox(height: 16),
+                      _CaptureLegacyRecoveryPanel(controller: controller),
+                    ],
+                  ],
+                );
+                if (constraints.maxWidth >= 980 &&
+                    MediaQuery.textScalerOf(context).scale(1) <= 1.4) {
+                  return Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(flex: 3, child: form),
+                      const SizedBox(width: 24),
+                      Expanded(flex: 2, child: status),
+                    ],
+                  );
+                }
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [form, const SizedBox(height: 24), status],
+                );
+              },
             ),
-          );
-        },
-      ),
-    );
-
-    if (!_isMacOS) {
-      return Scaffold(
-        appBar: AppBar(title: const Text('Capture')),
-        body: body,
-      );
-    }
-
-    return MacosPageScaffold(
-      title: 'Capture',
-      description:
-          'Send notes, media, and document collections into indexed knowledge.',
-      icon: Icons.add_box_outlined,
-      actions: [
-        ListenableBuilder(
-          listenable: widget.controller,
-          builder: (context, _) => IconButton(
-            tooltip: 'Sync encrypted captures',
-            onPressed:
-                widget.controller.pending.isEmpty || widget.controller.syncing
-                ? null
-                : widget.controller.syncPending,
-            icon: widget.controller.syncing
-                ? const SizedBox.square(
-                    dimension: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.sync_rounded),
           ),
         ),
-      ],
-      primaryAction: ListenableBuilder(
-        listenable: widget.controller,
-        builder: (context, _) => FilledButton.tonalIcon(
-          onPressed:
-              picking ||
-                  widget.controller.submitting ||
-                  widget.controller.batchQueueing
-              ? null
-              : pickBatchDocuments,
-          icon: const Icon(Icons.library_add_outlined),
-          label: const Text('Add documents'),
-        ),
       ),
-      inspectorWidth: 360,
-      body: body,
-      inspector: _MacosCaptureInspector(controller: widget.controller),
     );
+    return _isMacOS
+        ? MacosPageScaffold(
+            title: 'Capture',
+            description:
+                'Notes, audio and original files with visible processing.',
+            icon: Icons.add_box_outlined,
+            body: body,
+          )
+        : Scaffold(
+            appBar: AppBar(title: const Text('Capture')),
+            body: body,
+          );
   }
-}
-
-class _MacosCaptureInspector extends StatelessWidget {
-  const _MacosCaptureInspector({required this.controller});
-
-  final CaptureController controller;
-
-  @override
-  Widget build(BuildContext context) => ListenableBuilder(
-    listenable: controller,
-    builder: (context, _) => ListView(
-      key: const ValueKey('macos-capture-processing-inspector'),
-      padding: const EdgeInsets.all(16),
-      children: [
-        const MacosSectionHeader(
-          title: 'Processing',
-          description:
-              'Encrypted intake, background indexing, and source status.',
-        ),
-        const SizedBox(height: 14),
-        _CaptureInspectorMetric(
-          icon: Icons.pending_actions_outlined,
-          label: 'Waiting to sync',
-          value: '${controller.pending.length}',
-        ),
-        const SizedBox(height: 7),
-        _CaptureInspectorMetric(
-          icon: Icons.account_tree_outlined,
-          label: 'Active batches',
-          value: '${controller.batchItems.length}',
-        ),
-        const SizedBox(height: 18),
-        if (controller.receipt != null) ...[
-          _CaptureSuccess(receipt: controller.receipt!),
-          const SizedBox(height: 14),
-        ],
-        if (controller.batchItems.isNotEmpty) ...[
-          CaptureBatchProgressPanel(controller: controller),
-          const SizedBox(height: 14),
-        ],
-        if (controller.pendingWithoutBatch.isNotEmpty) ...[
-          _CaptureOutboxPanel(controller: controller),
-          const SizedBox(height: 14),
-        ],
-        if (controller.receipt == null &&
-            controller.batchItems.isEmpty &&
-            controller.pendingWithoutBatch.isEmpty)
-          const _CaptureGuide(),
-      ],
-    ),
-  );
-}
-
-class _CaptureInspectorMetric extends StatelessWidget {
-  const _CaptureInspectorMetric({
-    required this.icon,
-    required this.label,
-    required this.value,
-  });
-
-  final IconData icon;
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) => Row(
-    children: [
-      Icon(icon, size: 17),
-      const SizedBox(width: 8),
-      Expanded(child: Text(label)),
-      Text(value, style: Theme.of(context).textTheme.labelLarge),
-    ],
-  );
 }
 
 String _fileSize(int bytes) => bytes >= 1024 * 1024
     ? '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB'
     : '${(bytes / 1024).ceil()} KB';
 
-class _CaptureGuide extends StatelessWidget {
-  const _CaptureGuide({super.key});
-  @override
-  Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.all(20),
-    decoration: BoxDecoration(
-      color: Theme.of(context).colorScheme.surfaceContainerLow,
-      borderRadius: BorderRadius.circular(16),
-    ),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Icon(Icons.hub_outlined, color: Theme.of(context).colorScheme.primary),
-        const SizedBox(height: 16),
-        Text(
-          'What happens next',
-          style: Theme.of(context).textTheme.titleMedium,
-        ),
-        const SizedBox(height: 12),
-        const _GuideRow(
-          icon: Icons.enhanced_encryption_outlined,
-          text: 'Encrypted on this device before upload',
-        ),
-        const _GuideRow(
-          icon: Icons.manage_search_rounded,
-          text: 'Indexed for semantic search',
-        ),
-        const _GuideRow(
-          icon: Icons.link_rounded,
-          text: 'Connected to related knowledge',
-        ),
-      ],
-    ),
-  );
-}
+class _CaptureLegacyRecoveryPanel extends StatelessWidget {
+  const _CaptureLegacyRecoveryPanel({required this.controller});
+  final CaptureController controller;
 
-class _GuideRow extends StatelessWidget {
-  const _GuideRow({required this.icon, required this.text});
-  final IconData icon;
-  final String text;
   @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.symmetric(vertical: 7),
-    child: Row(
-      children: [
-        Icon(icon, size: 19),
-        const SizedBox(width: 10),
-        Expanded(child: Text(text)),
-      ],
-    ),
-  );
+  Widget build(BuildContext context) {
+    final inventory = controller.legacyInventory;
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            'Older device queue',
+            style: Theme.of(context).textTheme.titleMedium,
+          ),
+          Text(
+            inventory == null
+                ? 'Check for older encrypted files that cannot be linked to this account.'
+                : '${inventory.count} unclaimed encrypted ${inventory.count == 1 ? 'file' : 'files'} · ${_fileSize(inventory.encryptedBytes)}',
+          ),
+          const Text(
+            'These files stay on this device and count toward its queue limit. Their contents and prior owners are not shown.',
+          ),
+          if (inventory?.limited == true)
+            const Text(
+              'This is a bounded inventory. After cleanup, check again for additional files.',
+            ),
+          if ((inventory?.unreadableCount ?? 0) > 0)
+            Text(
+              '${inventory!.unreadableCount} local encrypted files could not be classified and will be kept.',
+            ),
+          if (controller.legacyRecoveryError != null)
+            Text(controller.legacyRecoveryError!),
+          if (controller.legacyCleanupNotice != null)
+            Semantics(
+              liveRegion: true,
+              child: Text(controller.legacyCleanupNotice!),
+            ),
+          if (controller.inspectingLegacy) const LinearProgressIndicator(),
+          Wrap(
+            spacing: 12,
+            runSpacing: 8,
+            children: [
+              TextButton(
+                key: const Key('capture-legacy-refresh'),
+                onPressed: !controller.available || controller.busy
+                    ? null
+                    : controller.refreshLegacyInventory,
+                child: const Text('Check older queue'),
+              ),
+              if ((inventory?.count ?? 0) > 0)
+                OutlinedButton(
+                  key: const Key('capture-review-legacy-cleanup'),
+                  onPressed: !controller.available || controller.busy
+                      ? null
+                      : () => _confirm(context),
+                  child: const Text('Review local cleanup'),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _confirm(BuildContext context) async {
+    final generation = controller.generation;
+    final reviewed = await controller.refreshLegacyInventory();
+    if (!context.mounted ||
+        !controller.current(generation) ||
+        reviewed == null ||
+        reviewed.count == 0) {
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        scrollable: true,
+        title: const Text('Discard older encrypted files?'),
+        content: Text(
+          'Permanently remove these ${reviewed.count} unclaimed encrypted files (${_fileSize(reviewed.encryptedBytes)}) from this device? '
+          'Their original contents cannot be recovered here. Current account captures and captures pinned to other accounts will be kept. '
+          'This does not undo anything already accepted by the service.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Keep files'),
+          ),
+          FilledButton(
+            key: const Key('capture-confirm-legacy-cleanup'),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Discard older files'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      await controller.discardLegacyInventory(
+        reviewed,
+        reviewedGeneration: generation,
+      );
+    }
+  }
 }
 
 class _CaptureOutboxPanel extends StatelessWidget {
@@ -931,7 +996,9 @@ class _CaptureOutboxPanel extends StatelessWidget {
                 ),
               ),
               TextButton.icon(
-                onPressed: controller.syncing ? null : controller.syncPending,
+                onPressed: !controller.canWrite || controller.syncing
+                    ? null
+                    : controller.syncPending,
                 icon: controller.syncing
                     ? const SizedBox.square(
                         dimension: 16,
@@ -944,23 +1011,26 @@ class _CaptureOutboxPanel extends StatelessWidget {
           ),
           Text(
             controller.syncError == null
-                ? 'These items sync only for this signed-in workspace.'
+                ? 'These items belong to this account and API origin. Review them, then choose Sync to retry with their existing request keys. Restoring this queue does not upload it. Older unverified entries remain quarantined.'
                 : 'Sync paused. The encrypted originals remain on this device.',
           ),
           const SizedBox(height: 8),
           for (final entry in entries.take(4))
-            ListTile(
-              dense: true,
-              contentPadding: EdgeInsets.zero,
-              leading: Icon(_captureKindIcon(entry.draft.kind)),
-              title: Text(_captureKindLabel(entry.draft.kind)),
-              subtitle: Text(_queuedTime(entry.createdAt)),
-              trailing: IconButton(
-                tooltip: 'Discard encrypted capture',
-                icon: const Icon(Icons.delete_outline_rounded),
-                onPressed: controller.syncing
-                    ? null
-                    : () => _confirmDiscard(context, entry),
+            Material(
+              type: MaterialType.transparency,
+              child: ListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(_captureKindIcon(entry.draft.kind)),
+                title: Text(_captureKindLabel(entry.draft.kind)),
+                subtitle: Text(_queuedTime(entry.createdAt)),
+                trailing: IconButton(
+                  tooltip: 'Discard encrypted capture',
+                  icon: const Icon(Icons.delete_outline_rounded),
+                  onPressed: controller.syncing
+                      ? null
+                      : () => _confirmDiscard(context, entry),
+                ),
               ),
             ),
           if (entries.length > 4)
@@ -974,12 +1044,13 @@ class _CaptureOutboxPanel extends StatelessWidget {
     BuildContext context,
     CaptureOutboxEntry entry,
   ) async {
+    final generation = controller.generation;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: const Text('Discard this capture?'),
         content: const Text(
-          'This permanently removes the encrypted local copy before it syncs.',
+          'This removes the encrypted device copy. It does not undo a source already accepted by the service.',
         ),
         actions: [
           TextButton(
@@ -993,7 +1064,9 @@ class _CaptureOutboxPanel extends StatelessWidget {
         ],
       ),
     );
-    if (confirmed == true) await controller.discard(entry.id);
+    if (confirmed == true) {
+      await controller.discard(entry.id, reviewedGeneration: generation);
+    }
   }
 }
 
@@ -1018,47 +1091,4 @@ String _queuedTime(DateTime createdAt) {
   final hour = local.hour.toString().padLeft(2, '0');
   final minute = local.minute.toString().padLeft(2, '0');
   return 'Saved ${local.month}/${local.day} at $hour:$minute';
-}
-
-class _CaptureSuccess extends StatelessWidget {
-  const _CaptureSuccess({super.key, required this.receipt});
-  final CaptureReceipt receipt;
-  @override
-  Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.all(20),
-    decoration: BoxDecoration(
-      color: Theme.of(context).colorScheme.primaryContainer,
-      borderRadius: BorderRadius.circular(16),
-    ),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Icon(
-          Icons.check_circle_rounded,
-          color: Theme.of(context).colorScheme.primary,
-        ),
-        const SizedBox(height: 14),
-        Text('Capture queued', style: Theme.of(context).textTheme.titleLarge),
-        const SizedBox(height: 6),
-        Text(
-          receipt.title.isEmpty ? 'Your note is being indexed.' : receipt.title,
-        ),
-        if (receipt.tags.isNotEmpty) ...[
-          const SizedBox(height: 14),
-          Wrap(
-            spacing: 6,
-            runSpacing: 6,
-            children: receipt.tags
-                .map(
-                  (tag) => Chip(
-                    label: Text(tag),
-                    visualDensity: VisualDensity.compact,
-                  ),
-                )
-                .toList(),
-          ),
-        ],
-      ],
-    ),
-  );
 }

@@ -9,6 +9,7 @@ class AppDelegate: FlutterAppDelegate, UNUserNotificationCenterDelegate {
   private let desktopHostController = DesktopHostController()
   private let localComputerController = LocalComputerController()
   private let credentialBrokerController = CredentialBrokerController()
+  private let recoveryStorageBrokerController = RecoveryStorageBrokerController()
 
   override func applicationDidFinishLaunching(_ notification: Notification) {
     // FlutterAppDelegate inherits this optional AppKit delegate callback but
@@ -48,6 +49,17 @@ class AppDelegate: FlutterAppDelegate, UNUserNotificationCenterDelegate {
 
   func attachDesktopBridge(channel: FlutterMethodChannel, window: NSWindow) {
     desktopHostController.attach(channel: channel, window: window)
+    if let controller = window.contentViewController as? FlutterViewController {
+      _ = attachRecoveryStorageBridge(to: controller.engine.binaryMessenger)
+    }
+  }
+
+  func attachRecoveryStorageBridge(to messenger: FlutterBinaryMessenger) -> FlutterMethodChannel {
+    recoveryStorageBrokerController.attach(to: messenger)
+  }
+
+  func detachRecoveryStorageBridge(_ channel: FlutterMethodChannel) {
+    recoveryStorageBrokerController.detach(channel)
   }
 
   func attachLocalComputerBridge(channel: FlutterMethodChannel) {
@@ -2126,7 +2138,7 @@ private final class DesktopHostController: NSObject {
     pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
   )
   private static let workspaceRoutePattern = try! NSRegularExpression(
-    pattern: "^/(talk|today|capture|inbox|knowledge|projects|meetings|results|automation)(/[A-Za-z0-9._~%:-]{1,500})?$"
+    pattern: "^/(?:(talk|today|capture|inbox|knowledge|projects|meetings|results|automation|activity)(/[A-Za-z0-9._~%:-]{1,500})?|results/approval(?::|%3[Aa])[A-Za-z0-9._~%:-]{1,480}\\?kind=(tool|workflow|slo_policy)|projects/[A-Za-z0-9._~%:-]{1,240}\\?workItemId=[A-Za-z0-9._~%:-]{1,240}|projects/[A-Za-z0-9._~%:-]{1,240}\\?view=build(?:&artifact=[A-Za-z0-9._~%:-]{1,240})?(?:&workItemId=[A-Za-z0-9._~%:-]{1,240})?|responsibilities(?:/responsibility(?::|%3[Aa])[a-f0-9]{64})?|accounts|(?:accounts|customers)/customer-account(?::|%3[Aa])[a-f0-9]{64}|knowledge\\?memory=[A-Za-z0-9._~%:-]{1,240})$"
   )
 
   private weak var window: NSWindow?
@@ -3689,6 +3701,7 @@ private final class AsaelWorkspaceWindowController: NSWindowController, NSWindow
   private let channel: FlutterMethodChannel
   private let localComputerChannel: FlutterMethodChannel
   private let secureStorageChannel: FlutterMethodChannel
+  private var recoveryStorageChannel: FlutterMethodChannel?
   private let onClose: (UUID) -> Void
   private var closed = false
 
@@ -3740,6 +3753,9 @@ private final class AsaelWorkspaceWindowController: NSWindowController, NSWindow
     desktopHost.attachAuxiliary(channel: channel, window: window)
     (NSApp.delegate as? AppDelegate)?.attachLocalComputerBridge(channel: localComputerChannel)
     (NSApp.delegate as? AppDelegate)?.attachCredentialBrokerBridge(channel: secureStorageChannel)
+    recoveryStorageChannel = (NSApp.delegate as? AppDelegate)?.attachRecoveryStorageBridge(
+      to: flutterViewController.engine.binaryMessenger
+    )
   }
 
   @available(*, unavailable)
@@ -3753,6 +3769,9 @@ private final class AsaelWorkspaceWindowController: NSWindowController, NSWindow
     channel.setMethodCallHandler(nil)
     (NSApp.delegate as? AppDelegate)?.detachLocalComputerBridge(channel: localComputerChannel)
     (NSApp.delegate as? AppDelegate)?.detachCredentialBrokerBridge(channel: secureStorageChannel)
+    if let recoveryStorageChannel {
+      (NSApp.delegate as? AppDelegate)?.detachRecoveryStorageBridge(recoveryStorageChannel)
+    }
     flutterViewController.engine.shutDownEngine()
     onClose(id)
   }

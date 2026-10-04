@@ -1,6 +1,7 @@
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
+import 'created_file_export.dart';
+import 'result_contracts.dart';
 import 'results.dart';
 
 class CreatedFilesSection extends StatefulWidget {
@@ -9,318 +10,226 @@ class CreatedFilesSection extends StatefulWidget {
     required this.controller,
     required this.files,
     this.dense = false,
+    this.exporter = const ScopedCreatedFileExporter(),
   });
-
   final ResultsController controller;
   final List<GeneratedArtifactSummary> files;
   final bool dense;
-
+  final ScopedCreatedFileExporter exporter;
   @override
   State<CreatedFilesSection> createState() => _CreatedFilesSectionState();
 }
 
 class _CreatedFilesSectionState extends State<CreatedFilesSection> {
-  String? _savingId;
-
+  String? _savingId, _notice;
+  int _page = 0;
   @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Container(
-      key: const Key('created-files-section'),
-      height: widget.files.isEmpty
-          ? 102
-          : widget.dense
-          ? 182
-          : 194,
-      padding: EdgeInsets.fromLTRB(
-        widget.dense ? 16 : 12,
-        10,
-        widget.dense ? 16 : 12,
-        11,
-      ),
-      decoration: BoxDecoration(
-        color: scheme.surfaceContainerLow.withValues(alpha: .72),
-        border: Border(bottom: BorderSide(color: scheme.outlineVariant)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                width: 30,
-                height: 30,
-                decoration: BoxDecoration(
-                  color: scheme.primaryContainer,
-                  borderRadius: BorderRadius.circular(9),
-                ),
-                child: Icon(
-                  Icons.folder_copy_outlined,
-                  size: 17,
-                  color: scheme.primary,
-                ),
-              ),
-              const SizedBox(width: 9),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Created files',
-                      style: Theme.of(context).textTheme.titleSmall
-                          ?.copyWith(fontWeight: FontWeight.w700),
-                    ),
-                    Text(
-                      'Private files created by Asael · separate from Knowledge and RAG',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
-                  ],
-                ),
-              ),
-              if (widget.files.isNotEmpty)
-                Text(
-                  '${widget.files.length}',
-                  style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                    color: scheme.primary,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-            ],
-          ),
-          const SizedBox(height: 9),
-          Expanded(
-            child: widget.files.isEmpty
-                ? Align(
-                    alignment: Alignment.centerLeft,
-                    child: Text(
-                      'Files generated in future runs will stay available here.',
-                      style: Theme.of(context).textTheme.bodySmall
-                          ?.copyWith(color: scheme.onSurfaceVariant),
-                    ),
-                  )
-                : LayoutBuilder(
-                    builder: (context, constraints) {
-                      final width = constraints.maxWidth < 600
-                          ? (constraints.maxWidth - 8)
-                                .clamp(220, 340)
-                                .toDouble()
-                          : widget.dense
-                          ? 286.0
-                          : 310.0;
-                      return ListView.separated(
-                        scrollDirection: Axis.horizontal,
-                        itemCount: widget.files.length,
-                        separatorBuilder: (_, _) => const SizedBox(width: 9),
-                        itemBuilder: (context, index) => SizedBox(
-                          width: width,
-                          child: _CreatedFileCard(
-                            artifact: widget.files[index],
-                            saving: _savingId == widget.files[index].id,
-                            onSave: widget.files[index].ready
-                                ? () => _save(widget.files[index])
-                                : null,
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _save(GeneratedArtifactSummary artifact) async {
-    if (_savingId != null || !artifact.ready) return;
-    setState(() => _savingId = artifact.id);
-    try {
-      final bytes = await widget.controller.downloadCreatedFile(artifact);
-      if (!mounted) return;
-      final saved = await FilePicker.saveFile(
-        dialogTitle: 'Save ${artifact.filename}',
-        fileName: artifact.filename,
-        bytes: bytes,
-      );
-      if (mounted && saved != null) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('${artifact.filename} saved.')));
-      }
-    } catch (error) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('This created file could not be downloaded.'),
-          ),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _savingId = null);
+  void didUpdateWidget(covariant CreatedFilesSection oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller) {
+      _savingId = _notice = null;
+      _page = 0;
+    }
+    if (_page * 3 >= widget.files.length) {
+      _page = 0;
     }
   }
-}
-
-class _CreatedFileCard extends StatelessWidget {
-  const _CreatedFileCard({
-    required this.artifact,
-    required this.saving,
-    required this.onSave,
-  });
-
-  final GeneratedArtifactSummary artifact;
-  final bool saving;
-  final VoidCallback? onSave;
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final color = _statusColor(scheme, artifact.status);
+    final read = widget.controller.readFor(ResultsSource.createdFiles);
     return Material(
-      key: Key('created-file-${artifact.id}'),
-      color: scheme.surface,
-      borderRadius: BorderRadius.circular(12),
-      child: Container(
-        padding: const EdgeInsets.fromLTRB(11, 9, 8, 8),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: scheme.outlineVariant),
-        ),
-        child: Row(
+      key: const Key('created-files-section'),
+      color: Theme.of(context).colorScheme.surface,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Container(
-              width: 42,
-              height: 52,
-              decoration: BoxDecoration(
-                color: color.withValues(alpha: .11),
-                borderRadius: BorderRadius.circular(9),
-              ),
-              child: Icon(_kindIcon(artifact.kind), color: color, size: 23),
+            Text(
+              'Created files',
+              style: Theme.of(context).textTheme.titleMedium,
             ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Text(
-                    artifact.title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.bodyMedium
-                        ?.copyWith(fontWeight: FontWeight.w700),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    '${_kindLabel(artifact.kind)} · v${artifact.version}${artifact.byteCount == null ? '' : ' · ${_humanBytes(artifact.byteCount!)}'}',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                  const SizedBox(height: 3),
-                  Row(
-                    children: [
-                      Icon(Icons.lock_outline_rounded, size: 12, color: color),
-                      const SizedBox(width: 4),
-                      Expanded(
-                        child: Text(
-                          _statusLabel(artifact.status),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: Theme.of(context).textTheme.labelSmall
-                              ?.copyWith(
-                                color: color,
-                                fontWeight: FontWeight.w600,
-                              ),
-                        ),
-                      ),
-                      const SizedBox(width: 4),
-                      Flexible(
-                        child: Text(
-                          MaterialLocalizations.of(context)
-                              .formatShortDate(artifact.updatedAt.toLocal()),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: Theme.of(context).textTheme.labelSmall,
-                        ),
-                      ),
-                    ],
-                  ),
-                  if (artifact.status == GeneratedArtifactStatus.rendering ||
-                      artifact.status == GeneratedArtifactStatus.queued) ...[
-                    const SizedBox(height: 5),
-                    LinearProgressIndicator(
-                      minHeight: 2,
-                      color: color,
-                      backgroundColor: color.withValues(alpha: .12),
-                    ),
-                  ],
-                ],
-              ),
+            const Text(
+              'Private generated files · separate from Knowledge and recall',
             ),
-            const SizedBox(width: 4),
-            if (onSave != null)
-              IconButton(
-                key: Key('created-file-save-${artifact.id}'),
-                tooltip: 'Save ${artifact.filename} as…',
-                onPressed: saving ? null : onSave,
-                icon: saving
-                    ? const SizedBox.square(
-                        dimension: 17,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.download_rounded, size: 20),
-              )
-            else
+            if (!widget.exporter.available)
+              const Text(
+                'Saving private files is unavailable on this platform. Open Results in the desktop app to save this exact version.',
+              ),
+            Text(
+              '${read.label}${read.loaded ? ' · ${widget.files.length} returned files' : ' · Count unavailable'}',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            if (read.error != null) SelectableText(read.error!),
+            if (_notice != null)
+              Semantics(liveRegion: true, child: Text(_notice!)),
+            if (widget.files.isEmpty)
               Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 7),
-                child: Icon(
-                  artifact.status == GeneratedArtifactStatus.failed
-                      ? Icons.error_outline_rounded
-                      : Icons.schedule_rounded,
-                  size: 19,
-                  color: color,
+                padding: const EdgeInsets.only(top: 12),
+                child: Text(
+                  read.state == ResultsAvailability.partial
+                      ? 'No valid file metadata is available; some returned records were omitted.'
+                      : read.retained
+                      ? 'No created files were in the last successful window. The current source could not be checked.'
+                      : read.loaded
+                      ? 'No created files were returned in this window.'
+                      : 'Created files have not been successfully checked.',
                 ),
+              ),
+            for (final artifact in widget.files.skip(_page * 3).take(3))
+              Padding(
+                padding: const EdgeInsets.only(top: 12),
+                child: Material(
+                  key: Key('created-file-${artifact.id}'),
+                  color: Theme.of(context).colorScheme.surfaceContainerLow,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                    side: BorderSide(
+                      color: Theme.of(context).colorScheme.outlineVariant,
+                    ),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          artifact.title,
+                          style: Theme.of(context).textTheme.titleSmall,
+                        ),
+                        Text(_status(artifact.status)),
+                        Text(
+                          '${artifact.kind.name} · Version ${artifact.version} · ${artifact.byteCount == null ? 'Size unavailable' : '${artifact.byteCount} bytes'}',
+                        ),
+                        if (artifact.ready)
+                          OutlinedButton.icon(
+                            key: Key('created-file-save-${artifact.id}'),
+                            onPressed:
+                                widget.exporter.available &&
+                                    _savingId == null &&
+                                    widget.controller.fileCurrent(artifact)
+                                ? () => _save(artifact)
+                                : null,
+                            icon: const Icon(Icons.save_alt),
+                            label: Text(
+                              _savingId == artifact.id
+                                  ? 'Saving exact file…'
+                                  : 'Save file as…',
+                            ),
+                          ),
+                        if (artifact.ready &&
+                            !widget.controller.fileCurrent(artifact))
+                          const Text(
+                            'Refresh this source before saving the exact file version.',
+                          ),
+                        ExpansionTile(
+                          expansionAnimationStyle:
+                              MediaQuery.disableAnimationsOf(context)
+                              ? AnimationStyle.noAnimation
+                              : null,
+                          tilePadding: EdgeInsets.zero,
+                          title: const Text('File identity and version'),
+                          children: [
+                            SelectableText(
+                              'File ID: ${artifact.id}\nFilename: ${artifact.filename}\nVersion: ${artifact.version}\nMedia type: ${artifact.mediaType}\nCreated: ${artifact.createdAt.toIso8601String()}\nUpdated: ${artifact.updatedAt.toIso8601String()}\nQueued: ${artifact.queuedAt.toIso8601String()}${artifact.readyAt == null ? '' : '\nReady: ${artifact.readyAt!.toIso8601String()}'}${artifact.failedAt == null ? '' : '\nFailed: ${artifact.failedAt!.toIso8601String()}'}',
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            if (widget.files.length > 3)
+              Wrap(
+                spacing: 12,
+                runSpacing: 8,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  TextButton(
+                    onPressed: _page > 0 ? () => setState(() => _page--) : null,
+                    child: const Text('Previous files'),
+                  ),
+                  Text(
+                    'Files page ${_page + 1} of ${(widget.files.length + 2) ~/ 3}',
+                  ),
+                  TextButton(
+                    onPressed: (_page + 1) * 3 < widget.files.length
+                        ? () => setState(() => _page++)
+                        : null,
+                    child: const Text('Next files'),
+                  ),
+                ],
               ),
           ],
         ),
       ),
     );
   }
+
+  Future<void> _save(GeneratedArtifactSummary artifact) async {
+    final controller = widget.controller,
+        generation = widget.controller.generation;
+    if (_savingId != null ||
+        !widget.exporter.available ||
+        !controller.fileCurrent(artifact)) {
+      return;
+    }
+    setState(() {
+      _savingId = artifact.id;
+      _notice = null;
+    });
+    bool current() =>
+        mounted &&
+        identical(controller, widget.controller) &&
+        generation == controller.generation &&
+        controller.fileCurrent(artifact);
+    try {
+      final outcome = await widget.exporter.save(
+        filename: artifact.filename,
+        loadBytes: () => controller.downloadCreatedFile(artifact),
+        isCurrent: current,
+      );
+      if (mounted && identical(controller, widget.controller)) {
+        if (outcome == CreatedFileExportOutcome.scopeChanged) {
+          setState(
+            () => _notice = 'Results access or the file version changed. Refresh and choose a save location again.',
+          );
+        } else if (current()) {
+          setState(
+            () => _notice = switch (outcome) {
+              CreatedFileExportOutcome.saved => 'The selected file was saved.',
+              CreatedFileExportOutcome.canceled =>
+                'Save dialog closed. No file was saved.',
+              CreatedFileExportOutcome.unavailable =>
+                'Saving private files is unavailable on this platform.',
+              CreatedFileExportOutcome.scopeChanged => null,
+            },
+          );
+        }
+      }
+    } catch (_) {
+      if (current()) {
+        setState(
+          () => _notice = 'This exact file could not be saved. Refresh its metadata and try again.',
+        );
+      }
+    } finally {
+      if (mounted && identical(controller, widget.controller)) {
+        setState(() => _savingId = null);
+      }
+    }
+  }
 }
 
-IconData _kindIcon(GeneratedArtifactKind kind) => switch (kind) {
-  GeneratedArtifactKind.document => Icons.description_outlined,
-  GeneratedArtifactKind.presentation => Icons.slideshow_rounded,
-  GeneratedArtifactKind.spreadsheet => Icons.table_chart_outlined,
-  GeneratedArtifactKind.pdf => Icons.picture_as_pdf_outlined,
-};
-
-String _kindLabel(GeneratedArtifactKind kind) => switch (kind) {
-  GeneratedArtifactKind.document => 'Document',
-  GeneratedArtifactKind.presentation => 'Presentation',
-  GeneratedArtifactKind.spreadsheet => 'Spreadsheet',
-  GeneratedArtifactKind.pdf => 'PDF',
-};
-
-String _statusLabel(GeneratedArtifactStatus status) => switch (status) {
+String _status(GeneratedArtifactStatus status) => switch (status) {
   GeneratedArtifactStatus.queued => 'Private · Queued',
   GeneratedArtifactStatus.rendering => 'Private · Rendering',
   GeneratedArtifactStatus.ready => 'Private · Ready',
   GeneratedArtifactStatus.failed => 'Private · Failed',
 };
-
-Color _statusColor(ColorScheme scheme, GeneratedArtifactStatus status) =>
-    switch (status) {
-      GeneratedArtifactStatus.queued ||
-      GeneratedArtifactStatus.rendering => scheme.tertiary,
-      GeneratedArtifactStatus.ready => scheme.primary,
-      GeneratedArtifactStatus.failed => scheme.error,
-    };
-
-String _humanBytes(int value) {
-  if (value < 1024) return '$value B';
-  if (value < 1024 * 1024) return '${(value / 1024).toStringAsFixed(1)} KB';
-  return '${(value / (1024 * 1024)).toStringAsFixed(1)} MB';
-}

@@ -33,7 +33,12 @@ void main() {
       final controller = CaptureController(
         repository,
         outbox,
-        const CaptureOwnerBinding(tenantId: 'tenant-one', actorId: 'actor:one'),
+        const CaptureOwnerBinding(
+          tenantId: 'tenant-one',
+          actorId: 'actor:one',
+          canonicalUserId: 'user-one',
+          apiOrigin: 'https://capture.test',
+        ),
       );
 
       expect(
@@ -63,7 +68,12 @@ void main() {
     final controller = CaptureController(
       repository,
       outbox,
-      const CaptureOwnerBinding(tenantId: 'tenant-one', actorId: 'actor:one'),
+      const CaptureOwnerBinding(
+        tenantId: 'tenant-one',
+        actorId: 'actor:one',
+        canonicalUserId: 'user-one',
+        apiOrigin: 'https://capture.test',
+      ),
     );
 
     final submission = controller.submit(
@@ -116,6 +126,8 @@ class _MemoryOutbox implements CaptureOutbox {
       id: 'abcdefghijklmnopqrstuvwx',
       tenantId: owner.tenantId,
       actorId: owner.actorId,
+      canonicalUserId: owner.canonicalUserId,
+      apiOrigin: owner.apiOrigin,
       createdAt: DateTime.utc(2026, 9, 8),
       idempotencyKey: 'capture-offline-abcdefghijklmnopqrstuvwx',
       draft: draft,

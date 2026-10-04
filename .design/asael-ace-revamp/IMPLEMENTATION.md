@@ -1502,6 +1502,63 @@ suite passed 82 assertions and seven axe scans in
 independent failures and mounted owner/role changes. All Mission reads were
 synthetic; the only actual write was the isolated test login. Evidence links
 were inspected without visiting their destinations. The suite is enrolled in
-the existing serial work-family CI job. Hosted acceptance remains required;
-this slice does not establish source RLS, physical-device parity or production
-promotion.
+the existing serial work-family CI job. PR #43 merged as
+`837dee1eb866f22c42268b517ab49de08a665f52` after all 14 hosted checks passed
+at exact head `8a4b85cb72491b7e888c211b13a09379a6b443e4`. The recovery
+loading assertion now matches its uncertainty copy; Payments waits for actual
+computed theme colors before the unchanged axe scan. Their local regressions
+passed six recovery tests, 128 browser checks and six axe scans. Retained
+receipts are `missions-history-exact-head-hosted.json` and
+`missions-history-merge-receipt.json`. This slice does not establish source RLS,
+physical-device parity or production promotion.
+
+## Native workspaces and recovery candidate — 4 October 2026
+
+The combined native candidate includes provider-bound Work/Build, Results,
+Memory reads, Capture, Responsibilities, Meetings and Customer Accounts. Their
+shared router, host bridge and integration tests now depend on the complete
+set. The earlier core-only manifest is superseded by the combined release
+manifest; none of these additions introduces a second execution store.
+Exact bookmarks and legacy Accounts/Results mappings validate identity before
+opening private providers. Current owner, role, API, biometric, visibility and
+controller changes fence reads and protected effects. Accounts retains separate
+core/intelligence failures and exact fact, revision, conflict and provenance
+inspection; its current native scope remains the three published reads.
+
+Meetings uses v33 for create/revise, participant/consent editing, project
+selection, proposal generation and exact decisions. Immutable protected drafts,
+submitted intent and accepted phase evidence survive controller replacement;
+uncertain decisions cannot restart child effects. Existing source/entity links
+remain editable by their exact IDs, while adding new source/entity choices
+awaits the separately reviewed selector publication. Calendar synchronization
+and recording completion are not enrolled by this candidate.
+
+The macOS host shares one ciphertext broker across Flutter engines. Fixed
+namespace quotas, kernel locking, atomic publication and exact authenticated
+byte comparisons protect recovery records and Capture outbox mutations.
+Restored Capture entries require explicit retry. Accepted receipts remain
+separate from a later failing read or deletion confirmation. Standalone Swift
+policy and process-termination cases passed in
+`native-recovery-macos-policy-validation.log`; these establish the tested
+process-crash boundaries only.
+
+The third complete Flutter run passed all 949 existing cases and three new
+Meeting provider cases. Two remaining new cases exposed Riverpod invalidation
+before Ref replacement and a stale test restore closure. The corrected Meeting
+provider/router rerun passed all eight cases. A follow-up audit found the same
+probe admission pattern in Accounts, Builder and Responsibilities; providers
+and all four repositories now recheck access after callbacks. All 37 focused
+provider cases and the full analyzer passed in
+`native-probe-admission-regression.log`. Accounts route, exact inspector and
+200% text checks passed all 24 cases in
+`native-accounts-route-regression-2.log`.
+
+The actual arm64 macOS Runner and its SwiftPM plugins compiled successfully
+with one Xcode build job. Evidence: `native-macos-runner-configuration.log` and
+`native-macos-runner-build.log`; the latter ends with BUILD SUCCEEDED. This was
+an unsigned Debug build, not a signed release, live multi-window test or
+physical-device acceptance. Hosted acceptance remains required. The native
+binary requires v33 server support, and its decision mutations require the
+paired v220 application/schema release before use. Remaining specialist/admin
+families, native Memory mutations, expanded Accounts actions and device gates
+remain open in Phase 5.

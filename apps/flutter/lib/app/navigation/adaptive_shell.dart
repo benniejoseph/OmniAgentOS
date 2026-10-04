@@ -665,13 +665,15 @@ class _BrandMark extends StatelessWidget {
       const AsaelMark(size: 40),
       if (extended) ...[
         const SizedBox(width: 12),
-        const Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            AsaelWordmark(compact: true),
-            SizedBox(height: 4),
-            Text('Your second brain', style: TextStyle(fontSize: 13)),
-          ],
+        const Flexible(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              AsaelWordmark(compact: true),
+              SizedBox(height: 4),
+              Text('Your second brain', style: TextStyle(fontSize: 13)),
+            ],
+          ),
         ),
       ],
     ],

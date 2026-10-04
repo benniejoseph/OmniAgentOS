@@ -5,8 +5,9 @@ import 'package:flutter/material.dart';
 import '../../app/macos/macos_page_scaffold.dart';
 import '../../app/theme/macos_app_theme.dart';
 import 'knowledge.dart';
+import 'knowledge_read_widgets.dart';
 
-enum _KnowledgeWorkspace { memories, sources, relationships }
+enum _KnowledgeWorkspace { memories, sources, reviews, relationships }
 
 /// A desktop knowledge browser for macOS.
 ///
@@ -15,9 +16,14 @@ enum _KnowledgeWorkspace { memories, sources, relationships }
 /// searchable indexes, a stable relationship canvas, and a persistent
 /// inspector suited to a resizable Mac window.
 class MacosKnowledgeView extends StatefulWidget {
-  const MacosKnowledgeView({super.key, required this.controller});
+  const MacosKnowledgeView({
+    super.key,
+    required this.controller,
+    this.initialMemoryId,
+  });
 
   final KnowledgeController controller;
+  final String? initialMemoryId;
 
   @override
   State<MacosKnowledgeView> createState() => _MacosKnowledgeViewState();
@@ -31,14 +37,28 @@ class _MacosKnowledgeViewState extends State<MacosKnowledgeView> {
   String? _selectedMemoryId;
   String? _selectedSourceId;
   String? _selectedNodeId;
-  MemoryRecord? _inspectedMemory;
-  bool _inspectingMemory = false;
 
   @override
   void initState() {
     super.initState();
     _searchController.text = widget.controller.query;
+    _selectedMemoryId = widget.initialMemoryId;
     if (widget.controller.state == null) widget.controller.refresh();
+  }
+
+  @override
+  void didUpdateWidget(covariant MacosKnowledgeView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.controller, widget.controller) ||
+        oldWidget.initialMemoryId != widget.initialMemoryId) {
+      _selectedMemoryId = widget.initialMemoryId;
+      _selectedSourceId = null;
+      _selectedNodeId = null;
+      _category = 'all';
+      _workspace = _KnowledgeWorkspace.memories;
+      _searchController.text = widget.controller.query;
+      _graphTransform.value = Matrix4.identity();
+    }
   }
 
   @override
@@ -53,6 +73,18 @@ class _MacosKnowledgeViewState extends State<MacosKnowledgeView> {
     listenable: widget.controller,
     builder: (context, _) {
       final controller = widget.controller;
+      if (!controller.available) {
+        return const Center(
+          child: Text('Sign in to read memory and knowledge.'),
+        );
+      }
+      if (MediaQuery.sizeOf(context).width < 960 ||
+          MediaQuery.textScalerOf(context).scale(1) >= 1.5) {
+        return KnowledgeView(
+          controller: controller,
+          initialMemoryId: _selectedMemoryId,
+        );
+      }
       final state = controller.state;
       final memories = _visibleMemories(state?.memories ?? const []);
       final sources = _visibleSources(state?.knowledge ?? const []);
@@ -84,62 +116,62 @@ class _MacosKnowledgeViewState extends State<MacosKnowledgeView> {
                 : const Icon(Icons.refresh_rounded),
           ),
         ],
-        primaryAction: controller.canMutate
-            ? FilledButton.icon(
-                key: const Key('macos-knowledge-add-memory'),
-                onPressed: _addMemory,
-                icon: const Icon(Icons.add_rounded, size: 17),
-                label: const Text('New memory'),
-              )
-            : null,
-        toolbar: _KnowledgeToolbar(
-          workspace: _workspace,
-          searchController: _searchController,
-          category: _category,
-          categories: _categoriesFor(state),
-          visibleCount: switch (_workspace) {
-            _KnowledgeWorkspace.memories => memories.length,
-            _KnowledgeWorkspace.sources => sources.length,
-            _KnowledgeWorkspace.relationships => nodes.length,
-          },
-          onWorkspaceChanged: _selectWorkspace,
-          onSearchChanged: (_) => setState(() {}),
-          onSearchSubmitted: widget.controller.search,
-          onClearSearch: _clearSearch,
-          onCategoryChanged: (value) => setState(() => _category = value),
-        ),
         inspectorWidth: 390,
         inspectorMinWidth: 320,
         inspectorMaxWidth: 540,
-        inspector: _KnowledgeInspector(
-          key: const Key('macos-knowledge-inspector'),
-          workspace: _workspace,
-          memory: _inspectedMemory ?? selectedMemory,
-          source: selectedSource,
-          node: selectedNode,
-          allNodes: state?.nodes ?? const [],
-          edges: state?.edges ?? const [],
-          loadingMemory: _inspectingMemory,
-          canMutate: controller.canMutate,
-          onCorrect: selectedMemory == null
-              ? null
-              : () => _correctMemory(selectedMemory, contradiction: false),
-          onContradict: selectedMemory == null
-              ? null
-              : () => _correctMemory(selectedMemory, contradiction: true),
-          onForget: selectedMemory == null
-              ? null
-              : () => _forgetMemory(selectedMemory),
-          onSelectNode: (id) => setState(() => _selectedNodeId = id),
-        ),
-        body: _buildBody(
-          state: state,
-          memories: memories,
-          sources: sources,
-          nodes: nodes,
-          selectedMemory: selectedMemory,
-          selectedSource: selectedSource,
-          selectedNode: selectedNode,
+        inspector:
+            _workspace == _KnowledgeWorkspace.memories &&
+                _selectedMemoryId != null
+            ? KnowledgeMemoryInspector(
+                key: ValueKey(_selectedMemoryId),
+                controller: controller,
+                memoryId: _selectedMemoryId!,
+              )
+            : _KnowledgeInspector(
+                key: const Key('macos-knowledge-inspector'),
+                workspace: _workspace,
+                source: selectedSource,
+                node: selectedNode,
+                allNodes: state?.nodes ?? const [],
+                edges: state?.edges ?? const [],
+                onSelectNode: (id) => setState(() => _selectedNodeId = id),
+              ),
+        body: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(12),
+              child: _KnowledgeToolbar(
+                workspace: _workspace,
+                searchController: _searchController,
+                category: _categoriesFor(state).contains(_category)
+                    ? _category
+                    : 'all',
+                categories: _categoriesFor(state),
+                visibleCount: switch (_workspace) {
+                  _KnowledgeWorkspace.memories => memories.length,
+                  _KnowledgeWorkspace.sources => sources.length,
+                  _KnowledgeWorkspace.relationships => nodes.length,
+                  _KnowledgeWorkspace.reviews => 0,
+                },
+                onWorkspaceChanged: _selectWorkspace,
+                onSearchChanged: (_) => setState(() {}),
+                onSearchSubmitted: widget.controller.search,
+                onClearSearch: _clearSearch,
+                onCategoryChanged: (value) => setState(() => _category = value),
+              ),
+            ),
+            Expanded(
+              child: _buildBody(
+                state: state,
+                memories: memories,
+                sources: sources,
+                nodes: nodes,
+                selectedMemory: selectedMemory,
+                selectedSource: selectedSource,
+                selectedNode: selectedNode,
+              ),
+            ),
+          ],
         ),
       );
     },
@@ -170,30 +202,59 @@ class _MacosKnowledgeViewState extends State<MacosKnowledgeView> {
       );
     }
     return switch (_workspace) {
-      _KnowledgeWorkspace.memories => _MemoryIndex(
-        memories: memories,
-        selectedId: selectedMemory?.id,
-        filtered: _isFiltered,
-        onSelect: _selectMemory,
-        onClearFilters: _resetFilters,
+      _KnowledgeWorkspace.memories => Column(
+        children: [
+          KnowledgeCoverage(controller: controller),
+          KnowledgeMemoryFilters(controller: controller),
+          Expanded(
+            child: _MemoryIndex(
+              memories: memories,
+              selectedId: selectedMemory?.id,
+              filtered: _isFiltered,
+              onSelect: _selectMemory,
+              onClearFilters: _resetFilters,
+            ),
+          ),
+          KnowledgePageControls(controller: controller, memory: true),
+        ],
       ),
-      _KnowledgeWorkspace.sources => _SourceIndex(
-        sources: sources,
-        selectedId: selectedSource?.id,
-        filtered: _isFiltered,
-        onSelect: (source) => setState(() => _selectedSourceId = source.id),
-        onClearFilters: _resetFilters,
+      _KnowledgeWorkspace.sources => Column(
+        children: [
+          KnowledgeCoverage(controller: controller),
+          Expanded(
+            child: _SourceIndex(
+              sources: sources,
+              selectedId: selectedSource?.id,
+              filtered: _isFiltered,
+              onSelect: (source) =>
+                  setState(() => _selectedSourceId = source.id),
+              onClearFilters: _resetFilters,
+            ),
+          ),
+          KnowledgePageControls(controller: controller, memory: false),
+        ],
       ),
-      _KnowledgeWorkspace.relationships => _RelationshipWorkspace(
-        nodes: nodes,
-        allNodes: state?.nodes ?? const [],
-        edges: state?.edges ?? const [],
-        stats: state?.stats ?? const {},
-        selectedId: selectedNode?.id,
-        transform: _graphTransform,
-        canRebuild: controller.canMutate,
-        onRebuild: () => _run(controller.rebuild),
-        onSelect: (node) => setState(() => _selectedNodeId = node.id),
+      _KnowledgeWorkspace.reviews => KnowledgeReviews(
+        overview: state?.overview ?? const {},
+        stale: controller.error != null,
+      ),
+      _KnowledgeWorkspace.relationships => Column(
+        children: [
+          KnowledgeCoverage(controller: controller, graph: true),
+          Expanded(
+            child: _RelationshipWorkspace(
+              nodes: nodes,
+              allNodes: state?.nodes ?? const [],
+              edges: state?.edges ?? const [],
+              stats: state?.stats ?? const {},
+              selectedId: selectedNode?.id,
+              transform: _graphTransform,
+              canRebuild: controller.canMutate,
+              onRebuild: () => _run(controller.rebuild),
+              onSelect: (node) => setState(() => _selectedNodeId = node.id),
+            ),
+          ),
+        ],
       ),
     };
   }
@@ -211,6 +272,7 @@ class _MacosKnowledgeViewState extends State<MacosKnowledgeView> {
         (state?.knowledge ?? const <KnowledgeItem>[]).map(
           (item) => item.category,
         ),
+      _KnowledgeWorkspace.reviews => const <String>[],
       _KnowledgeWorkspace.relationships =>
         (state?.nodes ?? const <GraphNode>[]).map((item) => item.kind),
     };
@@ -278,102 +340,8 @@ class _MacosKnowledgeViewState extends State<MacosKnowledgeView> {
     widget.controller.search('');
   }
 
-  Future<void> _selectMemory(MemoryRecord memory) async {
-    setState(() {
-      _selectedMemoryId = memory.id;
-      _inspectedMemory = null;
-      _inspectingMemory = true;
-    });
-    try {
-      final exact = await widget.controller.inspect(memory.id);
-      if (!mounted || _selectedMemoryId != memory.id) return;
-      setState(() => _inspectedMemory = exact);
-    } catch (error) {
-      _showError(error);
-    } finally {
-      if (mounted && _selectedMemoryId == memory.id) {
-        setState(() => _inspectingMemory = false);
-      }
-    }
-  }
-
-  Future<void> _addMemory() async {
-    final value = await showDialog<Json>(
-      context: context,
-      builder: (_) => const _MacosMemoryDialog(),
-    );
-    if (value != null) await _run(() => widget.controller.add(value));
-  }
-
-  Future<void> _correctMemory(
-    MemoryRecord memory, {
-    required bool contradiction,
-  }) async {
-    try {
-      final exact = await widget.controller.inspect(memory.id);
-      if (!mounted) return;
-      final value = await showDialog<Json>(
-        context: context,
-        builder: (_) =>
-            _MacosMemoryDialog(memory: exact, contradiction: contradiction),
-      );
-      if (value != null) {
-        await _run(() => widget.controller.correct(memory.id, value));
-      }
-    } catch (error) {
-      _showError(error);
-    }
-  }
-
-  Future<void> _forgetMemory(MemoryRecord memory) async {
-    try {
-      final preview = await widget.controller.previewForget(memory.id);
-      if (!mounted) return;
-      final confirmed = await showDialog<bool>(
-        context: context,
-        builder: (dialogContext) => AlertDialog(
-          title: const Text('Forget this memory?'),
-          content: SizedBox(
-            width: 480,
-            child: Text(
-              '“${memory.title}” and its derived recall material will be removed. '
-              'This affects ${preview.descendantMemoryCount} derived memories, '
-              '${preview.graphNodeCount} relationship points, '
-              '${preview.graphEdgeCount} links, and '
-              '${preview.retrievalTraceCount} recall traces. A deletion receipt '
-              'will remain.',
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext, false),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              key: const Key('macos-memory-confirm-forget'),
-              onPressed: () => Navigator.pop(dialogContext, true),
-              child: const Text('Forget memory'),
-            ),
-          ],
-        ),
-      );
-      if (confirmed == true) {
-        await _run(
-          () => widget.controller.forget(
-            memory.id,
-            preview.expectedReceiptManifestSha256,
-          ),
-        );
-        if (mounted) {
-          setState(() {
-            _selectedMemoryId = null;
-            _inspectedMemory = null;
-          });
-        }
-      }
-    } catch (error) {
-      _showError(error);
-    }
+  void _selectMemory(MemoryRecord memory) {
+    setState(() => _selectedMemoryId = memory.id);
   }
 
   Future<void> _run(Future<void> Function() action) async {
@@ -420,30 +388,34 @@ class _KnowledgeToolbar extends StatelessWidget {
   Widget build(BuildContext context) => LayoutBuilder(
     builder: (context, constraints) {
       final compact = constraints.maxWidth < 860;
-      return Row(
+      return Wrap(
+        spacing: 12,
+        runSpacing: 12,
+        crossAxisAlignment: WrapCrossAlignment.center,
         children: [
-          SegmentedButton<_KnowledgeWorkspace>(
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
             key: const Key('macos-knowledge-workspace'),
-            showSelectedIcon: false,
-            segments: const [
-              ButtonSegment(
-                value: _KnowledgeWorkspace.memories,
-                icon: Icon(Icons.memory_outlined, size: 15),
-                label: Text('Memory'),
-              ),
-              ButtonSegment(
-                value: _KnowledgeWorkspace.sources,
-                icon: Icon(Icons.library_books_outlined, size: 15),
-                label: Text('Sources'),
-              ),
-              ButtonSegment(
-                value: _KnowledgeWorkspace.relationships,
-                icon: Icon(Icons.hub_outlined, size: 15),
-                label: Text('Relationships'),
-              ),
+            children: [
+              for (final entry in const {
+                _KnowledgeWorkspace.memories: 'Memory',
+                _KnowledgeWorkspace.sources: 'Sources',
+                _KnowledgeWorkspace.reviews: 'Reviews',
+                _KnowledgeWorkspace.relationships: 'Relationships',
+              }.entries)
+                ChoiceChip(
+                  label: Text(entry.value),
+                  selected: workspace == entry.key,
+                  materialTapTargetSize: MaterialTapTargetSize.padded,
+                  visualDensity: VisualDensity.standard,
+                  padding: const EdgeInsets.symmetric(
+                    vertical: 10,
+                    horizontal: 4,
+                  ),
+                  onSelected: (_) => onWorkspaceChanged({entry.key}),
+                ),
             ],
-            selected: {workspace},
-            onSelectionChanged: onWorkspaceChanged,
           ),
           const SizedBox(width: 12),
           SizedBox(
@@ -458,6 +430,7 @@ class _KnowledgeToolbar extends StatelessWidget {
                   _KnowledgeWorkspace.memories => 'Search memory',
                   _KnowledgeWorkspace.sources => 'Search indexed sources',
                   _KnowledgeWorkspace.relationships => 'Find a concept',
+                  _KnowledgeWorkspace.reviews => 'Search catalogue',
                 },
                 prefixIcon: const Icon(Icons.search_rounded, size: 17),
                 suffixIcon: searchController.text.isEmpty
@@ -492,7 +465,6 @@ class _KnowledgeToolbar extends StatelessWidget {
               },
             ),
           ),
-          const Spacer(),
           if (!compact)
             Text(
               '$visibleCount visible',
@@ -1193,47 +1165,32 @@ class _KnowledgeInspector extends StatelessWidget {
   const _KnowledgeInspector({
     super.key,
     required this.workspace,
-    required this.memory,
     required this.source,
     required this.node,
     required this.allNodes,
     required this.edges,
-    required this.loadingMemory,
-    required this.canMutate,
-    required this.onCorrect,
-    required this.onContradict,
-    required this.onForget,
     required this.onSelectNode,
   });
 
   final _KnowledgeWorkspace workspace;
-  final MemoryRecord? memory;
   final KnowledgeItem? source;
   final GraphNode? node;
   final List<GraphNode> allNodes;
   final List<GraphEdge> edges;
-  final bool loadingMemory, canMutate;
-  final VoidCallback? onCorrect, onContradict, onForget;
   final ValueChanged<String> onSelectNode;
 
   @override
   Widget build(BuildContext context) => switch (workspace) {
-    _KnowledgeWorkspace.memories =>
-      memory == null
-          ? const _InspectorPlaceholder(
-              icon: Icons.memory_outlined,
-              title: 'Select a memory',
-              message:
-                  'Its claim, evidence, and lineage will remain visible here.',
-            )
-          : _MemoryInspector(
-              memory: memory!,
-              loading: loadingMemory,
-              canMutate: canMutate,
-              onCorrect: onCorrect,
-              onContradict: onContradict,
-              onForget: onForget,
-            ),
+    _KnowledgeWorkspace.memories => const _InspectorPlaceholder(
+      icon: Icons.memory_outlined,
+      title: 'Select a memory',
+      message: 'Read its exact current claim, provenance, and lifecycle.',
+    ),
+    _KnowledgeWorkspace.reviews => const _InspectorPlaceholder(
+      icon: Icons.fact_check_outlined,
+      title: 'Review availability',
+      message: 'Advisory recommendations do not authorize truth changes or background maintenance.',
+    ),
     _KnowledgeWorkspace.sources =>
       source == null
           ? const _InspectorPlaceholder(
@@ -1260,121 +1217,6 @@ class _KnowledgeInspector extends StatelessWidget {
   };
 }
 
-class _MemoryInspector extends StatelessWidget {
-  const _MemoryInspector({
-    required this.memory,
-    required this.loading,
-    required this.canMutate,
-    required this.onCorrect,
-    required this.onContradict,
-    required this.onForget,
-  });
-
-  final MemoryRecord memory;
-  final bool loading, canMutate;
-  final VoidCallback? onCorrect, onContradict, onForget;
-
-  @override
-  Widget build(BuildContext context) => ListView(
-    padding: const EdgeInsets.all(20),
-    children: [
-      Row(
-        children: [
-          Expanded(
-            child: Text(
-              memory.title,
-              style: Theme.of(context).textTheme.titleLarge,
-            ),
-          ),
-          if (loading)
-            const SizedBox.square(
-              dimension: 15,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            ),
-        ],
-      ),
-      const SizedBox(height: 5),
-      Text(
-        '${_label(memory.category)} · ${_label(memory.tier)} · ${_label(memory.claimStatus)}',
-        style: Theme.of(context).textTheme.bodySmall,
-      ),
-      const SizedBox(height: 18),
-      _InspectorSection(title: 'Claim', child: SelectableText(memory.content)),
-      const SizedBox(height: 18),
-      _ConfidenceMeter(label: 'Confidence', value: memory.confidence),
-      const SizedBox(height: 10),
-      _ConfidenceMeter(label: 'Importance', value: memory.importance),
-      const SizedBox(height: 18),
-      _InspectorSection(
-        title: 'Provenance',
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _MetaLine(label: 'Asserted by', value: memory.assertedBy),
-            _MetaLine(
-              label: 'Source',
-              value: memory.source.isEmpty ? 'Not recorded' : memory.source,
-            ),
-            _MetaLine(
-              label: 'Evidence',
-              value: '${memory.evidenceCount} links',
-            ),
-            if (memory.supersedesId != null)
-              _MetaLine(label: 'Supersedes', value: memory.supersedesId!),
-            if (memory.contradictionOfId != null)
-              _MetaLine(label: 'Contradicts', value: memory.contradictionOfId!),
-          ],
-        ),
-      ),
-      if (memory.tags.isNotEmpty) ...[
-        const SizedBox(height: 18),
-        _InspectorSection(
-          title: 'Tags',
-          child: Wrap(
-            spacing: 6,
-            runSpacing: 6,
-            children: memory.tags.map((tag) => Chip(label: Text(tag))).toList(),
-          ),
-        ),
-      ],
-      if (canMutate && memory.claimStatus != 'forgotten') ...[
-        const SizedBox(height: 22),
-        const Divider(),
-        const SizedBox(height: 10),
-        Row(
-          children: [
-            Expanded(
-              child: FilledButton.tonal(
-                key: const Key('macos-memory-correct'),
-                onPressed: onCorrect,
-                child: const Text('Correct'),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: OutlinedButton(
-                key: const Key('macos-memory-contradict'),
-                onPressed: onContradict,
-                child: const Text('Contradict'),
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 8),
-        TextButton.icon(
-          key: const Key('macos-memory-forget'),
-          onPressed: onForget,
-          icon: const Icon(Icons.delete_outline_rounded, size: 17),
-          label: const Text('Forget this memory'),
-          style: TextButton.styleFrom(
-            foregroundColor: Theme.of(context).colorScheme.error,
-          ),
-        ),
-      ],
-    ],
-  );
-}
-
 class _SourceInspector extends StatelessWidget {
   const _SourceInspector({required this.source});
 
@@ -1385,6 +1227,14 @@ class _SourceInspector extends StatelessWidget {
     padding: const EdgeInsets.all(20),
     children: [
       Text(source.title, style: Theme.of(context).textTheme.titleLarge),
+      SelectableText(source.id),
+      Text(
+        'Canonical lineage: ${source.hasCanonicalLineage ? "reported" : "not reported"}',
+      ),
+      Text('Indexed: ${source.indexedAt?.toIso8601String() ?? "not reported"}'),
+      const Text(
+        'Catalogue metadata only. Exact source content and source deletion are not included in this view.',
+      ),
       const SizedBox(height: 5),
       Text(
         '${_label(source.category)} · ${_label(source.kind)}',
@@ -1394,7 +1244,7 @@ class _SourceInspector extends StatelessWidget {
       _InspectorSection(
         title: 'Origin',
         child: SelectableText(
-          source.source.isEmpty ? 'Local knowledge' : source.source,
+          source.source.isEmpty ? 'Origin not reported' : source.source,
         ),
       ),
       const SizedBox(height: 18),
@@ -1467,6 +1317,7 @@ class _NodeInspector extends StatelessWidget {
       padding: const EdgeInsets.all(20),
       children: [
         Text(node.label, style: Theme.of(context).textTheme.titleLarge),
+        SelectableText(node.id),
         const SizedBox(height: 5),
         Text(
           '${_label(node.kind)} · ${node.sourceCount} sources · weight ${node.weight.toStringAsFixed(2)}',
@@ -1480,6 +1331,9 @@ class _NodeInspector extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 18),
+        Text(
+          'Showing at most 24 neighbors from this relationship sample. Links outside the sample are not shown.',
+        ),
         _InspectorSection(
           title: 'Connected concepts (${related.length})',
           child: related.isEmpty
@@ -1496,7 +1350,9 @@ class _NodeInspector extends StatelessWidget {
                           dense: true,
                           contentPadding: EdgeInsets.zero,
                           title: Text(item.node.label),
-                          subtitle: Text(_label(item.edge.relation)),
+                          subtitle: Text(
+                            '${_label(item.edge.relation)}\n${item.node.id}',
+                          ),
                           trailing: Text(
                             item.edge.weight.toStringAsFixed(2),
                             style: Theme.of(context).textTheme.labelSmall,
@@ -1558,51 +1414,6 @@ class _InspectorSection extends StatelessWidget {
   );
 }
 
-class _ConfidenceMeter extends StatelessWidget {
-  const _ConfidenceMeter({required this.label, required this.value});
-
-  final String label;
-  final double value;
-
-  @override
-  Widget build(BuildContext context) => Column(
-    children: [
-      Row(
-        children: [
-          Expanded(child: Text(label)),
-          Text(
-            '${(value * 100).round()}%',
-            style: Theme.of(context).textTheme.labelLarge,
-          ),
-        ],
-      ),
-      const SizedBox(height: 5),
-      LinearProgressIndicator(value: value.clamp(0, 1), minHeight: 4),
-    ],
-  );
-}
-
-class _MetaLine extends StatelessWidget {
-  const _MetaLine({required this.label, required this.value});
-
-  final String label, value;
-
-  @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.only(bottom: 7),
-    child: Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        SizedBox(
-          width: 90,
-          child: Text(label, style: Theme.of(context).textTheme.bodySmall),
-        ),
-        Expanded(child: SelectableText(value)),
-      ],
-    ),
-  );
-}
-
 class _CompactStat extends StatelessWidget {
   const _CompactStat({required this.value, required this.label});
 
@@ -1629,210 +1440,13 @@ class _CompactStat extends StatelessWidget {
   }
 }
 
-class _MacosMemoryDialog extends StatefulWidget {
-  const _MacosMemoryDialog({this.memory, this.contradiction = false});
-
-  final MemoryRecord? memory;
-  final bool contradiction;
-
-  @override
-  State<_MacosMemoryDialog> createState() => _MacosMemoryDialogState();
-}
-
-class _MacosMemoryDialogState extends State<_MacosMemoryDialog> {
-  final _formKey = GlobalKey<FormState>();
-  late final _title = TextEditingController(text: widget.memory?.title);
-  late final _content = TextEditingController(text: widget.memory?.content);
-  late final _tags = TextEditingController(
-    text: widget.memory?.tags.join(', '),
-  );
-  late String _type = widget.memory?.type ?? 'fact';
-  late double _importance = widget.memory?.importance ?? .7;
-  late double _confidence = widget.memory?.confidence ?? .8;
-
-  @override
-  void dispose() {
-    _title.dispose();
-    _content.dispose();
-    _tags.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => AlertDialog(
-    title: Text(
-      widget.memory == null
-          ? 'New memory'
-          : widget.contradiction
-          ? 'Record a contradiction'
-          : 'Correct memory',
-    ),
-    content: SizedBox(
-      width: 600,
-      child: Form(
-        key: _formKey,
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextFormField(
-                key: const Key('macos-memory-title'),
-                controller: _title,
-                autofocus: true,
-                textInputAction: TextInputAction.next,
-                decoration: const InputDecoration(labelText: 'Title'),
-                validator: (value) => value == null || value.trim().isEmpty
-                    ? 'Give this memory a title.'
-                    : null,
-              ),
-              const SizedBox(height: 10),
-              TextFormField(
-                key: const Key('macos-memory-content'),
-                controller: _content,
-                minLines: 5,
-                maxLines: 9,
-                decoration: const InputDecoration(
-                  labelText: 'What should Asael remember?',
-                  alignLabelWithHint: true,
-                ),
-                validator: (value) => value == null || value.trim().isEmpty
-                    ? 'Memory content cannot be empty.'
-                    : null,
-              ),
-              if (widget.memory == null) ...[
-                const SizedBox(height: 10),
-                Row(
-                  children: [
-                    Expanded(
-                      child: DropdownButtonFormField<String>(
-                        initialValue: _type,
-                        decoration: const InputDecoration(labelText: 'Kind'),
-                        items:
-                            const [
-                                  'preference',
-                                  'fact',
-                                  'episode',
-                                  'procedure',
-                                  'knowledge',
-                                  'decision',
-                                  'task',
-                                ]
-                                .map(
-                                  (value) => DropdownMenuItem(
-                                    value: value,
-                                    child: Text(_label(value)),
-                                  ),
-                                )
-                                .toList(),
-                        onChanged: (value) {
-                          if (value != null) setState(() => _type = value);
-                        },
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: TextFormField(
-                        controller: _tags,
-                        decoration: const InputDecoration(
-                          labelText: 'Tags, comma separated',
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 14),
-                _DialogSlider(
-                  label: 'Importance',
-                  value: _importance,
-                  onChanged: (value) => setState(() => _importance = value),
-                ),
-              ],
-              const SizedBox(height: 10),
-              _DialogSlider(
-                label: 'Confidence',
-                value: _confidence,
-                onChanged: (value) => setState(() => _confidence = value),
-              ),
-            ],
-          ),
-        ),
-      ),
-    ),
-    actions: [
-      TextButton(
-        onPressed: () => Navigator.pop(context),
-        child: const Text('Cancel'),
-      ),
-      FilledButton(
-        key: const Key('macos-memory-save'),
-        onPressed: _save,
-        child: Text(widget.contradiction ? 'Record contradiction' : 'Save'),
-      ),
-    ],
-  );
-
-  void _save() {
-    if (!(_formKey.currentState?.validate() ?? false)) return;
-    final value = <String, dynamic>{
-      'title': _title.text.trim(),
-      'content': _content.text.trim(),
-      'confidence': _confidence,
-    };
-    if (widget.memory == null) {
-      value.addAll({
-        'type': _type,
-        'tags': _tags.text
-            .split(',')
-            .map((tag) => tag.trim())
-            .where((tag) => tag.isNotEmpty)
-            .toList(),
-        'importance': _importance,
-        'evidenceRefs': <String>[],
-      });
-    } else if (widget.contradiction) {
-      value['contradiction'] = true;
-    }
-    Navigator.pop(context, value);
-  }
-}
-
-class _DialogSlider extends StatelessWidget {
-  const _DialogSlider({
-    required this.label,
-    required this.value,
-    required this.onChanged,
-  });
-
-  final String label;
-  final double value;
-  final ValueChanged<double> onChanged;
-
-  @override
-  Widget build(BuildContext context) => Row(
-    children: [
-      SizedBox(width: 90, child: Text(label)),
-      Expanded(
-        child: Slider(value: value, onChanged: onChanged),
-      ),
-      SizedBox(
-        width: 42,
-        child: Text(
-          '${(value * 100).round()}%',
-          textAlign: TextAlign.right,
-          style: Theme.of(context).textTheme.labelLarge,
-        ),
-      ),
-    ],
-  );
-}
-
 MemoryRecord? _findMemory(List<MemoryRecord> values, String? id) {
   if (values.isEmpty) return null;
-  if (id == null) return values.first;
+  if (id == null) return null;
   for (final value in values) {
     if (value.id == id) return value;
   }
-  return values.first;
+  return null;
 }
 
 KnowledgeItem? _findSource(List<KnowledgeItem> values, String? id) {
@@ -1841,7 +1455,7 @@ KnowledgeItem? _findSource(List<KnowledgeItem> values, String? id) {
   for (final value in values) {
     if (value.id == id) return value;
   }
-  return values.first;
+  return null;
 }
 
 GraphNode? _findNode(List<GraphNode> values, String? id) {
@@ -1850,7 +1464,7 @@ GraphNode? _findNode(List<GraphNode> values, String? id) {
   for (final value in values) {
     if (value.id == id) return value;
   }
-  return values.first;
+  return null;
 }
 
 Color _nodeColor(String kind, MacosThemeColors mac, ColorScheme scheme) =>

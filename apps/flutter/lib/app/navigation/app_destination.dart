@@ -78,6 +78,15 @@ const appDestinations = <AppDestination>[
     primary: true,
   ),
   AppDestination(
+    label: 'Responsibilities',
+    path: '/responsibilities',
+    icon: Icons.event_repeat_outlined,
+    selectedIcon: Icons.event_repeat,
+    eyebrow: 'BOUNDED CHECKS',
+    description: 'Review finite checks, evidence, limits and inbox delivery.',
+    group: AppDestinationGroup.workspace,
+  ),
+  AppDestination(
     label: 'Memory',
     path: '/knowledge',
     icon: Icons.account_tree_outlined,

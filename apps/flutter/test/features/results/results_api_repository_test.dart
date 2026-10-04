@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:asael/core/network/api_client.dart';
 import 'package:asael/core/storage/secure_session_store.dart';
 import 'package:asael/features/results/results_api_repository.dart';
+import 'package:asael/features/results/result_contracts.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -14,7 +15,7 @@ void main() {
     'lists created files separately from execution and knowledge results',
     () async {
       final api = _ResultsApiClient();
-      final repository = ApiResultsRepository(api);
+      final repository = ApiResultsRepository(api, access: _access());
 
       final snapshot = await repository.list();
 
@@ -23,7 +24,10 @@ void main() {
       expect(snapshot.createdFiles, hasLength(1));
       expect(snapshot.createdFiles.single.title, 'Service Cloud AI pitch');
       expect(snapshot.createdFiles.single.ready, isTrue);
-      expect(snapshot.sourceErrors, isEmpty);
+      expect(
+        snapshot.sourceErrors.single,
+        contains('1 invalid or duplicate records omitted'),
+      );
     },
   );
 
@@ -32,11 +36,14 @@ void main() {
     () async {
       final api = _ResultsApiClient(throwArtifacts: true);
 
-      final snapshot = await ApiResultsRepository(api).list();
+      final snapshot = await ApiResultsRepository(
+        api,
+        access: _access(),
+      ).list();
 
       expect(snapshot.items, hasLength(1));
       expect(snapshot.createdFiles, isEmpty);
-      expect(snapshot.sourceErrors, contains('created files unavailable'));
+      expect(snapshot.sourceErrors.single, contains('Created files: offline'));
     },
   );
 
@@ -44,7 +51,7 @@ void main() {
     'downloads only the exact ready version and verifies its byte count',
     () async {
       final api = _ResultsApiClient();
-      final repository = ApiResultsRepository(api);
+      final repository = ApiResultsRepository(api, access: _access());
       final artifact = (await repository.list()).createdFiles.single;
 
       final bytes = await repository.downloadGeneratedArtifact(artifact);
@@ -68,13 +75,17 @@ class _ResultsApiClient extends ApiClient {
   final byteLimits = <int>[];
 
   @override
-  Future<Map<String, dynamic>> getJson(
+  Future<Map<String, dynamic>> getJsonFreshCancelable(
     String path, {
     Map<String, dynamic>? query,
+    Map<String, dynamic>? headers,
+    required CancelToken cancelToken,
   }) async {
     jsonReads.add(path);
     if (path == '/api/artifacts?limit=50') {
-      if (throwArtifacts) throw StateError('offline');
+      if (throwArtifacts) {
+        throw StateError('offline');
+      }
       return {
         'artifacts': [
           _artifact(),
@@ -85,6 +96,8 @@ class _ResultsApiClient extends ApiClient {
     if (path == '/api/workspace-summary') {
       return {
         'summary': {
+          'tenantId': 'tenant',
+          'generatedAt': '2026-10-04T00:00:00Z',
           'sources': {
             'runs': {
               'status': 'ready',
@@ -103,7 +116,9 @@ class _ResultsApiClient extends ApiClient {
         },
       };
     }
-    if (path == '/api/evaluations') return {'runs': <Object>[]};
+    if (path == '/api/evaluations') {
+      return {'runs': <Object>[]};
+    }
     throw StateError('Unexpected path $path');
   }
 
@@ -118,6 +133,13 @@ class _ResultsApiClient extends ApiClient {
     return Uint8List.fromList([80, 75, 3, 4]);
   }
 }
+
+ResultsAccess _access() => ResultsAccess(
+  deployment: 'https://synthetic.invalid',
+  tenantId: 'tenant',
+  actorId: 'actor',
+  role: 'operator',
+);
 
 Map<String, dynamic> _artifact([Map<String, dynamic> overrides = const {}]) {
   final id = 'generated_artifact_${List.filled(48, 'c').join()}';

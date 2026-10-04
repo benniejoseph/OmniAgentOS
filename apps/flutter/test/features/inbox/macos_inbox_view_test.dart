@@ -96,6 +96,60 @@ const _approvalQueue = ApprovalQueue(
 );
 
 void main() {
+  testWidgets(
+    'macOS Responsibility inspector opens exact detail without reminder actions',
+    (tester) async {
+      tester.view.physicalSize = const Size(1500, 1000);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final id = 'responsibility:${List.filled(64, 'a').join()}',
+          opened = <String>[];
+      final notice = PersonalNotification(
+        id: 'notice-responsibility',
+        title: 'Responsibility change',
+        status: 'unread',
+        urgency: 'update',
+        dueAt: DateTime.utc(2026, 10, 4),
+        kind: 'responsibility_change',
+        sourceId: id,
+      );
+      final center = NotificationCenter(
+        notifications: [notice],
+        unreadCount: 1,
+        quietHoursActive: false,
+        generatedAt: DateTime.utc(2026, 10, 4),
+      );
+      final repository = _InboxRepository(
+        queue: _approvalQueue,
+        center: center,
+      );
+      final actual = InboxController(repository);
+      addTearDown(actual.dispose);
+      await actual.refresh();
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: MacosAppTheme.light(),
+          home: MacosInboxView(
+            controller: actual,
+            onOpenResponsibility: opened.add,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('macos-notification-snooze')), findsNothing);
+      expect(
+        find.byKey(const Key('macos-notification-complete')),
+        findsNothing,
+      );
+      await tester.tap(
+        find.byKey(const Key('macos-notification-responsibility')),
+      );
+      expect(opened, [id]);
+      expect(repository.notificationActions, isEmpty);
+      expect(tester.takeException(), isNull);
+    },
+  );
   test('explicit approval focus binds both kind and full identity', () {
     const tool = ApprovalItem(
       id: 'shared/id%2F',

@@ -257,6 +257,17 @@ task_expect_entitlement "the owner-only host may load its own frameworks" \
 task_expect_entitlement "the Apple-signed host may use the microphone" \
   "$task_release_entitlements" com.apple.security.device.audio-input
 
+
+# Export chooses a destination before private bytes are read, then writes only
+# the user-selected file; sandboxed builds need that explicit capability.
+for task_export_entitlements in "$task_release_entitlements" "$task_macos_dir/Runner/DebugProfile.entitlements"; do
+  task_expect_entitlement "sandboxed Results export may write its user-selected destination" \
+    "$task_export_entitlements" com.apple.security.files.user-selected.read-write
+  if "$task_plist_buddy" -c 'Print :com.apple.security.files.user-selected.read-only' "$task_export_entitlements" >/dev/null 2>&1; then
+    task_fail "Results export retains a conflicting read-only entitlement"
+  fi
+done
+
 echo "==> release packager"
 
 task_packager_lines="$(sed 's/^[[:space:]]*//' "$task_build_script")"

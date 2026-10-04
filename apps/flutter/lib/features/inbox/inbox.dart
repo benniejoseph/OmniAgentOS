@@ -193,6 +193,12 @@ class NotificationDisposition {
     final digestDelivered = outcome == 'digest' && state == 'terminal';
     final directPending = outcome == 'send' && state == 'pending';
     if (!_notificationDispositionId.hasMatch(id) ||
+        (sourceKind == 'responsibility_change' &&
+            (!RegExp(r'^responsibility:[a-f0-9]{64}$')
+                    .hasMatch(_requiredDispositionText(value, 'sourceId')) ||
+                (outcome == 'send' &&
+                    state == 'terminal' &&
+                    deliveryKind != 'notification_ledger'))) ||
         (state == 'terminal') != (terminalAt != null) ||
         (retryable &&
             (state != 'pending' ||
@@ -262,14 +268,25 @@ class PersonalNotification {
     required this.urgency,
     required this.dueAt,
     this.snoozedUntil,
+    this.kind = 'reminder',
+    this.sourceId,
+    this.occurrenceKey,
   });
 
   final String id, title, status, urgency;
   final DateTime dueAt;
   final DateTime? snoozedUntil;
+  final String kind;
+  final String? sourceId, occurrenceKey;
 
   bool get isUnread => status == 'unread';
   bool get isOverdue => urgency == 'overdue';
+  bool get isResponsibilityChange => kind == 'responsibility_change';
+  String? get responsibilityId => isResponsibilityChange ? sourceId : null;
+  bool allows(NotificationAction action) =>
+      action == NotificationAction.read ||
+      action == NotificationAction.dismiss ||
+      kind == 'reminder';
 
   factory PersonalNotification.fromJson(Json json) {
     final id = json['id'];
@@ -278,6 +295,30 @@ class PersonalNotification {
     if (id is! String || title is! String || dueAt == null) {
       throw const FormatException('Notification response is invalid.');
     }
+    final kind = json.containsKey('kind') ? json['kind'] : 'reminder';
+    if (!const {'reminder', 'responsibility_change'}.contains(kind)) {
+      throw const FormatException('Notification kind is unsupported.');
+    }
+    if (kind == 'reminder' &&
+        json.containsKey('sourceType') &&
+        json['sourceType'] != 'today_item') {
+      throw const FormatException('Reminder notification source is invalid.');
+    }
+    if (kind == 'responsibility_change' &&
+        (json['sourceType'] != 'responsibility_change' ||
+            json['sourceId'] is! String ||
+            !RegExp(r'^responsibility:[a-f0-9]{64}$')
+                .hasMatch(json['sourceId'] as String) ||
+            json['occurrenceKey'] is! String ||
+            !RegExp(r'^responsibility-notification:[a-f0-9]{64}$')
+                .hasMatch(json['occurrenceKey'] as String) ||
+            json['urgency'] != 'update' ||
+            !const {'unread', 'read', 'dismissed'}.contains(json['status']) ||
+            json['snoozedUntil'] != null)) {
+      throw const FormatException(
+        'Responsibility notification coordinates are invalid.',
+      );
+    }
     return PersonalNotification(
       id: id,
       title: title,
@@ -285,6 +326,9 @@ class PersonalNotification {
       urgency: json['urgency'] as String? ?? 'due_soon',
       dueAt: dueAt,
       snoozedUntil: DateTime.tryParse(json['snoozedUntil'] as String? ?? ''),
+      kind: kind as String,
+      sourceId: json['sourceId'] as String?,
+      occurrenceKey: json['occurrenceKey'] as String?,
     );
   }
 }
@@ -420,6 +464,13 @@ class InboxController extends ChangeNotifier {
     NotificationAction action, {
     int? snoozeMinutes,
   }) async {
+    if (!notification.allows(action)) {
+      actionError = const FormatException(
+        'This notice supports only read and dismiss. Open the Responsibility to review its current state.',
+      );
+      notifyListeners();
+      return;
+    }
     updatingNotifications.add(notification.id);
     actionError = null;
     notifyListeners();
@@ -461,10 +512,12 @@ class InboxView extends StatelessWidget {
     required this.controller,
     this.focusApprovalId,
     this.focusApprovalKind,
+    this.onOpenResponsibility,
   });
   final InboxController controller;
   final String? focusApprovalId;
   final String? focusApprovalKind;
+  final ValueChanged<String>? onOpenResponsibility;
   @override
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: controller,
@@ -562,6 +615,7 @@ class InboxView extends StatelessWidget {
                   return NotificationCard(
                     notification: item,
                     busy: controller.updatingNotifications.contains(item.id),
+                    onOpenResponsibility: onOpenResponsibility,
                     onAction: (action, {snoozeMinutes}) =>
                         controller.updateNotification(
                           item,
@@ -758,10 +812,12 @@ class NotificationCard extends StatelessWidget {
     required this.notification,
     required this.busy,
     required this.onAction,
+    this.onOpenResponsibility,
   });
   final PersonalNotification notification;
   final bool busy;
   final NotificationActionCallback onAction;
+  final ValueChanged<String>? onOpenResponsibility;
 
   @override
   Widget build(BuildContext context) {
@@ -805,7 +861,11 @@ class NotificationCard extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             Text(
-              notification.isOverdue ? 'Overdue · $due' : 'Due $due',
+              notification.isResponsibilityChange
+                  ? 'Recorded in this inbox · $due'
+                  : notification.isOverdue
+                  ? 'Overdue · $due'
+                  : 'Due $due',
               style: TextStyle(color: color, fontWeight: FontWeight.w600),
             ),
             const SizedBox(height: 12),
@@ -820,27 +880,39 @@ class NotificationCard extends StatelessWidget {
                         : () => onAction(NotificationAction.read),
                     child: const Text('Mark read'),
                   ),
-                OutlinedButton.icon(
-                  onPressed: busy
-                      ? null
-                      : () => onAction(
-                          NotificationAction.snooze,
-                          snoozeMinutes: 15,
-                        ),
-                  icon: const Icon(Icons.snooze_rounded),
-                  label: const Text('Snooze 15m'),
-                ),
-                FilledButton.tonal(
-                  onPressed: busy
-                      ? null
-                      : () => onAction(NotificationAction.complete),
-                  child: busy
-                      ? const SizedBox.square(
-                          dimension: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Text('Complete'),
-                ),
+                if (notification.kind == 'reminder')
+                  OutlinedButton.icon(
+                    onPressed: busy
+                        ? null
+                        : () => onAction(
+                            NotificationAction.snooze,
+                            snoozeMinutes: 15,
+                          ),
+                    icon: const Icon(Icons.snooze_rounded),
+                    label: const Text('Snooze 15m'),
+                  ),
+                if (notification.kind == 'reminder')
+                  FilledButton.tonal(
+                    onPressed: busy
+                        ? null
+                        : () => onAction(NotificationAction.complete),
+                    child: busy
+                        ? const SizedBox.square(
+                            dimension: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Text('Complete'),
+                  ),
+                if (notification.responsibilityId != null)
+                  OutlinedButton.icon(
+                    onPressed: busy || onOpenResponsibility == null
+                        ? null
+                        : () => onOpenResponsibility!(
+                            notification.responsibilityId!,
+                          ),
+                    icon: const Icon(Icons.open_in_new),
+                    label: const Text('Open Responsibility'),
+                  ),
                 IconButton(
                   tooltip: 'Dismiss notification',
                   onPressed: busy
@@ -1180,6 +1252,7 @@ final _notificationDispositionId = RegExp(
   r'^notification_disposition_[a-f0-9]{48}$',
 );
 const _notificationSourceKinds = {
+  'responsibility_change',
   'tool_approval',
   'meeting',
   'customer_risk',
@@ -1192,6 +1265,7 @@ const _notificationSourceKinds = {
 const _notificationOutcomes = {'send', 'defer', 'digest', 'suppress'};
 const _notificationStates = {'pending', 'terminal'};
 const _notificationReasons = {
+  'material_change',
   'approval_required',
   'security_alert',
   'actionable_failure',

@@ -1,173 +1,404 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'meetings.dart';
+import 'meetings_action_controller.dart';
+import 'meetings_action_widgets.dart';
+import 'meetings_commitments.dart';
+import 'meetings_detail_body.dart';
+import 'meetings_mutations.dart';
+import 'meetings_snapshots.dart';
+import 'meetings_widgets.dart';
 
 class MeetingsView extends StatefulWidget {
   const MeetingsView({
     super.key,
     required this.controller,
     required this.onOpen,
+    this.actions,
+    this.desktop = false,
+    this.active = true,
   });
   final MeetingsController controller;
   final ValueChanged<Meeting> onOpen;
-
+  final MeetingActionController? actions;
+  final bool desktop, active;
   @override
   State<MeetingsView> createState() => _MeetingsViewState();
 }
 
-class _MeetingsViewState extends State<MeetingsView> {
-  String filter = 'active';
+class _MeetingsViewState extends State<MeetingsView>
+    with WidgetsBindingObserver {
+  String filter = 'active', search = '';
+  String? selectedId;
+  final searchController = TextEditingController();
+  bool preparing = false;
+  Future<bool> _refresh() async {
+    await widget.controller.refresh();
+    return widget.controller.readable &&
+        widget.controller.hasLoaded &&
+        widget.controller.error == null;
+  }
 
-  @override
-  Widget build(BuildContext context) => ListenableBuilder(
-    listenable: widget.controller,
-    builder: (_, _) {
-      final controller = widget.controller;
-      if (controller.loading && controller.meetings.isEmpty) {
-        return const _MeetingsSkeleton();
+  Future<void> _createMeeting() async {
+    final actions = widget.actions;
+    if (preparing ||
+        actions == null ||
+        actions.disabledReason('create') != null) {
+      return;
+    }
+    preparing = true;
+    setState(() {});
+    try {
+      if (!await _refresh() ||
+          !mounted ||
+          !identical(actions, widget.actions)) {
+        return;
       }
-      if (controller.error != null && controller.meetings.isEmpty) {
-        return _MeetingsFailure(onRetry: controller.refresh);
+      final authority = widget.controller.context;
+      if (authority == null || !authority.canWrite) {
+        return;
       }
-      final meetings = controller.meetings
-          .where((meeting) {
-            if (filter == 'all') return true;
-            if (filter == 'active') return meeting.isActive;
-            return meeting.status == filter;
-          })
-          .toList(growable: false);
-      return RefreshIndicator(
-        onRefresh: controller.refresh,
-        child: CustomScrollView(
-          slivers: [
-            SliverAppBar.large(
-              title: const Text('Meetings'),
-              actions: [
-                IconButton(
-                  tooltip: 'Refresh meetings',
-                  onPressed: controller.refresh,
-                  icon: const Icon(Icons.refresh_rounded),
-                ),
-              ],
-            ),
-            if (controller.showingStaleData)
-              SliverToBoxAdapter(
-                child: _StaleNotice(onRetry: controller.refresh),
-              ),
-            SliverToBoxAdapter(
-              child: SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-                child: Row(
-                  children: [
-                    for (final value in const [
-                      'active',
-                      'all',
-                      'completed',
-                      'cancelled',
-                    ])
-                      Padding(
-                        padding: const EdgeInsets.only(right: 8),
-                        child: ChoiceChip(
-                          label: Text(_statusLabel(value)),
-                          selected: filter == value,
-                          onSelected: (_) => setState(() => filter = value),
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-            ),
-            if (meetings.isEmpty)
-              const SliverFillRemaining(child: _MeetingsEmpty())
-            else
-              SliverPadding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 32),
-                sliver: SliverList.separated(
-                  itemCount: meetings.length,
-                  separatorBuilder: (_, _) => const SizedBox(height: 10),
-                  itemBuilder: (_, index) => _MeetingCard(
-                    meeting: meetings[index],
-                    onTap: () => widget.onOpen(meetings[index]),
-                  ),
-                ),
-              ),
-          ],
-        ),
+      await showMeetingEditor(
+        context,
+        actions: actions,
+        workspaceId: authority.workspaceId,
+        stillCurrent: () =>
+            mounted &&
+            identical(actions, widget.actions) &&
+            actions.available &&
+            widget.controller.error == null &&
+            widget.controller.context?.authoritySha256 ==
+                authority.authoritySha256,
+        refresh: _refresh,
       );
-    },
-  );
-}
-
-class _MeetingCard extends StatelessWidget {
-  const _MeetingCard({required this.meeting, required this.onTap});
-  final Meeting meeting;
-  final VoidCallback onTap;
+    } finally {
+      if (mounted) {
+        setState(() => preparing = false);
+      }
+    }
+  }
 
   @override
-  Widget build(BuildContext context) {
-    final local = meeting.startAt.toLocal();
-    final date = MaterialLocalizations.of(context).formatMediumDate(local);
-    final time = MaterialLocalizations.of(context)
-        .formatTimeOfDay(TimeOfDay.fromDateTime(local));
-    return Card(
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Container(
-                width: 48,
-                height: 48,
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.primaryContainer,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: const Icon(Icons.groups_2_outlined),
-              ),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      meeting.title,
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
-                    const SizedBox(height: 5),
-                    Text('$date · $time · ${meeting.timezone}'),
-                    if (meeting.location.isNotEmpty) ...[
-                      const SizedBox(height: 3),
-                      Text(
-                        meeting.location,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ],
-                    const SizedBox(height: 9),
-                    Wrap(
-                      spacing: 7,
-                      runSpacing: 7,
-                      children: [
-                        _MeetingChip(_statusLabel(meeting.status)),
-                        _MeetingChip('${meeting.participants.length} people'),
-                        if (meeting.evidence.isNotEmpty)
-                          _MeetingChip('${meeting.evidence.length} sources'),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-              const Icon(Icons.chevron_right_rounded),
-            ],
-          ),
-        ),
-      ),
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    widget.controller.addListener(_changed);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        widget.controller.setActive(widget.active);
+        if (widget.active &&
+            !widget.controller.hasLoaded &&
+            !widget.controller.loading) {
+          widget.controller.refresh();
+        }
+      }
+    });
+  }
+
+  void _changed() {
+    if (!widget.controller.readable) {
+      searchController.clear();
+      search = '';
+      selectedId = null;
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant MeetingsView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller) {
+      oldWidget.controller.removeListener(_changed);
+      oldWidget.controller.setActive(false);
+      widget.controller.addListener(_changed);
+      searchController.clear();
+      search = '';
+      selectedId = null;
+    }
+    if (oldWidget.controller != widget.controller ||
+        oldWidget.active != widget.active) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          widget.controller.setActive(widget.active);
+        }
+      });
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    widget.controller.setActive(
+      widget.active && state == AppLifecycleState.resumed,
     );
   }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    widget.controller.removeListener(_changed);
+    widget.controller.setActive(false);
+    searchController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => CallbackShortcuts(
+    bindings: {
+      const SingleActivator(LogicalKeyboardKey.keyR, meta: true): () =>
+          widget.controller.refresh(),
+    },
+    child: ListenableBuilder(
+      listenable: Listenable.merge([
+        widget.controller,
+        if (widget.actions != null) widget.actions!,
+      ]),
+      builder: (context, _) {
+        final controller = widget.controller;
+        final rows = controller.meetings
+            .where(
+              (meeting) =>
+                  (filter == 'all' ||
+                      filter == 'active' && meeting.isActive ||
+                      meeting.status == filter) &&
+                  '${meeting.title} ${meeting.summary} ${meeting.location}'
+                      .toLowerCase()
+                      .contains(search.toLowerCase()),
+            )
+            .toList(growable: false);
+        final selected = controller.meetings
+            .where((meeting) => meeting.id == selectedId)
+            .firstOrNull;
+        return Scaffold(
+          appBar: AppBar(
+            title: const Text('Meetings'),
+            actions: [
+              IconButton(
+                tooltip: 'Refresh meetings',
+                onPressed: controller.loading || !controller.readable
+                    ? null
+                    : controller.refresh,
+                icon: const Icon(Icons.refresh),
+              ),
+            ],
+          ),
+          body: SafeArea(
+            top: false,
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final wide =
+                    widget.desktop &&
+                    constraints.maxWidth >= 1000 &&
+                    MediaQuery.textScalerOf(context).scale(14) <= 21;
+                Widget agenda() => ListView(
+                  padding: const EdgeInsets.all(20),
+                  children: [
+                    const Text(
+                      'Prepare from saved sources, review consent, and inspect exact follow-up evidence.',
+                    ),
+                    if (widget.actions != null) ...[
+                      MeetingActionFeedback(
+                        actions: widget.actions!,
+                        refresh: _refresh,
+                        onOpen: widget.onOpen,
+                      ),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: OutlinedButton(
+                          onPressed:
+                              !preparing &&
+                                  widget.actions!.disabledReason('create') ==
+                                      null &&
+                                  controller.context?.canWrite == true &&
+                                  controller.error == null
+                              ? _createMeeting
+                              : null,
+                          child: Text(
+                            preparing
+                                ? 'Refreshing create authority…'
+                                : 'Create meeting',
+                          ),
+                        ),
+                      ),
+                      if (widget.actions!.disabledReason('create') != null)
+                        MeetingNotice(
+                          widget.actions!.disabledReason('create')!,
+                        ),
+                    ],
+                    if (!controller.readable)
+                      const MeetingNotice(
+                        'Meeting access is unavailable. Unlock or restore the current workspace session to continue.',
+                      )
+                    else ...[
+                      if (controller.loading)
+                        const MeetingNotice('Loading meetings…'),
+                      if (controller.error != null)
+                        MeetingNotice(
+                          controller.hasLoaded || controller.meetings.isNotEmpty
+                              ? 'Showing the last available agenda. The latest refresh did not complete.'
+                              : 'Meetings are unavailable. No meeting count has been confirmed.',
+                          action: 'Retry meetings',
+                          onAction: controller.loading
+                              ? null
+                              : controller.refresh,
+                          error: true,
+                        ),
+                      if (controller.hasLoaded ||
+                          controller.meetings.isNotEmpty)
+                        Text(
+                          '${controller.showingStaleData ? 'Last loaded' : 'Loaded'} ${controller.meetings.length}${controller.atBound ? '+' : ''} meetings · up to 100 accessible records. No complete workspace total is supplied.',
+                        ),
+                      const SizedBox(height: 16),
+                      TextField(
+                        controller: searchController,
+                        decoration: const InputDecoration(
+                          labelText: 'Search loaded meetings',
+                          prefixIcon: Icon(Icons.search),
+                        ),
+                        onChanged: (value) => setState(() => search = value),
+                      ),
+                      const SizedBox(height: 12),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          for (final value in const [
+                            'active',
+                            'all',
+                            'completed',
+                            'cancelled',
+                          ])
+                            FilterChip(
+                              label: Text(meetingLabel(value)),
+                              selected: filter == value,
+                              onSelected: (_) => setState(() => filter = value),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      if (controller.hasLoaded && rows.isEmpty)
+                        Text(
+                          controller.meetings.isEmpty
+                              ? 'No meetings were returned in this accessible list.'
+                              : 'No loaded meetings match these filters.',
+                        ),
+                      for (final meeting in rows)
+                        Material(
+                          color: Colors.transparent,
+                          child: Column(
+                            children: [
+                              ListTile(
+                                key: Key('macos-meeting-${meeting.id}'),
+                                contentPadding: const EdgeInsets.symmetric(
+                                  vertical: 10,
+                                ),
+                                selected: selectedId == meeting.id,
+                                title: Text(
+                                  meeting.title,
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .titleMedium,
+                                ),
+                                subtitle: Padding(
+                                  padding: const EdgeInsets.only(top: 8),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        '${meetingLabel(meeting.status)} · revision ${meeting.revision}',
+                                      ),
+                                      Text(
+                                        '${meetingTimestamp(meeting.startAt)} · ${meeting.timezone}',
+                                      ),
+                                      if (meeting.location.isNotEmpty)
+                                        Text(meeting.location),
+                                      Text(
+                                        '${meeting.participants.length} participants · ${meeting.evidence.length} saved sources',
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                trailing: const Icon(Icons.chevron_right),
+                                onTap: () {
+                                  if (wide) {
+                                    setState(() => selectedId = meeting.id);
+                                  } else {
+                                    widget.onOpen(meeting);
+                                  }
+                                },
+                              ),
+                              const Divider(height: 1),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ],
+                );
+                if (!wide) {
+                  return agenda();
+                }
+                return Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Expanded(flex: 3, child: agenda()),
+                    const VerticalDivider(width: 1),
+                    Expanded(
+                      flex: 2,
+                      child: ListView(
+                        padding: const EdgeInsets.all(24),
+                        children: [
+                          Semantics(
+                            header: true,
+                            child: Text(
+                              'Meeting brief',
+                              style: Theme.of(context).textTheme.titleLarge,
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          if (selected == null)
+                            const Text(
+                              'Select a meeting to inspect its saved brief.',
+                            )
+                          else ...[
+                            SelectableText(
+                              selected.title,
+                              style: Theme.of(context).textTheme.titleLarge,
+                            ),
+                            const SizedBox(height: 12),
+                            SelectableText(
+                              selected.summary.isEmpty
+                                  ? 'No summary is recorded.'
+                                  : selected.summary,
+                              style: Theme.of(context).textTheme.bodyLarge,
+                            ),
+                            const SizedBox(height: 16),
+                            FilledButton(
+                              key: const Key('macos-meeting-open'),
+                              onPressed: () => widget.onOpen(selected),
+                              child: const Text('Open meeting'),
+                            ),
+                            MeetingValue('Meeting', selected.id),
+                            MeetingValue('Workspace', selected.workspaceId),
+                            MeetingValue(
+                              'Revision',
+                              selected.revisionId ??
+                                  'Revision ${selected.revision}',
+                            ),
+                            for (final source in selected.evidence)
+                              MeetingValue('Saved source', source.label),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ],
+                );
+              },
+            ),
+          ),
+        );
+      },
+    ),
+  );
 }
 
 class MeetingDetailView extends StatefulWidget {
@@ -175,238 +406,432 @@ class MeetingDetailView extends StatefulWidget {
     super.key,
     required this.id,
     required this.repository,
+    this.workspaceId,
+    this.actions,
+    this.desktop = false,
+    this.active = true,
   });
   final String id;
+  final String? workspaceId;
   final MeetingsRepository repository;
-
+  final MeetingActionController? actions;
+  final bool desktop, active;
   @override
   State<MeetingDetailView> createState() => _MeetingDetailViewState();
 }
 
-class _MeetingDetailViewState extends State<MeetingDetailView> {
-  late Future<Meeting> request;
+class _MeetingDetailViewState extends State<MeetingDetailView>
+    with WidgetsBindingObserver {
+  late MeetingDetailController controller;
+  bool preparing = false;
+  String? preparationError;
+  Future<bool> _refresh() async {
+    await controller.refresh();
+    return controller.readable &&
+        controller.detail != null &&
+        controller.detailError == null &&
+        (!controller.commitmentsAvailable || controller.currentCommitments);
+  }
+
+  Future<void> _edit() async {
+    final actions = widget.actions;
+    if (preparing ||
+        actions == null ||
+        actions.disabledReason('update') != null) {
+      return;
+    }
+    setState(() {
+      preparing = true;
+      preparationError = null;
+    });
+    try {
+      await controller.refreshDetail();
+      if (!mounted ||
+          !identical(actions, widget.actions) ||
+          !controller.readable ||
+          controller.detailError != null) {
+        return;
+      }
+      final snapshot = controller.detail;
+      if (snapshot == null ||
+          snapshot.context?.canWrite != true ||
+          snapshot.meeting.ownerActorId != 'actor:${actions.owner?.userId}') {
+        return;
+      }
+      await showMeetingEditor(
+        context,
+        actions: actions,
+        workspaceId: snapshot.meeting.workspaceId!,
+        base: snapshot.meeting,
+        stillCurrent: () =>
+            mounted &&
+            identical(actions, widget.actions) &&
+            controller.readable &&
+            controller.detailError == null &&
+            controller.detail?.meeting.versionKey ==
+                snapshot.meeting.versionKey &&
+            controller.detail?.context?.authoritySha256 ==
+                snapshot.context?.authoritySha256,
+        refresh: _refresh,
+      );
+    } finally {
+      if (mounted) {
+        setState(() => preparing = false);
+      }
+    }
+  }
+
+  Future<void> _review(MeetingCommitmentReview proposal) async {
+    final actions = widget.actions;
+    if (preparing ||
+        actions == null ||
+        actions.disabledReason('resolve') != null) {
+      return;
+    }
+    setState(() {
+      preparing = true;
+      preparationError = null;
+    });
+    try {
+      if (!await _refresh() ||
+          !mounted ||
+          !identical(actions, widget.actions)) {
+        return;
+      }
+      final snapshot = controller.commitments!,
+          meeting = controller.detail!.meeting;
+      final current = snapshot.rows
+          .where(
+            (row) =>
+                row.id == proposal.id &&
+                row.sha256 == proposal.sha256 &&
+                row.reviewable,
+          )
+          .firstOrNull;
+      if (current == null ||
+          current.meetingRevisionId != meeting.revisionId ||
+          !snapshot.context.canWrite) {
+        setState(
+          () => preparationError = 'This proposal changed or is no longer reviewable. Inspect the refreshed evidence.',
+        );
+        return;
+      }
+      await showMeetingFollowUpReview(
+        context,
+        actions: actions,
+        meeting: meeting,
+        snapshot: snapshot,
+        proposal: current,
+        stillCurrent: () =>
+            mounted &&
+            identical(actions, widget.actions) &&
+            controller.currentCommitments &&
+            controller.detail?.meeting.versionKey == meeting.versionKey &&
+            controller.commitments!.rows.any(
+              (row) =>
+                  row.id == current.id &&
+                  row.sha256 == current.sha256 &&
+                  row.reviewable,
+            ),
+        refresh: _refresh,
+      );
+    } finally {
+      if (mounted) {
+        setState(() => preparing = false);
+      }
+    }
+  }
+
+  Future<void> _propose(
+    MeetingSource source,
+    MeetingMediaOutput output,
+    Json action,
+  ) async {
+    final actions = widget.actions;
+    if (preparing ||
+        actions == null ||
+        actions.disabledReason('propose') != null) {
+      return;
+    }
+    setState(() {
+      preparing = true;
+      preparationError = null;
+    });
+    try {
+      await controller.refreshDetail();
+      if (!mounted ||
+          !identical(actions, widget.actions) ||
+          controller.detailError != null ||
+          !controller.readable) {
+        return;
+      }
+      final snapshot = controller.detail!;
+      final current = snapshot.sources
+          .where(
+            (row) =>
+                row.id == source.id &&
+                row.revisionState == 'exact' &&
+                row.media?.status == 'ready' &&
+                row.media?.output?.revisionId == output.revisionId &&
+                row.media?.output?.sha256 == output.sha256,
+          )
+          .firstOrNull;
+      final currentAction = current?.media?.output?.actions
+          .where(
+            (row) =>
+                row['actionItemId'] == action['actionItemId'] &&
+                meetingCanonicalJson(row) == meetingCanonicalJson(action),
+          )
+          .firstOrNull;
+      if (current == null ||
+          currentAction == null ||
+          snapshot.context?.canWrite != true ||
+          snapshot.meeting.projectId == null) {
+        setState(
+          () => preparationError = 'The exact media evidence or Work project is no longer available.',
+        );
+        return;
+      }
+      final frozen = MeetingSubmission.freeze(
+        action: 'propose',
+        owner: actions.owner!,
+        id: snapshot.meeting.id,
+        body: {
+          'workspaceId': snapshot.meeting.workspaceId,
+          'mediaRevisionId': output.revisionId,
+          'actionItemId': action['actionItemId'],
+        },
+        evidence: {
+          'sourceLinkId': source.id,
+          'recordingId': source.sourceId,
+          'mediaOutputSha256': output.sha256,
+          'actionItemSha256': await meetingSha(action),
+        },
+      );
+      if (!mounted ||
+          !identical(actions, widget.actions) ||
+          !controller.readable) {
+        return;
+      }
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => ListenableBuilder(
+          listenable: actions,
+          builder: (context, _) =>
+              !actions.available || actions.owner?.key != frozen.ownerKey
+              ? AlertDialog(
+                  title: const Text('Review unavailable'),
+                  content: const Text(
+                    'Private evidence is hidden because Meeting access changed.',
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(context, false),
+                      child: const Text('Close'),
+                    ),
+                  ],
+                )
+              : AlertDialog(
+                  title: const Text('Create exact follow-up proposal'),
+                  content: SingleChildScrollView(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        SelectableText(action['text'] as String),
+                        const SizedBox(height: 12),
+                        MeetingValue('Media revision', output.revisionId),
+                        MeetingValue('Media output SHA-256', output.sha256),
+                        MeetingValue(
+                          'Action item',
+                          action['actionItemId'] as String,
+                        ),
+                        const Text(
+                          'This records a proposal for later review. It does not create a Work item or send a message.',
+                        ),
+                      ],
+                    ),
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(context, false),
+                      child: const Text('Cancel'),
+                    ),
+                    FilledButton(
+                      onPressed: () => Navigator.pop(context, true),
+                      child: const Text('Create reviewed proposal'),
+                    ),
+                  ],
+                ),
+        ),
+      );
+      if (confirmed == true &&
+          mounted &&
+          identical(actions, widget.actions) &&
+          controller.readable &&
+          controller.detail?.meeting.versionKey ==
+              snapshot.meeting.versionKey) {
+        await actions.submit(frozen, refresh: _refresh);
+      }
+    } finally {
+      if (mounted) {
+        setState(() => preparing = false);
+      }
+    }
+  }
 
   @override
   void initState() {
     super.initState();
-    request = widget.repository.detail(widget.id);
+    WidgetsBinding.instance.addObserver(this);
+    _create();
   }
 
-  void retry() => setState(() => request = widget.repository.detail(widget.id));
+  void _create() {
+    controller = MeetingDetailController(
+      widget.repository,
+      id: widget.id,
+      workspaceId: widget.workspaceId,
+      active: false,
+    );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        controller.setActive(widget.active);
+      }
+    });
+  }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('Meeting evidence')),
-    body: FutureBuilder<Meeting>(
-      future: request,
-      builder: (_, snapshot) {
-        if (snapshot.connectionState != ConnectionState.done) {
-          return const Center(child: CircularProgressIndicator());
-        }
-        if (snapshot.hasError || snapshot.data == null) {
-          return _MeetingsFailure(onRetry: retry);
-        }
-        return _MeetingDetail(meeting: snapshot.data!);
-      },
-    ),
-  );
-}
-
-class _MeetingDetail extends StatelessWidget {
-  const _MeetingDetail({required this.meeting});
-  final Meeting meeting;
+  void didUpdateWidget(covariant MeetingDetailView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.repository != widget.repository) {
+      controller.dispose();
+      _create();
+    } else if (oldWidget.id != widget.id ||
+        oldWidget.workspaceId != widget.workspaceId) {
+      controller.select(widget.id, workspaceId: widget.workspaceId);
+    }
+    if (oldWidget.active != widget.active) {
+      controller.setActive(widget.active);
+    }
+  }
 
   @override
-  Widget build(BuildContext context) => ListView(
-    padding: const EdgeInsets.fromLTRB(16, 12, 16, 36),
-    children: [
-      Text(meeting.title, style: Theme.of(context).textTheme.headlineSmall),
-      const SizedBox(height: 8),
-      Wrap(
-        spacing: 8,
-        runSpacing: 8,
-        children: [
-          _MeetingChip(_statusLabel(meeting.status)),
-          _MeetingChip(meeting.accessClass.replaceAll('_', ' ')),
-          _MeetingChip('Revision ${meeting.revision}'),
-        ],
-      ),
-      if (meeting.summary.isNotEmpty) ...[
-        const SizedBox(height: 20),
-        Text(meeting.summary),
-      ],
-      _DetailSection(
-        title: 'Participants & consent',
-        empty: 'No participants recorded.',
-        children: meeting.participants
-            .map(
-              (participant) => ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading: const CircleAvatar(child: Icon(Icons.person_outline)),
-                title: Text(participant.name),
-                subtitle: Text(
-                  '${participant.role} · ${participant.response}\n'
-                  'Attendance: ${participant.attendeeConsent} · Recording: ${participant.recordingConsent}',
-                ),
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    controller.setActive(widget.active && state == AppLifecycleState.resumed);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => CallbackShortcuts(
+    bindings: {
+      const SingleActivator(LogicalKeyboardKey.keyR, meta: true):
+          controller.refresh,
+    },
+    child: ListenableBuilder(
+      listenable: Listenable.merge([
+        controller,
+        if (widget.actions != null) widget.actions!,
+      ]),
+      builder: (context, _) => Scaffold(
+        appBar: AppBar(
+          title: const Text('Meeting evidence'),
+          actions: [
+            IconButton(
+              tooltip: 'Refresh meeting and proposals',
+              onPressed:
+                  controller.detailLoading ||
+                      controller.commitmentsLoading ||
+                      !controller.readable
+                  ? null
+                  : controller.refresh,
+              icon: const Icon(Icons.refresh),
+            ),
+          ],
+        ),
+        body: SafeArea(
+          top: false,
+          child: Align(
+            alignment: Alignment.topCenter,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 1100),
+              child: ListView(
+                padding: EdgeInsets.all(widget.desktop ? 28 : 20),
+                children: [
+                  if (widget.actions != null)
+                    MeetingActionFeedback(
+                      actions: widget.actions!,
+                      refresh: _refresh,
+                    ),
+                  if (preparing)
+                    const MeetingNotice('Refreshing exact review evidence…'),
+                  if (preparationError != null)
+                    MeetingNotice(preparationError!, error: true),
+                  MeetingDetailBody(
+                    key: ValueKey(
+                      '${widget.id}:${widget.workspaceId}:${identityHashCode(widget.repository)}',
+                    ),
+                    controller: controller,
+                    onReview: widget.actions == null ? null : _review,
+                    onPropose: widget.actions == null ? null : _propose,
+                    reviewDisabledReason: preparing
+                        ? 'Another review is opening.'
+                        : widget.actions?.disabledReason('resolve'),
+                    proposeDisabledReason: preparing
+                        ? 'Another review is opening.'
+                        : widget.actions?.disabledReason('propose'),
+                    actions: widget.actions == null
+                        ? null
+                        : Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              OutlinedButton(
+                                onPressed:
+                                    !preparing &&
+                                        widget.actions!.disabledReason(
+                                              'update',
+                                            ) ==
+                                            null &&
+                                        controller.detail?.context?.canWrite ==
+                                            true &&
+                                        controller
+                                                .detail
+                                                ?.meeting
+                                                .ownerActorId ==
+                                            'actor:${widget.actions!.owner?.userId}'
+                                    ? _edit
+                                    : null,
+                                child: const Text('Edit saved meeting'),
+                              ),
+                              if (widget.actions!.disabledReason('update') !=
+                                  null)
+                                MeetingNotice(
+                                  widget.actions!.disabledReason('update')!,
+                                ),
+                              if (controller.detail?.context?.canWrite != true)
+                                const Text(
+                                  'Current workspace contributor access is required for changes.',
+                                ),
+                              if (controller.detail?.meeting.ownerActorId !=
+                                  'actor:${widget.actions!.owner?.userId}')
+                                const Text(
+                                  'Only the canonical Meeting owner can edit this saved record.',
+                                ),
+                            ],
+                          ),
+                  ),
+                ],
               ),
-            )
-            .toList(),
-      ),
-      _DetailSection(
-        title: 'Decisions',
-        empty: 'No decisions recorded.',
-        children: meeting.decisions.map(_noteTile).toList(),
-      ),
-      _DetailSection(
-        title: 'Commitments',
-        empty: 'No commitments recorded.',
-        children: meeting.commitments.map(_noteTile).toList(),
-      ),
-      _DetailSection(
-        title: 'Follow-ups',
-        empty: 'No follow-ups proposed.',
-        children: meeting.followUps.map(_noteTile).toList(),
-      ),
-      _DetailSection(
-        title: 'Linked evidence',
-        empty: 'No linked evidence.',
-        children: meeting.evidence
-            .map(
-              (item) => ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading: const Icon(Icons.link_rounded),
-                title: Text(item.label),
-                subtitle: Text('${item.role} · ${item.kind}'),
-              ),
-            )
-            .toList(),
-      ),
-    ],
-  );
-
-  static Widget _noteTile(MeetingNote note) => ListTile(
-    contentPadding: EdgeInsets.zero,
-    leading: const Icon(Icons.check_circle_outline_rounded),
-    title: Text(note.label),
-    subtitle: note.status == null ? null : Text(_statusLabel(note.status!)),
-  );
-}
-
-class _DetailSection extends StatelessWidget {
-  const _DetailSection({
-    required this.title,
-    required this.empty,
-    required this.children,
-  });
-  final String title, empty;
-  final List<Widget> children;
-
-  @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.only(top: 24),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(title, style: Theme.of(context).textTheme.titleLarge),
-        const SizedBox(height: 6),
-        if (children.isEmpty) Text(empty) else ...children,
-      ],
-    ),
-  );
-}
-
-class _MeetingChip extends StatelessWidget {
-  const _MeetingChip(this.label);
-  final String label;
-  @override
-  Widget build(BuildContext context) => Chip(
-    label: Text(label),
-    visualDensity: VisualDensity.compact,
-    side: BorderSide.none,
-  );
-}
-
-class _StaleNotice extends StatelessWidget {
-  const _StaleNotice({required this.onRetry});
-  final VoidCallback onRetry;
-  @override
-  Widget build(BuildContext context) => Container(
-    margin: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-    padding: const EdgeInsets.all(12),
-    decoration: BoxDecoration(
-      color: Theme.of(context).colorScheme.errorContainer,
-      borderRadius: BorderRadius.circular(12),
-    ),
-    child: Row(
-      children: [
-        const Icon(Icons.cloud_off_outlined),
-        const SizedBox(width: 10),
-        const Expanded(
-          child: Text('Offline · showing last available meetings'),
-        ),
-        TextButton(onPressed: onRetry, child: const Text('Retry')),
-      ],
-    ),
-  );
-}
-
-class _MeetingsFailure extends StatelessWidget {
-  const _MeetingsFailure({required this.onRetry});
-  final VoidCallback onRetry;
-  @override
-  Widget build(BuildContext context) => Center(
-    child: FilledButton.tonalIcon(
-      onPressed: onRetry,
-      icon: const Icon(Icons.refresh_rounded),
-      label: const Text('Reconnect meetings'),
-    ),
-  );
-}
-
-class _MeetingsEmpty extends StatelessWidget {
-  const _MeetingsEmpty();
-  @override
-  Widget build(BuildContext context) => Center(
-    child: Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(
-          Icons.event_available_outlined,
-          size: 48,
-          color: Theme.of(context).colorScheme.primary,
-        ),
-        const SizedBox(height: 12),
-        Text('No meetings here', style: Theme.of(context).textTheme.titleLarge),
-        const SizedBox(height: 6),
-        const Text('Try another status or refresh the schedule.'),
-      ],
-    ),
-  );
-}
-
-class _MeetingsSkeleton extends StatelessWidget {
-  const _MeetingsSkeleton();
-  @override
-  Widget build(BuildContext context) => ListView(
-    padding: const EdgeInsets.fromLTRB(16, 84, 16, 16),
-    children: List.generate(
-      4,
-      (_) => Container(
-        height: 138,
-        margin: const EdgeInsets.only(bottom: 10),
-        decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.surfaceContainerHighest,
-          borderRadius: BorderRadius.circular(14),
+            ),
+          ),
         ),
       ),
     ),
   );
 }
-
-String _statusLabel(String value) => value
-    .split('_')
-    .map(
-      (part) =>
-          part.isEmpty ? part : '${part[0].toUpperCase()}${part.substring(1)}',
-    )
-    .join(' ');

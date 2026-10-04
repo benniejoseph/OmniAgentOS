@@ -133,6 +133,26 @@ class ActivityItem {
             uri.queryParameters['id'] == sourceRef.id &&
             uri.queryParameters['kind'] == sourceRef.approvalKind,
       );
+    } else if (workKey.startsWith('responsibility:') ||
+        uri.path.startsWith('/app/responsibilities/')) {
+      _require(
+        RegExp(r'^responsibility:[a-f0-9]{64}$').hasMatch(workKey) &&
+            sourceRef.kind == 'notification' &&
+            sourceRef.approvalKind == null &&
+            id == 'notification:${sourceRef.id}' &&
+            references.length == 1 &&
+            references.single.kind == 'notification' &&
+            references.single.id == sourceRef.id &&
+            references.single.approvalKind == null &&
+            const {'unread', 'read', 'dismissed'}.contains(status) &&
+            group ==
+                (status == 'unread'
+                    ? ActivityGroup.updates
+                    : ActivityGroup.history) &&
+            timeBasis == 'updated' &&
+            json['origin'] == null &&
+            href == '/app/responsibilities/${Uri.encodeComponent(workKey)}',
+      );
     } else {
       _require(uri.path == '/app');
     }
@@ -230,13 +250,22 @@ class ActivityItem {
       ? 'Inspect run'
       : source == 'approvals'
       ? 'Open approval'
+      : responsibilityId != null
+      ? 'Open Responsibility'
       : 'Open in Today';
+  String? get responsibilityId =>
+      source == 'notifications' &&
+          RegExp(r'^responsibility:[a-f0-9]{64}$').hasMatch(workKey)
+      ? workKey
+      : null;
   String? get conversationId =>
       originThreadId ?? Uri.parse(href).queryParameters['thread'];
   String get nativeLocation => switch (source) {
     'runs' => runLocation(sourceRef.id),
     'approvals' =>
       '/inbox/approvals/${Uri.encodeComponent(sourceRef.id)}?kind=${Uri.encodeQueryComponent(sourceRef.approvalKind!)}',
+    _ when responsibilityId != null =>
+      '/responsibilities/${Uri.encodeComponent(responsibilityId!)}',
     _ => Uri(
       path: '/today',
       queryParameters: {
