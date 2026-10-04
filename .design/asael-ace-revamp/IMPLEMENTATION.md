@@ -1,17 +1,18 @@
 # ATLAS implementation evidence
 
-**Current checkpoint, 4 October 2026:** PR53 (contract v38 / app 1.23.12+47),
+**Current checkpoint, 5 October 2026 (IST):** PR53 (contract v38 / app 1.23.12+47),
 PR54 (priority UI / app 1.23.13+48), PR55 (static full-body greeting /
 app 1.23.14+49) and PR56 (scoped language/motion intensity / app 1.23.15+50)
 are accepted and merged, each after all 16 hosted checks passed. The private
 Mac package is verified through 1.23.15 (50), from PR56's exact accepted source.
-The last complete matching 3D export and visual review is eyelid-03, with all
-nine structure checks passing and the full model still unaccepted. Throat-04 and
-beak-02 are retained historical checkpoints; throat-03 was rejected for its coarse staircase
-boundary. PR57's expanded web Voice shared player is accepted and merged after
-all 14 applicable hosted checks passed; native API/version and Mac 1.23.15 (50)
-are unchanged. Software UI priorities through PR57 are accepted. The next
-body/tuft follow-up is planned and has not started. No
+The last complete matching 3D export and visual review is completed-01, with all
+nine structure checks passing and the full model still unaccepted. It includes
+retained body-tuft, surface-grain, wing-fit, eyelid-return and completed-gesture
+clearance improvements. Eyelid-03, throat-04 and beak-02 are historical checkpoints;
+throat-03 was rejected for its coarse staircase boundary. PR57's expanded web
+Voice shared player is accepted and merged after all 14 applicable hosted checks
+passed; native API/version and Mac 1.23.15 (50) are unchanged. Software UI
+priorities through PR57 are accepted. No
 3D/state bundle publication or production promotion has occurred. The dated entries below retain earlier
 preparation and validation boundaries; the final release checkpoints record
 their later acceptance without completing whole-task gates.
@@ -1658,27 +1659,42 @@ That historical package-preparation checkpoint is superseded by the signed
 packages and hosted acceptance below. Nine Node geometry/lifecycle checks and
 three Python tool tests also passed for the sculpt-02 source workbench.
 
-The last complete matching eyelid-03 export at
-`2026-10-04T18:03:14.083731+00:00` binds
-`sculpt-04-eyelid-03-interior-surface-clearance` and has 104 artifacts,
-27,190 vertices, 49,748 triangles, 14 bones and 12 clips: eight states and
-four inspection aliases, in a 2,035,216-byte GLB. All nine structure checks
-passed. Root reviewed actual rest, mid-blink and peak-blink front/three-quarter/profile
-captures: forward bulge is much reduced, front white breakthrough is gone,
-and the neutral iris remains legible. A thin outer white seam and profile gap
-remain; final blink and full-model acceptance are open. Matching source/output is archived as `atlas-eyelid-03-review.tar.gz`.
-The planned body/tuft follow-up has not started;
-no later source or export is claimed.
+The last complete matching completed-01 export at
+`2026-10-04T18:41:03.423334+00:00` (5 October in IST) binds
+`sculpt-04-completed-01-forward-clearance` and has 104 artifacts,
+27,240 vertices, 49,844 triangles, 14 bones and 12 clips: eight states and
+four inspection aliases, in a 2,039,716-byte GLB. All nine structure checks passed.
+Matching source/output is archived as `atlas-completed-01-review.tar.gz`.
+Root verified all 17 source hashes and all 104 artifact hashes/bytes in
+`atlas-completed-01-export-verification.json`; exact manifest and archive hashes
+are recorded in `atlas-production/MEASUREMENTS.md`.
 
-Throat-04's finer-boundary checkpoint is retained in `atlas-throat-04-review.tar.gz`.
-The latest eyelid-03 retains its counts with revised source/weights.
+This checkpoint includes retained tuft-01 fit across 44 body parts, quieter
+grain-01 ribbing, wing-01's fitted coverts/underforms and eyelid-04 temporal return.
+Eyelid-04's 24 captures retained coverage of the large profile white wedge and
+readable neutral irises, with fine edge specks remaining. Root reviewed all 48
+completed-01 acting comparison captures against identical geometry and the prior
+eyelid-04 configuration: the wing clears the torso at clearance, peak and settle,
+then returns alongside the body. Long parallel primaries and the coarse
+covert/primary junction remain obvious. Final feather finish, fine throat/lid
+edges, natural all-state acting and physical performance remain unaccepted.
+
+Completed-01 keeps geometry byte-identical to eyelid-04 and the other 11 clips
+identical. The maximum difference across 2,172 non-wing quaternion samples is
+`4.246830940246582e-7`. These narrow comparison checks are not artistic or
+performance acceptance.
+
+Eyelid-03 and throat-04 remain historical full checkpoints in
+`atlas-eyelid-03-review.tar.gz` and `atlas-throat-04-review.tar.gz`, each with
+27,190 vertices and 49,748 triangles. Their exact metadata and hashes, plus the
+retained tuft/grain/wing comparison archives, are recorded in MEASUREMENTS.md.
 
 Beak-02 remains a historical retained baseline in `atlas-beak-02-review.tar.gz`;
 its 18 comparison captures showed an improved beak without accepting the full
 model. Throat-03 was rejected for its coarse staircase boundary. Historical
 sculpt-04 passed all nine geometry/lifecycle checks. Source/export tooling and
 an explicit hash-verifying publisher exist; final art acceptance does not.
-The archived rough-01 performance comparison does not measure eyelid-03.
+The archived rough-01 performance comparison does not measure completed-01.
 Details and exact evidence boundaries are in `atlas-production/README.md`,
 `ART_REVIEW.md`, `MEASUREMENTS.md` and `PERFORMANCE_PLAN.md`. A functional release
 with approved static ATLAS is permitted; full-plan completion, physical-device
@@ -1951,7 +1967,8 @@ was healthy at about 11:04 UTC on
 `a06aa78b843cce6c8f41a79ec5beb6192f3c4b20`, recorded in
 `production-health-ui-priority.json`. The owner release environment still needs
 the migration-owner connection, active gateway token and paid/admin smoke
-credentials. Private signing and ready packages do not replace those gates.
+credentials. A read-only probe at 18:13 UTC on 4 October still found that release
+environment absent. Private signing and ready packages do not replace those gates.
 
 Connector expansion at `ba468e7f` is parked and not merged. Scoped personality
 implementation is accepted through PR56. Final 3D likeness, state acting,

@@ -1,6 +1,120 @@
-# ATLAS actual-art review — 4 October 2026
+# ATLAS actual-art review — 5 October 2026 (IST)
 
-## Eyelid03 refinement — latest full export, character still unaccepted
+## Completed01 — latest matching full export, character still unaccepted
+
+The retained body-tuft, shallow-grain, fitted-wing, temporal-lid and completed
+trajectory refinements are now exported together as
+`sculpt-04-completed-01-forward-clearance`. The matching export completed at
+`2026-10-04T18:41:03.423334+00:00`: 104 artifacts, 27,240 vertices, 49,844 triangles,
+fourteen bones, twelve clips and a 2,039,716-byte GLB. All nine final structure
+checks pass. All seventeen source hashes and all 104 artifact hashes/byte counts
+match. Source, output, reference and review helpers are preserved in
+`atlas-completed-01-review.tar.gz`; verification is recorded in
+`atlas-completed-01-export-verification.json` in the release evidence directory.
+
+The export-manifest SHA256 is
+`ebba096e6d27382fc1c8244df9340f0deaaa57f12150e3450e8b0f4c33914fb8`;
+the raster-manifest SHA256 is
+`6453dfee0b275ca44f778a7a44c8e935485bbc5ded8c2e61f4904913ddf87376`.
+
+Actual comparisons support the local improvements described below. Long parallel
+primary feathers, the covert/primary junction, fine throat and lid edges, overall
+finish and natural all-state acting still prevent final art acceptance. Small
+delivery-size review and physical-device performance also remain open. No
+`--accept-reviewed` publication, production migration or deployment occurred.
+The approved concept portrait/static greeting remain the application artwork.
+
+## Completed01 comparison — retained forward clearance, final acting open
+
+Root inspected all 48 comparison captures at rest, clearance, peak, settle,
+release, lowering and the final held pose in three angles, plus peak portraits.
+The baseline used identical current geometry and the exact prior eyelid04
+configuration. The moving wing now visibly clears the torso and returns to its
+resting side. The long parallel primaries and coarse covert/primary junction are
+more exposed; final feather integration and natural acting remain unaccepted.
+
+All nine structure/lifecycle checks pass. Geometry is byte-identical to eyelid04
+at 27,240 vertices and 49,844 triangles, with fourteen bones and twelve clips.
+The other eleven clips are identical. Across 2,172 non-wing quaternion samples,
+maximum component difference is 4.246830940246582e-7. Source, exact baseline
+configuration, capture script and receipt are preserved in
+`completed01-comparison/matching-source-and-baseline.tar.gz`. These samples do
+not certify every intermediate collision or all-state acting. No bundle is
+published; the next full-export receipt will be recorded above this comparison.
+
+## Eyelid04 comparison — retained temporal return, final finish open
+
+Root inspected all 24 matching rest, closing, closed and opening captures in
+front, three-quarter and profile. The large white wedge visible through the
+closed profile lid is now covered. Neutral irises remain readable; the sampled
+intermediate views do not show a new large breakthrough. Fine edge specks and
+the overall lid shape still need finishing, so this does not establish complete
+blink or character acceptance.
+
+All nine structure/lifecycle checks pass. Exact comparison against wing01 finds
+only the two upper-lid seams changed; the other 165 parts and their topology,
+rig, poses, clips and palette remain identical. The added curved return totals
+50 vertices and 96 triangles: the current rendered model has 27,240 vertices,
+49,844 triangles and fourteen bones. Source, eyelid03 baseline GLB and receipt
+are archived in `eyelid04-comparison/matching-source-and-baseline.tar.gz`.
+Eyelid03 remains the latest full export at this comparison checkpoint. No
+art/state bundle has been published.
+
+## Wing01 comparison — retained fitted coverts, acting still unaccepted
+
+Root inspected all 38 matching captures, including rest, speech, listening,
+the held completed pose, and completed motion at .17s and its .34s peak. The
+exposed square shoulder tabs are removed, the coverts wrap around the supporting
+volume, and the resting outline is more continuous. At the completed peak,
+the moving wing still becomes substantially buried in the torso; the original
+motion already had this problem. Long parallel primary feathers, overall feather
+finish and convincing state acting remain open. This is a retained local shape
+improvement, not final wing or character acceptance.
+
+All nine structure/lifecycle checks pass. Exact comparison against grain01 finds
+only the 24 coverts and two underforms changed; the other 141 parts, all indices,
+rig, poses, clips and palette remain identical. Both rendered models have 27,190
+vertices, 49,748 triangles and fourteen bones. Matching source, baseline GLB,
+capture script and receipt are preserved in
+`wing01-comparison/matching-source-and-baseline.tar.gz`. Eyelid03 remains the
+latest full export. No state bundle is published.
+
+## Grain01 comparison — retained shallow finish, no full export yet
+
+Root inspected all 22 matching full-body, portrait, speech and held-gesture
+captures. The regular neck/throat bars are visibly quieter after replacing the
+sharp repeating relief with shallow staggered grain. The sampled views show no
+new throat holes or detached tufts. Fine throat-edge stepping, pointed tuft tips,
+wing-root tabs/oval underforms and the profile blink gap remain unaccepted.
+
+All nine structure/lifecycle checks pass. Exact comparison against tuft01 finds
+only the shell and its 44 fitted body tufts changed; the other 122 parts, complete
+indices, rig, poses, clips and palette remain identical. The render count remains
+27,190 vertices, 49,748 triangles and fourteen bones. Matching source, eyelid03
+baseline GLB and receipt are archived in
+`grain01-comparison/matching-source-and-baseline.tar.gz`. This is a retained local
+improvement, not full-export, performance or final art acceptance. Eyelid03 is
+still the latest full export. Nothing has been published.
+
+## Tuft01 comparison — retained local improvement, no full export yet
+
+Root inspected all 22 matching full-body, portrait, speech and held-gesture
+comparison captures against eyelid03. The broad rectangular chest/mantle roots
+are replaced by tufts that follow the body surface. Pointed lower ridges and
+coarse feather finish remain; wing-root tabs, oval underforms, periodic shell
+ribbing, the profile blink gap and fine throat boundary still prevent final
+character acceptance.
+
+All nine structure/lifecycle checks pass. Exact source comparison verifies that
+only the 44 breast/mantle parts change; the other 123 parts, complete indices,
+rig, poses, clips and palette are identical. Both rendered models measure 27,190
+vertices, 49,748 triangles and fourteen bones. This is comparison evidence, not
+a new full-export or performance result. Matching source, baseline GLB and
+receipt are archived in `tuft01-comparison/matching-source-and-baseline.tar.gz`
+within the release evidence directory. Eyelid03 remains the latest full export.
+No artwork has been published.
+
+## Eyelid03 refinement — previous matching full export
 
 Root inspected actual neutral, mid-blink and peak-closure front, three-quarter
 and profile portraits. The revised hinges, fitted rim and interior clearance

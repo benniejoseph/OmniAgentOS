@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "name": "ATLAS_ROUGH_01",
-  "status": "SCULPT_04_EYELID_03_UNREVIEWED_SOURCE",
-  "creativeRevision": "sculpt-04-eyelid-03-interior-surface-clearance",
-  "exportEvidence": "Eyelid-03 is unexported and unreviewed. Eyelid-02 improved lower-aperture closure but retained white corner spots and a thin outer seam. The last matching full export is sculpt-04-throat-04-refined-boundary-sampling, exported 2026-10-04T17:30:25.836966+00:00 and archived in atlas-throat-04-review.tar.gz. Historical measurements do not establish an eyelid-03 export or visual result. Require matching creativeRevision and source hashes in export-manifest.json before using new outputs. The full character remains unaccepted.",
+  "status": "SCULPT_04_COMPLETED_01_RETAINED_UNACCEPTED_STUDY",
+  "creativeRevision": "sculpt-04-completed-01-forward-clearance",
+  "exportEvidence": "This retained local study incorporates reviewed body-tuft, shallow-grain, fitted-wing, temporal-lid and forward-clearance refinements. Completed-01 has 48 comparison captures, nine passing structure checks and verified unchanged geometry/other clips; non-wing trajectory preservation is sampled numerically. The complete character, natural state acting and physical-device performance remain unaccepted. Full-export evidence is authoritative only when export-manifest.json matches this creativeRevision and every current source hash. Current measurements, archive identities and remaining limits are recorded in ../ART_REVIEW.md. No production art/state publication is implied.",
   "coordinates": "Arbitrary model units. Y up, Z forward, X character left. Overall height about 3 units; not a physical scale claim.",
   "sourceExpectedSha256": "876591c5a2b739df99d6aab647554dc53bcab97d55bf0c3e0864e39e1c98c070",
   "palette": {
@@ -38,7 +38,7 @@
     "working": {"Head":[3,-6,0],"UpperLidLeft":[7,0,0],"UpperLidRight":[7,0,0]},
     "needs_you": {"Head":[-1,3,2],"BrowLeft":[-9,0,-9],"BrowRight":[0,0,2],"UpperLidLeft":[-16,0,0],"UpperLidRight":[-3,0,0],"WingRight":[0,0,3]},
     "blocked": {"Head":[3,0,-2],"BrowLeft":[-3,0,-3],"BrowRight":[-3,0,3],"UpperLidLeft":[8,0,0],"UpperLidRight":[8,0,0]},
-    "completed": {"Head":[-1,0,-2],"UpperLidLeft":[12,0,0],"UpperLidRight":[12,0,0],"WingLeft":[0,-9,-14],"WingTipLeft":[0,0,-7]},
+    "completed": {"Head":[-1,0,-2],"UpperLidLeft":[12,0,0],"UpperLidRight":[12,0,0],"WingLeft":[0,0,0],"WingTipLeft":[0,0,0]},
     "paused": {"Head":[4,0,0],"UpperLidLeft":[24,0,0],"UpperLidRight":[24,0,0],"WingLeft":[0,0,1],"WingRight":[0,0,-1]}
   },
   "statePerformances": {
@@ -48,7 +48,16 @@
     "working": {"duration":0.66,"intent":"Briefly orient toward the work, then hold; no thinking loop.","keys":[{"time":0,"pose":{}},{"time":0.18,"pose":{"Head":[1,-3,0]}},{"time":0.39,"pose":{"Head":[4,-7,0],"UpperLidLeft":[9,0,0],"UpperLidRight":[9,0,0]}},{"time":0.66,"state":"working"}]},
     "needs_you": {"duration":0.9,"intent":"Dry, asymmetric eyebrow question; one small double-take, then wait.","keys":[{"time":0,"pose":{}},{"time":0.08,"pose":{"Head":[2,-2,0]}},{"time":0.34,"pose":{"Head":[-3,7,3],"BrowLeft":[-12,0,-12],"BrowRight":[0,0,3],"UpperLidLeft":[-20,0,0],"UpperLidRight":[-5,0,0]}},{"time":0.48,"pose":{"Head":[-2,5,2],"BrowLeft":[-10,0,-10],"UpperLidLeft":[-18,0,0]}},{"time":0.9,"state":"needs_you"}]},
     "blocked": {"duration":0.72,"intent":"A calm small lower-and-settle; no alarm, shiver or blame expression.","keys":[{"time":0,"pose":{}},{"time":0.2,"pose":{"Head":[1,0,-1],"UpperLidLeft":[5,0,0],"UpperLidRight":[5,0,0]}},{"time":0.43,"pose":{"Head":[4,0,-2],"BrowLeft":[-3,0,-3],"BrowRight":[-3,0,3]}},{"time":0.72,"state":"blocked"}]},
-    "completed": {"duration":0.9,"intent":"One satisfied nod and compact wing-to-breast gesture, only for confirmed completion identity.","keys":[{"time":0,"pose":{}},{"time":0.08,"pose":{"Head":[-3,0,0],"UpperLidLeft":[6,0,0],"UpperLidRight":[6,0,0]}},{"time":0.34,"pose":{"Head":[7,0,1],"WingLeft":[0,-12,-27],"WingTipLeft":[0,0,-18],"UpperLidLeft":[18,0,0],"UpperLidRight":[18,0,0]}},{"time":0.48,"pose":{"Head":[3,0,-1],"WingLeft":[0,-11,-22],"WingTipLeft":[0,0,-12]}},{"time":0.9,"state":"completed"}]},
+    "completed": {"duration":0.9,"intent":"One satisfied nod and compact wing-to-breast gesture, only for confirmed completion identity.","keys":[
+      {"time":0,"pose":{"WingLeft":[0,0,0],"WingTipLeft":[0,0,0]}},
+      {"time":0.08,"pose":{"Head":[-3,0,0],"UpperLidLeft":[6,0,0],"UpperLidRight":[6,0,0],"WingLeft":[-16,0,5],"WingTipLeft":[14,0,0]}},
+      {"time":0.20,"pose":{"Head":[1.615379744728,-0.021701352184,0.461489888678],"UpperLidLeft":[11.538461538462,0,0],"UpperLidRight":[11.538461538462,0,0],"WingLeft":[-60,0,5],"WingTipLeft":[55,0,0]}},
+      {"time":0.34,"pose":{"Head":[7,0,1],"WingLeft":[-60,0,-8],"WingTipLeft":[55,0,-4],"UpperLidLeft":[18,0,0],"UpperLidRight":[18,0,0]}},
+      {"time":0.48,"pose":{"Head":[3,0,-1],"WingLeft":[-58,0,-6],"WingTipLeft":[53,0,-3]}},
+      {"time":0.64,"pose":{"Head":[1.476196180827,-0.008232776262,-1.380929571519],"UpperLidLeft":[4.571428571429,0,0],"UpperLidRight":[4.571428571429,0,0],"WingLeft":[-56,0,4],"WingTipLeft":[51,0,0]}},
+      {"time":0.78,"pose":{"Head":[0.142848257275,-0.007124420306,-1.71432124397],"UpperLidLeft":[8.571428571429,0,0],"UpperLidRight":[8.571428571429,0,0],"WingLeft":[-22,0,4],"WingTipLeft":[20,0,0]}},
+      {"time":0.90,"state":"completed"}
+    ]},
     "paused": {"duration":0.66,"intent":"Quiet lids and folded wings settle into a static pause; no sleeping or breathing loop.","keys":[{"time":0,"pose":{}},{"time":0.22,"pose":{"Head":[2,0,0],"UpperLidLeft":[14,0,0],"UpperLidRight":[14,0,0]}},{"time":0.44,"pose":{"Head":[5,0,0],"UpperLidLeft":[27,0,0],"UpperLidRight":[27,0,0]}},{"time":0.66,"state":"paused"}]}
   },
   "cameras": {

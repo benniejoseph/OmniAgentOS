@@ -1,4 +1,4 @@
-/** ATLAS sculpt 04, eyelid 03 — unreviewed interior lid clearance correction.
+/** ATLAS sculpt 04, completed 01 — retained local study; final art unaccepted.
  * No raster planes, generated imagery, physics, audio, providers or app imports.
  * Geometry is deterministic; Three UUIDs are internal and not provenance IDs.
  */
@@ -151,6 +151,83 @@ function feather(length=1,width=.12,depth=.04,sweep=0,curl=.015) {
   return ringMesh(rings,sides,tones);
 }
 
+const wingEase=value=>{const t=clamp(value);return t*t*(3-2*t);};
+
+/** One original wing frame, with a recessed cap and a smaller inner surface. */
+function foldedWingEnvelope(side) {
+  const matrix=new THREE.Matrix4().compose(new THREE.Vector3(side*.445,1.601,-.065),
+    quaternion([0,0,side*8]),new THREE.Vector3(.167,.493,.177));
+  const innerScale=q=>q>=.6?1:q>=0?.91+.09*wingEase(q/.6):.84+.07*wingEase((q+.6)/.6);
+  const map=(point,scale=1)=>{
+    const result=new THREE.Vector3(point.x*scale,point.y,point.z*scale).applyMatrix4(matrix);
+    result.x-=side*.10*wingEase((point.y-.35)/.65);
+    return result;
+  };
+  const surface=(q,angle,scale=1)=>{
+    const radial=Math.sqrt(Math.max(0,1-q*q));
+    return map(new THREE.Vector3(radial*Math.cos(angle),q,radial*Math.sin(angle)),scale);
+  };
+  return {inverse:matrix.clone().invert(),innerScale,map,surface};
+}
+
+/** Resample the same sphere vertices; keep its indices, seam and pole copies. */
+function foldedWingUnderform(wing) {
+  const result=new THREE.SphereGeometry(1,20,10),vertices=result.getAttribute('position');
+  const point=new THREE.Vector3();
+  for(let i=0;i<vertices.count;i++) {
+    point.fromBufferAttribute(vertices,i);
+    const fitted=wing.map(point,wing.innerScale(point.y));
+    vertices.setXYZ(i,fitted.x,fitted.y,fitted.z);
+  }
+  result.computeVertexNormals();
+  const normals=result.getAttribute('normal');
+  for(let row=0;row<=10;row++) {
+    const group=row===0||row===10?Array.from({length:21},(_,n)=>row*21+n):[row*21,row*21+20];
+    const average=new THREE.Vector3();
+    for(const index of group)average.add(point.fromBufferAttribute(normals,index));
+    average.normalize();
+    for(const index of group)normals.setXYZ(index,average.x,average.y,average.z);
+  }
+  return result;
+}
+
+/** Fit only wing coverts; the shared feather() and primary geometry stay intact. */
+function fittedWingCovert(wing,length,width,depth,sweep,curl,position,rotation) {
+  const result=feather(length,width,depth,sweep,curl),vertices=result.getAttribute('position');
+  const matrix=new THREE.Matrix4().compose(new THREE.Vector3(...position),quaternion(rotation),new THREE.Vector3(1,1,1));
+  const envelopes=[.18,.72,.90,.76,.56,.31,.10,.006];
+  for(let row=0;row<vaneProfile.length;row++) {
+    const t=vaneProfile[row][0],envelope=envelopes[row];
+    const center=new THREE.Vector3(sweep*(.28*Math.sin(Math.PI*t)+t*t),-length*t,curl*t*t);
+    const centerQ=center.clone().applyMatrix4(matrix).applyMatrix4(wing.inverse).y;
+    const fit=wingEase((centerQ+.99)/.15);
+    for(let n=0;n<8;n++) {
+      const index=row*8+n,angle=n*2*Math.PI/8,across=Math.cos(angle),front=Math.sin(angle);
+      const original=new THREE.Vector3().fromBufferAttribute(vertices,index).applyMatrix4(matrix);
+      if(fit>0) {
+        // Recover coordinates in the unshifted frame, then wrap each across point.
+        const sample=center.clone();
+        sample.x+=width*envelope*across*(across<0?.87:1);
+        sample.applyMatrix4(matrix).applyMatrix4(wing.inverse);
+        const q=Math.max(-.999999,Math.min(.999999,sample.y)),phi=Math.atan2(sample.z,sample.x);
+        const outer=wing.surface(q,phi),inner=wing.surface(q,phi,wing.innerScale(q));
+        const radial=outer.clone().sub(wing.surface(q,phi,0)).normalize();
+        const crest=inner.clone().lerp(outer,wingEase(t/.37));
+        crest.addScaledVector(radial,-.006*(1-wingEase(t/.18)));
+        const rear=inner.clone().addScaledVector(radial,-.006-depth*envelope*.30);
+        const fullDepth=Math.max(.00012,crest.clone().sub(rear).dot(radial));
+        // Release the free end smoothly; keep finite closed tips instead of a fin.
+        const release=wingEase((t-.76)/.24),thickness=fullDepth*(1-release)+.00012*release;
+        const fitted=crest.addScaledVector(radial,-thickness*(1-front)/2);
+        original.lerp(fitted,fit);
+      }
+      vertices.setXYZ(index,original.x,original.y,original.z);
+    }
+  }
+  result.computeVertexNormals();
+  return result;
+}
+
 /** Shallow continuous feather grain: no repeated raised plates on the torso. */
 function plumageShell(profile,low,high,rows=60,sides=112) {
   const positions=[],indices=[],tones=[],levels=[];
@@ -166,14 +243,16 @@ function plumageShell(profile,low,high,rows=60,sides=112) {
     const boundary=Math.min(clamp((y-low)/.11),clamp((high-y)/.11));
     for(let n=0;n<sides;n++) {
       const angle=n*2*Math.PI/sides;
-      const phase=28*angle+3.6*y+.8*Math.sin(3*angle-1.7*y);
-      const shaft=Math.max(0,Math.cos(phase))**4;
-      const layer=.5+.5*Math.cos(26*y+1.1*Math.sin(phase)+.8*Math.sin(3*angle));
-      const relief=.0008+boundary*(.0022+.006*shaft*(.35+.65*layer));
+      const phase=16*angle+3.0*y+.55*Math.sin(3*angle-1.2*y)+.25*Math.sin(5*angle+2.1*y);
+      const shaft=.5+.5*Math.cos(phase);
+      const stagger=17*y+1.6*Math.sin(3*angle-.8*y)+.6*Math.sin(5*angle+1.4*y);
+      const envelope=.5+.5*Math.cos(stagger);
+      const grain=shaft*(.2+.8*envelope);
+      const relief=.0008+boundary*(.0022+.0016*grain);
       const outward=new THREE.Vector3(Math.sin(angle)/rx,0,Math.cos(angle)/rz).normalize();
       positions.push(rx*Math.sin(angle)+outward.x*relief,y,
         cz+rz*frontContour(y,Math.cos(angle))+outward.z*relief);
-      tones.push(1+boundary*(-.03+.045*shaft+.012*layer));
+      tones.push(1+boundary*(-.020+.014*grain+.002*Math.sin(5*angle-3.7*y)));
     }
   }
   for(let row=0;row<levels.length-1;row++)for(let n=0;n<sides;n++) {
@@ -184,19 +263,52 @@ function plumageShell(profile,low,high,rows=60,sides=112) {
   return result;
 }
 
+/** Sample the existing shell triangles without changing their relief or grid. */
+function plumageContact(vertices,sides=112) {
+  const levels=Array.from({length:vertices.count/sides},(_,row)=>vertices.getY(row*sides));
+  return (y,angle)=>{
+    let row=0;
+    while(row<levels.length-2&&levels[row+1]<y)row++;
+    const v=clamp((y-levels[row])/(levels[row+1]-levels[row]));
+    const around=((angle/(2*Math.PI))%1+1)%1*sides,column=Math.floor(around),u=around-column;
+    const a=row*sides+column,b=row*sides+(column+1)%sides,d=a+sides,c=b+sides;
+    const point=new THREE.Vector3(),sample=new THREE.Vector3();
+    const corners=u+v<=1?[[a,1-u-v],[b,u],[d,v]]:[[c,u+v-1],[d,1-u],[b,1-v]];
+    for(const [index,weight] of corners)point.addScaledVector(sample.fromBufferAttribute(vertices,index),weight);
+    point.y=y;
+    return point;
+  };
+}
+
 /** A low sculpted tuft has three unequal tips, rather than one repeated leaf. */
-function plumageTuft(profile,y,angle,length,width,sweep=0,lift=.004) {
+function plumageTuft(profile,y,angle,length,width,sweep=0,lift=.004,contact=null) {
   const positions=[],indices=[],tones=[],across=12,rows=5;
   for(let row=0;row<=rows;row++)for(let n=0;n<=across;n++) {
     const t=row/rows,u=n/across*2-1;
     const tip=.11*Math.cos(u*3*Math.PI)+.035*u;
-    const sampleY=y-length*t*(1+tip*t*t),a=angle+sweep*t*t;
+    const sampleY=y-length*t*(1+tip*t*t),centerAngle=angle+sweep*t*t;
     const [,rx,rz,cz]=profileAt(profile,sampleY);
-    const tangent=new THREE.Vector3(rx*Math.cos(a),0,-rz*Math.sin(a)).normalize();
-    const outward=new THREE.Vector3(Math.sin(a)/rx,0,Math.cos(a)/rz).normalize();
-    const point=new THREE.Vector3(rx*Math.sin(a),sampleY,cz+rz*frontContour(sampleY,Math.cos(a)));
-    point.addScaledVector(tangent,width*u*(1-.46*t));
-    point.addScaledVector(outward,lift+.012*Math.sin(t*Math.PI*.75)*(1-.55*u*u));
+    let point;
+    if(contact) {
+      // Wrap every column around the profile; do not translate a flat panel.
+      // Keep a finite rounded end and the existing three unequal terminal lobes.
+      const taper=.18+.82*Math.cos(t*Math.PI/2)**1.35;
+      const arcScale=Math.hypot(rx*Math.cos(centerAngle),rz*Math.sin(centerAngle));
+      const a=centerAngle+width*u*taper/arcScale;
+      const outward=new THREE.Vector3(Math.sin(a)/rx,0,Math.cos(a)/rz).normalize();
+      point=contact(sampleY,a);
+      const root=clamp(t/.42),emerge=root*root*(3-2*root)*(1-u*u)**2;
+      // Root and sides sit just inside the sampled shell; relief emerges smoothly.
+      point.addScaledVector(outward,-.0018+(lift+.0078)*emerge*(.55+.45*Math.sin(Math.PI*t)));
+    } else {
+      // Preserve the four temple tufts' original construction exactly.
+      const a=centerAngle;
+      const tangent=new THREE.Vector3(rx*Math.cos(a),0,-rz*Math.sin(a)).normalize();
+      const outward=new THREE.Vector3(Math.sin(a)/rx,0,Math.cos(a)/rz).normalize();
+      point=new THREE.Vector3(rx*Math.sin(a),sampleY,cz+rz*frontContour(sampleY,Math.cos(a)));
+      point.addScaledVector(tangent,width*u*(1-.46*t));
+      point.addScaledVector(outward,lift+.012*Math.sin(t*Math.PI*.75)*(1-.55*u*u));
+    }
     positions.push(...point.toArray());tones.push(.975+.022*t+.012*(1-u*u));
   }
   for(let row=0;row<rows;row++)for(let n=0;n<across;n++) {
@@ -290,15 +402,16 @@ function eyeDisc(rx,ry,cx,cy,offset,side) {
 
 /** A soft lid grows back into the face; only a thin inner seam stays visible. */
 function eyelid(side,upper=true,seam=false,hinge=null) {
-  const positions=[],indices=[],headWeights=[],across=24,rows=seam?1:4;
+  const positions=[],indices=[],headWeights=[],across=24,rows=upper&&seam?2:seam?1:4;
   const closeCos=Math.cos(68*DEG),closeSin=Math.sin(68*DEG);
   for(let row=0;row<=rows;row++) for(let n=0;n<=across;n++) {
     const u=n/across*2-1,v=row/rows,edge=Math.sin((u+1)*Math.PI/2)**.72;
-    const inner=(upper?lidUpper:-eyeLower)*edge,x=u*(eyeWidth+v*(seam?.001:.025));
+    const inner=(upper?lidUpper:-eyeLower)*edge;
+    let x=u*(eyeWidth+v*(seam?.001:.025));
     const depth=upper
       ?.005+.032*edge-(seam?-.0005:.060*v**4)+Math.sin(Math.PI*v)*(seam?0:.005)
       :.014+.003*edge-v*(seam?-.0005:.044)+Math.sin(Math.PI*v)*(seam?0:.006);
-    const localY=inner+(upper?1:-1)*v*(seam?.0015:.034*edge+.006);
+    let localY=inner+(upper?1:-1)*v*(seam?.0015:.034*edge+.006);
     let z=eyeSag(x,side)+depth;
     if(upper) {
       const root=seam?0:clamp((v-.25)/.50),rimX=u*eyeWidth,rimY=lidUpper*edge;
@@ -324,6 +437,28 @@ function eyelid(side,upper=true,seam=false,hinge=null) {
           const closedGap=eyeDepth(rimX,posedY,side)+clearance-posedZ;
           z+=Math.max(0,restGap,closedGap/(1-moving*(1-closeCos)));
         }
+      }
+      if(upper&&seam&&row>0) {
+        // Sample the actual stationary lower mesh's first column edge at targetY.
+        const lowerX0=rimX,lowerY0=-eyeLower*edge,lowerZ0=eyeSag(lowerX0,side)+.014+.003*edge;
+        const lowerX1=u*(eyeWidth+.025*.25),lowerY1=lowerY0-.25*(.034*edge+.006);
+        const lowerZ1=eyeSag(lowerX1,side)+.014+.003*edge-.044*.25+.006*Math.sin(Math.PI*.25);
+        const contact=clamp((lowerY0-targetY)/(lowerY0-lowerY1));
+        const targetX=lowerX0+(lowerX1-lowerX0)*contact;
+        const targetZ=lowerZ0+(lowerZ1-lowerZ0)*contact+.00125*edge;
+        // Invert this column's existing Head/lid blend; no weight or hinge change.
+        const moving=1-head,a=1-moving+moving*closeCos,b=moving*closeSin,det=a*a+b*b;
+        const returnY=hingeY+(a*(targetY-hingeY)+b*(targetZ-hingeZ))/det;
+        const returnZ=hingeZ+(-b*(targetY-hingeY)+a*(targetZ-hingeZ))/det;
+        const ramp=clamp((side*u-.42)/.25),turn=ramp*ramp*(3-2*ramp);
+        const outerX=u*(eyeWidth+.001),outerY=rimY+.0015;
+        const frontZ=rimZ+.0005,outerZ=frontZ+eyeSag(outerX,side)-eyeSag(rimX,side);
+        const contactX=outerX+(targetX-outerX)*turn;
+        const contactY=outerY+(returnY-outerY)*turn,contactZ=outerZ+(returnZ-outerZ)*turn;
+        // Split the old central/medial ribbon; round only the temporal return.
+        x=rimX+(contactX-rimX)*v;
+        localY=rimY+(contactY-rimY)*v;
+        z=frontZ+(contactZ-frontZ)*v+.001*edge*turn*Math.sin(Math.PI*v);
       }
       headWeights.push(head);
     }
@@ -405,7 +540,9 @@ export function createAtlas(config) {
     return Array.from({length:steps},(_,step)=>profileAt(silhouette,section[0]+(next?next[0]-section[0]:0)*step/steps));
   });
   append('continuous_eagle_silhouette',loft(coloredSilhouette,config.radialSegments,true),'umber',spineWeight);
-  append('continuous_directional_plumage',plumageShell(silhouette,.46,2.68),'umber',spineWeight);
+  const bodyPlumage=plumageShell(silhouette,.46,2.68);
+  const bodyContact=plumageContact(bodyPlumage.getAttribute('position'));
+  append('continuous_directional_plumage',bodyPlumage,'umber',spineWeight);
 
   const breastTufts=[[2.13,.38,.21,.067,.12],[2.04,.78,.25,.076,.15],[1.94,.13,.19,.061,.09],
     [1.85,.57,.23,.074,.16],[1.72,.95,.24,.072,.18],[1.64,.29,.21,.065,.11],
@@ -413,14 +550,14 @@ export function createAtlas(config) {
     [1.03,.87,.24,.067,.18],[.90,.29,.20,.059,.11],[.71,.58,.19,.053,.13]];
   for(const side of [-1,1])for(let j=0;j<breastTufts.length;j++) {
     const [y,a,length,width,sweep]=breastTufts[j];
-    append(`breast_flow_tuft_${side}_${j}`,plumageTuft(silhouette,y+(side===1?.025:0),side*a,length,width,side*sweep),'umber',spineWeight);
+    append(`breast_flow_tuft_${side}_${j}`,plumageTuft(silhouette,y+(side===1?.025:0),side*a,length,width,side*sweep,.004,bodyContact),'umber',spineWeight);
   }
   const backTufts=[[2.62,1.42,.20,.052],[2.50,1.98,.22,.062],[2.39,2.56,.24,.066],
     [2.24,1.59,.25,.071],[2.12,2.93,.25,.072],[1.94,2.22,.25,.072],
     [1.71,2.64,.24,.074],[1.47,1.82,.26,.073],[1.24,2.91,.23,.067],[.98,2.17,.23,.060]];
   for(const side of [-1,1])for(let j=0;j<backTufts.length;j++) {
     const [y,a,length,width]=backTufts[j];
-    append(`mantle_flow_tuft_${side}_${j}`,plumageTuft(silhouette,y,side*a,length,width,side*.14),'umber',spineWeight);
+    append(`mantle_flow_tuft_${side}_${j}`,plumageTuft(silhouette,y,side*a,length,width,side*.14,.004,bodyContact),'umber',spineWeight);
   }
   // The pale cheek edge is color on the neck itself; no sheet or loose strips.
   append('charcoal_collar',collarBand(silhouette),'collar','Neck');
@@ -455,10 +592,11 @@ export function createAtlas(config) {
       [.069-j*.008,.067-j*.007,.037-j*.003,.0015],[.017,.022,.015,.001],14,8,true),'umber','Head');
     ellipsoid(`nostril_${suffix}`,'beakShadow','Head',[side*.101,2.666,.323],[.012,.005,.004],[0,side*30,side*12],12);
 
-    ellipsoid(`folded_wing_underform_${suffix}`,'umber',`Wing${suffix}`,[side*.445,1.601,-.065],[.167,.493,.177],[0,0,side*8],20);
+    const wingEnvelope=foldedWingEnvelope(side);
+    append(`folded_wing_underform_${suffix}`,foldedWingUnderform(wingEnvelope),'umber',`Wing${suffix}`);
     for(let row=0;row<3;row++) for(let j=0;j<4;j++) append(`layered_wing_covert_${suffix}_${row}_${j}`,
-      feather(.39+row*.063-j*.019,.072-row*.007,.014,side*(.022+j*.011),.022),'umber',`Wing${suffix}`,
-      [side*(.421+j*.038),2.033-row*.181-j*.058,.115-j*.088+row*.002],[1,1,1],[10,side*(-12+j*28),side*(-6+j*3)]);
+      fittedWingCovert(wingEnvelope,.39+row*.063-j*.019,.072-row*.007,.014,side*(.022+j*.011),.022,
+        [side*(.421+j*.038),2.033-row*.181-j*.058,.115-j*.088+row*.002],[10,side*(-12+j*28),side*(-6+j*3)]),'umber',`Wing${suffix}`);
     for(let j=0;j<8;j++) append(`curved_primary_${suffix}_${j}`,feather(.85-j*.023,.050,.013,side*(.017+j*.003),.023),j===5?'feather':'umber',
       `WingTip${suffix}`,[side*(.442+j*.013),1.452-j*.041,.113-j*.044],[1,1,1],[7,side*(-11+j*17),side*(-2+j*.8)]);
     // Full feathered thighs conceal the upper tarsus; the planted feet have a

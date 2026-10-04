@@ -1,4 +1,86 @@
-# ATLAS sculpt 04, eyelid 03 — clearance for the interior lid surface
+# ATLAS sculpt 04, completed 01 — retained local study
+
+Current status: **local refinements reviewed; full character and natural state acting unaccepted**. Creative revision: `sculpt-04-completed-01-forward-clearance`.
+
+Root inspected all 48 completed-01 comparison captures, using identical current geometry with the exact prior eyelid-04 configuration as the baseline. The staged wing now clears the torso visibly at clearance, peak and settle, then returns alongside the body. The long parallel primaries and coarse covert/primary junction remain conspicuous, so this is a retained trajectory correction, not final acting acceptance. Earlier body, grain, wing and temporal-lid refinements remain retained.
+
+All nine structure/lifecycle checks pass. Geometry is byte-identical to eyelid-04 at 27,240 vertices and 49,844 triangles; the rig has fourteen bones and twelve clips. The other eleven clips are identical. Across 2,172 non-wing quaternion samples, the maximum component difference is 4.246830940246582e-7. The matching comparison archive is `completed01-comparison/matching-source-and-baseline.tar.gz`, SHA-256 `235b7c44c673a14473687a5c24b5b2736537b89f692f830ffd88ed4f826cab97`.
+
+The authoritative full-export time, measurements and archive identity belong in `../ART_REVIEW.md` and a matching `output/export-manifest.json`; require every source hash to match. This source record is stable across export and does not approve publication. The notes below preserve pre-comparison authoring intent and earlier checkpoint evidence as history.
+
+## Completed 01 authoring record — before root comparison
+
+Status: **authored, unexported, unreviewed source**. Creative revision: `sculpt-04-completed-01-forward-clearance`. The full character remains unaccepted. Geometry, including retained eyelid-04 and wing-01 work, is unchanged.
+
+Only completed's `WingLeft` and `WingTipLeft` acting channels change. The candidate pitches the shoulder forward before a mild inward fold, counterpitches the child, then returns both channels to zero at the existing 0.90-second completed state. Specified shoulder/child rotations `[X,Y,Z]` are: t=0 `[0,0,0]` / `[0,0,0]`; 0.08 `[-16,0,5]` / `[14,0,0]`; 0.20 `[-60,0,5]` / `[55,0,0]`; 0.34 `[-60,0,-8]` / `[55,0,-4]`; 0.48 `[-58,0,-6]` / `[53,0,-3]`; 0.64 `[-56,0,4]` / `[51,0,0]`; 0.78 `[-22,0,4]` / `[20,0,0]`; 0.90 `[0,0,0]` / `[0,0,0]`.
+
+Existing head/lid values at the original keys and the 0.90-second duration remain. New 0.20, 0.64 and 0.78 keys copy the supplied head/lid values exactly from `/tmp/atlas-completed-preserved-keys.json`, preventing the builder from resetting those channels at inserted times. Root derived those values from the prior quaternion trajectory; this author did not calculate or execute a new interpolation. Root must verify the resulting non-wing trajectory. Other poses, clips, rig, pivots, skin bindings, geometry and materials are unchanged. Expected topology delta is **zero**.
+
+Root retained eyelid 04 after all 24 captures: the large white profile wedge is covered at peak closure, neutral irises remain readable, and intermediate samples show no new large breakthrough. Fine edge specks and shape remain unfinished; full blink/art acceptance is not established. Nine checks passed. Exact parity found only two seam parts changed and 165 unchanged; +50 vertices/+96 triangles produced measured comparison counts of 27,240 vertices and 49,844 triangles. Matching source/baseline/receipt are archived in `eyelid04-comparison/matching-source-and-baseline.tar.gz`, SHA-256 `1ff34bc0f5f22398e67abd400c2a11a5d654d48100b0fd2933e33f316c8ca6a7`. These are comparison results, not a new full export. Eyelid 03 remains the last matching full export recorded below.
+
+Only the three assigned source files were edited using static reads/edits. No runtime, tests, browser, export or Git operation was run. Freeze for root's non-wing trajectory check and rest, clearance, peak, settle and return comparisons in three angles. Forward clearance, shoulder attachment and primary overlap are candidate behavior until those captures are reviewed; no visual improvement or full-character acceptance is claimed.
+
+## Eyelid 04 retained local improvement
+
+Status: **authored, unexported, unreviewed source**. Creative revision: `sculpt-04-eyelid-04-temporal-return`. The full character remains unaccepted. Retained tuft-01, grain-01 and wing-01 work is unchanged.
+
+The author inspected the unchanged eyelid-03 closed profile and three-quarter captures. A white wedge remains visible between the upper edge and stationary lower lid. The existing upper seam provides height but insufficient inward depth. This patch changes only `upper_lid_seam_Left` and `upper_lid_seam_Right`, adding one cross-section row: original front edge, rounded middle, inward contact edge.
+
+The original front-edge positions and every column's existing Head/lid weight are preserved. The return fades in with a smooth ramp over temporal `side*u=0.42` to `0.67`, beyond the iris's approximately 0.372 normalized outer extent. Central/medial seam geometry is split at its midpoint with the same footprint. The middle ring receives a 0.001-times-almond-factor rounding offset, restricted to the temporal ramp and tapering at the canthus.
+
+The closed contact target uses `Y=-(eyeLower+0.002)*edge`. At each column, interpolation between the actual lower lid's first two mesh rows gives its X/Z at that height; forward clearance is `0.00125*edge`. This samples the stationary lower-lid mesh band, not the sclera depth equation. The existing 68-degree blended Head/lid Y/Z transform is inverted about the unchanged hinge to obtain the contact edge's rest position. Each of the three rings retains the same column weight. This is fixed geometry, with no state-dependent hiding, recoloring or depth-test change.
+
+Only the two seam grids increase from one to two row intervals. Expected delta: **50 vertices and 96 triangles**, predicting **27,240 vertices and 49,844 triangles**, 156 below the 50,000 triangle budget. These are source calculations, not current measurements. Soft upper/lower lids, eye surfaces, iris, pupils, highlights, front edge, rig, hinges, weights, clips, materials, body and wings remain unchanged. Peak contact from this inverse fit does not establish intermediate-blink clearance or a correct silhouette.
+
+Root retained wing 01 after all 38 comparison captures: square shoulder tabs are gone and coverts follow the smaller underform; the rest outline improves. The completed peak still buries much of the wing in the body, and long parallel primaries/other finish remain unaccepted. Nine structural checks passed; parity found exactly 26 changed and 141 unchanged parts, with zero topology delta and 49,748 triangles. Matching source/baseline/receipt are archived in `wing01-comparison/matching-source-and-baseline.tar.gz`, SHA-256 `122b8bf295928eff416175d5d20dffe94a43f3da6c33c9fe10be0a5088a1ab74`. Wing 01 has comparison evidence only; eyelid 03 remains the last matching full export recorded below.
+
+Only the three assigned source files were edited using static reads/edits and existing image inspection. No runtime, tests, browser, export or Git operation was run. Freeze for root's nine checks, bounded part parity and 24 rest/closing/closed/opening captures across front, three-quarter and profile. Review neutral iris visibility, temporal depth closure and intermediate contact before retaining this revision. No visual improvement or full-character acceptance is claimed.
+
+## Wing 01 retained local improvement
+
+Status: **authored, unexported, unreviewed source**. Creative revision: `sculpt-04-wing-01-fitted-coverts`. The full character remains unaccepted. Retained tuft-01 and grain-01 work is unchanged.
+
+The author inspected grain-01 full three-quarter/profile and completed-gesture captures. Raised covert roots surround a smooth exposed oval, while descending vane shafts enter the old underform. This patch fits the full covert surfaces, not only their caps, and changes only 24 `layered_wing_covert` parts plus two `folded_wing_underform` parts.
+
+A shared wing envelope retains the original center, radii, eight-degree rotation and height. Above normalized sphere height q=0.35, its shoulder cap shifts inward in world X with a smooth ramp, reaching 0.10 model units at the upper pole. The inner underform smoothly scales X/Z radii through 1.00 at q=0.60, 0.91 at q=0 and 0.84 at q=-0.60 and below. The existing SphereGeometry(20,10) vertices are remapped without changing indices; normals are recomputed, with existing duplicate seam/pole normals reconciled without merging vertices.
+
+The original transformed covert centerlines recover coordinates in the original wing frame. Each across point wraps onto the shared surface. Existing eight-by-eight rings use root-to-tip width multipliers `[.18,.72,.90,.76,.56,.31,.10,.006]`; the root crest sits 0.006 inside the inner underform, the t=0.18 ring emerges, and crests from t=0.37 follow the outer envelope. Closed rear surfaces extend inward into the inner underform through t=0.76. As clarified by the explorer, the free distal ends then smoothly reduce total thickness across the existing last three rings to a finite 0.00012 units, avoiding tiny-width but thick terminal fins. The lower fit separately fades from full at q=-0.84 to zero at q=-0.99, returning to original geometry below that range.
+
+All placement tuples, lengths, sweep/curl inputs, part names, indices, tone values and respective whole-`Wing` bindings remain. The global `feather()` construction, all sixteen primaries, rig, pivots, clips, materials, body and face remain unchanged. Expected topology delta is **exactly zero**: the 26 affected parts retain 1,998 vertices and 3,696 triangles by construction. These are arithmetic counts, not measurements of wing 01. Actual moving shoulder contact and covert/primary overlap remain unverified.
+
+Root retained grain 01 after all 22 comparison captures: neck/throat ribbing is quieter, with no new throat holes or detached tufts in sampled views; the fine staircase and pointed tuft finish remain. Nine structural checks passed. Parity found 45 changed and 122 unchanged parts; comparison counts were 27,190 vertices, 49,748 triangles and fourteen bones. Source/baseline/receipt are archived in `grain01-comparison/matching-source-and-baseline.tar.gz`, SHA-256 `b4f4611d1bd189a1ea8899299167364323dcea7c67568bf2bf3c59976eb47f44`. Tuft 01 and grain 01 have comparison evidence only. Eyelid 03 remains the last matching full export recorded below.
+
+Only the three assigned source files were edited, with static reads/edits and existing image inspection; no runtime, tests, browser, export or Git operation was run. Freeze for root's exact parity check allowing 26 changed parts and 34 renders, including completed at 0.34 seconds in full/portrait front, three-quarter and profile. Inspect upper attachment, whole vane visibility, tip thickness and lower overlap during motion. No visual improvement or artistic acceptance is claimed before that review.
+
+## Grain 01 retained local improvement
+
+Status: **authored, unexported, unreviewed source**. Creative revision: `sculpt-04-grain-01-shallow-staggered-plumage`. The full character remains unaccepted.
+
+Only `plumageShell()`'s phase, shaft, stagger/envelope, relief and tone field changes. The specified field replaces the narrow 28-cycle fourth-power ridges with a 16-cycle smooth cosine shaft and staggered longitudinal envelope. Relief modulation decreases from 0.006 to 0.0016 model units, with the existing 0.0008 offset and 0.0022 boundary-scaled base retained. Tone modulation uses the specified shallow grain and five-cycle variation. Grid, indices, Y samples, profile, outward vector and boundary calculation remain exactly as authored.
+
+Retained tuft-01 construction automatically fits its 44 breast/mantle tufts to the revised shell. Thus the allowed geometry changes are the shell and those 44 fitted parts; all other geometry, materials, rig, clips and placement tuples remain unchanged. Expected vertex/triangle delta is **exactly zero**, not a current measurement. Shell radial movement is bounded by 0.006 model units from the field ranges. Its projected silhouette and pale throat-mask edge still require actual render review; unchanged mask code does not imply identical visible boundary pixels.
+
+Root retained tuft 01 after inspecting all 22 captures: rectangular root plates are gone, while pointed lower ridges/slits and coarse finish remain. Nine structural checks passed; external parity found exactly 44 changed and 123 unchanged parts with identical indices, rig, poses, clips and palette. Comparison measurements were 27,190 vertices, 49,748 triangles and fourteen bones. Matching source/baseline/receipt are archived in `tuft01-comparison/matching-source-and-baseline.tar.gz`, SHA-256 `2316d4830bea30aa8874a93969fdd7662322408e241811d92045697df45283c3`. This is comparison evidence, not a full tuft-01 export. The last matching full export remains eyelid 03, recorded below.
+
+Only the three assigned source files were edited with static reads/edits; no runtime, tests, browser, export or Git operation was run. Freeze for root's parity check allowing 45 affected parts and matching renders, including throat boundary and tuft contact in gestures. No visible improvement is claimed. Wing work remains separate.
+
+## Tuft 01 retained local improvement
+
+Status: **authored, unexported, unreviewed source**. Creative revision: `sculpt-04-tuft-01-surface-fitting`. The full character remains unaccepted. Retained beak-02, throat-04 and eyelid-03 work is unchanged.
+
+The author inspected the matching eyelid-03 full-body front and three-quarter light turnarounds and the selected reference. The body tufts have broad straight roots, raised side edges and wide terminal panels. This patch changes only the existing 24 `breast_flow_tuft` and 20 `mantle_flow_tuft` grids.
+
+Each body-tuft column now follows its own angle around the curved body instead of translating sideways from a single tangent plane. A small sampler interpolates the already-created feather shell's existing triangles at that angle and height, including their actual displaced relief. The shell itself is unchanged. Root and lateral edges sit 0.0018 model units inside that sampled surface, while a smooth root ramp and squared side falloff introduce shallow central relief. This avoids relying on analytic relief alone where the shell's coarser triangles differ from the analytic surface.
+
+The body-only width envelope curves down to 18% of root half-width at the terminal row, replacing 54%. It retains finite width and the existing three unequal terminal lobes. All original placement tuples, tip-height formulas, vertex order, tone values, indices, names and `spineWeight` calls remain. The original sample heights are preserved, so the existing Y-based binding semantics remain; no stale weight array is copied. The four temple tufts retain their original construction path.
+
+Expected topology delta is **exactly zero**: each of the same 44 body grids still has 13 × 6 = 78 vertices and 12 × 5 × 2 = 120 triangles. This is source arithmetic, not a measured tuft-01 export. No eyes, beak, throat, body profile, outer proportions, wings, rig, clips, materials, lighting or shell ribbing are revised. Only the three assigned source files were edited, with static reads/edits and image inspection; no runtime, tests, browser, export or Git operation was run.
+
+The last matching full export is eyelid 03, exported **2026-10-04T18:03:14.083731+00:00** and archived as `atlas-eyelid-03-review.tar.gz`: 104 artifacts, 27,190 vertices, 49,748 triangles, fourteen bones, twelve clips and a 2,035,216-byte GLB. Root reported all nine structural checks passing. These are historical results, not validation of tuft 01; 252 triangles remain below the 50,000 budget if the zero-delta prediction is confirmed. The retained eyelid review wording below remains history.
+
+Freeze for root's nine structural checks and 22 matching comparison captures, including profile and existing gestures. Review whether the roots/sides remain in contact through deformation, whether the rounded lobes read as integrated feathers, and whether coarse shell interpolation causes visible facets or intersections. No visual improvement or full-character acceptance is claimed before those renders. Shell ribbing and wing-root integration remain separate follow-ups.
+
+## Eyelid 03 retained local improvement
 
 Status: **authored source; full character remains unaccepted**. Creative revision: `sculpt-04-eyelid-03-interior-surface-clearance`. The full character remains unaccepted. Retained beak-02, throat-04 and eyelid-02 rim work is unchanged.
 

@@ -1,4 +1,4 @@
-# UI and ATLAS priority — 4 October 2026
+# UI and ATLAS priority — 5 October 2026 (IST)
 
 The owner explicitly prioritized the UI revamp and ATLAS, asking to stabilize the current release and return to connector expansion afterward. The full implementation plan remains in scope; this changes execution order.
 
@@ -112,14 +112,15 @@ recorded below and remain separate from the approved static greeting.
 
 ## ATLAS boundary
 
-The latest separately archived art study is eyelid03: 49,748 triangles, a
-2,035,216-byte GLB, fourteen bones and twelve clips, with all nine structure checks
-passing. Beak volume, throat continuity and frontal blink coverage improve. Fine
-boundary stepping, feather/body integration and a remaining side gap during lid
-closure keep the character unaccepted.
+The latest separately archived art study is completed01: 49,844 triangles, a
+2,039,716-byte GLB, fourteen bones and twelve clips, with all nine structure checks
+passing. Fitted body tufts, quieter surface grain, integrated wing coverts,
+temporal lid closure and forward-clearing completion motion improve the model.
+Long parallel primaries, their wing junction, fine throat/lid edges and final
+state acting keep the character unaccepted.
 No 3D artwork has been published. The approved concept portrait remains active,
 with the static full-body greeting implemented above. The final authored model,
-material pass, convincing facial closure, animated greeting/state delivery and
+material pass, final face/feather finish, animated greeting/state delivery and
 state-performance/device acceptance remain open.
 
 ## Greeting acceptance and personality follow-up
@@ -176,8 +177,24 @@ navigation timed out; the complete exact-head hosted browser suite subsequently
 passed. Native code remains identical to the verified Mac 1.23.15 (50) package.
 
 The unaccepted art source is checkpointed separately. Its latest matching full
-export is `sculpt-04-eyelid-03-interior-surface-clearance`, archived in
-`atlas-eyelid-03-review.tar.gz` with 104 artifacts and all seventeen source hashes
-verified. The next planned body correction preserves topology while fitting the
-44 chest/mantle tuft grids to the body; wing roots and regular shell ribbing are
-separate remaining defects.
+export is `sculpt-04-completed-01-forward-clearance`, exported at
+`2026-10-04T18:41:03.423334+00:00` and archived in
+`atlas-completed-01-review.tar.gz`. All seventeen source hashes and 104 artifact
+hashes/byte counts match. Body/wing refinements preserve topology; the temporal
+lid return adds fifty vertices and ninety-six triangles, for 27,240 vertices and
+49,844 triangles overall. The final acting pass changes only completed's two wing
+channels; the other eleven clips are identical, and 2,172 sampled non-wing
+quaternions remain within 4.246830940246582e-7 component difference.
+
+Root reviewed the five matching comparisons: 22 tuft, 22 grain, 38 wing, 24 blink
+and 48 completed-trajectory captures. The completed wing now clears the torso and
+returns to its resting side. The next local art task is to integrate the long
+primary feathers with the revised wing, then finish the face/throat edges and
+review all eight states at their actual delivery sizes. Natural acting, final
+art publication and physical-device/performance acceptance remain open.
+
+The clean software release remains accepted main `79386e26`, with private Mac
+1.23.15 (50) unchanged. A read-only environment probe at 18:13 UTC still found
+required production credentials absent. Canonical health at 18:42 UTC remained
+healthy on `a06aa78b`; no migration or production deployment occurred. Connector
+expansion remains parked behind the UI/ATLAS priority.
