@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>ATLAS rough model lab</title>
+  <link rel="stylesheet" href="/web/style.css">
+  <script type="importmap">{"imports":{"three":"/vendor/build/three.module.js","three/addons/":"/vendor/examples/jsm/"}}</script>
+  <script type="module" src="/web/viewer.mjs"></script>
+</head>
+<body>
+  <main>
+    <header>
+      <p class="eyebrow">ATLAS · editable rough 01</p>
+      <h1>Model and delivery study</h1>
+      <p>This local lab shows a procedural interpretation of the approved study. State samples and speech are simulated. No microphone, audio, provider or application action is connected.</p>
+      <p><strong>ROUGH.</strong> A rendered image or a local measurement does not establish production fidelity, target-device performance or completion of real work.</p>
+    </header>
+    <form class="configuration" method="get" action="/">
+      <label>Delivery <select name="mode" id="mode"><option value="procedural">Editable procedural model</option><option value="glb">Exported GLB</option><option value="poster">Generated still</option><option value="sequence">Generated frame sequence</option></select></label>
+      <label>Reserved size <select name="size" id="size"><option value="256">256 px review</option><option value="36">36 px presence</option></select></label>
+      <label>Pixel ratio <select name="dpr" id="dpr"><option value="1">1</option><option value="2">2</option></select></label>
+      <label>Theme <select name="theme" id="theme"><option value="light">Warm light</option><option value="dark">Graphite</option></select></label>
+      <button type="submit">Load configuration</button>
+    </form>
+    <section aria-labelledby="sample-title" class="sample">
+      <h2 id="sample-title">Presentation sample</h2>
+      <div class="presence-row">
+        <div id="stage" aria-hidden="true"><div id="fallback">A</div></div>
+        <div class="readout"><p id="state-label">State sample: available</p><p id="status" role="status">Loading the selected delivery.</p></div>
+      </div>
+      <p id="motion-note">Idle is still. Clips play once and can be interrupted immediately.</p>
+      <div class="controls">
+        <label>State sample <select id="pose"><option>available</option><option>listening</option><option>responding</option><option>working</option><option>needs_you</option><option>blocked</option><option>completed</option><option>paused</option></select></label>
+        <button type="button" id="apply-pose">Apply static pose</button>
+        <button type="button" data-clip="available">Available · soft settle</button>
+        <button type="button" data-clip="listening">Listening · attentive tilt</button>
+        <button type="button" data-clip="responding">Responding · phrase study</button>
+        <button type="button" data-clip="working">Working · orient and hold</button>
+        <button type="button" data-clip="needs_you">Needs you · brow question</button>
+        <button type="button" data-clip="blocked">Blocked · calm settle</button>
+        <button type="button" data-clip="completed">Completed · one satisfied nod</button>
+        <button type="button" data-clip="paused">Paused · rest attention</button>
+        <button type="button" data-clip="quick_reaction">Quick reaction test</button>
+        <button type="button" data-clip="speech_test">Synthetic beak test</button>
+        <button type="button" data-clip="satisfied_nod">Manual nod test</button>
+        <button type="button" id="interrupt">Interrupt to rest</button>
+        <label class="check"><input type="checkbox" id="hide-character"> Hide character</label>
+        <button type="button" id="dispose">Dispose renderer</button>
+      </div>
+      <p>The beak test is an authored envelope without audio or phonemes. “Completed” is only a manually selected pose label here; it is not a completion receipt.</p>
+      <button type="button" id="independent">Independent control · <span id="counter">0</span></button>
+      <p>That control remains available during loading, playback, failure, hiding and disposal.</p>
+    </section>
+    <section aria-labelledby="evidence-title">
+      <h2 id="evidence-title">Local evidence</h2>
+      <button type="button" id="show-metrics">Refresh metric snapshot</button>
+      <pre id="metrics">No measurements exported.</pre>
+      <p>Frame intervals and handler-to-paint latency are lab proxies, not field INP or GPU execution time. Geometry counts are not a GPU memory measurement. This server sends uncompressed files; compression and deployed bundle cost remain separate checks.</p>
+      <p><a href="/sheets/model-sheet.svg">Editable turnarounds</a> · <a href="/sheets/expression-sheet.svg">Editable expression sheet</a></p>
+    </section>
+  </main>
+</body>
+</html>

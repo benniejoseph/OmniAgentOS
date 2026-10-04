@@ -11,10 +11,13 @@ class MeetingRelationshipFields extends StatelessWidget {
     required this.definition,
     required this.enabled,
     required this.onChanged,
+    this.onAddSource,
+    this.onAddEntity,
   });
   final Json definition;
   final bool enabled;
   final ValueChanged<Json> onChanged;
+  final VoidCallback? onAddSource, onAddEntity;
 
   List<Json> _rows(String name) =>
       (definition[name] as List).map(meetingMap).toList();
@@ -78,9 +81,13 @@ class MeetingRelationshipFields extends StatelessWidget {
               for (var index = 0; index < sources.length; index++)
                 _source(sources[index], index),
               if (sources.isEmpty) const Text('No source references linked.'),
-              const Text(
-                'Use the web Meeting editor to choose additional governed Library sources. Source selection is not available in this native version.',
+              OutlinedButton.icon(
+                key: const Key('meeting-add-source'),
+                onPressed: enabled && sources.length < 100 ? onAddSource : null,
+                icon: const Icon(Icons.add_link),
+                label: const Text('Choose a current Library source'),
               ),
+              Text('${sources.length} of 100 source references'),
             ],
           ),
         ),
@@ -93,9 +100,15 @@ class MeetingRelationshipFields extends StatelessWidget {
                 _entity(entities[index], index),
               if (entities.isEmpty)
                 const Text('No Entity Registry records linked.'),
-              const Text(
-                'Use the web Meeting editor to choose additional Entity Registry records. Existing record identities and types remain fixed here.',
+              OutlinedButton.icon(
+                key: const Key('meeting-add-entity'),
+                onPressed: enabled && entities.length < 100
+                    ? onAddEntity
+                    : null,
+                icon: const Icon(Icons.account_tree_outlined),
+                label: const Text('Choose an authorized entity'),
               ),
+              Text('${entities.length} of 100 entity links'),
             ],
           ),
         ),
@@ -292,6 +305,8 @@ class MeetingRelationshipFields extends StatelessWidget {
       onChanged: change,
       validator: (value) => required && (value == null || value.trim().isEmpty)
           ? '$label is required.'
+          : value != null && value.length > maximum
+          ? 'Keep this label within $maximum characters.'
           : null,
     ),
   );

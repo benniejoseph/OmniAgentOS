@@ -125,6 +125,10 @@ class PresenceFixtures(Fixtures):
             return self.fulfill(route, {"error": "OAuth and voice effects are blocked."}, 503)
         if request.method not in ("GET", "HEAD", "OPTIONS"):
             return super().route(route)
+        if path == "/companion/atlas-v1/manifest.json":
+            # This suite proves the approved neutral fallback independently of
+            # any later reviewed production-art publication.
+            return route.fulfill(status=404, content_type="text/plain", body="Synthetic production artwork unavailable")
         if path == "/companion/atlas-neutral.png" and self.asset_failure:
             return route.fulfill(status=404, content_type="text/plain", body="Synthetic portrait unavailable")
         allowed = (PREFERENCES_PATH, "/api/threads", f"/api/threads/{THREAD_ID}", f"/api/threads/{HOME_ID}", f"/api/runs/{RUN_ID}")

@@ -1,3 +1,5 @@
+import '../capture/library_contracts.dart';
+
 import 'meetings.dart';
 import 'meetings_mutations.dart';
 import 'meetings_validation.dart';
@@ -30,6 +32,97 @@ const meetingEntityRelationships = [
   'subject',
   'related',
 ];
+
+Json meetingSourceLinkFromLibrary(LibraryItem item) {
+  meetingRequire(
+    item.raw['status'] == 'ready' &&
+        const {
+          'capture_asset',
+          'capture_recording',
+          'capture_transcript',
+          'source_item',
+        }.contains(item.authority),
+    'Choose a ready Capture or connected Library source.',
+  );
+  final kind = switch (item.authority) {
+    'capture_recording' || 'capture_transcript' => 'capture_recording',
+    'capture_asset' => 'capture_asset',
+    _ => item.kind == 'meeting' ? 'calendar_event' : 'source_revision',
+  };
+  final mediaType = item.version['mediaType'] as String;
+  final role = kind == 'calendar_event'
+      ? 'calendar'
+      : item.authority == 'capture_transcript' || item.kind == 'transcript'
+      ? 'transcript'
+      : kind == 'capture_recording' ||
+            item.kind == 'recording' ||
+            mediaType.startsWith('audio/') ||
+            mediaType.startsWith('video/')
+      ? 'recording'
+      : kind == 'capture_asset'
+      ? 'attachment'
+      : 'reference';
+  return {
+    'linkId': 'meeting-link:${newMeetingMutationKey()}',
+    'kind': kind,
+    'sourceId': _id(item.sourceId),
+    if (item.authority == 'source_item')
+      'sourceRevisionId': _id(item.version['sourceRevisionId']),
+    'mediaRole': role,
+    'label': item.title,
+  };
+}
+
+Json meetingEntityLinkFromOption(EntityOption option) => {
+  'entityId': _id(option.id),
+  'entityType': meetingMember(option.type, const [
+    'person',
+    'organization',
+    'account',
+    'project',
+  ]),
+  // Retain the canonical label in full; the editor asks for a shorter context
+  // label when it exceeds the Meeting request's 240-character bound.
+  'label': meetingText(option.label, max: 320),
+  'relationship': option.type == 'person'
+      ? 'participant'
+      : option.type == 'account'
+      ? 'account'
+      : option.type == 'project'
+      ? 'related'
+      : 'customer',
+};
+
+Json appendMeetingRelationship(Json definition, String collection, Json link) {
+  meetingRequire(const ['sourceLinks', 'entityLinks'].contains(collection));
+  final rows = meetingList(definition[collection], 100, (row) => row);
+  meetingRequire(
+    rows.length < 100,
+    'A Meeting can retain up to 100 links of this type.',
+  );
+  if (collection == 'sourceLinks') {
+    meetingRequire(
+      !rows.any(
+        (row) =>
+            row['kind'] == link['kind'] && row['sourceId'] == link['sourceId'],
+      ),
+      'This source is already linked. Edit its retained reference instead.',
+    );
+    meetingRequire(
+      link['kind'] != 'calendar_event' ||
+          !rows.any((row) => row['kind'] == 'calendar_event'),
+      'A Meeting can link one exact Calendar event.',
+    );
+  } else {
+    meetingRequire(
+      !rows.any((row) => row['entityId'] == link['entityId']),
+      'This entity is already linked.',
+    );
+  }
+  return {
+    collection: [...rows, link],
+  };
+}
 
 Json newMeetingParticipantDraft() => {
   'participantId': 'meeting-participant:${newMeetingMutationKey()}',

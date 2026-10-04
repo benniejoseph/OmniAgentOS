@@ -1,6 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../../core/network/native_workspace_access.dart';
+import '../capture/entity_options.dart';
+import '../capture/library_view.dart';
 
 import 'meetings.dart';
+import 'meetings_access.dart';
 import 'meetings_action_controller.dart';
 import 'meetings_commitments.dart';
 import 'meetings_form_model.dart';
@@ -180,6 +186,13 @@ Future<void> showMeetingEditor(
   await actions.flushDraft();
 }
 
+typedef MeetingSourcePicker = Future<LibraryMeetingSelection?> Function(
+  BuildContext context,
+);
+typedef MeetingEntityPicker = Future<AuthorizedEntitySelection?> Function(
+  BuildContext context,
+);
+
 class MeetingEditor extends StatefulWidget {
   const MeetingEditor({
     super.key,
@@ -189,6 +202,8 @@ class MeetingEditor extends StatefulWidget {
     required this.stillCurrent,
     required this.refresh,
     this.projectLoader,
+    this.sourcePicker,
+    this.entityPicker,
   });
   final MeetingActionController actions;
   final String workspaceId;
@@ -196,6 +211,8 @@ class MeetingEditor extends StatefulWidget {
   final bool Function() stillCurrent;
   final Future<bool> Function() refresh;
   final MeetingProjectLoader? projectLoader;
+  final MeetingSourcePicker? sourcePicker;
+  final MeetingEntityPicker? entityPicker;
   @override
   State<MeetingEditor> createState() => _MeetingEditorState();
 }
@@ -214,6 +231,7 @@ class _MeetingEditorState extends State<MeetingEditor> {
       location;
   int fieldsRevision = 0;
   bool staleDraft = false, reviewed = false, scopeInvalidated = false;
+  bool selectingRelationship = false;
   late final String? ownerKey;
   String? issue;
   String get action => widget.base == null ? 'create' : 'update';
@@ -346,6 +364,108 @@ class _MeetingEditorState extends State<MeetingEditor> {
     }
     setState(() => definition = {...definition, ...change});
     _save();
+  }
+
+  Future<void> _chooseRelationship({required bool source}) async {
+    if (!canEdit || selectingRelationship) {
+      return;
+    }
+    final actions = widget.actions;
+    final owner = actions.owner;
+    final generation = actions.repository.access.generation;
+    final version = widget.base?.versionKey;
+    final workspace = widget.workspaceId;
+    final fields = fieldsRevision;
+    // Keep the exact workspace provider alive across navigation. A replacement
+    // provider, including one with the same textual owner, must be re-reviewed.
+    final container = ProviderScope.containerOf(context, listen: false);
+    final subscription = container.listen<NativeWorkspaceAccess?>(
+      nativeWorkspaceAccessProvider,
+      (_, _) {},
+    );
+    setState(() {
+      selectingRelationship = true;
+      issue = null;
+    });
+    try {
+      final access = subscription.read();
+      meetingRequire(
+        access != null &&
+            access.current &&
+            owner != null &&
+            access.authority.tenantId == owner.tenantId &&
+            access.authority.actorId == owner.actorId &&
+            access.authority.canonicalUserId.toLowerCase() == owner.userId &&
+            access.authority.role == owner.role &&
+            meetingsApiScope(access.authority.apiBaseUrl) == owner.apiScope,
+        'Current workspace access could not be confirmed. Reopen this draft after refreshing access.',
+      );
+      final authorized = access!;
+      final binding = owner!;
+      final identity = authorized.identity;
+      final Object? selection = source
+          ? await (widget.sourcePicker ?? showNativeMeetingLibraryPicker)(
+              context,
+            )
+          : await (widget.entityPicker ?? showNativeEntitySelector)(context);
+      if (!mounted || selection == null) {
+        return;
+      }
+      final current = subscription.read();
+      meetingRequire(
+        canEdit &&
+            identical(actions, widget.actions) &&
+            actions.owner?.key == binding.key &&
+            actions.repository.access.generation == generation &&
+            widget.base?.versionKey == version &&
+            widget.workspaceId == workspace &&
+            fieldsRevision == fields &&
+            authorized.current &&
+            current != null &&
+            current.current &&
+            current.identity == identity,
+        'Meeting or workspace access changed during selection. Nothing was linked; reopen the selector from the current draft.',
+      );
+      Json link;
+      if (source) {
+        meetingRequire(selection is LibraryMeetingSelection);
+        final selected = selection as LibraryMeetingSelection;
+        meetingRequire(
+          selected.matchesCurrent(current!) &&
+              selected.item.raw['tenantId'] == binding.tenantId &&
+              libraryMeetingSourceAvailable(selected.item),
+        );
+        link = meetingSourceLinkFromLibrary(selected.item);
+      } else {
+        meetingRequire(selection is AuthorizedEntitySelection);
+        final selected = selection as AuthorizedEntitySelection;
+        meetingRequire(
+          selected.matchesCurrent(current!) &&
+              selected.tenantId == binding.tenantId &&
+              selected.ownerActorId == 'actor:${binding.userId}',
+        );
+        meetingHash(selected.accessScopeSha256);
+        link = meetingEntityLinkFromOption(selected.option);
+      }
+      _patch(
+        appendMeetingRelationship(
+          definition,
+          source ? 'sourceLinks' : 'entityLinks',
+          link,
+        ),
+      );
+    } catch (error) {
+      if (mounted && !scopeInvalidated) {
+        setState(
+          () => issue = error is FormatException ? error.message : 'The current selection could not be confirmed. Your existing links are retained.',
+        );
+      }
+    } finally {
+      subscription.close();
+      if (mounted) {
+        setState(() => selectingRelationship = false);
+      }
+    }
   }
 
   void _save() {
@@ -595,7 +715,15 @@ class _MeetingEditorState extends State<MeetingEditor> {
                     definition: definition,
                     enabled: canEdit,
                     onChanged: _patch,
+                    onAddSource: selectingRelationship
+                        ? null
+                        : () => _chooseRelationship(source: true),
+                    onAddEntity: selectingRelationship
+                        ? null
+                        : () => _chooseRelationship(source: false),
                   ),
+                  if (selectingRelationship)
+                    const Text('Choosing a current authorized reference…'),
                   CheckboxListTile(
                     contentPadding: EdgeInsets.zero,
                     value: reviewed,

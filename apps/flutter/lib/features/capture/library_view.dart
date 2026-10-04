@@ -18,6 +18,42 @@ class LibraryCommandSelection {
       access.current && access.identity == workspaceIdentity;
 }
 
+class LibraryMeetingSelection {
+  const LibraryMeetingSelection(this.item, this.workspaceIdentity);
+  final LibraryItem item;
+  final Object workspaceIdentity;
+  bool matchesCurrent(NativeWorkspaceAccess access) =>
+      access.current && access.identity == workspaceIdentity;
+}
+
+/// Meeting source requests accept current Capture or immutable source revisions.
+/// Project/Mission artifact identities have different authority and cannot be
+/// relabelled as source revisions by this selector.
+bool libraryMeetingSourceAvailable(LibraryItem item) {
+  bool sourceId(Object? value) =>
+      value is String &&
+      value.length <= 240 &&
+      RegExp(r'^[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$').hasMatch(value);
+  return item.raw['status'] == 'ready' &&
+      const {
+        'capture_asset',
+        'capture_recording',
+        'capture_transcript',
+        'source_item',
+      }.contains(item.authority) &&
+      sourceId(item.sourceId) &&
+      (item.authority != 'source_item' ||
+          sourceId(item.version['sourceRevisionId']));
+}
+
+Future<LibraryMeetingSelection?> showNativeMeetingLibraryPicker(
+  BuildContext context,
+) => Navigator.of(context).push<LibraryMeetingSelection>(
+  MaterialPageRoute(
+    builder: (_) => const NativeLibraryPage(selectForMeeting: true),
+  ),
+);
+
 Future<LibraryCommandSelection?> showNativeLibraryPicker(
   BuildContext context,
 ) => Navigator.of(context).push<LibraryCommandSelection>(
@@ -32,14 +68,20 @@ class NativeLibraryPage extends StatelessWidget {
     super.key,
     this.initialLibraryItemId,
     this.selectForCommand = false,
-  });
+    this.selectForMeeting = false,
+  }) : assert(!selectForCommand || !selectForMeeting);
   final String? initialLibraryItemId;
   final bool selectForCommand;
+  final bool selectForMeeting;
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(
       title: Text(
-        selectForCommand ? 'Choose current Library context' : 'Library',
+        selectForMeeting
+            ? 'Choose a Meeting source'
+            : selectForCommand
+            ? 'Choose current Library context'
+            : 'Library',
       ),
     ),
     body: NativePrivateWorkspace(
@@ -54,13 +96,24 @@ class NativeLibraryPage extends StatelessWidget {
                   key: ObjectKey(controller),
                   controller: controller,
                   initialLibraryItemId: initialLibraryItemId,
-                  onSelectedCurrent: selectForCommand
+                  selectForMeeting: selectForMeeting,
+                  onSelectedCurrent: selectForCommand || selectForMeeting
                       ? (item) {
                           if (access.current &&
                               controller.available &&
-                              controller.detail?.versionId == item.versionId) {
+                              identical(controller.detail, item) &&
+                              (!selectForMeeting ||
+                                  libraryMeetingSourceAvailable(item))) {
                             Navigator.of(context).pop(
-                              LibraryCommandSelection(item, access.identity),
+                              selectForMeeting
+                                  ? LibraryMeetingSelection(
+                                      item,
+                                      access.identity,
+                                    )
+                                  : LibraryCommandSelection(
+                                      item,
+                                      access.identity,
+                                    ),
                             );
                           }
                         }
@@ -78,10 +131,12 @@ class LibraryView extends StatefulWidget {
     required this.controller,
     this.initialLibraryItemId,
     this.onSelectedCurrent,
+    this.selectForMeeting = false,
   });
   final LibraryController controller;
   final String? initialLibraryItemId;
   final ValueChanged<LibraryItem>? onSelectedCurrent;
+  final bool selectForMeeting;
   @override
   State<LibraryView> createState() => _LibraryViewState();
 }
@@ -126,9 +181,12 @@ class _LibraryViewState extends State<LibraryView> with WidgetsBindingObserver {
     if (!RegExp(
           r'^library:(capture_asset|capture_recording|capture_transcript|project_artifact|source_item):.+$',
         ).hasMatch(id) ||
-        id.length > 320) {
+        id.length > 320 ||
+        widget.selectForMeeting && id.startsWith('library:project_artifact:')) {
       setState(
-        () => _formError = 'Enter an exact current Library ID from a saved source. Legacy Mission artifacts do not support exact opening.',
+        () => _formError = widget.selectForMeeting
+            ? 'Choose an exact Capture or connected source ID. Project and Mission artifacts cannot be linked as Meeting sources.'
+            : 'Enter an exact current Library ID from a saved source. Legacy Mission artifacts do not support exact opening.',
       );
       return;
     }
@@ -153,21 +211,28 @@ class _LibraryViewState extends State<LibraryView> with WidgetsBindingObserver {
 
   Future<void> _attach(LibraryItem reviewed) async {
     final c = widget.controller;
+    final meetingSelection = widget.selectForMeeting;
     if (_attaching ||
         !c.available ||
         widget.onSelectedCurrent == null ||
-        !reviewed.commandAvailable ||
+        !_selectable(reviewed) ||
         c.selectedId != reviewed.id) {
       return;
     }
-    final reviewedReference = libraryCanonical(reviewed.commandReference());
+    final reviewedReference = _selectionBinding(reviewed);
     setState(() {
       _attaching = true;
       _attachmentNotice = null;
     });
     await c.select(reviewed.id);
-    if (!mounted) return;
+    if (!mounted) {
+      return;
+    }
     try {
+      if (!identical(c, widget.controller) ||
+          meetingSelection != widget.selectForMeeting) {
+        return;
+      }
       final current = c.detail;
       if (!c.available ||
           c.selectedId != reviewed.id ||
@@ -179,8 +244,8 @@ class _LibraryViewState extends State<LibraryView> with WidgetsBindingObserver {
         );
         return;
       }
-      if (!current.commandAvailable ||
-          libraryCanonical(current.commandReference()) != reviewedReference) {
+      if (!_selectable(current) ||
+          _selectionBinding(current) != reviewedReference) {
         setState(
           () => _attachmentNotice = 'This source changed. Review its current version before choosing it again.',
         );
@@ -191,6 +256,13 @@ class _LibraryViewState extends State<LibraryView> with WidgetsBindingObserver {
       if (mounted) setState(() => _attaching = false);
     }
   }
+
+  bool _selectable(LibraryItem item) => widget.selectForMeeting
+      ? libraryMeetingSourceAvailable(item)
+      : item.commandAvailable;
+  String _selectionBinding(LibraryItem item) => libraryCanonical(
+    widget.selectForMeeting ? item.raw : item.commandReference(),
+  );
 
   Widget _button(
     String label,
@@ -230,6 +302,15 @@ class _LibraryViewState extends State<LibraryView> with WidgetsBindingObserver {
         );
       }
       final page = c.page;
+      final rows =
+          page?.items
+              .where(
+                (item) =>
+                    !widget.selectForMeeting ||
+                    libraryMeetingSourceAvailable(item),
+              )
+              .toList() ??
+          const <LibraryItem>[];
       return SingleChildScrollView(
         key: const Key('library-scroll'),
         padding: const EdgeInsets.all(24),
@@ -244,8 +325,10 @@ class _LibraryViewState extends State<LibraryView> with WidgetsBindingObserver {
                   style: Theme.of(context).textTheme.titleLarge,
                 ),
                 const SizedBox(height: 8),
-                const Text(
-                  'Read the source identity, current revision and exact citations. History contains retained metadata; it does not grant access to historical file bytes or attach an older version to Command.',
+                Text(
+                  widget.selectForMeeting
+                      ? 'Choose a ready current Capture or connected source. Project and Mission artifacts are excluded. The exact current source is read again before returning to the Meeting draft.'
+                      : 'Read the source identity, current revision and exact citations. History contains retained metadata; it does not grant access to historical file bytes or attach an older version to Command.',
                 ),
                 const SizedBox(height: 16),
                 TextField(
@@ -371,6 +454,10 @@ class _LibraryViewState extends State<LibraryView> with WidgetsBindingObserver {
                   Text(
                     'Counts ${page.countsLowerBound ? 'are lower bounds' : 'describe the returned search window'}. Read at ${page.generatedAt}.',
                   ),
+                  if (widget.selectForMeeting)
+                    Text(
+                      '${rows.length} suitable Meeting sources in this loaded page. Library totals include other source types; use the next page or narrow the search to continue.',
+                    ),
                   if (page.items.isEmpty)
                     const Padding(
                       padding: EdgeInsets.symmetric(vertical: 20),
@@ -378,7 +465,7 @@ class _LibraryViewState extends State<LibraryView> with WidgetsBindingObserver {
                         'No records matched this search in the current readable Library.',
                       ),
                     ),
-                  for (final row in page.items)
+                  for (final row in rows)
                     Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
@@ -563,8 +650,10 @@ class _LibraryViewState extends State<LibraryView> with WidgetsBindingObserver {
             c.detail?.id == item.id,
       ),
       if (widget.onSelectedCurrent != null) ...[
-        const Text(
-          'Only this exact current version can be selected. The source is read again now and revalidated again by the server when you explicitly send the conversation.',
+        Text(
+          widget.selectForMeeting
+              ? 'This exact current source is read again now. Linking only changes your private Meeting draft; the server revalidates access and consent when you save the reviewed Meeting.'
+              : 'Only this exact current version can be selected. The source is read again now and revalidated again by the server when you explicitly send the conversation.',
         ),
         Align(
           alignment: AlignmentDirectional.centerStart,
@@ -575,16 +664,18 @@ class _LibraryViewState extends State<LibraryView> with WidgetsBindingObserver {
             !_attaching &&
                     !c.detailLoading &&
                     c.detailError == null &&
-                    item.commandAvailable
+                    _selectable(item)
                 ? () => _attach(item)
                 : null,
             key: 'library-select-current',
             icon: Icons.attach_file,
           ),
         ),
-        if (!item.commandAvailable)
-          const Text(
-            'This source is not ready for current-version conversation context.',
+        if (!_selectable(item))
+          Text(
+            widget.selectForMeeting
+                ? 'This source cannot be linked to a Meeting. Choose a ready Capture or connected source with an exact supported identity.'
+                : 'This source is not ready for current-version conversation context.',
           ),
         if (_attachmentNotice != null)
           Semantics(liveRegion: true, child: Text(_attachmentNotice!)),

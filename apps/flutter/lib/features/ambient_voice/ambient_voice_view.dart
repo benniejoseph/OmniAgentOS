@@ -169,6 +169,12 @@ class AmbientVoiceSurface extends StatelessWidget {
                     children: [
                       CompanionPortrait(
                         visible: companionPreferences?.visible == true,
+                        preferences: companionPreferences,
+                        state: playbackActive
+                            ? 'responding'
+                            : microphoneActive
+                            ? 'listening'
+                            : 'available',
                       ),
                       const SizedBox(width: 13),
                       Expanded(

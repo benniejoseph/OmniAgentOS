@@ -11,7 +11,6 @@ import 'package:go_router/go_router.dart';
 import 'package:record/record.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-import '../../app/brand/asael_mascot.dart';
 import '../../app/brand/asael_mark.dart';
 import '../../app/platform/macos_presentation.dart';
 import '../../app/theme/macos_app_theme.dart';
@@ -23,6 +22,7 @@ import '../ambient_voice/ambient_voice_consent.dart';
 import '../ambient_voice/ambient_voice_view.dart';
 import '../ambient_voice/realtime_voice_controller.dart';
 import '../computer_use/local_computer.dart';
+import '../companion/atlas_player.dart';
 import '../companion/companion_controller.dart';
 import '../companion/companion_models.dart';
 import '../companion/companion_presence.dart';
@@ -3416,6 +3416,13 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
         CompanionPresence(
           preferences: preferences?.preferences,
           work: widget.controller.companionStatus,
+          reactionScope: widget.controller.threadId == null
+              ? null
+              : (
+                  widget.controller,
+                  widget.companionController,
+                  widget.controller.threadId,
+                ),
           microphoneActive:
               recording || realtimeVoice?.microphoneActive == true,
           playbackActive: realtimeVoice?.isSpeechPlaying == true,
@@ -5059,7 +5066,16 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                               .surfaceContainerLow,
                           child: Row(
                             children: [
-                              const _CommandLiveGlyph(),
+                              _CommandLiveGlyph(
+                                preferences: widget
+                                    .companionController
+                                    ?.current
+                                    ?.preferences,
+                                scopeKey: (
+                                  widget.controller,
+                                  widget.controller.threadId,
+                                ),
+                              ),
                               const SizedBox(width: 10),
                               Text(
                                 _humanCommandStatus(widget.controller.status!),
@@ -5075,6 +5091,12 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                   child: widget.controller.messages.isEmpty
                       ? _TalkEmpty(
                           selectedThread: widget.controller.hasSelectedThread,
+                          preferences:
+                              widget.companionController?.current?.preferences,
+                          scopeKey: (
+                            widget.controller,
+                            widget.controller.threadId,
+                          ),
                           loading:
                               widget.controller.threadState ==
                               TalkThreadState.loading,
@@ -5148,9 +5170,17 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                                       : null,
                                 ),
                                 child: m.streaming && m.text.isEmpty
-                                    ? const AsaelMascot(
-                                        state: AsaelMascotState.working,
+                                    ? AtlasPortrait(
+                                        state: 'working',
                                         size: 38,
+                                        preferences: widget
+                                            .companionController
+                                            ?.current
+                                            ?.preferences,
+                                        scopeKey: (
+                                          widget.controller,
+                                          widget.controller.threadId,
+                                        ),
                                       )
                                     : Column(
                                         crossAxisAlignment:
@@ -5393,6 +5423,14 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                               Padding(
                                 padding: const EdgeInsets.only(bottom: 8),
                                 child: _VoiceDraftFeedback(
+                                  preferences: widget
+                                      .companionController
+                                      ?.current
+                                      ?.preferences,
+                                  scopeKey: (
+                                    widget.controller,
+                                    widget.controller.threadId,
+                                  ),
                                   starting: startingVoiceDraft,
                                   recording: recording,
                                   finalizing: finalizingVoiceDraft,
@@ -6381,6 +6419,8 @@ class _ExecutionTargetMenu extends StatelessWidget {
 
 class _VoiceDraftFeedback extends StatelessWidget {
   const _VoiceDraftFeedback({
+    this.preferences,
+    this.scopeKey,
     required this.starting,
     required this.recording,
     required this.finalizing,
@@ -6393,6 +6433,8 @@ class _VoiceDraftFeedback extends StatelessWidget {
   });
 
   final bool starting, recording, finalizing, transcribing;
+  final CompanionPreferences? preferences;
+  final Object? scopeKey;
   final double level;
   final String? error, notice;
   final VoidCallback? onDismiss, onRecordAgain;
@@ -6411,42 +6453,42 @@ class _VoiceDraftFeedback extends StatelessWidget {
         : transcribing
         ? 'transcribing'
         : 'ready';
-    final (title, detail, color, mascotState) = switch (state) {
+    final (title, detail, color, portraitState) = switch (state) {
       'error' => (
         'Voice draft needs attention',
         error!,
         scheme.error,
-        AsaelMascotState.attention,
+        'blocked',
       ),
       'starting' => (
         'Opening the microphone…',
         'Asael will only turn this recording into an editable draft.',
         scheme.primary,
-        AsaelMascotState.ready,
+        'available',
       ),
       'recording' => (
         'Listening…',
         'Speak naturally. Stop when you are ready to turn it into text.',
         scheme.error,
-        AsaelMascotState.listening,
+        'listening',
       ),
       'finalizing' => (
         'Finishing the recording…',
         'Securing this voice draft before transcription starts.',
         scheme.secondary,
-        AsaelMascotState.transcribing,
+        'working',
       ),
       'transcribing' => (
         'Writing your words…',
         'Your recording will appear below as an editable draft.',
         scheme.primary,
-        AsaelMascotState.transcribing,
+        'working',
       ),
       _ => (
         'Voice draft added',
         notice ?? 'Review or edit it before sending.',
         scheme.tertiary,
-        AsaelMascotState.success,
+        'available',
       ),
     };
     return Semantics(
@@ -6467,7 +6509,12 @@ class _VoiceDraftFeedback extends StatelessWidget {
           ),
           child: Row(
             children: [
-              AsaelMascot(state: mascotState, size: 38),
+              AtlasPortrait(
+                state: portraitState,
+                size: 38,
+                preferences: preferences,
+                scopeKey: scopeKey,
+              ),
               const SizedBox(width: 9),
               Expanded(
                 child: Column(
@@ -7619,11 +7666,17 @@ String _humanActivityDetail(TalkActivity activity) => switch (activity.detail
 };
 
 class _CommandLiveGlyph extends StatelessWidget {
-  const _CommandLiveGlyph();
+  const _CommandLiveGlyph({this.preferences, this.scopeKey});
+  final CompanionPreferences? preferences;
+  final Object? scopeKey;
 
   @override
-  Widget build(BuildContext context) =>
-      const AsaelMascot(state: AsaelMascotState.working, size: 26);
+  Widget build(BuildContext context) => AtlasPortrait(
+    state: 'working',
+    size: 26,
+    preferences: preferences,
+    scopeKey: scopeKey,
+  );
 }
 
 class _ActivityStoryGlyph extends StatefulWidget {
@@ -7880,10 +7933,17 @@ class _TalkActivityCard extends StatelessWidget {
 }
 
 class _TalkEmpty extends StatelessWidget {
-  const _TalkEmpty({required this.selectedThread, required this.loading});
+  const _TalkEmpty({
+    required this.selectedThread,
+    required this.loading,
+    this.preferences,
+    this.scopeKey,
+  });
 
   final bool selectedThread;
   final bool loading;
+  final CompanionPreferences? preferences;
+  final Object? scopeKey;
 
   @override
   Widget build(BuildContext context) {
@@ -7901,11 +7961,11 @@ class _TalkEmpty extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   if (macos)
-                    AsaelMascot(
-                      state: loading
-                          ? AsaelMascotState.working
-                          : AsaelMascotState.ready,
+                    AtlasPortrait(
+                      state: loading ? 'working' : 'available',
                       size: 132,
+                      preferences: preferences,
+                      scopeKey: scopeKey,
                     )
                   else if (loading)
                     const SizedBox.square(

@@ -3545,6 +3545,7 @@ function OwnedAgentRunsWorkspace({
             </header>
 
             <CompanionPresence
+              conversationId={threadId || undefined}
               onOpenHome={(id) => void openCompanionHome(id)}
               homeDisabledReason={homeSelecting ? "Opening your home conversation…"
                 : loading || workflowInProgress || directRunInProgress || speechLoading ? "Wait for the current action or playback before changing the home conversation." : undefined}

@@ -1,61 +1,35 @@
 import 'package:flutter/material.dart';
 
+import 'atlas_player.dart';
 import 'companion_models.dart';
 import 'companion_presentation.dart';
 
-class CompanionPortrait extends StatefulWidget {
-  const CompanionPortrait({super.key, required this.visible});
+class CompanionPortrait extends StatelessWidget {
+  const CompanionPortrait({
+    super.key,
+    required this.visible,
+    this.state = 'available',
+    this.preferences,
+  });
   final bool visible;
+  final String state;
+  final CompanionPreferences? preferences;
   @override
-  State<CompanionPortrait> createState() => _CompanionPortraitState();
-}
-
-class _CompanionPortraitState extends State<CompanionPortrait>
-    with WidgetsBindingObserver {
-  bool foreground = true;
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addObserver(this);
-    final state = WidgetsBinding.instance.lifecycleState;
-    foreground = state == null || state == AppLifecycleState.resumed;
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (mounted) {
-      setState(() => foreground = state == AppLifecycleState.resumed);
-    }
-  }
-
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => SizedBox(
-    width: 36,
-    height: 36,
-    child: widget.visible && foreground
-        ? Image.asset(
-            'assets/companion/atlas-neutral.png',
-            width: 36,
-            height: 36,
-            excludeFromSemantics: true,
-            errorBuilder: (_, _, _) => const SizedBox.expand(),
-          )
-        : const SizedBox.expand(),
+  Widget build(BuildContext context) => AtlasPortrait(
+    state: state,
+    visible: visible,
+    preferences:
+        preferences ?? CompanionPreferences(visible: visible, motion: 'off'),
   );
 }
 
-/// Approved static artwork only. State and controls do not depend on loading it.
+/// Receipt-bound state presentation. Artwork never supplies run authority.
 class CompanionPresence extends StatefulWidget {
   const CompanionPresence({
     super.key,
     required this.preferences,
     required this.work,
+    this.reactionScope,
     this.microphoneActive = false,
     this.playbackActive = false,
     this.speechPreparing = false,
@@ -65,50 +39,67 @@ class CompanionPresence extends StatefulWidget {
   });
   final CompanionPreferences? preferences;
   final CompanionWork work;
-  final bool microphoneActive;
-  final bool playbackActive;
-  final bool speechPreparing;
+  final Object? reactionScope;
+  final bool microphoneActive, playbackActive, speechPreparing;
   final VoidCallback? onHome;
-  final String? homeDisabledReason;
-  final String? agentIdentity;
+  final String? homeDisabledReason, agentIdentity;
   @override
   State<CompanionPresence> createState() => _CompanionPresenceState();
 }
 
-class _CompanionPresenceState extends State<CompanionPresence>
-    with WidgetsBindingObserver {
-  bool foreground = true;
+class _CompanionPresenceState extends State<CompanionPresence> {
+  CompanionReactionLedger _ledger = CompanionReactionLedger();
+  String? _lastState;
+  Object? _reaction;
+
+  CompanionWork get _presentation => companionForeground(
+    work: widget.work,
+    microphoneActive: widget.microphoneActive,
+    playbackActive: widget.playbackActive,
+    speechPreparing: widget.speechPreparing,
+  );
+
+  void _prime() {
+    _ledger = CompanionReactionLedger();
+    _ledger.observe(widget.work, allowReaction: false);
+    _lastState = _presentation.state;
+    _reaction = null;
+  }
+
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this);
-    final state = WidgetsBinding.instance.lifecycleState;
-    foreground = state == null || state == AppLifecycleState.resumed;
+    _prime();
   }
 
   @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (mounted) {
-      setState(() => foreground = state == AppLifecycleState.resumed);
+  void didUpdateWidget(covariant CompanionPresence oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.reactionScope != widget.reactionScope) {
+      _prime();
+      return;
     }
-  }
-
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    super.dispose();
+    final state = _presentation.state;
+    final completion = _ledger.observe(
+      widget.work,
+      allowReaction: widget.reactionScope != null && state == 'completed',
+    );
+    if (completion || state != _lastState && state != 'completed') {
+      _reaction = Object();
+    } else if (state != _lastState) {
+      _reaction = null;
+    }
+    _lastState = state;
   }
 
   @override
   Widget build(BuildContext context) {
     final preferences = widget.preferences;
-    final presentation = companionForeground(
-      work: widget.work,
-      microphoneActive: widget.microphoneActive,
-      playbackActive: widget.playbackActive,
-      speechPreparing: widget.speechPreparing,
-    );
+    final presentation = _presentation;
     final reduced = MediaQuery.disableAnimationsOf(context);
+    final motion = preferences == null
+        ? 'off'
+        : companionEffectiveMotion(preferences, reduced);
     final color = Theme.of(context).colorScheme;
     return Semantics(
       container: true,
@@ -123,18 +114,11 @@ class _CompanionPresenceState extends State<CompanionPresence>
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            SizedBox(
-              width: 36,
-              height: 36,
-              child: preferences?.visible == true && foreground
-                  ? Image.asset(
-                      'assets/companion/atlas-neutral.png',
-                      width: 36,
-                      height: 36,
-                      excludeFromSemantics: true,
-                      errorBuilder: (_, _, _) => const SizedBox.expand(),
-                    )
-                  : const SizedBox.expand(),
+            AtlasPortrait(
+              state: presentation.state,
+              preferences: preferences,
+              scopeKey: widget.reactionScope,
+              reactionKey: _reaction,
             ),
             const SizedBox(width: 12),
             Expanded(
@@ -169,7 +153,9 @@ class _CompanionPresenceState extends State<CompanionPresence>
                     ),
                   if (preferences != null && preferences.intensity != 'quiet')
                     Text(
-                      'Static ATLAS · ${companionEffectiveMotion(preferences, reduced)} motion preference',
+                      motion == 'full'
+                          ? 'ATLAS · brief state reactions when artwork is available'
+                          : 'Static ATLAS · $motion motion preference',
                       style: TextStyle(
                         fontSize: 13,
                         color: color.onSurfaceVariant,

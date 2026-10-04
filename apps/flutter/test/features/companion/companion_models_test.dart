@@ -204,4 +204,79 @@ void main() {
     gate.invalidate();
     expect(gate.current(old), false);
   });
+
+  test(
+    'historical and unseen terminal receipts cannot introduce a reaction',
+    () {
+      final completed = companionWork(
+        status: 'completed',
+        runId: 'run:1',
+        terminalReceipt: verifiedTerminalFixture(),
+      );
+      final mountedCompleted = CompanionReactionLedger();
+      expect(mountedCompleted.observe(completed, allowReaction: false), false);
+      expect(mountedCompleted.observe(completed, allowReaction: true), false);
+      final lateHistoricalRead = CompanionReactionLedger();
+      lateHistoricalRead.observe(availableCompanion, allowReaction: true);
+      expect(lateHistoricalRead.observe(completed, allowReaction: true), false);
+      lateHistoricalRead.observe(
+        companionWork(status: 'running', runId: 'run:1'),
+        allowReaction: true,
+      );
+      expect(lateHistoricalRead.observe(completed, allowReaction: true), false);
+    },
+  );
+
+  test('only an exact observed active run admits its fresh verified completion once', () {
+    for (final status in ['running', 'waiting_approval', 'paused']) {
+      final ledger = CompanionReactionLedger();
+      ledger.observe(
+        companionWork(status: status, runId: 'run:1'),
+        allowReaction: true,
+      );
+      final completed = companionWork(
+        status: 'completed',
+        runId: 'run:1',
+        terminalReceipt: verifiedTerminalFixture(),
+      );
+      expect(ledger.observe(completed, allowReaction: true), true);
+      expect(ledger.observe(completed, allowReaction: true), false);
+    }
+    for (final observation in [
+      companionWork(status: 'blocked', runId: 'run:1'),
+      companionWork(status: 'running', runId: 'run:other'),
+    ]) {
+      final ledger = CompanionReactionLedger();
+      ledger.observe(observation, allowReaction: true);
+      expect(
+        ledger.observe(
+          companionWork(
+            status: 'completed',
+            runId: 'run:1',
+            terminalReceipt: verifiedTerminalFixture(),
+          ),
+          allowReaction: true,
+        ),
+        false,
+      );
+    }
+  });
+
+  test(
+    'suppressed completion is consumed while hidden or audio has priority',
+    () {
+      final ledger = CompanionReactionLedger();
+      ledger.observe(
+        companionWork(status: 'running', runId: 'run:1'),
+        allowReaction: true,
+      );
+      final completed = companionWork(
+        status: 'completed',
+        runId: 'run:1',
+        terminalReceipt: verifiedTerminalFixture(),
+      );
+      expect(ledger.observe(completed, allowReaction: false), false);
+      expect(ledger.observe(completed, allowReaction: true), false);
+    },
+  );
 }
