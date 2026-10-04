@@ -87,8 +87,8 @@ def inspect(path: Path) -> dict:
     if len(png) < 33 or png[:8] != b'\x89PNG\r\n\x1a\n' or png[8:16] != b'\x00\x00\x00\rIHDR':
         raise ValueError('Invalid embedded PNG signature or IHDR header.')
     width, height = struct.unpack_from('>II', png, 16)
-    if (width, height) != (512, 512):
-        raise ValueError('Expected the authored 512x512 color map.')
+    if (width, height) != (1024, 1024):
+        raise ValueError('Expected the authored 1024x1024 color map.')
     if png[24:29] != b'\x08\x06\x00\x00\x00':
         raise ValueError('Expected 8-bit RGBA PNG with compression/filter method 0 and no interlace.')
     position = document['accessors'][primitive['attributes']['POSITION']]
@@ -100,7 +100,8 @@ def inspect(path: Path) -> dict:
     uv = accessors[uv_index]
     if uv.get('type') != 'VEC2' or uv.get('componentType') != 5126 or uv.get('count') != position['count']:
         raise ValueError('Expected a Float32 UV pair for every position.')
-    return {'status': 'ROUGH_STRUCTURE_CHECKED_NOT_VISUALLY_APPROVED', 'path': str(path), 'bytes': len(data), 'vertices': position['count'], 'triangles': indices['count'] // 3, 'bones': len(skins[0]['joints']), 'clips': names, 'materials': len(materials), 'textures': len(textures), 'images': len(images), 'textureDimensions': [width, height], 'externalResources': 0}
+    # Dimension-derived RGBA storage; this does not measure GPU allocation.
+    return {'status': 'ROUGH_STRUCTURE_CHECKED_NOT_VISUALLY_APPROVED', 'path': str(path), 'bytes': len(data), 'vertices': position['count'], 'triangles': indices['count'] // 3, 'bones': len(skins[0]['joints']), 'clips': names, 'materials': len(materials), 'textures': len(textures), 'images': len(images), 'textureDimensions': [width, height], 'decodedRgbaEstimateBytes': width * height * 4, 'externalResources': 0}
 
 
 def main() -> None:

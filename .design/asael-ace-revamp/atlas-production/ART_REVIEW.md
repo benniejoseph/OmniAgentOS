@@ -1,6 +1,24 @@
 # ATLAS actual-art review — 5 October 2026 (IST)
 
-## Finish03 — latest matching full export, character still unaccepted
+## Grain02 — latest matching full export, character still unaccepted
+
+The retained subtle body-grain pass is exported as `sculpt-04-grain-02-continuous-color` at `2026-10-04T20:49:56.541894+00:00`. All seventeen source hashes, 104 artifact hashes/byte lengths and 156 archive members are verified. The GLB is 2,494,008 bytes, with 27,543 vertices, 49,844 triangles, fourteen bones, twelve clips, one material and one embedded 1024 × 1024 RGBA8 PNG. There are no external image or buffer resources. Nine model/lifecycle and ten static-tool checks pass.
+
+The deterministic color field adds quiet variation across the torso and its 44 body tufts. Exact comparison confirms all positions, normals, indices, skin bindings, rig, poses, clips, original tuft scalar tones and 121 other parts remain unchanged. Only the two continuous layers and 44 tufts change UVs; only those tufts change stored color representation. The old 480 × 480 throat chart is preserved exactly in the larger atlas, and front/rear body fields match byte-for-byte.
+
+Root and independent review retain this modest improvement after 64 comparisons: full, portrait, torso, working, completed and native 36/72-pixel samples in four views. It has little visible benefit at the smallest sizes and still falls short of the reference's feather density. A contact-sheet impression of sharper throat edges was withdrawn after matched original PNG/crop review. Protected head/throat regions differ by at most one channel value in 26/67/187/226 pixels across front/three-quarter/profile/rear. Existing edge coarseness remains. Confirm suspected edge regressions in original matched pixels before changing the source.
+
+The before/after archive is `grain02-comparison/matching-source-and-baseline.tar.gz`, SHA256 `fc6f62d88f11d1c5f63a991d78c0fcaac140da16bf4b7f33667412abbea9bd02`. The regional correction proof is `grain02-protected-region-review.tar.gz`, SHA256 `cb58db97b485dedb4b096bbd8fb67494f3824ecd631900589cf4724c06b49444`.
+
+Forty procedural/GLB captures show eight pixel-identical rest pairs and twelve posed pairs differing at 0–10 pixels each by at most one channel value (31 pixels total). One 1024px map decodes in both modes; hide, explicit reload and disposal pass with no page/console/rejected-network errors. Matching GLB comparison archive SHA256: `cdfd1fa8da0ea4bc75d3b29d677dc1dc51aa95973689e83ada6429bccda39705`.
+
+Decoded RGBA storage rises from 1,048,576 to 4,194,304 bytes; GLB size rises by 172,204 bytes. These are storage facts, not measured GPU allocation or performance. Small-size motion shimmer, grazing-angle motion, physical responsiveness and natural acting are unmeasured. The old eighty-state still review belongs to finish02 and was not repeated.
+
+Full archive: `atlas-grain-02-review.tar.gz`, SHA256 `0481b753a17762d02aa5710e5f4bcbd53f4a83a9c205d86699e0e71747fb0669`. Receipt: `atlas-grain-02-export-verification.json`. Export-manifest SHA256: `5bb5c5f88d453e83eb370ee04df545a512f28d13929990a2c4381fe1571dde12`; raster-manifest SHA256: `f3958e1e371eea06c12dd923b81d357590ec8093ed5f6f5ce97fc6813012d55a`.
+
+Final fine feather layering, temple and eye edges, wing junctions, stronger likeness, natural acting, device acceptance and publication remain open. The approved portrait/static greeting remain active; this local retention is not final art approval.
+
+## Finish03 — previous matching full export, character still unaccepted
 
 The retained body-surface and texture-padding refinement is exported as `sculpt-04-finish-03-padded-color-chart` at `2026-10-04T20:32:41.680641+00:00`. All seventeen source hashes, 104 artifact hashes/byte lengths and 152 archive members were verified. The GLB is 2,321,804 bytes, with 27,543 vertices, 49,844 triangles, fourteen bones, twelve clips, one material and one embedded 512 × 512 RGBA8 PNG. There are no external image or buffer resources. Nine final model/lifecycle checks pass; unchanged static-tool coverage last passed at finish02.
 

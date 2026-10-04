@@ -4,17 +4,17 @@
 PR54 (priority UI / app 1.23.13+48), PR55 (static full-body greeting /
 app 1.23.14+49) and PR56 (scoped language/motion intensity / app 1.23.15+50)
 are accepted and merged, each after all 16 hosted checks passed. The private
-Mac package is verified through 1.23.15 (50), from PR56's exact accepted source.
-The last complete matching 3D export is finish-03, with all nine new
-model/lifecycle checks passing. Forty body comparisons, eighteen padding
-comparisons and forty source/GLB parity captures retain the local improvement.
-The nine static tool tests and 80-state review remain finish-02 evidence and were
-not rerun. Full art, natural acting and device acceptance remain open. Finish-02,
-wing-02 and earlier exports are historical checkpoints;
+Mac package is now verified through PR58's 1.23.16 (51), from exact accepted
+source `52e54d2cd14ccc4501d23b46367e94dcd9e30b16`.
+The last complete matching 3D export is grain-02, with nine model/lifecycle and ten
+static tool checks passing in new runs. Sixty-four comparison stills and forty
+source/GLB captures retain subtle body variation; the 80-state review remains
+finish-02 evidence, without a rerun. Final art, shimmer, natural acting and device
+acceptance remain open. Finish-03 and earlier exports are historical checkpoints;
 throat-03 was rejected for its coarse staircase boundary. PR57's expanded web
 Voice shared player is accepted and merged after all 14 applicable hosted checks
-passed; native API/version and Mac 1.23.15 (50) are unchanged. Software UI
-priorities through PR57 are accepted. No
+passed; that web-only release left native API/version and Mac50 unchanged. Software UI
+priorities through PR58 are accepted. No
 3D/state bundle publication or production promotion has occurred. The dated entries below retain earlier
 preparation and validation boundaries; the final release checkpoints record
 their later acceptance without completing whole-task gates.
@@ -1661,7 +1661,32 @@ That historical package-preparation checkpoint is superseded by the signed
 packages and hosted acceptance below. Nine Node geometry/lifecycle checks and
 three Python tool tests also passed for the sculpt-02 source workbench.
 
-### Current finish-03 checkpoint
+### Current grain-02 checkpoint
+
+The matching `sculpt-04-grain-02-continuous-color` export at
+`2026-10-04T20:49:56.541894+00:00` contains 104 artifacts, a 2,494,008-byte GLB,
+27,543 vertices, 49,844 triangles, 14 bones, 12 clips, one material and one embedded
+1024 × 1024 RGBA8 texture, with zero external resources. The receipt verifies
+17 source hashes and 156 archive members. Exact hashes and archive identity are
+recorded in `atlas-production/MEASUREMENTS.md`.
+
+Geometry, normals, indices, skin, rig and clips remain exact against finish-03.
+Only UVs in 46 parts and colors in 44 body tufts change; the other 121 parts and
+old 480 × 480 throat bytes retain exact parity. Decoded RGBA size is 4,194,304 bytes
+versus 1,048,576 previously, not measured GPU allocation or performance.
+
+Root and independent review retain subtle body variation across 64 stills,
+including 36/72-pixel samples; small-size benefit is minimal. The initial throat
+regression impression was withdrawn after original PNG/crop review and protected
+regional differences at most one channel value. Forty source/GLB captures have
+eight identical rest pairs and twelve posed pairs differing by 0–10 pixels each,
+at most one channel value (31 pixels total). Hide/reload/dispose passed without
+page/console/rejected-network errors. Nine model/lifecycle and ten static tool
+checks passed in new runs. The 80-state review was not rerun. Dense feather finish,
+head/wing-joint finish, likeness, shimmer, natural acting and device/publication
+acceptance remain open.
+
+### Historical finish-03 checkpoint
 
 The matching `sculpt-04-finish-03-padded-color-chart` export at
 `2026-10-04T20:32:41.680641+00:00` contains 104 artifacts, a 2,321,804-byte GLB,
@@ -1746,7 +1771,7 @@ its 18 comparison captures showed an improved beak without accepting the full
 model. Throat-03 was rejected for its coarse staircase boundary. Historical
 sculpt-04 passed all nine geometry/lifecycle checks. Source/export tooling and
 an explicit hash-verifying publisher exist; final art acceptance does not.
-The archived rough-01 performance comparison does not measure finish-03.
+The archived rough-01 performance comparison does not measure grain-02.
 Details and exact evidence boundaries are in `atlas-production/README.md`,
 `ART_REVIEW.md`, `MEASUREMENTS.md` and `PERFORMANCE_PLAN.md`. A functional release
 with approved static ATLAS is permitted; full-plan completion, physical-device
@@ -2011,6 +2036,15 @@ browser suite subsequently passed on the exact hosted head. This web-only
 change leaves native API/version and the verified Mac 1.23.15 (50) package
 unchanged. Software UI priorities through PR57 are accepted; final artwork,
 physical-device/performance acceptance and production promotion remain open.
+
+## Native Automation run navigation — accepted and merged, 4 October 2026
+
+PR58's native Automation run navigation is accepted and merged after all 16 hosted checks passed on `52e54d2cd14ccc4501d23b46367e94dcd9e30b16`. It merged at `2026-10-04T20:43:05Z` as `d7b5bca4292dd6c8f31c09fdd949c04cd0556f9c`. The verified private Mac 1.23.16 (51) package has SHA-256 `3616583ca5151a8373355e2f7f7b35df22739c05439965e0c37983018c79de9f`; its exact source and the merged tree match. This follow-up needs no migration or API version change. Production is not promoted.
+
+The new actions open existing authorized Results and retain only section selection
+on Back. Full Flutter analysis and six focused router integration cases passed
+before the hosted gates. Private inventory/history still dispose. The installed
+application is unchanged; final artwork and device acceptance remain separate.
 
 ## Production and parked work — 4 October 2026
 

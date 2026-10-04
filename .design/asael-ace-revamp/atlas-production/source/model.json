@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "name": "ATLAS_ROUGH_01",
-  "status": "SCULPT_04_FINISH_03_LOCAL_REFINEMENT_RETAINED",
-  "creativeRevision": "sculpt-04-finish-03-padded-color-chart",
-  "exportEvidence": "Local refinement retained after 40 body comparisons and 18 isolated texture-padding captures. The 44 body tufts settle closer to their sampled shell; umber chart padding removes horizontal pale head lines while retaining the separate white sample patch. Topology, skin bindings, rig and all clips are unchanged. Matching full-export measurements belong in ../ART_REVIEW.md and export-manifest.json, with every source hash verified. Final character and natural acting remain unaccepted and unpublished.",
+  "status": "SCULPT_04_GRAIN_02_LOCAL_REFINEMENT_RETAINED",
+  "creativeRevision": "sculpt-04-grain-02-continuous-color",
+  "exportEvidence": "Local refinement retained after 64 size/pose comparisons, exact attribute proof and 40 procedural/GLB captures. One deterministic 1024x1024 atlas adds subtle body grain while preserving the old480x480 throat pixels. UVs change in46parts and scalar colors in44tufts; all geometry, normals, indices, skin, rig, poses, clips and121otherparts remain exact. Nine model/lifecycle and ten static-tool checks pass. Decoded RGBA storage is4,194,304bytes, not measured GPU allocation. Final feather density, likeness, natural acting, small-size motion stability and physical performance remain unaccepted; no publication approval is implied.",
   "coordinates": "Arbitrary model units. Y up, Z forward, X character left. Overall height about 3 units; not a physical scale claim.",
   "sourceExpectedSha256": "876591c5a2b739df99d6aab647554dc53bcab97d55bf0c3e0864e39e1c98c070",
   "palette": {

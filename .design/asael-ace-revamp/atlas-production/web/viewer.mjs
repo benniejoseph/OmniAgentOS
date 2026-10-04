@@ -181,8 +181,10 @@ async function load() {
       if(mode==='glb') {
         const [material]=resources.materials, texture=material?.map, image=texture?.image;
         const width=image?.naturalWidth??image?.width, height=image?.naturalHeight??image?.height;
-        if(resources.materials.size!==1||resources.textures.size!==1||!texture?.isTexture||width!==512||height!==512)
-          throw Error('GLB color map did not load: expected one material and one decoded 512x512 texture.');
+        if(resources.materials.size!==1||resources.textures.size!==1||!texture?.isTexture||width!==1024||height!==1024)
+          throw Error('GLB color map did not load: expected one material and one decoded 1024x1024 texture.');
+        // Decoded RGBA storage estimate only; actual GPU allocation is unmeasured.
+        samples.decodedRgbaEstimateBytes=width*height*4;
       }
       samples.geometry={vertices,triangles,bones,materials:resources.materials.size,textures:resources.textures.size};scene.add(model.root);mixer=new THREE.AnimationMixer(model.root);
       renderer=new THREE.WebGLRenderer({antialias:true,alpha:captureAlpha,preserveDrawingBuffer:true,powerPreference:'low-power'});renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1;

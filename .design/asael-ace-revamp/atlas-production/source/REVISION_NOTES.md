@@ -1,4 +1,24 @@
-# ATLAS sculpt 04, finish 03 — settled feather ends and padded color chart
+# ATLAS sculpt 04, grain 02 — retained continuous body-color grain
+
+Current status: **local refinement retained; final art and natural acting unaccepted**. Creative revision: `sculpt-04-grain-02-continuous-color`. Retained finish03 (`sculpt-04-finish-03-padded-color-chart`) is the exact baseline; its evidence remains below.
+
+The candidate uses one deterministic 1024 × 1024 RGBA atlas. The front chart spans X 16–495; the rear spans X 528–1007. The retained 480 × 480 throat grid moves unchanged to front Y 480–959. Its row-major RGBA fixture SHA256 is `469f12ced11fcc8de012429225cb435ee9f8946d26e8064eed3a14b9ecc6e05f`. Body Y .38–2.08 maps over texels 16–480, and the rear head remains plain umber. Umber padding surrounds both charts. The existing 504/512 UV of the other 121 parts now samples texel 1008 within the white patch at X/Y ≥ 992.
+
+A fixed integer hash feeds smooth anisotropic value noise. A slow .012-unit horizontal warp bends the coarse (40X,14Y) and fine (68X+7Y,24Y) fields; their .065/.025 blend is clamped to ±.075 before linear-color modulation. Smooth fades cover Y .46–.56 and 1.98–2.08. Each body texel is generated once and copied byte-for-byte to the rear chart. The throat and head receive no grain. No random generator, shader customization, normal map, external resource or additional material is introduced.
+
+The two continuous layers reuse all 303 existing seam copies and the same complete index buffer. Each of the 44 breast/mantle tufts selects one atlas island from its mean rest Z and maps rest X/Y throughout that part. Its retained scalar tone is stored in all three color channels so the atlas supplies umber. Exact comparison confirms changes are limited to UVs in these 46 parts and colors in the 44 tufts; all positions, normals, indices, skin inputs, rig, poses, clips, original tuft scalar tones and the other 121 parts remain exact against finish03. Wing, temple and head construction is unchanged.
+
+The atlas retains sRGB interpretation, linear min/mag filtering, clamp wrapping, no mipmaps and one embedded PNG on export. Decoded RGBA storage is 4,194,304 bytes, compared with finish03's 1,048,576; GPU allocation and performance remain unmeasured. Nine model/lifecycle checks and ten static-tool checks pass. The old 480² throat bytes, front/rear body field identity, chart filter padding and separate white footprint are verified.
+
+Root reviewed 64 before/after captures across full, portrait, torso, working, completed and native 36/72-pixel samples. Independent review retains the subtle body variation without a demonstrated new defect. The small-size benefit is minimal; the field remains a quiet base, not the reference's dense fine feather finish. The comparison archive SHA256 is `fc6f62d88f11d1c5f63a991d78c0fcaac140da16bf4b7f33667412abbea9bd02`.
+
+An initial contact-sheet impression of a sharper throat was withdrawn after matched original PNG/crop inspection and measured differences. The head/throat region differs by at most one channel value in 26 front, 67 three-quarter, 187 profile and 226 rear pixels. Its edge coarseness is already present in finish03. Review future suspected edge regressions in matched original pixels before attributing them to source changes; rescaled contact sheets alone can mislead. The exact regional measurements and helper are preserved in `grain02-protected-region-review.tar.gz`.
+
+Forty procedural/embedded-GLB captures preserve appearance: eight rest pairs are pixel-identical; twelve posed pairs differ at 0–10 pixels each by at most one channel value, 31 pixels total. Both modes decode one1024²map. Hide/reload/dispose pass without page/console/rejected-network errors. Matching comparison archive SHA256: `cdfd1fa8da0ea4bc75d3b29d677dc1dc51aa95973689e83ada6429bccda39705`. Full-export measurements belong in `../ART_REVIEW.md` and the matching export manifest; source hashes must agree.
+
+Motion shimmer, grazing-angle quality beyond these samples, natural acting, final likeness/finish, physical performance and publication remain open. No reviewed admission is authorized by this local retention.
+
+## Finish 03 retained settled feather ends and padded color chart
 
 Current status: **local refinement retained; full character and natural acting unaccepted**. Creative revision: `sculpt-04-finish-03-padded-color-chart`. Retained finish02 is the exact baseline.
 

@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
 import {readFile} from 'node:fs/promises';
-import {Vector3,SRGBColorSpace,LinearFilter,ClampToEdgeWrapping} from 'three';
+import {Color,Vector3,SRGBColorSpace,LinearFilter,ClampToEdgeWrapping} from 'three';
 import {createAtlas} from '../../.design/asael-ace-revamp/atlas-production/source/atlas-model.mjs';
 import {STATE_NAMES,CLIP_NAMES,createPlaybackGate,validateSequence,sequenceIndex} from '../../.design/asael-ace-revamp/atlas-production/web/lifecycle.mjs';
 const config=JSON.parse(await readFile(new URL('../../.design/asael-ace-revamp/atlas-production/source/model.json',import.meta.url),'utf8'));
@@ -26,8 +27,8 @@ test('procedural geometry is finite, indexed and deterministically bound to the 
     for(const definition of config.rig)if(definition.parent)assert.equal(a.bones.find(bone=>bone.name===definition.name).parent.name,definition.parent);
     assert.equal(a.root.userData.sourceExpectedSha256,config.sourceExpectedSha256);assert.equal(a.stats.textures,1);
     const map=a.mesh.material.map;
-    assert.ok(map.isDataTexture);assert.equal(map.image.width,512);assert.equal(map.image.height,512);
-    assert.equal(map.image.data.byteLength,1024*1024);assert.deepEqual(map.image.data,b.mesh.material.map.image.data);
+    assert.ok(map.isDataTexture);assert.equal(map.image.width,1024);assert.equal(map.image.height,1024);
+    assert.equal(map.image.data.byteLength,4194304);assert.deepEqual(map.image.data,b.mesh.material.map.image.data);
     assert.equal(map.colorSpace,SRGBColorSpace);assert.equal(map.flipY,false);assert.equal(map.generateMipmaps,false);
     assert.equal(map.minFilter,LinearFilter);assert.equal(map.magFilter,LinearFilter);
     assert.equal(map.wrapS,ClampToEdgeWrapping);assert.equal(map.wrapT,ClampToEdgeWrapping);
@@ -40,20 +41,59 @@ test('procedural geometry is finite, indexed and deterministically bound to the 
     assert.equal(continuous.length,2);
     const position=geometry.getAttribute('position'),uv=geometry.getAttribute('uv');
     const umber=Number.parseInt(config.palette.umber.slice(1),16),base=[(umber>>16)&255,(umber>>8)&255,umber&255];
-    // The head clamps to the upper/right chart edge. Linear sampling must not
-    // pick up white from the adjacent texel, including small UV roundoff.
-    for(let edge=0;edge<480;edge++)for(const [x,y] of [[edge,480],[480,edge]]) {
-      const texel=(y*map.image.width+x)*4;
-      for(let channel=0;channel<3;channel++)assert.ok(Math.abs(map.image.data[texel+channel]-base[channel])<=1,
-        'color-chart filter footprint must meet umber padding');
+    const pixel=(x,y)=>map.image.data.subarray((y*1024+x)*4,(y*1024+x)*4+4);
+    const bytes=color=>color.toArray().map(value=>Math.round(value*255));
+    const lower=bytes(new Color(config.palette.umber).multiplyScalar(.925).convertLinearToSRGB());
+    const upper=bytes(new Color(config.palette.umber).multiplyScalar(1.075).convertLinearToSRGB());
+    // A measured fixture from retained finish03 binds every protected throat
+    // byte independently of the new grain algorithm and atlas placement.
+    const throatHash=createHash('sha256');
+    for(let y=480;y<960;y++)throatHash.update(map.image.data.subarray((y*1024+16)*4,(y*1024+496)*4));
+    assert.equal(throatHash.digest('hex'),'469f12ced11fcc8de012429225cb435ee9f8946d26e8064eed3a14b9ecc6e05f',
+      'the retained 480×480 throat chart must stay byte-exact');
+    let darker=0,lighter=0;
+    for(let y=16;y<=480;y++)for(let x=16;x<496;x++) {
+      const front=pixel(x,y),rear=pixel(x+512,y);
+      assert.deepEqual(front,rear,'front and rear body fields must share exact bytes');
+      for(let channel=0;channel<3;channel++)assert.ok(front[channel]>=lower[channel]&&front[channel]<=upper[channel],
+        'grain must stay inside the encoded 0.925–1.075 linear-color bound');
+      if(front[0]<base[0])darker++;if(front[0]>base[0])lighter++;
+      if(y<=37||y===480)assert.deepEqual(Array.from(front),[...base,255],'grain must fade away at both body endpoints');
     }
-    for(const [x,y] of [[503,503],[504,503],[503,504],[504,504]]) {
-      const texel=(y*map.image.width+x)*4;
-      assert.deepEqual(Array.from(map.image.data.slice(texel,texel+4)),[255,255,255,255],
-        'other parts must retain a white linear-sampling footprint');
+    assert.ok(darker>1000&&lighter>1000,'the body must contain a nonconstant field on both sides of base umber');
+    for(let y=481;y<960;y++)for(let x=528;x<1008;x++) {
+      assert.deepEqual(Array.from(pixel(x,y)),[...base,255],'rear throat/head must remain plain umber');
+    }
+    // Every chart edge meets umber padding, including the upper/right head
+    // footprint; the other 121 parts keep the existing white UV sample.
+    for(const left of [16,528]) {
+      for(let edge=0;edge<480;edge++)for(const y of [15,960])
+        assert.deepEqual(Array.from(pixel(left+edge,y)),[...base,255],'horizontal chart padding must remain umber');
+      for(let y=16;y<960;y++)for(const x of [left-1,left+480])
+        assert.deepEqual(Array.from(pixel(x,y)),[...base,255],'vertical chart padding must remain umber');
+    }
+    for(let y=992;y<1024;y++)for(let x=992;x<1024;x++)
+      assert.deepEqual(Array.from(pixel(x,y)),[255,255,255,255],'the separate white patch must include the constant UV footprint');
+    const tufts=a.root.userData.parts.filter(part=>/^(breast|mantle)_flow_tuft_/.test(part.name));
+    assert.equal(tufts.length,44);
+    const colors=geometry.getAttribute('color');
+    for(const part of tufts) {
+      let meanZ=0;for(let i=part.vertexStart;i<part.vertexStart+part.vertexCount;i++)meanZ+=position.getZ(i);
+      const left=meanZ<=0?528:16;
+      for(let i=part.vertexStart;i<part.vertexStart+part.vertexCount;i++) {
+        const column=uv.getX(i)*1024-.5;
+        assert.ok(column>=left-.0001&&column<=left+479+.0001,`${part.name} must occupy one complete atlas island`);
+        assert.equal(colors.getX(i),colors.getY(i));assert.equal(colors.getX(i),colors.getZ(i));
+        assert.ok(colors.getX(i)>=.97&&colors.getX(i)<=1.02,'tufts must retain a scalar tone, with umber supplied by the atlas');
+      }
+    }
+    const unchanged=a.root.userData.parts.filter(part=>!continuous.includes(part)&&!tufts.includes(part));
+    assert.equal(unchanged.length,121);
+    for(const part of unchanged)for(let i=part.vertexStart;i<part.vertexStart+part.vertexCount;i++) {
+      assert.equal(uv.getX(i),504/512);assert.equal(uv.getY(i),504/512);
     }
     const probes=[[1/3,1/3,1/3],[.75,.125,.125],[.125,.75,.125],[.125,.125,.75]];
-    let upperHeadTriangles=0,rearTriangles=0;const sampledParts=new Set();
+    let upperHeadTriangles=0,rearTriangles=0,rearGrainSamples=0;const sampledParts=new Set();
     for(let offset=0;offset<geometry.index.count;offset+=3){
       const triangle=[geometry.index.getX(offset),geometry.index.getX(offset+1),geometry.index.getX(offset+2)];
       const part=continuous.find(value=>triangle.every(index=>index>=value.vertexStart&&index<value.vertexStart+value.vertexCount));
@@ -67,11 +107,17 @@ test('procedural geometry is finite, indexed and deterministically bound to the 
         const x=Math.max(0,Math.min(map.image.width-1,Math.floor(u*map.image.width)));
         const y=Math.max(0,Math.min(map.image.height-1,Math.floor(v*map.image.height)));
         const texel=(y*map.image.width+x)*4;
-        for(let channel=0;channel<3;channel++)assert.ok(Math.abs(map.image.data[texel+channel]-base[channel])<=1,
-          `${part.name} triangle ${offset/3} must sample base umber above the throat and on the rear`);
+        const protectedHead=upperHead||triangle.every(index=>position.getY(index)>=2.08);
+        if(!protectedHead&&map.image.data[texel]!==base[0])rearGrainSamples++;
+        if(rear)assert.ok(x>=528&&x<1008,'rear triangles must stay in the rear island');
+        for(let channel=0;channel<3;channel++)assert.ok(protectedHead
+          ?Math.abs(map.image.data[texel+channel]-base[channel])<=1
+          :map.image.data[texel+channel]>=lower[channel]&&map.image.data[texel+channel]<=upper[channel],
+          `${part.name} triangle ${offset/3} must protect the head and keep rear grain bounded`);
       }
     }
     assert.ok(upperHeadTriangles>0&&rearTriangles>0,'both excluded pale-field regions must be sampled');
+    assert.ok(rearGrainSamples>0,'rear body interiors must actually sample the bounded grain field');
     assert.equal(sampledParts.size,2,'both continuous layers must contribute interior samples');
   }finally{release(a);release(b);}
 });

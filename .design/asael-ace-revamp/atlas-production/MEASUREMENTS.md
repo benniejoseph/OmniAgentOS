@@ -1,30 +1,46 @@
 # ATLAS export and measurement records — 5 October 2026 (IST)
 
-## Last complete finish-03 export: no matching performance comparison
+## Last complete grain-02 export: no matching performance comparison
 
-The retained `output/export-manifest.json` was written at `2026-10-04T20:32:41.680641+00:00` (5 October in IST) for `sculpt-04-finish-03-padded-color-chart`. It records **104 artifacts** and a **2,321,804-byte GLB**, with **27,543 vertices, 49,844 triangles, 14 bones and 12 clips**: eight application states plus the four inspection aliases `rest`, `quick_reaction`, `speech_test` and `satisfied_nod`. Runtime records Three.js 0.186.0, headless Chrome 154.0.8037.94 and ANGLE/Metal reporting Apple M2. These are export/renderer facts, not measured responsiveness, battery or thermal results. Matching source/output is archived in `atlas-finish-03-review.tar.gz`; root verified all 17 current source hashes, all 104 artifact hashes/bytes and reread all 152 archive members in `atlas-finish-03-export-verification.json`. It has one material, one embedded 512 × 512 RGBA8 color texture and zero external resources. All nine new model/lifecycle checks passed; the earlier static tool tests were not rerun. Forty body comparisons retained lower relief across 44 breast/mantle tufts without a new profile/rear gap or protrusion. Eighteen padding comparisons removed the horizontal pale temple line; descending temple geometry remains rough. Small body slits/marks, feather flow, eye/wing-joint finish, overall likeness, natural acting, delivery-size readability and device performance remain unaccepted. The prior 80-state review belongs to finish-02 and was not rerun.
+The retained `output/export-manifest.json` was written at `2026-10-04T20:49:56.541894+00:00` (5 October in IST) for `sculpt-04-grain-02-continuous-color`. It records **104 artifacts** and a **2,494,008-byte GLB**, with **27,543 vertices, 49,844 triangles, 14 bones and 12 clips**: eight application states plus the four inspection aliases `rest`, `quick_reaction`, `speech_test` and `satisfied_nod`. Runtime records Three.js 0.186.0, headless Chrome 154.0.8037.94 and ANGLE/Metal reporting Apple M2. These are export/renderer facts, not measured responsiveness, battery or thermal results. Matching source/output is archived in `atlas-grain-02-review.tar.gz`; root verified all 17 current source hashes, all 104 artifact hashes/bytes and reread all 156 archive members in `atlas-grain-02-export-verification.json`. It has one material, one embedded 1024 × 1024 RGBA8 color texture and zero external resources. Nine model/lifecycle checks and ten static tool checks passed in new runs. Root and independent review retained subtle body variation across 64 comparison stills, including 36/72-pixel and large samples; the small-size benefit is minimal. An initial throat-edge regression impression was withdrawn after matched original PNG/crop review and protected-region differences of at most one channel value. Dense feather finish, overall likeness, head/wing-joint finish, natural acting, shimmer and device performance remain unaccepted. The 80-state review remains finish-02 evidence and was not rerun.
 
-The finish-03 state bundle contains a schema-version-1 manifest and 32 transparent WebP assets: light/dark poster and sprite for each state, 256px frames, four columns and 20Hz inclusive sampling. Its durations are 600–1120ms and frame counts 13–24; the shared format admits at most 1200ms/25 frames. Theme pairs have identical image hashes. No 3D/state bundle has been published, and actual-art review found final likeness insufficient; see [ART_REVIEW.md](ART_REVIEW.md). The complete export binds finish-03; no matching performance measurement is claimed.
+The grain-02 state bundle contains a schema-version-1 manifest and 32 transparent WebP assets: light/dark poster and sprite for each state, 256px frames, four columns and 20Hz inclusive sampling. Its durations are 600–1120ms and frame counts 13–24; the shared format admits at most 1200ms/25 frames. Theme pairs have identical image hashes. No 3D/state bundle has been published, and actual-art review found final likeness insufficient; see [ART_REVIEW.md](ART_REVIEW.md). The complete export binds grain-02; no matching performance measurement is claimed.
 
 Root's `atlas-production-adapter-unit.log` records **26 passing web adapter unit cases** on 4 October 2026, including the public metadata-only `awaiting-art-review` response. The web manifest reader uses `no-cache` revalidation; this placeholder publishes no artwork and retains the approved neutral portrait. The full native analyzer reported no issues in `atlas-native-adapter-analyze.log`, and **all 37 companion cases passed** in `atlas-companion-final-regression.log` (the earlier 15-case run was a focused subset, not an additional total).
 
-Historical sculpt-04 evidence includes **all nine geometry/lifecycle checks** passing. Historical sculpt-02 evidence includes **nine Node geometry/lifecycle checks** in `atlas-sculpt-02-structure-tests.log` and **three Python tool tests** in `atlas-sculpt-02-tool-tests.log`. The earlier full adapter web build passed in `atlas-adapter-final-web-build.log` before the subsequent manifest/cache change. Its package-preparation status is superseded by the accepted PR53/PR54/PR55 release checkpoints and signed packages in [IMPLEMENTATION.md](../IMPLEMENTATION.md); PR55 is merged after all 16 hosted checks passed and its private greeting package is verified. These are implementation/build checks, not physical-device or finish-03 performance measurements. Evidence logs are under `/Volumes/Extreme Pro/Asael-release-records/2026-10-03-followups/ui-validation/`.
+Historical sculpt-04 evidence includes **all nine geometry/lifecycle checks** passing. Historical sculpt-02 evidence includes **nine Node geometry/lifecycle checks** in `atlas-sculpt-02-structure-tests.log` and **three Python tool tests** in `atlas-sculpt-02-tool-tests.log`. The earlier full adapter web build passed in `atlas-adapter-final-web-build.log` before the subsequent manifest/cache change. Its package-preparation status is superseded by the accepted PR53/PR54/PR55 release checkpoints and signed packages in [IMPLEMENTATION.md](../IMPLEMENTATION.md); PR55 is merged after all 16 hosted checks passed and its private greeting package is verified. These are implementation/build checks, not physical-device or grain-02 performance measurements. Evidence logs are under `/Volumes/Extreme Pro/Asael-release-records/2026-10-03-followups/ui-validation/`.
 
 PR56 is accepted and merged after all 16 hosted checks passed on `a3fb4215b632f8b6d56487e3617b0afb82085aba`. Its scoped language and motion-intensity implementation passed **277 focused web/server checks**, full Flutter analysis and **11 companion checks**. The private Mac 1.23.15 (50) package is verified from that exact source. There is no database/API version change and no new art or performance measurement in this release.
 
 PR57's web-only expanded Voice shared-player integration is accepted and merged after all 14 applicable hosted checks passed on `76a2230e911d1d8436c731fc965f53037b5dadd6`. The 48 focused unit checks, 114 maintained browser checks and ESLint passed. Local compact/greeting validation reached 75 passing checks before a 180-second document-navigation timeout; that local run was incomplete. The complete browser suite passed on the exact hosted head. Native API/version and the verified Mac 1.23.15 (50) package are unchanged. These results supply no new artwork or physical-device performance acceptance.
 
-Finish-03 export manifest SHA-256: `fe1a30d2fda61a494ece550312476d4b7c7403c36ebb32044a3a3e84ebf535ff`.
+PR58's native Automation run navigation is accepted and merged after all 16 hosted checks passed on `52e54d2cd14ccc4501d23b46367e94dcd9e30b16`. It merged at `2026-10-04T20:43:05Z` as `d7b5bca4292dd6c8f31c09fdd949c04cd0556f9c`. The verified private Mac 1.23.16 (51) package has SHA-256 `3616583ca5151a8373355e2f7f7b35df22739c05439965e0c37983018c79de9f`; its exact source and the merged tree match. This follow-up needs no migration or API version change. Production is not promoted.
 
-Finish-03 raster manifest SHA-256: `f0cacea831488baf3a12ef3904c8a8cbf92118c4a8199cacbf76344ebe9daa9e`.
+Grain-02 export manifest SHA-256: `5bb5c5f88d453e83eb370ee04df545a512f28d13929990a2c4381fe1571dde12`.
 
-Finish-03 archive SHA-256: `179fa4c55775942d0c7e04bd2701a38f96f618b7091a253ea8027d2d30cedbb7`.
+Grain-02 raster manifest SHA-256: `f3958e1e371eea06c12dd923b81d357590ec8093ed5f6f5ce97fc6813012d55a`.
+
+Grain-02 archive SHA-256: `0481b753a17762d02aa5710e5f4bcbd53f4a83a9c205d86699e0e71747fb0669`.
+
+Exact comparison changes only UVs in 46 parts and colors in 44 tufts. All geometry, normals, indices, skin inputs, rig, poses, clips, original tuft scalar tones and the other 121 parts remain exact against finish-03. The retained 480 × 480 throat grid preserves SHA-256 `469f12ced11fcc8de012429225cb435ee9f8946d26e8064eed3a14b9ecc6e05f`. The 1024 × 1024 map has 4,194,304 decoded RGBA bytes versus finish-03's 1,048,576; this arithmetic storage size is not measured GPU allocation or performance.
+
+Forty source/GLB captures preserve one decoded 1024 × 1024 texture per mode. Eight rest pairs are pixel-identical; twelve posed pairs differ by 0–10 pixels each, at most one channel value (31 pixels total). Hide/reload/dispose pass without page/console/rejected-network errors. Nine model/lifecycle and ten static tool checks are new passing runs. The 80-state review was not rerun; it remains finish-02 evidence. Motion shimmer, physical performance and final acting are unaccepted.
+
+**The remaining `output/benchmark.json` is stale rough-01 evidence.** It predates the later sculpts and must not be paired with the grain-02 export manifest or used to claim that the larger model/state bundle meets the old timings. A fresh matching comparison has not been recorded here.
+
+## Archived finish-03 checkpoint
+
+The historical `sculpt-04-finish-03-padded-color-chart` export at `2026-10-04T20:32:41.680641+00:00` is retained in `atlas-finish-03-review.tar.gz`. It contains 104 artifacts, a 2,321,804-byte GLB, 27,543 vertices, 49,844 triangles, 14 bones, 12 clips, one material and one embedded 512 × 512 texture, with 17 source hashes and 152 archive members verified. Nine new model/lifecycle checks passed; static tool tests and the 80-state review were not rerun at that checkpoint.
 
 Exact comparison changes only positions/derived normals in 44 breast/mantle parts and 31,488 texture-margin pixels. All 123 other parts, complete indices, colors, UVs, skin indices/weights, chart interior, separate white patch, rig, poses, palette and clips remain exact against finish-02. Forty body comparisons retained lower relief; eighteen temple-tuft diagnostic captures left the horizontal line visible, and eighteen padding-only comparisons removed it. No temple tuft was removed from retained source.
 
 Forty source/exported-GLB captures preserve one decoded 512 × 512 texture per mode. Eight rest pairs are pixel-identical; the other twelve pairs differ by 0–10 pixels each and at most one channel value (31 pixels total). Hide/reload/dispose pass with zero page/console/rejected-network errors. These checks do not establish allocation, GPU reclamation, natural acting or physical-device performance. The nine static tool tests and 80-state review were not rerun; those results remain attributed to finish-02 below.
 
-**The remaining `output/benchmark.json` is stale rough-01 evidence.** It predates the later sculpts and must not be paired with the finish-03 export manifest or used to claim that the larger model/state bundle meets the old timings. A fresh matching comparison has not been recorded here.
+Archived finish-03 export manifest SHA-256: `fe1a30d2fda61a494ece550312476d4b7c7403c36ebb32044a3a3e84ebf535ff`.
+
+Archived finish-03 raster manifest SHA-256: `f0cacea831488baf3a12ef3904c8a8cbf92118c4a8199cacbf76344ebe9daa9e`.
+
+Archived finish-03 archive SHA-256: `179fa4c55775942d0c7e04bd2701a38f96f618b7091a253ea8027d2d30cedbb7`.
 
 ## Archived finish-02 checkpoint
 
@@ -86,7 +102,7 @@ Archived eyelid-03 export manifest SHA-256: `9eb70a01ed62ce630de1c866b4550064890
 
 Archived eyelid-03 raster manifest SHA-256: `863daf3362c45dd6fe08f8f5361c83ff10a31642923637695e1e8b1be50f45fa`.
 
-The later retained tuft-01, grain-01 and wing-01 comparisons are preserved in `tuft01-comparison/matching-source-and-baseline.tar.gz`, `grain01-comparison/matching-source-and-baseline.tar.gz` and `wing01-comparison/matching-source-and-baseline.tar.gz` under the same release evidence directory. These are matching comparison archives, not separate full exports; their changes are included in completed-01 and subsequent full exports, including current finish-03.
+The later retained tuft-01, grain-01 and wing-01 comparisons are preserved in `tuft01-comparison/matching-source-and-baseline.tar.gz`, `grain01-comparison/matching-source-and-baseline.tar.gz` and `wing01-comparison/matching-source-and-baseline.tar.gz` under the same release evidence directory. These are matching comparison archives, not separate full exports; their changes are included in completed-01 and subsequent full exports, including current grain-02.
 
 ## Archived throat-04 checkpoint
 
@@ -106,7 +122,7 @@ Archived beak-02 raster manifest SHA-256: `90b813ceaac8120a1e5948feac7eb1821f189
 
 ## Archived rough-01 local comparison
 
-The results below belong exclusively to `/Volumes/Extreme Pro/Asael-release-records/2026-10-03-followups/ui-validation/atlas-rough-01-output.tar.gz`, which preserves the matching rough-01 output, export manifest and benchmark. They are retained for comparison, not transferred to later sculpts or finish-03.
+The results below belong exclusively to `/Volumes/Extreme Pro/Asael-release-records/2026-10-03-followups/ui-validation/atlas-rough-01-output.tar.gz`, which preserves the matching rough-01 output, export manifest and benchmark. They are retained for comparison, not transferred to later sculpts or grain-02.
 
 Captured at `2026-10-03T20:20:45.506325+00:00` with headless Chrome 154.0.8037.94 on macOS-27.0-arm64-arm-64bit-Mach-O. All 36 fresh-context cases passed their declared checks. Each row below reports three repetitions; it is a short loopback lab sample, not a production or physical-mobile performance claim.
 
@@ -135,7 +151,7 @@ The old still has a 262,144-byte decoded RGBA arithmetic estimate; nineteen sequ
 
 The initial benchmark attempt failed because an expression-based test wait conflicted with the lab CSP. Function-form predicates fixed the harness; no CSP relaxation was made. The exporter was rerun to bind the corrected benchmark source in its provenance, followed by the complete 36-case comparison.
 
-This archived comparison supports continued evaluation of a static default with a bounded pre-rendered reaction. It does not approve any 3D artwork, validate the adapters on physical targets, or measure the finish-03 state bundle. The approved app/native static portrait remains the fallback; PR55's static full-body greeting is a separate accepted and merged delivery change. See ART_REVIEW.md and PERFORMANCE_PLAN.md for the remaining decisions.
+This archived comparison supports continued evaluation of a static default with a bounded pre-rendered reaction. It does not approve any 3D artwork, validate the adapters on physical targets, or measure the grain-02 state bundle. The approved app/native static portrait remains the fallback; PR55's static full-body greeting is a separate accepted and merged delivery change. See ART_REVIEW.md and PERFORMANCE_PLAN.md for the remaining decisions.
 
 Evidence: the matching `output/benchmark.json` and `output/export-manifest.json` **inside the rough-01 archive**, not the mixed-revision working output directory.
 

@@ -1,4 +1,4 @@
-/** ATLAS sculpt 04, finish 03 — retained settled feathers and padded color chart.
+/** ATLAS sculpt 04, grain 02 — retained continuous body-color grain.
  * No raster planes, generated imagery, physics, audio, providers or app imports.
  * Geometry is deterministic; Three UUIDs are internal and not provenance IDs.
  */
@@ -76,31 +76,69 @@ function throatMask(profile) {
   };
 }
 
-/** A bounded color chart samples the existing contour independently of triangles. */
-function throatColorChart(config) {
-  const size=512,chart=480,data=new Uint8Array(size*size*4).fill(255);
+/** Fixed integer hashes and smooth interpolation make an anisotropic fiber field. */
+function fiberNoise(x,y) {
+  const hash=(column,row)=>{
+    let value=Math.imul(column,374761393)^Math.imul(row,668265263)^0x6d2b79f5;
+    value=Math.imul(value^(value>>>13),1274126177);
+    return ((value^(value>>>16))>>>0)/4294967295*2-1;
+  };
+  const column=Math.floor(x),row=Math.floor(y),dx=x-column,dy=y-row;
+  const u=dx*dx*(3-2*dx),v=dy*dy*(3-2*dy);
+  const lower=hash(column,row)*(1-u)+hash(column+1,row)*u;
+  const upper=hash(column,row+1)*(1-u)+hash(column+1,row+1)*u;
+  return lower*(1-v)+upper*v;
+}
+
+function bodyGrainFactor(x,y) {
+  const ramp=value=>{const t=clamp(value);return t*t*(3-2*t);};
+  const fade=ramp((y-.46)/.10)*ramp((2.08-y)/.10);
+  const warped=x+.012*fiberNoise(3*x,3*y);
+  const coarse=fiberNoise(40*warped+.9*Math.sin(1.3*y),14*y);
+  const fine=fiberNoise(68*warped+7*y,24*y);
+  return 1+fade*Math.max(-.075,Math.min(.075,.065*coarse+.025*fine));
+}
+
+/** Body fibers share a field; the protected throat retains its exact 480² grid. */
+function plumageColorAtlas(config) {
+  const size=1024,chart=480,data=new Uint8Array(size*size*4).fill(255);
   const mask=throatMask(config.throatProfile),base=new THREE.Color(config.palette.umber);
   const pale=new THREE.Color(config.palette.throat),color=new THREE.Color();
   // Linear filtering at the chart edge must meet matching umber padding.
   // Keep a separate white patch around the other parts' constant UV sample.
   color.copy(base).convertLinearToSRGB();
   for(let row=0;row<size;row++)for(let column=0;column<size;column++) {
-    if(row>=496&&column>=496)continue;
+    if(row>=992&&column>=992)continue;
     const index=(row*size+column)*4;
     data[index]=Math.round(color.r*255);data[index+1]=Math.round(color.g*255);data[index+2]=Math.round(color.b*255);
+  }
+  // Generate each body texel once, then copy the exact bytes to both islands.
+  // Row 480 meets the protected chart at Y=2.08, where grain has faded to zero.
+  for(let row=0;row<=464;row++)for(let column=0;column<chart;column++) {
+    const x=-.46+.92*column/(chart-1),y=.38+1.70*row/464;
+    color.copy(base).multiplyScalar(bodyGrainFactor(x,y)).convertLinearToSRGB();
+    const front=((16+row)*size+16+column)*4,rear=front+512*4;
+    data[front]=Math.round(color.r*255);data[front+1]=Math.round(color.g*255);data[front+2]=Math.round(color.b*255);
+    data.copyWithin(rear,front,front+4);
   }
   for(let row=0;row<chart;row++)for(let column=0;column<chart;column++) {
     const x=-.46+.92*column/(chart-1),y=2.08+.68*row/(chart-1);
     color.copy(base).lerp(pale,mask({x,y,z:1})).convertLinearToSRGB();
-    const index=(row*size+column)*4;
+    const index=((480+row)*size+16+column)*4;
     data[index]=Math.round(color.r*255);data[index+1]=Math.round(color.g*255);data[index+2]=Math.round(color.b*255);
   }
   const texture=new THREE.DataTexture(data,size,size,THREE.RGBAFormat,THREE.UnsignedByteType);
-  texture.name='ATLAS_authored_throat_color';texture.colorSpace=THREE.SRGBColorSpace;
+  texture.name='ATLAS_authored_plumage_color';texture.colorSpace=THREE.SRGBColorSpace;
   texture.flipY=false;texture.minFilter=THREE.LinearFilter;texture.magFilter=THREE.LinearFilter;
   texture.wrapS=THREE.ClampToEdgeWrapping;texture.wrapT=THREE.ClampToEdgeWrapping;
   texture.generateMipmaps=false;texture.needsUpdate=true;
   return texture;
+}
+
+function plumageAtlasUV(x,y,rear=false) {
+  const column=(rear?528:16)+479*clamp((x+.46)/.92);
+  const row=y>=2.08?480+479*clamp((y-2.08)/.68):16+464*clamp((y-.38)/1.70);
+  return [(column+.5)/1024,(row+.5)/1024];
 }
 
 // Z, mouth-edge Y, half-width, ridge height. The broad mouth corners end
@@ -613,12 +651,11 @@ export function createAtlas(config) {
     }
     const coordinates=new Float32Array((vertices.count+shared.length)*2);
     for(let i=0;i<vertices.count;i++) {
-      coordinates[i*2]=(.5+479*clamp((vertices.getX(i)+.46)/.92))/512;
-      coordinates[i*2+1]=(.5+479*(usage[i]===2?0:clamp((vertices.getY(i)-2.08)/.68)))/512;
+      coordinates.set(plumageAtlasUV(vertices.getX(i),vertices.getY(i),usage[i]===2),i*2);
     }
     for(let i=0;i<shared.length;i++) {
-      coordinates[(vertices.count+i)*2]=coordinates[shared[i]*2];
-      coordinates[(vertices.count+i)*2+1]=.5/512;
+      const source=shared[i];
+      coordinates.set(plumageAtlasUV(vertices.getX(source),vertices.getY(source),true),(vertices.count+i)*2);
     }
     const remapped=Array.from(index.array);
     for(let triangle=0;triangle<front.length;triangle++)if(!front[triangle])for(let corner=0;corner<3;corner++) {
@@ -629,12 +666,20 @@ export function createAtlas(config) {
   }
   function append(name, mesh, shade, bone, position = [0,0,0], scale = [1,1,1], rotation = [0,0,0]) {
     const hasThroat=name==='continuous_eagle_silhouette'||name==='continuous_directional_plumage';
+    const hasBodyGrain=name.startsWith('breast_flow_tuft_')||name.startsWith('mantle_flow_tuft_');
     // Both continuous layers append in world-rest coordinates with identity transforms.
     if(hasThroat)splitThroatChartUV(mesh);
     const matrix = new THREE.Matrix4().compose(new THREE.Vector3(...position), quaternion(rotation), new THREE.Vector3(...scale));
     const normalMatrix = new THREE.Matrix3().getNormalMatrix(matrix), offset = p.length / 3;
     const vertices = mesh.getAttribute('position'), normals = mesh.getAttribute('normal'), tones=mesh.getAttribute('tone');
     const chartUV=hasThroat?mesh.getAttribute('uv'):null;
+    // Choose one island for the complete tuft; never span the atlas in a triangle.
+    // These 44 meshes, like the continuous layers, use world-rest coordinates.
+    let tuftRear=false;
+    if(hasBodyGrain) {
+      let meanZ=0;for(let i=0;i<vertices.count;i++)meanZ+=vertices.getZ(i);
+      tuftRear=meanZ<=0;
+    }
     const lidHeadWeights=bone==='UpperLidLeft'||bone==='UpperLidRight'?mesh.getAttribute('lidHeadWeight'):null;
     color.set(config.palette[shade]);
     for (let i = 0; i < vertices.count; i++) {
@@ -645,6 +690,9 @@ export function createAtlas(config) {
       if(hasThroat) {
         colors.push(tone,tone,tone);
         uv.push(chartUV.getX(i),chartUV.getY(i));
+      } else if(hasBodyGrain) {
+        colors.push(tone,tone,tone);
+        uv.push(...plumageAtlasUV(point.x,point.y,tuftRear));
       } else {
         colors.push(color.r*tone,color.g*tone,color.b*tone);
         // Other parts retain their vertex palette through a padded white region.
@@ -759,7 +807,7 @@ export function createAtlas(config) {
   merged.setAttribute('uv',new THREE.Float32BufferAttribute(uv,2));
   merged.setAttribute('skinIndex',new THREE.Uint16BufferAttribute(joints,4));
   merged.setAttribute('skinWeight',new THREE.Float32BufferAttribute(weights,4));
-  const material = new THREE.MeshStandardMaterial({vertexColors:true,map:throatColorChart(config),roughness:.86,metalness:0,side:THREE.DoubleSide});
+  const material = new THREE.MeshStandardMaterial({vertexColors:true,map:plumageColorAtlas(config),roughness:.86,metalness:0,side:THREE.DoubleSide});
   material.name = 'ATLAS_ROUGH_matte_authored_color';
   const mesh = new THREE.SkinnedMesh(merged,material); mesh.name = 'ATLAS_ROUGH_skinned_mesh';
   // The bounded prototype does not use stale rest-pose bounds for clip culling.

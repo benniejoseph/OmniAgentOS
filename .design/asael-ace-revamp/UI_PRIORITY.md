@@ -21,6 +21,26 @@ Owned work:
 
 The approved reference in `DESIGN_BRIEF.md` remains authoritative. Sculpt02 remains rejected. New source is not visual approval, and a passing build does not complete the art or physical-device gates.
 
+## Native Automation acceptance — 5 October
+
+PR58 is accepted and merged after all sixteen hosted checks passed on
+`52e54d2cd14ccc4501d23b46367e94dcd9e30b16`; its merge is
+`d7b5bca4292dd6c8f31c09fdd949c04cd0556f9c` at 20:43:05 UTC. Both native
+Automation presentations now open recent/occurrence run output in the existing
+Results detail using the exact validated workflow identity. Back retains the
+selected section while private inventory/history still dispose and reload through
+existing access checks. Full Flutter analysis and six focused actual-router cases
+pass. No migration or API version change is introduced.
+
+The universal private package `Asael-1.23.16-51-macOS.dmg` is verified from that
+accepted head, including version, both architectures and nested signatures on the
+read-only mounted image. SHA256:
+`3616583ca5151a8373355e2f7f7b35df22739c05439965e0c37983018c79de9f`.
+Signing is local/private, not Apple notarization. The installed application and
+canonical production revision are unchanged. Paired v38 server promotion still
+requires the complete operator release environment. Parked connector work must
+use build 52 or later.
+
 ## Implemented UI checkpoint
 
 The web shell begins with the compact rail while preserving an explicit expanded
@@ -112,24 +132,26 @@ recorded below and remain separate from the approved static greeting.
 
 ## ATLAS boundary
 
-The latest separately archived art study is finish03: 27,543 vertices, 49,844 triangles,
-a 2,321,804-byte GLB, fourteen bones, twelve clips and one embedded 512px color map.
-The smooth throat, shorter crown, completed breast fold and fitted wing coverts remain
-retained. Forty body comparisons support lower relief on 44 body tufts; eighteen
-isolated padding comparisons remove the thin horizontal pale head lines.
+The latest separately archived art study is grain02: 27,543 vertices, 49,844 triangles,
+a 2,494,008-byte GLB, fourteen bones, twelve clips and one embedded 1024px color map.
+The smooth throat, shorter crown, completed breast fold, fitted wing coverts and
+settled body tufts remain retained. Sixty-four before/after captures support subtle
+continuous body-color variation while preserving the old throat pixels and all
+geometry, rig and clips. The small-size visual gain remains modest.
 
-The full export at `2026-10-04T20:32:41.680641+00:00` verifies seventeen sources,
-104 artifacts and 152 archive members. Nine final model/lifecycle checks pass;
-unchanged static-tool coverage last passed at finish02. Forty source/export captures
-show eight pixel-identical rest pairs and twelve posed pairs differing at 0–10 pixels
-by at most one channel value, with successful hide/reload/disposal. These checks do
-not establish final art or physical performance. Full archive SHA256:
-`179fa4c55775942d0c7e04bd2701a38f96f618b7091a253ea8027d2d30cedbb7`.
+The full export at `2026-10-04T20:49:56.541894+00:00` verifies seventeen sources,
+104 artifacts and 156 archive members. Nine model/lifecycle and ten static-tool
+checks pass. Forty source/export captures show eight pixel-identical rest pairs and
+twelve posed pairs differing at 0–10 pixels by at most one channel value, with
+successful hide/reload/disposal. Decoded map storage is 4,194,304 bytes, not a
+measured GPU allocation. These checks do not establish motion shimmer, final art
+or physical performance. Full archive SHA256:
+`0481b753a17762d02aa5710e5f4bcbd53f4a83a9c205d86699e0e71747fb0669`.
 
-Continuous fine plumage, descending temple/eye edges, wing-joint finish, overall
-likeness and natural acting remain open. No 3D artwork has been published. The
-approved portrait and static full-body greeting remain active; animated delivery and
-physical-device acceptance remain pending.
+Dense fine feather layering, descending temple/eye edges, wing-joint finish,
+overall likeness and natural acting remain open. No 3D artwork has been published.
+The approved portrait and static full-body greeting remain active; animated delivery
+and physical-device acceptance remain pending.
 
 ## Greeting acceptance and personality follow-up
 

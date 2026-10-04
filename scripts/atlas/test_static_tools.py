@@ -15,19 +15,24 @@ def png_chunk(kind, payload):
     return struct.pack('>I', len(payload)) + kind + payload + struct.pack('>I', zlib.crc32(kind + payload))
 
 
+def rgba_png(width, height):
+    # Transparent RGBA rows, each prefixed by the PNG "None" filter byte.
+    return (b'\x89PNG\r\n\x1a\n'
+            + png_chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 6, 0, 0, 0))
+            + png_chunk(b'IDAT', zlib.compress(bytes((width * 4 + 1) * height)))
+            + png_chunk(b'IEND', b''))
+
+
 # The mesh remains a minimal structural fixture; its embedded image is a valid
-# transparent 512x512 RGBA PNG, so each malformed case changes one contract.
-FIXTURE_PNG = (b'\x89PNG\r\n\x1a\n'
-               + png_chunk(b'IHDR', struct.pack('>IIBBBBB', 512, 512, 8, 6, 0, 0, 0))
-               + png_chunk(b'IDAT', zlib.compress(bytes((512 * 4 + 1) * 512)))
-               + png_chunk(b'IEND', b''))
+# transparent 1024x1024 RGBA PNG, so each malformed case changes one contract.
+FIXTURE_PNG = rgba_png(1024, 1024)
 FIXTURE_BIN = b'\0\0\0\0' + FIXTURE_PNG
 
 
-def fixture_document():
-    return {'asset': {'version': '2.0'}, 'buffers': [{'byteLength': len(FIXTURE_BIN)}],
+def fixture_document(png=FIXTURE_PNG):
+    return {'asset': {'version': '2.0'}, 'buffers': [{'byteLength': 4 + len(png)}],
             'bufferViews': [{'buffer': 0, 'byteOffset': 0, 'byteLength': 4},
-                            {'buffer': 0, 'byteOffset': 4, 'byteLength': len(FIXTURE_PNG)}],
+                            {'buffer': 0, 'byteOffset': 4, 'byteLength': len(png)}],
             'images': [{'mimeType': 'image/png', 'bufferView': 1}],
             'textures': [{'source': 0, 'sampler': 0}],
             'samplers': [{'minFilter': 9729, 'magFilter': 9729, 'wrapS': 33071, 'wrapT': 33071}],
@@ -71,7 +76,8 @@ class StaticToolsTest(unittest.TestCase):
             self.assertEqual(inspected['bones'], 14)
             self.assertEqual(len(inspected['clips']), 12)
             self.assertEqual((inspected['materials'], inspected['textures'], inspected['images']), (1, 1, 1))
-            self.assertEqual(inspected['textureDimensions'], [512, 512])
+            self.assertEqual(inspected['textureDimensions'], [1024, 1024])
+            self.assertEqual(inspected['decodedRgbaEstimateBytes'], 4_194_304)
             self.assertEqual(inspected['externalResources'], 0)
             value['buffers'][0]['uri'] = 'https://example.invalid/mesh.bin'
             path.write_bytes(glb(value))
@@ -185,12 +191,20 @@ class StaticToolsTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'PNG signature or IHDR header'):
                 inspect(path)
 
-    def test_glb_rejects_png_header_dimensions_and_encoding_changes(self):
+    def test_glb_rejects_valid_pngs_with_stale_or_inexact_dimensions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'rough.glb'
+            for width, height in ((512, 512), (512, 1024), (1024, 512), (1025, 1024), (1024, 1025)):
+                with self.subTest(width=width, height=height):
+                    png = rgba_png(width, height)
+                    path.write_bytes(glb(fixture_document(png), b'\0\0\0\0' + png))
+                    with self.assertRaisesRegex(ValueError, '1024x1024 color map'):
+                        inspect(path)
+
+    def test_glb_rejects_png_header_and_encoding_changes(self):
         cases = ((0, b'\0', 'PNG signature or IHDR header'),
                  (8, struct.pack('>I', 12), 'PNG signature or IHDR header'),
                  (12, b'IDAT', 'PNG signature or IHDR header'),
-                 (16, struct.pack('>I', 256), '512x512 color map'),
-                 (20, struct.pack('>I', 256), '512x512 color map'),
                  (24, b'\x10', '8-bit RGBA PNG'),
                  (25, b'\x02', '8-bit RGBA PNG'),
                  (26, b'\x01', '8-bit RGBA PNG'),
