@@ -33,13 +33,10 @@ void main() {
     );
 
     expect(find.text('Capture'), findsOneWidget);
-    expect(find.text('New capture'), findsOneWidget);
-    expect(find.text('Add documents'), findsOneWidget);
-    expect(find.text('Processing'), findsOneWidget);
-    expect(
-      find.byKey(const ValueKey('macos-capture-processing-inspector')),
-      findsOneWidget,
-    );
+    expect(find.text('Note'), findsOneWidget);
+    expect(find.text('Record'), findsOneWidget);
+    expect(find.text('Upload'), findsOneWidget);
+    expect(find.text('Source and processing'), findsOneWidget);
     expect(tester.takeException(), isNull);
     debugDefaultTargetPlatformOverride = null;
   });

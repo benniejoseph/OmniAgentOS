@@ -96,7 +96,9 @@ class CaptureDropSummary {
       if (cleanupFailed > 0)
         '$cleanupFailed temporary ${cleanupFailed == 1 ? 'copy needs' : 'copies need'} cleanup',
     ];
-    if (result.isEmpty) return 'No files were added.';
+    if (result.isEmpty) {
+      return 'No files were added.';
+    }
     return '${result.join(' · ')}.';
   }
 }
@@ -134,7 +136,9 @@ class DesktopCaptureDropSource implements CaptureDropSource {
 
   @override
   Future<CaptureDropEntityType> entityType() async {
-    if (item is DropItemDirectory) return CaptureDropEntityType.directory;
+    if (item is DropItemDirectory) {
+      return CaptureDropEntityType.directory;
+    }
     final type = await FileSystemEntity.type(item.path, followLinks: true);
     return switch (type) {
       FileSystemEntityType.file => CaptureDropEntityType.file,
@@ -255,9 +259,13 @@ class DesktopCaptureDropPromiseCleanup implements CaptureDropPromiseCleanup {
     }
 
     final parent = Directory(path.dirname(source.sourcePath));
-    if (!await parent.exists()) return;
+    if (!await parent.exists()) {
+      return;
+    }
     final isEmpty = await parent.list(followLinks: false).isEmpty;
-    if (isEmpty) await parent.delete();
+    if (isEmpty) {
+      await parent.delete();
+    }
   }
 }
 
@@ -272,10 +280,14 @@ bool isSafeDesktopDropPromisePath(
     path.absolute(path.join(systemTemporaryPath, 'Drops')),
   );
   final normalized = path.normalize(path.absolute(candidate));
-  if (!path.isWithin(dropsRoot, normalized)) return false;
+  if (!path.isWithin(dropsRoot, normalized)) {
+    return false;
+  }
   final relative = path.relative(normalized, from: dropsRoot);
   final parts = path.split(relative);
-  if (parts.length != 2) return false;
+  if (parts.length != 2) {
+    return false;
+  }
   return RegExp(r'^\d{8}_\d{6}_\d{3}Z$').hasMatch(parts.first) &&
       normalizeCaptureDropFilename(parts.last) != null;
 }
@@ -320,7 +332,7 @@ class CaptureDropIntake {
       return const CaptureDropSummary(queued: 0, failed: 0);
     }
     if (_busy ||
-        controller.owner == null ||
+        !controller.canWrite ||
         controller.batchQueueing ||
         controller.submitting ||
         controller.syncing) {
@@ -335,6 +347,7 @@ class CaptureDropIntake {
     }
 
     _busy = true;
+    final generation = controller.generation;
     var directories = 0;
     var unsupported = 0;
     var invalidNames = 0;
@@ -387,7 +400,9 @@ class CaptureDropIntake {
               throw const _CaptureDropUnsupportedException();
             }
             final length = await source.length();
-            if (length < 1) throw const _CaptureDropEmptyException();
+            if (length < 1) {
+              throw const _CaptureDropEmptyException();
+            }
             if (length > captureAttachmentMaxBytes) {
               throw const _CaptureDropTooLargeException();
             }
@@ -422,73 +437,87 @@ class CaptureDropIntake {
         }
       }
 
-      final result = await controller.submitBatch(
-        accepted.map((item) => item.name).toList(growable: false),
-        (index) async {
-          final item = accepted[index];
-          try {
-            final bytes = await _readStableFile(item);
-            final filenameTitle = captureBatchTitle(item.name);
-            final sharedTitle = context.title.trim();
-            final itemTitle = sharedTitle.isEmpty
-                ? filenameTitle
-                : '$sharedTitle · $filenameTitle';
-            return CaptureDraft(
-              title: itemTitle.length <= 240
-                  ? itemTitle
-                  : itemTitle.substring(0, 240),
-              content: context.note,
-              tags: context.tags,
-              file: CaptureAttachment(
-                name: item.name,
-                bytes: bytes,
-                contentType:
-                    lookupMimeType(item.name, headerBytes: bytes) ??
-                    'application/octet-stream',
-              ),
-              kind: bulkCaptureKind(item.name),
-            );
-          } on _CaptureDropChangedException {
-            changed += 1;
-            loadFailures += 1;
-            throw const FormatException(
-              'The file changed while it was being read. Drop it again.',
-            );
-          } on _CaptureDropTooLargeException {
-            tooLarge += 1;
-            loadFailures += 1;
-            throw const FormatException('Choose a file up to 5 MB.');
-          } on _CaptureDropEmptyException {
-            empty += 1;
-            loadFailures += 1;
-            throw const FormatException('Choose a non-empty file.');
-          } catch (_) {
-            unreadable += 1;
-            loadFailures += 1;
-            throw const FormatException(
-              'This file could not be read securely. Drop it again.',
-            );
-          }
-        },
-      );
-      final uncategorizedLoadFailures = (result.failed - loadFailures).clamp(
-        0,
-        result.failed,
-      );
-      unreadable += uncategorizedLoadFailures;
-      summary = CaptureDropSummary(
-        queued: result.queued,
-        failed: sources.length - accepted.length + result.failed,
-        directories: directories,
-        unsupported: unsupported,
-        invalidNames: invalidNames,
-        empty: empty,
-        tooLarge: tooLarge,
-        duplicates: duplicates,
-        full: full,
-        changed: changed,
-        unreadable: unreadable,
-      );
+      if (!controller.current(generation)) {
+        summary = CaptureDropSummary(
+          queued: 0,
+          failed: sources.length,
+          unreadable: sources.length,
+        );
+      } else {
+        final result = await controller.submitBatch(
+          accepted.map((item) => item.name).toList(growable: false),
+          (index) async {
+            final item = accepted[index];
+            try {
+              final bytes = await _readStableFile(item);
+              if (!controller.current(generation)) {
+                bytes.fillRange(0, bytes.length, 0);
+                throw const FormatException(
+                  'Capture access changed while the file was being read.',
+                );
+              }
+              final filenameTitle = captureBatchTitle(item.name);
+              final sharedTitle = context.title.trim();
+              final itemTitle = sharedTitle.isEmpty
+                  ? filenameTitle
+                  : '$sharedTitle · $filenameTitle';
+              return CaptureDraft(
+                title: itemTitle.length <= 240
+                    ? itemTitle
+                    : itemTitle.substring(0, 240),
+                content: context.note,
+                tags: context.tags,
+                file: CaptureAttachment(
+                  name: item.name,
+                  bytes: bytes,
+                  contentType:
+                      lookupMimeType(item.name, headerBytes: bytes) ??
+                      'application/octet-stream',
+                ),
+                kind: bulkCaptureKind(item.name),
+              );
+            } on _CaptureDropChangedException {
+              changed += 1;
+              loadFailures += 1;
+              throw const FormatException(
+                'The file changed while it was being read. Drop it again.',
+              );
+            } on _CaptureDropTooLargeException {
+              tooLarge += 1;
+              loadFailures += 1;
+              throw const FormatException('Choose a file up to 5 MB.');
+            } on _CaptureDropEmptyException {
+              empty += 1;
+              loadFailures += 1;
+              throw const FormatException('Choose a non-empty file.');
+            } catch (_) {
+              unreadable += 1;
+              loadFailures += 1;
+              throw const FormatException(
+                'This file could not be read securely. Drop it again.',
+              );
+            }
+          },
+        );
+        final uncategorizedLoadFailures = (result.failed - loadFailures).clamp(
+          0,
+          result.failed,
+        );
+        unreadable += uncategorizedLoadFailures;
+        summary = CaptureDropSummary(
+          queued: result.queued,
+          failed: sources.length - accepted.length + result.failed,
+          directories: directories,
+          unsupported: unsupported,
+          invalidNames: invalidNames,
+          empty: empty,
+          tooLarge: tooLarge,
+          duplicates: duplicates,
+          full: full,
+          changed: changed,
+          unreadable: unreadable,
+        );
+      }
     } finally {
       cleanupFailed = await _cleanupAll(sources);
       _busy = false;
@@ -519,7 +548,9 @@ class CaptureDropIntake {
           0,
           captureAttachmentMaxBytes + 1,
         )) {
-          if (chunk.isEmpty) continue;
+          if (chunk.isEmpty) {
+            continue;
+          }
           byteCount += chunk.length;
           if (byteCount > captureAttachmentMaxBytes) {
             throw const _CaptureDropTooLargeException();
@@ -528,7 +559,9 @@ class CaptureDropIntake {
         }
         final afterLength = await item.source.length();
         final afterModified = await item.source.lastModified();
-        if (byteCount == 0) throw const _CaptureDropEmptyException();
+        if (byteCount == 0) {
+          throw const _CaptureDropEmptyException();
+        }
         if (byteCount != item.length ||
             afterLength != item.length ||
             afterModified != item.lastModified) {
@@ -542,14 +575,20 @@ class CaptureDropIntake {
     Future<T> Function() action,
   ) async {
     final bookmark = source.securityBookmark;
-    if (bookmark == null || bookmark.isEmpty) return action();
+    if (bookmark == null || bookmark.isEmpty) {
+      return action();
+    }
     final started = await _securityAccess.start(bookmark);
-    if (!started) throw const _CaptureDropUnreadableException();
+    if (!started) {
+      throw const _CaptureDropUnreadableException();
+    }
     try {
       return await action();
     } finally {
       final stopped = await _securityAccess.stop(bookmark);
-      if (!stopped) throw const _CaptureDropUnreadableException();
+      if (!stopped) {
+        throw const _CaptureDropUnreadableException();
+      }
     }
   }
 
@@ -597,7 +636,9 @@ class _CaptureDropSurfaceState extends State<CaptureDropSurface> {
   }
 
   void _setHovering(bool value) {
-    if (!mounted || hovering == value) return;
+    if (!mounted || hovering == value) {
+      return;
+    }
     setState(() => hovering = value);
   }
 
@@ -612,7 +653,9 @@ class _CaptureDropSurfaceState extends State<CaptureDropSurface> {
       onDragExited: (_) => _setHovering(false),
       onDragDone: (details) {
         _setHovering(false);
-        if (!active) return;
+        if (!active) {
+          return;
+        }
         unawaited(
           widget.onDrop(
             details.files
@@ -738,7 +781,9 @@ bool _validSourcePath(String value) =>
 
 bool _isSupportedCaptureDropName(String value) {
   final dot = value.lastIndexOf('.');
-  if (dot <= 0 || dot == value.length - 1) return false;
+  if (dot <= 0 || dot == value.length - 1) {
+    return false;
+  }
   return captureDocumentExtensions.contains(
     value.substring(dot + 1).toLowerCase(),
   );

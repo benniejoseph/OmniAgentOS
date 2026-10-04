@@ -10,6 +10,8 @@ void main() {
   const owner = CaptureOwnerBinding(
     tenantId: 'tenant-one',
     actorId: 'actor:one',
+    canonicalUserId: 'user-one',
+    apiOrigin: 'https://capture.test',
   );
 
   test(
@@ -109,7 +111,7 @@ void main() {
     },
   );
 
-  test('macOS restart resumes queued files and tracks the real job', () async {
+  test('macOS restart waits for explicit same-key retry before tracking the real job', () async {
     final repository = _BatchRepository();
     final outbox = _MemoryOutbox();
     final restored = await outbox.enqueue(owner, _draft('restored.vtt'));
@@ -125,6 +127,16 @@ void main() {
 
     await controller.initialize();
 
+    expect(repository.submittedKeys, isEmpty);
+    expect(controller.pending.single.id, restored.id);
+    expect(controller.batchItems.single.state, CaptureBatchState.queued);
+    expect(controller.batchItems.single.retryable, isTrue);
+    expect(
+      controller.batchItems.single.detail,
+      contains('Review and choose Retry'),
+    );
+    await controller.retryBatchItem(restored.id);
+    await controller.batchWork;
     expect(repository.submittedKeys, [restored.idempotencyKey]);
     expect(controller.batchItems.single.name, 'restored.vtt');
     expect(controller.batchItems.single.state, CaptureBatchState.completed);
@@ -208,6 +220,8 @@ class _MemoryOutbox implements CaptureOutbox {
       id: id,
       tenantId: owner.tenantId,
       actorId: owner.actorId,
+      canonicalUserId: owner.canonicalUserId,
+      apiOrigin: owner.apiOrigin,
       createdAt: DateTime.utc(2026, 9, 16),
       idempotencyKey: 'capture-offline-$id',
       draft: draft,

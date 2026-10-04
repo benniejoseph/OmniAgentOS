@@ -21,6 +21,8 @@
 /* End PBXAggregateTarget section */
 
 /* Begin PBXBuildFile section */
+		A13F30012E49000100131695 /* RecoveryStorageBroker.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13F30022E49000100131695 /* RecoveryStorageBroker.swift */; };
+		A13F30032E49000100131695 /* RecoveryStorageBrokerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13F30042E49000100131695 /* RecoveryStorageBrokerTests.swift */; };
 		A13F00012E44A10000131695 /* GoogleService-Info.plist in Resources */ = {isa = PBXBuildFile; fileRef = A13F00022E44A10000131695 /* GoogleService-Info.plist */; };
 		A13F10052E46000100131695 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13F10012E46000100131695 /* ShareViewController.swift */; };
 		A13F10062E46000100131695 /* AsaelShare.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = A13F10042E46000100131695 /* AsaelShare.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -82,6 +84,8 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		A13F30022E49000100131695 /* RecoveryStorageBroker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoveryStorageBroker.swift; sourceTree = "<group>"; };
+		A13F30042E49000100131695 /* RecoveryStorageBrokerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoveryStorageBrokerTests.swift; sourceTree = "<group>"; };
 		A13F00022E44A10000131695 /* GoogleService-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "GoogleService-Info.plist"; sourceTree = "<group>"; };
 		A13F10012E46000100131695 /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
 		A13F10022E46000100131695 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
@@ -148,6 +152,7 @@
 		331C80D6294CF71000263BE5 /* RunnerTests */ = {
 			isa = PBXGroup;
 			children = (
+				A13F30042E49000100131695 /* RecoveryStorageBrokerTests.swift */,
 				331C80D7294CF71000263BE5 /* RunnerTests.swift */,
 			);
 			path = RunnerTests;
@@ -212,6 +217,7 @@
 		33FAB671232836740065AC1E /* Runner */ = {
 			isa = PBXGroup;
 			children = (
+				A13F30022E49000100131695 /* RecoveryStorageBroker.swift */,
 				A13F00022E44A10000131695 /* GoogleService-Info.plist */,
 				33CC10F02044A3C60003C045 /* AppDelegate.swift */,
 				33CC11122044BFA00003C045 /* MainFlutterWindow.swift */,
@@ -437,6 +443,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A13F30032E49000100131695 /* RecoveryStorageBrokerTests.swift in Sources */,
 				331C80D8294CF71000263BE5 /* RunnerTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -445,6 +452,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A13F30012E49000100131695 /* RecoveryStorageBroker.swift in Sources */,
 				33CC11132044BFA00003C045 /* MainFlutterWindow.swift in Sources */,
 				33CC10F12044A3C60003C045 /* AppDelegate.swift in Sources */,
 				335BBD1B22A9A15E00E9071D /* GeneratedPluginRegistrant.swift in Sources */,

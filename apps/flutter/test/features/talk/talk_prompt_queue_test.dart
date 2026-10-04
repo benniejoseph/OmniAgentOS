@@ -7,6 +7,46 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  for (final width in [900.0, 1400.0]) {
+    testWidgets(
+      'Responsibilities entry preserves the unsent Assistant draft at $width',
+      (tester) async {
+        tester.view.physicalSize = Size(width, 900);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        final controller = TalkController(_PromptQueueTalkRepository());
+        addTearDown(controller.dispose);
+        var opened = 0;
+        await tester.pumpWidget(
+          _talkApp(controller, onOpenResponsibilities: () => opened++),
+        );
+        await tester.pumpAndSettle();
+        final composer = find.descendant(
+          of: find.byType(TalkCommandComposer),
+          matching: find.byType(EditableText),
+        );
+        await tester.enterText(composer, 'An unsent request to keep');
+        if (width < 1000) {
+          await tester.tap(find.byTooltip('What Asael is doing'));
+          await tester.pumpAndSettle();
+        }
+        await tester.tap(find.byKey(const Key('talk-responsibilities')));
+        await tester.pumpAndSettle();
+        expect(opened, 1);
+        expect(
+          tester.widget<EditableText>(composer).controller.text,
+          'An unsent request to keep',
+        );
+        expect(controller.messages, isEmpty);
+        expect(controller.sending, isFalse);
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.macOS),
+    );
+  }
+
   testWidgets(
     'narrow Conversation exposes the queue and refresh reconciles the outbox',
     (tester) async {
@@ -95,10 +135,15 @@ void main() {
 
 /// Talk in the Mac theme, beside a sidebar of [sidebarWidth] when there is
 /// one. Motion is reduced so the idle mascot lets the frame settle.
-Widget _talkApp(TalkController controller, {double sidebarWidth = 0}) {
+Widget _talkApp(
+  TalkController controller, {
+  double sidebarWidth = 0,
+  VoidCallback? onOpenResponsibilities,
+}) {
   final talk = TalkView(
     controller: controller,
     voiceRecorder: _VoiceDraftRecorder(),
+    onOpenResponsibilities: onOpenResponsibilities,
   );
   return MaterialApp(
     theme: MacosAppTheme.light(),

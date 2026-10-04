@@ -3259,6 +3259,7 @@ class TalkView extends StatefulWidget {
     this.companionController,
     this.requestedThreadId,
     this.onThreadAdopted,
+    this.onOpenResponsibilities,
   });
 
   final TalkController controller;
@@ -3281,6 +3282,7 @@ class TalkView extends StatefulWidget {
   final CompanionController? companionController;
   final String? requestedThreadId;
   final ValueChanged<String>? onThreadAdopted;
+  final VoidCallback? onOpenResponsibilities;
   @override
   State<TalkView> createState() => _TalkViewState();
 }
@@ -4233,6 +4235,12 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
           builder: (_, _) => _TalkActivityPane(
             controller: widget.controller,
             initialSection: initialSection,
+            onOpenResponsibilities: widget.onOpenResponsibilities == null
+                ? null
+                : () {
+                    Navigator.of(context).pop();
+                    widget.onOpenResponsibilities?.call();
+                  },
           ),
         ),
       ),
@@ -5529,7 +5537,10 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                   Expanded(child: conversation),
                   SizedBox(
                     width: macos ? 318 : 328,
-                    child: _TalkActivityPane(controller: widget.controller),
+                    child: _TalkActivityPane(
+                      controller: widget.controller,
+                      onOpenResponsibilities: widget.onOpenResponsibilities,
+                    ),
                   ),
                 ],
               );
@@ -5540,7 +5551,10 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                 Expanded(child: conversation),
                 SizedBox(
                   width: macos ? 328 : 348,
-                  child: _TalkActivityPane(controller: widget.controller),
+                  child: _TalkActivityPane(
+                    controller: widget.controller,
+                    onOpenResponsibilities: widget.onOpenResponsibilities,
+                  ),
                 ),
               ],
             );
@@ -6579,10 +6593,12 @@ class _TalkActivityPane extends StatefulWidget {
   const _TalkActivityPane({
     required this.controller,
     this.initialSection = _TalkRailSection.activity,
+    this.onOpenResponsibilities,
   });
 
   final TalkController controller;
   final _TalkRailSection initialSection;
+  final VoidCallback? onOpenResponsibilities;
 
   @override
   State<_TalkActivityPane> createState() => _TalkActivityPaneState();
@@ -6731,6 +6747,16 @@ class _TalkActivityPaneState extends State<_TalkActivityPane> {
                 },
               ),
             ),
+            if (widget.onOpenResponsibilities != null)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                child: TextButton.icon(
+                  key: const Key('talk-responsibilities'),
+                  onPressed: widget.onOpenResponsibilities,
+                  icon: const Icon(Icons.event_repeat_outlined),
+                  label: const Text('Open Responsibilities'),
+                ),
+              ),
             Divider(height: 1, color: scheme.outlineVariant),
             Expanded(
               child: switch (section) {

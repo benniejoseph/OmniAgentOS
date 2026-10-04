@@ -17,6 +17,79 @@ typedef NativeSessionRefresh = Future<void> Function({
   String? rejectedAccessToken,
 });
 
+const _requestAuthorityKey = 'asaelNativeRequestAuthority';
+
+/// Runtime authority for one private write, never an authorization grant stored
+/// with an offline draft. The server still authorizes the selected bearer token.
+class NativeRequestAuthority {
+  const NativeRequestAuthority({
+    required this.tenantId,
+    required this.actorId,
+    required this.canonicalUserId,
+    required this.role,
+    required this.apiBaseUrl,
+    required this.isCurrent,
+  });
+
+  final String tenantId, actorId, canonicalUserId, role, apiBaseUrl;
+  final bool Function() isCurrent;
+
+  static String normalizeApiBaseUrl(String value) {
+    final uri = Uri.tryParse(value);
+    if (uri == null ||
+        !const {'http', 'https'}.contains(uri.scheme) ||
+        uri.host.isEmpty ||
+        uri.userInfo.isNotEmpty ||
+        uri.hasQuery ||
+        uri.hasFragment) {
+      throw const FormatException('The request API address is invalid.');
+    }
+    return uri
+        .replace(
+          host: uri.host.toLowerCase(),
+          path: uri.path.replaceFirst(RegExp(r'/+$'), ''),
+        )
+        .toString();
+  }
+
+  void requireCurrent(String currentApiBaseUrl) {
+    if (tenantId.trim().isEmpty ||
+        actorId.trim().isEmpty ||
+        canonicalUserId.trim().isEmpty ||
+        role.trim().isEmpty ||
+        normalizeApiBaseUrl(currentApiBaseUrl) !=
+            normalizeApiBaseUrl(apiBaseUrl) ||
+        !isCurrent()) {
+      throw const ApiException(
+        'The request authority changed. Reload before retrying.',
+      );
+    }
+  }
+
+  void verifyBootstrap(Object? value) {
+    if (value is! Map) {
+      throw const FormatException('The current request owner is unavailable.');
+    }
+    final context = value['context'],
+        user = value['user'],
+        membership = value['membership'];
+    if (value['authenticated'] != true ||
+        context is! Map ||
+        user is! Map ||
+        membership is! Map ||
+        context['tenantId'] != tenantId ||
+        context['actorId'] != actorId ||
+        context['role'] != role ||
+        membership['role'] != role ||
+        user['id'] != canonicalUserId) {
+      throw const FormatException(
+        'The current request owner does not match the admitted owner.',
+      );
+    }
+    NativeContract.verifyBootstrap(Map<String, dynamic>.from(value));
+  }
+}
+
 final apiClientProvider = Provider<ApiClient>(
   (ref) => createApiClient(ref.watch(secureSessionStoreProvider)),
 );
@@ -110,6 +183,69 @@ ApiClient createApiClient(
     InterceptorsWrapper(
       onRequest: (options, handler) async {
         options.headers.addAll(NativeClientInfo.attestationHeaders());
+        final authority = options.extra[_requestAuthorityKey];
+        if (authority is NativeRequestAuthority) {
+          try {
+            authority.requireCurrent(client.options.baseUrl);
+            authority.requireCurrent(options.baseUrl);
+            final expectedOrigin = Uri.parse(authority.apiBaseUrl).origin;
+            if (options.uri.origin != expectedOrigin) {
+              throw const FormatException(
+                'The private request changed API origin.',
+              );
+            }
+            if (await store.accessTokenNeedsRefresh()) await ensureRefreshed();
+            final token = await store.readToken();
+            authority.requireCurrent(client.options.baseUrl);
+            if (token == null || token.isEmpty) {
+              throw const FormatException(
+                'A current native credential is required.',
+              );
+            }
+            // The raw client has no mutable credential interceptor. Validate and
+            // dispatch the same literal token even if storage changes meanwhile.
+            final bootstrap = await refreshClient.get<Object?>(
+              RequestOptions(
+                baseUrl: options.baseUrl,
+                path: NativePaths.bootstrapGet,
+              ).uri.toString(),
+              options: Options(
+                headers: {
+                  ...NativeClientInfo.attestationHeaders(),
+                  'Authorization': 'Bearer $token',
+                  'Cache-Control': 'no-store',
+                },
+                followRedirects: false,
+              ),
+              cancelToken: options.cancelToken,
+            );
+            if (bootstrap.statusCode != 200 ||
+                bootstrap.requestOptions.headers['Authorization'] !=
+                    'Bearer $token' ||
+                bootstrap.requestOptions.uri.origin != expectedOrigin) {
+              throw const FormatException(
+                'The current request owner could not be verified.',
+              );
+            }
+            authority.verifyBootstrap(bootstrap.data);
+            authority.requireCurrent(options.baseUrl);
+            authority.requireCurrent(client.options.baseUrl);
+            options.headers['Authorization'] = 'Bearer $token';
+            options.followRedirects = false;
+            handler.next(options);
+          } catch (_) {
+            handler.reject(
+              DioException(
+                requestOptions: options,
+                type: DioExceptionType.cancel,
+                error: const ApiException(
+                  'The request owner could not be verified. The original request can be retried after reloading.',
+                ),
+              ),
+            );
+          }
+          return;
+        }
         if (!_isCredentialRoute(options.path) &&
             await store.accessTokenNeedsRefresh()) {
           try {
@@ -132,6 +268,22 @@ ApiClient createApiClient(
           return;
         }
         try {
+          final authority = request.extra[_requestAuthorityKey];
+          if (authority is NativeRequestAuthority) {
+            authority.requireCurrent(client.options.baseUrl);
+            await ensureRefreshed(
+              rejectedAccessToken: _bearerToken(
+                request.headers['Authorization'],
+              ),
+            );
+            authority.requireCurrent(client.options.baseUrl);
+            request.extra['asaelNativeRefreshRetried'] = true;
+            final data = request.data;
+            if (data is FormData) request.data = data.clone();
+            // onRequest validates the exact replacement token before any replay.
+            handler.resolve(await client.fetch<Object?>(request));
+            return;
+          }
           await ensureRefreshed(
             rejectedAccessToken: _bearerToken(request.headers['Authorization']),
           );
@@ -160,6 +312,7 @@ ApiClient createApiClient(
     projectionStore,
     ensureRefreshed,
     sessionEnded.stream,
+    true,
   );
 }
 
@@ -214,6 +367,7 @@ class ApiClient {
     this._projectionStore,
     this._refreshSession,
     this._sessionEnded,
+    this._supportsRequestAuthority = false,
   ]);
   final Dio _dio;
   final Dio _rawDio;
@@ -221,6 +375,11 @@ class ApiClient {
   final OfflineProjectionStore? _projectionStore;
   final NativeSessionRefresh? _refreshSession;
   final Stream<void>? _sessionEnded;
+  final bool _supportsRequestAuthority;
+
+  /// The configured API address, for binding retained local data to this server.
+  /// Callers must validate and normalize it before using it as an identity.
+  String get apiBaseUrl => _dio.options.baseUrl;
 
   /// Fires when a refused request finds no session stored any more, so the
   /// app can sign out instead of showing a session every request fails.
@@ -370,6 +529,53 @@ class ApiClient {
     ),
   );
 
+  Future<Map<String, dynamic>> postJsonAuthorized(
+    String path, {
+    required NativeRequestAuthority authority,
+    Map<String, dynamic>? data,
+    Map<String, dynamic>? headers,
+  }) {
+    _requireAuthorityTransport(authority);
+    return _json(
+      () => _dio.post<Object?>(
+        path,
+        data: data,
+        options: Options(
+          headers: headers,
+          extra: {_requestAuthorityKey: authority},
+        ),
+      ),
+    );
+  }
+
+  Future<Map<String, dynamic>> patchJsonAuthorized(
+    String path, {
+    required NativeRequestAuthority authority,
+    Map<String, dynamic>? data,
+    Map<String, dynamic>? headers,
+  }) {
+    _requireAuthorityTransport(authority);
+    return _json(
+      () => _dio.patch<Object?>(
+        path,
+        data: data,
+        options: Options(
+          headers: headers,
+          extra: {_requestAuthorityKey: authority},
+        ),
+      ),
+    );
+  }
+
+  void _requireAuthorityTransport(NativeRequestAuthority authority) {
+    if (!_supportsRequestAuthority) {
+      throw const ApiException(
+        'This client cannot verify a private request owner.',
+      );
+    }
+    authority.requireCurrent(apiBaseUrl);
+  }
+
   Future<Map<String, dynamic>> patchJson(
     String path, {
     Map<String, dynamic>? data,
@@ -417,7 +623,9 @@ class ApiClient {
     String fileField = 'file',
     Map<String, dynamic>? headers,
     Duration? receiveTimeout,
+    NativeRequestAuthority? authority,
   }) async {
+    if (authority != null) _requireAuthorityTransport(authority);
     final values = <String, dynamic>{...fields};
     if (bytes != null) {
       values[fileField] = MultipartFile.fromBytes(
@@ -432,7 +640,11 @@ class ApiClient {
       () => _dio.post<Object?>(
         path,
         data: FormData.fromMap(values),
-        options: Options(headers: headers, receiveTimeout: receiveTimeout),
+        options: Options(
+          headers: headers,
+          receiveTimeout: receiveTimeout,
+          extra: authority == null ? null : {_requestAuthorityKey: authority},
+        ),
       ),
     );
   }

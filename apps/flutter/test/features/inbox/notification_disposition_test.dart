@@ -19,6 +19,50 @@ const _dispositionId =
     'notification_disposition_111111111111111111111111111111111111111111111111';
 
 void main() {
+  test('Responsibility material change accepts only actual inbox delivery evidence', () {
+    final response = _historyResponse(),
+        original = Map<String, dynamic>.from(
+          (_historyResponse()['dispositions'] as List).single as Map,
+        );
+    final item = {
+      ...original,
+      'sourceKind': 'responsibility_change',
+      'sourceId': 'responsibility:${List.filled(64, 'a').join()}',
+      'reason': 'material_change',
+      'outcome': 'send',
+      'state': 'terminal',
+      'dueAt': null,
+      'deliveryKind': 'notification_ledger',
+      'deliveryBindingSha256': _shaA,
+      'digestDeliveryId': null,
+      'terminalAt': original['updatedAt'],
+    };
+    expect(
+      NotificationDispositionHistory.fromJson({
+        ...response,
+        'dispositions': [item],
+      }).items.single.sourceKind,
+      'responsibility_change',
+    );
+    expect(
+      () => NotificationDispositionHistory.fromJson({
+        ...response,
+        'dispositions': [
+          {...item, 'deliveryKind': 'mobile_push_outbox'},
+        ],
+      }),
+      throwsFormatException,
+    );
+    expect(
+      () => NotificationDispositionHistory.fromJson({
+        ...response,
+        'dispositions': [
+          {...item, 'sourceId': 'other'},
+        ],
+      }),
+      throwsFormatException,
+    );
+  });
   test('loads exact actor-private content-free delivery decisions', () async {
     final api = _DispositionApiClient();
     final history = await ApiInboxRepository(api)

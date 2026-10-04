@@ -1,117 +1,254 @@
+import 'package:dio/dio.dart';
+
 import '../../core/network/api_client.dart';
 import '../../generated/native_contract.g.dart';
 import 'knowledge.dart';
+import 'knowledge_contracts.dart';
 
-class ApiKnowledgeRepository implements KnowledgeRepository {
-  const ApiKnowledgeRepository(this.api);
+/// Live, authenticated reads only. The published catalogue is a bounded
+/// projection and never supplies authority for a mutation or a private label.
+class ApiKnowledgeRepository
+    implements KnowledgeRepository, PagedKnowledgeRepository {
+  ApiKnowledgeRepository(this.api, {this.expectedTenantId});
   final ApiClient api;
-  List<dynamic> _list(Object? value) => value is List ? value : const [];
+  final String? expectedTenantId;
+  final CancelToken _lifetime = CancelToken();
+  bool _disposed = false;
+  void dispose() {
+    _disposed = true;
+    _lifetime.cancel('Knowledge session replaced.');
+  }
+
+  Future<Json> _read(String path, {Json? query}) async {
+    if (_disposed) throw StateError('Knowledge session replaced.');
+    final result = await api.getJsonFreshCancelable(
+      path,
+      query: query,
+      cancelToken: _lifetime,
+    );
+    if (_disposed) throw StateError('Knowledge session replaced.');
+    return result;
+  }
+
+  List<T> _bounded<T>(
+    Object? value,
+    int maximum,
+    T Function(Json) parse,
+    String label,
+  ) {
+    if (value is! List || value.length > maximum) {
+      throw FormatException('$label exceeds its read bound.');
+    }
+    return List<T>.unmodifiable(
+      value.map((item) => parse(knowledgeMap(item, label))),
+    );
+  }
+
+  MemoryRecord _memory(Json value) {
+    for (final field in ['confidence', 'importance']) {
+      final number = value[field];
+      if (number is! num || !number.isFinite || number < 0 || number > 1) {
+        throw FormatException('Memory $field is unavailable or invalid.');
+      }
+    }
+    if (value['title'] is! String) {
+      throw const FormatException('Memory title is unavailable.');
+    }
+    return MemoryRecord.fromJson(value);
+  }
 
   @override
-  Future<KnowledgeState> load({String query = '', String type = 'all'}) async {
-    final response = await api.getJson(
+  Future<KnowledgeState> load({String query = '', String type = 'all'}) =>
+      loadWorkspace(KnowledgeQuery(query: query));
+
+  @override
+  Future<KnowledgeState> loadWorkspace(KnowledgeQuery query) async {
+    final response = await _read(
       NativePaths.memoryIntelligenceGet,
-      query: {
-        'view': 'workspace',
-        if (query.isNotEmpty) 'q': query,
-        'limit': 100,
-      },
+      query: query.parameters('workspace'),
     );
-    final graphJson = response['graph'] is Map
-        ? Map<String, dynamic>.from(response['graph'] as Map)
-        : const <String, dynamic>{};
-    final memoryPage = response['memory'] is Map
-        ? Map<String, dynamic>.from(response['memory'] as Map)
-        : const <String, dynamic>{};
-    final knowledgePage = response['knowledge'] is Map
-        ? Map<String, dynamic>.from(response['knowledge'] as Map)
-        : const <String, dynamic>{};
+    final memory = parseKnowledgePage(
+      response['memory'],
+      _memory,
+      (item) => item.id,
+    );
+    final knowledge = parseKnowledgePage(
+      response['knowledge'],
+      KnowledgeItem.fromJson,
+      (item) => item.id,
+    );
+    final graph = knowledgeMap(response['graph'], 'Relationship sample');
+    final overview = knowledgeMap(response['overview'], 'Memory overview');
+    if (overview['version'] != 'memory-intelligence-observatory:4' ||
+        overview['generatedAt'] is! String ||
+        DateTime.tryParse(overview['generatedAt'] as String) == null) {
+      throw const FormatException(
+        'Memory overview version or observation time is unavailable.',
+      );
+    }
+    knowledgeMap(overview['summary'], 'Memory summary');
+    knowledgeMap(overview['steward'], 'Memory steward');
+    final nodes = _bounded(
+      graph['nodes'],
+      100,
+      GraphNode.fromJson,
+      'Relationship points',
+    );
+    final edges = _bounded(
+      graph['edges'],
+      200,
+      GraphEdge.fromJson,
+      'Relationship links',
+    );
+    if (nodes.map((item) => item.id).toSet().length != nodes.length) {
+      throw const FormatException(
+        'Relationship sample contains duplicate identities.',
+      );
+    }
     return KnowledgeState(
-      memories: _list(memoryPage['items'])
-          .whereType<Map>()
-          .map((e) => MemoryRecord.fromJson(Map<String, dynamic>.from(e)))
-          .where((e) => type == 'all' || e.type == type)
-          .toList(),
-      knowledge: _list(knowledgePage['items'])
-          .whereType<Map>()
-          .map((e) => KnowledgeItem.fromJson(Map<String, dynamic>.from(e)))
-          .toList(),
-      nodes: _list(graphJson['nodes'])
-          .whereType<Map>()
-          .map((e) => GraphNode.fromJson(Map<String, dynamic>.from(e)))
-          .toList(),
-      edges: _list(graphJson['edges'])
-          .whereType<Map>()
-          .map((e) => GraphEdge.fromJson(Map<String, dynamic>.from(e)))
-          .toList(),
-      stats: graphJson['stats'] is Map
-          ? Map<String, dynamic>.from(graphJson['stats'] as Map)
-          : const {},
-      overview: response['overview'] is Map
-          ? Map<String, dynamic>.from(response['overview'] as Map)
-          : const {},
+      memories: memory.items,
+      knowledge: knowledge.items,
+      nodes: nodes,
+      edges: edges,
+      stats: freezeKnowledgeJson(
+        knowledgeMap(graph['stats'], 'Relationship statistics'),
+      ) as Json,
+      overview: freezeKnowledgeJson(overview) as Json,
+      memoryCursor: memory.nextCursor,
+      knowledgeCursor: knowledge.nextCursor,
+      memoryCatalogTotal: memory.catalogTotal,
+      knowledgeCatalogTotal: knowledge.catalogTotal,
+    );
+  }
+
+  @override
+  Future<KnowledgePage<MemoryRecord>> loadMemoryPage(
+    KnowledgeQuery query,
+    String cursor,
+  ) async {
+    final response = await _read(
+      NativePaths.memoryIntelligenceGet,
+      query: query.parameters(
+        'memory',
+        cursor: knowledgeIdentity(cursor, 'Memory cursor', maximum: 1000),
+      ),
+    );
+    return parseKnowledgePage(response['memory'], _memory, (item) => item.id);
+  }
+
+  @override
+  Future<KnowledgePage<KnowledgeItem>> loadKnowledgePage(
+    KnowledgeQuery query,
+    String cursor,
+  ) async {
+    final response = await _read(
+      NativePaths.memoryIntelligenceGet,
+      query: query.parameters(
+        'knowledge',
+        cursor: knowledgeIdentity(cursor, 'Source cursor', maximum: 1000),
+      ),
+    );
+    return parseKnowledgePage(
+      response['knowledge'],
+      KnowledgeItem.fromJson,
+      (item) => item.id,
     );
   }
 
   @override
   Future<MemoryRecord> getMemory(String id) async {
-    final response = await api.getJson(NativePaths.memoryGet(id));
-    if (response['memory'] is! Map) {
-      throw const FormatException('The selected memory is unavailable.');
+    knowledgeIdentity(id, 'Selected memory');
+    final response = await _read(NativePaths.memoryGet(id));
+    final value = knowledgeMap(response['memory'], 'Selected memory');
+    if (value['id'] != id ||
+        value['content'] is! String ||
+        value['title'] is! String ||
+        (expectedTenantId != null && value['tenantId'] != expectedTenantId)) {
+      throw const FormatException(
+        'The exact memory identity or workspace could not be verified.',
+      );
     }
-    return MemoryRecord.fromJson(
-      Map<String, dynamic>.from(response['memory'] as Map),
-    );
+    knowledgeMap(value['access'], 'Memory classification');
+    knowledgeMap(value['explainability'], 'Memory provenance');
+    return _memory(value);
   }
 
   @override
-  Future<void> addMemory(Json input) => Future.error(
-    UnsupportedError(
-      'Memory mutations are not published by native contract v8.',
-    ),
-  );
-  @override
-  Future<void> correctMemory(String id, Json input) => Future.error(
-    UnsupportedError(
-      'Memory mutations are not published by native contract v8.',
-    ),
-  );
-  @override
   Future<MemoryForgetPreview> previewForgetMemory(String id) async {
-    final response = await api.getJson(
+    knowledgeIdentity(id, 'Selected memory');
+    final response = await _read(
       NativePaths.memoryGet(id),
       query: {'view': 'deletion-preview'},
     );
-    final preview = response['preview'];
-    if (preview is! Map) {
+    final preview = knowledgeMap(
+      response['preview'],
+      'Deletion impact preview',
+    );
+    final memory = knowledgeMap(preview['memory'], 'Deletion preview memory');
+    final impact = knowledgeMap(preview['impact'], 'Deletion impact');
+    final descendants = preview['descendantMemories'];
+    if (preview['schemaVersion'] != 1 ||
+        preview['contractKind'] != 'memory_deletion_preview' ||
+        !['ready', 'already_deleted'].contains(preview['state']) ||
+        memory['id'] != id ||
+        ![
+          'rollback_proof_barrier',
+          'best_effort',
+        ].contains(preview['guarantee']) ||
+        preview['expectedReceiptManifestSha256'] is! String ||
+        !RegExp(r'^[a-f0-9]{64}$')
+            .hasMatch(preview['expectedReceiptManifestSha256'] as String) ||
+        preview['generatedAt'] is! String ||
+        DateTime.tryParse(preview['generatedAt'] as String) == null ||
+        descendants is! List) {
       throw const FormatException(
-        'The deletion impact preview is unavailable.',
+        'The exact deletion impact preview is incomplete.',
       );
     }
-    final result = MemoryForgetPreview.fromJson(
-      Map<String, dynamic>.from(preview),
-    );
-    if (result.expectedReceiptManifestSha256.isEmpty) {
-      throw const FormatException('The deletion impact preview is incomplete.');
+    for (final key in [
+      'rootMemoryCount',
+      'descendantMemoryCount',
+      'retrievalTraceCount',
+      'graphNodeCount',
+      'graphEdgeCount',
+      'pendingAgentRunCount',
+      'pendingWorkflowRunCount',
+    ]) {
+      knowledgeCount(impact[key], 'Deletion impact $key');
     }
-    return result;
+    final descendantIds = descendants
+        .map(
+          (value) => knowledgeIdentity(
+            knowledgeMap(value, 'Derived memory')['id'],
+            'Derived memory',
+          ),
+        )
+        .toSet();
+    if (impact['rootMemoryCount'] != 1 ||
+        impact['descendantMemoryCount'] != descendants.length ||
+        descendantIds.length != descendants.length ||
+        descendantIds.contains(id)) {
+      throw const FormatException(
+        'Deletion impact identities or counts disagree.',
+      );
+    }
+    return MemoryForgetPreview.fromJson(preview);
   }
 
-  @override
-  Future<void> forgetMemory(String id, String expectedManifestSha256) async {
-    throw UnsupportedError(
-      'Memory mutations are not published by native contract v8.',
-    );
-  }
-
-  @override
-  Future<void> rebuildGraph() => Future.error(
-    UnsupportedError('Graph rebuild is not published by native contract v8.'),
+  Never _unsupported(String action) => throw UnsupportedError(
+    '$action is not published by native contract ${NativeContract.currentVersion}.',
   );
   @override
-  Future<void> deleteConnectedSource(String source) => Future.error(
-    UnsupportedError(
-      'Knowledge source deletion is not published by native contract v8.',
-    ),
-  );
+  Future<void> addMemory(Json input) async => _unsupported('Memory creation');
+  @override
+  Future<void> correctMemory(String id, Json input) async =>
+      _unsupported('Memory correction');
+  @override
+  Future<void> forgetMemory(String id, String expectedManifestSha256) async =>
+      _unsupported('Memory forgetting');
+  @override
+  Future<void> rebuildGraph() async => _unsupported('Relationship rebuilding');
+  @override
+  Future<void> deleteConnectedSource(String source) async =>
+      _unsupported('Knowledge source deletion');
 }

@@ -56,6 +56,13 @@ task_run_suite() {
   "$task_build_dir/$task_name"
 }
 
+# Includes process-termination and atomic-publication recovery cases. These
+# are crash-boundary checks, not certification against machine power loss.
+task_run_suite RecoveryStorageBrokerTests RECOVERY_STORAGE_POLICY_TESTS \
+  -framework CryptoKit \
+  "$task_macos_dir/Runner/RecoveryStorageBroker.swift" \
+  "$task_macos_dir/RunnerTests/RecoveryStorageBrokerTests.swift"
+
 task_run_suite CredentialBrokerPolicyTests ASAEL_CREDENTIAL_BROKER_TESTING \
   "${task_credential_broker_frameworks[@]}" \
   "$task_macos_dir/CredentialBroker/BrokerMain.swift" \

@@ -14,7 +14,7 @@ class CaptureSelectionPanel extends StatelessWidget {
   });
 
   final List<SelectedCaptureFile> files;
-  final ValueChanged<SelectedCaptureFile> onRemove;
+  final ValueChanged<SelectedCaptureFile>? onRemove;
 
   @override
   Widget build(BuildContext context) {
@@ -46,24 +46,27 @@ class CaptureSelectionPanel extends StatelessWidget {
           ),
           const SizedBox(height: 4),
           const Text(
-            'Each file becomes its own cited knowledge source. Files are read and encrypted only after you queue the batch.',
+            'Each file keeps its original identity. Files are read and encrypted after you queue them; processing may return partial or unsupported extraction.',
           ),
           const SizedBox(height: 10),
           for (final item in files)
-            ListTile(
-              dense: true,
-              contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.description_outlined),
-              title: Text(
-                item.file.name,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-              subtitle: Text(_fileSize(item.length)),
-              trailing: IconButton(
-                tooltip: 'Remove from batch',
-                onPressed: () => onRemove(item),
-                icon: const Icon(Icons.close_rounded),
+            Material(
+              type: MaterialType.transparency,
+              child: ListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.description_outlined),
+                title: Text(
+                  item.file.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                subtitle: Text(_fileSize(item.length)),
+                trailing: IconButton(
+                  tooltip: 'Remove from batch',
+                  onPressed: onRemove == null ? null : () => onRemove!(item),
+                  icon: const Icon(Icons.close_rounded),
+                ),
               ),
             ),
         ],
@@ -123,7 +126,7 @@ class CaptureBatchProgressPanel extends StatelessWidget {
                       style: Theme.of(context).textTheme.titleMedium,
                     ),
                     Text(
-                      '$active active · $completed indexed${failed > 0 ? ' · $failed need attention' : ''}',
+                      '$active active · $completed processing jobs completed${failed > 0 ? ' · $failed need attention' : ''}',
                     ),
                   ],
                 ),
@@ -185,9 +188,18 @@ class _CaptureBatchItemTile extends StatelessWidget {
     };
     final hasLocalCopy = controller.pending.any((entry) => entry.id == item.id);
     final action = switch (item.state) {
+      CaptureBatchState.queued when item.retryable => IconButton(
+        tooltip: 'Retry upload with existing request key',
+        onPressed: !controller.canWrite || controller.syncing
+            ? null
+            : () => unawaited(controller.retryBatchItem(item.id)),
+        icon: const Icon(Icons.refresh_rounded),
+      ),
       CaptureBatchState.failed when item.retryable => IconButton(
-        tooltip: 'Retry upload',
-        onPressed: controller.syncing
+        tooltip: item.outcomeUnconfirmed
+            ? 'Recover submission with same request key'
+            : 'Retry upload',
+        onPressed: !controller.canWrite || controller.syncing
             ? null
             : () => unawaited(controller.retryBatchItem(item.id)),
         icon: const Icon(Icons.refresh_rounded),
@@ -208,28 +220,38 @@ class _CaptureBatchItemTile extends StatelessWidget {
       ),
       _ => null,
     };
-    return ListTile(
-      dense: true,
-      contentPadding: EdgeInsets.zero,
-      leading:
-          item.state == CaptureBatchState.uploading ||
-              item.state == CaptureBatchState.processing
-          ? SizedBox.square(
-              dimension: 22,
-              child: CircularProgressIndicator(strokeWidth: 2.2, color: color),
-            )
-          : Icon(icon, color: color),
-      title: Text(item.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-      subtitle: Text(
-        [
-          _captureBatchStateLabel(item.state),
-          if (item.progressStage != null) _humanizeStage(item.progressStage!),
-          if (item.detail != null) item.detail!,
-        ].join(' · '),
-        maxLines: 2,
-        overflow: TextOverflow.ellipsis,
+    return Material(
+      type: MaterialType.transparency,
+      child: ListTile(
+        dense: true,
+        contentPadding: EdgeInsets.zero,
+        leading:
+            item.state == CaptureBatchState.uploading ||
+                item.state == CaptureBatchState.processing
+            ? SizedBox.square(
+                dimension: 22,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2.2,
+                  color: color,
+                ),
+              )
+            : Icon(icon, color: color),
+        title: Text(item.name),
+        subtitle: Text(
+          [
+            item.outcomeUnconfirmed
+                ? 'Outcome unconfirmed'
+                : item.state == CaptureBatchState.queued && item.retryable
+                ? 'Review required'
+                : _captureBatchStateLabel(item.state),
+            if (item.progressStage != null) _humanizeStage(item.progressStage!),
+            if (item.detail != null) item.detail!,
+            if (item.jobId != null) 'Job: ${item.jobId}',
+            if (item.source != null) 'Source: ${item.source}',
+          ].join(' · '),
+        ),
+        trailing: action,
       ),
-      trailing: action,
     );
   }
 }
@@ -239,6 +261,7 @@ Future<void> _confirmBatchDiscard(
   CaptureController controller,
   String entryId,
 ) async {
+  final generation = controller.generation;
   final confirmed = await showDialog<bool>(
     context: context,
     builder: (dialogContext) => AlertDialog(
@@ -258,7 +281,9 @@ Future<void> _confirmBatchDiscard(
       ],
     ),
   );
-  if (confirmed == true) await controller.discard(entryId);
+  if (confirmed == true) {
+    await controller.discard(entryId, reviewedGeneration: generation);
+  }
 }
 
 const captureDocumentExtensions = <String>[
@@ -352,7 +377,9 @@ String? captureSelectionMessage({
     if (duplicate > 0) '$duplicate duplicate',
     if (full > 0) '$full beyond the available encrypted outbox capacity',
   ];
-  if (reasons.isEmpty) return null;
+  if (reasons.isEmpty) {
+    return null;
+  }
   final count = duplicate + empty + tooLarge + full;
   return '$count ${count == 1 ? 'file was' : 'files were'} not added (${reasons.join(', ')}).';
 }
@@ -384,7 +411,9 @@ String _captureBatchStateLabel(CaptureBatchState state) => switch (state) {
 
 String _humanizeStage(String value) {
   final normalized = value.trim().replaceAll(RegExp(r'[_-]+'), ' ');
-  if (normalized.isEmpty) return 'Working';
+  if (normalized.isEmpty) {
+    return 'Working';
+  }
   return '${normalized[0].toUpperCase()}${normalized.substring(1)}';
 }
 

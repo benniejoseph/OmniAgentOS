@@ -7,6 +7,77 @@ import 'package:flutter_test/flutter_test.dart';
 import 'activity_fixture.dart';
 
 void main() {
+  test(
+    'Responsibility update maps only its exact canonical notification link',
+    () {
+      final responsibility = 'responsibility:${List.filled(64, 'a').join()}';
+      final row = {
+        ...reminderFixture(),
+        'workKey': responsibility,
+        'references': [
+          {'kind': 'notification', 'id': 'reminder-one'},
+        ],
+        'href': '/app/responsibilities/${Uri.encodeComponent(responsibility)}',
+      };
+      final item = snapshot(items: [row]).items.single;
+      expect(
+        item.nativeLocation,
+        '/responsibilities/${Uri.encodeComponent(responsibility)}',
+      );
+      expect(item.sourceLabel, 'Open Responsibility');
+      expect(item.responsibilityId, responsibility);
+      for (final status in ['read', 'dismissed']) {
+        final history = snapshot(
+          items: [
+            {...row, 'status': status, 'group': 'history'},
+          ],
+        ).items.single;
+        expect(history.nativeLocation, item.nativeLocation);
+      }
+    },
+  );
+  test('Responsibility Activity rejects broad or misleading destination coordinates', () {
+    final responsibility = 'responsibility:${List.filled(64, 'a').join()}';
+    final row = {
+      ...reminderFixture(),
+      'workKey': responsibility,
+      'references': [
+        {'kind': 'notification', 'id': 'reminder-one'},
+      ],
+      'href': '/app/responsibilities/${Uri.encodeComponent(responsibility)}',
+    };
+    for (final bad in [
+      {
+        ...row,
+        'href':
+            '/app/responsibilities/${Uri.encodeComponent(responsibility)}?id=other',
+      },
+      {...row, 'href': '/app/responsibilities/$responsibility'},
+      {
+        ...row,
+        'href':
+            '/app/responsibilities/${Uri.encodeComponent(responsibility)}#other',
+      },
+      {...row, 'href': '/app'},
+      {...row, 'workKey': responsibility.toUpperCase()},
+      {...row, 'status': 'snoozed'},
+      {...row, 'status': 'acted'},
+      {...row, 'status': 'read'},
+      {
+        ...row,
+        'references': [
+          {'kind': 'notification', 'id': 'reminder-one'},
+          {'kind': 'today_item', 'id': 'other'},
+        ],
+      },
+      {
+        ...row,
+        'sourceRef': {'kind': 'notification', 'id': 'other'},
+      },
+    ]) {
+      expect(() => snapshot(items: [bad]), throwsFormatException);
+    }
+  });
   test('keeps distinct occurrences sharing one work identity', () {
     final value = snapshot(
       items: [

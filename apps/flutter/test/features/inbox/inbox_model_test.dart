@@ -66,6 +66,73 @@ final _emptyNotifications = NotificationCenter(
 );
 
 void main() {
+  test('Responsibility notices expose an exact target and only read/dismiss actions', () {
+    final id = 'responsibility:${List.filled(64, 'a').join()}';
+    final body = {
+      'id': 'notice-one',
+      'title': 'Responsibility change',
+      'kind': 'responsibility_change',
+      'sourceType': 'responsibility_change',
+      'sourceId': id,
+      'occurrenceKey':
+          'responsibility-notification:${List.filled(64, 'b').join()}',
+      'urgency': 'update',
+      'status': 'unread',
+      'dueAt': '2026-10-04T00:00:00.000Z',
+      'snoozedUntil': null,
+    };
+    final notice = PersonalNotification.fromJson(body);
+    expect(notice.responsibilityId, id);
+    expect(notice.allows(NotificationAction.read), isTrue);
+    expect(notice.allows(NotificationAction.dismiss), isTrue);
+    expect(notice.allows(NotificationAction.snooze), isFalse);
+    expect(notice.allows(NotificationAction.complete), isFalse);
+    for (final bad in [
+      {...body, 'sourceId': '$id/other'},
+      {...body, 'sourceType': 'today_item'},
+      {...body, 'occurrenceKey': 'other'},
+      {...body, 'status': 'acted'},
+      {...body, 'urgency': 'overdue'},
+      {...body, 'snoozedUntil': '2026-10-04T01:00:00.000Z'},
+    ]) {
+      expect(() => PersonalNotification.fromJson(bad), throwsFormatException);
+    }
+  });
+  testWidgets(
+    'Responsibility card opens its exact source and has no reminder buttons',
+    (tester) async {
+      final id = 'responsibility:${List.filled(64, 'a').join()}',
+          opened = <String>[];
+      final notice = PersonalNotification(
+        id: 'notice-one',
+        title: 'Responsibility change',
+        status: 'unread',
+        urgency: 'update',
+        dueAt: DateTime.utc(2026, 10, 4),
+        kind: 'responsibility_change',
+        sourceId: id,
+        occurrenceKey:
+            'responsibility-notification:${List.filled(64, 'b').join()}',
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: NotificationCard(
+              notification: notice,
+              busy: false,
+              onAction: (_, {snoozeMinutes}) {},
+              onOpenResponsibility: opened.add,
+            ),
+          ),
+        ),
+      );
+      expect(find.text('Snooze 15m'), findsNothing);
+      expect(find.text('Complete'), findsNothing);
+      expect(find.textContaining('Recorded in this inbox'), findsOneWidget);
+      await tester.tap(find.text('Open Responsibility'));
+      expect(opened, [id]);
+    },
+  );
   test('decodes unified approval queue', () {
     final queue = ApprovalQueue.fromJson({
       'items': [
