@@ -26,7 +26,9 @@ describe("truthful recovery boundaries", () => {
   it("announces a mission read without implying that missions are running", () => {
     const html = renderToStaticMarkup(createElement(MissionsLoading));
     expect(html).toContain('role="status" aria-busy="true"');
-    expect(html).toContain("Mission status is not available yet");
+    expect(html).toContain("Loading mission history.");
+    expect(html).toContain("Historical counts and status are not confirmed yet.");
+    expect(html).toContain("Workspace navigation remains available.");
     expect(html).not.toContain("animate-pulse");
     expect(html).not.toContain("<button");
   });

@@ -76,6 +76,23 @@ DEVICE_GUARD = r"""(() => {
 })();"""
 
 
+def wait_for_theme_colors(page, coarse):
+    # The theme preference/dataset can settle before inherited text colors do.
+    # Wait for actual shell and selected-control colors, keeping axe's full
+    # contrast check intact rather than sampling the light/dark token swap.
+    theme = page.locator("html").get_attribute("data-theme")
+    palette = {"light": ["rgb(36, 35, 33)", "rgb(105, 100, 94)", "rgb(255, 255, 255)", "rgb(250, 249, 246)"],
+               "dark": ["rgb(244, 241, 234)", "rgb(184, 179, 170)", "rgb(34, 35, 37)", "rgb(25, 26, 27)"]}[theme]
+    page.wait_for_function("""({theme,coarse,palette})=>{
+      const surface=document.querySelector(coarse?'nav[aria-label="Everyday workspace navigation"]':'#desktop-workspace-navigation');
+      const muted=surface?.querySelector(coarse?'a.text-muted > span':'.block.truncate.text-xs');
+      const selected=document.querySelector(coarse?'button[aria-label^="Theme: "]':'button[aria-label="'+theme[0].toUpperCase()+theme.slice(1)+' theme"] > span');
+      return document.documentElement.dataset.theme===theme && surface && muted && selected &&
+        getComputedStyle(document.body).color===palette[0] && getComputedStyle(selected).color===palette[0] &&
+        getComputedStyle(muted).color===palette[1] && getComputedStyle(surface).backgroundColor===palette[coarse?3:2];
+    }""", arg={"theme": theme, "coarse": coarse, "palette": palette}, timeout=10_000)
+
+
 def capture(page, checks, name, coarse, target=None, axe=True):
     page.evaluate("window.scrollTo(0,0)"); settle(page)
     checks.check(name + ": expected pointer", page.evaluate("matchMedia('(pointer:coarse)').matches") == coarse)
@@ -87,6 +104,7 @@ def capture(page, checks, name, coarse, target=None, axe=True):
     })""", 48 if coarse else 44)
     checks.check(name + ": accessible control targets", not short, short)
     if axe:
+        wait_for_theme_colors(page, coarse)
         if not page.evaluate("Boolean(window.axe)"): page.add_script_tag(path=str(checks.axe))
         result = page.evaluate("""async()=>{const result=await axe.run({exclude:[['nextjs-portal']]},{runOnly:{type:'tag',values:['wcag2a','wcag2aa','wcag21a','wcag21aa','wcag22aa']}});return {violations:result.violations.map(v=>({id:v.id,impact:v.impact,nodes:v.nodes.map(n=>({target:n.target,summary:n.failureSummary}))})),incomplete:result.incomplete.map(v=>v.id),passes:result.passes.length};}""")
         (checks.output / (name + "-axe.json")).write_text(json.dumps(result, indent=2))
