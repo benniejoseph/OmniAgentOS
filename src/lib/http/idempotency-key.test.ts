@@ -33,6 +33,13 @@ const CONTRACT_KEYED_ROUTE_EXPORTS = new Set([
   "src/app/api/memory/reconciliation/route.ts PATCH",
 ]);
 
+// This shared route retains its unkeyed legacy web envelope. Its strict native
+// contract branch validates the standard key before authorization; route tests
+// also verify missing keys and mobile legacy-envelope rejection behavior.
+const CONTRACT_KEYED_ROUTE_EXPORTS = new Set([
+  "src/app/api/memory/reconciliation/route.ts PATCH",
+]);
+
 function request(method: string, headers: Record<string, string> = {}) {
   return new Request("http://asael.test/api/items/item-a", { method, headers });
 }
