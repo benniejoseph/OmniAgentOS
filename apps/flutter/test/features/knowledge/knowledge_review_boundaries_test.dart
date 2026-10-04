@@ -108,6 +108,12 @@ void main() {
   testWidgets(
     'private review is readable at phone width and 200 percent text without a decision grant',
     (tester) async {
+      final previousHitTestPolicy =
+          WidgetController.hitTestWarningShouldBeFatal;
+      WidgetController.hitTestWarningShouldBeFatal = true;
+      addTearDown(() {
+        WidgetController.hitTestWarningShouldBeFatal = previousHitTestPolicy;
+      });
       tester.view.devicePixelRatio = 1;
       tester.view.physicalSize = const Size(320, 800);
       addTearDown(tester.view.resetDevicePixelRatio);
@@ -127,28 +133,40 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
+      final inspect = find.widgetWithText(
+        OutlinedButton,
+        'Inspect exact review',
+      );
       await tester.scrollUntilVisible(
-        find.text('Inspect exact review'),
+        inspect,
         250,
         scrollable: find.byType(Scrollable).first,
       );
-      await tester.tap(find.text('Inspect exact review'));
+      // ensureVisible finishes by changing the scroll offset. Paint that frame
+      // before checking or tapping the actual button at this text scale.
       await tester.pumpAndSettle();
+      expect(inspect.hitTestable(), findsOneWidget);
+      await tester.tap(inspect);
+      await tester.pumpAndSettle();
+      expect(repo.reads.single.id, 'review:one');
       await tester.scrollUntilVisible(
         find.textContaining('no current decision token'),
         300,
         scrollable: find.byType(Scrollable).first,
       );
+      await tester.pumpAndSettle();
       expect(find.textContaining('no current decision token'), findsOneWidget);
+      final confirm = find.widgetWithText(OutlinedButton, 'Confirm candidate');
       await tester.scrollUntilVisible(
-        find.text('Confirm candidate'),
+        confirm,
         400,
         maxScrolls: 100,
         scrollable: find.byType(Scrollable).first,
       );
-      final button = tester.widget<OutlinedButton>(
-        find.widgetWithText(OutlinedButton, 'Confirm candidate'),
-      );
+      await tester.pumpAndSettle();
+      expect(tester.getRect(confirm).top, greaterThanOrEqualTo(0));
+      expect(tester.getRect(confirm).bottom, lessThanOrEqualTo(800));
+      final button = tester.widget<OutlinedButton>(confirm);
       expect(button.onPressed, isNull);
       expect(find.text('Keep both'), findsNothing);
       expect(repo.submissions, isEmpty);

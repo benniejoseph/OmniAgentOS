@@ -2019,7 +2019,7 @@ function nativeReconciliationReviewToken(
 function nativeAcceptanceFromEvent(row: Record<string, unknown>, review: MemoryReconciliationReview) {
   const payload = databaseRecord(row.payload);
   const stored = databaseRecord(payload?.nativeAcceptance);
-  if (!stored || payload?.digestsForgottenAt) return null;
+  if (!payload || !stored || payload.digestsForgottenAt) return null;
   // Tokens are non-secret keyed metadata, but the general event redactor
   // deliberately removes Token-named fields. Store its digest under this alias.
   const { expectedReviewSha256, ...rest } = stored;
