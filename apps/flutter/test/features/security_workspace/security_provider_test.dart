@@ -5,21 +5,20 @@ import 'package:asael/features/auth/application/biometric_session_lock_controlle
 import 'package:asael/features/auth/application/session_controller.dart';
 import 'package:asael/features/auth/data/session_repository.dart';
 import 'package:asael/features/auth/domain/app_session.dart';
-import 'package:asael/features/quality/quality_controller.dart';
-import 'package:asael/features/quality/quality_providers.dart';
-import 'package:asael/features/quality/quality_workspace_view.dart';
+import 'package:asael/features/security/security_controller.dart';
+import 'package:asael/features/security/security_providers.dart';
+import 'package:asael/features/security/security_workspace_view.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'quality_test_fixtures.dart';
-import 'quality_test_support.dart';
+import 'security_test_support.dart';
 
 AppSession _session({
   String tenant = 'tenant-a',
   String actor = 'owner@example.test',
-  String user = qualityUser,
+  String user = securityUser,
   String role = 'admin',
 }) => AppSession(
   tenantId: tenant,
@@ -39,7 +38,7 @@ class _Sessions extends SessionController {
 
 class _NoSessionEffects extends Fake implements SessionRepository {}
 
-class _MutableOriginApi extends QualityTestApi {
+class _MutableOriginApi extends SecurityTestApi {
   String origin = 'https://workspace.example.test';
   @override
   String get apiBaseUrl => origin;
@@ -72,20 +71,17 @@ void main() {
     'repository',
   ]) {
     test(
-      '$change replacement synchronously clears old evidence before provider rebuild',
+      '$change replacement clears outgoing Security before provider rebuild',
       () async {
-        final previous = FlutterError.onError, errors = <FlutterErrorDetails>[];
+        final prior = FlutterError.onError, errors = <FlutterErrorDetails>[];
         FlutterError.onError = errors.add;
         addTearDown(() {
-          FlutterError.onError = previous;
+          FlutterError.onError = prior;
           expect(errors, isEmpty);
         });
         var api = _MutableOriginApi();
-        final first = api, lock = _Lock();
+        final original = api, lock = _Lock();
         late _Sessions sessions;
-        api.reader = (path) async => path == '/api/evaluations'
-            ? qualityEvaluationsJson()
-            : qualityReleaseJson();
         final container = ProviderContainer(
           overrides: [
             apiClientProvider.overrideWith((ref) => api),
@@ -97,21 +93,24 @@ void main() {
         );
         addTearDown(container.dispose);
         await container.read(sessionControllerProvider.future);
-        final provider = qualityControllerProvider('visibility');
-        final subscription = container.listen(provider, (_, _) {});
+        final provider = securityControllerProvider('visible'),
+            subscription = container.listen(
+              securityControllerProvider('visible'),
+              (_, _) {},
+            );
         addTearDown(subscription.close);
         final c = container.read(provider)!;
-        final repository = container.read(qualityRepositoryProvider)!;
+        final repository = container.read(securityRepositoryProvider)!;
         await c.refresh();
-        for (final source in QualitySource.values) {
+        for (final source in SecuritySource.values) {
           expect(c.lane(source).data, isNotNull);
           expect(c.lane(source).receivedAt, isNotNull);
         }
-        final selectedId = c.evaluations.data!.runs.first.id;
+        final selectedId = c.context.data!.rules.first.action;
         c.select(selectedId);
         final held = Completer<Map<String, dynamic>>();
         api.reader = (_) => held.future;
-        final pending = c.refreshSource(QualitySource.release);
+        final pending = c.refreshSource(SecuritySource.retention);
         await Future<void>.value();
         expect(c.selectedId, selectedId);
         var notifications = 0;
@@ -126,59 +125,61 @@ void main() {
               _session(user: '22222222-2222-4222-8222-222222222222'),
             );
           case 'role':
-            sessions.replace(_session(role: 'viewer'));
+            sessions.replace(_session(role: 'operator'));
           case 'API':
             api = _MutableOriginApi();
             container.invalidate(apiClientProvider);
           case 'API base':
-            first.origin = 'https://other-workspace.example.test';
+            original.origin = 'https://other-workspace.example.test';
           case 'lock':
             lock.protect();
           case 'repository':
-            container.invalidate(qualityRepositoryProvider);
+            container.invalidate(securityRepositoryProvider);
         }
         expect(c.available, isFalse);
-        for (final source in QualitySource.values) {
+        for (final source in SecuritySource.values) {
           expect(c.lane(source).data, isNull);
           expect(c.lane(source).receivedAt, isNull);
         }
         expect(c.selectedId, isNull);
-        expect(first.tokens.last.isCancelled, isTrue);
+        expect(original.tokens.last.isCancelled, isTrue);
         if (change == 'API base') {
           expect(notifications, 0);
-          first.origin = 'https://workspace.example.test';
+          original.origin = 'https://workspace.example.test';
           expect(repository.current, isFalse);
           expect(c.available, isFalse);
           await Future<void>.value();
           expect(notifications, greaterThan(0));
           await expectLater(
-            repository.evaluations(CancelToken()),
+            repository.context(CancelToken()),
             throwsStateError,
           );
         }
-        held.complete(qualityReleaseJson());
+        held.complete(securityRetentionJson());
         await pending;
         await c.refresh();
-        expect(first.paths, hasLength(3));
-        expect(c.release.data, isNull);
+        expect(original.paths, hasLength(5));
+        expect(c.retention.data, isNull);
       },
     );
   }
-
   testWidgets(
-    'same-owner repository replacement removes old selected detail and hidden return reads fresh',
+    'same-owner repository replacement and hidden return discard old inspector content',
     (tester) async {
-      tester.view.physicalSize = const Size(900, 1100);
+      tester.view.physicalSize = const Size(900, 1200);
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
-      final api = QualityTestApi();
-      var suite = 'Private prior suite';
+      final api = SecurityTestApi();
+      var description = 'Prior private rule';
       api.reader = (path) async {
-        if (path != '/api/evaluations') return qualityReleaseJson();
-        final data = qualityEvaluationsJson();
-        ((data['runs'] as List).single as Map)['suite'] = suite;
-        return data;
+        final json = securityResponse(path);
+        if (path == '/api/security/context') {
+          (((json['policy'] as Map)['rbacRules'] as List).first
+                  as Map)['description'] =
+              description;
+        }
+        return json;
       };
       final container = ProviderContainer(
         overrides: [
@@ -192,45 +193,42 @@ void main() {
       Widget app(bool shown) => UncontrolledProviderScope(
         container: container,
         child: MaterialApp(
-          home: TickerMode(enabled: shown, child: const NativeQualityPage()),
+          home: TickerMode(enabled: shown, child: const NativeSecurityPage()),
         ),
       );
       await tester.pumpWidget(app(true));
       await tester.pumpAndSettle();
-      await tester.ensureVisible(
-        find.byKey(const ValueKey('quality-run-eval-run-1')),
+      final row = find.byKey(const ValueKey('security-rule-read.security'));
+      await tester.scrollUntilVisible(
+        row,
+        200,
+        scrollable: find.byType(Scrollable).first,
       );
-      await tester.tap(find.byKey(const ValueKey('quality-run-eval-run-1')));
+      await tester.pumpAndSettle();
+      await tester.tap(row);
       await tester.pumpAndSettle();
       expect(find.text('Evidence detail'), findsOneWidget);
-      expect(find.text('Private prior suite'), findsWidgets);
-      suite = 'Fresh replacement suite';
-      container.invalidate(qualityRepositoryProvider);
+      description = 'Fresh private rule';
+      container.invalidate(securityRepositoryProvider);
       await tester.pumpAndSettle();
-      expect(find.text('Private prior suite'), findsNothing);
+      expect(find.text('Prior private rule'), findsNothing);
       expect(find.text('Evidence detail'), findsNothing);
-      expect(find.text('Fresh replacement suite'), findsOneWidget);
       final before = api.paths.length;
       await tester.pumpWidget(app(false));
       await tester.pumpAndSettle();
-      expect(find.text('Fresh replacement suite'), findsNothing);
-      suite = 'New visibility suite';
+      expect(find.text('Fresh private rule'), findsNothing);
+      description = 'New visibility rule';
       await tester.pumpWidget(app(true));
       await tester.pumpAndSettle();
-      expect(api.paths.length, before + 2);
-      expect(find.text('New visibility suite'), findsOneWidget);
+      expect(api.paths.length, before + 4);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox.shrink());
     },
   );
-
   testWidgets(
-    'backgrounding drops private content and resumes with a new visibility read',
+    'backgrounding clears evidence and resumes with four fresh GETs',
     (tester) async {
-      final api = QualityTestApi()
-        ..reader = (path) async => path == '/api/evaluations'
-            ? qualityEvaluationsJson()
-            : qualityReleaseJson();
+      final api = SecurityTestApi();
       final container = ProviderContainer(
         overrides: [
           apiClientProvider.overrideWithValue(api),
@@ -243,17 +241,17 @@ void main() {
       await tester.pumpWidget(
         UncontrolledProviderScope(
           container: container,
-          child: const MaterialApp(home: NativeQualityPage()),
+          child: const MaterialApp(home: NativeSecurityPage()),
         ),
       );
       await tester.pumpAndSettle();
-      expect(api.paths, hasLength(2));
+      expect(api.paths, hasLength(4));
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
       await tester.pumpAndSettle();
-      expect(find.text('Core operations'), findsNothing);
+      expect(find.text('Security evidence'), findsNothing);
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
       await tester.pumpAndSettle();
-      expect(api.paths, hasLength(4));
+      expect(api.paths, hasLength(8));
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox.shrink());
     },

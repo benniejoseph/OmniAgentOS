@@ -53,6 +53,7 @@ import '../../features/settings/admin_console.dart';
 import '../../features/settings/macos_admin_workspace_view.dart';
 import '../../features/settings/model_settings_view.dart';
 import '../../features/security/device_security_screen.dart';
+import '../../features/security/security_workspace_view.dart';
 import '../../features/search/content_search_targets.dart';
 import '../../features/search/content_search_view.dart';
 import '../../features/talk/talk.dart';
@@ -796,7 +797,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                           '/tools' => _nativeAdminWorkspace('tools'),
                           '/quality' => const NativeQualityPage(),
                           '/monitoring' => const NativeMonitoringPage(),
-                          '/security' => _nativeAdminWorkspace('security'),
+                          '/security' => const NativeSecurityPage(),
                           '/settings' => NativePrivateWorkspace(
                             ownNavigator: true,
                             builder: (access) => ModelSettingsView(

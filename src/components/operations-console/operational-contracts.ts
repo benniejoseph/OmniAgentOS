@@ -1,4 +1,6 @@
 /** Browser-only projections. These checks narrow presentation; routes remain authority. */
+import type { RbacRule } from "@/lib/security/types";
+
 export type RecordValue = Record<string, unknown>;
 export type OperationalScope = { tenantId: string; actorId: string };
 export type SourceKey = "evaluations" | "feedback" | "release" | "events" | "slo" | "incidents" | "alerts" | "context" | "audits" | "isolation" | "retention";
@@ -28,6 +30,14 @@ function array(value: unknown, max: number, scope?: OperationalScope, identity =
     if (scope && row.tenantId !== undefined) requireValue(row.tenantId === scope.tenantId, "The returned tenant does not match this workspace.");
   }
   return value as RecordValue[];
+}
+export function parseRbacRules(value: unknown): RbacRule[] {
+  const roles: readonly RbacRule["roles"][number][] = ["viewer", "operator", "admin", "system"];
+  return array(value, 500, undefined, "action").map((rule) => {
+    requireValue(typeof rule.description === "string" && rule.description.trim().length > 0 && rule.description.length <= 2_000);
+    requireValue(Array.isArray(rule.roles) && rule.roles.length <= roles.length && rule.roles.every((role) => oneOf(role, roles)) && new Set(rule.roles).size === rule.roles.length);
+    return { action: rule.action as string, description: rule.description, roles: [...rule.roles] as RbacRule["roles"] };
+  });
 }
 function policy(value: unknown) { const result = object(value); requireValue(retentionKeys.every((key) => integer(result[key]))); return result; }
 function validateSlo(value: unknown, scope?: OperationalScope) {
@@ -68,7 +78,7 @@ export function parseSource(key: SourceKey, value: unknown, scope: OperationalSc
     case "context": {
       const context = object(body.context);
       requireValue(context.tenantId === scope.tenantId && context.actorId === scope.actorId, "Security context does not match this workspace.");
-      object(object(body.policy).rbacRules); break;
+      parseRbacRules(object(body.policy).rbacRules); break;
     }
     case "release": {
       const report = object(body.report); const gate = object(report.releaseGate);

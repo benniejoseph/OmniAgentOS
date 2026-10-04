@@ -17,6 +17,90 @@ const _replacementId = '22222222-2222-4222-8222-222222222222';
 void main() {
   setUp(() => FlutterSecureStorage.setMockInitialValues({}));
 
+  for (final refusal in ['bootstrap401', 'bootstrap403', 'canonical owner']) {
+    test(
+      '$refusal is a typed authority refusal with no dispatch or refresh',
+      () async {
+        final store = await _store(), service = _Service();
+        if (refusal == 'canonical owner') {
+          service.bootstrapOverride = () => _bootstrap(_replacementId);
+        } else {
+          service.bootstrapStatus = refusal == 'bootstrap401' ? 401 : 403;
+        }
+        await expectLater(
+          _client(
+            store,
+            service,
+          ).getJsonAuthorized('/api/private-read', authority: _authority()),
+          throwsA(
+            isA<NativeAuthorityVerificationException>()
+                .having((error) => error.statusCode, 'statusCode', isNull)
+                .having((error) => error.responseData, 'responseData', isNull),
+          ),
+        );
+        expect(service.validatedTokens, ['Bearer access-one']);
+        expect(service.posts, isEmpty);
+        expect(service.refreshes, 0);
+      },
+    );
+  }
+
+  test(
+    'bootstrap transport failure is unavailable rather than authority refusal',
+    () async {
+      final store = await _store(), service = _Service()..bootstrapStatus = 500;
+      await expectLater(
+        _client(
+          store,
+          service,
+        ).getJsonAuthorized('/api/private-read', authority: _authority()),
+        throwsA(
+          isA<ApiException>().having(
+            (error) => error is NativeAuthorityVerificationException,
+            'authority refusal',
+            isFalse,
+          ),
+        ),
+      );
+      expect(service.posts, isEmpty);
+      expect(service.refreshes, 0);
+    },
+  );
+
+  test(
+    'ordinary cancellation during bootstrap does not become authority refusal',
+    () async {
+      final store = await _store(), service = _Service();
+      final arrived = Completer<void>(), release = Completer<void>();
+      service.beforeBootstrap = () {
+        arrived.complete();
+        return release.future;
+      };
+      final cancel = CancelToken();
+      final request = _client(store, service).getJsonAuthorized(
+        '/api/private-read',
+        authority: _authority(),
+        cancelToken: cancel,
+      );
+      final failed = expectLater(
+        request,
+        throwsA(
+          isA<ApiException>().having(
+            (error) => error is NativeAuthorityVerificationException,
+            'authority refusal',
+            isFalse,
+          ),
+        ),
+      );
+      await arrived.future;
+      cancel.cancel('View hidden');
+      release.complete();
+      await failed;
+      expect(service.posts, isEmpty);
+      expect(service.refreshes, 0);
+    },
+  );
+
   test('a scoped form dispatches the exact validated token after storage replacement', () async {
     final store = await _store(), service = _Service();
     final arrived = Completer<void>(), release = Completer<void>();

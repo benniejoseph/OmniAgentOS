@@ -11,6 +11,14 @@ class ApiException implements Exception {
   });
 
   factory ApiException.fromDio(DioException error) {
+    // This marker is created locally before dispatch. A response body cannot
+    // manufacture it, and it deliberately carries no synthetic HTTP status.
+    final localRefusal = error.error;
+    if (error.type == DioExceptionType.cancel &&
+        error.response == null &&
+        localRefusal is NativeAuthorityVerificationException) {
+      return localRefusal;
+    }
     final data = error.response?.data;
     String? message;
     if (data is Map) {
@@ -64,6 +72,14 @@ class ApiException implements Exception {
 
   @override
   String toString() => message;
+}
+
+/// The current private-request authority was refused before dispatch. This is
+/// distinct from a canceled request or an unavailable bootstrap transport.
+class NativeAuthorityVerificationException extends ApiException {
+  const NativeAuthorityVerificationException([
+    super.message = 'Current workspace access could not be verified. Reopen the workspace or sign in again.',
+  ]) : super(diagnosticCode: 'native_authority_refused');
 }
 
 class ApiConflictException extends ApiException {

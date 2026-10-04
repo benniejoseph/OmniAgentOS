@@ -19,6 +19,59 @@ ApiException responseError(Object? data, {int status = 409}) {
 
 void main() {
   test(
+    'only a local pre-dispatch cancellation preserves authority refusal',
+    () {
+      const refusal = NativeAuthorityVerificationException();
+      final request = RequestOptions(path: '/private');
+      expect(
+        ApiException.fromDio(
+          DioException(
+            requestOptions: request,
+            type: DioExceptionType.cancel,
+            error: refusal,
+          ),
+        ),
+        same(refusal),
+      );
+      expect(refusal.statusCode, isNull);
+      expect(refusal.responseData, isNull);
+      for (final type in [
+        DioExceptionType.badResponse,
+        DioExceptionType.unknown,
+      ]) {
+        expect(
+          ApiException.fromDio(
+            DioException(requestOptions: request, type: type, error: refusal),
+          ),
+          isNot(isA<NativeAuthorityVerificationException>()),
+        );
+      }
+      expect(
+        ApiException.fromDio(
+          DioException(
+            requestOptions: request,
+            type: DioExceptionType.cancel,
+            error: refusal,
+            response: Response<Object?>(
+              requestOptions: request,
+              statusCode: 403,
+            ),
+          ),
+        ),
+        isNot(isA<NativeAuthorityVerificationException>()),
+      );
+      expect(
+        responseError({
+          'error': 'native_authority_refused',
+          'diagnosticCode': 'native_authority_refused',
+          'type': 'NativeAuthorityVerificationException',
+        }, status: 503),
+        isNot(isA<NativeAuthorityVerificationException>()),
+      );
+    },
+  );
+
+  test(
     'retains exact conflict evidence as a detached deeply immutable JSON map',
     () {
       final body = <String, dynamic>{

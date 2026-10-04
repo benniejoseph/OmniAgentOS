@@ -249,6 +249,12 @@ def exercise(browser, origin, credentials, checks, coarse):
                 expect(region(page, title, "SLO measurements").get_by_text("Insufficient samples", exact=True).first).to_be_visible()
                 if not coarse: monitor_effects(page, fixture, checks)
             else:
+                access = region(page, title, "Access and role rules")
+                rule = access.get_by_role("listitem").filter(has=page.get_by_role("heading", level=3, name="read.security", exact=True))
+                expect(rule.get_by_role("heading", level=3, name="read.security", exact=True)).to_be_visible()
+                expect(rule.get_by_text("Read security context, RBAC policy, and audit records.", exact=True)).to_be_visible()
+                expect(rule.locator("dt").filter(has_text=re.compile("^Roles$")).locator("xpath=../dd")).to_have_text("admin, system")
+                checks.check(label + " Security: canonical action, description and roles are rendered", True)
                 link = region(page, title, "Signed audit chain").get_by_role("link", name="Download signed audit", exact=True)
                 expect(link).to_have_attribute("href", "/api/security/audits/export")
                 checks.check(label + ": signed export exact endpoint retained without invoking download", link.get_attribute("download") is not None)
@@ -283,6 +289,11 @@ def exercise(browser, origin, credentials, checks, coarse):
             fixture.mode = "empty"; refresh(page, title)
             empty = {"Quality": "No evaluation runs in this loaded view.", "Monitoring": "No enabled policy measurements", "Security": "No audit records in this loaded view."}[title]
             expect(region(page, title, main).get_by_text(empty, exact=True)).to_be_visible()
+            if title == "Security":
+                access = region(page, title, "Access and role rules")
+                expect(access.get_by_text("No role rules were reported in this loaded policy.", exact=True)).to_be_visible()
+                expect(access.get_by_role("heading", level=3, name="read.security", exact=True)).to_have_count(0)
+                checks.check(label + " Security: empty policy array is explicit and clears the previous action", True)
             fixture.mode = "restricted"; refresh(page, title)
             expect(region(page, title, main).get_by_text("Restricted", exact=True)).to_be_visible()
             checks.check(label + " " + title + ": source 403 clears previously loaded records", region(page, title, main).locator("li").count() == 0)

@@ -101,6 +101,12 @@ class QualityController extends ChangeNotifier {
     if (notify) _publish();
   }
 
+  void invalidateAndNotifyLater() {
+    // Authority can be probed during build: clear now, repaint after it unwinds.
+    invalidate(notify: false);
+    Future<void>.microtask(_publish);
+  }
+
   void setVisible(bool value) {
     if (_disposed || _invalidated || _visible == value) return;
     _visible = value;
@@ -161,7 +167,8 @@ class QualityController extends ChangeNotifier {
       target.receivedAt = DateTime.now();
     } catch (failure) {
       if (!_current(source, token, generation)) return;
-      if (failure is ApiException && failure.statusCode == 401) {
+      if (failure is NativeAuthorityVerificationException ||
+          (failure is ApiException && failure.statusCode == 401)) {
         _clear();
         authorizationDenied = true;
         _publish();

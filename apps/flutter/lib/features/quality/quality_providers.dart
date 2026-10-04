@@ -52,7 +52,7 @@ final qualityControllerProvider = Provider.autoDispose
       }
       final controller = QualityController(repository);
       final detach = repository.observeInvalidation(
-        () => controller.invalidate(notify: false),
+        controller.invalidateAndNotifyLater,
       );
       _watchAuthority(ref, repository.access, controller.invalidate);
       ref.onDispose(() {

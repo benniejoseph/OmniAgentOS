@@ -60,7 +60,7 @@ class NativeRequestAuthority {
         normalizeApiBaseUrl(currentApiBaseUrl) !=
             normalizeApiBaseUrl(apiBaseUrl) ||
         !isCurrent()) {
-      throw const ApiException(
+      throw const NativeAuthorityVerificationException(
         'The request authority changed. Reload before retrying.',
       );
     }
@@ -123,7 +123,9 @@ ApiClient createApiClient(
     }
     final refreshToken = await store.readRefreshToken();
     if (refreshToken == null || refreshToken.isEmpty) {
-      throw StateError('No native refresh credential is available.');
+      throw const NativeAuthorityVerificationException(
+        'No native refresh credential is available. Sign in again.',
+      );
     }
     final deviceId = await store.readOrCreateDeviceId();
     Response<Object?> response;
@@ -233,14 +235,23 @@ ApiClient createApiClient(
             options.headers['Authorization'] = 'Bearer $token';
             options.followRedirects = false;
             handler.next(options);
-          } catch (_) {
+          } catch (error) {
+            final authorityRefused =
+                error is NativeAuthorityVerificationException ||
+                error is FormatException ||
+                (error is DioException &&
+                    const {401, 403}.contains(error.response?.statusCode));
             handler.reject(
               DioException(
                 requestOptions: options,
                 type: DioExceptionType.cancel,
-                error: const ApiException(
-                  'The request owner could not be verified. The original request can be retried after reloading.',
-                ),
+                // Keep the transport cancellation/no-response shape so this
+                // pre-dispatch refusal cannot enter the HTTP 401 replay path.
+                error: authorityRefused
+                    ? const NativeAuthorityVerificationException()
+                    : const ApiException(
+                        'The request owner could not be verified. The original request can be retried after reloading.',
+                      ),
               ),
             );
           }
