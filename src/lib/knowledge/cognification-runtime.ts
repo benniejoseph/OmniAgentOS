@@ -310,6 +310,8 @@ export async function cognifyKnowledgeBatch(input: {
   correlationId?: string;
   causationId?: string;
   abortSignal?: AbortSignal;
+  singleAttempt?: boolean;
+  beforeProvider?: () => Promise<void>;
   dependencies?: Partial<CognificationRuntimeDependencies>;
 }): Promise<CognificationCandidateBatchV1> {
   const tenantId = contractIdSchema.parse(input.tenantId);
@@ -381,7 +383,10 @@ export async function cognifyKnowledgeBatch(input: {
       ...runtimeModel.usageReceipt,
     },
   });
-  const generated = await dependencies.generateModelStructured(request);
+  await input.beforeProvider?.(); input.abortSignal?.throwIfAborted();
+  const generated = await dependencies.generateModelStructured({ ...request,
+    ...(input.singleAttempt ? { maxAttempts: 1, allowCrossProviderFallback: false } : {}),
+  });
   if (
     generated.usageReceiptRecorded !== true ||
     !generated.usageReceiptId?.trim()

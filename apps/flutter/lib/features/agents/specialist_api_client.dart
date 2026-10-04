@@ -11,6 +11,7 @@ import '../../core/network/native_workspace_access.dart';
 import '../../core/storage/secure_session_store.dart';
 import '../../generated/native_contract.g.dart';
 import 'specialist_contracts.dart';
+import 'agent_skill_contracts.dart';
 import 'specialist_recovery_store.dart';
 
 final specialistRecoveryProvider = Provider<SpecialistRecoveryStore>(
@@ -33,7 +34,8 @@ final specialistApiProvider = Provider.autoDispose
     });
 
 /// Existing repositories keep their domain parsers. This adapter supplies the
-/// live authority transport and a content-free, durable decision boundary.
+/// live authority transport and a durable decision boundary. Legacy entries
+/// retain digests only; exact catalog decisions use an encrypted request slot.
 class SpecialistApiClient extends ApiClient with ChangeNotifier {
   SpecialistApiClient(
     this.access,
@@ -50,6 +52,19 @@ class SpecialistApiClient extends ApiClient with ChangeNotifier {
   Future<void>? _initialization;
   bool _closed = false, _ready = false, _writing = false, _revoked = false;
   String? recoveryError;
+  SpecialistJson? _nativeDecision;
+  SpecialistJson? get nativeDecision => current ? _nativeDecision : null;
+  bool get nativeDecisionAvailable =>
+      current &&
+      _ready &&
+      !_writing &&
+      recoveryError == null &&
+      _nativeDecision?['pending'] == null &&
+      !_journal.any(
+        (row) =>
+            row['state'] != 'accepted' &&
+            row['newDecisionAcknowledgedAt'] == null,
+      );
   bool get current =>
       !_closed &&
       !_revoked &&
@@ -98,7 +113,7 @@ class SpecialistApiClient extends ApiClient with ChangeNotifier {
     final allowedFamily = family == 'agents'
         ? operation.startsWith('agents.') ||
               operation.startsWith('moltbook.') ||
-              operation == 'skills.list'
+              operation.startsWith('skills.')
         : family == 'automation' &&
               (operation.startsWith('plugins.') ||
                   operation.startsWith('admin.') ||
@@ -136,10 +151,26 @@ class SpecialistApiClient extends ApiClient with ChangeNotifier {
       if (!current) return;
       if (stored != null) {
         specialistRequire(
-          stored['schemaVersion'] == 1 &&
+          (stored['schemaVersion'] == 1 || stored['schemaVersion'] == 2) &&
               stored['entries'] is List &&
               (stored['entries'] as List).length <= 32,
         );
+        specialistRequire(
+          stored.length == (stored['schemaVersion'] == 1 ? 2 : 3) &&
+              stored.keys.every(
+                {'schemaVersion', 'entries', 'nativeDecision'}.contains,
+              ),
+        );
+        final nextNative =
+            stored['schemaVersion'] == 2 && stored['nativeDecision'] != null
+            ? specialistMap(stored['nativeDecision'])
+            : null;
+        await _validateNativeDecision(nextNative);
+        if (!current) return;
+        _retainPendingNative(nextNative);
+        _nativeDecision = nextNative == null
+            ? null
+            : specialistFreeze(nextNative);
         final entries = (stored['entries'] as List).map(specialistMap);
         for (final row in entries) {
           const fields = {
@@ -210,6 +241,8 @@ class SpecialistApiClient extends ApiClient with ChangeNotifier {
             }),
           );
         }
+      } else {
+        _retainPendingNative(null);
       }
       _ready = true;
     } catch (_) {
@@ -226,7 +259,15 @@ class SpecialistApiClient extends ApiClient with ChangeNotifier {
     await recovery.write(
       SpecialistOwner(access!),
       family,
-      specialistFreeze({'schemaVersion': 1, 'entries': _journal}),
+      specialistFreeze(
+        _nativeDecision == null
+            ? {'schemaVersion': 1, 'entries': _journal}
+            : {
+                'schemaVersion': 2,
+                'entries': _journal,
+                'nativeDecision': _nativeDecision,
+              },
+      ),
       isCurrent: () => current,
     );
   }
@@ -251,8 +292,42 @@ class SpecialistApiClient extends ApiClient with ChangeNotifier {
       '/api/workflows': 'admin.workflows',
       '/api/triggers': 'admin.triggers',
     };
-    if (method == 'GET' && reads.containsKey(route)) return reads[route]!;
-    if (method == 'POST' && route == '/api/agents') return 'agents.create';
+    if (method == 'GET' && reads.containsKey(route)) {
+      return reads[route]!;
+    }
+    if (method == 'GET' &&
+        RegExp(r'^/api/agents/[^/]+/deletion-review$').hasMatch(route)) {
+      return 'agents.delete.review';
+    }
+    if (method == 'GET' &&
+        RegExp(r'^/api/skills/[^/]+/mutation-review$').hasMatch(route)) {
+      return 'skills.mutation.review';
+    }
+    if (method == 'GET' &&
+        RegExp(r'^/api/agents/mutations/[a-f0-9]{64}$').hasMatch(route)) {
+      return 'agents.mutations.get';
+    }
+    if (method == 'GET' &&
+        RegExp(r'^/api/skills/mutations/[a-f0-9]{64}$').hasMatch(route)) {
+      return 'skills.mutations.get';
+    }
+    if (method == 'DELETE' && RegExp(r'^/api/agents/[^/]+$').hasMatch(route)) {
+      return 'agents.delete';
+    }
+    if (method == 'POST' && route == '/api/skills') {
+      return 'skills.create';
+    }
+    if (RegExp(r'^/api/skills/[^/]+$').hasMatch(route)) {
+      if (method == 'PATCH') {
+        return 'skills.update';
+      }
+      if (method == 'DELETE') {
+        return 'skills.delete';
+      }
+    }
+    if (method == 'POST' && route == '/api/agents') {
+      return 'agents.create';
+    }
     if (method == 'POST' && route == '/api/plugins/preview') {
       return 'plugins.preview';
     }
@@ -260,8 +335,12 @@ class SpecialistApiClient extends ApiClient with ChangeNotifier {
       return 'plugins.install';
     }
     if (RegExp(r'^/api/plugins/[^/]+$').hasMatch(route)) {
-      if (method == 'PATCH') return 'plugins.change';
-      if (method == 'DELETE') return 'plugins.uninstall';
+      if (method == 'PATCH') {
+        return 'plugins.change';
+      }
+      if (method == 'DELETE') {
+        return 'plugins.uninstall';
+      }
     }
     if (method == 'GET' && RegExp(r'^/api/triggers/[^/]+$').hasMatch(route)) {
       return 'automation.schedule.show';
@@ -284,8 +363,12 @@ class SpecialistApiClient extends ApiClient with ChangeNotifier {
       ('learning', 'agents.learning.show', ''),
     ]) {
       if (RegExp('^/api/agents/[^/]+/$suffix\$').hasMatch(route)) {
-        if (method == 'GET') return read;
-        if (method == 'POST' && write.isNotEmpty) return write;
+        if (method == 'GET') {
+          return read;
+        }
+        if (method == 'POST' && write.isNotEmpty) {
+          return write;
+        }
       }
     }
     throw StateError('This specialist path is not enrolled for this method.');
@@ -295,7 +378,9 @@ class SpecialistApiClient extends ApiClient with ChangeNotifier {
     final agent = RegExp(
       r'^/api/agents/([^/]+)(?:/(moltbook|release|adaptations))?$',
     ).firstMatch(path);
-    if (agent != null) return 'agent:${agent.group(1)}';
+    if (agent != null) {
+      return 'agent:${agent.group(1)}';
+    }
     // Plugin enable, disable and uninstall share one installation boundary.
     return path;
   }
@@ -382,11 +467,24 @@ class SpecialistApiClient extends ApiClient with ChangeNotifier {
     SpecialistJson? headers,
   ) async {
     final operation = _operation(method, path);
+    specialistRequire(
+      !{
+        'agents.delete',
+        'skills.create',
+        'skills.update',
+        'skills.delete',
+      }.contains(operation),
+      'Use the exact reviewed catalog decision flow.',
+    );
     _require(operation, mutation: true);
     await initialize();
     _require(operation, mutation: true);
     specialistRequire(
-      _ready && recoveryError == null && !_writing && _journal.length < 32,
+      _ready &&
+          recoveryError == null &&
+          !_writing &&
+          _journal.length < 32 &&
+          _nativeDecision?['pending'] == null,
       'Inspect protected decision recovery before another specialist action.',
     );
     final key = specialistText(
@@ -601,6 +699,142 @@ class SpecialistApiClient extends ApiClient with ChangeNotifier {
     }
   }
 
+  void _retainPendingNative(SpecialistJson? next) {
+    final held = _nativeDecision?['pending'];
+    if (held == null) return;
+    specialistRequire(
+      specialistCanonical(held) == specialistCanonical(next?['pending']) ||
+          (next?['accepted'] != null &&
+              specialistCanonical(held) ==
+                  specialistCanonical(next?['acceptedIntent'])),
+      'The protected unresolved catalog decision is missing or differs. New actions remain held.',
+    );
+  }
+
+  Future<void> _validateNativeDecision(SpecialistJson? value) async {
+    if (value == null) {
+      return;
+    }
+    final row = agentSkillExact(value, {
+          'pending',
+          'acceptedIntent',
+          'accepted',
+          'notSubmitted',
+        }),
+        owner = AgentSkillOwner.fromAccess(access!);
+    if (row['pending'] != null) {
+      await AgentSkillIntent.restore(row['pending'], owner);
+    }
+    specialistRequire(
+      (row['acceptedIntent'] == null) == (row['accepted'] == null),
+    );
+    if (row['acceptedIntent'] != null) {
+      final intent = await AgentSkillIntent.restore(
+        row['acceptedIntent'],
+        owner,
+      );
+      await AgentSkillAcceptance.restore(row['accepted'], owner, intent);
+    }
+    if (row['notSubmitted'] != null) {
+      await AgentSkillIntent.restore(row['notSubmitted'], owner);
+    }
+  }
+
+  /// A single protected transaction coordinates typed decisions with the legacy
+  /// Specialist journal. It never retries an HTTP mutation.
+  Future<T> withNativeDecision<T>(
+    Future<T> Function() operation, {
+    bool recovery = false,
+  }) async {
+    await initialize();
+    specialistRequire(
+      current &&
+          _ready &&
+          !_writing &&
+          recoveryError == null &&
+          (recovery || nativeDecisionAvailable),
+    );
+    _writing = true;
+    _emit();
+    try {
+      return await operation();
+    } finally {
+      _writing = false;
+      _emit();
+    }
+  }
+
+  Future<void> saveNativeDecision(SpecialistJson value) async {
+    specialistRequire(current && _writing);
+    await _validateNativeDecision(value);
+    specialistRequire(current);
+    _nativeDecision = specialistFreeze(value);
+    try {
+      await _save();
+    } catch (_) {
+      recoveryError = 'The protected catalog decision could not be confirmed locally. Reload recovery before continuing.';
+      _emit();
+      rethrow;
+    }
+  }
+
+  Future<SpecialistJson> dispatchNativeDecision(
+    AgentSkillIntent intent, {
+    required bool Function() isCurrent,
+  }) async {
+    final path = switch (intent.operation) {
+          'agent.delete' => NativePaths.agentsDelete(intent.resourceId!),
+          'skill.create' => NativePaths.skillsCreate,
+          'skill.update' => NativePaths.skillsUpdate(intent.resourceId!),
+          _ => NativePaths.skillsDelete(intent.resourceId!),
+        },
+        method = intent.operation == 'skill.create'
+            ? 'POST'
+            : intent.operation == 'skill.update'
+            ? 'PATCH'
+            : 'DELETE';
+    final operation = _operation(method, path);
+    _require(operation, mutation: true);
+    specialistRequire(
+      _writing &&
+          recoveryError == null &&
+          isCurrent() &&
+          specialistCanonical(_nativeDecision?['pending']) ==
+              specialistCanonical(intent.toJson()),
+    );
+    final owner = access!.authority;
+    final authority = NativeRequestAuthority(
+      tenantId: owner.tenantId,
+      actorId: owner.actorId,
+      canonicalUserId: owner.canonicalUserId,
+      role: owner.role,
+      apiBaseUrl: owner.apiBaseUrl,
+      isCurrent: () => current && isCurrent(),
+    );
+    final response = switch (method) {
+      'POST' => await access!.api.postJsonAuthorized(
+        path,
+        authority: authority,
+        data: intent.request,
+        headers: {'Idempotency-Key': intent.key},
+      ),
+      'PATCH' => await access!.api.patchJsonAuthorized(
+        path,
+        authority: authority,
+        data: intent.request,
+        headers: {'Idempotency-Key': intent.key},
+      ),
+      _ => await access!.api.deleteJsonAuthorized(
+        path,
+        authority: authority,
+        data: intent.request,
+        headers: {'Idempotency-Key': intent.key},
+      ),
+    };
+    specialistRequire(current);
+    return specialistFreeze(response);
+  }
+
   void close() {
     if (_closed) return;
     _closed = true;
@@ -610,6 +844,7 @@ class SpecialistApiClient extends ApiClient with ChangeNotifier {
     _reads.clear();
     _responses.clear();
     _journal.clear();
+    _nativeDecision = null;
     super.dispose();
   }
 }

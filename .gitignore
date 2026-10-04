@@ -76,3 +76,7 @@ screenshots/
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# The cognition build endpoint is application source.
+!src/app/api/knowledge/cognification/documents/**/build/
+!src/app/api/knowledge/cognification/documents/**/build/route.ts

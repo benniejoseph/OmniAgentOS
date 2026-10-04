@@ -6,11 +6,11 @@ import {
   showSkillService,
   updateSkillService,
 } from "@/lib/app-services/agents";
-import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { isServerFailure, serverErrorResponse } from "@/lib/http/errors";
 import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { skillPatchSchema } from "@/lib/skills/schema";
+import { nativeAgentSkillResponse, nativeAgentSkillWriteResponse, readAgentSkillCompatibleBody } from "@/lib/skills/native-mutation-http";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
@@ -40,14 +40,16 @@ async function GETHandler(request: Request, context: RouteContext<"/api/skills/[
 }
 
 async function PATCHHandler(request: Request, context: RouteContext<"/api/skills/[id]">) {
+  const { id } = await context.params;
+  const read = await readAgentSkillCompatibleBody(request, 65_536, 24_000);
+  if (read instanceof Response) return read;
+  if (read.native) return nativeAgentSkillWriteResponse(request, { resourceType: "agent_skill", resourceId: id, operation: "update", body: read.body });
   let auth;
   try { auth = await authorizeRequest({ request, action: "manage.workflow", resourceType: "agent_skill", metadata: { operation: "update" } }); }
   catch (error) { return forbiddenResponse(error); }
-  let body: unknown;
-  try { body = await parseJsonBody(request, 24_000); } catch (error) { return jsonBodyErrorResponse(error); }
-  const parsed = skillPatchSchema.safeParse(body);
+  if (auth.source === "mobile") return nativeAgentSkillResponse("The strict native Skill request is required.", 403);
+  const parsed = skillPatchSchema.safeParse(read.body);
   if (!parsed.success) return Response.json({ error: "Invalid skill update", details: parsed.error.flatten() }, { status: 400 });
-  const { id } = await context.params;
   const result = await updateSkillService(
     createRequestMutationAppServiceCaller(request, auth, { purpose: "skill.update", causationId: id }),
     { id, change: parsed.data },
@@ -56,12 +58,15 @@ async function PATCHHandler(request: Request, context: RouteContext<"/api/skills
 }
 
 async function DELETEHandler(request: Request, context: RouteContext<"/api/skills/[id]">) {
+  const { id } = await context.params;
+  const read = await readAgentSkillCompatibleBody(request, 16_384, 16_000);
+  if (read instanceof Response) return read;
+  if (read.native) return nativeAgentSkillWriteResponse(request, { resourceType: "agent_skill", resourceId: id, operation: "delete", body: read.body });
   let auth;
   try { auth = await authorizeRequest({ request, action: "manage.workflow", resourceType: "agent_skill", metadata: { operation: "delete" } }); }
   catch (error) { return forbiddenResponse(error); }
-  let body: unknown;
-  try { body = await parseJsonBody(request, 16_000); } catch (error) { return jsonBodyErrorResponse(error); }
-  const { id } = await context.params;
+  if (auth.source === "mobile") return nativeAgentSkillResponse("The strict native Skill request is required.", 403);
+  const body = read.body;
   try {
     const result = await deleteSkillService(
       createRequestMutationAppServiceCaller(request, auth, {

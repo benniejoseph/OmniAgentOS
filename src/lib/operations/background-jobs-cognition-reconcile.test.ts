@@ -94,9 +94,14 @@ describe("knowledge cognition plan reconciliation", () => {
       },
     });
     expect(mocks.enqueueOperationJob).toHaveBeenCalledWith(expect.objectContaining({
+      maxAttempts: 3,
       requeueTerminal: false,
       requeueFailed: true,
-    }));
+    }), {});
+    // This is the legacy file-mode path: its explicit empty transaction
+    // options are distinct from native once-only admission's joined SQL.
+    expect(mocks.enqueueOperationJob.mock.calls[0][0].payload)
+      .not.toHaveProperty("nativeCognitionBuild");
   });
 
   it("changes job identity when the current retention plan changes", async () => {

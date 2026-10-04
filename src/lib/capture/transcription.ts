@@ -96,6 +96,7 @@ export async function transcribeCaptureMediaDiarized(
   languageHints: readonly string[] = [],
   abortSignal?: AbortSignal,
   usageScope?: AiUsageScope,
+  options: { singleAttempt?: boolean; beforeProvider?: () => Promise<void> } = {},
 ) {
   const mimeType = media.type.split(";", 1)[0].toLowerCase();
   if (!CAPTURE_MEDIA_TYPES.has(mimeType)) {
@@ -111,6 +112,7 @@ export async function transcribeCaptureMediaDiarized(
     deploymentConfigured: hasOpenAIKey(),
   });
   if (!runtimeModel.configured || runtimeModel.provider !== "openai") {
+    if (options.singleAttempt) throw new Error("The reviewed recording requires a configured diarization provider; no automatic fallback is allowed.");
     const fallback = await transcribeCaptureMedia(
       media,
       abortSignal,
@@ -132,9 +134,11 @@ export async function transcribeCaptureMediaDiarized(
     ? { ...usageScope, ...runtimeModel.usageReceipt }
     : undefined;
   const startedAt = Date.now();
+  let dispatched = false;
   try {
-    const result = await runtimeModel.withApiKey((apiKey) =>
-      getOpenAIClient({ apiKey, correlationId: usageScope?.correlationId }).audio.transcriptions.create({
+    const result = await runtimeModel.withApiKey(async (apiKey) => {
+      await options.beforeProvider?.(); abortSignal?.throwIfAborted(); dispatched = true;
+      return getOpenAIClient({ apiKey, correlationId: usageScope?.correlationId }).audio.transcriptions.create({
         file: media,
         model: runtimeModel.model,
         response_format: "diarized_json",
@@ -142,7 +146,7 @@ export async function transcribeCaptureMediaDiarized(
         ...(languageHints.length === 1
           ? { language: languageTag.split("-", 1)[0].toLowerCase() }
           : {}),
-      }, { signal: abortSignal })
+      }, { signal: abortSignal }); }
     ) as TranscriptionDiarized;
     const durationMs = Math.max(
       1,
@@ -205,6 +209,7 @@ export async function transcribeCaptureMediaDiarized(
       segments,
     };
   } catch (error) {
+    if (options.beforeProvider && !dispatched) throw error;
     if (meteredUsageScope) {
       await recordAiUsageSafely({
         ...meteredUsageScope,
@@ -220,7 +225,7 @@ export async function transcribeCaptureMediaDiarized(
         retryable: !abortSignal?.aborted,
       });
     }
-    if (abortSignal?.aborted) throw error;
+    if (abortSignal?.aborted || options.singleAttempt) throw error;
     const fallback = await transcribeCaptureMedia(
       media,
       abortSignal,

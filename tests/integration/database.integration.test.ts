@@ -6,6 +6,8 @@ import path from "node:path";
 import postgres from "postgres";
 import { removeEmptyResponsibilityRuntimeForReplay } from "./helpers/responsibility-replay";
 import { removeEmptyMemoryLifecycleForReplay } from "./helpers/memory-lifecycle-replay";
+import { removeEmptyMemoryPromotionForReplay } from "./helpers/memory-promotion-replay";
+import { removeEmptyCustomerWorkflowIntentsForReplay, removeEmptyAgentSkillMutationsForReplay, removeEmptyMeetingRecordingProcessingForReplay, removeEmptyCustomerFactIntentsForReplay, removeEmptySalesforceNativeActionsForReplay, removeEmptyNativePrivateMemoryActionsForReplay, removeEmptyNativeKnowledgeCognitionBuildsForReplay } from "./helpers/native-catalog-replay";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import {
   buildAgentRunIdentityPinV1,
@@ -6821,13 +6823,21 @@ databaseDescribe("Postgres schema integration", () => {
     `;
     // Each one covers every command and role, as its restore below does.
     expect(restrictivePolicies.map(({ command, roles }) => ({ command, roles })))
-      .toEqual(Array(68).fill({ command: "*", roles: "{0}" }));
+      .toEqual(Array(80).fill({ command: "*", roles: "{0}" }));
     expect(restrictivePolicies.filter((policy) =>
       additiveDraftReplayTables.includes(policy.table_name),
     ).map(({ table_name, policy_name }) => ({ table_name, policy_name })))
       .toEqual(additiveDraftReplayTables.map((tableName) => ({
         table_name: tableName,
-        policy_name: tableName === "omni_meeting_calendar_sync_acceptances"
+        policy_name: tableName.startsWith("omni_knowledge_native_cognition_")
+          ? "omni_native_cognition_build_actor"
+          : tableName === "omni_native_private_memory_actions"
+          ? "omni_native_private_memory_actor"
+          : tableName.startsWith("omni_meeting_recording_processing_")
+          ? "omni_native_recording_actor"
+          : tableName === "omni_agent_skill_native_mutations"
+          ? "omni_agent_skill_native_actor"
+          : tableName === "omni_meeting_calendar_sync_acceptances"
           ? "omni_meeting_calendar_sync_actor"
           : `${tableName}_${meetingResolutionReplayTables.includes(tableName) ? "owner" : "actor"}`,
       })));
@@ -6845,7 +6855,7 @@ databaseDescribe("Postgres schema integration", () => {
         getTenantIsolationReport(tenantId),
       );
       expect([...report.summary.missingPolicies].sort()).toEqual(
-        restrictivePolicies.map((policy) => policy.table_name),
+        [...new Set(restrictivePolicies.map((policy) => policy.table_name))].sort(),
       );
     } finally {
       for (const policy of dropped) {
@@ -9585,6 +9595,15 @@ const memoryReconciliationFencesVersion = 223;
 const meetingCalendarSyncAcceptancesVersion = 224;
 const personalConsentValidatorGrantVersion = 225;
 const customerHealthEvaluationIntentsVersion = 226;
+const memoryPromotionNativeDecisionsVersion = 227;
+const customerWorkflowNativeIntentsVersion = 228;
+const agentSkillNativeMutationsVersion = 229;
+const meetingRecordingNativeProcessingVersion = 230;
+const customerFactNativeIntentsVersion = 231;
+const salesforceNativeActionsVersion = 232;
+const nativePrivateMemoryActionsVersion = 233;
+const nativePrivateMemoryMaintenanceGraphVersion = 234;
+const nativeKnowledgeCognitionBuildsVersion = 235;
 const additiveReplayVersions = [
   companionPreferencesVersion,
   responsibilityDraftsVersion,
@@ -9598,12 +9617,28 @@ const additiveReplayVersions = [
   meetingCalendarSyncAcceptancesVersion,
   personalConsentValidatorGrantVersion,
   customerHealthEvaluationIntentsVersion,
+  memoryPromotionNativeDecisionsVersion,
+  customerWorkflowNativeIntentsVersion,
+  agentSkillNativeMutationsVersion,
+  meetingRecordingNativeProcessingVersion,
+  customerFactNativeIntentsVersion,
+  salesforceNativeActionsVersion,
+  nativePrivateMemoryActionsVersion,
+  nativePrivateMemoryMaintenanceGraphVersion,
+  nativeKnowledgeCognitionBuildsVersion,
 ].filter((version) => databaseSchemaMigrations.some((migration) => migration.version === version));
 const meetingResolutionReplayTables: readonly string[] = [
   "omni_meeting_commitment_resolution_intents",
   "omni_meeting_commitment_resolution_progress",
 ];
 const additiveDraftReplayTables: readonly string[] = [
+  "omni_knowledge_native_cognition_builds",
+  "omni_knowledge_native_cognition_effects",
+  "omni_native_private_memory_actions",
+  "omni_salesforce_native_actions",
+  "omni_meeting_recording_processing_acceptances",
+  "omni_meeting_recording_processing_effects",
+  "omni_agent_skill_native_mutations",
   "omni_meeting_calendar_sync_acceptances",
   "omni_companion_preference_mutations",
   "omni_companion_preferences",
@@ -9969,6 +10004,30 @@ async function withMigrationsPendingFrom<T>(
   }
   await client.begin(async (transaction) => {
     if (replay) {
+      if (additiveReplayVersions.includes(nativeKnowledgeCognitionBuildsVersion)) {
+        await removeEmptyNativeKnowledgeCognitionBuildsForReplay(transaction);
+      }
+      if (additiveReplayVersions.includes(nativePrivateMemoryActionsVersion)) {
+        await removeEmptyNativePrivateMemoryActionsForReplay(transaction);
+      }
+      if (additiveReplayVersions.includes(salesforceNativeActionsVersion)) {
+        await removeEmptySalesforceNativeActionsForReplay(transaction);
+      }
+      if (additiveReplayVersions.includes(customerFactNativeIntentsVersion)) {
+        await removeEmptyCustomerFactIntentsForReplay(transaction);
+      }
+      if (additiveReplayVersions.includes(meetingRecordingNativeProcessingVersion)) {
+        await removeEmptyMeetingRecordingProcessingForReplay(transaction);
+      }
+      if (additiveReplayVersions.includes(agentSkillNativeMutationsVersion)) {
+        await removeEmptyAgentSkillMutationsForReplay(transaction);
+      }
+      if (additiveReplayVersions.includes(customerWorkflowNativeIntentsVersion)) {
+        await removeEmptyCustomerWorkflowIntentsForReplay(transaction);
+      }
+      if (additiveReplayVersions.includes(memoryPromotionNativeDecisionsVersion)) {
+        await removeEmptyMemoryPromotionForReplay(transaction);
+      }
       if (additiveReplayVersions.includes(meetingCalendarSyncAcceptancesVersion)) {
         expect(await transaction`
           SELECT count(*)::int AS acceptances
@@ -10071,6 +10130,54 @@ async function withMigrationsPendingFrom<T>(
         SELECT version, name, checksum FROM omni_schema_version
         WHERE version IS NOT NULL ORDER BY version
       `).toEqual(databaseSchemaMigrations);
+      if (additiveReplayVersions.includes(nativePrivateMemoryActionsVersion)) {
+        expect(await client`SELECT to_regclass('public.omni_native_private_memory_actions') IS NOT NULL AS receipts,
+          EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid='public.omni_memories'::regclass
+            AND tgname='omni_native_private_memory_forget') AS privacy_closure`).toEqual([{ receipts: true, privacy_closure: true }]);
+      }
+      if (additiveReplayVersions.includes(salesforceNativeActionsVersion)) {
+        expect(await client`SELECT to_regclass('public.omni_salesforce_native_actions') IS NOT NULL AS receipts,
+          EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid='public.omni_salesforce_native_actions'::regclass
+            AND tgname='omni_salesforce_native_action_guard') AS immutable_guard`).toEqual([{ receipts: true, immutable_guard: true }]);
+      }
+      if (additiveReplayVersions.includes(customerFactNativeIntentsVersion)) {
+        expect(await client`SELECT column_name, data_type, is_nullable FROM information_schema.columns
+          WHERE table_schema='public' AND table_name='omni_customer_fact_revisions'
+            AND column_name IN ('native_intent','native_intent_sha256') ORDER BY column_name`).toEqual([
+          { column_name: "native_intent", data_type: "jsonb", is_nullable: "YES" },
+          { column_name: "native_intent_sha256", data_type: "text", is_nullable: "YES" },
+        ]);
+        expect(await client`SELECT convalidated FROM pg_constraint WHERE conrelid='public.omni_customer_fact_revisions'::regclass
+          AND conname='omni_customer_fact_native_intent'`).toEqual([{ convalidated: true }]);
+      }
+      if (additiveReplayVersions.includes(customerWorkflowNativeIntentsVersion)) {
+        expect(await client`SELECT column_name, data_type, is_nullable FROM information_schema.columns
+          WHERE table_schema='public' AND table_name='omni_customer_success_workflow_run_revisions'
+            AND column_name IN ('native_intent','native_intent_sha256') ORDER BY column_name`).toEqual([
+          { column_name: "native_intent", data_type: "jsonb", is_nullable: "YES" },
+          { column_name: "native_intent_sha256", data_type: "text", is_nullable: "YES" },
+        ]);
+        expect(await client`SELECT convalidated FROM pg_constraint
+          WHERE conrelid='public.omni_customer_success_workflow_run_revisions'::regclass
+            AND conname='omni_customer_workflow_exact_native_intent'`).toEqual([{ convalidated: true }]);
+      }
+      if (additiveReplayVersions.includes(agentSkillNativeMutationsVersion)) {
+        expect(await client`SELECT to_regclass('public.omni_agent_skill_native_mutations') IS NOT NULL AS receipts,
+          EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid='public.omni_moltbook_connections'::regclass
+            AND tgname='aa_omni_moltbook_agent_parent_lock') AS connection_lock`).toEqual([{ receipts: true, connection_lock: true }]);
+      }
+      if (additiveReplayVersions.includes(memoryPromotionNativeDecisionsVersion)) {
+        expect(await client`
+          SELECT column_name, data_type, is_nullable FROM information_schema.columns
+          WHERE table_schema='public' AND table_name='omni_memory_promotion_reviews'
+            AND column_name='native_decision'
+        `).toEqual([{ column_name: "native_decision", data_type: "jsonb", is_nullable: "YES" }]);
+        expect(await client`
+          SELECT convalidated FROM pg_constraint
+          WHERE conrelid='public.omni_memory_promotion_reviews'::regclass
+            AND conname='omni_memory_promotion_native_shape'
+        `).toEqual([{ convalidated: true }]);
+      }
       if (additiveReplayVersions.includes(customerHealthEvaluationIntentsVersion)) {
         expect(await client`
           SELECT column_name, data_type, is_nullable

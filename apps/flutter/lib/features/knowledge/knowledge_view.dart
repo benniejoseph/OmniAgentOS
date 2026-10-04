@@ -2,6 +2,11 @@ import 'package:flutter/material.dart';
 
 import 'knowledge.dart';
 import 'knowledge_consent_view.dart';
+import 'knowledge_promotion_view.dart';
+import 'knowledge_source_map_view.dart';
+import 'knowledge_source_deletion_view.dart';
+import 'knowledge_graph_view.dart';
+import 'knowledge_operations_view.dart';
 import 'knowledge_read_widgets.dart';
 import 'knowledge_mutations.dart';
 import 'knowledge_mutation_widgets.dart';
@@ -29,7 +34,7 @@ class _KnowledgeViewState extends State<KnowledgeView>
   @override
   void initState() {
     super.initState();
-    _tabs = TabController(length: 5, vsync: this);
+    _tabs = TabController(length: 10, vsync: this);
     _tabs.addListener(_tabChanged);
     _selectedMemoryId = widget.initialMemoryId;
     _search.text = widget.controller.query;
@@ -102,6 +107,11 @@ class _KnowledgeViewState extends State<KnowledgeView>
               Tab(text: 'Reviews'),
               Tab(text: 'Universe'),
               Tab(text: 'Personal recall'),
+              Tab(text: 'Promotions'),
+              Tab(text: 'Source maps'),
+              Tab(text: 'Source cleanup'),
+              Tab(text: 'Graph explorer'),
+              Tab(text: 'Private actions'),
             ],
           ),
         ),
@@ -114,7 +124,7 @@ class _KnowledgeViewState extends State<KnowledgeView>
               )
             : Column(
                 children: [
-                  if (_tabs.index != 2 && _tabs.index != 4)
+                  if (_tabs.index != 2 && _tabs.index < 4)
                     Padding(
                       padding: const EdgeInsets.all(12),
                       child: TextField(
@@ -149,6 +159,26 @@ class _KnowledgeViewState extends State<KnowledgeView>
                         KnowledgePersonalRecall(
                           controller: controller,
                           active: _tabs.index == 4,
+                        ),
+                        KnowledgePromotions(
+                          controller: controller,
+                          active: _tabs.index == 5,
+                        ),
+                        KnowledgeSourceMaps(
+                          controller: controller,
+                          active: _tabs.index == 6,
+                        ),
+                        KnowledgeSourceCleanup(
+                          controller: controller,
+                          active: _tabs.index == 7,
+                        ),
+                        KnowledgeGraphExplorer(
+                          controller: controller,
+                          active: _tabs.index == 8,
+                        ),
+                        KnowledgeOperations(
+                          controller: controller,
+                          active: _tabs.index == 9,
                         ),
                       ],
                     ),
@@ -252,7 +282,7 @@ class _KnowledgeViewState extends State<KnowledgeView>
                   'Indexed: ${source.indexedAt?.toIso8601String() ?? 'not reported'}',
                 ),
                 const Text(
-                  'Catalogue metadata only. Exact source content and source deletion are not available in this view.',
+                  'Catalogue metadata only. Use Source cleanup to review deletion of eligible private local imports.',
                 ),
               ],
             ),

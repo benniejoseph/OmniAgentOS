@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { withCaptureNativeProcessingFence } from "@/lib/capture/native-processing-fence";
 import {
   AppServicePreviewMismatchError,
   authorizeAppServiceCall,
@@ -98,6 +99,7 @@ export async function completeRecordingService(caller: AppServiceCaller, input: 
   const value = recordingCompleteSchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.assets.recordings.complete"));
   const owner = { ...exactOwner(caller), executionScope: caller.executionScope! };
+  return withCaptureNativeProcessingFence({ ...owner, recordingId: value.id }, async () => {
   const recording = await prepareCaptureRecordingCompletion(value.id, owner);
   if (recording.ingestJobId) return completeAppServiceCall(authorized, { recording, job: { id: recording.ingestJobId }, duplicate: true });
   const extraction = captureRecordingExtraction({ durationMs: recording.durationMs, segments: recording.segments });
@@ -119,6 +121,7 @@ export async function completeRecordingService(caller: AppServiceCaller, input: 
   });
   const updated = await markCaptureRecordingIngestQueued(recording.id, owner, job.id);
   return completeAppServiceCall(authorized, { recording: updated, job: projectOperationJobStatus(job), extractionReceipt });
+  });
 }
 
 export async function indexStoredAssetService(caller: AppServiceCaller, input: z.input<typeof assetIndexSchema>) {

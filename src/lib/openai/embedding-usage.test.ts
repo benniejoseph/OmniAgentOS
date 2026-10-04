@@ -33,6 +33,11 @@ afterEach(() => {
 });
 
 describe("embedding usage", () => {
+  it("runs the optional native authority fence after credential resolution without billing a refused call", async () => {
+    const beforeProvider = vi.fn(async () => { throw new Error("Recording source changed"); });
+    await expect(embedTextsWithRuntime(["reviewed transcript"], undefined, undefined, beforeProvider)).rejects.toThrow("Recording source changed");
+    expect(beforeProvider).toHaveBeenCalledOnce(); expect(mocks.createEmbedding).not.toHaveBeenCalled(); expect(mocks.recordAiUsageSafely).not.toHaveBeenCalled();
+  });
   it("records the tokens and priced cost of an embedding call", async () => {
     vi.stubEnv("OPENAI_MODEL_PRICING_JSON", JSON.stringify({
       "text-embedding-3-large": { input: 0.13, output: 0 },

@@ -132,6 +132,15 @@ export async function runActorMemoryMaintenance(
   return { report: plan.report, reviews };
 }
 
+/** Closed native graph: caller owns the exact maintenance scope, complete
+ * reviewed inventory, graph fence, parent locks and accepting transaction. */
+export async function applyMemoryMaintenancePlanInTransaction(sql: MemorySqlClient, records: readonly MemoryRecord[],
+  plan: ReturnType<typeof planMemoryMaintenance>) {
+  const archived = await persistPlannedArchives(sql, records, plan.archives);
+  const reviews = await persistPlannedPromotionReviews(sql, records, plan.promotionReviews);
+  return actualMaintenanceReport(plan.report, archived, reviews);
+}
+
 export async function runTenantMemoryMaintenance(input: {
   tenantId: string;
   executingPrincipalId: string;

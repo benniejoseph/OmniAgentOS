@@ -28,6 +28,8 @@ import {
   type CustomerAccountMutationRequest,
 } from "@/lib/customer-success/account-mutation-contracts";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
+import { buildCustomerFactNativeAcceptance, buildCustomerFactNativeSource, customerFactNativeIntentSchema,
+  type CustomerFactNativeIntent } from "@/lib/customer-success/fact-mutation-contracts";
 import {
   parsePersistedExecutionScope,
   type ExecutionScope,
@@ -398,6 +400,8 @@ export async function recordCustomerFact(input: {
   validFrom: string;
   validTo?: string | null;
   staleAfter?: string | null;
+  /** Internal exact native intent; legacy callers leave this absent. */
+  nativeIntent?: CustomerFactNativeIntent;
 }): Promise<CustomerFactRevision> {
   requireDatabase();
   await ensureDatabaseSchema();
@@ -406,7 +410,20 @@ export async function recordCustomerFact(input: {
   return runWithDatabaseActorScope(
     authority.tenantId,
     authority.readableActorIds,
-    () => getSql().transaction(async (sql: CustomerSql) => {
+    () => getSql().transaction((sql: CustomerSql) => recordCustomerFactInTransaction(sql, input)) as Promise<CustomerFactRevision>,
+  );
+}
+
+/** Joins the caller's Account/fact transaction; never opens another commit. */
+export async function recordCustomerFactInTransaction(sql: CustomerSql, input: Parameters<typeof recordCustomerFact>[0]): Promise<CustomerFactRevision> {
+      assertMutationAuthority(input.authority);
+      const { authority } = input;
+      const nativeIntent = input.nativeIntent ? customerFactNativeIntentSchema.parse(input.nativeIntent) : null;
+      if (nativeIntent && (nativeIntent.tenantId !== authority.tenantId || nativeIntent.workspaceId !== authority.workspaceId ||
+        nativeIntent.canonicalActorId !== authority.canonicalActorId || nativeIntent.accountId !== input.accountId ||
+        nativeIntent.factId !== input.factId || nativeIntent.mutationId !== input.mutationId)) {
+        throw new CustomerAccountConflictError("Native fact intent differs from its exact write authority.");
+      }
       await sql`
         SELECT pg_advisory_xact_lock(hashtextextended(
           ${`${authority.tenantId}:${authority.workspaceId}:${input.accountId}:${input.factId}`}, 0
@@ -423,9 +440,13 @@ export async function recordCustomerFact(input: {
       `;
       if (!accountRows[0]) throw new CustomerAccountNotFoundError();
       const account = customerAccountRevisionSchema.parse(accountRows[0].account_snapshot);
+      if (nativeIntent && (account.ownerActorId !== authority.canonicalActorId ||
+        account.revision !== nativeIntent.request.expectedAccountRevision || account.accountSha256 !== nativeIntent.request.expectedAccountSha256)) {
+        throw new CustomerAccountConflictError("The reviewed Account changed before fact admission.");
+      }
       assertFactPurposes(account, input.source.allowedPurposeIds);
       const existingMutation = await sql`
-        SELECT fact_snapshot
+        SELECT fact_snapshot,native_intent,native_intent_sha256
         FROM omni_customer_fact_revisions
         WHERE tenant_id = ${authority.tenantId}
           AND workspace_id = ${authority.workspaceId}
@@ -434,7 +455,15 @@ export async function recordCustomerFact(input: {
         LIMIT 1
       `;
       if (existingMutation[0]) {
-        return customerFactRevisionSchema.parse(existingMutation[0].fact_snapshot);
+        const existing = customerFactRevisionSchema.parse(existingMutation[0].fact_snapshot);
+        if (nativeIntent) {
+          const digest = canonicalJsonSha256(nativeIntent);
+          if (existingMutation[0].native_intent_sha256 !== digest || canonicalJsonSha256(existingMutation[0].native_intent) !== digest) {
+            throw new CustomerAccountConflictError("The fact mutation key has another accepted intent.");
+          }
+          buildCustomerFactNativeAcceptance(nativeIntent, existing);
+        }
+        return existing;
       }
       const currentRows = await sql`
         SELECT fact_snapshot
@@ -450,6 +479,11 @@ export async function recordCustomerFact(input: {
       const current = currentRows[0]
         ? customerFactRevisionSchema.parse(currentRows[0].fact_snapshot)
         : undefined;
+      if (nativeIntent && current && (current.factSha256 !== nativeIntent.request.expectedFactSha256 ||
+        current.source.sourceKind !== "manual" || current.source.permissionBasis !== "operator_assertion" ||
+        current.recordedByActorId !== authority.canonicalActorId)) {
+        throw new CustomerAccountConflictError("Only the exact current manual assertion can be revised or retracted here.");
+      }
       if (!current && input.expectedRevision !== undefined) {
         throw new CustomerAccountConflictError("Customer fact does not exist for revision.");
       }
@@ -474,7 +508,7 @@ export async function recordCustomerFact(input: {
         factKey: input.factKey,
         state: input.state,
         value: input.value,
-        source: { ...input.source, ingestedAt: recordedAt },
+        source: nativeIntent ? buildCustomerFactNativeSource(nativeIntent, recordedAt) : { ...input.source, ingestedAt: recordedAt },
         owner: input.owner,
         confidenceBasisPoints: input.confidenceBasisPoints,
         validFrom: input.validFrom,
@@ -483,19 +517,20 @@ export async function recordCustomerFact(input: {
         recordedByActorId: authority.canonicalActorId,
         recordedAt,
       });
+      if (nativeIntent) buildCustomerFactNativeAcceptance(nativeIntent, fact);
       await sql`
         INSERT INTO omni_customer_fact_revisions (
           tenant_id, workspace_id, account_id, fact_id, fact_revision_id,
           revision, mutation_id, owner_actor_id, fact_key, fact_kind,
           fact_state, allowed_purpose_ids, value_sha256,
-          source_revision_sha256, fact_sha256, fact_snapshot, recorded_at
+          source_revision_sha256, fact_sha256, fact_snapshot, recorded_at,native_intent,native_intent_sha256
         ) VALUES (
           ${authority.tenantId}, ${authority.workspaceId}, ${fact.accountId},
           ${fact.factId}, ${fact.factRevisionId}, ${fact.revision},
           ${fact.mutationId}, ${account.ownerActorId}, ${fact.factKey},
           ${fact.kind}, ${fact.state}, ${fact.source.allowedPurposeIds},
           ${fact.valueSha256}, ${fact.source.sourceRevisionSha256},
-          ${fact.factSha256}, ${fact}::JSONB, ${fact.recordedAt}
+          ${fact.factSha256}, ${fact}::JSONB, ${fact.recordedAt},${nativeIntent}::JSONB,${nativeIntent ? canonicalJsonSha256(nativeIntent) : null}
         )
       `;
       await appendScopedDomainEvent({
@@ -519,8 +554,6 @@ export async function recordCustomerFact(input: {
         },
       }, { sql });
       return fact;
-    }) as Promise<CustomerFactRevision>,
-  );
 }
 
 async function readAccount360(

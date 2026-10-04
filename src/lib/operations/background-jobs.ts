@@ -57,6 +57,8 @@ import {
   saveKnowledgeCognitionFromBackgroundWorker,
   type KnowledgeCognitionRecord,
 } from "@/lib/knowledge/cognification-store";
+import { executeNativeCognitionBuildJob } from "@/lib/knowledge/cognification-build-native-jobs";
+import { withNativeCognitionLegacyFence } from "@/lib/knowledge/cognification-build-native-store";
 import type { AgentMode } from "@/lib/orchestration/types";
 import { ingestTextDocument } from "@/lib/rag/retriever";
 import {
@@ -349,12 +351,16 @@ export async function enqueueKnowledgeIngestJob({
   executionScope,
   request,
   idempotencyKey,
+  nativeAcceptanceId,
+  nativeParentJobId,
 }: {
   tenantId: string;
   actorId?: string;
   executionScope?: ExecutionScope;
   request: KnowledgeIngestJobRequest;
   idempotencyKey?: string;
+  nativeAcceptanceId?: string;
+  nativeParentJobId?: string;
 }) {
   const parsed = knowledgeIngestJobRequestSchema.parse(request);
   const requestId = idempotencyKey?.trim().slice(0, 200) || randomUUID();
@@ -376,8 +382,9 @@ export async function enqueueKnowledgeIngestJob({
       executionScope: trustedExecutionScope,
       requestHash,
       progress: { stage: "queued" },
+      ...(nativeAcceptanceId ? { nativeAcceptanceId, nativeParentJobId } : {}),
     },
-    maxAttempts: 3,
+    maxAttempts: nativeAcceptanceId ? 1 : 3,
     priority: 1,
     dedupeMode: "idempotent",
   });
@@ -623,7 +630,7 @@ async function enqueueCurrentKnowledgeCognifyJob({
     ...parsed,
     actorId: usageActorId,
   });
-  const job = await enqueueOperationJob({
+  const job = await withNativeCognitionLegacyFence(tenantId,usageActorId,parsed.documentId,(sql) => enqueueOperationJob({
     tenantId,
     type: "knowledge.cognify",
     dedupeKey: requestDedupeKey("knowledge.cognify", {
@@ -641,7 +648,7 @@ async function enqueueCurrentKnowledgeCognifyJob({
     priority: 0,
     requeueTerminal: false,
     requeueFailed: true,
-  });
+  },sql ? { sql } : {}));
   if (job.payload.actorId !== usageActorId) {
     throw new BackgroundJobIdempotencyConflictError("knowledge.cognify");
   }
@@ -1167,7 +1174,7 @@ async function executeBackgroundOperation(
     return executeCaptureMediaProcessingJob(
       job,
       abortSignal,
-      async ({ recording, output, executionScope }) => {
+      async ({ recording, output, executionScope, nativeAcceptanceId, nativeParentJobId }) => {
         const evidenceRefs = [...new Set([
           output.mediaRevisionId,
           ...output.summary.citations.map((citation) => citation.turnId),
@@ -1177,6 +1184,8 @@ async function executeBackgroundOperation(
           actorId: recording.actorId,
           executionScope,
           idempotencyKey: `capture-media:${output.mediaRevisionId}`,
+          nativeAcceptanceId,
+          nativeParentJobId,
           request: {
             title: recording.title,
             content: renderCaptureMediaKnowledge(output),
@@ -1380,6 +1389,16 @@ async function executeBackgroundOperation(
   }
 
   if (job.type === "knowledge.ingest") {
+    if (job.payload.nativeAcceptanceId) {
+      const { executeNativeMeetingRecordingKnowledge } = await import("@/lib/capture/meeting-recording-native-jobs");
+      return executeNativeMeetingRecordingKnowledge(job, abortSignal, (nativeRecording, recheck) =>
+        executeKnowledgeIngestJobRequest(job, knowledgeIngestJobRequestSchema.parse(request), abortSignal, { nativeRecording, nativeRecordingRecheck: recheck }));
+    }
+    const legacyRequest = knowledgeIngestJobRequestSchema.parse(request);
+    if (typeof legacyRequest.metadata?.captureRecordingId === "string" && typeof job.payload.actorId === "string") {
+      const { requireLegacyCaptureProcessing } = await import("@/lib/capture/native-processing-fence");
+      await requireLegacyCaptureProcessing(legacyRequest.metadata.captureRecordingId, { tenantId: job.tenantId, actorId: job.payload.actorId });
+    }
     return executeKnowledgeIngestJobRequest(
       job,
       knowledgeIngestJobRequestSchema.parse(request),
@@ -1618,6 +1637,7 @@ async function executeKnowledgeCognifyJob(
   job: OperationJobRecord,
   abortSignal: AbortSignal,
 ): Promise<Record<string, unknown>> {
+  if (job.payload.nativeCognitionBuild !== undefined) return executeNativeCognitionBuildJob(job,abortSignal);
   const request = knowledgeCognifyJobRequestSchema.parse(job.payload.request);
   const actorId = normalizeQueuedActorId(
     typeof job.payload.actorId === "string" ? job.payload.actorId : undefined,
@@ -1990,7 +2010,9 @@ async function executeKnowledgeIngestJobRequest(
   job: OperationJobRecord,
   parsed: KnowledgeIngestJobRequest,
   abortSignal: AbortSignal,
-  options: { assetExtractionReceipt?: CaptureExtractionReceipt } = {},
+  options: { assetExtractionReceipt?: CaptureExtractionReceipt;
+    nativeRecording?: import("@/lib/capture/meeting-recording-native-jobs").NativeRecordingIngestGuard;
+    nativeRecordingRecheck?: () => Promise<void> } = {},
 ) {
   const captureTarget = captureIngestTarget(parsed);
   const actorId = await resolveKnowledgeIngestActorId(job, parsed);
@@ -2007,6 +2029,7 @@ async function executeKnowledgeIngestJobRequest(
         tenantId: job.tenantId,
         actorId,
         ingestJobId: job.id,
+        ...(options.nativeRecording ? { nativeRecording: options.nativeRecording } : {}),
         ...(captureTarget.assetId
           ? { kind: "asset" as const, captureId: captureTarget.assetId }
           : {
@@ -2021,8 +2044,11 @@ async function executeKnowledgeIngestJobRequest(
     idempotencyKey: job.id,
     abortSignal,
     executionScope: sourceExecutionScope,
-    onProgress: (progress) =>
-      updateBackgroundJobProgress(job, abortSignal, progress),
+    ...(options.nativeRecordingRecheck ? { beforeEmbeddingProvider: options.nativeRecordingRecheck } : {}),
+    onProgress: async (progress) => {
+      await options.nativeRecordingRecheck?.();
+      await updateBackgroundJobProgress(job, abortSignal, progress);
+    },
     ...(actorId ? {
       usageScope: {
         tenantId: job.tenantId,
@@ -2130,7 +2156,7 @@ async function executeKnowledgeIngestJobRequest(
     }
   }
   let cognition: Record<string, unknown> = { status: "not_eligible" };
-  if (actorId && result.document.sourceRevisionId) {
+  if (actorId && result.document.sourceRevisionId && !options.nativeRecording) {
     try {
       const cognitionJob = await enqueueKnowledgeCognificationPlan({
         tenantId: job.tenantId,

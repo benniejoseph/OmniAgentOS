@@ -54,6 +54,8 @@ export async function extractCaptureMediaInsights(input: {
   turns: CaptureMediaTurn[];
   abortSignal?: AbortSignal;
   usageScope?: AiUsageScope;
+  singleAttempt?: boolean;
+  beforeProvider?: () => Promise<void>;
 }) : Promise<CaptureMediaExtraction> {
   if (!input.turns.length) throw new Error("Media extraction requires transcript turns.");
   const extractionTurns = boundedExtractionTurns(input.turns);
@@ -89,10 +91,14 @@ export async function extractCaptureMediaInsights(input: {
     if (!runtimeModel.configured) {
       throw new Error("Media insight planning is not configured.");
     }
-    const generated = await generateModelStructured(runtimeModel.bind(request));
+    await input.beforeProvider?.(); input.abortSignal?.throwIfAborted();
+    const generated = await generateModelStructured(runtimeModel.bind({ ...request,
+      ...(input.singleAttempt ? { maxAttempts: 1, allowCrossProviderFallback: false } : {}),
+    }));
     response = generated.text;
     generatedModel = generated.model;
   } else {
+    await input.beforeProvider?.(); input.abortSignal?.throwIfAborted();
     response = await createStructuredResponse(request);
   }
   const parsed = extractionResponseSchema.parse(JSON.parse(response));

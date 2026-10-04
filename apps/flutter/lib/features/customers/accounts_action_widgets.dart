@@ -4,6 +4,9 @@ import 'accounts_contracts.dart';
 import 'accounts_controller.dart';
 import 'accounts_mutation_controller.dart';
 import 'accounts_health_review.dart';
+import 'accounts_workflow_review.dart';
+import 'accounts_fact_panel.dart';
+import 'accounts_salesforce_panel.dart';
 
 class AccountActionsPanel extends StatelessWidget {
   const AccountActionsPanel({super.key, required this.controller});
@@ -56,7 +59,10 @@ class AccountActionsPanel extends StatelessWidget {
                   ),
                 if (actions.storageUnconfirmed ||
                     actions.pending != null ||
-                    actions.pendingHealth != null)
+                    actions.pendingHealth != null ||
+                    actions.pendingWorkflow != null ||
+                    actions.pendingFact != null ||
+                    actions.salesforceState.pending != null)
                   OutlinedButton(
                     onPressed: actions.available && !actions.busy
                         ? actions.reload
@@ -78,6 +84,9 @@ class AccountActionsPanel extends StatelessWidget {
                 ),
               ),
             AccountHealthRecovery(controller: controller),
+            AccountWorkflowRecovery(controller: controller),
+            AccountFactPanel(controller: controller),
+            AccountSalesforcePanel(controller: controller),
             if (actions.pending case final pending?) ...[
               Text(
                 pending.create

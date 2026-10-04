@@ -9,6 +9,7 @@ import 'meetings_calendar_view.dart';
 import 'meetings_commitments.dart';
 import 'meetings_detail_body.dart';
 import 'meetings_mutations.dart';
+import 'meetings_recording_controller.dart';
 import 'meetings_snapshots.dart';
 import 'meetings_widgets.dart';
 
@@ -417,6 +418,7 @@ class MeetingDetailView extends StatefulWidget {
     required this.repository,
     this.workspaceId,
     this.actions,
+    this.recordings,
     this.desktop = false,
     this.active = true,
   });
@@ -424,6 +426,7 @@ class MeetingDetailView extends StatefulWidget {
   final String? workspaceId;
   final MeetingsRepository repository;
   final MeetingActionController? actions;
+  final MeetingRecordingController? recordings;
   final bool desktop, active;
   @override
   State<MeetingDetailView> createState() => _MeetingDetailViewState();
@@ -787,6 +790,8 @@ class _MeetingDetailViewState extends State<MeetingDetailView>
                       '${widget.id}:${widget.workspaceId}:${identityHashCode(widget.repository)}',
                     ),
                     controller: controller,
+                    recordings: widget.recordings,
+                    active: widget.active,
                     onReview: widget.actions == null ? null : _review,
                     onPropose: widget.actions == null ? null : _propose,
                     reviewDisabledReason: preparing

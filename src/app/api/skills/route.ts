@@ -1,11 +1,11 @@
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { createAppServiceCaller, createRequestMutationAppServiceCaller } from "@/lib/app-services/contracts";
 import { createSkillService, listSkillsService } from "@/lib/app-services/agents";
-import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { serverErrorResponse } from "@/lib/http/errors";
 import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { skillInputSchema } from "@/lib/skills/schema";
+import { nativeAgentSkillResponse, nativeAgentSkillWriteResponse, readAgentSkillCompatibleBody } from "@/lib/skills/native-mutation-http";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
@@ -20,12 +20,14 @@ async function GETHandler(request: Request) {
 }
 
 async function POSTHandler(request: Request) {
+  const read = await readAgentSkillCompatibleBody(request, 65_536, 24_000);
+  if (read instanceof Response) return read;
+  if (read.native) return nativeAgentSkillWriteResponse(request, { resourceType: "agent_skill", operation: "create", body: read.body });
   let context;
   try { context = await authorizeRequest({ request, action: "manage.workflow", resourceType: "agent_skill", metadata: { operation: "create" } }); }
   catch (error) { return forbiddenResponse(error); }
-  let body: unknown;
-  try { body = await parseJsonBody(request, 24_000); } catch (error) { return jsonBodyErrorResponse(error); }
-  const parsed = skillInputSchema.safeParse(body);
+  if (context.source === "mobile") return nativeAgentSkillResponse("The strict native Skill request is required.", 403);
+  const parsed = skillInputSchema.safeParse(read.body);
   if (!parsed.success) return Response.json({ error: "Invalid skill", details: parsed.error.flatten() }, { status: 400 });
   try {
     const result = await createSkillService(

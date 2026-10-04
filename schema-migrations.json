@@ -1374,5 +1374,68 @@
     "checksum": "d84ef7defa1802422dd887651f706bc169c0da90818dff5a05e061a4c3babc0d",
     "file": "20261005130000_customer_health_evaluation_intents.sql",
     "sha256": "d84ef7defa1802422dd887651f706bc169c0da90818dff5a05e061a4c3babc0d"
+  },
+  {
+    "version": 227,
+    "name": "memory_promotion_native_decisions_v1",
+    "checksum": "ef6aa42b388a171f1f4fc1e313ce11e7b8da5ec37e9dd4c6594068ae3cef438d",
+    "file": "20261005133000_memory_promotion_native_decisions.sql",
+    "sha256": "ef6aa42b388a171f1f4fc1e313ce11e7b8da5ec37e9dd4c6594068ae3cef438d"
+  },
+  {
+    "version": 228,
+    "name": "customer_workflow_native_intents_v1",
+    "checksum": "8e550cb21de1a527a3d4227ecc2b7e4e968f62d96b14cb227fef73c782156ffc",
+    "file": "20261005140000_customer_workflow_native_intents.sql",
+    "sha256": "8e550cb21de1a527a3d4227ecc2b7e4e968f62d96b14cb227fef73c782156ffc"
+  },
+  {
+    "version": 229,
+    "name": "agent_skill_native_mutations_v1",
+    "checksum": "b2bf2d0724e57516e2d40cd378f21479d249743699ca0eabee6052a8770ac34d",
+    "file": "20261005143000_agent_skill_native_mutations.sql",
+    "sha256": "b2bf2d0724e57516e2d40cd378f21479d249743699ca0eabee6052a8770ac34d"
+  },
+  {
+    "version": 230,
+    "name": "meeting_recording_native_processing_v1",
+    "checksum": "ca7ee608ac02995c7bd8ade2c04cadbb3cfbb044d2a974cbf546566a45ae9d24",
+    "file": "20261005150000_meeting_recording_native_processing.sql",
+    "sha256": "ca7ee608ac02995c7bd8ade2c04cadbb3cfbb044d2a974cbf546566a45ae9d24"
+  },
+  {
+    "version": 231,
+    "name": "customer_fact_native_intents_v1",
+    "checksum": "701b5b3cbb2074fc7f438c24f9fb4bd7ab966925919b290cd87606fa2bcf1cf4",
+    "file": "20261005153000_customer_fact_native_intents.sql",
+    "sha256": "701b5b3cbb2074fc7f438c24f9fb4bd7ab966925919b290cd87606fa2bcf1cf4"
+  },
+  {
+    "version": 232,
+    "name": "salesforce_native_actions_v1",
+    "checksum": "68250ab3f08534b5e9e1fffda2563281759eb6e2e7d416e3ad624cf60ff0dbd0",
+    "file": "20261005160000_salesforce_native_actions.sql",
+    "sha256": "68250ab3f08534b5e9e1fffda2563281759eb6e2e7d416e3ad624cf60ff0dbd0"
+  },
+  {
+    "version": 233,
+    "name": "native_private_memory_actions_v1",
+    "checksum": "fc769e804833e1509948919af832c92057d4236de057e60c51c98f8fdf0f9150",
+    "file": "20261005163000_native_private_memory_actions.sql",
+    "sha256": "fc769e804833e1509948919af832c92057d4236de057e60c51c98f8fdf0f9150"
+  },
+  {
+    "version": 234,
+    "name": "native_private_memory_maintenance_graph_v1",
+    "checksum": "82472e8714f28c2dd3dd64e6ca856f99c5a8c132850b1da8d1e149d510f1a3a7",
+    "file": "20261005170000_native_private_memory_maintenance_graph.sql",
+    "sha256": "82472e8714f28c2dd3dd64e6ca856f99c5a8c132850b1da8d1e149d510f1a3a7"
+  },
+  {
+    "version": 235,
+    "name": "native_knowledge_cognition_builds_v1",
+    "checksum": "32970b0b3a66989751fc81f1a2ece1dbc357d8c569c3f3deed6b4df7d0851ae0",
+    "file": "20261005173000_native_knowledge_cognition_builds.sql",
+    "sha256": "32970b0b3a66989751fc81f1a2ece1dbc357d8c569c3f3deed6b4df7d0851ae0"
   }
 ]

@@ -58,9 +58,10 @@ export async function fetchSalesforcePage(input: {
   objectType: SalesforceObjectType;
   cursor: SalesforceObjectCursor;
   abortSignal?: AbortSignal;
+  nativeFence?: () => Promise<void>;
 }): Promise<SalesforcePage> {
   const observedAt = new Date().toISOString();
-  const api = await salesforceApi(input.connection, input.abortSignal);
+  const api = await salesforceApi(input.connection, input.abortSignal, input.nativeFence);
   const sourceKind = input.cursor.phase === "pending" ||
       input.cursor.phase === "backfill"
     ? "backfill" as const
@@ -114,6 +115,7 @@ export async function fetchSalesforceRecord(input: {
   sourceKind: "webhook" | "reconciliation";
   replayIdSha256?: string | null;
   abortSignal?: AbortSignal;
+  nativeFence?: () => Promise<void>;
 }): Promise<SalesforceRecordObservation | undefined> {
   if (!/^[A-Za-z0-9]{15,18}$/.test(input.externalId)) {
     throw providerError(
@@ -122,7 +124,7 @@ export async function fetchSalesforceRecord(input: {
       "review_permissions",
     );
   }
-  const api = await salesforceApi(input.connection, input.abortSignal);
+  const api = await salesforceApi(input.connection, input.abortSignal, input.nativeFence);
   const fields = await readableFields(api, input.objectType, input.abortSignal);
   const soql = `SELECT ${fields.join(",")} FROM ${input.objectType} WHERE Id = '${input.externalId}' LIMIT 1`;
   const response = await api.request(
@@ -622,13 +624,15 @@ type SalesforceApi = Readonly<{
 async function salesforceApi(
   connection: SalesforceConnection,
   abortSignal?: AbortSignal,
+  nativeFence?: () => Promise<void>,
 ): Promise<SalesforceApi> {
+  await nativeFence?.();
   const secret = await getOAuthGrantSecrets(
     connection.tenantId,
     connection.ownerActorId,
     "salesforce",
   );
-  if (!secret || secret.grant.id !== connection.oauthGrantId) {
+  if (!secret || secret.grant.id !== connection.oauthGrantId || (nativeFence && secret.grant.authorizationGeneration !== connection.authorizationGeneration)) {
     throw providerError(
       "authorization_expired",
       "Salesforce authorization is unavailable. Reconnect the workspace.",
@@ -664,6 +668,7 @@ async function salesforceApi(
     },
   ) {
     assertSalesforcePath(path);
+    await nativeFence?.();
     let response: Response;
     try {
       response = await fetch(`${connection.instanceOrigin}${path}`, {
@@ -694,6 +699,7 @@ async function salesforceApi(
         );
       }
       try {
+        await nativeFence?.();
         const refreshed = await refreshOAuthAccess("salesforce", refreshToken);
         const refreshedOrigin = String(
           refreshed.instance_url || grantSecret.tokens.instance_url || "",

@@ -41,6 +41,7 @@ import {
 } from "@/lib/customer-success/workflow-contracts";
 import {
   getCustomerSuccessWorkflowRun,
+  findCustomerSuccessWorkflowOutcomeReplay,
   saveCustomerSuccessWorkflowOutcome,
   saveCustomerSuccessWorkflowStart,
 } from "@/lib/customer-success/workflow-store";
@@ -134,6 +135,39 @@ describe("customer-success workflow store", () => {
     const saved = await getCustomerSuccessWorkflowRun(readAuthority(), run.runId);
     expect(saved?.runSha256).toBe(run.runSha256);
     expect(mocks.queries[0]?.text).toContain("workspace_id");
+  });
+
+  it("replays immutable legacy outcome semantics before a regenerated timestamp without another write", async () => {
+    const { runSha256: _digest, ...initial } = workflowRun();
+    const outcome = buildCustomerSuccessOutcomeReceipt({ status: "blocked", summary: "Waiting for the sponsor.",
+      artifactReceipts: [], nextAction: "Ask the sponsor.", recordedByActorId: actorId, recordedAt: "2026-09-07T13:00:00.000Z" });
+    const accepted = buildCustomerSuccessWorkflowRunRevision({ ...initial, revision: 2, outcome });
+    const authority = mutationAuthority("outcome-replay", "customer.success.workflow.outcome");
+    const { receiptSha256: _receipt, ...outcomeFields } = outcome;
+    mocks.responses.push([], [{ run_snapshot: accepted, mutation_request_sha256: "f".repeat(64), native_intent: null, native_intent_sha256: null }]);
+    const replay = await saveCustomerSuccessWorkflowOutcome({ authority, runId: accepted.runId, expectedRevision: 1,
+      outcome: buildCustomerSuccessOutcomeReceipt({ ...outcomeFields, recordedAt: "2026-09-07T14:00:00.000Z" }) });
+    expect(replay).toEqual(accepted);
+    expect(mocks.event).not.toHaveBeenCalled();
+    expect(mocks.queries.some((query) => /^\s*(?:INSERT|UPDATE)\b/.test(query.text))).toBe(false);
+    mocks.responses.push([{ run_snapshot: accepted, native_intent: null }]);
+    expect(await findCustomerSuccessWorkflowOutcomeReplay({ authority, accountId, runId: accepted.runId, expectedRevision: 1,
+      status: "blocked", summary: outcome.summary, artifactReceipts: [], nextAction: outcome.nextAction })).toEqual(accepted);
+    mocks.responses.push([{ run_snapshot: accepted, native_intent: null }]);
+    await expect(findCustomerSuccessWorkflowOutcomeReplay({ authority, accountId, runId: accepted.runId, expectedRevision: 1,
+      status: "blocked", summary: "Different intent", artifactReceipts: [], nextAction: outcome.nextAction })).rejects.toThrow("different workflow outcome");
+  });
+
+  it("never claims a native immutable outcome through the legacy replay lane", async () => {
+    const { runSha256: _digest, ...initial } = workflowRun();
+    const outcome = buildCustomerSuccessOutcomeReceipt({ status: "blocked", summary: "Waiting for the sponsor.",
+      artifactReceipts: [], nextAction: "Ask the sponsor.", recordedByActorId: actorId, recordedAt: "2026-09-07T13:00:00.000Z" });
+    const accepted = buildCustomerSuccessWorkflowRunRevision({ ...initial, revision: 2, outcome });
+    mocks.responses.push([{ run_snapshot: accepted, native_intent: { contract: "customer-success-workflow-intent:1" } }]);
+    await expect(findCustomerSuccessWorkflowOutcomeReplay({ authority: mutationAuthority("native-key", "customer.success.workflow.outcome"),
+      accountId, runId: accepted.runId, expectedRevision: 1, status: "blocked", summary: outcome.summary,
+      artifactReceipts: [], nextAction: outcome.nextAction })).rejects.toThrow("different workflow outcome");
+    expect(mocks.event).not.toHaveBeenCalled();
   });
 });
 

@@ -7,6 +7,8 @@ import 'agents.dart';
 import 'agents_providers.dart';
 import 'macos_agents_view.dart';
 import 'specialist_workspace.dart';
+import 'agent_skill_controller.dart';
+import 'agent_skill_view.dart';
 
 class NativeAgentsWorkspace extends StatelessWidget {
   const NativeAgentsWorkspace({super.key, this.onAssignWork});
@@ -19,17 +21,36 @@ class NativeAgentsWorkspace extends StatelessWidget {
       builder: (context, ref, _) {
         final controller = ref.watch(agentsControllerProvider),
             council = ref.watch(agentCouncilControllerProvider);
-        return usesMacosPresentation()
-            ? MacosAgentsView(
-                controller: controller,
-                councilController: council,
-                onAssignWork: onAssignWork,
-              )
-            : AgentsView(
-                controller: controller,
-                liveWork: AgentControlView(controller: council),
-                onRefreshLiveWork: council.refresh,
-              );
+        final decisions = ref.watch(agentSkillControllerProvider);
+        Future<void> decide(String operation, String? id) async {
+          await showAgentSkillDecision(context, decisions, operation, id);
+          if (context.mounted &&
+              decisions.current &&
+              decisions.accepted != null) {
+            await controller.refresh();
+          }
+        }
+
+        return Column(
+          children: [
+            AgentSkillRecoveryPanel(controller: decisions),
+            Expanded(
+              child: usesMacosPresentation()
+                  ? MacosAgentsView(
+                      controller: controller,
+                      councilController: council,
+                      onAssignWork: onAssignWork,
+                      onCatalogDecision: decide,
+                    )
+                  : AgentsView(
+                      controller: controller,
+                      liveWork: AgentControlView(controller: council),
+                      onRefreshLiveWork: council.refresh,
+                      onCatalogDecision: decide,
+                    ),
+            ),
+          ],
+        );
       },
     ),
   );

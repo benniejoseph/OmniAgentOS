@@ -179,8 +179,10 @@ export async function embedTexts(
   input: string[],
   abortSignal?: AbortSignal,
   usageScope?: AiUsageScope,
+  beforeProvider?: () => Promise<void>,
 ) {
-  const result = await embedTextsWithRuntime(input, abortSignal, usageScope);
+  const result = beforeProvider ? await embedTextsWithRuntime(input, abortSignal, usageScope, beforeProvider)
+    : await embedTextsWithRuntime(input, abortSignal, usageScope);
   return result?.vectors || null;
 }
 
@@ -188,6 +190,7 @@ export async function embedTextsWithRuntime(
   input: string[],
   abortSignal?: AbortSignal,
   usageScope?: AiUsageScope,
+  beforeProvider?: () => Promise<void>,
 ) {
   if (input.length === 0) {
     return null;
@@ -210,9 +213,11 @@ export async function embedTextsWithRuntime(
     : undefined;
 
   const startedAt = Date.now();
+  let dispatched = false;
   try {
-    const response = await runtimeModel.withApiKey((apiKey) =>
-      getOpenAIClient({ apiKey, correlationId: usageScope?.correlationId }).embeddings.create(
+    const response = await runtimeModel.withApiKey(async (apiKey) => {
+      await beforeProvider?.(); abortSignal?.throwIfAborted(); dispatched = true;
+      return getOpenAIClient({ apiKey, correlationId: usageScope?.correlationId }).embeddings.create(
         {
           model: runtimeModel.model,
           input,
@@ -221,7 +226,7 @@ export async function embedTextsWithRuntime(
             : {}),
         },
         { signal: abortSignal },
-      )
+      ); }
     );
     if (meteredUsageScope) {
       const inputTokens = finiteToken(response.usage?.prompt_tokens);
@@ -254,6 +259,7 @@ export async function embedTextsWithRuntime(
       dimensions: vectors[0]?.length || EMBEDDING_DIMENSIONS,
     };
   } catch (error) {
+    if (beforeProvider && !dispatched) throw error;
     if (meteredUsageScope) {
       await recordAiUsageSafely({
         ...meteredUsageScope,

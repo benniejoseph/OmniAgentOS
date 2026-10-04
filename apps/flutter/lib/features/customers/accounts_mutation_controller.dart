@@ -11,6 +11,13 @@ import 'accounts_mutation_contracts.dart';
 import 'accounts_recovery_store.dart';
 import 'accounts_repository.dart';
 import 'accounts_health_contracts.dart';
+import 'accounts_workflow_contracts.dart';
+import 'accounts_advanced_contracts.dart';
+import 'accounts_fact_contracts.dart';
+import 'accounts_salesforce_contracts.dart';
+
+part 'accounts_fact_actions.dart';
+part 'accounts_salesforce_actions.dart';
 
 class AccountsMutationController extends ChangeNotifier {
   AccountsMutationController(
@@ -30,8 +37,17 @@ class AccountsMutationController extends ChangeNotifier {
   AccountHealthIntent? pendingHealth, acceptedHealthIntent;
   AccountHealthRead? acceptedHealth;
   AccountJson? healthDisposition;
+  AccountWorkflowIntent? pendingWorkflow, acceptedWorkflowIntent;
+  AccountWorkflowAcceptance? acceptedWorkflow;
+  AccountJson? workflowDraft, workflowNotSubmitted;
+  AccountFactState factState = AccountFactState();
+  AccountSalesforceState salesforceState = AccountSalesforceState();
+  AccountSalesforceRead? salesforceReview;
+  CancelToken? _salesforceRead;
+  CancelToken? _factRead;
   int _journalVersion = 1;
   CancelToken? _healthRead;
+  CancelToken? _workflowRead;
   bool busy = false,
       loaded = false,
       storageUnconfirmed = false,
@@ -51,7 +67,24 @@ class AccountsMutationController extends ChangeNotifier {
       repository is AccountsMutationRepository &&
       loaded;
   bool get locked =>
-      busy || pending != null || pendingHealth != null || storageUnconfirmed;
+      busy ||
+      pending != null ||
+      pendingHealth != null ||
+      pendingWorkflow != null ||
+      factState.pending != null ||
+      salesforceState.pending != null ||
+      storageUnconfirmed;
+  bool get _salesforceRecoveryHeld =>
+      salesforceState.pending != null || salesforceState.needsLocalSave;
+  bool workflowWritable({required bool start}) =>
+      available &&
+      canManage() &&
+      loaded &&
+      _owner?.role != 'viewer' &&
+      repository is AccountsWorkflowRepository &&
+      repository.access.operations.contains(
+        start ? 'customers.workflows.start' : 'customers.workflows.outcome',
+      );
   bool get healthWritable =>
       available &&
       canManage() &&
@@ -68,13 +101,23 @@ class AccountsMutationController extends ChangeNotifier {
     'pending': pending?.stored,
     'acceptedIntent': acceptedIntent?.stored,
     'accepted': accepted?.raw,
-    if (_journalVersion == 2)
+    if (_journalVersion >= 2)
       'health': {
         'pending': pendingHealth?.stored,
         'acceptedIntent': acceptedHealthIntent?.stored,
         'accepted': acceptedHealth?.raw,
         'disposition': healthDisposition,
       },
+    if (_journalVersion >= 3)
+      'workflow': {
+        'draft': workflowDraft,
+        'pending': pendingWorkflow?.stored,
+        'acceptedIntent': acceptedWorkflowIntent?.stored,
+        'accepted': acceptedWorkflow?.raw,
+        'notSubmitted': workflowNotSubmitted,
+      },
+    if (_journalVersion >= 4) 'fact': factState.stored,
+    if (_journalVersion >= 5) 'salesforce': salesforceState.stored,
   };
   Future<void> _save(int epoch, AccountsOwner owner, String scope) => store
       .write(owner, scope, _journal, isCurrent: () => _current(epoch, owner));
@@ -97,6 +140,12 @@ class AccountsMutationController extends ChangeNotifier {
       pendingHealth = acceptedHealthIntent = null;
       acceptedHealth = null;
       healthDisposition = null;
+      pendingWorkflow = acceptedWorkflowIntent = null;
+      acceptedWorkflow = null;
+      workflowDraft = workflowNotSubmitted = null;
+      factState = AccountFactState();
+      salesforceState = AccountSalesforceState();
+      salesforceReview = null;
       _journalVersion = 1;
     }
     _owner = owner;
@@ -125,9 +174,14 @@ class AccountsMutationController extends ChangeNotifier {
       AccountHealthIntent? restoredHealth, healthReceiptIntent;
       AccountHealthRead? healthReceipt;
       AccountJson? restoredDisposition;
+      AccountWorkflowIntent? restoredWorkflow, workflowReceiptIntent;
+      AccountWorkflowAcceptance? workflowReceipt;
+      AccountJson? restoredWorkflowDraft, restoredNotSubmitted;
+      AccountFactState? restoredFact;
+      AccountSalesforceState? restoredSalesforce;
       var journalVersion = 1;
       if (value != null) {
-        journalVersion = accountInt(value['schemaVersion'], min: 1, max: 2);
+        journalVersion = accountInt(value['schemaVersion'], min: 1, max: 5);
         accountKeys(value, [
           'schemaVersion',
           'targetId',
@@ -135,7 +189,10 @@ class AccountsMutationController extends ChangeNotifier {
           'pending',
           'acceptedIntent',
           'accepted',
-          if (journalVersion == 2) 'health',
+          if (journalVersion >= 2) 'health',
+          if (journalVersion >= 3) 'workflow',
+          if (journalVersion >= 4) 'fact',
+          if (journalVersion >= 5) 'salesforce',
         ]);
         restoredTarget = value['targetId'] == null
             ? null
@@ -196,7 +253,7 @@ class AccountsMutationController extends ChangeNotifier {
             receiptIntent,
           );
         }
-        if (journalVersion == 2) {
+        if (journalVersion >= 2) {
           final health = accountMap(value['health']);
           accountKeys(health, [
             'pending',
@@ -248,7 +305,87 @@ class AccountsMutationController extends ChangeNotifier {
             'Only one Account request may await confirmation.',
           );
         }
+        if (journalVersion >= 3) {
+          final workflow = accountMap(value['workflow']);
+          accountKeys(workflow, [
+            'draft',
+            'pending',
+            'acceptedIntent',
+            'accepted',
+            'notSubmitted',
+          ]);
+          if (workflow['draft'] != null) {
+            restoredWorkflowDraft = _workflowDraft(workflow['draft']);
+          }
+          if (workflow['pending'] != null) {
+            restoredWorkflow = await AccountWorkflowIntent.restore(
+              workflow['pending'],
+              owner,
+              scope,
+            );
+          }
+          if (workflow['acceptedIntent'] != null) {
+            workflowReceiptIntent = await AccountWorkflowIntent.restore(
+              workflow['acceptedIntent'],
+              owner,
+              scope,
+            );
+          }
+          accountRequire(
+            (workflowReceiptIntent == null) == (workflow['accepted'] == null),
+          );
+          if (workflowReceiptIntent != null) {
+            final raw = accountMap(workflow['accepted']);
+            workflowReceipt = await AccountWorkflowAcceptance.parse(
+              raw,
+              workflowReceiptIntent,
+              mutation: raw.containsKey('replayed'),
+            );
+            accountRequire(workflowReceipt.acceptance != null);
+          }
+          if (workflow['notSubmitted'] != null) {
+            restoredNotSubmitted = (await AccountWorkflowIntent.restore(
+              workflow['notSubmitted'],
+              owner,
+              scope,
+            )).stored;
+          }
+          accountRequire(
+            [
+                  restored,
+                  restoredHealth,
+                  restoredWorkflow,
+                ].where((item) => item != null).length <=
+                1,
+            'Only one Account request may await confirmation.',
+          );
+        }
       }
+      restoredFact = await AccountFactState.restore(
+        journalVersion >= 4 ? value!['fact'] : null,
+        owner,
+        scope,
+        factState,
+        storageUnconfirmed: storageUnconfirmed,
+      );
+      restoredSalesforce = await AccountSalesforceState.restore(
+        journalVersion >= 5 ? value!['salesforce'] : null,
+        owner,
+        scope,
+        salesforceState,
+        storageUnconfirmed: storageUnconfirmed,
+      );
+      accountRequire(
+        [
+              restored,
+              restoredHealth,
+              restoredWorkflow,
+              restoredFact.pending,
+              restoredSalesforce.pending,
+            ].where((item) => item != null).length <=
+            1,
+        'Only one Account request may await confirmation.',
+      );
       if (!_current(epoch, owner)) {
         return;
       }
@@ -275,6 +412,57 @@ class AccountsMutationController extends ChangeNotifier {
             dispositionSettlesHeld,
         'The protected journal does not confirm the pending health request. Its original identity remains held.',
       );
+      final heldWorkflow = pendingWorkflow;
+      bool workflowMatches(
+        AccountWorkflowIntent? intent,
+        AccountWorkflowIntent? target,
+      ) =>
+          target != null &&
+          intent?.owner.key == target.owner.key &&
+          intent?.workspaceId == target.workspaceId &&
+          intent?.requestSha256 == target.requestSha256;
+      accountRequire(
+        heldWorkflow == null ||
+            workflowMatches(restoredWorkflow, heldWorkflow) ||
+            (workflowReceipt != null &&
+                workflowMatches(workflowReceiptIntent, heldWorkflow)) ||
+            restoredNotSubmitted?['requestSha256'] ==
+                heldWorkflow.requestSha256,
+        'The protected journal does not confirm the pending workflow request. Its original identity remains held.',
+      );
+      final knownWorkflow = acceptedWorkflow,
+          knownWorkflowIntent = acceptedWorkflowIntent;
+      accountRequire(
+        !storageUnconfirmed ||
+            knownWorkflow == null ||
+            workflowMatches(restoredWorkflow, knownWorkflowIntent) ||
+            workflowMatches(workflowReceiptIntent, knownWorkflowIntent),
+        'The accepted workflow receipt is retained until the protected journal confirms its exact identity.',
+      );
+      final workflowMatchesKnown =
+          knownWorkflow != null &&
+          workflowMatches(restoredWorkflow, knownWorkflowIntent);
+      final workflowStoppedKnown =
+          restoredWorkflow != null &&
+          workflowNotSubmitted?['requestSha256'] ==
+              restoredWorkflow.requestSha256;
+      pendingWorkflow = workflowMatchesKnown || workflowStoppedKnown
+          ? null
+          : restoredWorkflow;
+      acceptedWorkflowIntent =
+          (workflowMatchesKnown
+              ? knownWorkflowIntent
+              : workflowReceiptIntent) ??
+          knownWorkflowIntent;
+      acceptedWorkflow =
+          (workflowMatchesKnown ? knownWorkflow : workflowReceipt) ??
+          knownWorkflow;
+      workflowNotSubmitted = workflowStoppedKnown
+          ? workflowNotSubmitted
+          : restoredNotSubmitted;
+      workflowDraft = restoredWorkflowDraft;
+      factState = restoredFact;
+      salesforceState = restoredSalesforce;
       draft = restoredDraft;
       targetId = restoredTarget;
       pending = restored;
@@ -309,9 +497,21 @@ class AccountsMutationController extends ChangeNotifier {
           ? knownDisposition
           : restoredDisposition;
       _journalVersion =
-          journalVersion == 2 ||
-              acceptedHealth != null ||
-              healthDisposition != null
+          journalVersion >= 5 ||
+              salesforceState.observed != null ||
+              salesforceState.notSubmitted != null
+          ? 5
+          : journalVersion >= 4 ||
+                factState.accepted != null ||
+                factState.notSubmitted != null
+          ? 4
+          : journalVersion >= 3 ||
+                acceptedWorkflow != null ||
+                workflowNotSubmitted != null
+          ? 3
+          : journalVersion >= 2 ||
+                acceptedHealth != null ||
+                healthDisposition != null
           ? 2
           : 1;
       // A later local read cannot revoke an already validated server receipt.
@@ -330,10 +530,30 @@ class AccountsMutationController extends ChangeNotifier {
         targetId = null;
       }
       storageUnconfirmed =
-          matchedKnown || healthMatchesKnown || dispositionMatchesKnown;
+          matchedKnown ||
+          healthMatchesKnown ||
+          dispositionMatchesKnown ||
+          workflowMatchesKnown ||
+          workflowStoppedKnown;
+      storageUnconfirmed =
+          storageUnconfirmed ||
+          factState.needsLocalSave ||
+          salesforceState.needsLocalSave;
       loaded = true;
       draftVersion++;
-      message = healthMatchesKnown || dispositionMatchesKnown
+      message = salesforceState.needsLocalSave
+          ? 'The Salesforce receipt is retained. Save it locally without another server action.'
+          : salesforceState.pending != null
+          ? 'A saved Salesforce action is unconfirmed. Read its exact receipt; no provider action will be repeated.'
+          : factState.needsLocalSave
+          ? 'The verified fact outcome is retained. Save it locally without another server action.'
+          : factState.pending != null
+          ? 'A saved manual fact request is unconfirmed. Read its exact receipt; no write will be repeated.'
+          : workflowMatchesKnown || workflowStoppedKnown
+          ? 'The verified workflow outcome is retained. Save it locally without another server action.'
+          : restoredWorkflow != null
+          ? 'A saved workflow request is unconfirmed. Read its exact acceptance; recovery never repeats the write.'
+          : healthMatchesKnown || dispositionMatchesKnown
           ? 'The verified health outcome is retained. Save it locally without another evaluation.'
           : restoredHealth != null
           ? 'A saved health evaluation is unconfirmed. Read its exact receipt; evaluation is never repeated during recovery.'
@@ -402,6 +622,10 @@ class AccountsMutationController extends ChangeNotifier {
         busy ||
         pending != null ||
         pendingHealth != null ||
+        pendingWorkflow != null ||
+        factState.pending != null ||
+        factState.needsLocalSave ||
+        _salesforceRecoveryHeld ||
         accepted == null ||
         owner == null ||
         scope == null) {
@@ -475,6 +699,9 @@ class AccountsMutationController extends ChangeNotifier {
         busy ||
         storageUnconfirmed ||
         pendingHealth != null ||
+        pendingWorkflow != null ||
+        factState.pending != null ||
+        _salesforceRecoveryHeld ||
         owner == null ||
         scope == null ||
         transport is! AccountsMutationRepository) {
@@ -621,7 +848,9 @@ class AccountsMutationController extends ChangeNotifier {
       pendingHealth = intent;
       prepared = true;
       healthDisposition = null;
-      _journalVersion = 2;
+      if (_journalVersion < 2) {
+        _journalVersion = 2;
+      }
       await _save(epoch, owner, scope);
       if (!current()) {
         // While this owner remains current, persist the locally known absence
@@ -772,6 +1001,10 @@ class AccountsMutationController extends ChangeNotifier {
         busy ||
         pendingHealth != null ||
         pending != null ||
+        pendingWorkflow != null ||
+        factState.pending != null ||
+        factState.needsLocalSave ||
+        _salesforceRecoveryHeld ||
         owner == null ||
         scope == null ||
         (acceptedHealth == null && healthDisposition == null)) {
@@ -799,10 +1032,300 @@ class AccountsMutationController extends ChangeNotifier {
     }
   }
 
+  AccountJson _workflowDraft(Object? value) {
+    final row = accountMap(value);
+    accountKeys(row, ['accountId', 'definitionSha256', 'runId', 'values']);
+    accountId(row['accountId'], 'customer-account');
+    accountHash(row['definitionSha256']);
+    if (row['runId'] != null) {
+      accountId(row['runId'], 'customer-success-run');
+    }
+    accountMap(row['values']);
+    accountRequire(
+      utf8.encode(jsonEncode(row)).length <= 131072,
+      'The workflow draft is too large to save.',
+    );
+    return accountFreeze(row);
+  }
+
+  void editWorkflowDraft(AccountJson value) {
+    if (!available || !loaded || locked || !canManage()) {
+      return;
+    }
+    workflowDraft = _workflowDraft(value);
+    if (_journalVersion < 3) {
+      _journalVersion = 3;
+    }
+    _scheduleSave();
+  }
+
+  Future<void> submitWorkflow(
+    CustomerAccountSummary reviewed,
+    AccountJson definition,
+    AccountJson values, {
+    AccountWorkflowRun? reviewedRun,
+    required bool Function() isReviewCurrent,
+  }) async {
+    final owner = _owner, scope = workspace, transport = repository;
+    if (!workflowWritable(start: reviewedRun == null) ||
+        locked ||
+        owner == null ||
+        scope == null ||
+        transport is! AccountsWorkflowRepository ||
+        !isReviewCurrent()) {
+      return;
+    }
+    final epoch = _epoch, token = CancelToken();
+    bool owned() => !_disposed && epoch == _epoch && owner.key == _owner?.key;
+    bool current() => _current(epoch, owner) && isReviewCurrent();
+    busy = true;
+    message = null;
+    _saveTimer?.cancel();
+    _workflowRead = token;
+    notifyListeners();
+    var dispatched = false, prepared = false;
+    try {
+      final fresh = await repository.detail(
+        reviewed.id,
+        token,
+        workspaceId: scope,
+      );
+      if (!current()) {
+        return;
+      }
+      accountRequire(
+        fresh.context.accessLevel != 'reader' &&
+            fresh.account.id == reviewed.id &&
+            fresh.account.revision == reviewed.revision &&
+            fresh.account.sha256 == reviewed.sha256 &&
+            fresh.account.raw['ownerActorId'] == 'actor:${owner.userId}',
+        'The Account changed. Refresh and review it before submitting a workflow action.',
+      );
+      if (reviewedRun == null) {
+        accountRequire(transport is AccountsAdvancedRepository);
+        final pack = await (transport as AccountsAdvancedRepository).advanced(
+          AccountAdvancedKind.workflows,
+          token,
+          workspaceId: scope,
+          accountId: reviewed.id,
+        );
+        if (!current()) {
+          return;
+        }
+        accountRequire(
+          (pack.raw['pack'] as List).any(
+            (item) =>
+                item['workflowId'] == definition['workflowId'] &&
+                item['definitionSha256'] == definition['definitionSha256'],
+          ),
+          'The workflow definition changed. Refresh and review it again.',
+        );
+      } else {
+        final exact = await (transport as AccountsWorkflowRepository)
+            .readWorkflow(
+              reviewed.id,
+              reviewedRun.run['runId'] as String,
+              scope,
+              token,
+            );
+        if (!current()) {
+          return;
+        }
+        accountRequire(
+          exact.definition?['definitionSha256'] ==
+                  definition['definitionSha256'] &&
+              exact.run['runSha256'] == reviewedRun.run['runSha256'] &&
+              exact.run['revision'] == reviewedRun.run['revision'] &&
+              exact.context.accessLevel != 'reader',
+          'The workflow run or its definition changed. Refresh before recording an outcome.',
+        );
+      }
+      final key =
+          'account-workflow-${base64UrlEncode(List<int>.generate(24, (_) => Random.secure().nextInt(256))).replaceAll('=', '')}';
+      final intent = await AccountWorkflowIntent.prepare(
+        owner,
+        scope,
+        key,
+        reviewed,
+        definition,
+        values,
+        run: reviewedRun?.run,
+      );
+      if (!current()) {
+        return;
+      }
+      pendingWorkflow = intent;
+      workflowNotSubmitted = null;
+      if (_journalVersion < 3) {
+        _journalVersion = 3;
+      }
+      prepared = true;
+      await _save(epoch, owner, scope);
+      if (!current()) {
+        if (_current(epoch, owner)) {
+          pendingWorkflow = null;
+          workflowNotSubmitted = intent.stored;
+          await _save(epoch, owner, scope);
+          message = 'The workflow review closed before submission. No server action was sent.';
+        }
+        return;
+      }
+      dispatched = true;
+      final receipt = await (transport as AccountsWorkflowRepository)
+          .mutateWorkflow(intent, isCurrent: current);
+      if (!_current(epoch, owner)) {
+        return;
+      }
+      accountRequire(receipt.acceptance != null);
+      acceptedWorkflow = receipt;
+      acceptedWorkflowIntent = intent;
+      pendingWorkflow = null;
+      workflowDraft = null;
+      try {
+        await _save(epoch, owner, scope);
+        message = intent.start
+            ? 'Workflow setup accepted. Its project and tasks were created; no task or external action was started.'
+            : 'Workflow outcome accepted. Current progress is a separate read.';
+      } catch (_) {
+        storageUnconfirmed = true;
+        message = 'Workflow acceptance is verified, but its local save is unconfirmed. Reload recovery before another action.';
+      }
+    } catch (error) {
+      if (!owned() || !_current(epoch, owner)) {
+        return;
+      }
+      if (!dispatched) {
+        if (prepared) {
+          storageUnconfirmed = true;
+        }
+        message = prepared
+            ? 'The protected workflow intent save is unconfirmed. Reload recovery before any submission.'
+            : error is FormatException
+            ? error.message
+            : 'The current workflow review could not be confirmed. Nothing was submitted.';
+      } else {
+        message = 'The workflow outcome is unconfirmed. The exact saved request is held. Read its acceptance; no write will be repeated.';
+      }
+    } finally {
+      if (identical(_workflowRead, token)) {
+        _workflowRead = null;
+      }
+      if (owned()) {
+        busy = false;
+        notifyListeners();
+      }
+    }
+  }
+
+  Future<void> recoverWorkflow() async {
+    final owner = _owner,
+        scope = workspace,
+        intent = pendingWorkflow,
+        transport = repository;
+    if (!available ||
+        !loaded ||
+        busy ||
+        storageUnconfirmed ||
+        owner == null ||
+        scope == null ||
+        intent == null ||
+        transport is! AccountsWorkflowRepository ||
+        !repository.access.operations.contains(
+          'customers.workflows.mutations.get',
+        )) {
+      return;
+    }
+    final epoch = _epoch, token = CancelToken();
+    _workflowRead = token;
+    busy = true;
+    notifyListeners();
+    try {
+      final receipt = await (transport as AccountsWorkflowRepository)
+          .readWorkflowAcceptance(intent, token);
+      if (!_current(epoch, owner)) {
+        return;
+      }
+      if (receipt.acceptance == null) {
+        message = 'No matching workflow acceptance was returned. The original request remains held; no write was repeated.';
+        return;
+      }
+      acceptedWorkflow = receipt;
+      acceptedWorkflowIntent = intent;
+      pendingWorkflow = null;
+      workflowDraft = null;
+      try {
+        await _save(epoch, owner, scope);
+        message = 'The exact original workflow acceptance was recovered. Current Account and project progress may be newer.';
+      } catch (_) {
+        storageUnconfirmed = true;
+        message = 'The workflow receipt is verified but its local save is unconfirmed. Reload protected recovery.';
+      }
+    } catch (_) {
+      if (_current(epoch, owner)) {
+        message = 'The exact workflow acceptance could not be confirmed. The original request remains held.';
+      }
+    } finally {
+      if (identical(_workflowRead, token)) {
+        _workflowRead = null;
+      }
+      if (_current(epoch, owner)) {
+        busy = false;
+        notifyListeners();
+      }
+    }
+  }
+
+  Future<void> settleWorkflowLocally() async {
+    final owner = _owner, scope = workspace;
+    if (!available ||
+        !loaded ||
+        busy ||
+        pending != null ||
+        pendingHealth != null ||
+        pendingWorkflow != null ||
+        factState.pending != null ||
+        factState.needsLocalSave ||
+        _salesforceRecoveryHeld ||
+        owner == null ||
+        scope == null ||
+        (acceptedWorkflow == null && workflowNotSubmitted == null)) {
+      return;
+    }
+    final epoch = _epoch;
+    busy = true;
+    notifyListeners();
+    try {
+      await _save(epoch, owner, scope);
+      if (_current(epoch, owner)) {
+        storageUnconfirmed = false;
+        message =
+            'Workflow recovery saved locally. No server action was repeated.';
+      }
+    } catch (_) {
+      if (_current(epoch, owner)) {
+        storageUnconfirmed = true;
+        message = 'Local workflow recovery remains unconfirmed. Reload the protected journal.';
+      }
+    } finally {
+      if (_current(epoch, owner)) {
+        busy = false;
+        notifyListeners();
+      }
+    }
+  }
+
+  void _factsChanged() => notifyListeners();
+
   void hide() {
+    _salesforceRead?.cancel('Salesforce access changed.');
+    _salesforceRead = null;
+    _factRead?.cancel('Account fact access changed.');
+    _factRead = null;
     _saveTimer?.cancel();
     _healthRead?.cancel('Account health access changed.');
     _healthRead = null;
+    _workflowRead?.cancel('Account workflow access changed.');
+    _workflowRead = null;
     _epoch++;
     _owner = null;
     workspace = null;
@@ -813,6 +1336,12 @@ class AccountsMutationController extends ChangeNotifier {
     pendingHealth = acceptedHealthIntent = null;
     acceptedHealth = null;
     healthDisposition = null;
+    pendingWorkflow = acceptedWorkflowIntent = null;
+    acceptedWorkflow = null;
+    workflowDraft = workflowNotSubmitted = null;
+    factState = AccountFactState();
+    salesforceState = AccountSalesforceState();
+    salesforceReview = null;
     _journalVersion = 1;
     busy = loaded = storageUnconfirmed = false;
     message = null;

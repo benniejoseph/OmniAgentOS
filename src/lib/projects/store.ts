@@ -54,6 +54,8 @@ export async function createProject(input: {
   status?: ProjectStatus;
   targetDate?: string;
   mutation?: ProjectMutationContext;
+  /** Atomic setup callers must not adopt a pre-existing deterministic target. */
+  requireNew?: boolean;
 }) {
   const tenantId = normalizeTenantId(input.tenantId);
   const mutation = input.mutation
@@ -86,6 +88,7 @@ export async function createProject(input: {
     }
     return getSql().transaction(async (sql: ProjectSqlClient) => {
       const rows = await insertProject(sql, project, now, true);
+      if (input.requireNew && !rows[0]) throw new Error("The project target already exists without this setup acceptance.");
       const saved = rows[0]
         ? projectFromRow(rows[0])
         : await getProjectById(sql, project.id, project.tenantId);
@@ -109,6 +112,7 @@ export async function createProject(input: {
   await updateLedger((ledger) => {
     const existing = ledger.projects.find((item) => item.id === project.id);
     if (existing) {
+      if (input.requireNew) throw new Error("The project target already exists without this setup acceptance.");
       if (!sameProjectCreateRequest(existing, project)) {
         throw new Error(
           "Idempotency-Key is already bound to a different project request.",
@@ -865,6 +869,8 @@ export async function createProjectTasks(
     tenantId?: string;
     actorId?: string;
     mutation?: ProjectMutationContext;
+    /** Refuse existing task identities instead of adopting partial setup. */
+    requireNew?: boolean;
   },
 ) {
   const tenantId = normalizeTenantId(options.tenantId);
@@ -906,6 +912,7 @@ export async function createProjectTasks(
         )
       : randomUUID();
     const replay = existing.find((item) => item.id === id);
+    if (options.requireNew && replay) throw new Error("The task target already exists without this setup acceptance.");
     if (replay && !sameProjectTaskCreateRequest(replay, input)) {
       throw new Error(
         "Idempotency-Key is already bound to a different project task request.",
@@ -951,6 +958,7 @@ export async function createProjectTasks(
         const rows = item.replay
           ? []
           : await insertProjectTask(sql, item.task, true);
+        if (options.requireNew && !rows[0]) throw new Error("The task target already exists without this setup acceptance.");
         const saved = rows[0]
           ? taskFromRow(rows[0])
           : await getProjectTaskById(

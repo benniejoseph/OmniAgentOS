@@ -51,6 +51,17 @@ beforeEach(() => {
 });
 
 describe("cited media extraction", () => {
+  it("binds native extraction to one provider attempt and current authority", async () => {
+    const sample = turn(0, "A reviewed statement.", { label: "A", identity: "diarized" });
+    const scope = { tenantId: "tenant-a", actorId: "actor-a", sourceStreamId: "capture-a", operation: "structured_generation" as const, purpose: "capture.media.insights.extract" };
+    mocks.generate.mockRejectedValue(new Error("Response lost")); const beforeProvider = vi.fn(async () => undefined);
+    await expect(extractCaptureMediaInsights({ turns: [sample], usageScope: scope, singleAttempt: true, beforeProvider })).rejects.toThrow("Response lost");
+    expect(beforeProvider).toHaveBeenCalledOnce(); expect(mocks.generate).toHaveBeenCalledWith(expect.objectContaining({ maxAttempts: 1, allowCrossProviderFallback: false }));
+    expect(mocks.generate).toHaveBeenCalledOnce();
+    mocks.generate.mockClear();
+    await expect(extractCaptureMediaInsights({ turns: [sample], usageScope: scope, singleAttempt: true, beforeProvider: async () => { throw new Error("Consent changed"); } })).rejects.toThrow("Consent changed");
+    expect(mocks.generate).not.toHaveBeenCalled();
+  });
   it("turns only exact transcript references into timestamped insights", async () => {
     const ownerTurn = turn(0, "I will send the plan tomorrow.", {
       label: "A",

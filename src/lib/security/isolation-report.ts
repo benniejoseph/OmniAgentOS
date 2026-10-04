@@ -150,6 +150,13 @@ const RESTRICTIVE_ACTOR_POLICIES = new Map<string, string>([
     "omni_workflow_schedule_occurrences",
     "omni_workflow_schedule_shadow_events",
   ].map((tableName): [string, string] => [tableName, `${tableName}_actor`]),
+  ["omni_meeting_recording_processing_acceptances", "omni_native_recording_actor"],
+  ["omni_salesforce_native_actions", "omni_salesforce_native_actions_actor"],
+  ["omni_native_private_memory_actions", "omni_native_private_memory_actor"],
+  ["omni_knowledge_native_cognition_builds", "omni_native_cognition_build_actor"],
+  ["omni_knowledge_native_cognition_effects", "omni_native_cognition_build_actor"],
+  ["omni_meeting_recording_processing_effects", "omni_native_recording_actor"],
+  ["omni_agent_skill_native_mutations", "omni_agent_skill_native_actor"],
   ["omni_memory_lifecycle_mutations", "omni_memory_lifecycle_mutations_actor"],
   ["omni_meeting_calendar_sync_acceptances", "omni_meeting_calendar_sync_actor"],
   ["omni_events", "omni_meeting_calendar_sync_event_actor"],
@@ -193,6 +200,7 @@ export function hasExpectedTenantIsolationPolicy(
   const restrictivePolicyName = RESTRICTIVE_ACTOR_POLICIES.get(tableName);
   const requiredRestrictivePolicies = [
     ...(restrictivePolicyName ? [restrictivePolicyName] : []),
+    ...(tableName === "omni_events" ? ["omni_agent_skill_native_event_actor", "omni_native_recording_event_actor", "omni_salesforce_native_event_actor", "omni_native_private_memory_event_actor", "omni_native_cognition_build_event_actor"] : []),
     ...(tableName === "omni_memory_lifecycle_mutations"
       ? ["omni_memory_lifecycle_mutations_memory_scope"] : []),
   ];

@@ -1768,3 +1768,48 @@ with the release evidence. Broader local regression
 runs remain deferred at the owner request. This slice does not complete Account
 workflow, Salesforce or whole-program acceptance, and production has not been
 migrated or promoted.
+
+
+## Hosted acceptance and signed package checkpoints — 4 October 2026
+
+PR51 merged as `ab9dd512b1c7b83160cd1841d005f004c0c2f91f` after all16
+hosted checks passed on `a7b69161a4f49a828e740a66562b0f68823855e7`.
+PR52 merged as `764c77dee05cbda12a19cdf3ce397896cd0b83d4` after all16
+hosted checks passed on `edfabe1e0684ed2c865f2982df60644afb9a0e98`.
+The final health correction updates the architecture inventory to209 services.
+
+The universal signed private Mac package `Asael-1.23.11-46-macOS.dmg`
+was built from clean `71471d6747a122db22c0d2aa3a79ef7abb4da011`, before
+that documentation-only correction. SHA256 is
+`d800ef7c12e74f7960db81606d4bfaca9cdc1b0db855229a930f68c0ef949b80`.
+Both architectures and nested hardened-runtime signatures are verified.
+
+These checkpoints do not establish production promotion. The paired release
+runner still needs the migration-owner connection, gateway token and paid/admin
+smoke credentials. Contract38 development is batched in an isolated checkout;
+broad local regression remains deferred at the owner's request. Whole-task
+checkboxes retain outstanding device, live-effect, artwork and parity gates.
+
+
+## Contract38 implementation batch — in progress, 4 October2026
+
+The isolated native-memory-promotion checkout batches native Memory promotion,
+Account workflow/fact mutations, custom Agent/Skill mutations, linked Recording
+processing and Salesforce sync/reconcile/disconnect. Source-map decisions and
+reviewed local connected-source deletion, advanced private graph inspection,
+maintenance/rebuild and single-document cognition are implemented across their
+server and native surfaces. Publication contains44 additional operations and15 capability floors;
+the application-service inventory is247. This is implementation inventory, not
+release acceptance.
+
+The full Flutter analyzer passes for the combined app. All235 migrations applied
+and verified on a disposable database with261 tenant tables; all17 focused
+Recording, source-map/deletion/paid-build, maintenance/rebuild and Salesforce
+PostgreSQL cases passed. Earlier all six Agent/Skill owner cases passed with
+direct private identity-registry access still denied. A later Salesforce fixture
+JSON-parameter correction is included for hosted validation. Contract generation
+and the full Next.js production build, including TypeScript compilation, passed.
+Changed-file ESLint and generated-contract verification also passed.
+
+Broad local regression remains deferred at the owner's request. The signed Mac package, exact-head hosted acceptance and production promotion
+remain separate.

@@ -151,7 +151,7 @@ void _policy(Object? value) {
   _number(retrieval['priorityWeight']);
 }
 
-MemoryRecord _record(Object? value, KnowledgeOwner owner) {
+MemoryRecord parsePrivateMemoryRecord(Object? value, KnowledgeOwner owner) {
   final row = _object(
     value,
     'id tenantId type tier tierPolicyVersion title content tags scope source importance createdAt updatedAt access explainability',
@@ -356,9 +356,9 @@ class MemoryReview {
     });
     _instant(row['createdAt']);
     _instant(row['updatedAt']);
-    final candidate = _record(row['candidate'], owner);
+    final candidate = parsePrivateMemoryRecord(row['candidate'], owner);
     final existing = row.containsKey('existing')
-        ? _record(row['existing'], owner)
+        ? parsePrivateMemoryRecord(row['existing'], owner)
         : null;
     memoryRequire(
       (kind == 'contradiction') == (existing != null) &&

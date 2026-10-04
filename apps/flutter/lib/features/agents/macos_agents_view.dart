@@ -35,11 +35,13 @@ class MacosAgentsView extends ConsumerStatefulWidget {
     required this.controller,
     this.councilController,
     this.onAssignWork,
+    this.onCatalogDecision,
   });
 
   final AgentsController controller;
   final AgentCouncilController? councilController;
   final ValueChanged<AgentProfile>? onAssignWork;
+  final Future<void> Function(String operation, String? id)? onCatalogDecision;
 
   @override
   ConsumerState<MacosAgentsView> createState() => _MacosAgentsViewState();
@@ -247,10 +249,15 @@ class _MacosAgentsViewState extends ConsumerState<MacosAgentsView>
                         !selectedAgent.manageable ||
                         !controller.canDeleteAgents
                     ? null
-                    : () => _confirmDelete(
-                        selectedAgent.name,
-                        () => controller.removeAgent(selectedAgent.id),
-                      ),
+                    : () => widget.onCatalogDecision != null
+                          ? widget.onCatalogDecision!(
+                              'agent.delete',
+                              selectedAgent.id,
+                            )
+                          : _confirmDelete(
+                              selectedAgent.name,
+                              () => controller.removeAgent(selectedAgent.id),
+                            ),
                 onAssignWork:
                     selectedAgent == null ||
                         !selectedAgent.selectable ||
@@ -264,10 +271,15 @@ class _MacosAgentsViewState extends ConsumerState<MacosAgentsView>
                 onDeleteSkill:
                     selectedSkill == null || !selectedSkill.manageable
                     ? null
-                    : () => _confirmDelete(
-                        selectedSkill.name,
-                        () => controller.removeSkill(selectedSkill.id),
-                      ),
+                    : () => widget.onCatalogDecision != null
+                          ? widget.onCatalogDecision!(
+                              'skill.delete',
+                              selectedSkill.id,
+                            )
+                          : _confirmDelete(
+                              selectedSkill.name,
+                              () => controller.removeSkill(selectedSkill.id),
+                            ),
               ),
         body: _buildBody(
           councilController: councilController,
@@ -639,6 +651,10 @@ class _MacosAgentsViewState extends ConsumerState<MacosAgentsView>
 
   Future<void> _editSkill([AgentSkill? skill]) async {
     if (skill != null && !skill.manageable) return;
+    if (widget.onCatalogDecision case final decide?) {
+      await decide(skill == null ? 'skill.create' : 'skill.update', skill?.id);
+      return;
+    }
     final value = await showDialog<Json>(
       context: context,
       useRootNavigator: false,

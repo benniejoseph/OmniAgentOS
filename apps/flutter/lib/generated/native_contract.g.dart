@@ -3,9 +3,9 @@
 
 abstract final class NativeContract {
   static const id = 'asael.native-api';
-  static const currentVersion = 37;
-  static const previousVersion = 36;
-  static const supportedVersions = <int>[37, 36];
+  static const currentVersion = 38;
+  static const previousVersion = 37;
+  static const supportedVersions = <int>[38, 37];
   static const discoveryPath = '/api/mobile/contracts';
   static const operationIds = <String>{
     'auth.login',
@@ -202,6 +202,50 @@ abstract final class NativeContract {
     'meetings.calendar.sync.get',
     'customers.health.evaluate',
     'customers.health.evaluations.get',
+    'agents.delete.review',
+    'agents.delete',
+    'agents.mutations.get',
+    'skills.mutation.review',
+    'skills.create',
+    'skills.update',
+    'skills.delete',
+    'skills.mutations.get',
+    'memory.promotions.list',
+    'memory.promotions.read',
+    'memory.promotions.decide',
+    'customers.workflows.start',
+    'customers.workflows.outcome',
+    'customers.workflows.get',
+    'customers.workflows.mutations.get',
+    'meetings.recordings.review',
+    'meetings.recordings.process',
+    'meetings.recordings.processing.get',
+    'customers.facts.record',
+    'customers.facts.acceptance.get',
+    'customers.salesforce.actions.review',
+    'customers.salesforce.actions.submit',
+    'customers.salesforce.actions.get',
+    'knowledge.cognification.list',
+    'knowledge.cognification.read',
+    'knowledge.cognification.decide',
+    'knowledge.cognification.decisions.get',
+    'knowledge.sources.deletion.review',
+    'knowledge.sources.delete',
+    'knowledge.sources.deletions.get',
+    'memory.graph.universe',
+    'memory.graph.node',
+    'memory.graph.entity',
+    'memory.graph.temporalRelations',
+    'memory.graph.relationshipPaths',
+    'memory.maintenance.review',
+    'memory.maintenance.run',
+    'memory.maintenance.runs.get',
+    'memory.graph.rebuild.review',
+    'memory.graph.rebuild',
+    'memory.graph.rebuilds.get',
+    'knowledge.cognification.build.review',
+    'knowledge.cognification.build',
+    'knowledge.cognification.builds.get',
   };
 
   static bool supports(int version) => supportedVersions.contains(version);
@@ -880,6 +924,202 @@ abstract final class NativePaths {
         .join('&');
     return '$path?$encoded';
   }
+  static String agentsDeleteReview(String id) => '/api/agents/${Uri.encodeComponent(id)}/deletion-review';
+  static String agentsDelete(String id) => '/api/agents/${Uri.encodeComponent(id)}';
+  static String agentsMutationsGet(String keySha256) => '/api/agents/mutations/${Uri.encodeComponent(keySha256)}';
+  static String skillsMutationReview(String id, {required String operation}) {
+    final path = '/api/skills/${Uri.encodeComponent(id)}/mutation-review';
+    final query = <String, String>{
+      'operation': operation,
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static const skillsCreate = '/api/skills';
+  static String skillsUpdate(String id) => '/api/skills/${Uri.encodeComponent(id)}';
+  static String skillsDelete(String id) => '/api/skills/${Uri.encodeComponent(id)}';
+  static String skillsMutationsGet(String keySha256) => '/api/skills/mutations/${Uri.encodeComponent(keySha256)}';
+  static String memoryPromotionsList({String? status, int? limit}) {
+    final path = '/api/memory/promotions';
+    final query = <String, String>{
+      'status': ?status,
+      if (limit != null) 'limit': limit.toString(),
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static String memoryPromotionsRead(String reviewId, {String? acceptanceKeySha256}) {
+    final path = '/api/memory/promotions/${Uri.encodeComponent(reviewId)}';
+    final query = <String, String>{
+      'acceptanceKeySha256': ?acceptanceKeySha256,
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static const memoryPromotionsDecide = '/api/memory/promotions';
+  static String customersWorkflowsStart(String id) => '/api/customer-accounts/${Uri.encodeComponent(id)}/workflows';
+  static String customersWorkflowsOutcome(String id) => '/api/customer-accounts/${Uri.encodeComponent(id)}/workflows';
+  static String customersWorkflowsGet(String id, String runId, {required String workspaceId}) {
+    final path = '/api/customer-accounts/${Uri.encodeComponent(id)}/workflows/${Uri.encodeComponent(runId)}';
+    final query = <String, String>{
+      'workspaceId': workspaceId,
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static String customersWorkflowsMutationsGet(String id, String runId, String keySha256, {required String workspaceId}) {
+    final path = '/api/customer-accounts/${Uri.encodeComponent(id)}/workflows/${Uri.encodeComponent(runId)}/mutations/${Uri.encodeComponent(keySha256)}';
+    final query = <String, String>{
+      'workspaceId': workspaceId,
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static String meetingsRecordingsReview(String id, {required String workspaceId, required String meetingId}) {
+    final path = '/api/capture/recordings/${Uri.encodeComponent(id)}/processing-review';
+    final query = <String, String>{
+      'workspaceId': workspaceId,
+      'meetingId': meetingId,
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static String meetingsRecordingsProcess(String id) => '/api/capture/recordings/${Uri.encodeComponent(id)}/complete';
+  static String meetingsRecordingsProcessingGet(String id, String keySha256, {required String workspaceId, required String meetingId}) {
+    final path = '/api/capture/recordings/${Uri.encodeComponent(id)}/processing/${Uri.encodeComponent(keySha256)}';
+    final query = <String, String>{
+      'workspaceId': workspaceId,
+      'meetingId': meetingId,
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static String customersFactsRecord(String id) => '/api/customer-accounts/${Uri.encodeComponent(id)}/facts';
+  static String customersFactsAcceptanceGet(String id, String keySha256, {required String workspaceId}) {
+    final path = '/api/customer-accounts/${Uri.encodeComponent(id)}/facts/acceptances/${Uri.encodeComponent(keySha256)}';
+    final query = <String, String>{
+      'workspaceId': workspaceId,
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static String customersSalesforceActionsReview({required String workspaceId}) {
+    final path = '/api/customer-accounts/salesforce/actions';
+    final query = <String, String>{
+      'workspaceId': workspaceId,
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static const customersSalesforceActionsSubmit = '/api/customer-accounts/salesforce/actions';
+  static String customersSalesforceActionsGet(String keySha256, {required String workspaceId}) {
+    final path = '/api/customer-accounts/salesforce/actions/${Uri.encodeComponent(keySha256)}';
+    final query = <String, String>{
+      'workspaceId': workspaceId,
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static String knowledgeCognificationList({String? status, int? limit}) {
+    final path = '/api/knowledge/cognification/reviews';
+    final query = <String, String>{
+      'status': ?status,
+      if (limit != null) 'limit': limit.toString(),
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static String knowledgeCognificationRead(String id) => '/api/knowledge/cognification/reviews/${Uri.encodeComponent(id)}';
+  static String knowledgeCognificationDecide(String id) => '/api/knowledge/cognification/reviews/${Uri.encodeComponent(id)}';
+  static String knowledgeCognificationDecisionsGet(String id, String keySha256) => '/api/knowledge/cognification/reviews/${Uri.encodeComponent(id)}/decisions/${Uri.encodeComponent(keySha256)}';
+  static String knowledgeSourcesDeletionReview(String sourceKind) => '/api/knowledge/sources/${Uri.encodeComponent(sourceKind)}/deletion-review';
+  static String knowledgeSourcesDelete(String sourceKind) => '/api/knowledge/sources/${Uri.encodeComponent(sourceKind)}';
+  static String knowledgeSourcesDeletionsGet(String sourceKind, String keySha256) => '/api/knowledge/sources/${Uri.encodeComponent(sourceKind)}/deletions/${Uri.encodeComponent(keySha256)}';
+  static String memoryGraphUniverse({int? limit}) {
+    final path = '/api/memory/graph/views/universe';
+    final query = <String, String>{
+      if (limit != null) 'limit': limit.toString(),
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static String memoryGraphNode(String id) => '/api/memory/graph/views/nodes/${Uri.encodeComponent(id)}';
+  static String memoryGraphEntity(String id) => '/api/memory/graph/views/entities/${Uri.encodeComponent(id)}';
+  static String memoryGraphTemporalRelations({String? entityId, String? relationTypeId, String? epistemicKind, String? validAt, String? recordedAt, String? history, int? limit}) {
+    final path = '/api/memory/graph/views/relations';
+    final query = <String, String>{
+      'entityId': ?entityId,
+      'relationTypeId': ?relationTypeId,
+      'epistemicKind': ?epistemicKind,
+      'validAt': ?validAt,
+      'recordedAt': ?recordedAt,
+      'history': ?history,
+      if (limit != null) 'limit': limit.toString(),
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static String memoryGraphRelationshipPaths({required String q, int? maxHops, int? limit}) {
+    final path = '/api/memory/graph/views/paths';
+    final query = <String, String>{
+      'q': q,
+      if (maxHops != null) 'maxHops': maxHops.toString(),
+      if (limit != null) 'limit': limit.toString(),
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static const memoryMaintenanceReview = '/api/memory/maintenance/review';
+  static const memoryMaintenanceRun = '/api/memory/maintenance';
+  static String memoryMaintenanceRunsGet(String keySha256) => '/api/memory/maintenance/runs/${Uri.encodeComponent(keySha256)}';
+  static const memoryGraphRebuildReview = '/api/memory/graph/rebuild-review';
+  static const memoryGraphRebuild = '/api/memory/graph';
+  static String memoryGraphRebuildsGet(String keySha256) => '/api/memory/graph/rebuilds/${Uri.encodeComponent(keySha256)}';
+  static String knowledgeCognificationBuildReview(String documentId) => '/api/knowledge/cognification/documents/${Uri.encodeComponent(documentId)}/build-review';
+  static String knowledgeCognificationBuild(String documentId) => '/api/knowledge/cognification/documents/${Uri.encodeComponent(documentId)}/build';
+  static String knowledgeCognificationBuildsGet(String documentId, String keySha256) => '/api/knowledge/cognification/documents/${Uri.encodeComponent(documentId)}/builds/${Uri.encodeComponent(keySha256)}';
 }
 
 abstract final class NativeConversationEvents {

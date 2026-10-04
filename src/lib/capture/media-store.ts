@@ -83,6 +83,7 @@ export async function getCaptureMediaHead(
 export async function queueCaptureMediaProcessing(input: ScopedMediaOwner & {
   request: CaptureMediaProcessingRequest;
   operationJobId: string;
+  nativeAcceptanceId?: string;
 }) {
   const request = captureMediaProcessingRequestSchema.parse(input.request);
   const tenantId = normalizeTenantId(input.tenantId);
@@ -93,6 +94,8 @@ export async function queueCaptureMediaProcessing(input: ScopedMediaOwner & {
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     return getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      const { assertCaptureNativeProcessingFence } = await import("@/lib/capture/native-processing-fence");
+      await assertCaptureNativeProcessingFence(sql, { tenantId, actorId: ownerActorId, recordingId: request.recordingId, nativeAcceptanceId: input.nativeAcceptanceId });
       const existingRows = await sql`
         SELECT * FROM omni_capture_media_heads
         WHERE tenant_id = ${tenantId}
@@ -604,7 +607,7 @@ function optionalString(value: unknown) {
 }
 
 function iso(value: unknown) {
-  return new Date(String(value)).toISOString();
+  return (value instanceof Date ? value : new Date(String(value))).toISOString();
 }
 
 function optionalIso(value: unknown) {

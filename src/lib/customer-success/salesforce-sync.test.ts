@@ -104,6 +104,17 @@ beforeEach(() => {
 });
 
 describe("Salesforce backfill and delta orchestration", () => {
+  it("uses the admitted native lease and commits projection before releasing it", async () => {
+    const claim = { status: "claimed" as const, connection, lease: { ownerId: "native-lease", generation: 7, expiresAt: "2026-10-05T12:00:00.000Z" } };
+    const order: string[] = [], fence = vi.fn(async () => undefined);
+    mocks.project.mockImplementation(async () => { order.push("projection"); return { examined: 0, projected: 0, held: 0, failed: 0 }; });
+    mocks.settle.mockImplementation(async ({ cursor, releaseLease }) => { if (releaseLease) order.push("release"); return { connection: { ...connection, cursor }, advanced: 0, conflicts: 0 }; });
+    async function commit<T>(work: () => Promise<T>): Promise<T> { await fence(); return work(); }
+    const result = await syncSalesforceWorkspace({ authority, native: { claim, beforeProvider: fence, commit }, maxPages: 8 });
+    expect(result.status).toBe("healthy"); expect(mocks.claim).not.toHaveBeenCalled(); expect(order).toEqual(["projection", "release"]);
+    expect(mocks.fetchPage).toHaveBeenCalledWith(expect.objectContaining({ nativeFence: fence }));
+    expect(mocks.settle).toHaveBeenLastCalledWith(expect.objectContaining({ lease: claim.lease, releaseLease: true }));
+  });
   it("settles every object cursor then releases one healthy lease", async () => {
     const result = await syncSalesforceWorkspace({ authority, maxPages: 16 });
 

@@ -329,6 +329,17 @@ coverage includes separate writers, quota races, replacement controllers and
 process termination before/after publication. Those checks establish the
 tested process-crash boundaries, not a power-loss durability certification.
 
+Serving-role fixtures must preserve explicit migration revocations. In particular,
+do not grant the private actor-identifier registry to a test login to make a new
+native owner check pass. Use the exact current-owner boolean function, inherit
+its narrow runtime grant, and assert that direct registry reads remain denied.
+Fixture convenience grants must never conceal a production permission failure.
+
+Bind structured receipt objects directly to JSONB parameters in tagged PostgreSQL
+queries. Passing `JSON.stringify(receipt)` through the driver's JSON serializer
+can persist a JSON string instead of the required object. Keep the SQL shape and
+binding checks active so malformed acceptance cannot commit.
+
 ## Transitional paths expire
 
 Every shadow, canary, legacy, versioned and retired path is registered in

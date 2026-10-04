@@ -37,21 +37,60 @@ Set these through the platform secret/configuration store, never in source contr
 - `OMNIAGENT_NATIVE_MIN_ANDROID_VERSION`, `OMNIAGENT_NATIVE_MIN_IOS_VERSION`, and `OMNIAGENT_NATIVE_MIN_MACOS_VERSION`: optional stable `major.minor.patch` minimums for native compatibility telemetry. An absent or empty value defaults to `1.0.0`; a malformed configured value invalidates the policy and holds adoption unavailable. These settings do not authorize Agent enrollment.
 
 Native contract artifacts are committed immutable release inputs. This release
-advertises v37 as current and retains v36 as the supported previous version.
-V35 remains a byte-frozen, unadvertised archive; v34 leaves the three-version
-window in this reviewed publication. Run `npm run check:native-contracts` to
-verify generated v37 documents and SDK against frozen v35/v36 hashes.
+advertises v38 as current and retains v37 as the supported previous version.
+V36 remains a byte-frozen, unadvertised archive; v35 leaves the three-version
+window. Run `npm run check:native-contracts` to verify generated v38 documents
+and SDK against the frozen v36/v37 hashes.
 
-V37 adds explicit deterministic Account health evaluation and exact receipt
-recovery. Its capability `customers.health.evaluate` requires v37 and current
-write authority. Existing floors remain: Companion 31, Responsibilities 32,
-Meetings 33, Account/Memory records 34, reconciliation 35, consent/Calendar 36.
-Recording processing and source-audio access remain unenrolled.
+V38 adds reviewed private Memory promotion, Account workflow setup/outcomes and
+manual facts, custom Agent deletion and Skill mutations, already-linked Meeting
+recording processing, Salesforce sync/reconciliation/disconnect, source-map
+decisions/local source deletion, private graph inspection, deterministic
+maintenance/rebuild and explicit single-document cognition builds. Each new
+mutation has its own v38 capability floor and requires current domain authority.
+Existing floors remain: Companion 31, Responsibilities 32, Meetings 33,
+Account/Memory records 34, reconciliation 35, consent/Calendar 36 and health 37.
+Source-audio access and binary recording upload remain outside this publication.
 
-Deploy a server supporting v37 before distributing this v37 build. A server
-advertising only v36/v35 refuses its bootstrap. On v37/v36, an installed v36
-client retains existing operations and cannot enter the new health mutation;
-v35 clients require an upgrade. A merge does not establish production promotion.
+Deploy a server supporting v38 before distributing this v38 build. A server
+advertising only v37/v36 refuses its bootstrap. On v38/v37, an installed v37
+client retains its existing operations but cannot enter v38 mutations; v36
+clients require an upgrade. A merge does not establish production promotion.
+
+Migrations 227–231 follow the health migration. They bind native promotion
+decisions to immutable Memory review evidence; bind workflow starts/outcomes
+to exact Account, definition and run evidence; add actor-private immutable
+Agent/Skill mutation receipts and parent locks; add Recording processing
+acceptances and once-only effect claims; and attach native intent metadata to
+manual fact revisions. Legacy nullable metadata writers retain their contracts.
+Migration 229 also grants runtime and maintenance execution on the existing
+immutable Agent persona validator; PUBLIC execution remains revoked. Apply and
+verify the full checksum-linked chain before serving the matching code. Rollback
+retains accepted evidence and new columns/tables rather than deleting receipts.
+
+Migration232 adds immutable Salesforce action admission and settlement.233 adds
+private source-map/deletion receipts and a closed current-owner SQL function;
+runtime access to the private identity registry remains revoked.234 extends the
+same receipt contract for deterministic maintenance/rebuild and closes lifecycle
+and trace-deletion races with the existing graph statement fence.235 adds
+single-document cognition acceptance and per-batch provider claims. Apply these
+in their checksum-linked order with the migration-owner connection. Serving-role
+checks must retain the production identity-table revocation.
+
+Recording admission co-commits its reviewed consent/source/media pins, queue
+head and receipt. Native provider claims allow one dispatch and no automatic
+retry of uncertain work. Current owner, membership, consent and source evidence
+are checked around provider work. Media processing and Knowledge ingestion are
+reported separately; an accepted queue item is not evidence of a completed
+transcript or index. Exact acceptance reads and matching replay do not requeue.
+
+The Account journal preserves record and health recovery while adding workflow
+and manual fact actions under the same single pending-action boundary. Existing
+encrypted owner/role binding is unchanged. Unknown writes retain their original
+key and reviewed request, with GET-only recovery; navigation or a new review
+cannot reset uncertain admission. Agent/Skill controls use the existing encrypted
+Specialist recovery store with the same rule. These changes add no agent-tool
+authority: agent effects continue through the governed executor.
 
 Migration 226 adds nullable exact request intent/digest columns to immutable
 health score revisions, preserving legacy NULL/NULL writers. Its bounded CHECK

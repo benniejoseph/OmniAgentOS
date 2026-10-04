@@ -16,6 +16,7 @@ import {
   CustomAgentReadConflictError,
 } from "@/lib/skills/store";
 import { MoltbookConnectionError } from "@/lib/moltbook/store";
+import { nativeAgentSkillResponse, nativeAgentSkillWriteResponse, readAgentSkillCompatibleBody } from "@/lib/skills/native-mutation-http";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
@@ -99,12 +100,15 @@ async function PATCHHandler(request: Request, context: RouteContext<"/api/agents
 }
 
 async function DELETEHandler(request: Request, context: RouteContext<"/api/agents/[id]">) {
+  const { id } = await context.params;
+  const read = await readAgentSkillCompatibleBody(request, 16_384, 16_000);
+  if (read instanceof Response) return read;
+  if (read.native) return nativeAgentSkillWriteResponse(request, { resourceType: "custom_agent", resourceId: id, operation: "delete", body: read.body });
   let auth;
   try { auth = await authorizeRequest({ request, action: "manage.workflow", resourceType: "custom_agent", metadata: { operation: "delete" } }); }
   catch (error) { return forbiddenResponse(error); }
-  let body: unknown;
-  try { body = await parseJsonBody(request, 16_000); } catch (error) { return jsonBodyErrorResponse(error); }
-  const { id } = await context.params;
+  if (auth.source === "mobile") return nativeAgentSkillResponse("The strict native Agent deletion request is required.", 403);
+  const body = read.body;
   try {
     const result = await deleteAgentService(
       createRequestMutationAppServiceCaller(request, auth, {

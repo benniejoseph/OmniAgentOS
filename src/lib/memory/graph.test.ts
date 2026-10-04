@@ -196,6 +196,26 @@ describe("memory graph tenant isolation (file mode)", () => {
     expect(otherNodes).toEqual([]);
   });
 
+  it("keeps private-only graph inspection separate from a mixed compatibility catalog", async () => {
+    const graph = await import("@/lib/memory/graph");
+    const tenantId = "tenant-private-only-graph", ownerActorId = "actor:private-only-owner";
+    await graph.indexMemoryGraphRecords([memory(tenantId, "legacy-private-only-fixture")], "test", { tenantId });
+    const legacy = await graph.listMemoryGraphNodes(100, { tenantId });
+    expect(legacy.length).toBeGreaterThan(0);
+    await graph.indexUserPrivateMemoryGraphRecords([{
+      ...memory(tenantId, "owned-private-only-fixture"),
+      accessBinding: buildUserPrivateMemoryAccessBindingV1({ tenantId, ownerActorId, originPurpose: "api.memory.write" }),
+    }], "test", { tenantId, accessScope: userPrivateScope(tenantId, ownerActorId, MEMORY_PURPOSE_IDS.write) });
+    const options = { tenantId, privateOnly: true, accessScope: userPrivateScope(tenantId, ownerActorId, MEMORY_PURPOSE_IDS.read) };
+    const nodes = await graph.listMemoryGraphNodes(100, options), edges = await graph.listMemoryGraphEdges(200, options);
+    expect(nodes.length).toBeGreaterThan(0);
+    expect(nodes.every((node) => node.accessBinding?.ownerActorId === ownerActorId)).toBe(true);
+    expect(edges.every((edge) => edge.accessBinding?.ownerActorId === ownerActorId)).toBe(true);
+    expect(await graph.getMemoryGraphNode(legacy[0].id, options)).toBeNull();
+    expect(await graph.listMemoryGraphNodes(100, { ...options, accessScope: userPrivateScope(tenantId, "actor:another-owner", MEMORY_PURPOSE_IDS.read) })).toEqual([]);
+    await expect(graph.listMemoryGraphNodes(100, { tenantId, privateOnly: true })).rejects.toThrow("current owner scope");
+  });
+
   it("rebuilds immediately when the durable queue is unavailable", async () => {
     const graph = await import("@/lib/memory/graph");
     const store = await import("@/lib/memory/store");

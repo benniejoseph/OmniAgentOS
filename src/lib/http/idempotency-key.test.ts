@@ -26,11 +26,13 @@ const UNKEYED_ROUTE_EXPORTS = new Set([
   "src/app/api/memory/personal-context-consent/route.ts DELETE",
 ]);
 
-// This shared route retains its unkeyed legacy web envelope. Its strict native
-// contract branch validates the standard key before authorization; route tests
-// also verify missing keys and mobile legacy-envelope rejection behavior.
+// These shared routes retain their unkeyed legacy web envelopes. Each strict
+// native branch validates the standard key before calling its mutation service;
+// recording completion authorizes before parsing either body. Route tests also
+// verify missing keys and mobile legacy-envelope rejection behavior.
 const CONTRACT_KEYED_ROUTE_EXPORTS = new Set([
   "src/app/api/memory/reconciliation/route.ts PATCH",
+  "src/app/api/capture/recordings/[id]/complete/route.ts POST",
 ]);
 
 function request(method: string, headers: Record<string, string> = {}) {
@@ -174,6 +176,27 @@ describe("client idempotency keys", () => {
         if (UNKEYED_ROUTE_EXPORTS.has(name)) {
           exempt.push(name);
         } else if (CONTRACT_KEYED_ROUTE_EXPORTS.has(name)) {
+          if (name === "src/app/api/capture/recordings/[id]/complete/route.ts POST") {
+            const handler = source.indexOf("async function POSTHandler(");
+            const authorization = source.indexOf("authorizeRequest({", handler);
+            const branch = source.indexOf('if (body && typeof body === "object" && "contract" in body) {', authorization);
+            const key = source.indexOf("requiredRequestIdempotencyKey(request)", branch);
+            const parse = source.indexOf("meetingRecordingProcessRequestSchema.parse(body)", key);
+            const mutation = source.indexOf("createRequestMutationAppServiceCaller(", parse);
+            expect(line, name).toContain("withDatabaseRequestScope(POSTHandler)");
+            expect(handler, name).toBeGreaterThanOrEqual(0);
+            expect(authorization, name).toBeGreaterThan(handler);
+            expect(branch, name).toBeGreaterThan(authorization);
+            expect(key, name).toBeGreaterThan(branch);
+            expect(parse, name).toBeGreaterThan(key);
+            expect(mutation, name).toBeGreaterThan(parse);
+            expect(source.slice(mutation), name).toContain("catch (error) { return nativeRecordingFailure(error); }");
+            const failure = await readFile(resolve(root, "src/app/api/capture/recordings/native-processing-http.ts"), "utf8");
+            expect(failure, name).toContain("error instanceof IdempotencyKeyError");
+            expect(failure, name).toContain("status: 400, headers: nativeRecordingHeaders");
+            contractGuarded.push(name);
+            continue;
+          }
           const branch = source.indexOf('if ("contract" in parsed.data) {');
           const key = source.indexOf("requiredRequestIdempotencyKey(request)", branch);
           const authorization = source.indexOf("authorizeRequest({", branch);

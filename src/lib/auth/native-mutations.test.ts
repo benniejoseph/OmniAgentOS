@@ -87,12 +87,28 @@ describe("native mutation capability enrollment", () => {
   });
   it("enrolls deterministic health evaluation only from v37 with fresh native authority", () => {
     for (const platform of ["android", "ios", "macos"] as const) {
-      expect(nativeMutationEnrollment(context(37, undefined, platform), "customers.health.evaluate", asOf))
-        .toEqual({ state: "active", minimumContractVersion: 37 });
-      for (const client of [context(36, undefined, platform), context(38, undefined, platform),
+      for (const version of [NATIVE_API_PREVIOUS_VERSION, NATIVE_API_CURRENT_VERSION]) {
+        expect(nativeMutationEnrollment(context(version, undefined, platform), "customers.health.evaluate", asOf))
+          .toEqual({ state: "active", minimumContractVersion: 37 });
+      }
+      for (const client of [context(36, undefined, platform), context(NATIVE_API_CURRENT_VERSION + 1, undefined, platform),
         context(37, "2026-01-01T00:00:00.000Z", platform), { source: "session" as const }, { source: "mobile" as const }]) {
         expect(nativeMutationEnrollment(client, "customers.health.evaluate", asOf))
-          .toMatchObject({ state: "held", minimumContractVersion: 37 });
+          .toMatchObject({ state: "held", minimumContractVersion: "native" in client ? 37 : NATIVE_API_CURRENT_VERSION });
+      }
+    }
+  });
+  it("requires v38 and fresh native authority for the new reviewed mutations", () => {
+    for (const capability of ["memory.promotions.decide", "customers.workflows.start", "customers.workflows.outcomes.manage",
+      "agents.delete", "skills.create", "skills.update", "skills.delete", "customers.facts.mutate", "meetings.recordings.process", "customers.salesforce.manage", "knowledge.cognification.decide", "knowledge.cognification.build", "knowledge.sources.delete", "memory.maintenance.run", "memory.graph.rebuild"] as const) {
+      for (const platform of ["android", "ios", "macos"] as const) {
+        expect(nativeMutationEnrollment(context(38, undefined, platform), capability, asOf))
+          .toEqual({ state: "active", minimumContractVersion: 38 });
+        for (const client of [context(37, undefined, platform), context(39, undefined, platform),
+          context(38, "2026-01-01T00:00:00.000Z", platform), { source: "session" as const }, { source: "mobile" as const }]) {
+          expect(nativeMutationEnrollment(client, capability, asOf))
+            .toMatchObject({ state: "held", minimumContractVersion: 38 });
+        }
       }
     }
   });
@@ -215,7 +231,7 @@ describe("native mutation capability enrollment", () => {
     expect(Object.keys(policy)).toEqual(
       expect.arrayContaining([...capabilities]),
     );
-    expect(policy).not.toHaveProperty("agents.delete");
+    expect(policy["agents.delete"]).toEqual({ state: "active", minimumContractVersion: 38 });
   });
 
   it("retains exact child cancellation on both supported clients", () => {

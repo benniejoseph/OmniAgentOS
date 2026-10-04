@@ -170,6 +170,8 @@ async function POSTHandler(request: Request) {
   } catch (error) {
     return forbiddenResponse(error);
   }
+  if (context.source === "mobile") return Response.json({ error: "Native source-map generation requires a reviewed build contract.",
+    code: "knowledge_cognition_contract_required" }, { status: 400, headers: privateNoStoreHeaders });
   if (!canonicalRequestActorBindingFromSecurityContext(context)) {
     return Response.json({
       error: "Knowledge cognition requires a canonical signed-in user.",
@@ -245,6 +247,8 @@ async function PATCHHandler(request: Request) {
   } catch (error) {
     return forbiddenResponse(error);
   }
+  if (context.source === "mobile") return Response.json({ error: "Native source-map decisions require the exact reviewed decision contract.",
+    code: "knowledge_cognition_contract_required" }, { status: 400, headers: privateNoStoreHeaders });
   const canonicalActor = canonicalRequestActorBindingFromSecurityContext(
     context,
   );
@@ -406,6 +410,8 @@ async function confirmAndSaveMemory(input: {
     input.record.candidate.tenantId,
     [input.sourceActorId, input.canonicalActorId],
     () => getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      // Match native review/Knowledge deletion order before the candidate lock.
+      await sql`SELECT pg_advisory_xact_lock(hashtextextended(${`memory-graph:${input.record.candidate.tenantId}`},0))`;
       const review = await reviewKnowledgeCognition({
         id: input.record.candidate.batchId,
         tenantId: input.record.candidate.tenantId,

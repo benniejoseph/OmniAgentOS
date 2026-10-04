@@ -65,7 +65,7 @@ describe("native API contracts", () => {
   });
 
   it("generates exact Responsibility paths, bounds and status schemas without changing older operation defaults", async () => {
-    const previous = JSON.parse(await readFile(new URL("../../../public/native-contracts/v35/openapi.json", import.meta.url), "utf8"));
+    const previous = JSON.parse(await readFile(new URL("../../../public/native-contracts/v36/openapi.json", import.meta.url), "utf8"));
     const current = JSON.parse(await readFile(new URL(`../../../public/native-contracts/v${NATIVE_API_CURRENT_VERSION}/openapi.json`, import.meta.url), "utf8"));
     for (const operation of nativeOperationsForVersion(32)!.filter(({ id }) => id.startsWith("responsibilities."))) {
       expect(current.paths[operation.path][operation.method.toLowerCase()], operation.id).toEqual(previous.paths[operation.path][operation.method.toLowerCase()]);
@@ -101,8 +101,8 @@ describe("native API contracts", () => {
   it("retains exactly the current and previous rollout versions", () => {
     // Tripwire: a native contract bump must be a deliberate, reviewed change.
     // The other tests follow these constants.
-    expect(NATIVE_API_CURRENT_VERSION).toBe(37);
-    expect(NATIVE_API_PREVIOUS_VERSION).toBe(36);
+    expect(NATIVE_API_CURRENT_VERSION).toBe(38);
+    expect(NATIVE_API_PREVIOUS_VERSION).toBe(37);
     expect(NATIVE_API_SUPPORTED_VERSIONS).toEqual([
       NATIVE_API_CURRENT_VERSION,
       NATIVE_API_PREVIOUS_VERSION,
@@ -347,6 +347,7 @@ describe("native API contracts", () => {
       35: added("memory.reconciliation.list", "memory.reconciliation.read", "memory.reconciliation.resolve"),
       36: added("memory.personal-context-consent.get", "memory.personal-context-consent.decide", "memory.personal-context-consent.decision.get", "meetings.calendar.get", "meetings.calendar.sync", "meetings.calendar.sync.get"),
       37: added("customers.health.evaluate", "customers.health.evaluations.get"),
+      38: added("agents.delete.review", "agents.delete", "agents.mutations.get", "skills.mutation.review", "skills.create", "skills.update", "skills.delete", "skills.mutations.get", "memory.promotions.list", "memory.promotions.read", "memory.promotions.decide", "customers.workflows.start", "customers.workflows.outcome", "customers.workflows.get", "customers.workflows.mutations.get", "meetings.recordings.review", "meetings.recordings.process", "meetings.recordings.processing.get", "customers.facts.record", "customers.facts.acceptance.get", "customers.salesforce.actions.review", "customers.salesforce.actions.submit", "customers.salesforce.actions.get", "knowledge.cognification.list", "knowledge.cognification.read", "knowledge.cognification.decide", "knowledge.cognification.decisions.get", "knowledge.sources.deletion.review", "knowledge.sources.delete", "knowledge.sources.deletions.get", "memory.graph.universe", "memory.graph.node", "memory.graph.entity", "memory.graph.temporalRelations", "memory.graph.relationshipPaths", "memory.maintenance.review", "memory.maintenance.run", "memory.maintenance.runs.get", "memory.graph.rebuild.review", "memory.graph.rebuild", "memory.graph.rebuilds.get", "knowledge.cognification.build.review", "knowledge.cognification.build", "knowledge.cognification.builds.get"),
     });
     // v20 and v23 changed only request and push schemas.
     expect(nativeOperationsForVersion(20)).toEqual(nativeOperationsForVersion(19));
@@ -483,7 +484,7 @@ describe("native API contracts", () => {
     expect(dart).toContain("static String memoryList({String? threadId, int? limit})");
     expect(dart).toContain("'agents.create',");
     expect(dart).toContain("'agents.update',");
-    expect(dart).not.toContain("'agents.delete',");
+    expect(dart).toContain("'agents.delete',");
     expect(dart).toContain("'moltbook.connection.show',");
     expect(dart).toContain("'moltbook.connection.manage',");
     expect(dart).toContain("static String moltbookConnectionShow(String id");
@@ -585,19 +586,19 @@ describe("native API contracts", () => {
     });
   });
 
-  it("retains every published v35 and v36 document byte for byte", async () => {
+  it("retains every published v36 and v37 document byte for byte", async () => {
     const frozen = {
-      "35": {
-        "openapi.json": "ca1a78b332945d10fb6413333e4791aeb3c8ce03c78841869ec5fe3726865ad8", // gitleaks:allow -- public artifact integrity digest
-        "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
-        "fixtures.json": "eff2a2237b94d9d1142fac976faa985616ba1be91493d184d52f8185de92be14", // gitleaks:allow -- public artifact integrity digest
-        "manifest.json": "d45efb315c6926b3d625bcecc46f5b105d4c594236339f23c6df71b61ce7b472", // gitleaks:allow -- public artifact integrity digest
-      },
       "36": {
         "openapi.json": "8823044860927d2cabed33ff028efbb617107810ae71cece020bda2bc64d850a", // gitleaks:allow -- public artifact integrity digest
         "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
         "fixtures.json": "f3c0947090ef532ba3a8089b56c6f363480b0e8839c606f2fdd12831248e675b", // gitleaks:allow -- public artifact integrity digest
         "manifest.json": "7c8321e35e6738aea34d9625aecac3516848fe1e887e16e0f43bbcdc05f8150b", // gitleaks:allow -- public artifact integrity digest
+      },
+      "37": {
+        "openapi.json": "996b2e4efc644c66ae6f706d59d19825c17d8e605fb06a31c67cda625a56eefe", // gitleaks:allow -- public artifact integrity digest
+        "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
+        "fixtures.json": "f8678d98b6111eb59f3e5fb2deb94dc60f7d5173342ec551015e9489291a8947", // gitleaks:allow -- public artifact integrity digest
+        "manifest.json": "65d474906ae509f88327a0b6f600ab53ec0c3b9d31ec2b6cd4b54fa4fa1e26c6", // gitleaks:allow -- public artifact integrity digest
       },
     };
     for (const [version, documents] of Object.entries(frozen)) {

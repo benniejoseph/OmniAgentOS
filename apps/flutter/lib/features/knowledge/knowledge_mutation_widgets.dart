@@ -54,6 +54,12 @@ class MemoryChangeStatus extends StatelessWidget {
                             ? 'Checking the exact review decision…'
                             : sent.kind == MemoryChange.consent
                             ? 'Checking the personal recall decision…'
+                            : sent.kind == MemoryChange.promotion
+                            ? 'Checking the exact promotion decision…'
+                            : sent.kind == MemoryChange.sourceMap
+                            ? 'Checking the exact source-map decision…'
+                            : sent.kind == MemoryChange.sourceDelete
+                            ? 'Checking the exact local source deletion…'
                             : 'Submitting the reviewed Memory change…'
                       : 'Submission unconfirmed. It may already have been recorded.',
                 ),
@@ -87,6 +93,18 @@ class MemoryChangeStatus extends StatelessWidget {
                       ? 'Recovery only reads this exact review with the saved request identity. It never sends the decision again. A visible decision without a matching acceptance does not settle this request.'
                       : sent.kind == MemoryChange.consent
                       ? 'Recovery only reads the exact saved personal recall decision. It never sends it again. The current setting alone cannot confirm this request.'
+                      : sent.kind == MemoryChange.promotion
+                      ? 'Recovery only reads this exact promotion with its saved request identity. It never sends the decision again. A visible promoted memory alone cannot confirm acceptance.'
+                      : sent.kind == MemoryChange.sourceMap
+                      ? 'Recovery only reads the exact saved source-map acceptance. It never sends the decision again. A visible memory alone cannot confirm this request.'
+                      : sent.kind == MemoryChange.sourceDelete
+                      ? 'Recovery only reads the exact saved local deletion receipt. It never repeats deletion. A missing document alone cannot confirm this request.'
+                      : const {
+                          MemoryChange.maintenance,
+                          MemoryChange.graphRebuild,
+                          MemoryChange.cognitionBuild,
+                        }.contains(sent.kind)
+                      ? 'Recovery only reads the exact acceptance for this saved action. It never repeats the action. Current graph or processing status alone cannot confirm the original request.'
                       : sent.replayable
                       ? 'Recovery sends the same frozen request and key. A changed impact or lost authorization may prevent recovery.'
                       : 'This operation has no exact retry receipt. Inspect the live catalogue before making another entry. This app will not resend it.',
@@ -115,9 +133,47 @@ class MemoryChangeStatus extends StatelessWidget {
                         : null,
                     child: const Text('Read saved personal recall decision'),
                   ),
+                if (sent.kind == MemoryChange.promotion)
+                  OutlinedButton(
+                    onPressed: controller.canRecoverPromotion
+                        ? controller.recoverPromotion
+                        : null,
+                    child: const Text('Read exact promotion acceptance'),
+                  ),
+                if (sent.kind == MemoryChange.sourceMap)
+                  OutlinedButton(
+                    onPressed: controller.canRecoverSourceMap
+                        ? controller.recoverSourceMap
+                        : null,
+                    child: const Text('Read exact source-map acceptance'),
+                  ),
+                if (sent.kind == MemoryChange.sourceDelete)
+                  OutlinedButton(
+                    onPressed: controller.canRecoverSourceDeletion
+                        ? controller.recoverSourceDeletion
+                        : null,
+                    child: const Text('Read exact local deletion acceptance'),
+                  ),
+                if (const {
+                  MemoryChange.maintenance,
+                  MemoryChange.graphRebuild,
+                  MemoryChange.cognitionBuild,
+                }.contains(sent.kind))
+                  OutlinedButton(
+                    onPressed: controller.canRecoverPrivateOperation(sent.kind)
+                        ? () => controller.recoverPrivateOperation(sent.kind)
+                        : null,
+                    child: const Text('Read exact saved action acceptance'),
+                  ),
                 if (const {
                       MemoryChange.review,
                       MemoryChange.consent,
+                      MemoryChange.promotion,
+                      MemoryChange.sourceMap,
+                      MemoryChange.sourceDelete,
+                      MemoryChange.maintenance,
+                      MemoryChange.graphRebuild,
+                      MemoryChange.cognitionBuild,
                     }.contains(sent.kind) &&
                     controller.changeError != null)
                   Text(
@@ -127,6 +183,12 @@ class MemoryChangeStatus extends StatelessWidget {
                   ),
                 if (sent.kind != MemoryChange.review &&
                     sent.kind != MemoryChange.consent &&
+                    sent.kind != MemoryChange.promotion &&
+                    sent.kind != MemoryChange.sourceMap &&
+                    sent.kind != MemoryChange.sourceDelete &&
+                    sent.kind != MemoryChange.maintenance &&
+                    sent.kind != MemoryChange.graphRebuild &&
+                    sent.kind != MemoryChange.cognitionBuild &&
                     sent.owner.key !=
                         controller.mutationRepository?.access.owner?.key)
                   const Text(
@@ -137,7 +199,7 @@ class MemoryChangeStatus extends StatelessWidget {
             if (accepted != null) ...[
               Semantics(liveRegion: true, child: Text(accepted.description)),
               SelectableText(
-                '${accepted.submission.kind == MemoryChange.consent ? 'Decision receipt' : 'Accepted target'}: ${accepted.memoryId}',
+                '${const {MemoryChange.consent, MemoryChange.sourceDelete, MemoryChange.maintenance, MemoryChange.graphRebuild, MemoryChange.cognitionBuild}.contains(accepted.submission.kind) ? 'Decision receipt' : 'Accepted target'}: ${accepted.memoryId}',
               ),
               if (controller.error != null)
                 const Text(

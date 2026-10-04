@@ -2,6 +2,18 @@ import 'package:asael/generated/native_contract.g.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('publishes exact private Memory promotion review and recovery paths', () {
+    expect(NativeContract.supportsOperation('memory.promotions.decide'), isTrue);
+    expect(NativePaths.memoryPromotionsDecide, '/api/memory/promotions');
+    expect(
+      NativePaths.memoryPromotionsList(status: 'pending', limit: 25),
+      '/api/memory/promotions?status=pending&limit=25',
+    );
+    expect(
+      NativePaths.memoryPromotionsRead('review:one', acceptanceKeySha256: 'a' * 64),
+      '/api/memory/promotions/review%3Aone?acceptanceKeySha256=${'a' * 64}',
+    );
+  });
   test('publishes exact Account health evaluation and recovery paths', () {
     expect(
       NativeContract.supportsOperation('customers.health.evaluate'),
@@ -26,11 +38,11 @@ void main() {
   });
 
   test('retains current and previous contract compatibility', () {
-    expect(NativeContract.currentVersion, 37);
-    expect(NativeContract.previousVersion, 36);
-    expect(NativeContract.supportedVersions, [37, 36]);
-    expect(NativeContract.supports(35), isFalse);
-    expect(NativeContract.supports(38), isFalse);
+    expect(NativeContract.currentVersion, 38);
+    expect(NativeContract.previousVersion, 37);
+    expect(NativeContract.supportedVersions, [38, 37]);
+    expect(NativeContract.supports(36), isFalse);
+    expect(NativeContract.supports(39), isFalse);
     expect(
       NativePaths.meetingsList(
         workspaceId: 'workspace:one',

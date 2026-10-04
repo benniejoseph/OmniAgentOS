@@ -4,6 +4,8 @@ import 'meetings.dart';
 import 'meetings_commitments.dart';
 import 'meetings_snapshots.dart';
 import 'meetings_widgets.dart';
+import 'meetings_recording_controller.dart';
+import 'meetings_recording_view.dart';
 
 class MeetingDetailBody extends StatelessWidget {
   const MeetingDetailBody({
@@ -14,12 +16,16 @@ class MeetingDetailBody extends StatelessWidget {
     this.onPropose,
     this.reviewDisabledReason,
     this.proposeDisabledReason,
+    this.recordings,
+    this.active = true,
   });
   final MeetingDetailController controller;
   final Widget? actions;
   final void Function(MeetingCommitmentReview)? onReview;
   final void Function(MeetingSource, MeetingMediaOutput, Json)? onPropose;
   final String? reviewDisabledReason, proposeDisabledReason;
+  final MeetingRecordingController? recordings;
+  final bool active;
   @override
   Widget build(BuildContext context) {
     final snapshot = controller.detail, meeting = snapshot?.meeting;
@@ -214,9 +220,22 @@ class MeetingDetailBody extends StatelessWidget {
                   ],
                 ),
         ),
-        const MeetingNotice(
-          'View Calendar connection and sync status in Meetings. Recording processing is available in the web workspace.',
-        ),
+        if (recordings != null && meeting.workspaceId != null)
+          MeetingRecordingPanel(
+            key: ObjectKey(recordings),
+            controller: recordings!,
+            meeting: meeting,
+            active: active,
+            isCurrent: () =>
+                controller.readable &&
+                controller.detailError == null &&
+                !controller.detailLoading &&
+                controller.detail?.meeting.versionKey == meeting.versionKey,
+          )
+        else
+          const MeetingNotice(
+            'View Calendar connection and sync status in Meetings. Recording review is unavailable in this presentation.',
+          ),
       ],
     );
   }
