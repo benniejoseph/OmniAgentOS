@@ -37,10 +37,12 @@ import '../../features/markets/markets_workspace.dart';
 import '../../features/payments/macos_payments_view.dart';
 import '../../features/payments/payments_view.dart';
 import '../../features/meetings/meetings_page.dart';
+import '../../features/monitoring/monitoring_workspace_view.dart';
 import '../../features/projects/macos_project_detail_view.dart';
 import '../../features/projects/projects_providers.dart';
 import '../../features/projects/macos_projects_view.dart';
 import '../../features/projects/projects_view.dart';
+import '../../features/quality/quality_workspace_view.dart';
 import '../../features/results/macos_result_detail_view.dart';
 import '../../features/results/results_providers.dart';
 import '../../features/results/macos_results_view.dart';
@@ -792,8 +794,8 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                             'integrations',
                           ),
                           '/tools' => _nativeAdminWorkspace('tools'),
-                          '/quality' => _nativeAdminWorkspace('quality'),
-                          '/monitoring' => _nativeAdminWorkspace('monitoring'),
+                          '/quality' => const NativeQualityPage(),
+                          '/monitoring' => const NativeMonitoringPage(),
                           '/security' => _nativeAdminWorkspace('security'),
                           '/settings' => NativePrivateWorkspace(
                             ownNavigator: true,

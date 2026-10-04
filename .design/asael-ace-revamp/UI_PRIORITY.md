@@ -1,12 +1,53 @@
-# UI and ATLAS priority — 4 October 2026
+# UI and ATLAS priority — 5 October 2026
 
 The owner explicitly prioritized the UI revamp and ATLAS, asking to stabilize the current release and return to connector expansion afterward. The full implementation plan remains in scope; this changes execution order.
 
-PR53 is stabilized and merged with all sixteen hosted checks passing. The UI, static greeting and personality releases are accepted through PR56.
-Expanded Voice playback is accepted through PR57. Connector work is preserved in
+Software releases through PR59 are accepted and merged. Scoped Search passed all
+sixteen hosted checks at `608368ed679e483105198e62966f02dac198b662` and merged as
+`2fd786531899d686da6686988e82e3c5faa83224` with an identical full Git tree.
+The universal private Mac 1.23.17+52 package is verified; its original build source
+differs only in two corrected test expectations. Production remains unchanged.
+Connector work is preserved in
 `codex/native-connector-controls` and is deferred until after this UI/ATLAS priority.
 
-## Native scoped content search — 5 October candidate
+## Native Quality and Monitoring — 5 October implementation checkpoint
+
+Quality now presents typed evaluation runs, jobs, case catalog and release
+evidence. Completion and measured case success are separate; quarantine, failed
+cases, warnings, bounded coverage and server approval remain explicit. Release
+evidence retains its own permission and freshness state. Monitoring presents
+public health, SLO policies, active incidents, alert deliveries and runtime events.
+Configured dependencies do not imply reachability; unmeasured SLOs, insufficient
+samples and skipped deliveries cannot imply success. Every metric uses its own
+eligible event or sample evidence.
+
+Both workspaces use existing authorized GET operations with exact session,
+tenant, actor, role, API, lock and visibility fences. Outgoing controllers clear
+private data synchronously, cancel reads and reject late replies. Hidden or
+background workspaces reopen under a fresh visibility epoch. Manager navigation
+and narrower administrator-only lanes remain enforced. No native mutation,
+polling loop, offline projection, API publication or database migration is added.
+Existing browser routes provide the explicit operational actions.
+
+Desktop uses readable lists and inspectors; compact screens place the selected
+detail at the top and move focus only while the exact selection remains current.
+Command/Control-R refreshes; Escape closes detail. Forty-six Quality and
+fifty-seven Monitoring focused cases pass, including scope replacement,
+cancellation and late-row compact navigation. Independent source review has no
+unresolved concrete finding. Eight actual-widget captures have passed and been
+reviewed: light/dark desktop and 390px phone at 200% text, including actual selected
+details in both modules. Their archived harness, matching sources, image hashes
+and capture receipt are retained in the external `native-operations-visual`
+evidence directory. Fixtures and system fonts do not establish device acceptance.
+
+Full Flutter analysis is clean, and all fifteen existing foundation, navigation
+and administration metadata checks pass. App `1.23.18+53` identifies this combined
+checkpoint. Private packaging and exact-head hosted acceptance are separate
+release gates.
+The app retains native v39 and requires the matching server promotion before
+compatible production distribution. Connector work must use build 54 or later.
+
+## Native scoped content search — 5 October accepted
 
 The native Search destination now exposes live, authorized conversations, Work,
 private active Memory and saved Library sources. Command-K/Control-K opens it in
@@ -25,15 +66,16 @@ navigation retains the existing draft safeguards.
 Native contract v39 publishes these three existing GET routes, retaining frozen
 v38 and v37 artifacts. It introduces no mutation enrollment or database migration.
 App `1.23.17+52` identifies this follow-up. The deferred connector checkpoint must
-rebase its contract publication beyond v39 and use build 53 or later.
+rebase its contract publication beyond v39 and use build 54 or later.
 
 Independent source review has no unresolved concrete authority/navigation finding.
 Contract generation/check and 44 focused contract/authentication cases pass, as
 well as changed TypeScript lint. Full Flutter analysis is clean and 59 focused
 search, scope, keyboard, shell and destination cases pass. Three actual widget
 captures cover light/dark desktop and a 390px phone with 200% text, using synthetic
-data and system-font substitution. Packaging and exact-head hosted acceptance
-remain separate gates for this candidate. The new app requires the
+data and system-font substitution. Private packaging and exact-head hosted
+acceptance are complete. The full hosted Flutter suite passed 1,189 cases.
+The new app requires the
 matching v39 server promotion before compatible production distribution.
 
 ## Native Automation run navigation — 5 October checkpoint
@@ -50,7 +92,7 @@ presentations, encoded identities, unavailable Results, Back navigation, fresh
 history reads, malformed identities and button semantics. Full Flutter analysis is
 clean. This checkpoint adds no database migration or API contract version.
 App `1.23.16+51` identifies the native follow-up; the deferred connector checkpoint
-must use build 53 or later. Packaging and exact-head hosted acceptance are separate
+must use build 54 or later. Packaging and exact-head hosted acceptance are separate
 release gates, and physical-device acceptance remains pending.
 
 Visual thesis: a warm, precise conversation workspace with a quiet graphite rail, readable typography, restrained gold and an expressive umber eagle.
