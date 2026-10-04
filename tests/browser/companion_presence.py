@@ -18,6 +18,8 @@ from run import Checks, REPO, navigate, preview, select_theme
 
 ROOT = '[data-testid="companion-presence"]'
 COMMAND = f"/app/command?thread={THREAD_ID}&run={RUN_ID}"
+EMPTY_COMMAND = f"/app/command?thread={HOME_ID}"
+GREETING = "/companion/atlas-greeting.png"
 
 
 def presence(page):
@@ -54,15 +56,28 @@ def home(page):
     return open_details(page).get_by_role("button", name="Home conversation", exact=True)
 
 
-def snapshot(page, checks, name, coarse):
-    root = open_details(page)
+def snapshot(page, checks, name, coarse, greeting=False):
+    root = presence(page) if greeting else open_details(page)
+    if greeting and root.locator("details").first.evaluate("el=>el.open"):
+        root.locator("summary").first.click()
     page.evaluate("()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))")
     root.scroll_into_view_if_needed()
-    geometry = root.evaluate("""el => { const slot=el.querySelector('summary > span[aria-hidden="true"]').getBoundingClientRect(); return {
+    geometry = root.evaluate("""(el,greeting) => { const slot=el.querySelector('summary > span[aria-hidden="true"]').getBoundingClientRect();const image=el.querySelector('img');const imageBox=image?.getBoundingClientRect(); return {
       viewport:innerWidth,document:document.documentElement.scrollWidth,client:el.clientWidth,scroll:el.scrollWidth,
       portraitWidth:slot.width,portraitHeight:slot.height,
-      targets:[...el.querySelectorAll('button,a,summary')].map(el=>el.getBoundingClientRect().height)}; }""")
-    checks.check(name + ": stable36px portrait and no horizontal overflow", geometry["document"] <= geometry["viewport"] + 1 and geometry["scroll"] <= geometry["client"] + 1 and geometry["portraitWidth"] == 36 and geometry["portraitHeight"] == 36, geometry)
+      imageSource:image?.getAttribute('src'),naturalWidth:image?.naturalWidth,naturalHeight:image?.naturalHeight,
+      imageWidth:imageBox?.width,imageHeight:imageBox?.height,
+      targets:[...el.querySelectorAll(greeting?'summary':'button,a,summary')].map(el=>el.getBoundingClientRect().height)}; }""", greeting)
+    if greeting:
+        expect(root).to_have_attribute("data-companion-layout", "greeting")
+        expect(root).to_have_attribute("data-companion-artwork", "greeting")
+        checks.check(name + ": approved bounded full-body image", geometry["imageSource"] == GREETING and
+                     geometry["naturalWidth"] == 211 and geometry["naturalHeight"] == 432 and
+                     0 < geometry["imageWidth"] < geometry["imageHeight"] <= 144 and
+                     abs(geometry["imageWidth"] / geometry["imageHeight"] - 211 / 432) < .01, geometry)
+    else:
+        checks.check(name + ": stable36px portrait", geometry["portraitWidth"] == 36 and geometry["portraitHeight"] == 36, geometry)
+    checks.check(name + ": no horizontal overflow", geometry["document"] <= geometry["viewport"] + 1 and geometry["scroll"] <= geometry["client"] + 1, geometry)
     checks.check(name + ": control target floor", all(size >= (48 if coarse else 44) - 1 for size in geometry["targets"]))
     checks.check(name + ": no animation claimed", root.evaluate("el=>[el,...el.querySelectorAll('*')].every(node=>getComputedStyle(node).animationName==='none')"))
     page.screenshot(path=str(checks.output / (name + ".png")), full_page=False)
@@ -73,6 +88,75 @@ def snapshot(page, checks, name, coarse):
       incomplete:result.incomplete.map(v=>v.id),passes:result.passes.length}; }""", ROOT)
     (checks.output / (name + "-axe.json")).write_text(json.dumps(audit, indent=2))
     checks.check(name + ": scoped axe", not audit["violations"], audit["violations"])
+
+
+def greeting_views(page, origin, fixture, checks, label, coarse):
+    fixture.preferences = preferences()
+    fixture.asset_failure = False
+    navigate(page, origin, EMPTY_COMMAND)
+    root = ready(page, "available", "Available")
+    expect(page.get_by_role("heading", name="What are we working on?", exact=True)).to_be_visible()
+    expect(root.locator("code")).to_have_count(0)
+    draft = page.locator('textarea[role="combobox"]')
+    draft.fill("")
+    page.wait_for_function("selector=>document.querySelector(selector+' img')?.naturalHeight===432", arg=ROOT)
+    for theme in ("light", "dark"):
+        select_theme(page, theme, coarse)
+        snapshot(page, checks, f"presence-{label}-greeting-{theme}", coarse, greeting=True)
+    if coarse:
+        page.set_viewport_size({"width": 320, "height": 844})
+        page.evaluate("document.documentElement.style.fontSize='200%'")
+        snapshot(page, checks, "presence-greeting-320-text-200", True, greeting=True)
+        draft.click()
+        draft.fill("Local unsent greeting draft. Keep this message editable while reviewing composer options.")
+        send = page.get_by_role("button", name="Send message", exact=True)
+        expect(send).to_be_enabled()
+        send.click(trial=True)
+        composer = page.locator('section[aria-labelledby="command-composer-title"]')
+        options = composer.locator("summary").first
+        options.click()
+        expect(composer.locator("details").first).to_have_attribute("open", "")
+        options.click()
+        send.click(trial=True)
+        bounds = send.evaluate("""el=>{const box=el.getBoundingClientRect();const dock=document.querySelector('nav[aria-label="Everyday workspace navigation"]').getBoundingClientRect();const hit=document.elementFromPoint(box.left+box.width/2,box.top+box.height/2);return {bottom:box.bottom,dockTop:dock.top,hit:hit===el||el.contains(hit)}}""")
+        checks.check("greeting 320px/200%: draft, Options and send remain reachable above dock without submission",
+                     draft.input_value().startswith("Local unsent greeting draft.") and bounds["hit"] and bounds["bottom"] <= bounds["dockTop"] + 1, bounds)
+        page.screenshot(path=str(checks.output / "presence-greeting-320-text-200-composer.png"), full_page=False)
+        draft.fill("")
+        page.evaluate("document.documentElement.style.fontSize=''")
+        page.set_viewport_size({"width": 390, "height": 844})
+
+    fixture.preferences = preferences(visible=False)
+    navigate(page, origin, EMPTY_COMMAND)
+    root = ready(page, "available", "Available")
+    expect(root).to_have_attribute("data-companion-layout", "greeting")
+    expect(root).to_have_attribute("data-companion-portrait", "hidden")
+    expect(root.locator("img")).to_have_count(0)
+    checks.check(label + ": hidden character preserves the empty idle greeting and composer", draft.is_visible())
+
+    fixture.preferences = preferences()
+    missing = []
+    def missing_greeting(route):
+        missing.append(route.request.url)
+        route.fulfill(status=404, content_type="text/plain", body="Synthetic greeting unavailable")
+    page.route(origin + GREETING, missing_greeting)
+    try:
+        navigate(page, origin, EMPTY_COMMAND)
+        root = ready(page, "available", "Available")
+        expect(root.locator("img")).to_have_attribute("src", "/companion/atlas-neutral.png")
+        page.wait_for_function("selector=>document.querySelector(selector+' img')?.naturalWidth===108", arg=ROOT)
+        expect(root).to_have_attribute("data-companion-artwork", "portrait")
+        expect(root).to_have_attribute("data-companion-portrait", "visible")
+        checks.check(label + ": missing full-body image falls back to neutral without changing idle state", bool(missing))
+        page.screenshot(path=str(checks.output / f"presence-{label}-greeting-neutral-fallback.png"), full_page=False)
+    finally:
+        page.unroute(origin + GREETING, missing_greeting)
+    navigate(page, origin, COMMAND)
+    root = ready(page)
+    expect(root).to_have_attribute("data-companion-layout", "compact")
+    expect(root).to_have_attribute("data-companion-artwork", "portrait")
+    expect(root.locator("img")).to_have_attribute("src", "/companion/atlas-neutral.png")
+    checks.check(label + ": populated verified conversation returns to the compact portrait", True)
 
 
 def home_adoption(page, origin, fixture, checks, label):
@@ -233,6 +317,8 @@ def exercise(browser, origin, credentials, checks, coarse):
             page.emulate_media(forced_colors="active")
             snapshot(page, checks, "presence-forced-colors", False)
             page.emulate_media(forced_colors="none")
+
+        greeting_views(page, origin, fixture, checks, label, coarse)
 
         fixture.preference_hold = {"body": fixture.preferences, "status": 200, "hold": "disposed-preferences"}
         navigate(page, origin, COMMAND)

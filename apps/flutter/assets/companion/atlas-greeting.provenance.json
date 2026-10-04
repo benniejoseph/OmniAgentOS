@@ -1,0 +1,20 @@
+{
+  "source": ".design/asael-ace-revamp/references/atlas-selected.png",
+  "sourceProvenance": ".design/asael-ace-revamp/references/atlas-export.json",
+  "sourceSha256": "876591c5a2b739df99d6aab647554dc53bcab97d55bf0c3e0864e39e1c98c070",
+  "cropPixels": {
+    "left": 310,
+    "top": 850,
+    "right": 735,
+    "bottom": 1720
+  },
+  "outputPixels": [
+    211,
+    432
+  ],
+  "maximumDisplayHeightPixels": 144,
+  "outputSha256": "cb5db22c48af8e2f883be9b256226a50b4d26f97c82e516b3c240e9aa691eb53",
+  "method": "RGB crop from approved contact sheet; Lanczos resize to211\u00d7432 for up to3\u00d7 display density at144px high; original pale studio background retained; PNG compression9",
+  "kind": "Static full-body greeting from approved first pose; no model, rig, state clip or animated performance",
+  "reviewRequired": "Review empty Assistant/Talk in light and dark themes, narrow/large text, hidden-character and missing-asset fallback before release."
+}

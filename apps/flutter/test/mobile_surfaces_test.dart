@@ -1,10 +1,13 @@
 import 'dart:typed_data';
 
 import 'package:asael/app/theme/app_theme.dart';
+import 'package:asael/features/companion/companion_controller.dart';
 import 'package:asael/features/talk/talk.dart' hide Json;
 import 'package:asael/features/today/today.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import 'features/companion/companion_fixtures.dart';
 
 class _TodayRepository implements TodayRepository {
   @override
@@ -145,18 +148,35 @@ void main() {
     'Conversation keeps its composer visible and mode choices reachable on a phone',
     (tester) async {
       final controller = TalkController(_TalkRepository());
+      final preferences = CompanionController(FakeCompanionRepository());
       addTearDown(controller.dispose);
+      addTearDown(preferences.dispose);
+      await preferences.refresh();
       await pumpPhone(
         tester,
-        TalkView(controller: controller, voiceRecorder: _VoiceRecorder()),
+        TalkView(
+          controller: controller,
+          companionController: preferences,
+          voiceRecorder: _VoiceRecorder(),
+        ),
         themeMode: ThemeMode.dark,
       );
 
       expect(find.text('Assistant'), findsOneWidget);
       expect(find.text('How can I help?'), findsOneWidget);
+      final greeting = find.image(
+        const AssetImage('assets/companion/atlas-greeting.png'),
+      );
+      expect(greeting, findsOneWidget);
+      expect(tester.getSize(greeting).height, lessThanOrEqualTo(144));
       expect(find.byTooltip('Send message').hitTestable(), findsOneWidget);
       final options = find.byKey(const ValueKey('talk-composer-options'));
       expect(options.hitTestable(), findsOneWidget);
+      expect(tester.getTopLeft(greeting).dy, greaterThanOrEqualTo(0));
+      expect(
+        tester.getBottomLeft(greeting).dy,
+        lessThanOrEqualTo(tester.getTopLeft(options).dy),
+      );
       await tester.tap(options);
       await tester.pumpAndSettle();
       expect(find.text('Use a team').hitTestable(), findsOneWidget);

@@ -9,7 +9,7 @@ import { useCompanionPreferences } from "@/components/use-companion-preferences"
 import { effectiveCompanionMotion } from "@/lib/companion/model";
 import { companionPresentation, type CompanionWork } from "@/lib/companion/presentation";
 import {
-  ATLAS_ASSET_ROOT, ATLAS_NEUTRAL_POSTER, atlasFrameAt, createAtlasPlaybackGate, fetchAtlasManifest,
+  ATLAS_ASSET_ROOT, ATLAS_GREETING_POSTER, ATLAS_NEUTRAL_POSTER, atlasFrameAt, createAtlasPlaybackGate, fetchAtlasManifest,
   type AtlasManifest, type AtlasTheme,
 } from "@/lib/companion/atlas-assets";
 import styles from "./companion-presence.module.css";
@@ -58,12 +58,15 @@ function ScopedPresence({ scope, conversationId, manifest, showHome = true, onOp
   const motion = effectiveCompanionMotion(preferences?.motion ?? "off", reduced);
   const intensity = preferences?.intensity ?? "quiet";
   const portraitSize = layout === "greeting" ? 72 : 36;
+  const greeting = layout === "greeting" && presentation.state === "available";
   const showPortrait = Boolean(read.state === "ready" && preferences?.visible && pageVisible && !assetFailed);
   const clip = manifest?.states[presentation.state];
   const assets = clip?.[theme];
-  const selectedPoster = assets ? `${ATLAS_ASSET_ROOT}${assets.poster}?v=${assets.posterSha256}` : ATLAS_NEUTRAL_POSTER;
+  const selectedPoster = greeting ? ATLAS_GREETING_POSTER
+    : assets ? `${ATLAS_ASSET_ROOT}${assets.poster}?v=${assets.posterSha256}` : ATLAS_NEUTRAL_POSTER;
   const poster = failedPosters.has(selectedPoster) ? ATLAS_NEUTRAL_POSTER : selectedPoster;
-  const eligible = Boolean(scope && showPortrait && onScreen && motion === "full" && intensity !== "quiet" && clip && assets && !failedPosters.has(selectedPoster));
+  const fullBody = showPortrait && poster === ATLAS_GREETING_POSTER;
+  const eligible = Boolean(!greeting && scope && showPortrait && onScreen && motion === "full" && intensity !== "quiet" && clip && assets && !failedPosters.has(selectedPoster));
   const preferenceIdentity = JSON.stringify([read.state, read.response?.snapshot.revision, preferences]);
   const { state, work: { state: workState, runId, completionIdentity } } = presentation;
 
@@ -139,11 +142,12 @@ function ScopedPresence({ scope, conversationId, manifest, showHome = true, onOp
     <section ref={sectionRef} className={styles.presence} aria-label="ATLAS companion status" data-testid="companion-presence"
       data-companion-state={presentation.state} data-companion-motion={motion} data-companion-intensity={intensity}
       data-companion-layout={layout}
+      data-companion-artwork={fullBody ? "greeting" : "portrait"}
       data-companion-preferences={read.state} data-companion-portrait={showPortrait ? "visible" : assetFailed ? "unavailable" : "hidden"}>
       <details className={styles.disclosure}>
       <summary className={styles.summary}>
       <span className={styles.portrait} aria-hidden="true">
-        <span ref={posterRef}>{showPortrait ? <Image key={poster} src={poster} alt="" width={108} height={108} unoptimized loading="lazy"
+        <span ref={posterRef}>{showPortrait ? <Image key={poster} src={poster} alt="" width={fullBody ? 211 : 108} height={fullBody ? 432 : 108} unoptimized loading="lazy"
           className={styles.image} onError={() => {
             playback.current();
             if (poster === ATLAS_NEUTRAL_POSTER) setAssetFailed(true);

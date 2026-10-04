@@ -3,6 +3,7 @@ import { createCompanionReactionLedger, type CompanionState, type CompanionWork 
 export const ATLAS_MANIFEST_PATH = "/companion/atlas-v1/manifest.json";
 export const ATLAS_ASSET_ROOT = "/companion/atlas-v1/";
 export const ATLAS_NEUTRAL_POSTER = "/companion/atlas-neutral.png";
+export const ATLAS_GREETING_POSTER = "/companion/atlas-greeting.png";
 export const ATLAS_STATES = ["available", "listening", "responding", "working", "needs_you", "blocked", "completed", "paused"] as const;
 export type AtlasTheme = "light" | "dark";
 export type AtlasAssets = Readonly<{ poster: string; sprite: string; posterSha256: string; spriteSha256: string }>;
