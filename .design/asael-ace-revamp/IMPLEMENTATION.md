@@ -5,11 +5,12 @@ PR54 (priority UI / app 1.23.13+48), PR55 (static full-body greeting /
 app 1.23.14+49) and PR56 (scoped language/motion intensity / app 1.23.15+50)
 are accepted and merged, each after all 16 hosted checks passed. The private
 Mac package is verified through 1.23.15 (50), from PR56's exact accepted source.
-The last complete matching 3D export is finish-02, with all nine final
-model/lifecycle checks and nine static tool tests passing. Comparison, corrected
-GLB reload and all 80 exported state stills retain the local color/crown improvement;
-the full model and natural acting remain unaccepted. Wing-02, primary-01,
-completed-01, eyelid-03, throat-04 and beak-02 are historical checkpoints;
+The last complete matching 3D export is finish-03, with all nine new
+model/lifecycle checks passing. Forty body comparisons, eighteen padding
+comparisons and forty source/GLB parity captures retain the local improvement.
+The nine static tool tests and 80-state review remain finish-02 evidence and were
+not rerun. Full art, natural acting and device acceptance remain open. Finish-02,
+wing-02 and earlier exports are historical checkpoints;
 throat-03 was rejected for its coarse staircase boundary. PR57's expanded web
 Voice shared player is accepted and merged after all 14 applicable hosted checks
 passed; native API/version and Mac 1.23.15 (50) are unchanged. Software UI
@@ -1660,7 +1661,31 @@ That historical package-preparation checkpoint is superseded by the signed
 packages and hosted acceptance below. Nine Node geometry/lifecycle checks and
 three Python tool tests also passed for the sculpt-02 source workbench.
 
-The last complete matching finish-02 export at
+### Current finish-03 checkpoint
+
+The matching `sculpt-04-finish-03-padded-color-chart` export at
+`2026-10-04T20:32:41.680641+00:00` contains 104 artifacts, a 2,321,804-byte GLB,
+27,543 vertices, 49,844 triangles, 14 bones, 12 clips, one material and one embedded
+512 × 512 RGBA8 texture, with zero external resources. The receipt verifies
+17 source hashes and 152 archive members. Exact hashes and archive identity are
+recorded in `atlas-production/MEASUREMENTS.md`.
+
+Forty body comparisons retained lower relief across 44 breast/mantle parts;
+eighteen padding comparisons removed the horizontal pale temple line. Only those
+parts' positions/normals and 31,488 texture-margin pixels change against finish-02.
+Forty source/GLB captures preserve appearance: eight rest pairs are pixel-identical,
+and twelve other pairs differ by 0–10 pixels each, at most one channel value
+(31 pixels total). Hide/reload/dispose pass with zero page/console/rejected-network
+errors. Nine new model/lifecycle checks passed. Static tool tests and the 80-state
+review were not rerun; their historical finish-02 evidence follows below.
+
+Descending temple geometry, small body marks, feather flow, eye/wing-joint finish,
+overall likeness, natural acting, delivery-size/device acceptance and publication
+remain unaccepted. No performance budget or whole-program completion is claimed.
+
+### Historical finish-02 checkpoint
+
+The prior matching finish-02 export at
 `2026-10-04T20:07:57.362206+00:00` (5 October in IST) binds
 `sculpt-04-finish-02-seam-safe-color` and has 104 artifacts,
 27,543 vertices, 49,844 triangles, 14 bones and 12 clips in a 2,321,804-byte GLB.
@@ -1721,7 +1746,7 @@ its 18 comparison captures showed an improved beak without accepting the full
 model. Throat-03 was rejected for its coarse staircase boundary. Historical
 sculpt-04 passed all nine geometry/lifecycle checks. Source/export tooling and
 an explicit hash-verifying publisher exist; final art acceptance does not.
-The archived rough-01 performance comparison does not measure finish-02.
+The archived rough-01 performance comparison does not measure finish-03.
 Details and exact evidence boundaries are in `atlas-production/README.md`,
 `ART_REVIEW.md`, `MEASUREMENTS.md` and `PERFORMANCE_PLAN.md`. A functional release
 with approved static ATLAS is permitted; full-plan completion, physical-device

@@ -112,23 +112,23 @@ recorded below and remain separate from the approved static greeting.
 
 ## ATLAS boundary
 
-The latest separately archived art study is finish02: 27,543 vertices, 49,844 triangles,
+The latest separately archived art study is finish03: 27,543 vertices, 49,844 triangles,
 a 2,321,804-byte GLB, fourteen bones, twelve clips and one embedded 512px color map.
-The smooth throat and shorter crown are retained after forty matching wing02
-comparisons. Triangle-consistent mapping adds 303 UV seam copies without changing
-the surface triangles, skin bindings or acting. The completed breast fold and
-actual-mesh wing contact remain retained.
+The smooth throat, shorter crown, completed breast fold and fitted wing coverts remain
+retained. Forty body comparisons support lower relief on 44 body tufts; eighteen
+isolated padding comparisons remove the thin horizontal pale head lines.
 
-The full export at `2026-10-04T20:07:57.362206+00:00` verifies seventeen sources,
-104 artifacts and 146 archive members. Nine model/lifecycle checks and nine static
-tool tests pass. Actual GLB reload exposed and resolved a local CSP/texture-loading
-issue; forty corrected source/export captures agree within at most one channel
-value at 0–10 pixels per image. Eighty exported light/dark state samples were also
-inspected. These checks do not establish final art or physical performance.
+The full export at `2026-10-04T20:32:41.680641+00:00` verifies seventeen sources,
+104 artifacts and 152 archive members. Nine final model/lifecycle checks pass;
+unchanged static-tool coverage last passed at finish02. Forty source/export captures
+show eight pixel-identical rest pairs and twelve posed pairs differing at 0–10 pixels
+by at most one channel value, with successful hide/reload/disposal. These checks do
+not establish final art or physical performance. Full archive SHA256:
+`179fa4c55775942d0c7e04bd2701a38f96f618b7091a253ea8027d2d30cedbb7`.
 
-Fine temple/eye edges, torso accents, wing-joint finish, overall likeness and
-natural state acting remain open. No 3D artwork has been published. The approved
-portrait and static full-body greeting remain active; animated delivery and
+Continuous fine plumage, descending temple/eye edges, wing-joint finish, overall
+likeness and natural acting remain open. No 3D artwork has been published. The
+approved portrait and static full-body greeting remain active; animated delivery and
 physical-device acceptance remain pending.
 
 ## Greeting acceptance and personality follow-up

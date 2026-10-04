@@ -40,6 +40,18 @@ test('procedural geometry is finite, indexed and deterministically bound to the 
     assert.equal(continuous.length,2);
     const position=geometry.getAttribute('position'),uv=geometry.getAttribute('uv');
     const umber=Number.parseInt(config.palette.umber.slice(1),16),base=[(umber>>16)&255,(umber>>8)&255,umber&255];
+    // The head clamps to the upper/right chart edge. Linear sampling must not
+    // pick up white from the adjacent texel, including small UV roundoff.
+    for(let edge=0;edge<480;edge++)for(const [x,y] of [[edge,480],[480,edge]]) {
+      const texel=(y*map.image.width+x)*4;
+      for(let channel=0;channel<3;channel++)assert.ok(Math.abs(map.image.data[texel+channel]-base[channel])<=1,
+        'color-chart filter footprint must meet umber padding');
+    }
+    for(const [x,y] of [[503,503],[504,503],[503,504],[504,504]]) {
+      const texel=(y*map.image.width+x)*4;
+      assert.deepEqual(Array.from(map.image.data.slice(texel,texel+4)),[255,255,255,255],
+        'other parts must retain a white linear-sampling footprint');
+    }
     const probes=[[1/3,1/3,1/3],[.75,.125,.125],[.125,.75,.125],[.125,.125,.75]];
     let upperHeadTriangles=0,rearTriangles=0;const sampledParts=new Set();
     for(let offset=0;offset<geometry.index.count;offset+=3){

@@ -1,4 +1,20 @@
-# ATLAS sculpt 04, finish 02 — retained color and crown refinement
+# ATLAS sculpt 04, finish 03 — settled feather ends and padded color chart
+
+Current status: **local refinement retained; full character and natural acting unaccepted**. Creative revision: `sculpt-04-finish-03-padded-color-chart`. Retained finish02 is the exact baseline.
+
+Only the contact-fitted branch of the 44 breast/mantle tufts changes. A smooth rise over the first two row intervals and a smooth settling envelope over the last three lower the middle relief and return the terminal row into the sampled shell. With the existing lift, outward displacement is bounded by −0.0004 and +0.0044 model units. Roots and lateral edges remain just inside the sampled surface. Footprint, tip heights, all Y values, sweep, tone arrays, vertex order and indices are unchanged; the four temple tufts retain their separate construction.
+
+Forty before/after captures cover full body, portrait, torso, working and completed in front, three-quarter, profile and rear. Root and independent review retain the reduction in raised droplets and long cuts without a new profile/rear gap or protrusion. Small slits and isolated marks remain. Body02 comparison archive SHA256: `71f78247d16631c32907e0422511cb6209542221a822dbd8cd7b09d0bc2c0d1b`.
+
+Eighteen diagnostic captures without the four temple tufts show that descending cheek edges come from those pieces, but the horizontal pale head line persists. That diagnostic archive is `3e5d6b23db425ad596af6b47d3228d7269a5198553dc68b512555dfd5429753b`; no tuft was removed from retained source. Eighteen further captures changing only texture padding remove the horizontal line in portrait, listening and completed front/three-quarter/profile views. Root and independent review retain the correction with no observed new color regression. The chart margin now uses umber while the separate 16 × 16 white patch around other parts' constant UV remains white. Padding diagnostic archive SHA256: `0293e94d73ed1aa4425cd95f62a8872415e6f10e0e2c4f5cb9c446cfbf89db32`.
+
+Exact comparison against finish02 passes: 27,543 vertices, 49,844 triangles, fourteen bones, twelve clips, one material, one texture and 167 parts. Only positions/derived normals in 44 breast/mantle parts and 31,488 texture-margin pixels change. All 123 other parts, complete indices, colors, UVs, skin indices/weights, chart interior, white patch, rig, poses, palette and clips remain exact. Nine final model/lifecycle checks pass, including a regression check for the chart's filter footprint and the separate white sample.
+
+Forty procedural/exported GLB captures preserve appearance: eight rest pairs are pixel-identical; the other twelve pairs differ by 0–10 pixels each and at most one channel value (31 pixels total). Both modes decode one embedded 512 × 512 texture, and hide/reload/dispose complete without page, console or rejected-network errors. This does not establish GPU reclamation, physical-device performance or natural acting. Matching full-export measurements and archive identity belong in `../ART_REVIEW.md` and `output/export-manifest.json` with all source hashes verified.
+
+The reference still requires finer continuous feather flow, softer descending temple edges, eye/wing-joint finish and stronger overall likeness. No final art or publication approval is implied.
+
+## Finish 02 retained color and crown refinement
 
 Current status: **local refinement retained; full character and natural acting unaccepted**. Creative revision: `sculpt-04-finish-02-seam-safe-color`.
 

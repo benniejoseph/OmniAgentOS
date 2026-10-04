@@ -1,4 +1,4 @@
-/** ATLAS sculpt 04, finish 02 — retained seam-safe color and compact crown.
+/** ATLAS sculpt 04, finish 03 — retained settled feathers and padded color chart.
  * No raster planes, generated imagery, physics, audio, providers or app imports.
  * Geometry is deterministic; Three UUIDs are internal and not provenance IDs.
  */
@@ -81,6 +81,14 @@ function throatColorChart(config) {
   const size=512,chart=480,data=new Uint8Array(size*size*4).fill(255);
   const mask=throatMask(config.throatProfile),base=new THREE.Color(config.palette.umber);
   const pale=new THREE.Color(config.palette.throat),color=new THREE.Color();
+  // Linear filtering at the chart edge must meet matching umber padding.
+  // Keep a separate white patch around the other parts' constant UV sample.
+  color.copy(base).convertLinearToSRGB();
+  for(let row=0;row<size;row++)for(let column=0;column<size;column++) {
+    if(row>=496&&column>=496)continue;
+    const index=(row*size+column)*4;
+    data[index]=Math.round(color.r*255);data[index+1]=Math.round(color.g*255);data[index+2]=Math.round(color.b*255);
+  }
   for(let row=0;row<chart;row++)for(let column=0;column<chart;column++) {
     const x=-.46+.92*column/(chart-1),y=2.08+.68*row/(chart-1);
     color.copy(base).lerp(pale,mask({x,y,z:1})).convertLinearToSRGB();
@@ -370,9 +378,10 @@ function plumageTuft(profile,y,angle,length,width,sweep=0,lift=.004,contact=null
       const a=centerAngle+width*u*taper/arcScale;
       const outward=new THREE.Vector3(Math.sin(a)/rx,0,Math.cos(a)/rz).normalize();
       point=contact(sampleY,a);
-      const root=clamp(t/.42),emerge=root*root*(3-2*root)*(1-u*u)**2;
-      // Root and sides sit just inside the sampled shell; relief emerges smoothly.
-      point.addScaledVector(outward,-.0018+(lift+.0078)*emerge*(.55+.45*Math.sin(Math.PI*t)));
+      const root=clamp(t/.40),rise=root*root*(3-2*root);
+      const terminal=clamp((1-t)/.60),settle=terminal*terminal*(3-2*terminal);
+      // Low relief settles the terminal row into the same sampled body surface.
+      point.addScaledVector(outward,-.0004+(lift+.0008)*rise*settle*(1-u*u)**2);
     } else {
       // Preserve the four temple tufts' original construction exactly.
       const a=centerAngle;

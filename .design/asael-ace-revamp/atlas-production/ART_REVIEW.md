@@ -1,6 +1,20 @@
 # ATLAS actual-art review — 5 October 2026 (IST)
 
-## Finish02 — latest matching full export, character still unaccepted
+## Finish03 — latest matching full export, character still unaccepted
+
+The retained body-surface and texture-padding refinement is exported as `sculpt-04-finish-03-padded-color-chart` at `2026-10-04T20:32:41.680641+00:00`. All seventeen source hashes, 104 artifact hashes/byte lengths and 152 archive members were verified. The GLB is 2,321,804 bytes, with 27,543 vertices, 49,844 triangles, fourteen bones, twelve clips, one material and one embedded 512 × 512 RGBA8 PNG. There are no external image or buffer resources. Nine final model/lifecycle checks pass; unchanged static-tool coverage last passed at finish02.
+
+Forty body comparisons support retaining the shallower, settling relief of 44 breast/mantle tufts. Raised droplets and long cuts are quieter; no new outline/rear gap is observed. The four temple tufts remain unchanged. An eighteen-capture omission experiment showed their descending cheek edges are separate from the horizontal pale line. A second eighteen-capture experiment changed only texture padding and removed that horizontal line across portrait, listening and completed views. Root and independent review retain umber margins around the existing chart, with the separate white sample patch preserved.
+
+Exact comparison against finish02 confirms zero topology delta. Only positions/normals in those 44 parts and 31,488 padding pixels change; all other 123 parts, complete indices, colors, UVs, skin indices/weights, chart interior, white patch, rig, poses, palette and clips remain exact. Nine structure/lifecycle checks include the texture filter-footprint regression. Matching body and padding archives are `body02-comparison` (SHA256 `71f78247d16631c32907e0422511cb6209542221a822dbd8cd7b09d0bc2c0d1b`) and `padding-isolation-comparison` (SHA256 `0293e94d73ed1aa4425cd95f62a8872415e6f10e0e2c4f5cb9c446cfbf89db32`).
+
+Forty source/export captures preserve the decoded texture and visible appearance. Eight rest pairs are pixel-identical; twelve posed pairs differ at 0–10 pixels per image by at most one channel value (31 differing pixels total). Hide, explicit reload and disposal succeed without page/console/rejected-network errors. Visual review of all five sheets finds no source/export mismatch. Matching GLB comparison archive SHA256: `6f6acdab617f561afe915006c8f65b76316c5dcd4569af9ef1c2d22068f7280a`. These are bounded still/lifecycle observations; the older eighty-state-sample review belongs to finish02 and was not repeated.
+
+Full archive: `atlas-finish-03-review.tar.gz`, SHA256 `179fa4c55775942d0c7e04bd2701a38f96f618b7091a253ea8027d2d30cedbb7`. Receipt: `atlas-finish-03-export-verification.json`. Export-manifest SHA256: `fe1a30d2fda61a494ece550312476d4b7c7403c36ebb32044a3a3e84ebf535ff`; raster-manifest SHA256: `f0cacea831488baf3a12ef3904c8a8cbf92118c4a8199cacbf76344ebe9daa9e`.
+
+The head/body remain too smooth between isolated feather accents. Descending temple edges, eye detail, coarse wing junctions, stronger reference likeness and natural acting remain pending, along with delivery-size/device performance and publication. The approved neutral portrait/static greeting remain active. This retained refinement is not final art approval.
+
+## Finish02 — previous matching full export, character still unaccepted
 
 The retained color/crown refinement is exported as `sculpt-04-finish-02-seam-safe-color` at `2026-10-04T20:07:57.362206+00:00`. All seventeen source hashes, 104 artifact hashes/byte lengths and 146 archive members were verified. The GLB is 2,321,804 bytes, with 27,543 vertices, 49,844 triangles, fourteen bones, twelve clips, one material and one embedded 512 × 512 RGBA8 PNG. There are no external image or buffer resources. Nine final model/lifecycle checks and nine static-tool tests pass.
 
