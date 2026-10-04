@@ -65,13 +65,15 @@ def snapshot(page, checks, name, coarse, greeting=False):
     geometry = root.evaluate("""(el,greeting) => { const slot=el.querySelector('summary > span[aria-hidden="true"]').getBoundingClientRect();const image=el.querySelector('img');const imageBox=image?.getBoundingClientRect(); return {
       viewport:innerWidth,document:document.documentElement.scrollWidth,client:el.clientWidth,scroll:el.scrollWidth,
       portraitWidth:slot.width,portraitHeight:slot.height,
-      imageSource:image?.getAttribute('src'),naturalWidth:image?.naturalWidth,naturalHeight:image?.naturalHeight,
+      imageSource:image?new URL(image.currentSrc||image.src,location.href).pathname:null,
+      sameOrigin:image?new URL(image.currentSrc||image.src,location.href).origin===location.origin:false,
+      naturalWidth:image?.naturalWidth,naturalHeight:image?.naturalHeight,
       imageWidth:imageBox?.width,imageHeight:imageBox?.height,
       targets:[...el.querySelectorAll(greeting?'summary':'button,a,summary')].map(el=>el.getBoundingClientRect().height)}; }""", greeting)
     if greeting:
         expect(root).to_have_attribute("data-companion-layout", "greeting")
         expect(root).to_have_attribute("data-companion-artwork", "greeting")
-        checks.check(name + ": approved bounded full-body image", geometry["imageSource"] == GREETING and
+        checks.check(name + ": approved bounded full-body image", geometry["imageSource"] == GREETING and geometry["sameOrigin"] and
                      geometry["naturalWidth"] == 211 and geometry["naturalHeight"] == 432 and
                      0 < geometry["imageWidth"] < geometry["imageHeight"] <= 144 and
                      abs(geometry["imageWidth"] / geometry["imageHeight"] - 211 / 432) < .01, geometry)
