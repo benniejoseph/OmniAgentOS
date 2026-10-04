@@ -28,6 +28,8 @@ export const APP_SERVICE_OPERATION_CONTRACTS = Object.freeze([
   mutation("app.market_research.journal.score", "manage.workflow", "market_forecast_outcome", "market-forward-shadow-events.v1"),
   read("app.library.list", "read", "workspace_library"),
   read("app.library.show", "read", "workspace_library_item"),
+  read("app.library.versions.list", "read", "workspace_library_item"),
+  read("app.library.versions.show", "read", "workspace_library_item"),
   read("app.memory.readable.show", "read", "memory_overview"),
   read("app.memory.intelligence.show", "read", "memory_intelligence"),
   read("app.memory.shared.list", "read", "shared_memory"),

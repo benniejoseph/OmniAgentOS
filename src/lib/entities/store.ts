@@ -22,7 +22,17 @@ import {
   type EntityResolutionDecision,
 } from "@/lib/entities/registry";
 import type { EntityTypeId } from "@/lib/entities/ontology";
+import {
+  ENTITY_OPTIONS_CONTRACT,
+  entityOptionsQuerySchema,
+  entityOptionsResponseSchema,
+  entityOptionTypeSchema,
+  type EntityOptionsQuery,
+  type EntityOptionsResponse,
+} from "@/lib/entities/options-contracts";
+import type { RequestEntityAccessV1 } from "@/lib/entities/request-access";
 import { appendScopedDomainEvent } from "@/lib/events/store";
+import { canonicalActorIdFromExactRequestBinding } from "@/lib/security/canonical-actor";
 import {
   parsePersistedExecutionScope,
   type ExecutionScope,
@@ -880,6 +890,70 @@ export async function reviewEntityMerge(input: {
   });
   if (created) await appendMergeReviewEvent(stored!, scope);
   return stored!;
+}
+
+/** A bounded current-record projection; no aliases, history or mutation authority. */
+export async function readEntityOptions(
+  access: RequestEntityAccessV1,
+  query: EntityOptionsQuery = {},
+): Promise<EntityOptionsResponse> {
+  const value = entityOptionsQuerySchema.parse(query);
+  const binding = parseEntityAccessBinding(access.accessBinding);
+  const scope = assertEntityScope(access.executionScope, binding, "entity.read.v1");
+  const canonicalActorId = canonicalActorIdFromExactRequestBinding(
+    access.actorBinding.legacyOwnerActorIds[0], access.actorBinding,
+  );
+  if (!canonicalActorId || canonicalActorId !== scope.initiatingActorId) {
+    throw new Error("Entity options require the exact canonical request actor.");
+  }
+  const matches = (entity: EntityRecord) =>
+    entity.accessBinding.tenantId === scope.tenantId &&
+    entity.accessBinding.ownerActorId === canonicalActorId &&
+    entity.accessBinding.accessScopeSha256 === binding.accessScopeSha256 &&
+    entity.state === "active" && entityOptionTypeSchema.safeParse(entity.entityTypeId).success &&
+    (!value.after || entity.entityId > value.after);
+  let records: EntityRecord[];
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    records = await runWithDatabaseActorScope(scope.tenantId, [canonicalActorId], async () => {
+      // omni_entity_records is the mutable current head, keyed by tenant + ID.
+      // Apply every scope/state/type bound before fetching at most one lookahead.
+      const rows = await getSql()`
+        SELECT contract FROM omni_entity_records
+        WHERE tenant_id = ${scope.tenantId}
+          AND owner_actor_id = ${canonicalActorId}
+          AND access_scope_sha256 = ${binding.accessScopeSha256}
+          AND state = 'active'
+          AND entity_type_id IN ('person', 'organization', 'account', 'project')
+          AND id COLLATE "C" > ${value.after ?? ""}
+        ORDER BY id COLLATE "C"
+        LIMIT ${value.limit + 1}
+      `;
+      if (rows.length > value.limit + 1) throw new Error("Entity options exceeded their read bound.");
+      const parsed = rows.map((row) => parseEntityRecord(row.contract));
+      if (parsed.some((entity) => !matches(entity))) throw new Error("Entity option head does not match its exact scope.");
+      return parsed;
+    });
+  } else {
+    // The development JSON ledger remains its existing persistence format;
+    // only the response window is bounded on this fallback path.
+    records = (await readLedger()).entities.map(parseEntityRecord).filter(matches)
+      .sort((left, right) => left.entityId < right.entityId ? -1 : left.entityId > right.entityId ? 1 : 0)
+      .slice(0, value.limit + 1);
+  }
+  const items = records.slice(0, value.limit).map((entity) => ({
+    entityId: entity.entityId, entityTypeId: entity.entityTypeId,
+    canonicalLabel: entity.canonicalLabel, state: entity.state,
+  }));
+  const hasMore = records.length > value.limit;
+  return entityOptionsResponseSchema.parse({
+    schemaVersion: 1, contract: ENTITY_OPTIONS_CONTRACT,
+    scope: { tenantId: scope.tenantId, ownerActorId: canonicalActorId,
+      accessScopeSha256: binding.accessScopeSha256, purposeId: "entity.read.v1" },
+    items, hasMore, nextAfter: hasMore ? items[items.length - 1].entityId : null,
+    coverage: { kind: "bounded_current", limit: value.limit, returned: items.length, after: value.after ?? null, total: null },
+    authorityEffect: "none",
+  });
 }
 
 export async function readEntityRegistry(input: {
