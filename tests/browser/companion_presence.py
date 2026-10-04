@@ -145,8 +145,8 @@ def greeting_views(page, origin, fixture, checks, label, coarse):
     try:
         navigate(page, origin, EMPTY_COMMAND)
         root = ready(page, "available", "Available")
-        expect(root.locator("img")).to_have_attribute("src", "/companion/atlas-neutral.png")
-        page.wait_for_function("selector=>document.querySelector(selector+' img')?.naturalWidth===108", arg=ROOT)
+        page.wait_for_function("""selector=>{const image=document.querySelector(selector+' img');return image?.naturalWidth===108 &&
+          new URL(image.currentSrc||image.src,location.href).href===new URL('/companion/atlas-neutral.png',location.href).href;}""", arg=ROOT)
         expect(root).to_have_attribute("data-companion-artwork", "portrait")
         expect(root).to_have_attribute("data-companion-portrait", "visible")
         checks.check(label + ": missing full-body image falls back to neutral without changing idle state", bool(missing))
@@ -157,7 +157,8 @@ def greeting_views(page, origin, fixture, checks, label, coarse):
     root = ready(page)
     expect(root).to_have_attribute("data-companion-layout", "compact")
     expect(root).to_have_attribute("data-companion-artwork", "portrait")
-    expect(root.locator("img")).to_have_attribute("src", "/companion/atlas-neutral.png")
+    page.wait_for_function("""selector=>{const image=document.querySelector(selector+' img');return image?.naturalWidth===108 &&
+      new URL(image.currentSrc||image.src,location.href).href===new URL('/companion/atlas-neutral.png',location.href).href;}""", arg=ROOT)
     checks.check(label + ": populated verified conversation returns to the compact portrait", True)
 
 
