@@ -1,4 +1,4 @@
-/** ATLAS sculpt 04, primary 01 — retained local study; final art unaccepted.
+/** ATLAS sculpt 04, wing 02 — retained covert mesh-contact refinement; full character unaccepted.
  * No raster planes, generated imagery, physics, audio, providers or app imports.
  * Geometry is deterministic; Three UUIDs are internal and not provenance IDs.
  */
@@ -230,37 +230,52 @@ function foldedWingUnderform(wing) {
   return result;
 }
 
+/** Cache the actual underform before append disposes its geometry. */
+function wingMeshContact(mesh) {
+  const vertices=mesh.getAttribute('position'),indices=mesh.index,triangles=[];
+  for(let i=0;i<indices.count;i+=3)triangles.push([0,1,2].map(offset=>
+    new THREE.Vector3().fromBufferAttribute(vertices,indices.getX(i+offset))));
+  const ray=new THREE.Ray(),hit=new THREE.Vector3(),offset=new THREE.Vector3();
+  return (origin,direction,fallback)=>{
+    ray.set(origin,direction);
+    let nearest=Infinity;
+    const result=new THREE.Vector3();
+    for(const [a,b,c] of triangles) {
+      if(!ray.intersectTriangle(a,b,c,false,hit))continue;
+      const distance=offset.subVectors(hit,origin).dot(direction);
+      if(distance>0&&distance<nearest){nearest=distance;result.copy(hit);}
+    }
+    return Number.isFinite(nearest)?result:fallback.clone();
+  };
+}
+
 /** Fit only wing coverts; the shared feather() and primary geometry stay intact. */
-function fittedWingCovert(wing,length,width,depth,sweep,curl,position,rotation) {
+function fittedWingCovert(wing,contact,length,width,depth,sweep,curl,position,rotation) {
   const result=feather(length,width,depth,sweep,curl),vertices=result.getAttribute('position');
   const matrix=new THREE.Matrix4().compose(new THREE.Vector3(...position),quaternion(rotation),new THREE.Vector3(1,1,1));
   const envelopes=[.18,.72,.90,.76,.56,.31,.10,.006];
   for(let row=0;row<vaneProfile.length;row++) {
     const t=vaneProfile[row][0],envelope=envelopes[row];
     const center=new THREE.Vector3(sweep*(.28*Math.sin(Math.PI*t)+t*t),-length*t,curl*t*t);
-    const centerQ=center.clone().applyMatrix4(matrix).applyMatrix4(wing.inverse).y;
-    const fit=wingEase((centerQ+.99)/.15);
+    const emergence=wingEase(t/.37),release=wingEase((t-.76)/.24);
     for(let n=0;n<8;n++) {
       const index=row*8+n,angle=n*2*Math.PI/8,across=Math.cos(angle),front=Math.sin(angle);
-      const original=new THREE.Vector3().fromBufferAttribute(vertices,index).applyMatrix4(matrix);
-      if(fit>0) {
-        // Recover coordinates in the unshifted frame, then wrap each across point.
-        const sample=center.clone();
-        sample.x+=width*envelope*across*(across<0?.87:1);
-        sample.applyMatrix4(matrix).applyMatrix4(wing.inverse);
-        const q=Math.max(-.999999,Math.min(.999999,sample.y)),phi=Math.atan2(sample.z,sample.x);
-        const outer=wing.surface(q,phi),inner=wing.surface(q,phi,wing.innerScale(q));
-        const radial=outer.clone().sub(wing.surface(q,phi,0)).normalize();
-        const crest=inner.clone().lerp(outer,wingEase(t/.37));
-        crest.addScaledVector(radial,-.006*(1-wingEase(t/.18)));
-        const rear=inner.clone().addScaledVector(radial,-.006-depth*envelope*.30);
-        const fullDepth=Math.max(.00012,crest.clone().sub(rear).dot(radial));
-        // Release the free end smoothly; keep finite closed tips instead of a fin.
-        const release=wingEase((t-.76)/.24),thickness=fullDepth*(1-release)+.00012*release;
-        const fitted=crest.addScaledVector(radial,-thickness*(1-front)/2);
-        original.lerp(fitted,fit);
-      }
-      vertices.setXYZ(index,original.x,original.y,original.z);
+      // Wrap every sample; compress the lower tail without restoring unfitted tips.
+      const sample=center.clone();
+      sample.x+=width*envelope*across*(across<0?.87:1);
+      sample.applyMatrix4(matrix).applyMatrix4(wing.inverse);
+      const rawQ=sample.y,q=rawQ<-.84?-.84-.135*(1-Math.exp((rawQ+.84)/.135)):Math.min(.999999,rawQ);
+      const phi=Math.atan2(sample.z,sample.x),origin=wing.surface(q,phi,0);
+      const outer=wing.surface(q,phi),inner=wing.surface(q,phi,wing.innerScale(q));
+      const radial=outer.clone().sub(origin).normalize(),support=contact(origin,radial,inner);
+      const edge=1-(1-release)*across*across;
+      const crest=support.clone().lerp(outer,emergence*edge);
+      crest.addScaledVector(radial,-.002*(1-wingEase(t/.18)));
+      const rear=support.clone().addScaledVector(radial,-.003-depth*envelope*.30);
+      const fullDepth=Math.max(.00012,crest.clone().sub(rear).dot(radial));
+      const thickness=fullDepth*(1-release)+.00012*release;
+      const fitted=crest.addScaledVector(radial,-thickness*(1-front)/2);
+      vertices.setXYZ(index,fitted.x,fitted.y,fitted.z);
     }
   }
   result.computeVertexNormals();
@@ -631,10 +646,11 @@ export function createAtlas(config) {
       [.069-j*.008,.067-j*.007,.037-j*.003,.0015],[.017,.022,.015,.001],14,8,true),'umber','Head');
     ellipsoid(`nostril_${suffix}`,'beakShadow','Head',[side*.101,2.666,.323],[.012,.005,.004],[0,side*30,side*12],12);
 
-    const wingEnvelope=foldedWingEnvelope(side);
-    append(`folded_wing_underform_${suffix}`,foldedWingUnderform(wingEnvelope),'umber',`Wing${suffix}`);
+    const wingEnvelope=foldedWingEnvelope(side),wingUnderform=foldedWingUnderform(wingEnvelope);
+    const wingContact=wingMeshContact(wingUnderform);
+    append(`folded_wing_underform_${suffix}`,wingUnderform,'umber',`Wing${suffix}`);
     for(let row=0;row<3;row++) for(let j=0;j<4;j++) append(`layered_wing_covert_${suffix}_${row}_${j}`,
-      fittedWingCovert(wingEnvelope,.39+row*.063-j*.019,.072-row*.007,.014,side*(.022+j*.011),.022,
+      fittedWingCovert(wingEnvelope,wingContact,.39+row*.063-j*.019,.072-row*.007,.014,side*(.022+j*.011),.022,
         [side*(.421+j*.038),2.033-row*.181-j*.058,.115-j*.088+row*.002],[10,side*(-12+j*28),side*(-6+j*3)]),'umber',`Wing${suffix}`);
     const primaryFan=overlappingPrimaryFan(side,worldRest.get(`WingTip${suffix}`));
     for(let j=0;j<8;j++) append(`curved_primary_${suffix}_${j}`,primaryFan(j),j===5?'feather':'umber',`WingTip${suffix}`);

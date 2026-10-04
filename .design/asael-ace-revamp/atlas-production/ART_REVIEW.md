@@ -1,6 +1,102 @@
 # ATLAS actual-art review — 5 October 2026 (IST)
 
-## Primary01 — latest matching full export, character still unaccepted
+## Wing02 — latest matching full export, character still unaccepted
+
+The retained breast-fold trajectory and actual-mesh covert fitting are exported
+together as `sculpt-04-wing-02-mesh-contact` at
+`2026-10-04T19:37:43.326236+00:00`. The export contains 104 artifacts, 27,240
+vertices, 49,844 triangles, fourteen bones, twelve clips and a 2,039,724-byte GLB.
+All nine final structure/lifecycle checks pass. All seventeen source hashes and
+all 104 artifact hashes/byte lengths match; all 139 archive members were reread
+and verified.
+
+Full source/output archive: `atlas-wing-02-review.tar.gz`, SHA256
+`ac287508e845048e901edd734a8291d49b5abcbad51c3d2e561380c945027a32`.
+Receipt: `atlas-wing-02-export-verification.json`. Export-manifest SHA256:
+`8096da6653d3e2a22596343e895d6d50b49e4a2aaf8075a6e5a15e047962af3c`;
+raster-manifest SHA256:
+`4a1b1d1da6123eed178f48f555187f991dd41575b9c053da37f163ef9d05b922`.
+
+Root also inspected eighty sampled exported frames covering all eight states in
+both themes. The sampled wing fold and return stay coherent, with no new large
+detached part visible. These still samples do not establish natural motion,
+delivery-size readability or physical performance. Matching sprite evidence is
+preserved in `wing02-state-review/matching-source-and-baseline.tar.gz`, SHA256
+`c6041644b6492cda2296e269d5ed905fb02c9cb658ebbef580912567ba066fed`.
+
+Two subsequent throat sampling experiments were visually rejected and fully
+reverted before this export. Throat/lid edges, isolated torso accents, pointed
+crown feathers, overall finish/likeness and natural state acting remain open.
+The full character remains unaccepted and unpublished; the approved portrait
+and static greeting stay active in the application.
+
+## Throat05 and throat06 — rejected experiments, original throat restored
+
+Both candidates passed exact two-part parity with zero topology or weight
+changes. Throat05 also passed all nine structural checks. Root rejected its 30
+comparisons because new horizontal color streaks appeared below the beak and
+above the collar. Nine isolated-layer captures reproduced the bands in each
+layer independently, contradicting the initial intersection hypothesis.
+
+Throat06 restricted angular redistribution to the middle neck. Its 30 comparisons
+removed the cap bands but produced longer sharp steps along the lower diagonal
+boundary. That was not a sufficient improvement to retain. Both candidates and
+their diagnostics are archived externally; all executable source/configuration
+has been verified restored to retained wing02, apart from review metadata.
+
+Throat05 comparison archive SHA256:
+`4c8208359944232c9f2c6be219818d7698d82428e84ecc06b30dc6c215d7d11a`;
+throat06 comparison archive SHA256:
+`40862783654febfff8ef093d91132d13c531e1c79d5e18520ad3c4459d513143`.
+The isolated throat05-layer archive SHA256 is
+`f1e746b4d6582788a1d720e57ef2ca1fa0f284fac6529cac24e92399486dab3e`.
+A later boundary correction must preserve contour alignment between rows;
+positive sampling density alone did not do that.
+
+## Wing02 comparison — retained mesh contact, full character unaccepted
+
+Root inspected all 60 comparisons against the exact retained completed02 source
+and configuration: nine completed-motion phases in three angles, plus peak
+portraits. Fitting the 24 coverts to actual underform triangles removes the long
+dangling spur and reduces exposed roots and stepped lateral edges. The resting
+outline, raised joint and return remain coherent in these samples. Fine seams,
+overall feather finish and natural all-state acting still need review.
+
+All nine structure/lifecycle checks pass. Exact part parity finds only the 24
+coverts changed; the other 143 parts, complete indices, rig, poses, clips and
+palette remain identical. Counts remain 27,240 vertices and 49,844 triangles.
+Matching source, baseline and capture helper are preserved in
+`wing02-comparison/matching-source-and-baseline.tar.gz`, SHA256
+`63bb502f34331496ac35949caf528ee7341989761394d69a2223264866f3d5a4`.
+Primary01 remains the latest full export at this comparison checkpoint. This
+retains a local refinement; it does not establish full-character acceptance.
+
+## Completed02 comparison — retained breast fold, full character unaccepted
+
+Root first inspected 96 external configuration-preview captures. Z-only sweeps
+left the vanes dark and edge-on; the selected coordinated child rotation brings
+their broad faces diagonally across the upper breast. Those exploratory configs
+are preserved under `wing-sweep-preview` and `wing-fold-preview` and are distinct
+from the authored source comparison.
+
+All 60 authored-source comparison captures were then inspected: rest, clearance,
+folding, peak, settle, unfolding, release, lowering and held pose in three angles,
+plus peak portraits. The new fold replaces the downward hanging fan while
+preserving shoulder clearance and return to rest. No new large collision appears
+in these samples. Coarse upper-wing tabs, joint edges, final feather/face finish
+and natural all-state acting remain open; this is a retained local refinement.
+
+All nine structure checks pass. Exact parity verifies that only the completed
+`WingTipLeft.quaternion` track changes. Geometry, all timestamps/durations,
+static poses, rig, palette, the other thirteen completed tracks and the other
+eleven clips remain identical to primary01. Counts remain 27,240 vertices,
+49,844 triangles, fourteen bones and twelve clips. The matching comparison
+archive is `completed02-comparison/matching-source-and-baseline.tar.gz`, SHA256
+`79e0594003517b7fd67c2045cbfdc15b6cd4e470901be272883819fd97bed969`.
+Primary01 remains the latest full export at this comparison checkpoint; no
+publication or device/performance acceptance follows.
+
+## Primary01 — previous matching full export, character still unaccepted
 
 The compact overlapping primary fan is retained after root inspected all 48
 comparison captures against the completed01 GLB: seven completed-motion phases

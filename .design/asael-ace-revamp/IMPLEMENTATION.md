@@ -5,11 +5,11 @@ PR54 (priority UI / app 1.23.13+48), PR55 (static full-body greeting /
 app 1.23.14+49) and PR56 (scoped language/motion intensity / app 1.23.15+50)
 are accepted and merged, each after all 16 hosted checks passed. The private
 Mac package is verified through 1.23.15 (50), from PR56's exact accepted source.
-The last complete matching 3D export and visual review is primary-01, with all
-nine structure checks passing and the full model still unaccepted. It adds a
-compact overlapping primary fan to retained body-tuft, surface-grain, wing-fit,
-eyelid-return and completed-gesture clearance improvements. Completed-01,
-eyelid-03, throat-04 and beak-02 are historical checkpoints;
+The last complete matching 3D export and visual review is wing-02, with all
+nine final structure/lifecycle checks passing and the full model still unaccepted.
+It retains completed-02's breast fold and wing-02's underform contact/lower-tail
+compression. Rejected throat-05/06 studies were fully reverted. Primary-01,
+completed-01, eyelid-03, throat-04 and beak-02 are historical checkpoints;
 throat-03 was rejected for its coarse staircase boundary. PR57's expanded web
 Voice shared player is accepted and merged after all 14 applicable hosted checks
 passed; native API/version and Mac 1.23.15 (50) are unchanged. Software UI
@@ -1660,25 +1660,31 @@ That historical package-preparation checkpoint is superseded by the signed
 packages and hosted acceptance below. Nine Node geometry/lifecycle checks and
 three Python tool tests also passed for the sculpt-02 source workbench.
 
-The last complete matching primary-01 export at
-`2026-10-04T18:55:02.119850+00:00` (5 October in IST) binds
-`sculpt-04-primary-01-overlapping-fan` and has 104 artifacts,
+The last complete matching wing-02 export at
+`2026-10-04T19:37:43.326236+00:00` (5 October in IST) binds
+`sculpt-04-wing-02-mesh-contact` and has 104 artifacts,
 27,240 vertices, 49,844 triangles, 14 bones and 12 clips: eight states and
-four inspection aliases, in a 2,039,712-byte GLB. All nine structure checks passed.
-Matching source/output is archived as `atlas-primary-01-review.tar.gz`.
-Root verified all 17 current source hashes, all 104 artifact hashes/bytes and
-reread all 129 archive members in `atlas-primary-01-export-verification.json`;
-exact manifest/archive hashes and the narrow comparison archive are recorded
-in `atlas-production/MEASUREMENTS.md`.
+four inspection aliases, in a 2,039,724-byte GLB. All nine final structure/lifecycle
+checks passed. Matching source/output is archived as `atlas-wing-02-review.tar.gz`.
+Root verified all 17 source hashes, all 104 artifact hashes/bytes and 139 archive
+members in `atlas-wing-02-export-verification.json`; exact manifest/archive
+hashes are recorded in `atlas-production/MEASUREMENTS.md`.
 
-Only 16 primary parts change; the other 151 parts, all indices, rig, poses,
-clips and palette remain unchanged. Root reviewed all 48 comparison captures
-across seven completed phases in three views plus peak portraits. The shorter
-compact overlapping fan removes the detached-strip appearance, with no new large
-sampled joint gap. An independent rest/peak/peak-portrait review found no regression
-that blocks retention. Mechanical covert/joint tabs, the downward gesture fan,
-fine throat/lid edges, overall likeness/finish, all-state acting/readability and
-device performance remain unaccepted.
+Completed-02's breast fold was retained after 60 actual comparisons. Exactly one
+`WingTipLeft` quaternion track changed; geometry and the other 11 clips were exact.
+Wing-02's underform contact and lower-tail compression were then retained after
+60 actual comparisons and an independent rest/peak/portrait review, removing the
+dangling spur. Its 24 changed coverts leave the other 143 parts, all topology,
+rig, poses, clips and palette exact against completed-02.
+
+Throat-05 and throat-06 were each rejected after 30 comparisons and fully reverted.
+Diagnostics found interpolation bands even in isolated layers; wing-02's original
+throat is restored exactly. Throat/lid edges, torso cut-like accents, the sharp
+crown, overall finish/likeness, all-state acting, delivery-size readability and
+device performance remain unaccepted. No final art publication is claimed.
+
+Primary-01 is retained in `atlas-primary-01-review.tar.gz`, with its 48-capture
+review, exact 16-part comparison, metadata and hashes preserved in MEASUREMENTS.md.
 
 The prior completed-01 full export is retained in `atlas-completed-01-review.tar.gz`
 from checkpoint `2e8c330299bbc508211894819c6ace136e3bab23`. It combined tuft-01,
@@ -1700,7 +1706,7 @@ its 18 comparison captures showed an improved beak without accepting the full
 model. Throat-03 was rejected for its coarse staircase boundary. Historical
 sculpt-04 passed all nine geometry/lifecycle checks. Source/export tooling and
 an explicit hash-verifying publisher exist; final art acceptance does not.
-The archived rough-01 performance comparison does not measure primary-01.
+The archived rough-01 performance comparison does not measure wing-02.
 Details and exact evidence boundaries are in `atlas-production/README.md`,
 `ART_REVIEW.md`, `MEASUREMENTS.md` and `PERFORMANCE_PLAN.md`. A functional release
 with approved static ATLAS is permitted; full-plan completion, physical-device

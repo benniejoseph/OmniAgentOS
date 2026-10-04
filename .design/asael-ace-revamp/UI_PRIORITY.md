@@ -112,12 +112,16 @@ recorded below and remain separate from the approved static greeting.
 
 ## ATLAS boundary
 
-The latest separately archived art study is primary01: 49,844 triangles, a
-2,039,712-byte GLB, fourteen bones and twelve clips, with all nine structure checks
-passing. Fitted body tufts, quieter surface grain, integrated wing coverts,
-temporal lid closure, forward-clearing completion motion and an overlapping
-primary fan improve the model. The mechanical wing junction, fine throat/lid edges and final
-state acting keep the character unaccepted.
+The latest separately archived art study is wing02: 49,844 triangles, a
+2,039,724-byte GLB, fourteen bones and twelve clips, with all nine structure checks
+passing. The completed02 fan folds across the upper breast; wing02 fits the
+coverts to actual underform triangles and removes the dangling spur. Each was
+retained after sixty matching comparisons. The full export at
+`2026-10-04T19:37:43.326236+00:00` verifies seventeen sources, 104 artifacts and
+139 archive members. Eighty exported light/dark state samples were also inspected.
+Two throat sampling experiments were rejected and reverted before export.
+Fine throat/lid edges, torso accents, pointed crown feathers, overall finish and
+natural state acting keep the character unaccepted.
 No 3D artwork has been published. The approved concept portrait remains active,
 with the static full-body greeting implemented above. The final authored model,
 material pass, final face/feather finish, animated greeting/state delivery and

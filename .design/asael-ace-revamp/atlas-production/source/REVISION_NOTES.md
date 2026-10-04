@@ -1,4 +1,36 @@
-# ATLAS sculpt 04, primary 01 — retained overlapping fan
+# ATLAS sculpt 04, wing 02 — retained mesh-contact checkpoint
+
+Current status: **local refinements reviewed; full character and natural state acting unaccepted**. Creative revision: `sculpt-04-wing-02-mesh-contact`.
+
+Completed02 folds the primary fan across the upper breast; wing02 fits all 24 coverts to actual underform triangles and keeps the lower samples on that surface. Root inspected all 60 matching comparisons for each refinement. Independent rest, peak and portrait review agrees with wing02 retention. The dangling spur is removed, root and lateral edges are quieter, and sampled resting/raised outlines remain coherent. Fine seams, throat/lid finish, torso accents, crown shape, overall likeness and natural acting remain open.
+
+Exact parity finds only 24 coverts changed relative to completed02; 143 parts, all indices, rig, poses, clips and palette remain exact. The completed02 comparison separately changes only one child-wing quaternion track. Counts remain 27,240 vertices, 49,844 triangles, fourteen bones and twelve clips. Completed02 comparison archive SHA256: `79e0594003517b7fd67c2045cbfdc15b6cd4e470901be272883819fd97bed969`; wing02 archive SHA256: `63bb502f34331496ac35949caf528ee7341989761394d69a2223264866f3d5a4`.
+
+Full-export measurements and archive identity belong in `../ART_REVIEW.md` and a matching `output/export-manifest.json`; require every source hash to match. This stable source record does not approve publication.
+
+## Rejected throat sampling experiments — fully reverted
+
+Throat05 redistributed existing angular columns toward vertex-mask transitions. Exact parity limited changes to the two continuous layers, and all nine structural checks passed. Root nevertheless rejected all 30 rendered comparisons because new cap-row color streaks appeared below the beak and above the collar. Nine isolated-layer captures reproduced the bands in each individual layer, so layer intersection was not the leading cause. Throat06 restricted redistribution to Y=2.245–2.645 with smooth fades. Its 30 comparisons removed the cap streaks but left longer sharp steps along the lower diagonal boundary; this also failed visual retention.
+
+Both experiments, their exact source/baselines and diagnostic receipts are preserved externally. Neither angular warp nor contact changes remain in this source. The original wing02 throat is restored exactly. Throat05 comparison archive SHA256: `4c8208359944232c9f2c6be219818d7698d82428e84ecc06b30dc6c215d7d11a`; throat06: `40862783654febfff8ef093d91132d13c531e1c79d5e18520ad3c4459d513143`. These failures establish that positive-density redistribution alone does not preserve a smooth interpolated boundary across rows; a later correction must keep samples aligned with the contour.
+
+## Wing 02 retained comparison
+
+Status: **retained source comparison; full character remains unaccepted**. Creative revision: `sculpt-04-wing-02-mesh-contact`. Root reviewed all 60 matching captures plus independent rest/peak/portrait views; parity and nine structural checks passed. The following construction record preserves authoring intent. The author inspected `wing-parts-debug/wing-parts-contact.png`: the pink row-2/column-3 covert forms the long square-ended spur. This pass changes only the 24 coverts and addresses both inaccurate support contact and the return to unfitted geometry below the lower pole.
+
+The actual underform triangles are cached before append. Each covert sample casts a radial ray from the shifted centerline, using the nearest positive hit as support; the analytic inner surface is only a numerical fallback. Roots sit 0.002 inside that support, side margins blend toward it, and the attached rear surfaces extend inside it. Free ends retain the existing finite 0.00012 thickness release. Raw height below q=-0.84 is smoothly compressed toward -0.975 for every across sample, keeping the lower rings on the support; no original-distal-geometry blend remains.
+
+Original grids, indices, tones, part names/order and bindings are retained; expected topology delta is **zero**. Underforms, primary01, other geometry, palettes, rig, poses and all clips—including completed02—remain unchanged. Root retained completed02 after 60 source captures and exact one-track parity; primary01 remains the last matching full export. Only the three assigned source files were edited using static reads/edits and existing image inspection, with no runtime, tests, Git, browser or export. Freeze for matching parity and actual review; contact, tip finish, intersections and final art remain unverified.
+
+## Completed 02 retained comparison
+
+Status: **retained source comparison; full character and natural acting remain unaccepted**. Creative revision: `sculpt-04-completed-02-breast-fold`. Root retained the candidate after all 60 source captures and exact one-track parity. The following authoring record predates that comparison: root selected coordinated pitch/roll after reviewing 96 external exploratory captures, where the vane faces read across the upper breast. Those exploratory previews alone were not source validation or final acting acceptance.
+
+Only completed's `WingTipLeft` values at 0.20, 0.34, 0.48 and 0.64 seconds change, copied from `wing-fold-preview/fold0_30_-115-model.json`: `[45,5,-20]`, `[0,30,-115]`, `[3,28,-109]` and `[51,0,-8]`. All other keys/channels, shoulder motion, timestamps, duration, static poses, geometry, rig, materials and other clips remain unchanged. `atlas-model.mjs` changes only its revision header. Primary 01 remains the last matching full export.
+
+Only the three assigned source files were edited using static reads/edits; no runtime, tests, browser, export or Git operation was run. Freeze for root's exact one-track parity, nine checks and all-phase source comparison. Intermediate body/junction contact, release and final acting quality remain unverified; full-character acceptance is unchanged.
+
+## Primary 01 retained checkpoint
 
 Current status: **local refinement reviewed; full character and natural state acting unaccepted**. Creative revision: `sculpt-04-primary-01-overlapping-fan`.
 

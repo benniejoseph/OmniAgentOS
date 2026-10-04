@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "name": "ATLAS_ROUGH_01",
-  "status": "SCULPT_04_PRIMARY_01_RETAINED_UNACCEPTED_STUDY",
-  "creativeRevision": "sculpt-04-primary-01-overlapping-fan",
-  "exportEvidence": "This retained local study adds a compact overlapping primary fan to the reviewed completed-01 refinements. All 48 narrow comparison captures were inspected; nine structure checks and exact sixteen-part geometry parity pass with zero topology delta. The complete character, natural state acting and physical-device performance remain unaccepted. Full-export evidence is authoritative only when export-manifest.json matches this creativeRevision and every current source hash. Current measurements, archive identities and remaining limits are recorded in ../ART_REVIEW.md. No production art/state publication is implied.",
+  "status": "SCULPT_04_WING_02_RETAINED_LOCAL_REFINEMENT",
+  "creativeRevision": "sculpt-04-wing-02-mesh-contact",
+  "exportEvidence": "Completed-02 and wing-02 are retained after 60 matching comparisons each and exact scoped parity. Only the completed child-wing track and twenty-four coverts change relative to primary-01; topology, rig, poses, other clips and all other geometry remain exact. Two later throat sampling candidates were rejected after actual comparison and fully reverted. Full-export measurements and archive identity belong in ../ART_REVIEW.md and a matching export-manifest.json; require the creativeRevision and every current source hash to match. The full character and natural state acting remain unaccepted; no production art/state publication is implied.",
   "coordinates": "Arbitrary model units. Y up, Z forward, X character left. Overall height about 3 units; not a physical scale claim.",
   "sourceExpectedSha256": "876591c5a2b739df99d6aab647554dc53bcab97d55bf0c3e0864e39e1c98c070",
   "palette": {
@@ -51,10 +51,10 @@
     "completed": {"duration":0.9,"intent":"One satisfied nod and compact wing-to-breast gesture, only for confirmed completion identity.","keys":[
       {"time":0,"pose":{"WingLeft":[0,0,0],"WingTipLeft":[0,0,0]}},
       {"time":0.08,"pose":{"Head":[-3,0,0],"UpperLidLeft":[6,0,0],"UpperLidRight":[6,0,0],"WingLeft":[-16,0,5],"WingTipLeft":[14,0,0]}},
-      {"time":0.20,"pose":{"Head":[1.615379744728,-0.021701352184,0.461489888678],"UpperLidLeft":[11.538461538462,0,0],"UpperLidRight":[11.538461538462,0,0],"WingLeft":[-60,0,5],"WingTipLeft":[55,0,0]}},
-      {"time":0.34,"pose":{"Head":[7,0,1],"WingLeft":[-60,0,-8],"WingTipLeft":[55,0,-4],"UpperLidLeft":[18,0,0],"UpperLidRight":[18,0,0]}},
-      {"time":0.48,"pose":{"Head":[3,0,-1],"WingLeft":[-58,0,-6],"WingTipLeft":[53,0,-3]}},
-      {"time":0.64,"pose":{"Head":[1.476196180827,-0.008232776262,-1.380929571519],"UpperLidLeft":[4.571428571429,0,0],"UpperLidRight":[4.571428571429,0,0],"WingLeft":[-56,0,4],"WingTipLeft":[51,0,0]}},
+      {"time":0.20,"pose":{"Head":[1.615379744728,-0.021701352184,0.461489888678],"UpperLidLeft":[11.538461538462,0,0],"UpperLidRight":[11.538461538462,0,0],"WingLeft":[-60,0,5],"WingTipLeft":[45,5,-20]}},
+      {"time":0.34,"pose":{"Head":[7,0,1],"WingLeft":[-60,0,-8],"WingTipLeft":[0,30,-115],"UpperLidLeft":[18,0,0],"UpperLidRight":[18,0,0]}},
+      {"time":0.48,"pose":{"Head":[3,0,-1],"WingLeft":[-58,0,-6],"WingTipLeft":[3,28,-109]}},
+      {"time":0.64,"pose":{"Head":[1.476196180827,-0.008232776262,-1.380929571519],"UpperLidLeft":[4.571428571429,0,0],"UpperLidRight":[4.571428571429,0,0],"WingLeft":[-56,0,4],"WingTipLeft":[51,0,-8]}},
       {"time":0.78,"pose":{"Head":[0.142848257275,-0.007124420306,-1.71432124397],"UpperLidLeft":[8.571428571429,0,0],"UpperLidRight":[8.571428571429,0,0],"WingLeft":[-22,0,4],"WingTipLeft":[20,0,0]}},
       {"time":0.90,"state":"completed"}
     ]},
