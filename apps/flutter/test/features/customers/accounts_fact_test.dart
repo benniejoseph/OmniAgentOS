@@ -87,7 +87,7 @@ void main() {
         throwsFormatException,
       );
       await expectLater(
-        AccountFactIntent.prepare(
+        () => AccountFactIntent.prepare(
           healthOwner,
           accountWorkspace,
           'bad-purpose',

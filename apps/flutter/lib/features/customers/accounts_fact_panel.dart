@@ -110,6 +110,14 @@ class _AccountFactPanelState extends State<AccountFactPanel>
         ],
         if (accepted != null)
           ExpansionTile(
+            key: PageStorageKey<Object>((
+              'accounts-fact-receipt',
+              controller,
+              actions,
+              owner?.key,
+              accepted['accountId'],
+              accepted['acceptanceSha256'],
+            )),
             title: Text('Accepted manual fact ${accepted['operation']}'),
             subtitle: Text(
               '${accepted['factKey']} · revision ${accepted['factRevision']}',
@@ -145,7 +153,13 @@ class _AccountFactPanelState extends State<AccountFactPanel>
           ),
         if (detail != null)
           ExpansionTile(
-            key: ValueKey((actions, detail.account.id)),
+            key: PageStorageKey<Object>((
+              'accounts-fact-editor',
+              controller,
+              actions,
+              owner?.key,
+              detail.account.id,
+            )),
             initiallyExpanded: _expanded,
             maintainState: true,
             onExpansionChanged: (value) {

@@ -8,7 +8,7 @@ DO $migration$
 BEGIN
   IF (SELECT MAX(version) FROM public.omni_schema_version) IS DISTINCT FROM 233 OR (
     SELECT count(*) FROM public.omni_schema_version WHERE version=233 AND name='native_private_memory_actions_v1'
-      AND checksum='644ac2565a42fed9ebe0fa5c0c9aa34dcae5765a8a0ac879bcc86543ee021054'
+      AND checksum='fc769e804833e1509948919af832c92057d4236de057e60c51c98f8fdf0f9150'
   )<>1 THEN RAISE EXCEPTION 'Private Memory maintenance/graph predecessor is invalid' USING ERRCODE='55000'; END IF;
 END
 $migration$;
@@ -114,5 +114,5 @@ BEGIN
 END
 $grants$;
 INSERT INTO public.omni_schema_version(version,name,checksum,applied_at)
-VALUES(234,'native_private_memory_maintenance_graph_v1','9b94aacd9439de4be33ccf0f892eda3c7323670235df41f9597eb2181f893cab',clock_timestamp());
+VALUES(234,'native_private_memory_maintenance_graph_v1','82472e8714f28c2dd3dd64e6ca856f99c5a8c132850b1da8d1e149d510f1a3a7',clock_timestamp());
 COMMIT;

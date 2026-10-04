@@ -55,6 +55,33 @@ void main() {
         expect(target, findsOneWidget);
         await tester.ensureVisible(target);
         await tester.pumpAndSettle();
+        // Reviewing the choices changes both the content and action-bar
+        // height. Use the actual current scroll viewport if a text centre is
+        // still clipped; the gutter avoids nested selectable-text scrolling.
+        for (
+          var step = 0;
+          step < 20 && target.hitTestable().evaluate().isEmpty;
+          step++
+        ) {
+          final scroll = find
+              .ancestor(of: target, matching: find.byType(Scrollable))
+              .first;
+          expect(scroll, findsOneWidget);
+          final bounds = tester.getRect(scroll), text = tester.getRect(target);
+          final position = tester.state<ScrollableState>(scroll).position,
+              before = position.pixels;
+          await tester.dragFrom(
+            Offset(bounds.left + 4, bounds.center.dy),
+            Offset(0, text.center.dy < bounds.center.dy ? 160 : -160),
+          );
+          await tester.pumpAndSettle();
+          expect(
+            target.hitTestable().evaluate().isNotEmpty ||
+                position.pixels != before,
+            isTrue,
+            reason: 'The recording review viewport must move toward visible evidence.',
+          );
+        }
         expect(target.hitTestable(), findsOneWidget);
       }
 

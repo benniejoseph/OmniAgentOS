@@ -334,24 +334,24 @@ $function$;
 -- mutation policies. A write-scope update must carry the validated receipt.
 DROP POLICY omni_memory_promotion_reviews_actor_scope ON public.omni_memory_promotion_reviews;
 CREATE POLICY omni_memory_promotion_reviews_actor_scope ON public.omni_memory_promotion_reviews AS RESTRICTIVE FOR ALL
-USING (public.omni_system_scope_enabled()
+USING ((SELECT public.omni_system_scope_enabled())
   OR (access_contract_version=0 AND (SELECT public.omni_current_memory_access_scope_v1()) IS NULL)
   OR (access_contract_version=1 AND public.omni_user_private_memory_scope_v1_allows_validated(
     (SELECT public.omni_current_memory_access_scope_v1()),tenant_id,owner_actor_id,
     ARRAY['memory.export.v1','memory.forget.v1','memory.maintenance.v1','memory.read.v1','memory.retrieve.v1','memory.write.v1']::TEXT[])))
-WITH CHECK (public.omni_system_scope_enabled()
+WITH CHECK ((SELECT public.omni_system_scope_enabled())
   OR (access_contract_version=0 AND (SELECT public.omni_current_memory_access_scope_v1()) IS NULL)
   OR (access_contract_version=1 AND public.omni_user_private_memory_scope_v1_allows_validated(
     (SELECT public.omni_current_memory_access_scope_v1()),tenant_id,owner_actor_id,
     ARRAY['memory.export.v1','memory.forget.v1','memory.maintenance.v1','memory.read.v1','memory.retrieve.v1','memory.write.v1']::TEXT[])));
 DROP POLICY omni_memory_promotion_reviews_update_purpose ON public.omni_memory_promotion_reviews;
 CREATE POLICY omni_memory_promotion_reviews_update_purpose ON public.omni_memory_promotion_reviews AS RESTRICTIVE FOR UPDATE
-USING (public.omni_system_scope_enabled() OR access_contract_version=0
+USING ((SELECT public.omni_system_scope_enabled()) OR access_contract_version=0
   OR (SELECT public.omni_current_memory_access_scope_v1())->>'purposeId' IN ('memory.maintenance.v1','memory.write.v1'))
-WITH CHECK (public.omni_system_scope_enabled() OR access_contract_version=0
+WITH CHECK ((SELECT public.omni_system_scope_enabled()) OR access_contract_version=0
   OR (SELECT public.omni_current_memory_access_scope_v1())->>'purposeId'='memory.maintenance.v1'
   OR ((SELECT public.omni_current_memory_access_scope_v1())->>'purposeId'='memory.write.v1' AND native_decision IS NOT NULL));
 
 INSERT INTO public.omni_schema_version(version,name,checksum,applied_at)
-VALUES(227,'memory_promotion_native_decisions_v1','bf9e9132d165e7fb1ddb6c51888e1c763231ba1eb5456d6f318930a2656d6780',clock_timestamp());
+VALUES(227,'memory_promotion_native_decisions_v1','ef6aa42b388a171f1f4fc1e313ce11e7b8da5ec37e9dd4c6594068ae3cef438d',clock_timestamp());
 COMMIT;

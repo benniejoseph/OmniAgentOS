@@ -449,161 +449,159 @@ class _RecordingReviewDialogState extends State<_RecordingReviewDialog> {
       }
       final review = widget.review, record = review.recording;
       return AlertDialog(
+        // At large text sizes, the title must share the content viewport so
+        // the reviewed retention text stays reachable above the action bar.
+        scrollable: true,
         title: const Text('Review recording processing'),
         content: SizedBox(
           width: 600,
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                SelectableText(record['title'] as String),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              SelectableText(record['title'] as String),
+              Text(
+                '${record['segmentCount']} segments · ${record['durationMs']} ms · ${record['byteCount']} bytes',
+              ),
+              Text(
+                '${record['cachedTranscripts']} verified segment transcripts available for reuse.',
+              ),
+              const Text(
+                'This starts transcription, structured media extraction, and owner-private Knowledge indexing. Original audio is retained. Unconfirmed work is held and will not be automatically repeated.',
+              ),
+              for (final participant in review.participants)
                 Text(
-                  '${record['segmentCount']} segments · ${record['durationMs']} ms · ${record['byteCount']} bytes',
+                  '${participant['displayName']}: recording consent ${meetingLabel(participant['recordingConsent'] as String)}',
                 ),
-                Text(
-                  '${record['cachedTranscripts']} verified segment transcripts available for reuse.',
+              if (!review.processable)
+                MeetingNotice(
+                  'Processing is unavailable: ${review.reasons.map(meetingLabel).join(', ')}.',
                 ),
+              if (review.processable && !_reviewed) ...[
+                TextField(
+                  controller: _languages,
+                  enabled: !_submitting,
+                  decoration: const InputDecoration(
+                    labelText: 'Language codes',
+                    helperText: 'Comma-separated codes, for example en, fr-CA.',
+                  ),
+                ),
+                const SizedBox(height: 12),
                 const Text(
-                  'This starts transcription, structured media extraction, and owner-private Knowledge indexing. Original audio is retained. Unconfirmed work is held and will not be automatically repeated.',
+                  'Optional speaker mapping. Add only labels you have personally confirmed; unmapped speakers remain unidentified.',
                 ),
-                for (final participant in review.participants)
-                  Text(
-                    '${participant['displayName']}: recording consent ${meetingLabel(participant['recordingConsent'] as String)}',
+                DropdownButtonFormField<String>(
+                  key: ValueKey(_mappings.length),
+                  initialValue: _participant,
+                  isExpanded: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Confirmed participant',
                   ),
-                if (!review.processable)
-                  MeetingNotice(
-                    'Processing is unavailable: ${review.reasons.map(meetingLabel).join(', ')}.',
-                  ),
-                if (review.processable && !_reviewed) ...[
-                  TextField(
-                    controller: _languages,
-                    enabled: !_submitting,
-                    decoration: const InputDecoration(
-                      labelText: 'Language codes',
-                      helperText:
-                          'Comma-separated codes, for example en, fr-CA.',
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  const Text(
-                    'Optional speaker mapping. Add only labels you have personally confirmed; unmapped speakers remain unidentified.',
-                  ),
-                  DropdownButtonFormField<String>(
-                    key: ValueKey(_mappings.length),
-                    initialValue: _participant,
-                    isExpanded: true,
-                    decoration: const InputDecoration(
-                      labelText: 'Confirmed participant',
-                    ),
-                    items: [
-                      for (final person in review.participants.where(
-                        (person) => !_mappings.any(
-                          (mapping) =>
-                              mapping['participantId'] ==
-                              person['participantId'],
-                        ),
-                      ))
-                        DropdownMenuItem(
-                          value: person['participantId'] as String,
-                          child: Text(person['displayName'] as String),
-                        ),
-                    ],
-                    onChanged: _submitting
-                        ? null
-                        : (value) => setState(() => _participant = value),
-                  ),
-                  TextField(
-                    controller: _label,
-                    maxLength: 80,
-                    enabled: !_submitting,
-                    decoration: const InputDecoration(
-                      labelText: 'Confirmed speaker label',
-                    ),
-                  ),
-                  OutlinedButton(
-                    onPressed: _submitting || _mappings.length >= 40
-                        ? null
-                        : () {
-                            final person = review.participants
-                                    .where(
-                                      (person) =>
-                                          person['participantId'] ==
-                                          _participant,
-                                    )
-                                    .firstOrNull,
-                                label = _label.text.trim();
-                            if (person == null ||
-                                label.isEmpty ||
-                                _mappings.any(
-                                  (mapping) =>
-                                      (mapping['speakerLabel'] as String)
-                                          .toLowerCase() ==
-                                      label.toLowerCase(),
-                                )) {
-                              setState(
-                                () => _error = 'Choose a participant and a unique confirmed speaker label.',
-                              );
-                              return;
-                            }
-                            setState(() {
-                              _mappings.add({
-                                'speakerLabel': label,
-                                'participantId': person['participantId'],
-                                'displayName': person['displayName'],
-                                'confirmation': 'user_confirmed',
-                              });
-                              _participant = null;
-                              _label.clear();
-                              _error = null;
-                            });
-                          },
-                    child: const Text('Add confirmed mapping'),
-                  ),
-                ],
-                if (_reviewed) Text('Languages: ${_languageValues.join(', ')}'),
-                for (final mapping in _mappings)
-                  Wrap(
-                    spacing: 8,
-                    crossAxisAlignment: WrapCrossAlignment.center,
-                    children: [
-                      Text(
-                        '${mapping['speakerLabel']} → ${mapping['displayName']}',
+                  items: [
+                    for (final person in review.participants.where(
+                      (person) => !_mappings.any(
+                        (mapping) =>
+                            mapping['participantId'] == person['participantId'],
                       ),
-                      if (!_reviewed)
-                        TextButton(
-                          onPressed: _submitting
-                              ? null
-                              : () => setState(() => _mappings.remove(mapping)),
-                          child: const Text('Remove mapping'),
-                        ),
-                    ],
+                    ))
+                      DropdownMenuItem(
+                        value: person['participantId'] as String,
+                        child: Text(person['displayName'] as String),
+                      ),
+                  ],
+                  onChanged: _submitting
+                      ? null
+                      : (value) => setState(() => _participant = value),
+                ),
+                TextField(
+                  controller: _label,
+                  maxLength: 80,
+                  enabled: !_submitting,
+                  decoration: const InputDecoration(
+                    labelText: 'Confirmed speaker label',
                   ),
-                if (_reviewed && _mappings.isEmpty)
-                  const Text('No speaker identity mappings will be submitted.'),
-                if (_reviewed) const Text('Retention: keep original audio.'),
-                MeetingDisclosure(
-                  'Exact reviewed source',
+                ),
+                OutlinedButton(
+                  onPressed: _submitting || _mappings.length >= 40
+                      ? null
+                      : () {
+                          final person = review.participants
+                                  .where(
+                                    (person) =>
+                                        person['participantId'] == _participant,
+                                  )
+                                  .firstOrNull,
+                              label = _label.text.trim();
+                          if (person == null ||
+                              label.isEmpty ||
+                              _mappings.any(
+                                (mapping) =>
+                                    (mapping['speakerLabel'] as String)
+                                        .toLowerCase() ==
+                                    label.toLowerCase(),
+                              )) {
+                            setState(
+                              () => _error = 'Choose a participant and a unique confirmed speaker label.',
+                            );
+                            return;
+                          }
+                          setState(() {
+                            _mappings.add({
+                              'speakerLabel': label,
+                              'participantId': person['participantId'],
+                              'displayName': person['displayName'],
+                              'confirmation': 'user_confirmed',
+                            });
+                            _participant = null;
+                            _label.clear();
+                            _error = null;
+                          });
+                        },
+                  child: const Text('Add confirmed mapping'),
+                ),
+              ],
+              if (_reviewed) Text('Languages: ${_languageValues.join(', ')}'),
+              for (final mapping in _mappings)
+                Wrap(
+                  spacing: 8,
+                  crossAxisAlignment: WrapCrossAlignment.center,
                   children: [
-                    MeetingValue(
-                      'Recording',
-                      review.scope['recordingId'] as String,
+                    Text(
+                      '${mapping['speakerLabel']} → ${mapping['displayName']}',
                     ),
-                    MeetingValue(
-                      'Meeting revision',
-                      '${review.pin['meetingRevision']}',
-                    ),
-                    MeetingValue(
-                      'Source review SHA-256',
-                      review.pin['reviewSha256'] as String,
-                    ),
+                    if (!_reviewed)
+                      TextButton(
+                        onPressed: _submitting
+                            ? null
+                            : () => setState(() => _mappings.remove(mapping)),
+                        child: const Text('Remove mapping'),
+                      ),
                   ],
                 ),
-                if (_error != null) MeetingNotice(_error!, error: true),
-                if (widget.controller.error != null)
-                  MeetingNotice(widget.controller.error!, error: true),
-              ],
-            ),
+              if (_reviewed && _mappings.isEmpty)
+                const Text('No speaker identity mappings will be submitted.'),
+              if (_reviewed) const Text('Retention: keep original audio.'),
+              MeetingDisclosure(
+                'Exact reviewed source',
+                children: [
+                  MeetingValue(
+                    'Recording',
+                    review.scope['recordingId'] as String,
+                  ),
+                  MeetingValue(
+                    'Meeting revision',
+                    '${review.pin['meetingRevision']}',
+                  ),
+                  MeetingValue(
+                    'Source review SHA-256',
+                    review.pin['reviewSha256'] as String,
+                  ),
+                ],
+              ),
+              if (_error != null) MeetingNotice(_error!, error: true),
+              if (widget.controller.error != null)
+                MeetingNotice(widget.controller.error!, error: true),
+            ],
           ),
         ),
         actions: [

@@ -9,7 +9,7 @@ BEGIN
   IF (SELECT MAX(version) FROM public.omni_schema_version) IS DISTINCT FROM 227 OR (
     SELECT count(*) FROM public.omni_schema_version WHERE version = 227
       AND name = 'memory_promotion_native_decisions_v1'
-      AND checksum = 'bf9e9132d165e7fb1ddb6c51888e1c763231ba1eb5456d6f318930a2656d6780'
+      AND checksum = 'ef6aa42b388a171f1f4fc1e313ce11e7b8da5ec37e9dd4c6594068ae3cef438d'
   ) <> 1 THEN RAISE EXCEPTION 'Customer workflow native intent predecessor is invalid' USING ERRCODE = '55000'; END IF;
 END
 $migration$;
@@ -123,5 +123,5 @@ CREATE TRIGGER omni_customer_workflow_native_intent_validate
   FOR EACH ROW EXECUTE FUNCTION public.omni_validate_customer_workflow_native_intent_v1();
 
 INSERT INTO public.omni_schema_version(version,name,checksum,applied_at)
-VALUES (228,'customer_workflow_native_intents_v1','7dc7d3678239c34047ecf1732eb0f42ed80944c836c45e87eece1739c144c309',clock_timestamp());
+VALUES (228,'customer_workflow_native_intents_v1','8e550cb21de1a527a3d4227ecc2b7e4e968f62d96b14cb227fef73c782156ffc',clock_timestamp());
 COMMIT;

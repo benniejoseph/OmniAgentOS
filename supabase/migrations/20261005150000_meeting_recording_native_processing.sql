@@ -8,7 +8,7 @@ DO $migration$
 BEGIN
   IF (SELECT MAX(version) FROM public.omni_schema_version) IS DISTINCT FROM 229 OR (
     SELECT count(*) FROM public.omni_schema_version WHERE version=229 AND name='agent_skill_native_mutations_v1'
-      AND checksum='106e8e32db24965cc85c0fba5dbe338875f9b3eb4da5a5373712ceeba0c0322d'
+      AND checksum='b2bf2d0724e57516e2d40cd378f21479d249743699ca0eabee6052a8770ac34d'
   )<>1 THEN RAISE EXCEPTION 'Native recording predecessor is invalid' USING ERRCODE='55000'; END IF;
 END
 $migration$;
@@ -119,5 +119,5 @@ BEGIN
 END
 $grants$;
 INSERT INTO public.omni_schema_version(version,name,checksum,applied_at)
-VALUES(230,'meeting_recording_native_processing_v1','c372f6d625795a7b8c0b11b449ef2babc80e877389e66207576a684b45dbd468',clock_timestamp());
+VALUES(230,'meeting_recording_native_processing_v1','ca7ee608ac02995c7bd8ade2c04cadbb3cfbb044d2a974cbf546566a45ae9d24',clock_timestamp());
 COMMIT;

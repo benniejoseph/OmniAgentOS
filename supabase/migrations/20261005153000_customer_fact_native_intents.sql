@@ -9,7 +9,7 @@ BEGIN
   IF (SELECT MAX(version) FROM public.omni_schema_version) IS DISTINCT FROM 230 OR (
     SELECT count(*) FROM public.omni_schema_version WHERE version=230
       AND name='meeting_recording_native_processing_v1'
-      AND checksum='c372f6d625795a7b8c0b11b449ef2babc80e877389e66207576a684b45dbd468'
+      AND checksum='ca7ee608ac02995c7bd8ade2c04cadbb3cfbb044d2a974cbf546566a45ae9d24'
   ) <> 1 THEN RAISE EXCEPTION 'Native manual fact predecessor is invalid' USING ERRCODE='55000'; END IF;
 END
 $migration$;
@@ -112,5 +112,5 @@ REVOKE ALL ON FUNCTION public.omni_validate_customer_fact_native_intent_v1() FRO
 CREATE TRIGGER omni_customer_fact_native_intent_validate BEFORE INSERT ON public.omni_customer_fact_revisions
   FOR EACH ROW EXECUTE FUNCTION public.omni_validate_customer_fact_native_intent_v1();
 INSERT INTO public.omni_schema_version(version,name,checksum,applied_at)
-VALUES(231,'customer_fact_native_intents_v1','8a422f415c5ca73a375c954a1d10368afa60273cb9f8c801cb21990f72503b42',clock_timestamp());
+VALUES(231,'customer_fact_native_intents_v1','701b5b3cbb2074fc7f438c24f9fb4bd7ab966925919b290cd87606fa2bcf1cf4',clock_timestamp());
 COMMIT;

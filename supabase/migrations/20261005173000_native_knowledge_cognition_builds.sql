@@ -8,7 +8,7 @@ DO $migration$
 BEGIN
   IF (SELECT MAX(version) FROM public.omni_schema_version) IS DISTINCT FROM 234 OR (
     SELECT count(*) FROM public.omni_schema_version WHERE version=234 AND name='native_private_memory_maintenance_graph_v1'
-      AND checksum='9b94aacd9439de4be33ccf0f892eda3c7323670235df41f9597eb2181f893cab'
+      AND checksum='82472e8714f28c2dd3dd64e6ca856f99c5a8c132850b1da8d1e149d510f1a3a7'
   )<>1 THEN RAISE EXCEPTION 'Native cognition build predecessor is invalid' USING ERRCODE='55000'; END IF;
 END
 $migration$;
@@ -184,5 +184,5 @@ BEGIN
 END
 $grants$;
 INSERT INTO public.omni_schema_version(version,name,checksum,applied_at)
-VALUES(235,'native_knowledge_cognition_builds_v1','6f40c79c2c7e3c09b5f5902b4179f4748b5935e3b254e64ce362449ce50dd14e',clock_timestamp());
+VALUES(235,'native_knowledge_cognition_builds_v1','32970b0b3a66989751fc81f1a2ece1dbc357d8c569c3f3deed6b4df7d0851ae0',clock_timestamp());
 COMMIT;

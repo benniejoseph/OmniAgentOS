@@ -8,7 +8,7 @@ DO $migration$
 BEGIN
   IF (SELECT MAX(version) FROM public.omni_schema_version) IS DISTINCT FROM 232 OR (
     SELECT count(*) FROM public.omni_schema_version WHERE version=232 AND name='salesforce_native_actions_v1'
-      AND checksum='ab8ad6d46aeae3f728c665091e374d8201a88895dcdbe2880d34fb65ce55bf67'
+      AND checksum='68250ab3f08534b5e9e1fffda2563281759eb6e2e7d416e3ad624cf60ff0dbd0'
   )<>1 THEN RAISE EXCEPTION 'Native private Memory predecessor is invalid' USING ERRCODE='55000'; END IF;
 END
 $migration$;
@@ -320,5 +320,5 @@ BEGIN
 END
 $grants$;
 INSERT INTO public.omni_schema_version(version,name,checksum,applied_at)
-VALUES(233,'native_private_memory_actions_v1','644ac2565a42fed9ebe0fa5c0c9aa34dcae5765a8a0ac879bcc86543ee021054',clock_timestamp());
+VALUES(233,'native_private_memory_actions_v1','fc769e804833e1509948919af832c92057d4236de057e60c51c98f8fdf0f9150',clock_timestamp());
 COMMIT;

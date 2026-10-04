@@ -10,7 +10,7 @@ void main() {
   test('publishes only callable native mutation operations', () {
     expect(NativeContract.supportsOperation('market.backtests.run'), isTrue);
     expect(NativeContract.supportsOperation('agents.create'), isTrue);
-    expect(NativeContract.supportsOperation('memory.graph.rebuild'), isFalse);
+    expect(NativeContract.supportsOperation('memory.graph.rebuild'), isTrue);
     expect(NativeContract.supportsOperation('admin.workflows.tick'), isFalse);
   });
 

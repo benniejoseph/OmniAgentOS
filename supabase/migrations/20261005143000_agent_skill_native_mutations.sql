@@ -9,7 +9,7 @@ BEGIN
   IF (SELECT MAX(version) FROM public.omni_schema_version) IS DISTINCT FROM 228 OR (
     SELECT count(*) FROM public.omni_schema_version WHERE version=228
       AND name='customer_workflow_native_intents_v1'
-      AND checksum='7dc7d3678239c34047ecf1732eb0f42ed80944c836c45e87eece1739c144c309'
+      AND checksum='8e550cb21de1a527a3d4227ecc2b7e4e968f62d96b14cb227fef73c782156ffc'
   ) <> 1 THEN RAISE EXCEPTION 'Native Agent/Skill predecessor is invalid' USING ERRCODE='55000'; END IF;
 END
 $migration$;
@@ -137,5 +137,5 @@ BEGIN
 END
 $grants$;
 INSERT INTO public.omni_schema_version(version,name,checksum,applied_at)
-VALUES(229,'agent_skill_native_mutations_v1','106e8e32db24965cc85c0fba5dbe338875f9b3eb4da5a5373712ceeba0c0322d',clock_timestamp());
+VALUES(229,'agent_skill_native_mutations_v1','b2bf2d0724e57516e2d40cd378f21479d249743699ca0eabee6052a8770ac34d',clock_timestamp());
 COMMIT;

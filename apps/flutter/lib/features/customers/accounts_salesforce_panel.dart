@@ -127,7 +127,13 @@ class _AccountSalesforcePanelState extends State<AccountSalesforcePanel>
     final epoch = _epoch;
     bool current() => _current(epoch, actions, owner, workspace);
     return ExpansionTile(
-      key: ValueKey(('salesforce-actions', actions, workspace)),
+      key: PageStorageKey<Object>((
+        'accounts-salesforce-actions',
+        controller,
+        actions,
+        owner.key,
+        workspace,
+      )),
       title: const Text('Salesforce connection actions'),
       subtitle: Text(
         pending == null
@@ -349,6 +355,11 @@ class _SalesforceOutcome extends StatelessWidget {
         else
           Text('Provider revocation: ${settlement['providerRevocation']}'),
         ExpansionTile(
+          key: PageStorageKey<Object>((
+            'accounts-salesforce-receipt',
+            accepted['id'],
+            accepted['acceptanceSha256'],
+          )),
           title: const Text('Receipt details'),
           children: [
             SelectableText(

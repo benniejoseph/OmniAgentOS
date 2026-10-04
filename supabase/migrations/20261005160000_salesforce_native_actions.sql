@@ -8,7 +8,7 @@ DO $migration$
 BEGIN
   IF (SELECT MAX(version) FROM public.omni_schema_version) IS DISTINCT FROM 231 OR (
     SELECT count(*) FROM public.omni_schema_version WHERE version=231 AND name='customer_fact_native_intents_v1'
-      AND checksum='8a422f415c5ca73a375c954a1d10368afa60273cb9f8c801cb21990f72503b42'
+      AND checksum='701b5b3cbb2074fc7f438c24f9fb4bd7ab966925919b290cd87606fa2bcf1cf4'
   )<>1 THEN RAISE EXCEPTION 'Native Salesforce predecessor is invalid' USING ERRCODE='55000'; END IF;
 END
 $migration$;
@@ -132,5 +132,5 @@ BEGIN
 END
 $grants$;
 INSERT INTO public.omni_schema_version(version,name,checksum,applied_at)
-VALUES(232,'salesforce_native_actions_v1','ab8ad6d46aeae3f728c665091e374d8201a88895dcdbe2880d34fb65ce55bf67',clock_timestamp());
+VALUES(232,'salesforce_native_actions_v1','68250ab3f08534b5e9e1fffda2563281759eb6e2e7d416e3ad624cf60ff0dbd0',clock_timestamp());
 COMMIT;
