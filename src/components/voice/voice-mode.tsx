@@ -1,11 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import Image from "next/image";
 import { AlertTriangle, AudioLines, Check, Loader2, Mic, MicOff, RotateCcw, Send, ShieldCheck, Square, X } from "lucide-react";
 import { clsx } from "clsx";
-import { useCompanionPreferences } from "@/components/use-companion-preferences";
-import { ATLAS_NEUTRAL_POSTER } from "@/lib/companion/atlas-assets";
+import { CompanionAtlasPortrait, useCompanionAtlasPlayer } from "@/components/companion-atlas-player";
 import { companionPresentation, companionWork } from "@/lib/companion/presentation";
 import { requestCurrentMicrophone } from "./microphone-attempt";
 import { ApprovalDecisionUnconfirmedError, postApprovalDecision, type ApprovalDecisionRequest } from "@/components/approvals/approval-decision";
@@ -995,7 +993,7 @@ export function VoiceMode({
             </header>
 
             <div className={styles.stage}>
-            <VoiceAtlasStage key={authorityScope} scope={isAuthorityCurrent() ? authorityScope : undefined}
+            <VoiceAtlasStage key={JSON.stringify([authorityScope, conversationId])} scope={isAuthorityCurrent() ? authorityScope : undefined} conversationId={conversationId}
               phase={phase} microphoneOpen={microphoneOpen} replyAudioPlaying={replyAudioPlaying} />
             {phase === "consent" ? (
               <div className={styles.consent}>
@@ -1146,16 +1144,15 @@ export function VoiceMode({
   );
 }
 
-/** Decorative, static fallback only. Voice/device/action authority stays in
- * VoiceMode; the existing scoped preference read controls character visibility. */
-function VoiceAtlasStage({ scope, phase, microphoneOpen, replyAudioPlaying }: {
+/** Decorative only. Actual device/playback signals select presentation; a Voice
+ * phase alone is never a microphone, playing audio, or verified completion. */
+export function VoiceAtlasStage({ scope, conversationId, phase, microphoneOpen, replyAudioPlaying }: {
   scope?: string;
+  conversationId?: string;
   phase: VoicePhase;
   microphoneOpen: boolean;
   replyAudioPlaying: boolean;
 }) {
-  const preferences = useCompanionPreferences(scope);
-  const [assetFailed, setAssetFailed] = useState(false);
   const presentation = companionPresentation({
     microphoneActive: microphoneOpen,
     playbackActive: replyAudioPlaying,
@@ -1164,11 +1161,17 @@ function VoiceAtlasStage({ scope, phase, microphoneOpen, replyAudioPlaying }: {
       : phase === "review" ? "review" : phase === "reconnecting" ? "reconnecting"
       : phase === "error" ? "failed" : ["sending", "waiting", "deciding"].includes(phase) ? "running" : undefined }),
   });
-  if (preferences.state !== "ready" || !preferences.response?.snapshot.preferences.visible) return null;
+  const { read, observationRef, posterRef, spriteRef, showPortrait, assetFailed, motion, intensity, poster, fullBody, onPosterError } = useCompanionAtlasPlayer({ scope, conversationId, presentation });
+  const visible = read.state === "ready" && read.response?.snapshot.preferences.visible;
+  // Keep both the gate and its observation element mounted while hidden, so a
+  // preference/visibility change cannot replay a transition already observed.
   return (
-    <aside className={styles.companion} aria-label="ATLAS companion" data-voice-portrait={assetFailed ? "unavailable" : "visible"}>
-      {!assetFailed ? <Image src={ATLAS_NEUTRAL_POSTER} alt="" width={108} height={108} unoptimized
-        className={styles.portrait} onError={() => setAssetFailed(true)} /> : null}
+    <aside ref={observationRef} className={styles.companion} aria-label="ATLAS companion" hidden={!visible}
+      data-companion-state={presentation.state} data-companion-motion={motion} data-companion-intensity={intensity}
+      data-companion-preferences={read.state}
+      data-voice-portrait={showPortrait ? "visible" : assetFailed ? "unavailable" : "hidden"}>
+      <CompanionAtlasPortrait posterRef={posterRef} spriteRef={spriteRef} showPortrait={showPortrait} poster={poster} fullBody={fullBody} onPosterError={onPosterError}
+        className={styles.portrait} imageClassName={styles.portraitImage} size="var(--atlas-portrait-size)" />
       <p className={styles.companionName}>ATLAS</p>
       <p className={styles.companionState}>{presentation.label}</p>
       {assetFailed ? <p className={styles.portraitFallback}>Portrait unavailable</p> : null}
