@@ -1461,8 +1461,47 @@ and purpose scope. These are separate successful runs, retained as
 `meeting-resolution-v220-broad-regression.log` and
 `meeting-resolution-v220-serving-regression.log`.
 
-Hosted acceptance is still required. v220 requires paired application/schema
-promotion: a pre-v220 binary cannot insert a new terminal resolution without
-its admission record. The deployment guide records the compatibility and
-rollback boundary; these local results do not authorize or establish production
+PR #42 was accepted after all 16 hosted checks passed at exact head
+`618e21ef69abfe66279e58accd8078a5d1237c76`, then merged as
+`ecad9a926c354e863be91cdd47c8083480b89e25`. The final browser pass has 98
+assertions and eight axe scans, including a separate eight-read disposal
+scenario that preserves the preceding 300-read guard. Fifteen notification
+PostgreSQL cases also passed with complete bounded lock/activity evidence.
+Receipts are retained in `meeting-v33-exact-head-hosted.json` and
+`meeting-v33-merge-receipt.json`; the final browser evidence is in
+`meeting-explicit-scenario-budget-browser/`.
+
+v220 requires paired application/schema promotion: a pre-v220 binary cannot
+insert a new terminal resolution without its admission record. The deployment
+guide records the compatibility and rollback boundary. Repository acceptance
+does not establish production promotion or the separate native presentation.
+
+## Legacy Mission history candidate — 4 October 2026
+
+The default `/app/missions` alias still opens canonical Work. `legacy=1` and
+exact historical bookmarks now open a read-only list/detail surface; the old
+execution controller is not mounted. A bookmark is proved independently of the
+50-row history window. The inspector retains canonical status and exact source
+identities, with at most 30 tasks, 100 attempts, 50 artifacts and four 25-event
+pages. It does not invent an active project link from a legacy Mission ID.
+
+Summary, detail and events expose independent current, stale, unavailable and
+forbidden states. Summary-only access cannot reveal task or event details.
+Transient and malformed reads remain retryable; only authoritative denied or
+missing bookmarks fall back to Work. Search/status/return parameters survive
+selection and permission refresh. Hidden views, route changes, canonical owner
+replacement and role replacement cancel old reads and clear private state.
+The account-refresh control reproves the mounted bookmark without reloading the
+document; late responses cannot restore the prior scope or start follow-up reads.
+
+Strict lint, focused TypeScript and all 37 cases across five files passed in
+`missions-history-owner-refresh-validation.log`. The maintained external-Chrome
+suite passed 82 assertions and seven axe scans in
+`missions-history-owner-refresh-browser/`, covering desktop/phone themes,
+320-pixel reflow, 200% text, visible focus, exact identities, bounded pagination,
+independent failures and mounted owner/role changes. All Mission reads were
+synthetic; the only actual write was the isolated test login. Evidence links
+were inspected without visiting their destinations. The suite is enrolled in
+the existing serial work-family CI job. Hosted acceptance remains required;
+this slice does not establish source RLS, physical-device parity or production
 promotion.
