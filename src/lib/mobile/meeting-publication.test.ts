@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { NATIVE_API_CURRENT_VERSION, nativeContractSchemas, nativeOperationsForVersion } from "./contracts";
+import { nativeMeetingContractSchemas } from "./meeting-contracts";
 
 const expected = [
   ["meetings.list", "GET", "/api/meetings", undefined, "NativeMeetingListResponse"],
@@ -20,7 +21,10 @@ describe("native v33 Meeting publication", () => {
       .toEqual([["meetings.list", "JsonObject"], ["meetings.get", "JsonObject"]]);
     expect(current.filter(({ id }) => id.startsWith("meetings.")).map(({ id, method, path, requestSchema, responseSchema }) => [id, method, path, requestSchema, responseSchema])).toEqual(expected);
     expect(current.filter(({ id }) => !id.startsWith("meetings."))).toEqual(previous.filter(({ id }) => !id.startsWith("meetings.")));
-    expect(Object.keys(nativeContractSchemas).filter((name) => name.startsWith("NativeMeeting") && !name.startsWith("NativeMeetingCalendar"))).toHaveLength(14);
+    expect(Object.keys(nativeMeetingContractSchemas)).toHaveLength(14);
+    for (const [name, schema] of Object.entries(nativeMeetingContractSchemas)) {
+      expect(nativeContractSchemas[name as keyof typeof nativeContractSchemas], name).toBe(schema);
+    }
     for (const operation of current.filter(({ id }) => id.startsWith("meetings."))) {
       expect(operation.auth).toBe("bearer");
       expect(operation.queryPolicy).toBeUndefined();
@@ -64,7 +68,8 @@ describe("native v33 Meeting publication", () => {
   it("does not publish Calendar sync, recording completion or source audio by association", () => {
     const operations = nativeOperationsForVersion(33)!;
     expect(operations.filter(({ id }) => id.startsWith("meetings.")).map(({ id }) => id)).toEqual(expected.map(([id]) => id));
-    expect(Object.keys(nativeContractSchemas).filter((name) => /Meeting.*(Recording|Voice)/.test(name))).toEqual([]);
+    expect(operations.flatMap(({ requestSchema, responseSchema }) => [requestSchema, responseSchema])
+      .filter((name) => name && /Meeting.*(Recording|Voice)/.test(name))).toEqual([]);
     expect(operations.some(({ id }) => id.startsWith("meetings.calendar."))).toBe(false);
     expect(operations.find(({ id }) => id === "capture.transcribe")).toEqual(nativeOperationsForVersion(32)!.find(({ id }) => id === "capture.transcribe"));
   });
