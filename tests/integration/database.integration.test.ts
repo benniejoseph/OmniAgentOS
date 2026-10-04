@@ -9584,6 +9584,7 @@ const memoryLifecycleMutationsVersion = 222;
 const memoryReconciliationFencesVersion = 223;
 const meetingCalendarSyncAcceptancesVersion = 224;
 const personalConsentValidatorGrantVersion = 225;
+const customerHealthEvaluationIntentsVersion = 226;
 const additiveReplayVersions = [
   companionPreferencesVersion,
   responsibilityDraftsVersion,
@@ -9596,6 +9597,7 @@ const additiveReplayVersions = [
   memoryReconciliationFencesVersion,
   meetingCalendarSyncAcceptancesVersion,
   personalConsentValidatorGrantVersion,
+  customerHealthEvaluationIntentsVersion,
 ].filter((version) => databaseSchemaMigrations.some((migration) => migration.version === version));
 const meetingResolutionReplayTables: readonly string[] = [
   "omni_meeting_commitment_resolution_intents",
@@ -9979,6 +9981,19 @@ async function withMigrationsPendingFrom<T>(
       if (additiveReplayVersions.includes(memoryLifecycleMutationsVersion)) {
         await removeEmptyMemoryLifecycleForReplay(transaction);
       }
+      if (additiveReplayVersions.includes(customerHealthEvaluationIntentsVersion)) {
+        expect(await transaction`
+          SELECT count(*)::int AS populated_intents
+          FROM public.omni_customer_health_score_revisions
+          WHERE request_intent IS NOT NULL OR request_sha256 IS NOT NULL
+        `).toEqual([{ populated_intents: 0 }]);
+        await transaction`
+          ALTER TABLE public.omni_customer_health_score_revisions
+            DROP CONSTRAINT omni_customer_health_exact_intent,
+            DROP COLUMN request_intent,
+            DROP COLUMN request_sha256
+        `;
+      }
       if (additiveReplayVersions.includes(customerAccountIntentsVersion)) {
         expect(await transaction`
           SELECT count(*)::int AS populated_intents
@@ -10056,6 +10071,23 @@ async function withMigrationsPendingFrom<T>(
         SELECT version, name, checksum FROM omni_schema_version
         WHERE version IS NOT NULL ORDER BY version
       `).toEqual(databaseSchemaMigrations);
+      if (additiveReplayVersions.includes(customerHealthEvaluationIntentsVersion)) {
+        expect(await client`
+          SELECT column_name, data_type, is_nullable
+          FROM information_schema.columns
+          WHERE table_schema = 'public' AND table_name = 'omni_customer_health_score_revisions'
+            AND column_name IN ('request_intent', 'request_sha256')
+          ORDER BY column_name
+        `).toEqual([
+          { column_name: "request_intent", data_type: "jsonb", is_nullable: "YES" },
+          { column_name: "request_sha256", data_type: "text", is_nullable: "YES" },
+        ]);
+        expect(await client`
+          SELECT convalidated FROM pg_constraint
+          WHERE conrelid = 'public.omni_customer_health_score_revisions'::regclass
+            AND conname = 'omni_customer_health_exact_intent'
+        `).toEqual([{ convalidated: true }]);
+      }
       if (additiveReplayVersions.includes(customerAccountIntentsVersion)) {
         expect(await client`
           SELECT column_name, data_type, is_nullable

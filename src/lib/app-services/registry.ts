@@ -54,6 +54,7 @@ export const APP_SERVICE_OPERATION_CONTRACTS = Object.freeze([
   mutation("app.customer_accounts.revise", "manage.workflow", "customer_account", "customer-account-events.v1"),
   mutation("app.customer_accounts.facts.record", "manage.workflow", "customer_account_fact", "customer-account-events.v1"),
   read("app.customer_accounts.health.show", "read", "customer_health_score"),
+  read("app.customer_accounts.health.evaluations.show", "read", "customer_health_score"),
   mutation("app.customer_accounts.health.evaluate", "manage.workflow", "customer_health_score", "customer-health-events.v1"),
   read("app.customer_accounts.workflows.list", "read", "customer_success_workflow"),
   mutation("app.customer_accounts.workflows.start", "run.agent", "customer_success_workflow", "customer-success-workflow-events.v1+projects.atomic-events.v1"),

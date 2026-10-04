@@ -65,7 +65,7 @@ describe("native API contracts", () => {
   });
 
   it("generates exact Responsibility paths, bounds and status schemas without changing older operation defaults", async () => {
-    const previous = JSON.parse(await readFile(new URL("../../../public/native-contracts/v34/openapi.json", import.meta.url), "utf8"));
+    const previous = JSON.parse(await readFile(new URL("../../../public/native-contracts/v35/openapi.json", import.meta.url), "utf8"));
     const current = JSON.parse(await readFile(new URL(`../../../public/native-contracts/v${NATIVE_API_CURRENT_VERSION}/openapi.json`, import.meta.url), "utf8"));
     for (const operation of nativeOperationsForVersion(32)!.filter(({ id }) => id.startsWith("responsibilities."))) {
       expect(current.paths[operation.path][operation.method.toLowerCase()], operation.id).toEqual(previous.paths[operation.path][operation.method.toLowerCase()]);
@@ -101,8 +101,8 @@ describe("native API contracts", () => {
   it("retains exactly the current and previous rollout versions", () => {
     // Tripwire: a native contract bump must be a deliberate, reviewed change.
     // The other tests follow these constants.
-    expect(NATIVE_API_CURRENT_VERSION).toBe(36);
-    expect(NATIVE_API_PREVIOUS_VERSION).toBe(35);
+    expect(NATIVE_API_CURRENT_VERSION).toBe(37);
+    expect(NATIVE_API_PREVIOUS_VERSION).toBe(36);
     expect(NATIVE_API_SUPPORTED_VERSIONS).toEqual([
       NATIVE_API_CURRENT_VERSION,
       NATIVE_API_PREVIOUS_VERSION,
@@ -346,6 +346,7 @@ describe("native API contracts", () => {
       34: { ...added("customers.health", "customers.intelligence", "customers.workflows", "customers.salesforce.status", "customers.create", "customers.update", "library.list", "library.get", "library.versions.list", "library.versions.get", "entities.options", "market.snapshots.list", "market.snapshots.get", "market.analysis.metadata", "market.jobs.get", "market.calendar", "memory.create", "memory.update", "memory.delete", "memory.lifecycle.get", "memory.lifecycle.change"), removed: ["market.analysis"] },
       35: added("memory.reconciliation.list", "memory.reconciliation.read", "memory.reconciliation.resolve"),
       36: added("memory.personal-context-consent.get", "memory.personal-context-consent.decide", "memory.personal-context-consent.decision.get", "meetings.calendar.get", "meetings.calendar.sync", "meetings.calendar.sync.get"),
+      37: added("customers.health.evaluate", "customers.health.evaluations.get"),
     });
     // v20 and v23 changed only request and push schemas.
     expect(nativeOperationsForVersion(20)).toEqual(nativeOperationsForVersion(19));
@@ -584,21 +585,21 @@ describe("native API contracts", () => {
     });
   });
 
-  it("retains every published v34 and v35 document byte for byte", async () => {
+  it("retains every published v35 and v36 document byte for byte", async () => {
     const frozen = {
-  "34": {
-    "openapi.json": "9d9c35c0085c9f1d5473ce26e0d77d86e5188b8c33ab7061308eb3c7750d62fe", // gitleaks:allow -- public artifact integrity digest
-    "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
-    "fixtures.json": "081a006740ef7603fd13e783317cb009e52c6e288b35dda4958dce3dc174e2cf", // gitleaks:allow -- public artifact integrity digest
-    "manifest.json": "3079eb94d3b21c75feffc715b8bc445090fdb02458681ab06a78bfc6257422e5" // gitleaks:allow -- public artifact integrity digest
-  },
-  "35": {
-    "openapi.json": "ca1a78b332945d10fb6413333e4791aeb3c8ce03c78841869ec5fe3726865ad8", // gitleaks:allow -- public artifact integrity digest
-    "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
-    "fixtures.json": "eff2a2237b94d9d1142fac976faa985616ba1be91493d184d52f8185de92be14", // gitleaks:allow -- public artifact integrity digest
-    "manifest.json": "d45efb315c6926b3d625bcecc46f5b105d4c594236339f23c6df71b61ce7b472" // gitleaks:allow -- public artifact integrity digest
-  }
-};
+      "35": {
+        "openapi.json": "ca1a78b332945d10fb6413333e4791aeb3c8ce03c78841869ec5fe3726865ad8", // gitleaks:allow -- public artifact integrity digest
+        "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
+        "fixtures.json": "eff2a2237b94d9d1142fac976faa985616ba1be91493d184d52f8185de92be14", // gitleaks:allow -- public artifact integrity digest
+        "manifest.json": "d45efb315c6926b3d625bcecc46f5b105d4c594236339f23c6df71b61ce7b472", // gitleaks:allow -- public artifact integrity digest
+      },
+      "36": {
+        "openapi.json": "8823044860927d2cabed33ff028efbb617107810ae71cece020bda2bc64d850a", // gitleaks:allow -- public artifact integrity digest
+        "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
+        "fixtures.json": "f3c0947090ef532ba3a8089b56c6f363480b0e8839c606f2fdd12831248e675b", // gitleaks:allow -- public artifact integrity digest
+        "manifest.json": "7c8321e35e6738aea34d9625aecac3516848fe1e887e16e0f43bbcdc05f8150b", // gitleaks:allow -- public artifact integrity digest
+      },
+    };
     for (const [version, documents] of Object.entries(frozen)) {
       for (const [name, digest] of Object.entries(documents)) {
         const document = await readFile(new URL(`../../../public/native-contracts/v${version}/${name}`, import.meta.url), "utf8");

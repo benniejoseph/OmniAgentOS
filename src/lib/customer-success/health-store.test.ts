@@ -39,11 +39,16 @@ import {
   customerFactId,
   customerMutationId,
 } from "@/lib/customer-success/contracts";
-import { customerHealthEvaluationId } from "@/lib/customer-success/health-contracts";
+import { customerHealthEvaluationId, sealCustomerHealthScore } from "@/lib/customer-success/health-contracts";
 import {
   evaluateAndSaveCustomerHealth,
   getCurrentCustomerHealthScore,
+  submitCustomerHealthEvaluation,
+  readCustomerHealthEvaluationAcceptance,
+  CustomerHealthEvaluationRefusedError,
 } from "@/lib/customer-success/health-store";
+import { CUSTOMER_HEALTH_REVISION_MAX, buildCustomerHealthEvaluationIntent, type CustomerHealthEvaluationRequest } from "@/lib/customer-success/health-mutation-contracts";
+import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import {
   CUSTOMER_ACCOUNT_FACT_LIMIT,
   CustomerAccountProjectionLimitError,
@@ -59,6 +64,81 @@ beforeEach(() => {
 });
 
 describe("customer health score store", () => {
+  it("native replay after a newer Account returns the original acceptance without facts, policy or event effects", async () => {
+    const original = account(), score = await persistedScore(original), authority = nativeAuthority("health-eval-1"), request = nativeRequest(original);
+    const intent = buildCustomerHealthEvaluationIntent({ ...authority, accountId, request });
+    mocks.queries = []; mocks.event.mockClear();
+    mocks.responses = [[], [{ account_snapshot: account(2) }],
+      [{ score_snapshot: score, owner_actor_id: actorId, request_intent: intent, request_sha256: canonicalJsonSha256(intent) }]];
+    const result = await submitCustomerHealthEvaluation({ authority, accountId, request });
+    expect(result).toMatchObject({ replayed: true, currentAccount: { revision: 2 }, acceptance: { accountRevision: 1, scoreSha256: score.scoreSha256 } });
+    expect(mocks.queries).toHaveLength(3);
+    expect(mocks.queries.some((query) => /^\s*(?:INSERT|UPDATE|DELETE)\b|FROM omni_customer_fact_revisions/.test(query.text))).toBe(false);
+    expect(mocks.event).not.toHaveBeenCalled();
+  });
+
+  it("native stale admission is proven only after exact absence and current owner authority, never for legacy collisions", async () => {
+    const snapshot = account(), authority = nativeAuthority("health-eval-1"), request = nativeRequest(snapshot);
+    const score = await persistedScore(snapshot);
+    mocks.responses = [[], [{ account_snapshot: account(2) }], [{ score_snapshot: null }]];
+    await expect(submitCustomerHealthEvaluation({ authority, accountId, request })).rejects.toMatchObject({
+      admission: "not_admitted", code: "customer_health_account_changed", evaluationId: score.evaluationId,
+      requestSha256: canonicalJsonSha256(buildCustomerHealthEvaluationIntent({ ...authority, accountId, request })),
+    });
+    expect(mocks.queries.at(-1)?.text).toContain("LEFT JOIN omni_customer_health_score_revisions");
+    expect(mocks.queries.at(-1)?.text).toContain("workspace.state = 'active'");
+    mocks.responses = [[], [{ account_snapshot: snapshot }],
+      [{ score_snapshot: score, owner_actor_id: actorId, request_intent: null, request_sha256: null }]];
+    const collision = await submitCustomerHealthEvaluation({ authority, accountId, request }).catch((error: unknown) => error);
+    expect(collision).toBeInstanceOf(Error); expect(collision).not.toBeInstanceOf(CustomerHealthEvaluationRefusedError);
+    mocks.responses = [[], [{ account_snapshot: snapshot }], []];
+    const denied = await submitCustomerHealthEvaluation({ authority, accountId, request }).catch((error: unknown) => error);
+    expect(denied).toBeInstanceOf(Error); expect(denied).not.toBeInstanceOf(CustomerHealthEvaluationRefusedError);
+  });
+
+  it("exact native read joins the current readable owner with its original accepted score in one statement", async () => {
+    const snapshot = account(), score = await persistedScore(snapshot), authority = nativeAuthority("health-eval-1");
+    const intent = buildCustomerHealthEvaluationIntent({ ...authority, accountId, request: nativeRequest(snapshot) });
+    mocks.queries = [];
+    mocks.responses = [[{ account_snapshot: account(2), score_snapshot: score, owner_actor_id: actorId,
+      request_intent: intent, request_sha256: canonicalJsonSha256(intent) }]];
+    const result = await readCustomerHealthEvaluationAcceptance(readAuthority(), { accountId, evaluationId: score.evaluationId });
+    expect(result).toMatchObject({ currentAccount: { revision: 2 }, acceptance: { accountRevision: 1 } });
+    expect(mocks.queries).toHaveLength(1);
+    expect(mocks.queries[0].text).toContain("LEFT JOIN omni_customer_health_score_revisions");
+    expect(mocks.queries[0].text).toContain("workspace.state = 'active'");
+    expect(mocks.queries[0].text).not.toMatch(/FOR UPDATE|FOR SHARE/);
+  });
+
+  it("native evidence overflow is a bound refusal before history, policy or score writes", async () => {
+    const snapshot = account(), authority = nativeAuthority("native-overflow"), request = nativeRequest(snapshot);
+    mocks.responses = [[], [{ account_snapshot: snapshot }], [{ score_snapshot: null }], [], [{ access_level: "manager" }],
+      Array.from({ length: CUSTOMER_ACCOUNT_FACT_LIMIT + 1 }, () => ({ fact_snapshot: null }))];
+    await expect(submitCustomerHealthEvaluation({ authority, accountId, request })).rejects.toMatchObject({
+      admission: "not_admitted", code: "customer_health_projection_limit",
+      requestSha256: canonicalJsonSha256(buildCustomerHealthEvaluationIntent({ ...authority, accountId, request })),
+    });
+    expect(mocks.queries).toHaveLength(6);
+    expect(mocks.queries.some((query) => query.text.includes("clock_timestamp") || /^\s*(?:INSERT|UPDATE|DELETE)\b/.test(query.text))).toBe(false);
+    expect(mocks.event).not.toHaveBeenCalled();
+  });
+
+  it("native SQL revision exhaustion is refused after current authority without evaluating evidence", async () => {
+    const snapshot = account(), authority = nativeAuthority("native-capacity"), request = nativeRequest(snapshot);
+    const { scoreSha256: _digest, ...body } = await persistedScore(snapshot);
+    const exhausted = sealCustomerHealthScore({ ...body, revision: CUSTOMER_HEALTH_REVISION_MAX,
+      scoreRevisionId: `${body.scoreId}:v${CUSTOMER_HEALTH_REVISION_MAX}`,
+      previousScoreRevisionId: `${body.scoreId}:v${CUSTOMER_HEALTH_REVISION_MAX - 1}` });
+    mocks.queries = []; mocks.event.mockClear();
+    mocks.responses = [[], [{ account_snapshot: snapshot }], [{ score_snapshot: null }], [{ score_snapshot: exhausted }], [{ access_level: "manager" }]];
+    await expect(submitCustomerHealthEvaluation({ authority, accountId, request })).rejects.toMatchObject({
+      admission: "not_admitted", code: "customer_health_revision_exhausted",
+    });
+    expect(mocks.queries).toHaveLength(5);
+    expect(mocks.queries.some((query) => query.text.includes("FROM omni_customer_fact_revisions") || /^\s*(?:INSERT|UPDATE|DELETE)\b/.test(query.text))).toBe(false);
+    expect(mocks.event).not.toHaveBeenCalled();
+  });
+
   it("bounds heads with matching DISTINCT collation and preserves unknown health when none remain eligible", async () => {
     const accountSnapshot = account();
     mocks.responses.push(
@@ -255,16 +335,16 @@ function readAuthority() {
   };
 }
 
-function account() {
+function account(revision = 1) {
   return buildCustomerAccountRevision({
     tenantId,
     workspaceId,
     accountId,
-    revision: 1,
+    revision,
     mutationId: customerMutationId({
       accountId,
       idempotencyKey: "health-account",
-      operation: "account.create",
+      operation: revision === 1 ? "account.create" : "account.revise",
     }),
     name: "Acme",
     lifecycle: "active",
@@ -279,6 +359,15 @@ function account() {
     revisedByActorId: actorId,
     revisedAt: "2026-09-08T00:00:00.000Z",
   });
+}
+
+function nativeAuthority(key: string) {
+  const value = mutationAuthority(key);
+  return { ...value, executionScope: { ...value.executionScope, causationId: accountId } };
+}
+function nativeRequest(snapshot = account()): CustomerHealthEvaluationRequest {
+  return { contract: "customer-health-evaluation-request:1", workspaceId, expectedAccountRevision: snapshot.revision,
+    expectedAccountSha256: snapshot.accountSha256, modelSuggestions: [] };
 }
 
 function fact() {

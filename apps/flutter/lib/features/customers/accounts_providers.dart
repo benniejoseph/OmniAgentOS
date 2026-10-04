@@ -31,6 +31,8 @@ final accountsRepositoryProvider = Provider.autoDispose<AccountsRepository>((
         'customers.create',
         'customers.update',
         'customers.health',
+        'customers.health.evaluate',
+        'customers.health.evaluations.get',
         'customers.intelligence',
         'customers.workflows',
         'customers.salesforce.status',

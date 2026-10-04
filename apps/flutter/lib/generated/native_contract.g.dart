@@ -3,9 +3,9 @@
 
 abstract final class NativeContract {
   static const id = 'asael.native-api';
-  static const currentVersion = 36;
-  static const previousVersion = 35;
-  static const supportedVersions = <int>[36, 35];
+  static const currentVersion = 37;
+  static const previousVersion = 36;
+  static const supportedVersions = <int>[37, 36];
   static const discoveryPath = '/api/mobile/contracts';
   static const operationIds = <String>{
     'auth.login',
@@ -200,6 +200,8 @@ abstract final class NativeContract {
     'meetings.calendar.get',
     'meetings.calendar.sync',
     'meetings.calendar.sync.get',
+    'customers.health.evaluate',
+    'customers.health.evaluations.get',
   };
 
   static bool supports(int version) => supportedVersions.contains(version);
@@ -859,6 +861,18 @@ abstract final class NativePaths {
     final path = '/api/meetings/calendar/sync/${Uri.encodeComponent(id)}';
     final query = <String, String>{
       'acceptanceKeySha256': acceptanceKeySha256,
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static String customersHealthEvaluate(String id) => '/api/customer-accounts/${Uri.encodeComponent(id)}/health';
+  static String customersHealthEvaluationsGet(String id, String evaluationId, {required String workspaceId}) {
+    final path = '/api/customer-accounts/${Uri.encodeComponent(id)}/health/evaluations/${Uri.encodeComponent(evaluationId)}';
+    final query = <String, String>{
+      'workspaceId': workspaceId,
     };
     if (query.isEmpty) return path;
     final encoded = query.entries

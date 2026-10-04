@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'accounts_advanced_contracts.dart';
 import 'accounts_contracts.dart';
 import 'accounts_controller.dart';
+import 'accounts_health_review.dart';
 
 class AccountsAdvancedPanels extends StatelessWidget {
   const AccountsAdvancedPanels({super.key, required this.controller});
@@ -57,6 +58,7 @@ class _AdvancedPanel extends StatelessWidget {
                   onPressed:
                       controller.readable &&
                           controller.workspaceId != null &&
+                          !controller.busy &&
                           !source.loading
                       ? () => controller.refreshAdvanced(kind)
                       : null,
@@ -78,6 +80,14 @@ class _AdvancedPanel extends StatelessWidget {
             ),
             if (source.message != null)
               Semantics(liveRegion: true, child: Text(source.message!)),
+            if (kind == AccountAdvancedKind.health &&
+                controller.repository.access.operations.contains(
+                  'customers.health.evaluate',
+                ))
+              AccountHealthReview(
+                key: ValueKey(controller),
+                controller: controller,
+              ),
             if (value != null) ...[
               if (kind == AccountAdvancedKind.health)
                 _HealthSummary(

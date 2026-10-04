@@ -16,7 +16,15 @@ import {
   evaluateAndSaveCustomerHealth,
   getCurrentCustomerHealthScore,
   listCustomerHealthScoreHistory,
+  readCustomerHealthEvaluationAcceptance,
+  submitCustomerHealthEvaluation,
+  CustomerHealthEvaluationRefusedError,
 } from "@/lib/customer-success/health-store";
+import {
+  CUSTOMER_HEALTH_EVALUATION_READ_CONTRACT,
+  customerHealthEvaluationRequestSchema,
+  buildCustomerHealthEvaluationIntent,
+} from "@/lib/customer-success/health-mutation-contracts";
 import type {
   CustomerAccountMutationAuthority,
   CustomerAccountReadAuthority,
@@ -27,6 +35,14 @@ import {
   type RequestSharedMemoryAccessV1,
 } from "@/lib/memory/shared-context";
 import { createExecutionScope } from "@/lib/security/execution-scope";
+import { canonicalAuthUserActorFromSecurityContext } from "@/lib/security/canonical-actor";
+import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
+import {
+  nativeCustomerHealthEvaluationIdSchema,
+  nativeCustomerHealthEvaluationReadQuerySchema,
+  nativeCustomerHealthEvaluationReadResponseForScopeSchema,
+  nativeCustomerHealthEvaluateResponseForScopeSchema,
+} from "@/lib/mobile/customer-health-mutation-contracts";
 
 const workspaceSelectionSchema = z.object({
   workspaceId: z.string().trim().min(1).max(240).optional(),
@@ -63,6 +79,97 @@ export const customerHealthEvaluateServiceInputSchema = workspaceSelectionSchema
   expectedAccountSha256: sha256Schema,
   modelSuggestions: z.array(modelSuggestionDraftSchema).max(20).default([]),
 }).strict();
+
+export const customerHealthNativeEvaluateServiceInputSchema = customerHealthEvaluationRequestSchema.safeExtend({ accountId: accountIdSchema });
+export const customerHealthEvaluationReadServiceInputSchema = nativeCustomerHealthEvaluationReadQuerySchema.extend({
+  accountId: accountIdSchema, evaluationId: nativeCustomerHealthEvaluationIdSchema,
+}).strict();
+
+/** Native evaluation retains a compact exact acceptance, independently of live health projections. */
+export async function evaluateCustomerHealthNativeService(
+  caller: AppServiceCaller,
+  input: z.input<typeof customerHealthNativeEvaluateServiceInputSchema>,
+) {
+  const { accountId, ...request } = customerHealthNativeEvaluateServiceInputSchema.parse(input);
+  const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.customer_accounts.health.evaluate"));
+  const canonicalActorId = nativeHealthCaller(caller, request.workspaceId, accountId);
+  const access = await customerHealthAccess(caller, request.workspaceId, "write");
+  requireNativeHealthAccess(access, canonicalActorId, request.workspaceId);
+  requireCustomerWrite(access);
+  const authority = { ...mutationAuthority(access, caller), readableActorIds: [canonicalActorId] };
+  let evaluated: Awaited<ReturnType<typeof submitCustomerHealthEvaluation>>;
+  try {
+    evaluated = await submitCustomerHealthEvaluation({ authority, accountId, request });
+  } catch (error) {
+    if (error instanceof CustomerHealthEvaluationRefusedError) {
+      const intent = buildCustomerHealthEvaluationIntent({ ...authority, accountId, request });
+      if (error.evaluationId !== intent.evaluationId || error.requestSha256 !== canonicalJsonSha256(intent)) {
+        throw new Error("Health refusal evidence did not match the exact submitted request.");
+      }
+    }
+    throw error;
+  }
+  const result = completeAppServiceCall(authorized, {
+    contract: CUSTOMER_HEALTH_EVALUATION_READ_CONTRACT,
+    context: publicCustomerContext(access), currentAccount: evaluated.currentAccount,
+    acceptance: evaluated.acceptance, replayed: evaluated.replayed,
+  }, { resourceCount: 1 });
+  // This validation can fail after commit. The HTTP boundary must not turn it
+  // into a no-admission claim; the original exact receipt remains recoverable.
+  nativeCustomerHealthEvaluateResponseForScopeSchema({
+    tenantId: caller.context.tenantId, workspaceId: request.workspaceId, canonicalActorId,
+    requestActorId: caller.context.actorId, role: caller.context.role,
+    executionScope: caller.executionScope!, idempotencyKey: caller.idempotencyKey!, accountId, request,
+  }).parse({ ...result.data, serviceReceipt: result.receipt });
+  return result;
+}
+
+export async function readCustomerHealthEvaluationService(
+  caller: AppServiceCaller,
+  input: z.input<typeof customerHealthEvaluationReadServiceInputSchema>,
+) {
+  const value = customerHealthEvaluationReadServiceInputSchema.parse(input);
+  const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.customer_accounts.health.evaluations.show"));
+  const canonicalActorId = nativeHealthCaller(caller);
+  const access = await customerHealthAccess(caller, value.workspaceId, "read");
+  requireNativeHealthAccess(access, canonicalActorId, value.workspaceId);
+  const observed = await readCustomerHealthEvaluationAcceptance(
+    { ...readAuthority(access, caller), readableActorIds: [canonicalActorId] },
+    { accountId: value.accountId, evaluationId: value.evaluationId },
+  );
+  const result = completeAppServiceCall(authorized, {
+    contract: CUSTOMER_HEALTH_EVALUATION_READ_CONTRACT,
+    context: publicCustomerContext(access), currentAccount: observed.currentAccount,
+    acceptance: observed.acceptance,
+  }, { resourceCount: observed.acceptance ? 1 : 0 });
+  nativeCustomerHealthEvaluationReadResponseForScopeSchema({
+    ...value, tenantId: caller.context.tenantId, canonicalActorId,
+    requestActorId: caller.context.actorId, role: caller.context.role,
+  }).parse({ ...result.data, serviceReceipt: result.receipt });
+  return result;
+}
+
+function nativeHealthCaller(caller: AppServiceCaller, workspaceId?: string, accountId?: string) {
+  const canonical = canonicalAuthUserActorFromSecurityContext(caller.context);
+  if (!canonical) throw new CustomerAccountWriteDeniedError();
+  if (workspaceId !== undefined) {
+    const scope = caller.executionScope;
+    if (!scope || scope.tenantId !== caller.context.tenantId || scope.initiatingActorId !== caller.context.actorId ||
+      scope.executingPrincipalType !== "user" || scope.executingPrincipalId !== caller.context.actorId ||
+      scope.workspaceId !== workspaceId || scope.projectId !== null || scope.missionId !== null ||
+      scope.delegationId !== null || scope.contextGrantIds.length !== 0 || scope.capabilityGrantIds.length !== 0 ||
+      scope.causationId !== accountId || scope.purpose !== "api.customer-health.evaluate") throw new CustomerAccountWriteDeniedError();
+  } else if (caller.executionScope) {
+    // Exact receipt reads are current user reads, never delegated execution.
+    throw new CustomerAccountWriteDeniedError();
+  }
+  return canonical.actorId;
+}
+
+function requireNativeHealthAccess(access: RequestSharedMemoryAccessV1, canonicalActorId: string, workspaceId: string) {
+  if (access.actorBinding.canonicalActorId !== canonicalActorId || access.authority.workspaceId !== workspaceId ||
+    access.authority.initiatingActorId !== canonicalActorId) throw new CustomerAccountWriteDeniedError();
+}
 
 export async function showCustomerHealthService(
   caller: AppServiceCaller,

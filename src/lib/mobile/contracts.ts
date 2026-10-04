@@ -31,6 +31,7 @@ import { nativeMeetingContractSchemas } from "@/lib/mobile/meeting-contracts";
 import { nativeCustomerContractSchemas } from "@/lib/mobile/customer-contracts";
 import { nativeCustomerDetailContractSchemas } from "@/lib/mobile/customer-detail-contracts";
 import { nativeCustomerMutationContractSchemas } from "@/lib/mobile/customer-mutation-contracts";
+import { nativeCustomerHealthMutationSchemas } from "@/lib/mobile/customer-health-mutation-contracts";
 import { nativeLibraryContractSchemas, nativeLibraryListQueryMetadata } from "@/lib/mobile/library-contracts";
 import { nativeLibraryHistoryContractSchemas } from "@/lib/mobile/library-history-contracts";
 import { entityOptionsContractSchemas, entityOptionsQueryMetadata } from "@/lib/entities/options-contracts";
@@ -48,10 +49,10 @@ import {
 import { voiceCommandInputSchema } from "@/lib/voice/command-input";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 36 as const;
-// v35 remains byte-frozen. v36 adds exact personal recall consent decisions
-// and owner-bound calendar-only sync with durable acceptance recovery.
-export const NATIVE_API_PREVIOUS_VERSION = 35 as const;
+export const NATIVE_API_CURRENT_VERSION = 37 as const;
+// v36 remains byte-frozen. v37 adds deterministic Account health evaluation
+// with immutable intent and exact receipt recovery.
+export const NATIVE_API_PREVIOUS_VERSION = 36 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -1969,6 +1970,25 @@ const v36Operations: readonly NativeOperation[] = [
   }),
 ];
 
+const customerHealthEvaluationOptions = {
+  ...customerDetailOptions, queryPolicy: "exact",
+  errorResponseSchema: "NativeCustomerHealthEvaluationError",
+} as const satisfies Partial<NativeOperation>;
+const v37Operations: readonly NativeOperation[] = [
+  ...v36Operations,
+  operation("customers.health.evaluate", "POST", "/api/customer-accounts/{id}/health", "Evaluate the exact reviewed Account with current authorized facts and deterministic policy, retaining immutable acceptance.", "bearer", "NativeCustomerHealthEvaluateRequest", "NativeCustomerHealthEvaluateResponse", {
+    ...customerHealthEvaluationOptions, headerParameters: pluginMutationHeaders,
+    requestBodyMaxBytes: 4096, successStatuses: [200, 201],
+    errorStatuses: [400, 401, 403, 404, 409, 413, 415, 500, 503],
+  }),
+  operation("customers.health.evaluations.get", "GET", "/api/customer-accounts/{id}/health/evaluations/{evaluationId}", "Read one exact authorized health evaluation receipt without repeating the evaluation.", "bearer", undefined, "NativeCustomerHealthEvaluationReadResponse", {
+    ...customerHealthEvaluationOptions, errorStatuses: [400, 401, 403, 404, 409, 500, 503],
+    pathParameters: [...customerDetailOptions.pathParameters,
+      { name: "evaluationId", minLength: 91, maxLength: 91, pattern: "^customer-health-evaluation:[a-f0-9]{64}$" }],
+    queryParameters: [queryParameter("workspaceId", "string", { required: true, minLength: 1, maxLength: 240 })],
+  }),
+];
+
 const nativeCompanionPreferencesResponseSchema = z.object({
   schemaVersion: z.literal(1), contract: z.literal(COMPANION_PREFERENCES_CONTRACT),
   snapshot: z.object({
@@ -1994,6 +2014,7 @@ export const nativeContractSchemas = Object.freeze({
   ...nativeCustomerContractSchemas,
   ...nativeCustomerDetailContractSchemas,
   ...nativeCustomerMutationContractSchemas,
+  ...nativeCustomerHealthMutationSchemas,
   ...nativeLibraryContractSchemas,
   ...nativeLibraryHistoryContractSchemas,
   ...entityOptionsContractSchemas,
@@ -2134,6 +2155,7 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 34) return v34Operations;
   if (version === 35) return v35Operations;
   if (version === 36) return v36Operations;
+  if (version === 37) return v37Operations;
   return undefined;
 }
 

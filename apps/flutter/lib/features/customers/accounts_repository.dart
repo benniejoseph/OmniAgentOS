@@ -10,6 +10,7 @@ import '../auth/domain/app_session.dart';
 import 'accounts_contracts.dart';
 import 'accounts_mutation_contracts.dart';
 import 'accounts_advanced_contracts.dart';
+import 'accounts_health_contracts.dart';
 
 class AccountsAccess extends ChangeNotifier {
   AccountsAccess({
@@ -80,11 +81,23 @@ abstract interface class AccountsAdvancedRepository {
   });
 }
 
+abstract interface class AccountsHealthRepository {
+  Future<AccountHealthRead> evaluateHealth(
+    AccountHealthIntent intent, {
+    required bool Function() isCurrent,
+  });
+  Future<AccountHealthRead> readHealthEvaluation(
+    AccountHealthIntent intent,
+    CancelToken cancel,
+  );
+}
+
 class ApiAccountsRepository
     implements
         AccountsRepository,
         AccountsMutationRepository,
-        AccountsAdvancedRepository {
+        AccountsAdvancedRepository,
+        AccountsHealthRepository {
   ApiAccountsRepository(
     this.api, {
     required this.access,
@@ -295,6 +308,69 @@ class ApiAccountsRepository
       'Account access changed after the request. Its outcome remains unconfirmed.',
     );
     return receipt;
+  }
+
+  @override
+  Future<AccountHealthRead> evaluateHealth(
+    AccountHealthIntent intent, {
+    required bool Function() isCurrent,
+  }) async {
+    final generation = access.generation;
+    bool current() =>
+        authorityCurrent() &&
+        generation == access.generation &&
+        access.owner?.key == intent.owner.key &&
+        isCurrent();
+    accountRequire(
+      current() &&
+          intent.owner.role != 'viewer' &&
+          access.operations.contains('customers.health.evaluate'),
+    );
+    final raw = await api.postJsonAuthorized(
+      NativePaths.customersHealthEvaluate(intent.accountId),
+      authority: NativeRequestAuthority(
+        tenantId: intent.owner.tenantId,
+        actorId: intent.owner.actorId,
+        canonicalUserId: intent.owner.userId,
+        role: intent.owner.role,
+        apiBaseUrl: intent.owner.apiScope,
+        isCurrent: current,
+      ),
+      data: intent.body,
+      headers: {'Idempotency-Key': intent.key},
+    );
+    accountRequire(
+      current(),
+      'Account access changed. Evaluation remains unconfirmed.',
+    );
+    final result = await AccountHealthRead.parse(raw, intent, mutation: true);
+    accountRequire(
+      current(),
+      'Account access changed. Evaluation remains unconfirmed.',
+    );
+    return result;
+  }
+
+  @override
+  Future<AccountHealthRead> readHealthEvaluation(
+    AccountHealthIntent intent,
+    CancelToken cancel,
+  ) {
+    accountRequire(access.owner?.key == intent.owner.key);
+    return _read(
+      'customers.health.evaluations.get',
+      NativePaths.customersHealthEvaluationsGet(
+        intent.accountId,
+        intent.evaluationId,
+        workspaceId: intent.workspaceId,
+      ),
+      cancel,
+      const {},
+      (row, owner) {
+        accountRequire(owner.key == intent.owner.key);
+        return AccountHealthRead.parse(row, intent, mutation: false);
+      },
+    );
   }
 
   @override
