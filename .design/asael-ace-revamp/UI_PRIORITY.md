@@ -2,8 +2,8 @@
 
 The owner explicitly prioritized the UI revamp and ATLAS, asking to stabilize the current release and return to connector expansion afterward. The full implementation plan remains in scope; this changes execution order.
 
-PR53 is stabilized and merged with all sixteen hosted checks passing. The current
-visual release is PR54. Connector work is preserved in
+PR53 is stabilized and merged with all sixteen hosted checks passing. The UI, static greeting and personality releases are accepted through PR56.
+Expanded Voice playback is the next bounded follow-up. Connector work is preserved in
 `codex/native-connector-controls` and is deferred until after this UI/ATLAS priority.
 
 Visual thesis: a warm, precise conversation workspace with a quiet graphite rail, readable typography, restrained gold and an expressive umber eagle.
@@ -106,15 +106,16 @@ The later composer correction changes only web CSS and browser verification;
 packaged native application code is unchanged. Signing is local/private,
 not Apple notarization.
 
-No separate portrait/material study was saved; sculpt04 remains the latest fully
-exported, unaccepted 3D prototype. A narrow beak revision is being reviewed
-separately and is not part of this greeting release.
+At this greeting checkpoint, no separate portrait/material study was saved and
+sculpt04 was the latest complete 3D export. Later beak/throat refinements are
+recorded below and remain separate from the approved static greeting.
 
 ## ATLAS boundary
 
-Sculpt04 is exported and structurally checked: 41,580 triangles, a 1,750,516-byte
-GLB, fourteen bones and twelve clips, with all nine geometry/lifecycle checks
-passing. Actual turnaround and blink review still finds a likeness/finish gap.
+The latest separately archived art study is throat04: 49,748 triangles, a
+2,035,216-byte GLB, fourteen bones and twelve clips, with all nine structure checks
+passing. Beak volume and throat continuity improve, while fine boundary stepping,
+feather finish, body integration and eyelid closure remain unaccepted.
 No 3D artwork has been published. The approved concept portrait remains active,
 with the static full-body greeting implemented above. The final authored model,
 material pass, convincing facial closure, animated greeting/state delivery and
@@ -145,3 +146,24 @@ states remain composed; no preference change replays consumed history. The stati
 greeting and unpublished state manifest remain unchanged. Native build
 `1.23.15+50` is reserved for this follow-up; parked connectors need a later number.
 No database migration, API contract or Agent definition version changes are made.
+
+## Personality acceptance and expanded Voice follow-up
+
+PR56 passed all sixteen hosted checks on
+`a3fb4215b632f8b6d56487e3617b0afb82085aba` and merged at
+`2026-10-04T17:24:06Z` as `fe36089bc409e79e5fc267a277a65cb2605c3ee0`.
+The universal private Mac 1.23.15 (50) package is verified; its SHA256 is
+`be0c8ecb2f5e24f54d10c48a1ef020798cd864bade14d31ec380009ec443c185`.
+All 277 focused web/server cases, full Flutter analysis and 11 companion cases
+passed before the hosted release gates.
+
+The web-only follow-up connects expanded Voice to the same decorative state
+player as compact presence. Existing device observations, consent, transcript
+review, authority and approval paths remain authoritative. The shared player
+retains the current neutral portrait while the manifest awaits art review,
+consumes suppressed transitions, and stops on reduction, background, offscreen,
+theme or owner/conversation changes. It uses responsive sprite geometry without
+restarting a clip when layout changes. No native version, migration, API contract
+or public asset publication changes are included.
+
+Validation and exact-head hosted acceptance are pending for this Voice follow-up.

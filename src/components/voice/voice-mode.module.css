@@ -90,7 +90,11 @@
   scrollbar-width: thin;
 }
 .companion { position: sticky; inset-block-start: 1rem; display: flex; flex: 0 0 28%; flex-direction: column; align-items: center; justify-content: center; min-inline-size: 0; min-block-size: 18rem; padding: 1rem 0; text-align: center; }
-.portrait { display: block; inline-size: 108px; block-size: 108px; margin-block-end: 1.25rem; border-radius: 1.25rem; object-fit: contain; }
+.companion[hidden] { display: none; }
+.portrait { --atlas-portrait-size: 108px; display: block; inline-size: var(--atlas-portrait-size); block-size: var(--atlas-portrait-size); margin-block-end: 1.25rem; border-radius: 1.25rem; overflow: hidden; }
+.portraitImage { display: block; inline-size: var(--atlas-portrait-size); block-size: var(--atlas-portrait-size); object-fit: contain; }
+.companion[data-voice-portrait="hidden"] .portrait,
+.companion[data-voice-portrait="unavailable"] .portrait { display: none; }
 .companionName { color: var(--foreground); font-size: .875rem; font-weight: 600; letter-spacing: .09em; }
 .companionState { margin-block-start: .5rem; color: var(--muted); font-size: .8125rem; line-height: 1.6; }
 .portraitFallback { margin-block-start: .5rem; color: var(--muted); font-size: .75rem; }
@@ -300,7 +304,7 @@
   .microphoneStatus { order: 1; flex-basis: 100%; margin-inline-start: 0; }
   .stage { display: block; padding: .5rem 1rem 1.25rem; }
   .companion { position: static; min-block-size: 0; padding: .75rem 0; }
-  .portrait { inline-size: 64px; block-size: 64px; margin-block-end: .5rem; border-radius: .75rem; }
+  .portrait { --atlas-portrait-size: 64px; margin-block-end: .5rem; border-radius: .75rem; }
   .companionName { font-size: .75rem; }
   .companionState { margin-block-start: .125rem; font-size: .75rem; }
   .consent,

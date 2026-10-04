@@ -21,6 +21,8 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError, expect, 
 
 from fixtures import (ANSWER, PROMPT, THREAD_ID, RUN_ID, SCOPE_THREAD_B,
                       Fixtures, AssistantScopeFixtures, scope_session)
+from atlas_fixtures import AtlasFixtures, ROOT as ATLAS_ROOT
+from companion_presence_fixtures import preferences as companion_preferences
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -194,6 +196,10 @@ def exercise(browser, origin, credentials, checks, coarse):
         dialog = page.get_by_role("dialog", name="Realtime voice to Asael")
         expect(dialog).to_be_visible()
         checks.check("Voice consent does not open microphone", page.evaluate("window.__micAttempts") == 0)
+        page.wait_for_function("""() => {const image=document.querySelector('[data-voice-portrait] img');
+          return image?.naturalWidth===108 && new URL(image.currentSrc||image.src,location.href).pathname==='/companion/atlas-neutral.png';} """)
+        checks.check("Voice ATLAS: unpublished manifest keeps the approved neutral portrait",
+                     not dialog.locator("[data-atlas-sprite]").is_visible())
         for _ in range(12):
             page.keyboard.press("Tab")
             checks.check("Voice focus remains in dialog", dialog.evaluate("el=>el.contains(document.activeElement)"))
@@ -273,6 +279,7 @@ def scope_until(page, condition, message):
 
 def exercise_scope(browser, origin, credentials, checks):
     fixture = AssistantScopeFixtures(origin)
+    atlas = AtlasFixtures(origin)
     errors = []
     context = browser.new_context(viewport={"width": 1440, "height": 900}, service_workers="block", reduced_motion="reduce")
     page = None
@@ -284,6 +291,7 @@ def exercise_scope(browser, origin, credentials, checks):
             raise AssertionError("Assistant scope session was unavailable")
         session = scope_session(session_response.json())
         context.route("**/*", fixture.route)
+        context.route(origin + ATLAS_ROOT + "**", atlas.route)
         context.add_init_script("""window.__scopeMicAttempts=0; window.__scopeMicStops=0; window.__scopePeers=0;
           navigator.mediaDevices.getUserMedia=async()=>{
             window.__scopeMicAttempts++;
@@ -344,11 +352,31 @@ def exercise_scope(browser, origin, credentials, checks):
             field.fill("Private draft before " + label)
             if label == "Canonical replacement":
                 fixture.allow_voice = True
+                fixture.defaults["/api/companion/preferences"] = companion_preferences(intensity="expressive", home_state="not_set")
+                page.emulate_media(reduced_motion="no-preference")
                 page.get_by_role("button", name="Start voice mode with Asael", exact=True).click()
+                stage = page.locator("[data-voice-portrait]")
+                expect(stage).to_be_visible()
+                page.wait_for_function("""() => {const image=document.querySelector('[data-voice-portrait] img');
+                  return image?.naturalWidth===256 && new URL(image.currentSrc||image.src,location.href).pathname.includes('/available-');} """)
+                checks.check("Voice ATLAS: admitted poster preserves still consent", not atlas.sprite_requests())
                 page.get_by_role("button", name="Agree & start", exact=True).click()
                 scope_until(page, lambda: "old-voice" in fixture.held, "Synthetic voice session was not held")
                 checks.check("Assistant scope: synthetic microphone is active before replacement",
                              page.evaluate("window.__scopeMicAttempts===1 && window.__scopeMicStops===0"))
+                sprite = stage.locator("[data-atlas-sprite]")
+                expect(sprite).to_be_visible(timeout=5_000)
+                checks.check("Voice ATLAS: actual synthetic microphone observation admits one listening sprite",
+                             len(atlas.sprite_requests()) == 1 and "/listening-" in atlas.sprite_requests()[0])
+                page.emulate_media(reduced_motion="reduce")
+                expect(sprite).to_be_hidden()
+                checks.check("Voice ATLAS: reduced motion interrupts only decorative playback",
+                             page.evaluate("window.__scopeMicStops===0 && window.__scopePeers===0"))
+                page.emulate_media(reduced_motion="no-preference")
+                page.wait_for_timeout(150)
+                expect(sprite).to_be_hidden()
+                checks.check("Voice ATLAS: removing reduction does not replay the consumed listening transition",
+                             len(atlas.sprite_requests()) == 1)
                 replacement = scope_session(session, user_id="77777777-7777-4777-8777-777777777777")
             else:
                 replacement = scope_session(session, role="viewer")
@@ -368,6 +396,8 @@ def exercise_scope(browser, origin, credentials, checks):
             if label == "Canonical replacement":
                 checks.check("Assistant scope: access loss stops the active microphone before replacement settles",
                              page.evaluate("window.__scopeMicStops===1 && window.__scopePeers===0"))
+                expect(page.locator("[data-voice-portrait] [data-atlas-sprite]")).to_have_count(0)
+                checks.check("Voice ATLAS: access loss discards the prior owner stage", len(atlas.sprite_requests()) == 1)
             fixture.set_owner_label(label)
             fixture.defaults["/api/auth/session"] = replacement
             fixture.release("replacement-access")
@@ -388,10 +418,11 @@ def exercise_scope(browser, origin, credentials, checks):
         checks.check("Assistant scope: viewer cannot send and cleanup produced no effect retry",
                      len(fixture.writes) == 1 and fixture.writes[0]["disposition"] == "synthetic_held_voice_session"
                      and page.evaluate("window.__scopeMicStops===1 && window.__scopePeers===0"))
-        checks.check("Assistant scope: no unplanned request or uncaught browser error", not fixture.unexpected and not errors,
-                     {"unexpected": fixture.unexpected, "errors": errors})
+        checks.check("Assistant scope: no unplanned request or uncaught browser error", not fixture.unexpected and not atlas.unexpected and not errors,
+                     {"unexpected": fixture.unexpected + atlas.unexpected, "errors": errors})
         return {"scenario": "mounted Assistant owner/role and exact selection", "reads": fixture.requests,
                 "writes": fixture.writes, "releases": fixture.releases, "unexpected": fixture.unexpected, "browserErrors": errors,
+                "atlasAssetReads": atlas.requests,
                 "boundary": "Real session-provider refresh; coherent intercepted owner/role replacement; synthetic microphone track only. No device, provider transport, send, cancel or approval effect."}
     except Exception:
         if page is not None and not page.is_closed():
