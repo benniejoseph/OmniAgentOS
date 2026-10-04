@@ -9617,7 +9617,7 @@ const additiveDraftReplayTables: readonly string[] = [
   "omni_responsibility_observations",
   "omni_responsibility_runtime_receipts",
   "omni_responsibility_wakes",
-];
+].sort();
 
 // A native client that attests an Android build.
 const androidClient = {
@@ -9965,6 +9965,15 @@ async function withMigrationsPendingFrom<T>(
   }
   await client.begin(async (transaction) => {
     if (replay) {
+      if (additiveReplayVersions.includes(meetingCalendarSyncAcceptancesVersion)) {
+        expect(await transaction`
+          SELECT count(*)::int AS acceptances
+          FROM public.omni_meeting_calendar_sync_acceptances
+        `).toEqual([{ acceptances: 0 }]);
+        await transaction`DROP POLICY omni_meeting_calendar_sync_event_actor ON public.omni_events`;
+        await transaction`DROP TABLE public.omni_meeting_calendar_sync_acceptances`;
+        await transaction`DROP FUNCTION public.omni_meeting_calendar_sync_acceptance_guard_v1()`;
+      }
       if (additiveReplayVersions.includes(memoryLifecycleMutationsVersion)) {
         await removeEmptyMemoryLifecycleForReplay(transaction);
       }
