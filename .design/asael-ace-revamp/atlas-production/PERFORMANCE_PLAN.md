@@ -1,23 +1,30 @@
 # ATLAS delivery evidence plan
 
-**Current boundary, 4 October 2026:** sculpt-02 export is complete but actual likeness is insufficient. Web/native bounded raster adapters are implemented; root passed 26 web adapter unit cases, full native analysis with no issues, and all 37 companion cases. The approved static portrait remains in use. The public metadata-only `awaiting-art-review` manifest and web `no-cache` revalidation do not publish artwork. No sculpt-02 publication or physical-device performance acceptance has occurred.
+**Current boundary, 4 October 2026:** eyelid-03 is the last complete matching export and visual review, with all nine structure checks passing. Root reviewed actual rest, mid-blink and peak-blink front/three-quarter/profile captures: forward bulge is much reduced, front white breakthrough is gone and the neutral iris remains legible. A thin outer white seam and profile gap remain; final blink and overall artwork acceptance are still open. Throat-04 and beak-02 are historical checkpoints. Web/native bounded raster adapters are implemented; the earlier adapter checkpoint passed 26 web unit cases, full native analysis and all 37 companion cases. The approved static portrait remains the fallback. PR55's static full-body greeting and PR56's scoped language/motion intensity are accepted and merged, each after all 16 hosted checks passed, with private Mac packages verified through 1.23.15 (50). The public metadata-only `awaiting-art-review` manifest and web `no-cache` revalidation do not publish 3D artwork. No 3D/state-bundle publication or physical-device performance acceptance has occurred.
 
-The 36-case local comparison in [MEASUREMENTS.md](MEASUREMENTS.md) belongs to archived **rough-01**, at `/Volumes/Extreme Pro/Asael-release-records/2026-10-03-followups/ui-validation/atlas-rough-01-output.tar.gz`. Current `output/benchmark.json` is an old leftover and does not measure sculpt-02. No old timing or memory estimate is a budget result for the larger mesh or current sprite format.
+The 36-case local comparison in [MEASUREMENTS.md](MEASUREMENTS.md) belongs to archived **rough-01**, at `/Volumes/Extreme Pro/Asael-release-records/2026-10-03-followups/ui-validation/atlas-rough-01-output.tar.gz`. Retained `output/benchmark.json` is an old leftover and does not measure eyelid-03. No old timing or memory estimate is a budget result for the larger mesh or state sprite format.
+
+Software UI priorities through PR57 are accepted. Its expanded web Voice shared-player integration passed all 14 applicable hosted checks; native API/version and the verified Mac 1.23.15 (50) package are unchanged. Eyelid-03 is the last complete matching art export. The next body/tuft follow-up is planned and has not started; final art, physical-device/performance and production-environment gates remain open.
 
 ## Delivery paths and evidence
 
 | Delivery | Current implementation/evidence | Remaining limit |
 | --- | --- | --- |
 | Approved static portrait | Existing web/native fallback; independent controls and status retained | Measure any changed production startup/asset costs against this baseline |
+| Approved static full-body greeting | PR55 accepted and merged after all 16 hosted checks passed; app 1.23.14+49 private package verified; full Flutter analysis, 21 focused cases, 39 browser checks and five native captures passed | No production or physical-device performance claim |
 | Rough-01 generated still / live GLB / nineteen-frame sequence | Archived 36-case headless loopback comparison at 36/256px and DPR1/2 | Old source only; no physical/mobile/native result |
-| Sculpt-02 live GLB | Actual 1,414,604-byte GLB, 18,390 vertices, 33,718 triangles, 14 bones, 12 clips | Not final art; no fresh comparative runtime measurement; no production native 3D renderer assumed |
-| Sculpt-02 state posters/sprites | 32 transparent WebP images plus manifest; eight states, both theme slots, 256px, 20Hz, four columns | Not published or visually accepted; asset bytes/decode/frame/energy costs need a matching run |
+| Eyelid-03 live GLB | Last complete export: 2,035,216-byte GLB, 27,190 vertices, 49,748 triangles, 14 bones, 12 clips | Not final art; no fresh comparative runtime measurement; no production native 3D renderer assumed |
+| Eyelid-03 state posters/sprites | 32 transparent WebP images plus manifest; eight states, both theme slots, 256px, 20Hz, four columns | Not published or visually accepted; asset bytes/decode/frame/energy costs need a matching run |
+| Beak-02 baseline | Matching source/output retained in `atlas-beak-02-review.tar.gz` | Historical export, not the current model or a performance result |
 | Web state adapter | Bounded manifest/player/fallback implemented; 26 unit cases passed in root's `atlas-production-adapter-unit.log` | Unit coverage is not browser, device, artwork or performance certification |
-| Native state adapter | Bounded local-asset player/fallback implemented; full analyzer clean and all 37 companion cases passed | Later package pending; physical-target evidence remains separate |
+| Native state adapter | Bounded local-asset player/fallback implemented; full analyzer clean and all 37 companion cases passed; later signed packages are ready | Physical-target evidence remains separate; 3D/state bundle is not packaged for delivery |
+| Scoped language and motion intensity | PR56 accepted; 277 focused web/server checks, full Flutter analysis and 11 companion checks passed; private Mac 1.23.15 (50) verified | No database/API version change, art publication or physical-device performance claim |
+| Expanded web Voice shared player | PR57 accepted after all 14 applicable hosted checks; 48 focused unit checks, 114 maintained browser checks and ESLint passed; exact-head hosted full browser suite passed | Web-only; native API/version and Mac 1.23.15 (50) unchanged; no new artwork or physical-device performance evidence |
+| Throat-04 checkpoint | Matching source/output retained in `atlas-throat-04-review.tar.gz`; same counts as eyelid-03, earlier source/weights | Historical export, not the current model or a performance result |
 
-Root also passed nine Node geometry/lifecycle checks and three Python tool tests for sculpt-02. The complete web adapter build passed in `atlas-adapter-final-web-build.log` before the subsequent metadata-only manifest/cache change. These checks do not establish a measured current-asset performance budget.
+All nine eyelid-03 structure checks passed. Historical sculpt-04 evidence includes all nine geometry/lifecycle checks passing. Historical sculpt-02 evidence includes nine Node geometry/lifecycle checks, three Python tool tests and the complete adapter web build in `atlas-adapter-final-web-build.log` before the subsequent metadata-only manifest/cache change. PR53/PR54/PR55/PR56 later passed all 16 hosted checks each and have signed private packages ready. These checks do not establish a measured eyelid-03 performance budget.
 
-The shared format admits at most 1200ms and 25 frames, with `ceil(durationMs / 50) + 1` samples including a clamped final endpoint. Current source uses at most 1120ms/24 frames. These are implemented admission limits, **not measured performance budgets**. Keep existing app route budgets unchanged.
+The shared format admits at most 1200ms and 25 frames, with `ceil(durationMs / 50) + 1` samples including a clamped final endpoint. The eyelid-03 export uses at most 1120ms/24 frames. These are implemented admission limits, **not measured performance budgets**. Keep existing app route budgets unchanged.
 
 ## Matching local comparison
 
@@ -48,7 +55,7 @@ The production player must preserve actual microphone/playback precedence and ex
 | --- | --- | --- |
 | Supported desktop browser | Cold/warm startup, control latency, real foreground/background, sustained frame pacing, memory and asset failure | Pending for the current bundle/adapter |
 | Supported mobile web device | Actual device/OS/browser, touch latency, power/network conditions, memory pressure, thermal/battery traces | Pending |
-| Supported macOS native build and auxiliary windows | Packaged asset admission, quick-entry/voice/control independence, background/reopen/disposal, memory and energy | Analyzer and companion cases passed; later package and physical measurements pending |
+| Supported macOS native build and auxiliary windows | Packaged asset admission, quick-entry/voice/control independence, background/reopen/disposal, memory and energy | Analyzer and companion cases passed; signed private packages ready; physical measurements pending |
 | Supported iOS native build | Packaged static/pre-rendered path, startup, voice/control independence, failure fallback, lifecycle and energy | Pending; no live 3D renderer required or assumed |
 | Supported Android native build | Same evidence as iOS, including lifecycle loss/recreate | Pending; no live 3D renderer required or assumed |
 | Production web route | Same-revision static baseline, unchanged route-budget compliance and actual delivered asset costs | Separate from standalone lab; pending current-asset comparison |
@@ -57,6 +64,6 @@ For battery/thermal work, record physical device, ambient conditions, display br
 
 ## Publication and release boundary
 
-First obtain actual visual acceptance of a matching export. Only then may root invoke `scripts/atlas/publish.py --accept-reviewed`; it verifies current source/artifact hashes and exact bounded transparent assets before copying the manifest and images to the web/native asset directories. No publication has occurred, and the rejected sculpt-02 bundle must not be admitted by treating successful export as review approval. Publication is not deployment or physical-device certification.
+First obtain actual visual acceptance of a matching export. Only then may root invoke `scripts/atlas/publish.py --accept-reviewed`; it verifies current source/artifact hashes and exact bounded transparent assets before copying the manifest and images to the web/native asset directories. No 3D/state-bundle publication has occurred, and the unaccepted eyelid-03 bundle or any later mismatched source must not be admitted by treating export or comparison renders as review approval. Publication is not deployment or physical-device certification.
 
 The functional product can ship with the approved static portrait and implemented fallback/player boundaries, through normal build/migration/deployment gates. TASKS phase 2 and task 2.6 allow this usable milestone before final clips. Keep final creative likeness, eight-state visual acceptance and physical performance evidence outstanding; do not declare the whole plan complete. Broad regression deferral changes scheduling, not these evidence limits.

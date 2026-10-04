@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "name": "ATLAS_ROUGH_01",
-  "status": "SCULPT_04_UNREVIEWED_SOURCE",
-  "creativeRevision": "sculpt-04-compact-mantle-cheek-sweep-expressive-eyes",
-  "exportEvidence": "Rough-01, sculpt-02 and sculpt-03 exports and measurements are stale for this revision. Require matching creativeRevision and source hashes in export-manifest.json before using new outputs. Source alone establishes no export, visual approval or measurement.",
+  "status": "SCULPT_04_EYELID_03_UNREVIEWED_SOURCE",
+  "creativeRevision": "sculpt-04-eyelid-03-interior-surface-clearance",
+  "exportEvidence": "Eyelid-03 is unexported and unreviewed. Eyelid-02 improved lower-aperture closure but retained white corner spots and a thin outer seam. The last matching full export is sculpt-04-throat-04-refined-boundary-sampling, exported 2026-10-04T17:30:25.836966+00:00 and archived in atlas-throat-04-review.tar.gz. Historical measurements do not establish an eyelid-03 export or visual result. Require matching creativeRevision and source hashes in export-manifest.json before using new outputs. The full character remains unaccepted.",
   "coordinates": "Arbitrary model units. Y up, Z forward, X character left. Overall height about 3 units; not a physical scale claim.",
   "sourceExpectedSha256": "876591c5a2b739df99d6aab647554dc53bcab97d55bf0c3e0864e39e1c98c070",
   "palette": {
@@ -14,7 +14,7 @@
   "radialSegments": 48,
   "bodyProfile": [[0.38,0.115,0.15,-0.01],[0.55,0.247,0.232,-0.015],[0.80,0.335,0.305,-0.015],[1.10,0.417,0.357,-0.012],[1.40,0.454,0.372,-0.012],[1.69,0.448,0.361,-0.015],[1.90,0.407,0.341,-0.010],[2.08,0.371,0.314,-0.004],[2.22,0.333,0.286,-0.002],[2.35,0.310,0.269,0]],
   "headProfile": [[2.35,0.310,0.269,0],[2.47,0.327,0.273,-0.002],[2.59,0.355,0.270,-0.006],[2.69,0.369,0.270,-0.010],[2.78,0.374,0.272,-0.014],[2.86,0.362,0.260,-0.020],[2.94,0.324,0.235,-0.027],[3.006,0.245,0.186,-0.030],[3.045,0.120,0.098,-0.030],[3.055,0.018,0.016,-0.030]],
-  "throatProfile": [[2.105,0.012,0.013],[2.19,0.103,0.013],[2.30,0.179,0.013],[2.405,0.235,0.013],[2.505,0.281,0.013],[2.585,0.299,0.013],[2.65,0.269,0.013],[2.689,0.175,0.013]],
+  "throatProfile": [[2.175,0.090],[2.205,0.122],[2.242,0.157],[2.286,0.190],[2.338,0.216],[2.395,0.239],[2.455,0.267],[2.515,0.291],[2.562,0.298],[2.605,0.285],[2.641,0.261],[2.669,0.220],[2.685,0.160]],
   "rig": [
     {"name":"Root","parent":null,"position":[0,0,0]},
     {"name":"Spine","parent":"Root","position":[0,1.25,0]},
@@ -23,8 +23,8 @@
     {"name":"Jaw","parent":"Head","position":[0,2.57,0.25]},
     {"name":"BrowLeft","parent":"Head","position":[0.180,2.838,0.248]},
     {"name":"BrowRight","parent":"Head","position":[-0.180,2.838,0.248]},
-    {"name":"UpperLidLeft","parent":"Head","position":[0.180,2.700,0.228]},
-    {"name":"UpperLidRight","parent":"Head","position":[-0.180,2.700,0.228]},
+    {"name":"UpperLidLeft","parent":"Head","position":[0.180,2.7515,0.2231]},
+    {"name":"UpperLidRight","parent":"Head","position":[-0.180,2.7515,0.2231]},
     {"name":"WingLeft","parent":"Spine","position":[0.425,1.995,-0.020]},
     {"name":"WingTipLeft","parent":"WingLeft","position":[0.495,1.385,0.008]},
     {"name":"WingRight","parent":"Spine","position":[-0.425,1.995,-0.020]},

@@ -1,10 +1,26 @@
 # ATLAS implementation evidence
 
+**Current checkpoint, 4 October 2026:** PR53 (contract v38 / app 1.23.12+47),
+PR54 (priority UI / app 1.23.13+48), PR55 (static full-body greeting /
+app 1.23.14+49) and PR56 (scoped language/motion intensity / app 1.23.15+50)
+are accepted and merged, each after all 16 hosted checks passed. The private
+Mac package is verified through 1.23.15 (50), from PR56's exact accepted source.
+The last complete matching 3D export and visual review is eyelid-03, with all
+nine structure checks passing and the full model still unaccepted. Throat-04 and
+beak-02 are retained historical checkpoints; throat-03 was rejected for its coarse staircase
+boundary. PR57's expanded web Voice shared player is accepted and merged after
+all 14 applicable hosted checks passed; native API/version and Mac 1.23.15 (50)
+are unchanged. Software UI priorities through PR57 are accepted. The next
+body/tuft follow-up is planned and has not started. No
+3D/state bundle publication or production promotion has occurred. The dated entries below retain earlier
+preparation and validation boundaries; the final release checkpoints record
+their later acceptance without completing whole-task gates.
+
 ## First web slice — merged, 3 October 2026
 
 Source baseline: `dc1cfe6e9c51e84f85c78bb482fe1d082dfc735a` on `main`,
-including the merged operational follow-ups and ATLAS plan. The implementation
-branch is `codex/atlas-web-foundation`.
+including the merged operational follow-ups and ATLAS plan. This first slice's
+implementation branch was `codex/atlas-web-foundation`.
 
 | Surface | Scope in this slice | Validation status |
 |---|---|---|
@@ -1628,23 +1644,41 @@ purpose. No record-purpose list or RLS policy was widened.
 ## ATLAS bounded adapters and neutral delivery — 4 October 2026
 
 Web/native bounded poster-and-sprite adapters are implemented with exact state
-admission, completion deduplication, interruption and static fallback. Production
-still uses the approved neutral portrait. The public manifest returns only
+admission, completion deduplication, interruption and static fallback. The
+adapters retain the approved neutral portrait. The public manifest returns only
 `{"schemaVersion":1,"status":"awaiting-art-review"}`; web reads revalidate with
-`no-cache`. No sculpt-02 artwork has been published or accepted.
+`no-cache`. No 3D/state bundle has been published or accepted. PR55's later
+static full-body greeting has a separate release checkpoint below.
 
 Root passed 26 web adapter unit cases, full Flutter analysis with no issues, and
 all 37 companion cases in `atlas-companion-final-regression.log` (the prior
 15-case result was a subset). The full adapter web build passed in
-`atlas-adapter-final-web-build.log` before the later manifest/cache adjustment;
-the subsequent package remains pending. Nine Node geometry/lifecycle checks
-and three Python tool tests also passed for the sculpt-02 source workbench.
+`atlas-adapter-final-web-build.log` before the later manifest/cache adjustment.
+That historical package-preparation checkpoint is superseded by the signed
+packages and hosted acceptance below. Nine Node geometry/lifecycle checks and
+three Python tool tests also passed for the sculpt-02 source workbench.
 
-The actual sculpt export has 104 artifacts, 14 bones and 12 clips: eight states
-and four inspection aliases. Visual review found insufficient likeness in the
-neck/throat, eyes, feather volumes, crown and feet. Source/export tooling and
+The last complete matching eyelid-03 export at
+`2026-10-04T18:03:14.083731+00:00` binds
+`sculpt-04-eyelid-03-interior-surface-clearance` and has 104 artifacts,
+27,190 vertices, 49,748 triangles, 14 bones and 12 clips: eight states and
+four inspection aliases, in a 2,035,216-byte GLB. All nine structure checks
+passed. Root reviewed actual rest, mid-blink and peak-blink front/three-quarter/profile
+captures: forward bulge is much reduced, front white breakthrough is gone,
+and the neutral iris remains legible. A thin outer white seam and profile gap
+remain; final blink and full-model acceptance are open. Matching source/output is archived as `atlas-eyelid-03-review.tar.gz`.
+The planned body/tuft follow-up has not started;
+no later source or export is claimed.
+
+Throat-04's finer-boundary checkpoint is retained in `atlas-throat-04-review.tar.gz`.
+The latest eyelid-03 retains its counts with revised source/weights.
+
+Beak-02 remains a historical retained baseline in `atlas-beak-02-review.tar.gz`;
+its 18 comparison captures showed an improved beak without accepting the full
+model. Throat-03 was rejected for its coarse staircase boundary. Historical
+sculpt-04 passed all nine geometry/lifecycle checks. Source/export tooling and
 an explicit hash-verifying publisher exist; final art acceptance does not.
-The archived rough-01 performance comparison does not measure this revision.
+The archived rough-01 performance comparison does not measure eyelid-03.
 Details and exact evidence boundaries are in `atlas-production/README.md`,
 `ART_REVIEW.md`, `MEASUREMENTS.md` and `PERFORMANCE_PLAN.md`. A functional release
 with approved static ATLAS is permitted; full-plan completion, physical-device
@@ -1786,30 +1820,142 @@ Both architectures and nested hardened-runtime signatures are verified.
 
 These checkpoints do not establish production promotion. The paired release
 runner still needs the migration-owner connection, gateway token and paid/admin
-smoke credentials. Contract38 development is batched in an isolated checkout;
+smoke credentials. The later contract38 acceptance is recorded below;
 broad local regression remains deferred at the owner's request. Whole-task
 checkboxes retain outstanding device, live-effect, artwork and parity gates.
 
 
-## Contract38 implementation batch — in progress, 4 October2026
+## Contract38 implementation batch — accepted and merged, 4 October 2026
 
-The isolated native-memory-promotion checkout batches native Memory promotion,
+The isolated native-memory-promotion checkout delivered native Memory promotion,
 Account workflow/fact mutations, custom Agent/Skill mutations, linked Recording
 processing and Salesforce sync/reconcile/disconnect. Source-map decisions and
 reviewed local connected-source deletion, advanced private graph inspection,
 maintenance/rebuild and single-document cognition are implemented across their
-server and native surfaces. Publication contains44 additional operations and15 capability floors;
-the application-service inventory is247. This is implementation inventory, not
-release acceptance.
+server and native surfaces. Publication contains 44 additional operations and
+15 capability floors; the application-service inventory is 247. Contract v38
+and app 1.23.12+47 are accepted through PR53.
 
-The full Flutter analyzer passes for the combined app. All235 migrations applied
-and verified on a disposable database with261 tenant tables; all17 focused
+The full Flutter analyzer passed for the combined app. All 235 migrations applied
+and verified on a disposable database with 261 tenant tables; all 17 focused
 Recording, source-map/deletion/paid-build, maintenance/rebuild and Salesforce
 PostgreSQL cases passed. Earlier all six Agent/Skill owner cases passed with
 direct private identity-registry access still denied. A later Salesforce fixture
-JSON-parameter correction is included for hosted validation. Contract generation
+JSON-parameter correction was included for hosted validation. Contract generation
 and the full Next.js production build, including TypeScript compilation, passed.
 Changed-file ESLint and generated-contract verification also passed.
 
-Broad local regression remains deferred at the owner's request. The signed Mac package, exact-head hosted acceptance and production promotion
-remain separate.
+PR53 passed all 16 hosted checks on
+`8786a1bd98f5fa74477f7824aa854615aa27ac0b` and merged at
+`2026-10-04T07:24:39Z` as `10c086ad4fc25a9edbe110fd6b4b657b0d466d9b`.
+The corrected universal signed private package
+`macos-memory-actions-release/Asael-1.23.12-47-macOS.dmg` is ready, SHA-256
+`f47a7a364983680d4217bf8d86d8a3c2fe1339d249161e560c161dda7e110dc6`.
+It was built from corrected `4a242024`; the later accepted correction changed
+test files only. Universal architectures, version/build and nested signatures
+were verified. Broad local regression remains deferred at the owner's request;
+repository acceptance and packaging do not establish production promotion.
+
+## Priority UI revamp — accepted and merged, 4 October 2026
+
+PR54 / app 1.23.13+48 passed all 16 hosted checks on
+`4e62457533a3a57a4cf4470c353a1bfe5f67a1b2` and merged at
+`2026-10-04T08:29:52Z` as `cab9d5f77066872ae9a9a3b4f7a68a76cc6b0ea2`.
+The compact default rail preserves explicit saved preferences; Assistant and
+native Talk prioritize readable conversation and reachable composer controls.
+Native Today, expanded web Voice and dense Work were visually reviewed.
+The maintained Assistant/Voice browser suite passed 107 checks and companion
+presence passed 73. Full Flutter analysis, focused native checks and eight
+native visual captures passed. Required hosted build/browser/integration
+corrections passed before acceptance.
+
+The universal signed private package
+`macos-ui-priority-release/Asael-1.23.13-48-macOS.dmg` is ready, SHA-256
+`d38b7787c35ee757cb443a58b41a7a7ba7df5bb99b41c4d076d46d87bd9c5c68`,
+from `2fe00481f8505d9ffa241fb9553e095011eb03e9`. Later native corrections
+were test-only. Universal architectures, version/build and nested signatures
+were verified. This acceptance does not close physical-device or final-art gates.
+
+## Static full-body ATLAS greeting — accepted and merged, 4 October 2026
+
+PR55 passed all 16 hosted checks on
+`e9f1fbdbcf8f5e4bc576787e7d355820787490ba` and merged at
+`2026-10-04T17:01:53Z` as `c597c204aa49a852da4fe5f02b8708ab5cf3e0e1`.
+It implements a bounded static greeting from the approved contact sheet, with
+app 1.23.14+49. Identical web/native 211×432 PNGs are 84,847 bytes, SHA-256
+`cb5db22c48af8e2f883be9b256226a50b4d26f97c82e516b3c240e9aa691eb53`,
+with crop/source provenance. Full Flutter analysis, 21 focused cases,
+changed-file ESLint, 39 focused browser greeting checks and five native
+visual captures passed. The reviewed 320px/200%-text correction leaves 198px
+of usable draft text width with Send reachable above navigation. The eight-state
+art manifest is unchanged; this static asset does not accept the 3D artwork.
+
+The universal signed private package
+`macos-atlas-greeting-release/Asael-1.23.14-49-macOS.dmg` is ready, SHA-256
+`053f382551b221f1b774bf088098a25033571ac6d882df135e81bef064cd329e`,
+from `38839901326f7a065a25235a898aaf0195ce1529`. The final PR55 correction
+affects web CSS, browser checks and documentation; packaged native code is
+unchanged. Universal architectures, version/build and nested signatures were
+verified. Signing is local/private, not Apple notarization; the installed app
+is unchanged. The private Mac 1.23.14 (49) package and final-head hosted
+checks are verified; production promotion remains separate.
+
+## Scoped ATLAS personality — accepted and merged, 4 October 2026
+
+PR56 / app 1.23.15+50 passed all 16 hosted checks on
+`a3fb4215b632f8b6d56487e3617b0afb82085aba` and merged at
+`2026-10-04T17:24:06Z` as `fe36089bc409e79e5fc267a277a65cb2605c3ee0`.
+All 277 focused web/server checks, full Flutter analysis and 11 companion
+checks passed. There is no database migration, API contract version or Agent
+definition version change.
+
+New authenticated direct conversations, including foreground prompt-queue
+dispatches, pin the initiating person's Quiet/Balanced/Expressive language
+preference. Fixed delivery guidance preserves Agent identity, instructions,
+requested format and governed authority. Failed or ambiguous reads use neutral
+wording; approval resumes retain the original compiled instructions. Background,
+delegated, durable and genuine loop-v2 execution remain outside this slice.
+Explicit model selection labels the ordinary runner it actually dispatches.
+
+Web/native decorative motion follows intensity: Quiet stays still, Balanced
+permits a newly verified completion reaction, and Expressive also permits
+truthful listening/responding/working transitions. Attention, errors and paused
+states stay composed; preference changes do not replay consumed history. The
+static greeting and unpublished state manifest are unchanged.
+
+The private Mac 1.23.15 (50) package is fully verified from exact accepted source
+`a3fb4215b632f8b6d56487e3617b0afb82085aba`, SHA-256
+`be0c8ecb2f5e24f54d10c48a1ef020798cd864bade14d31ec380009ec443c185`.
+This is repository and package acceptance, not final art, physical-device
+performance or production promotion.
+
+## Expanded web Voice shared player — accepted and merged, 4 October 2026
+
+PR57 passed all 14 applicable hosted checks on
+`76a2230e911d1d8436c731fc965f53037b5dadd6` and merged at
+`2026-10-04T17:57:33Z` as `79386e2694a39cb01d5948f1fbbc6e06513105cf`.
+Expanded web Voice now shares the bounded ATLAS player. The 48 focused unit
+checks, 114 maintained browser checks and ESLint passed.
+
+Local compact/greeting validation reached 75 passing checks before a 180-second
+document-navigation timeout; that run is not a complete local pass. The full
+browser suite subsequently passed on the exact hosted head. This web-only
+change leaves native API/version and the verified Mac 1.23.15 (50) package
+unchanged. Software UI priorities through PR57 are accepted; final artwork,
+physical-device/performance acceptance and production promotion remain open.
+
+## Production and parked work — 4 October 2026
+
+No production migration or paired deployment has occurred. Canonical production
+was healthy at about 11:04 UTC on
+`a06aa78b843cce6c8f41a79ec5beb6192f3c4b20`, recorded in
+`production-health-ui-priority.json`. The owner release environment still needs
+the migration-owner connection, active gateway token and paid/admin smoke
+credentials. Private signing and ready packages do not replace those gates.
+
+Connector expansion at `ba468e7f` is parked and not merged. Scoped personality
+implementation is accepted through PR56. Final 3D likeness, state acting,
+physical-device/voice/performance acceptance, the integrated
+Responsibility pilot and reviewed live effect remain open. Exact release
+evidence is retained in
+`/Volumes/Extreme Pro/Asael-release-records/2026-10-03-followups/ui-validation/ATLAS_RELEASE_STATUS.md`.

@@ -1,4 +1,4 @@
-/** ATLAS sculpt 04 — compact shoulders, flowing cheek field and directional plumage.
+/** ATLAS sculpt 04, eyelid 03 — unreviewed interior lid clearance correction.
  * No raster planes, generated imagery, physics, audio, providers or app imports.
  * Geometry is deterministic; Three UUIDs are internal and not provenance IDs.
  */
@@ -51,53 +51,72 @@ function loft(profile, segments, sculptFace=false) {
   return geometry(positions, indices);
 }
 
-/** A short asymmetric cheek sweep lies on the neck, with a feathered edge. */
-function throat(profile, silhouette) {
-  const positions = [], indices = [], tones = [], across = 32;
-  for (const [y, width, lift] of profile) {
-    for (let n = 0; n <= across; n++) {
-      const t = n / across * 2 - 1;
-      const flow=clamp((2.69-y)/.48),sampleY=y+.067*t*flow*clamp(width/.13);
-      const [,rx,rz,cz] = profileAt(silhouette,sampleY);
-      const edge=1+.016*Math.sin(y*67+t*9)*Math.abs(t)**4;
-      const x=t*width*edge-.055*flow*flow;
-      const grain=Math.max(0,Math.cos(t*31+flow*4))**4;
-      positions.push(x,sampleY,cz+rz*frontContour(sampleY,Math.sqrt(Math.max(.01,1-(x/rx)**2)))+lift+.002*grain);
-      tones.push(.985+.022*grain-.015*Math.abs(t));
+/** Rounded throat-02 contour, used only as color on the existing front neck. */
+function throatMask(profile) {
+  const curve=new THREE.CatmullRomCurve3(profile.map(([y,width])=>new THREE.Vector3(width,y,0)),false,'centripetal');
+  const contour=Array.from({length:81},(_,row)=>{const point=curve.getPoint(row/80);return [point.y,point.x];});
+  const low=profile[0][0],high=profile.at(-1)[0];
+  return ({x,y,z})=>{
+    if(z<=0||y<low-.08||y>high+.08)return 0;
+    // Invert the previous patch's rounded, sideways sweep at this neck vertex.
+    let lower=low,upper=high;
+    for(let step=0;step<12;step++) {
+      const baseY=(lower+upper)/2,width=profileAt(contour,baseY)[1];
+      const flow=clamp((2.69-baseY)/.50),top=clamp((baseY-2.60)/.085);
+      const t=Math.max(-1,Math.min(1,(x+.070*flow*flow)/width));
+      const mappedY=baseY+.050*t*flow+.055*t*t*flow-.024*t*t*top;
+      if(mappedY<y)lower=baseY;else upper=baseY;
     }
-  }
-  for (let row = 0; row < profile.length - 1; row++) {
-    for (let n = 0; n < across; n++) {
-      const a = row * (across + 1) + n, b = a + 1, d = a + across + 1, c = d + 1;
-      indices.push(a, b, d, b, c, d);
-    }
-  }
-  const result=geometry(positions, indices);
-  result.setAttribute('tone',new THREE.Float32BufferAttribute(tones,1));
-  return result;
+    const baseY=(lower+upper)/2,width=profileAt(contour,baseY)[1],flow=clamp((2.69-baseY)/.50);
+    const t=(x+.070*flow*flow)/width;
+    const distance=Math.min((1-Math.abs(t))*width,(baseY-low)*.85,(high-baseY)*1.30);
+    // Cover several refined shell rows and the coarser underlying vertices.
+    const fade=clamp(distance/.060);
+    return fade*fade*(3-2*fade);
+  };
 }
 
-/** A raised cere, faceted central keel and a hooked tip, not a flat gold kite. */
+// Z, mouth-edge Y, half-width, ridge height. The broad mouth corners end
+// before the narrow descending hook; increasing Z avoids a folded-back tip ring.
+const beakSections=[[.246,2.648,.071,.095],[.292,2.628,.119,.126],[.339,2.615,.150,.136],
+  [.381,2.595,.146,.143],[.432,2.577,.083,.128],[.478,2.546,.039,.109],
+  [.512,2.512,.024,.079],[.533,2.476,.017,.051],[.544,2.448,.010,.026],[.547,2.432,.002,.006]];
+
+/** A rounded projecting culmen narrows into a continuous descending hook. */
 function upperBeak() {
-  const sections = [[.246,2.645,.090,.104],[.305,2.630,.139,.135],[.387,2.601,.147,.143],
-    [.469,2.557,.106,.132],[.533,2.498,.054,.100],[.559,2.441,.017,.050],[.543,2.415,.0015,.005]];
-  // Broad mouth corners are below the narrow culmen. The near-vertical lower
-  // side planes make the hook's thickness readable from the front as well.
-  const section=[[1,0],[.84,.36],[.48,.77],[0,1],[-.48,.77],[-.84,.36],[-1,0],[-.77,-.18],[0,-.25],[.77,-.18]];
+  const ridgeForward=[.012,.030,.049,.067,.075,.061,.043,.028,.019,.012];
+  const section=[[1,0],[.84,.28],[.34,.58],[.12,.92],[0,1],[-.12,.92],[-.34,.58],[-.84,.28],[-1,0],[-.77,-.18],[0,-.25],[.77,-.18]];
   const rings=[],tones=[];
-  for(let row=0;row<sections.length;row++) {
-    const [z,y,rx,ry]=sections[row];
-    rings.push(section.flatMap(([x,h])=>[x*rx,y+h*ry,z+(1-Math.abs(x))*.012]));
-    for(const [x,h] of section)tones.push(.78+.20*Math.max(0,h)+.025*(1-Math.abs(x))-.035*row/(sections.length-1));
+  for(let row=0;row<beakSections.length;row++) {
+    const [z,y,rx,ry]=beakSections[row];
+    rings.push(section.flatMap(([x,h])=>{
+      const crest=(1-Math.abs(x))**2*Math.max(0,h);
+      return [x*rx,y+h*ry,z+(1-Math.abs(x))*.012+(ridgeForward[row]-.012)*crest];
+    }));
+    for(const [x,h] of section)tones.push(.72+.23*Math.max(0,h)+.04*(1-Math.abs(x))-.07*clamp((row-5)/4));
   }
   return ringMesh(rings,section.length,tones);
 }
 
 function mandible() {
-  const sections=[[.253,2.583,.107,.024],[.327,2.584,.134,.022],[.410,2.544,.096,.024],[.487,2.499,.046,.020],[.525,2.465,.007,.005]];
-  return ringMesh(sections.map(([z,y,rx,ry])=>Array.from({length:12},(_,n)=>{
-    const a=n*Math.PI/6;return [rx*Math.cos(a),y+ry*Math.sin(a),z];
-  }).flat()),12);
+  // Fit the upper lip's concave underside instead of placing a round blade
+  // below it. The whole thin shell still belongs to the existing Jaw bone.
+  const contact=[[1,0],[.77,-.18],[0,-.25],[-.77,-.18],[-1,0]];
+  const thickness=[.014,.020,.022,.020,.016,.010,.004];
+  const rings=beakSections.slice(0,7).map(([z,y,rx,ry],row)=>{
+    const top=contact.map(([x,h])=>[x*rx,y+h*ry-.0015,z+(1-Math.abs(x))*.012]);
+    return [...top,...top.map(([x,y,z])=>[x,y-thickness[row],z]).reverse()].flat();
+  });
+  const result=ringMesh(rings,10);
+  // Pair top/bottom cap strips: a vertex-0 fan would cross the concave trough.
+  const indices=Array.from(result.index.array).slice(0,(rings.length-1)*10*6);
+  for(let n=0;n<4;n++) {
+    const a=n,b=n+1,c=9-n,d=8-n,end=(rings.length-1)*10;
+    indices.push(a,c,b,b,c,d,end+a,end+b,end+c,end+b,end+d,end+c);
+  }
+  result.setIndex(indices);
+  result.computeVertexNormals();
+  return result;
 }
 
 // Broad buried roots and an extended taper avoid the bulbous middle of a leaf.
@@ -134,9 +153,16 @@ function feather(length=1,width=.12,depth=.04,sweep=0,curl=.015) {
 
 /** Shallow continuous feather grain: no repeated raised plates on the torso. */
 function plumageShell(profile,low,high,rows=60,sides=112) {
-  const positions=[],indices=[],tones=[];
-  for(let row=0;row<=rows;row++) {
-    const y=low+(high-low)*row/rows,[,rx,rz,cz]=profileAt(profile,y);
+  const positions=[],indices=[],tones=[],levels=[];
+  // Refine only the final fourteen neck bands. With the existing 60/112 grid,
+  // one band is halved and thirteen are divided into thirds: +27 rows.
+  for(let row=0;row<rows;row++) {
+    const divisions=row>rows-14?3:row===rows-14?2:1;
+    for(let step=0;step<divisions;step++)levels.push(low+(high-low)*(row+step/divisions)/rows);
+  }
+  levels.push(high);
+  for(let row=0;row<levels.length;row++) {
+    const y=levels[row],[,rx,rz,cz]=profileAt(profile,y);
     const boundary=Math.min(clamp((y-low)/.11),clamp((high-y)/.11));
     for(let n=0;n<sides;n++) {
       const angle=n*2*Math.PI/sides;
@@ -150,7 +176,7 @@ function plumageShell(profile,low,high,rows=60,sides=112) {
       tones.push(1+boundary*(-.03+.045*shaft+.012*layer));
     }
   }
-  for(let row=0;row<rows;row++)for(let n=0;n<sides;n++) {
+  for(let row=0;row<levels.length-1;row++)for(let n=0;n<sides;n++) {
     const a=row*sides+n,b=row*sides+(n+1)%sides;indices.push(a,b,a+sides,b,b+sides,a+sides);
   }
   const result=geometry(positions,indices);
@@ -263,20 +289,52 @@ function eyeDisc(rx,ry,cx,cy,offset,side) {
 }
 
 /** A soft lid grows back into the face; only a thin inner seam stays visible. */
-function eyelid(side,upper=true,seam=false) {
-  const positions=[],indices=[],across=24,rows=seam?1:4;
+function eyelid(side,upper=true,seam=false,hinge=null) {
+  const positions=[],indices=[],headWeights=[],across=24,rows=seam?1:4;
+  const closeCos=Math.cos(68*DEG),closeSin=Math.sin(68*DEG);
   for(let row=0;row<=rows;row++) for(let n=0;n<=across;n++) {
     const u=n/across*2-1,v=row/rows,edge=Math.sin((u+1)*Math.PI/2)**.72;
     const inner=(upper?lidUpper:-eyeLower)*edge,x=u*(eyeWidth+v*(seam?.001:.025));
     const depth=upper
       ?.005+.032*edge-(seam?-.0005:.060*v**4)+Math.sin(Math.PI*v)*(seam?0:.005)
       :.014+.003*edge-v*(seam?-.0005:.044)+Math.sin(Math.PI*v)*(seam?0:.006);
-    positions.push(x,inner+(upper?1:-1)*v*(seam?.0015:.034*edge+.006),eyeSag(x,side)+depth);
+    const localY=inner+(upper?1:-1)*v*(seam?.0015:.034*edge+.006);
+    let z=eyeSag(x,side)+depth;
+    if(upper) {
+      const root=seam?0:clamp((v-.25)/.50),rimX=u*eyeWidth,rimY=lidUpper*edge;
+      const [hingeY,hingeZ]=hinge,targetY=-(eyeLower+.002)*edge;
+      // Fit each column to the lower aperture at the existing 68-degree peak.
+      // The surface guard also places the stationary canthi ahead of sclera.
+      const surfaceZ=eyeDepth(rimX,rimY,side)+.004;
+      const fittedZ=hingeZ+((rimY-hingeY)*closeCos-(targetY-hingeY))/closeSin;
+      const rimZ=edge<.0001?surfaceZ:Math.max(surfaceZ,fittedZ);
+      const closedY=hingeY+(rimY-hingeY)*closeCos-(rimZ-hingeZ)*closeSin;
+      const mobile=edge<.0001?0:clamp((targetY-rimY)/(closedY-rimY));
+      z+=(rimZ-(eyeSag(rimX,side)+.005+.032*edge))*(1-root);
+      const head=Math.max(root,1-mobile);
+      if(!seam&&v>0&&v<1) {
+        // The fitted edge alone does not keep the bridge over the curved eye.
+        // Guard existing interior rows in both neutral and peak-closure poses;
+        // use the aperture column so the bridge to the canthus stays covered.
+        const moving=1-head,clearance=.006+.002*edge;
+        for(let fit=0;fit<3;fit++) {
+          const posedY=localY+moving*((localY-hingeY)*(closeCos-1)-(z-hingeZ)*closeSin);
+          const posedZ=z+moving*((localY-hingeY)*closeSin+(z-hingeZ)*(closeCos-1));
+          const restGap=eyeDepth(rimX,localY,side)+clearance-z;
+          const closedGap=eyeDepth(rimX,posedY,side)+clearance-posedZ;
+          z+=Math.max(0,restGap,closedGap/(1-moving*(1-closeCos)));
+        }
+      }
+      headWeights.push(head);
+    }
+    positions.push(x,localY,z);
   }
   for(let row=0;row<rows;row++) for(let n=0;n<across;n++) {
     const a=row*(across+1)+n,b=a+1,d=a+across+1,c=d+1;indices.push(a,b,d,b,c,d);
   }
-  return geometry(positions,indices);
+  const result=geometry(positions,indices);
+  if(upper)result.setAttribute('lidHeadWeight',new THREE.Float32BufferAttribute(headWeights,1));
+  return result;
 }
 
 function profileAt(profile, y) {
@@ -305,6 +363,7 @@ export function createAtlas(config) {
   });
   const p = [], n = [], colors = [], joints = [], weights = [], indices = [], parts = [];
   const color = new THREE.Color(), point = new THREE.Vector3(), normal = new THREE.Vector3();
+  const throatWeight=throatMask(config.throatProfile);
   const spineWeight = (y) => {
     if (y < 0.65) return [['Root', 1]];
     if (y < 1.96) return [['Spine', 1]];
@@ -315,13 +374,19 @@ export function createAtlas(config) {
     const matrix = new THREE.Matrix4().compose(new THREE.Vector3(...position), quaternion(rotation), new THREE.Vector3(...scale));
     const normalMatrix = new THREE.Matrix3().getNormalMatrix(matrix), offset = p.length / 3;
     const vertices = mesh.getAttribute('position'), normals = mesh.getAttribute('normal'), tones=mesh.getAttribute('tone');
+    const lidHeadWeights=bone==='UpperLidLeft'||bone==='UpperLidRight'?mesh.getAttribute('lidHeadWeight'):null;
     color.set(config.palette[shade]);
+    const hasThroat=name==='continuous_eagle_silhouette'||name==='continuous_directional_plumage';
+    const throatPale=hasThroat?new THREE.Color(config.palette.throat):null,throatColor=hasThroat?color.clone():null;
     for (let i = 0; i < vertices.count; i++) {
       point.fromBufferAttribute(vertices, i).applyMatrix4(matrix);
       normal.fromBufferAttribute(normals, i).applyMatrix3(normalMatrix).normalize();
       const tone=tones?.getX(i)??1;
-      p.push(point.x,point.y,point.z); n.push(normal.x,normal.y,normal.z); colors.push(color.r*tone,color.g*tone,color.b*tone);
-      const influences = typeof bone === 'function' ? bone(point.y) : [[bone,1]];
+      const vertexColor=throatColor?throatColor.copy(color).lerp(throatPale,throatWeight(point)):color;
+      p.push(point.x,point.y,point.z); n.push(normal.x,normal.y,normal.z); colors.push(vertexColor.r*tone,vertexColor.g*tone,vertexColor.b*tone);
+      const influences = lidHeadWeights
+        ? [['Head',lidHeadWeights.getX(i)],[bone,1-lidHeadWeights.getX(i)]]
+        : typeof bone === 'function' ? bone(point.y) : [[bone,1]];
       for (let slot = 0; slot < 4; slot++) { joints.push(influences[slot] ? boneIndex.get(influences[slot][0]) : 0); weights.push(influences[slot]?.[1] || 0); }
     }
     for (let i = 0; i < mesh.index.count; i++) indices.push(offset + mesh.index.getX(i));
@@ -332,9 +397,15 @@ export function createAtlas(config) {
   // Higher shoulders shorten the exposed neck. Fine continuous grain supplies
   // the body texture; a few low tufts describe the direction of the plumage.
   const silhouette=[...config.bodyProfile.filter(row=>row[0]<config.headProfile[0][0]),...config.headProfile];
-  append('continuous_eagle_silhouette',loft(silhouette,config.radialSegments,true),'umber',spineWeight);
+  // Additional neck rows sample the existing profile so its underlying color
+  // follows the same mask as the feather shell, including the blended edge.
+  const coloredSilhouette=silhouette.flatMap((section,index)=>{
+    const next=silhouette[index+1];
+    const steps=next&&section[0]<2.75&&next[0]>2.11?Math.ceil((next[0]-section[0])/.020):1;
+    return Array.from({length:steps},(_,step)=>profileAt(silhouette,section[0]+(next?next[0]-section[0]:0)*step/steps));
+  });
+  append('continuous_eagle_silhouette',loft(coloredSilhouette,config.radialSegments,true),'umber',spineWeight);
   append('continuous_directional_plumage',plumageShell(silhouette,.46,2.68),'umber',spineWeight);
-  append('flowing_cheek_and_throat',throat(config.throatProfile,silhouette),'throat',spineWeight);
 
   const breastTufts=[[2.13,.38,.21,.067,.12],[2.04,.78,.25,.076,.15],[1.94,.13,.19,.061,.09],
     [1.85,.57,.23,.074,.16],[1.72,.95,.24,.072,.18],[1.64,.29,.21,.065,.11],
@@ -351,12 +422,7 @@ export function createAtlas(config) {
     const [y,a,length,width]=backTufts[j];
     append(`mantle_flow_tuft_${side}_${j}`,plumageTuft(silhouette,y,side*a,length,width,side*.14),'umber',spineWeight);
   }
-  // Only six small cheek tufts overlap the pale field; there are no vertical
-  // rows extending from the jaw to the collar, which read as a separate beard.
-  for(const side of [-1,1])for(let j=0;j<3;j++) {
-    append(`cheek_swept_tuft_${side}_${j}`,plumageTuft(silhouette,2.613-j*.074,side*(.80-j*.16),.136,.033,-side*.13,.016),
-      'throat',spineWeight);
-  }
+  // The pale cheek edge is color on the neck itself; no sheet or loose strips.
   append('charcoal_collar',collarBand(silhouette),'collar','Neck');
   append('collar_upper_stitch',collarBand(silhouette,true),'collarEdge','Neck');
   append('collar_overlap',geometry([-.166,2.162,.282,-.063,2.144,.304,-.091,2.068,.329,-.182,2.105,.305],[0,1,2,0,2,3]),'collar','Neck');
@@ -366,13 +432,13 @@ export function createAtlas(config) {
   for (const side of [-1,1]) {
     const suffix = side === 1 ? 'Left' : 'Right';
     const eye=[side*.180,2.761,.258];
+    const lidPivot=worldRest.get(`UpperLid${suffix}`),lidHinge=[lidPivot.y-eye[1],lidPivot.z-eye[2]];
     append(`almond_eye_${suffix}`,eyeSurface(side),'eyeWhite','Head',eye);
     append(`iris_${suffix}`,eyeDisc(.058,.064,-side*.010,-.006,.0015,side),'iris','Head',eye);
     append(`pupil_${suffix}`,eyeDisc(.024,.035,-side*.010,-.006,.003,side),'pupil','Head',eye);
     ellipsoid(`eye_highlight_${suffix}`,'eyeWhite','Head',[side*.159,2.769,.296],[.0065,.008,.0015],[0,0,0],12);
-    const lidWeight=y=>{const head=clamp((y-2.809)/.025);return [['Head',head],[`UpperLid${suffix}`,1-head]];};
-    append(`soft_upper_lid_${suffix}`,eyelid(side,true),'umber',lidWeight,eye);
-    append(`upper_lid_seam_${suffix}`,eyelid(side,true,true),'umber',lidWeight,eye);
+    append(`soft_upper_lid_${suffix}`,eyelid(side,true,false,lidHinge),'umber',`UpperLid${suffix}`,eye);
+    append(`upper_lid_seam_${suffix}`,eyelid(side,true,true,lidHinge),'umber',`UpperLid${suffix}`,eye);
     append(`soft_lower_lid_${suffix}`,eyelid(side,false),'umber','Head',eye);
     // Lift the inner brow enough to read as poised attention, not an eye mask.
     append(`neutral_brow_sweep_${suffix}`,sweepVolume([[side*.065,2.818,.254],[side*.147,2.840,.259],[side*.240,2.837,.228],[side*.331,2.816,.140]],
@@ -387,7 +453,7 @@ export function createAtlas(config) {
       [side*(.108+j*.058),3.047-j*.026,-.129-j*.030],
       [side*(.188+j*.037),3.072-j*.019,-.247-j*.048]],
       [.069-j*.008,.067-j*.007,.037-j*.003,.0015],[.017,.022,.015,.001],14,8,true),'umber','Head');
-    ellipsoid(`nostril_${suffix}`,'beakShadow','Head',[side*.106,2.689,.338],[.012,.005,.004],[0,side*30,side*12],12);
+    ellipsoid(`nostril_${suffix}`,'beakShadow','Head',[side*.101,2.666,.323],[.012,.005,.004],[0,side*30,side*12],12);
 
     ellipsoid(`folded_wing_underform_${suffix}`,'umber',`Wing${suffix}`,[side*.445,1.601,-.065],[.167,.493,.177],[0,0,side*8],20);
     for(let row=0;row<3;row++) for(let j=0;j<4;j++) append(`layered_wing_covert_${suffix}_${row}_${j}`,

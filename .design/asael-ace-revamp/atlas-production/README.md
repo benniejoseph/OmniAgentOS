@@ -1,8 +1,12 @@
 # ATLAS editable source and delivery lab
 
-**Status, 4 October 2026: sculpt-02 exported and visually reviewed; insufficient final likeness, not accepted or published.** The current export records 104 artifacts, including a self-contained 1,414,604-byte skinned GLB with 18,390 vertices, 33,718 triangles, 14 bones and 12 clips. The eight application-state clips and four inspection aliases are authored, but their existence is not artistic acceptance. See [ART_REVIEW.md](ART_REVIEW.md) for the actual findings.
+**Status, 4 October 2026: eyelid-03 is the last complete matching export and visual review; the full model remains unaccepted and unpublished.** That export records 104 artifacts, including a self-contained 2,035,216-byte skinned GLB with 27,190 vertices, 49,748 triangles, 14 bones and 12 clips. All nine structure checks passed. Root reviewed actual rest, mid-blink and peak-blink front/three-quarter/profile captures: forward bulge is much reduced, front white breakthrough is gone and the neutral iris remains legible. A thin outer white seam and profile gap remain; final blink and overall artwork acceptance are still open. The eight application-state clips and four inspection aliases are authored, but their existence is not artistic acceptance. Throat-04 and beak-02 remain historical checkpoints. See [ART_REVIEW.md](ART_REVIEW.md) for the actual findings.
 
-The approved static concept portrait remains the web/native companion asset. Web and native bounded raster adapters are implemented; root's web adapter unit run passed 26 cases, the full native analyzer reported no issues, and all 37 companion cases passed. No sculpt-02 artwork has been published. The public HTTP-200 manifest contains only `{"schemaVersion":1,"status":"awaiting-art-review"}`; the web reader uses `no-cache` so later reviewed metadata is revalidated, while the placeholder retains the approved neutral portrait. The current `output/benchmark.json` is stale rough-01 evidence, not a measurement of this export. [MEASUREMENTS.md](MEASUREMENTS.md) separates the two revisions.
+The approved static concept portrait remains the web/native fallback. Web and native bounded raster adapters are implemented; the earlier adapter checkpoint passed 26 web unit cases, full native analysis and all 37 companion cases. PR54's UI revamp and PR55's approved full-body static greeting are accepted and merged. PR55 passed all 16 hosted checks on `e9f1fbdbcf8f5e4bc576787e7d355820787490ba`; its private Mac app 1.23.14+49 package is verified. No 3D/state bundle has been published. The public HTTP-200 manifest contains only `{"schemaVersion":1,"status":"awaiting-art-review"}`; the web reader uses `no-cache` so later reviewed metadata is revalidated, while the placeholder retains the approved neutral portrait. The retained `output/benchmark.json` is stale rough-01 evidence, not a measurement of eyelid-03. [MEASUREMENTS.md](MEASUREMENTS.md) separates those revisions; [IMPLEMENTATION.md](../IMPLEMENTATION.md) records release acceptance.
+
+PR56's scoped language preference and web/native motion intensity are accepted and merged after all 16 hosted checks passed on `a3fb4215b632f8b6d56487e3617b0afb82085aba`. All 277 focused web/server checks, full Flutter analysis and 11 companion checks passed; the private Mac 1.23.15 (50) package is verified. This changes neither the database/API version nor the unpublished art bundle, and does not establish physical-device performance.
+
+PR57's expanded web Voice integration shares the bounded ATLAS player and is accepted and merged after all 14 applicable hosted checks passed on `76a2230e911d1d8436c731fc965f53037b5dadd6`. The 48 focused unit checks, 114 maintained browser checks and ESLint passed. The complete browser suite passed on that exact hosted head after an incomplete local compact/greeting run. This web-only change leaves native API/version and the verified Mac 1.23.15 (50) package unchanged. Software UI priorities through PR57 are accepted; final artwork, physical-device/performance acceptance and production promotion remain open.
 
 ## Source and usage record
 
@@ -12,7 +16,8 @@ The approved static concept portrait remains the web/native companion asset. Web
 - The user selected this original generated reference and authorized the Asael implementation, including derivative construction and local measurement work. This records project usage authorization and source provenance; no third-party character model or texture is included.
 - SVG paths, procedural mesh topology, bone placement, palette interpretation and clip keyframes are editable authored source. No image-generation API, external character asset, celebrity likeness, sampled voice or downloaded texture was used in this construction. Voice is absent.
 - Procedural seed: **0**, with no random generator. Source geometry and clip inputs are deterministic; browser/GPU pixels and GLB bytes are not promised identical across tool versions or machines. The exporter records actual source hashes and tool versions.
-- Current creative revision: `sculpt-02-eyelids-layered-plumage-eight-states`. The retained `atlas-rough.glb` filename is a compatibility name, not a final-art label.
+- Last fully exported creative revision: `sculpt-04-eyelid-03-interior-surface-clearance`. The retained `atlas-rough.glb` filename is a compatibility name, not a final-art label. Any subsequent source revision requires its own matching complete export before these output facts can change.
+- The next body/tuft follow-up is planned and has not started; no later source or complete export is claimed.
 
 ## Editable files
 
@@ -23,7 +28,7 @@ The approved static concept portrait remains the web/native companion asset. Web
 | `sheets/atlas-front.svg` | Standalone vector construction reference; not an actual mesh render. |
 | `source/model.json` | Proportions, palette, camera, 14-bone hierarchy, static poses and eight state performances. |
 | `source/atlas-model.mjs` | Procedural geometry, skin influences, material, state clips, four inspection aliases and pose reset. |
-| `source/REVISION_NOTES.md` | Authored sculpt-02 changes and their intended scope; actual acceptance is recorded separately here. |
+| `source/REVISION_NOTES.md` | Authored revision history and intended scope; source edits do not establish a matching export or artistic acceptance. |
 | `web/` | Isolated lab, lifecycle gate, viewer and export hooks. No session, microphone, provider or execution channel. |
 | `../../../scripts/atlas/` | Root-run export, inspection, local comparison and explicit publication tools. |
 
@@ -31,7 +36,7 @@ The GLB has actual geometry, skin, joints and animation channels. It can be open
 
 ## State clips and delivery boundary
 
-The current eight-state raster export uses transparent 256px WebP posters and sprite sheets, sampled at 20Hz with four columns. Each clip includes its final endpoint: `frameCount = ceil(durationMs / 50) + 1`, with the last sample clamped to the authored duration. No clip loops.
+The last complete eyelid-03 eight-state raster export uses transparent 256px WebP posters and sprite sheets, sampled at 20Hz with four columns. Each clip includes its final endpoint: `frameCount = ceil(durationMs / 50) + 1`, with the last sample clamped to the authored duration. No clip loops.
 
 | Application state | Duration | Frames per theme |
 | --- | ---: | ---: |
@@ -46,17 +51,17 @@ The current eight-state raster export uses transparent 256px WebP posters and sp
 
 The additional GLB clips `rest`, `quick_reaction`, `speech_test` and `satisfied_nod` are retained inspection aliases. They are not additional application states or independent success signals. The synthetic beak test has no audio or phoneme alignment; the responding gesture does not claim lip sync.
 
-`output/atlas-v1/manifest.json` has schema version 1, the creative revision, frame size 256, fps 20, columns 4, and exactly those eight states. Each state has a duration, frame count and light/dark poster/sprite basenames with SHA-256 hashes. The shared admission bound is at most 1200ms and 25 frames; this source currently uses at most 1120ms and 24 frames. The bundle contains 32 images plus the manifest. Current transparent light/dark image pairs have identical hashes because they share the same lighting without a composited backdrop; their names alone do not establish distinct theme treatment.
+`output/atlas-v1/manifest.json` binds eyelid-03, with schema version 1, frame size 256, fps 20, columns 4, and exactly those eight states. Each state has a duration, frame count and light/dark poster/sprite basenames with SHA-256 hashes. The shared admission bound is at most 1200ms and 25 frames; this export uses at most 1120ms and 24 frames. The bundle contains 32 images plus the manifest. Its transparent light/dark image pairs have identical hashes because they share the same lighting without a composited backdrop; their names alone do not establish distinct theme treatment.
 
 The implemented adapters keep actual microphone/playback precedence, separate work status and verified completion identity. State/receipt observations consumed while motion is suppressed must not replay on return, theme change or late asset arrival. Reduced motion supplies a static image. Hidden/offscreen/disposed instances cancel pending motion, and controls never wait for animation. Assets remain decorative and cannot authorize tools, recording, playback or run completion. The approved static portrait stays available when the bundle is absent or invalid.
 
 ## Export and inspection — root execution only
 
-Root exported the current revision at `2026-10-04T01:59:09.672255+00:00` using Three.js 0.186.0, headless Chrome 154.0.8037.94 and a renderer reporting Apple M2 through ANGLE/Metal. The manifest retains `ROUGH_RENDERED_NOT_REVIEWED` as the export-time status; the subsequent visual rejection is recorded in ART_REVIEW.md. Structural export success is not visual or physical-device acceptance.
+Root exported eyelid-03 at `2026-10-04T18:03:14.083731+00:00` using Three.js 0.186.0, headless Chrome 154.0.8037.94 and a renderer reporting Apple M2 through ANGLE/Metal. The manifest retains `ROUGH_RENDERED_NOT_REVIEWED` as the export-time status; subsequent review found improved eyelid clearance while leaving final blink and full-model acceptance open. Matching source and output are archived in `atlas-eyelid-03-review.tar.gz` under the release evidence directory. Structural export success is not visual or physical-device acceptance.
 
-Root also passed nine sculpt-02 Node geometry/lifecycle checks and three Python tool tests. The full web build with the adapter passed in `atlas-adapter-final-web-build.log`, before the subsequent metadata-only manifest/cache change. The later package remains pending. These validation results do not measure current-asset performance or accept its appearance.
+All nine eyelid-03 structure checks passed. Historical sculpt-04 evidence includes all nine geometry/lifecycle checks passing. Earlier sculpt-02 evidence includes nine Node geometry/lifecycle checks, three Python tool tests and the full adapter web build in `atlas-adapter-final-web-build.log`, before the subsequent metadata-only manifest/cache change. Those historical build/package preparation records are superseded by the accepted PR53/PR54/PR55/PR56 checkpoints and signed packages in IMPLEMENTATION.md. These validation results do not measure eyelid-03 performance or accept its appearance.
 
-Prepared commands, run serially from the repository worktree by root:
+Reproduction commands, run serially from the repository worktree by root after preserving matching prior evidence:
 
 ```sh
 node --test scripts/atlas/model.test.mjs
@@ -78,7 +83,7 @@ The isolated loopback server accepts read methods and the capture tools block un
 python3 scripts/atlas/publish.py --accept-reviewed
 ```
 
-Do not run this admission for the rejected sculpt-02 bundle. The publisher verifies the approved reference, current source/artifact hashes, exact manifest, dimensions, transparency, state names, frame bounds and local basenames. It then copies only the 33-file bundle to `public/companion/atlas-v1` and `apps/flutter/assets/companion/atlas-v1`. It stages both destinations and restores prior files on a reported copy failure; it does not promise cross-filesystem atomicity through a process crash. It does not render, install dependencies, deploy, certify performance or infer artistic approval from a successful export. No publication has occurred as of this record.
+Do not run this admission for the unaccepted eyelid-03 bundle or any later mismatched source. The publisher verifies the approved reference, current source/artifact hashes, exact manifest, dimensions, transparency, state names, frame bounds and local basenames. It then copies only the 33-file bundle to `public/companion/atlas-v1` and `apps/flutter/assets/companion/atlas-v1`. It stages both destinations and restores prior files on a reported copy failure; it does not promise cross-filesystem atomicity through a process crash. It does not render, install dependencies, deploy, certify performance or infer artistic approval from a successful export. No 3D/state-bundle publication has occurred as of this record.
 
 ## Functional release and remaining acceptance
 

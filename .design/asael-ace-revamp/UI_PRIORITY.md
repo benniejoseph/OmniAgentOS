@@ -2,8 +2,8 @@
 
 The owner explicitly prioritized the UI revamp and ATLAS, asking to stabilize the current release and return to connector expansion afterward. The full implementation plan remains in scope; this changes execution order.
 
-PR53 is stabilized and merged with all sixteen hosted checks passing. The UI, static greeting and personality releases are accepted through PR56.
-Expanded Voice playback is the next bounded follow-up. Connector work is preserved in
+PR53 is stabilized and merged with all sixteen hosted checks passing. The UI, static greeting, personality and expanded Voice releases are accepted
+through PR57. Final character artwork and device acceptance remain active. Connector work is preserved in
 `codex/native-connector-controls` and is deferred until after this UI/ATLAS priority.
 
 Visual thesis: a warm, precise conversation workspace with a quiet graphite rail, readable typography, restrained gold and an expressive umber eagle.
@@ -112,10 +112,11 @@ recorded below and remain separate from the approved static greeting.
 
 ## ATLAS boundary
 
-The latest separately archived art study is throat04: 49,748 triangles, a
+The latest separately archived art study is eyelid03: 49,748 triangles, a
 2,035,216-byte GLB, fourteen bones and twelve clips, with all nine structure checks
-passing. Beak volume and throat continuity improve, while fine boundary stepping,
-feather finish, body integration and eyelid closure remain unaccepted.
+passing. Beak volume, throat continuity and frontal blink coverage improve. Fine
+boundary stepping, feather/body integration and a remaining side gap during lid
+closure keep the character unaccepted.
 No 3D artwork has been published. The approved concept portrait remains active,
 with the static full-body greeting implemented above. The final authored model,
 material pass, convincing facial closure, animated greeting/state delivery and
@@ -129,7 +130,7 @@ PR55 passed all sixteen hosted checks on
 The private Mac 1.23.14 (49) package above is verified. Production promotion
 still awaits the owner release environment.
 
-The next implementation pins the initiating person's Quiet/Balanced/Expressive
+The personality implementation pins the initiating person's Quiet/Balanced/Expressive
 language preference for a new authenticated direct conversation, including a
 foreground prompt-queue dispatch. Only fixed delivery guidance enters the prompt;
 Agent identity, instructions, requested format and governed authority keep their
@@ -166,4 +167,17 @@ theme or owner/conversation changes. It uses responsive sprite geometry without
 restarting a clip when layout changes. No native version, migration, API contract
 or public asset publication changes are included.
 
-Validation and exact-head hosted acceptance are pending for this Voice follow-up.
+PR57 passed all fourteen applicable hosted checks on
+`76a2230e911d1d8436c731fc965f53037b5dadd6`, then merged at
+`2026-10-04T17:57:33Z` as `79386e2694a39cb01d5948f1fbbc6e06513105cf`.
+All 48 focused unit cases, changed-file ESLint and 114 maintained browser checks
+passed. The local compact/greeting run passed 75 checks before a document
+navigation timed out; the complete exact-head hosted browser suite subsequently
+passed. Native code remains identical to the verified Mac 1.23.15 (50) package.
+
+The unaccepted art source is checkpointed separately. Its latest matching full
+export is `sculpt-04-eyelid-03-interior-surface-clearance`, archived in
+`atlas-eyelid-03-review.tar.gz` with 104 artifacts and all seventeen source hashes
+verified. The next planned body correction preserves topology while fitting the
+44 chest/mantle tuft grids to the body; wing roots and regular shell ribbing are
+separate remaining defects.

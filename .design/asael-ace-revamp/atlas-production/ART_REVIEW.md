@@ -1,5 +1,82 @@
 # ATLAS actual-art review — 4 October 2026
 
+## Eyelid03 refinement — latest full export, character still unaccepted
+
+Root inspected actual neutral, mid-blink and peak-closure front, three-quarter
+and profile portraits. The revised hinges, fitted rim and interior clearance
+reduce the forward bulge and remove frontal white breakthroughs. The neutral
+iris remains legible. A thin outer white seam and profile gap remain, so full
+blink coverage is not accepted. Body panels, wing integration, regular feather
+ribbing and fine throat-edge quality also remain open.
+
+The matching full export contains 104 artifacts, 27,190 vertices, 49,748 triangles,
+fourteen bones, twelve clips and a 2,035,216-byte GLB, exported at
+`2026-10-04T18:03:14.083731+00:00`. All nine structure/lifecycle checks pass.
+Matching source/output are archived as `atlas-eyelid-03-review.tar.gz`. All
+seventeen source hashes match the export. The counts equal throat04; the source,
+skin weights and rendered frames differ. No art/state bundle is published.
+
+PR57 is accepted at `76a2230e911d1d8436c731fc965f53037b5dadd6` after all fourteen
+applicable hosted checks passed. It merged at 17:57:33 UTC as
+`79386e2694a39cb01d5948f1fbbc6e06513105cf`; expanded Voice now shares bounded
+playback while the public manifest continues to select the neutral fallback.
+Software acceptance does not accept this prototype artwork.
+
+## Throat04 refinement — previous retained export
+
+Root inspected matching front, three-quarter, profile and listening portraits.
+The coarse stepped color boundary is substantially finer; the holes and detached
+strips remain absent. Fine edge stepping, feather finish, body integration and
+convincing eyelid closure still prevent final character acceptance.
+
+The matching full export has 104 artifacts, 27,190 vertices, 49,748 triangles,
+fourteen bones, twelve clips and a 2,035,216-byte GLB. All nine structure/lifecycle
+checks pass. Export time is `2026-10-04T17:30:25.836966+00:00`; matching source and
+output are preserved in `atlas-throat-04-review.tar.gz`. This was the matching full
+export at that checkpoint, with beak02 retained in its geometry. Later eyelid source changes require
+matching renders and must not borrow this export's measurements. No state bundle
+has been published.
+
+## Throat03 comparison — unaccepted
+
+Root inspected the matching front, three-quarter, profile and listening renders.
+Removing the separate pale sheet resolved the visible holes and detached strips,
+but the color boundary is now a coarse staircase along the cheek and diagonal
+throat edge. This revision is not accepted. Its matching source and beak02
+baseline are archived in `throat03-comparison/matching-source-and-baseline.tar.gz`
+within the release evidence directory. Throat04 was the next narrow sampling correction; its completed export is
+recorded above and does not imply publication.
+
+The UI, static greeting and personality release are accepted through PR54–56.
+All 16 hosted checks passed for PR56 at `a3fb4215b632f8b6d56487e3617b0afb82085aba`;
+merge `fe36089bc409e79e5fc267a277a65cb2605c3ee0` completed at 17:24:06 UTC.
+Private Mac 1.23.15 (50) is verified. These software releases do not establish
+final 3D art or physical-device acceptance.
+
+## Beak02 refinement — retained, full character still unaccepted
+
+Root compared 18 actual full-body, portrait and speech-test captures of
+`sculpt-04-beak-02-curved-hook-jaw-contact` with the sculpt04 baseline and approved
+reference. The beak now has shaped mouth corners, a continuous hook in profile
+and a closed resting jaw seam. This is a visible local improvement over the flat
+diamond and separated mandible in the preceding render. The pale angular throat,
+feather finish, attached body volumes and eyelid closure still prevent final
+character acceptance. Selected speech samples do not certify collision-free
+motion or audio alignment.
+
+The matching full export contains 104 artifacts, 23,314 vertices, 41,700 triangles,
+14 bones, 12 clips and a 1,754,824-byte GLB. All nine structural/lifecycle checks
+passed. Matching source and output are archived as `atlas-beak-02-review.tar.gz`
+in the release evidence directory. Narrow later throat source revisions require
+their own matching renders; they must not borrow this export's measurements.
+No 3D/state bundle has been published.
+
+The UI and static full-body greeting are accepted through PR54 and PR55, with
+private Mac package 1.23.14 (49) ready. Those releases use approved concept images
+and do not establish final 3D or physical-device acceptance.
+
+## Previous sculpt-04 review
+
 **Sculpt-04 improves the rough prototype but remains unaccepted for publication.**
 Root inspected the actual front, three-quarter, profile and blink sequence beside
 the approved reference. The shorter throat, larger iris and quieter chest are
@@ -53,6 +130,6 @@ All eight application-state clips are authored, alongside four retained inspecti
 
 The previous rough-01 review also found protruding eyes, a stern brow, spike-like side feathers and primitive body/wing/collar forms. Its output and measurements are preserved in `/Volumes/Extreme Pro/Asael-release-records/2026-10-03-followups/ui-validation/atlas-rough-01-output.tar.gz`; those findings and measurements belong to that older revision.
 
-The approved static concept portrait remains the web/native companion asset. Bounded web/native raster adapters are implemented without publishing this sculpt: 26 web adapter unit cases passed, the full native analyzer reported no issues, and all 37 companion cases passed. Root also passed nine Node geometry/lifecycle checks and three Python tool tests. The public metadata-only `awaiting-art-review` manifest keeps neutral delivery, with web `no-cache` revalidation. The full adapter web build passed before that final manifest/cache change; the later package remains pending. None of these checks accepts art or stands in for physical-device measurement.
+At the sculpt-02 checkpoint, the approved static concept portrait remained the web/native companion asset. Bounded web/native raster adapters were implemented without publishing that sculpt: 26 web adapter unit cases passed, the full native analyzer reported no issues, and all 37 companion cases passed. Root also passed nine Node geometry/lifecycle checks and three Python tool tests. The public metadata-only `awaiting-art-review` manifest kept neutral delivery, with web `no-cache` revalidation. The full adapter web build passed before that final manifest/cache change; later private packages and their release acceptance are recorded above. None of these checks accepts art or stands in for physical-device measurement.
 
 No `--accept-reviewed` publication has occurred. A functional release may retain the approved portrait and working static fallback while final 3D creative delivery remains explicitly outstanding, as allowed by TASKS phase 2 and task 2.6. Do not mark final-model/state-performance tasks 0.5–0.6 or the whole revamp complete from this export.
