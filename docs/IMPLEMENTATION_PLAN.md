@@ -599,7 +599,7 @@ physical-device performance, final artwork and 3D/state-bundle publication remai
 open. The approved static portrait/greeting remains the delivery fallback.
 Production promotion and the remaining implementation program are separate gates.
 
-## Current ATLAS feather-03 checkpoint — 5 October 2026 (IST)
+## Historical ATLAS feather-03 checkpoint — 5 October 2026 (IST)
 
 Root and independent review retain `sculpt-04-feather-03-short-vanes` after 96
 comparison captures. Shorter, broader painted torso vanes reduce the hair-like
@@ -625,14 +625,51 @@ remain feather-02 evidence on unchanged scripts and were not rerun.
 The old 80-state review remains finish-02 evidence. Final art, continuous motion,
 shimmer, physical-device performance and 3D/state-bundle publication remain open.
 
-Native scoped content search is in open PR59 at corrected candidate
-`608368ed679e483105198e62966f02dac198b662`, publishing native v39 / app 1.23.17+52.
-The 59 focused native cases, Flutter analysis, 44 contract checks and three visual
-captures pass. Two older test expectations were corrected; the full Flutter
-check now passes while remaining hosted checks run. Mac52 is verified with
-SHA-256 `f52edbd1dc200e55b86dc9ced5e8ef7d9b335fe27d118fe8929a7456376d5fa7`,
-built from `2d4c1410b400f2d72e1ca7e3ec9ed6471ce8ed49`; application and packaging
-inputs are identical in the corrected candidate, which changes only the two test
-files. It is not yet accepted, merged or deployed. Parked connector work must
-rebase its contract publication and use build 53 or later. No new production
-promotion is claimed.
+## Current ATLAS face-02 checkpoint — 5 October 2026 (IST)
+
+Root and independent review retain `sculpt-04-face-02-anchored-brows` after
+seventeen matched sheets / 102 images. Neutral/listening integration is clearer
+without new sampled trench, detached tip or lid obstruction. The asymmetric
+crest remains readable, but the distinct eyebrow gesture is substantially
+quieter, especially at three-quarter. Existing bulky closed lids, final likeness,
+natural acting, continuous attachment, small-size `needs_you` readability and
+device acceptance remain open.
+
+Ten current model checks and exact FEATHER03 scope parity pass: only two brows
+change; the other 165 parts, full atlas, all ordered indices, rig/static poses and
+all 168 tracks remain exact. The 102-image comparison archive SHA-256 is
+`15966ef551dfda6b6ffa474e2def0a6bb5ffc750deb59aa317f165cc5a78157f`.
+
+The complete export at `2026-10-04T22:10:08.914731+00:00` verifies 17 source
+hashes, 104 artifact hashes/bytes and 169 archive members. The 2,969,076-byte GLB
+retains 27,543 vertices, 49,844 triangles, fourteen bones, twelve clips, 167 parts,
+one material and one embedded 1024 × 1024 RGBA8 map, with zero external resources.
+Archive SHA-256 is
+`5c51cca88d2df62d38b725ef9c1524532499249e2adecd35a0588aa6ae87508a`;
+the receipt and exact manifest hashes are in
+[ATLAS measurements](../.design/asael-ace-revamp/atlas-production/MEASUREMENTS.md).
+
+Forty-two source/GLB captures form 21 pairs across seven groups and three views:
+fifteen are exact. The remaining six total 21 changed pixels at maximum one
+channel byte. Listening differs by two pixels per view; closed three-quarter
+by one; completed three-quarter by four and profile by ten. Both modes pass
+hide/reload/dispose without page/console/rejected-request errors. GLB comparison
+archive SHA-256 is
+`c95a062aee104efe36139d48025eaa43fc45bfe0faebd4e1f8a91a3e5f05c9d4`.
+The ten static-tool checks remain FEATHER02 evidence on unchanged scripts and
+were not rerun; the 80-state review remains finish-02 evidence. FEATHER03 and
+earlier exports above are history. Final art/acting/device acceptance and
+3D/state-bundle publication remain open.
+
+Native scoped content search is accepted through PR59 after all 16 hosted checks
+passed on `608368ed679e483105198e62966f02dac198b662`; it merged as
+`2fd786531899d686da6686988e82e3c5faa83224`, publishing native v39 /
+app 1.23.17+52. The 59 focused native cases, Flutter analysis, 44 contract checks
+and three visual captures pass. Mac52 is verified with SHA-256
+`f52edbd1dc200e55b86dc9ced5e8ef7d9b335fe27d118fe8929a7456376d5fa7`,
+built from `2d4c1410b400f2d72e1ca7e3ec9ed6471ce8ed49`; application
+and packaging inputs are exact, with only two test expectations differing in the
+accepted candidate. Quality + Monitoring implementation is underway on a separate
+branch for app 1.23.18+53: 46 focused Quality and 57 Monitoring checks pass;
+eight actual-widget captures pass root review. Full Flutter analysis is clean and fifteen existing foundation/navigation/admin cases pass. Build 53 and exact-head hosted PR #60 checks remain pending; this slice is not yet accepted. Parked connector work must rebase native v39 and use
+build 54 or later. Production is unchanged; no new promotion is claimed.

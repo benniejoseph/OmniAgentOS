@@ -2,8 +2,11 @@
 
 The owner explicitly prioritized the UI revamp and ATLAS, asking to stabilize the current release and return to connector expansion afterward. The full implementation plan remains in scope; this changes execution order.
 
-PR53 is stabilized and merged with all sixteen hosted checks passing. The UI, static greeting, personality and expanded Voice releases are accepted
-through PR57. Final character artwork and device acceptance remain active. Connector work is preserved in
+The UI, static greeting, personality, expanded Voice, native Automation and native
+scoped content search releases are accepted through PR59. FACE02 is the current
+complete ATLAS export and retains the reviewed brow integration; final character
+artwork, acting and device acceptance remain open. Quality + Monitoring is underway
+on a separate branch for `1.23.18+53`. Connector work is preserved in
 `codex/native-connector-controls` and is deferred until after this UI/ATLAS priority.
 
 Visual thesis: a warm, precise conversation workspace with a quiet graphite rail, readable typography, restrained gold and an expressive umber eagle.
@@ -21,7 +24,28 @@ Owned work:
 
 The approved reference in `DESIGN_BRIEF.md` remains authoritative. Sculpt02 remains rejected. New source is not visual approval, and a passing build does not complete the art or physical-device gates.
 
-## Native Automation acceptance — 5 October
+## Current software checkpoint — 5 October
+
+PR59 native scoped content search is accepted with native API v39 and app
+`1.23.17+52`. All sixteen hosted checks passed on
+`608368ed679e483105198e62966f02dac198b662`; the accepted merge is
+`2fd786531899d686da6686988e82e3c5faa83224`.
+
+The verified universal private Mac 1.23.17 (52) package was built from
+`2d4c1410b400f2d72e1ca7e3ec9ed6471ce8ed49`. Its SHA256 is
+`f52edbd1dc200e55b86dc9ced5e8ef7d9b335fe27d118fe8929a7456376d5fa7`.
+Only two test files differ on the accepted head; application and package inputs
+are exact. This remains a private package, not a production promotion.
+
+Quality + Monitoring is underway on a separate branch for `1.23.18+53`.
+Forty-six focused Quality and 57 Monitoring checks pass; eight actual-widget
+captures have passed and been root-reviewed. Full Flutter analysis is clean and fifteen existing foundation/navigation/admin cases pass. Build 53 and exact-head hosted PR #60 checks remain pending. This slice is not yet accepted and does
+not complete the full plan.
+Canonical production remains `a06aa78b843cce6c8f41a79ec5beb6192f3c4b20`, with the
+owner release environment still pending. Parked connector work must rebase onto
+native v39 and use build 54 or later when resumed.
+
+## Historical native Automation acceptance — 5 October
 
 PR58 is accepted and merged after all sixteen hosted checks passed on
 `52e54d2cd14ccc4501d23b46367e94dcd9e30b16`; its merge is
@@ -37,11 +61,11 @@ accepted head, including version, both architectures and nested signatures on th
 read-only mounted image. SHA256:
 `3616583ca5151a8373355e2f7f7b35df22739c05439965e0c37983018c79de9f`.
 Signing is local/private, not Apple notarization. The installed application and
-canonical production revision are unchanged. Paired v38 server promotion still
-requires the complete operator release environment. Parked connector work must
-use build 52 or later.
+canonical production revision were unchanged at this checkpoint. Paired v38
+server promotion required the complete operator release environment. The current
+package and connector baseline are recorded in the PR59 checkpoint above.
 
-## Implemented UI checkpoint
+## Historical implemented UI checkpoint — 4 October
 
 The web shell begins with the compact rail while preserving an explicit expanded
 preference. Assistant has one title, a 720px reading column, compact ATLAS status,
@@ -68,11 +92,10 @@ harness is archived with the images, not added to the application test suite.
 Those captures use synthetic data and system-font loading (San Francisco substitutes
 for Android Roboto); they do not establish physical-device or microphone acceptance.
 
-App version `1.23.13+48` is reserved for this UI release. The deferred connector
-checkpoint must advance its build version when resumed. This UI change introduces
+App version `1.23.13+48` was reserved for this UI release. This UI change introduced
 no database migration or native API contract version.
 
-## Release correction checkpoint
+## Historical release correction checkpoint — 4 October
 
 The universal private Mac package `Asael-1.23.13-48-macOS.dmg` was built from
 `2fe00481f8505d9ffa241fb9553e095011eb03e9`; its SHA256 is
@@ -88,17 +111,17 @@ corrections affect tests only, so packaged application code remains unchanged.
 The affected native files pass all forty cases and the shell/palette files pass
 twelve cases. A fresh-data integration timeout is addressed by analyzing only
 the test fixture tables after bulk seeding; all ten Account projection cases
-pass locally with the original application timeout and RLS assertions intact.
-The complete corrected hosted cycle still determines release acceptance.
+passed locally with the original application timeout and RLS assertions intact.
+The subsequent complete corrected hosted cycle established release acceptance.
 
 PR54 is accepted: all sixteen hosted checks pass on
 `4e62457533a3a57a4cf4470c353a1bfe5f67a1b2`, including the production build,
 Flutter and PostgreSQL integration. It merged on 4 October 2026 at 08:29:52 UTC
 as `cab9d5f77066872ae9a9a3b4f7a68a76cc6b0ea2`.
 
-## Static full-body greeting
+## Accepted static full-body greeting — 4 October
 
-The next bounded ATLAS change uses the already-approved first full-body pose in
+The accepted static ATLAS greeting uses the already-approved first full-body pose in
 empty, idle Assistant/Talk. It retains the source's pale studio background and
 does not publish a 3D model or any state animation. Active conversations, work
 and audio keep their existing portrait presentation. The greeting is at most
@@ -108,16 +131,16 @@ scope replacement and neutral-image fallback remain authoritative.
 Identical 211×432 PNGs and crop/source provenance are enrolled in web and native
 asset roots. Each PNG is 84,847 bytes, SHA256
 `cb5db22c48af8e2f883be9b256226a50b4d26f97c82e516b3c240e9aa691eb53`.
-App version `1.23.14+49` is reserved for this follow-up. Connector work must use a
-later build number when resumed. Full Flutter analysis and 21 focused cases pass;
-five native widget captures cover light/dark desktop, phone, 200% text and the
+App version `1.23.14+49` was reserved for this follow-up. Full Flutter analysis and
+21 focused cases passed; five native widget captures cover light/dark desktop,
+phone, 200% text and the
 populated state. These synthetic captures do not establish physical-device or
 microphone acceptance. All 39 focused web greeting checks pass, including
 hidden-character preference, exact neutral-image fallback and return to the
 compact conversation portrait. Visual review found and corrected draft crowding
 at 320px with 200% text: controls wrap below the draft, preserving 198px of usable
 text width and a reachable Send control above navigation. The exact hosted cycle
-remains the release gate.
+subsequently passed for PR55, as recorded below.
 
 The private Mac greeting package `Asael-1.23.14-49-macOS.dmg` was built from
 `38839901326f7a065a25235a898aaf0195ce1529`; its SHA256 is
@@ -130,30 +153,54 @@ At this greeting checkpoint, no separate portrait/material study was saved and
 sculpt04 was the latest complete 3D export. Later beak/throat refinements are
 recorded below and remain separate from the approved static greeting.
 
-## ATLAS boundary
+## Current ATLAS boundary — FACE02, 5 October
 
-The latest separately archived art study is grain02: 27,543 vertices, 49,844 triangles,
-a 2,494,008-byte GLB, fourteen bones, twelve clips and one embedded 1024px color map.
-The smooth throat, shorter crown, completed breast fold, fitted wing coverts and
-settled body tufts remain retained. Sixty-four before/after captures support subtle
-continuous body-color variation while preserving the old throat pixels and all
-geometry, rig and clips. The small-size visual gain remains modest.
+The current complete export is `sculpt-04-face-02-anchored-brows` (FACE02), exported
+at `2026-10-04T22:10:08.914731+00:00`. It verifies seventeen sources, 104 artifacts
+and 169 archive members. The GLB is 2,969,076 bytes with 27,543 vertices, 49,844
+triangles, fourteen bones, twelve clips, 167 parts and one embedded 1024×1024 RGBA
+map. Full archive SHA256:
+`5c51cca88d2df62d38b725ef9c1524532499249e2adecd35a0588aa6ae87508a`.
+The external verification receipt is
+`/Volumes/Extreme Pro/Asael-release-records/2026-10-03-followups/ui-validation/atlas-face-02-export-verification.json`.
 
-The full export at `2026-10-04T20:49:56.541894+00:00` verifies seventeen sources,
+Root and independent review retained the brow integration after seventeen sheets
+containing 102 images. Only the two brows change; the other 165 parts, full texture
+and all 168 animation tracks remain exact. Neutral and listening read more clearly,
+with no new trench, detached tips or lid obstruction in the sampled views. The
+eyebrow gesture is substantially quieter, especially at three-quarter view.
+
+All ten current model checks pass. The ten static-tool checks remain the FEATHER02
+results for unchanged scripts and were not rerun for FACE02. Forty-two source/GLB
+captures cover 21 pairs across seven groups and three views: fifteen pairs are
+pixel-exact, with 21 changed pixels in total and a maximum channel difference of
+one. Hide, reload and disposal pass in both modes. These checks do not establish
+continuous attachment, final art or physical performance.
+
+Bulky closed lids, final likeness, natural acting, continuous attachment,
+`needs_you` at small delivery sizes, device acceptance and publication remain open.
+FEATHER03 and all older exports are historical checkpoints. The approved static
+portrait and full-body greeting remain active; no 3D artwork has been published.
+
+## Historical grain02 art checkpoint — 4 October
+
+The grain02 archive had 27,543 vertices, 49,844 triangles, a 2,494,008-byte GLB,
+fourteen bones, twelve clips and one embedded 1024px color map. The smooth throat,
+shorter crown, completed breast fold, fitted wing coverts and settled body tufts
+were retained. Sixty-four before/after captures supported subtle continuous
+body-color variation while preserving the old throat pixels and all geometry,
+rig and clips. The small-size visual gain remained modest.
+
+That export at `2026-10-04T20:49:56.541894+00:00` verified seventeen sources,
 104 artifacts and 156 archive members. Nine model/lifecycle and ten static-tool
-checks pass. Forty source/export captures show eight pixel-identical rest pairs and
-twelve posed pairs differing at 0–10 pixels by at most one channel value, with
-successful hide/reload/disposal. Decoded map storage is 4,194,304 bytes, not a
-measured GPU allocation. These checks do not establish motion shimmer, final art
-or physical performance. Full archive SHA256:
+checks passed at that checkpoint. Forty source/export captures showed eight
+pixel-identical rest pairs and twelve posed pairs differing at 0–10 pixels by at
+most one channel value, with successful hide/reload/disposal. Decoded map storage
+was 4,194,304 bytes, not a measured GPU allocation. Full archive SHA256:
 `0481b753a17762d02aa5710e5f4bcbd53f4a83a9c205d86699e0e71747fb0669`.
+FACE02 above supersedes this export as the current complete art checkpoint.
 
-Dense fine feather layering, descending temple/eye edges, wing-joint finish,
-overall likeness and natural acting remain open. No 3D artwork has been published.
-The approved portrait and static full-body greeting remain active; animated delivery
-and physical-device acceptance remain pending.
-
-## Greeting acceptance and personality follow-up
+## Historical greeting acceptance and personality follow-up — 4 October
 
 PR55 passed all sixteen hosted checks on
 `e9f1fbdbcf8f5e4bc576787e7d355820787490ba` and merged at
@@ -176,10 +223,10 @@ Balanced permits a newly verified completion reaction, and Expressive also permi
 truthful listening/responding/working transitions. Attention, errors and paused
 states remain composed; no preference change replays consumed history. The static
 greeting and unpublished state manifest remain unchanged. Native build
-`1.23.15+50` is reserved for this follow-up; parked connectors need a later number.
+`1.23.15+50` was reserved for this follow-up.
 No database migration, API contract or Agent definition version changes are made.
 
-## Personality acceptance and expanded Voice follow-up
+## Historical personality acceptance and expanded Voice follow-up — 4 October
 
 PR56 passed all sixteen hosted checks on
 `a3fb4215b632f8b6d56487e3617b0afb82085aba` and merged at
@@ -204,11 +251,13 @@ PR57 passed all fourteen applicable hosted checks on
 All 48 focused unit cases, changed-file ESLint and 114 maintained browser checks
 passed. The local compact/greeting run passed 75 checks before a document
 navigation timed out; the complete exact-head hosted browser suite subsequently
-passed. Native code remains identical to the verified Mac 1.23.15 (50) package.
+passed. At PR57, native code was identical to the verified Mac 1.23.15 (50) package.
 
-The unaccepted art source is checkpointed separately. Its latest matching full
-export is `sculpt-04-primary-01-overlapping-fan`, exported at
-`2026-10-04T18:55:02.119850+00:00` and archived in
+## Historical primary-fan art checkpoint — 4 October (UTC)
+
+The unaccepted art source was checkpointed separately. The matching full
+export at this historical checkpoint was `sculpt-04-primary-01-overlapping-fan`,
+exported at `2026-10-04T18:55:02.119850+00:00` and archived in
 `atlas-primary-01-review.tar.gz`. All seventeen source hashes and 104 artifact
 hashes/byte counts match, and all 129 archive members were verified. Body/wing refinements preserve topology; the temporal
 lid return adds fifty vertices and ninety-six triangles, for 27,240 vertices and
@@ -220,13 +269,14 @@ Root reviewed six matching comparisons: 22 tuft, 22 grain, 38 wing, 24 blink,
 48 completed-trajectory and 48 primary-fan captures. The completed wing now clears
 the torso and returns to its resting side; the overlapping fan replaces the long
 separated strips. Exact primary parity preserves the other 151 parts and all
-indices, rig, poses, clips and palette. The next local art task is to soften the
-mechanical covert/primary transition during the gesture, then finish face/throat edges and
-review all eight states at their actual delivery sizes. Natural acting, final
-art publication and physical-device/performance acceptance remain open.
+indices, rig, poses, clips and palette. The next local art task at that checkpoint
+was to soften the mechanical covert/primary transition during the gesture, then
+finish face/throat edges and review all eight states at their actual delivery
+sizes. FACE02 above records the current art boundary and remaining acceptance work.
 
-The clean software release remains accepted main `79386e26`, with private Mac
-1.23.15 (50) unchanged. A read-only environment probe at 18:13 UTC still found
-required production credentials absent. Canonical health at 18:42 UTC remained
-healthy on `a06aa78b`; no migration or production deployment occurred. Connector
-expansion remains parked behind the UI/ATLAS priority.
+At this 4 October checkpoint, the clean software release was accepted main
+`79386e26`, with private Mac 1.23.15 (50) unchanged. A read-only environment probe
+at 18:13 UTC found required production credentials absent. Canonical health at
+18:42 UTC remained
+healthy on `a06aa78b`; no migration or production deployment occurred. The PR59
+checkpoint above records the current accepted software and connector baseline.

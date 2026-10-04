@@ -1,4 +1,4 @@
-/** ATLAS sculpt 04, feather 03 — retained local short torso-vane paint refinement.
+/** ATLAS sculpt 04, face 02 — locally retained anchored-brow integration refinement.
  * No raster planes, generated imagery, physics, audio, providers or app imports.
  * Geometry is deterministic; Three UUIDs are internal and not provenance IDs.
  */
@@ -741,28 +741,65 @@ function integratedLowerLid(side,profile) {
   return result;
 }
 
-/** Broader vertical section, less forward relief and buried ends on the same path. */
-function integratedBrow(side,profile) {
+/** Cache actual head triangles before append adds UV seams and disposes them. */
+function browMeshContact(mesh) {
+  const vertices=mesh.getAttribute('position'),normals=mesh.getAttribute('normal'),triangles=[];
+  for(let i=0;i<mesh.index.count;i+=3) {
+    const indices=[0,1,2].map(corner=>mesh.index.getX(i+corner));
+    const points=indices.map(index=>new THREE.Vector3().fromBufferAttribute(vertices,index));
+    if(Math.max(...points.map(point=>point.y))<2.74||Math.min(...points.map(point=>point.y))>2.92
+      ||Math.max(...points.map(point=>point.z))<=0)continue;
+    const [a,b,c]=points,denominator=(b.y-c.y)*(a.x-c.x)+(c.x-b.x)*(a.y-c.y);
+    if(Math.abs(denominator)<1e-12)continue;
+    triangles.push({points,denominator,normals:indices.map(index=>new THREE.Vector3().fromBufferAttribute(normals,index))});
+  }
+  return (x,y)=>{
+    let result=null;
+    for(const triangle of triangles) {
+      const [a,b,c]=triangle.points;
+      const u=((b.y-c.y)*(x-c.x)+(c.x-b.x)*(y-c.y))/triangle.denominator;
+      const v=((c.y-a.y)*(x-c.x)+(a.x-c.x)*(y-c.y))/triangle.denominator,w=1-u-v;
+      if(Math.min(u,v,w)<-.000001)continue;
+      const z=a.z*u+b.z*v+c.z*w;
+      if(result&&z<=result.z)continue;
+      const normal=triangle.normals[0].clone().multiplyScalar(u)
+        .addScaledVector(triangle.normals[1],v).addScaledVector(triangle.normals[2],w).normalize();
+      result={z,normal};
+    }
+    if(!result)throw Error('Brow attachment must intersect the retained head mesh.');
+    return result;
+  };
+}
+
+/** A shallow broad ridge grows from Head-bound borders into its expressive center. */
+function integratedBrow(side,contact) {
   const points=[[side*.065,2.818,.254],[side*.147,2.840,.259],[side*.240,2.837,.228],[side*.331,2.816,.140]];
   const result=sweepVolume(points,[.020,.027,.025,.002],[.014,.020,.016,.001],16,8,true);
-  const vertices=result.getAttribute('position');
+  const vertices=result.getAttribute('position'),headWeights=[],supports=[],visible=[];
   const curve=new THREE.CatmullRomCurve3(points.map(point=>new THREE.Vector3(...point)),false,'centripetal');
   const ease=value=>{const t=clamp(value);return t*t*(3-2*t);};
+  const across=[0,.65,1,.65,0,-.65,-1,-.65],front=[1,.45,0,0,0,0,0,.45];
   for(let row=0;row<=16;row++) {
-    const t=row/16,center=curve.getPoint(t),attachment=Math.min(ease(t/.18),ease((1-t)/.22));
-    let underside=Infinity;
-    for(let column=0;column<8;column++)underside=Math.min(underside,vertices.getY(row*8+column));
+    const t=row/16,center=curve.getPoint(t),attachment=Math.min(ease(t/.22),ease((1-t)/.28));
+    const tangent=curve.getTangent(t),cross=new THREE.Vector3(tangent.y,-tangent.x,0).normalize();
+    const halfSpan=.003+(.020+.010*Math.sin(Math.PI*t))*attachment;
     for(let column=0;column<8;column++) {
-      const index=row*8+column,x=vertices.getX(index),oldY=vertices.getY(index),oldZ=vertices.getZ(index);
-      // Flatten the lower three section vertices while retaining the full span.
-      const localY=oldY<center.y+.35*(underside-center.y)?underside-center.y:oldY-center.y;
-      const y=center.y+1.225*localY,skin=faceSurfaceZ(profile,x,y);
-      const relieved=oldZ>skin?skin+.65*(oldZ-skin):oldZ;
-      const buried=Math.min(relieved,skin-.003);
-      vertices.setXYZ(index,x,y,buried+(relieved-buried)*attachment);
+      const index=row*8+column,x=center.x+cross.x*halfSpan*across[column],y=center.y+cross.y*halfSpan*across[column];
+      const support=contact(x,y),ridge=attachment*front[column],burial=column>=3&&column<=5?.004:.0018;
+      vertices.setXYZ(index,x,y,support.z-burial+.012*ridge);
+      // Terminal rings and both attachment borders remain exactly Head-bound.
+      // Neighboring front vertices blend; only the central ridge reaches Brow.
+      const moving=attachment*(column===0?1:column===1||column===7?.50:0);
+      headWeights.push(1-moving);supports.push(support.normal);visible.push(ridge);
     }
   }
   result.computeVertexNormals();
+  const normals=result.getAttribute('normal'),normal=new THREE.Vector3();
+  for(let i=0;i<vertices.count;i++) {
+    normal.fromBufferAttribute(normals,i).lerp(supports[i],1-visible[i]).normalize();
+    normals.setXYZ(i,normal.x,normal.y,normal.z);
+  }
+  result.setAttribute('browHeadWeight',new THREE.Float32BufferAttribute(headWeights,1));
   return result;
 }
 
@@ -841,6 +878,7 @@ export function createAtlas(config) {
   function append(name, mesh, shade, bone, position = [0,0,0], scale = [1,1,1], rotation = [0,0,0]) {
     const hasThroat=name==='continuous_eagle_silhouette'||name==='continuous_directional_plumage';
     const hasBodyGrain=name.startsWith('breast_flow_tuft_')||name.startsWith('mantle_flow_tuft_');
+    const hasBrowAtlas=name==='neutral_brow_sweep_Left'||name==='neutral_brow_sweep_Right';
     // Both continuous layers append in world-rest coordinates with identity transforms.
     if(hasThroat)splitThroatChartUV(mesh);
     const matrix = new THREE.Matrix4().compose(new THREE.Vector3(...position), quaternion(rotation), new THREE.Vector3(...scale));
@@ -855,6 +893,7 @@ export function createAtlas(config) {
       tuftRear=meanZ<=0;
     }
     const lidHeadWeights=bone==='UpperLidLeft'||bone==='UpperLidRight'?mesh.getAttribute('lidHeadWeight'):null;
+    const browHeadWeights=hasBrowAtlas?mesh.getAttribute('browHeadWeight'):null;
     color.set(config.palette[shade]);
     for (let i = 0; i < vertices.count; i++) {
       point.fromBufferAttribute(vertices, i).applyMatrix4(matrix);
@@ -864,9 +903,9 @@ export function createAtlas(config) {
       if(hasThroat) {
         colors.push(tone,tone,tone);
         uv.push(chartUV.getX(i),chartUV.getY(i));
-      } else if(hasBodyGrain) {
+      } else if(hasBodyGrain||hasBrowAtlas) {
         colors.push(tone,tone,tone);
-        uv.push(...plumageAtlasUV(silhouette,point.x,point.y,point.z,tuftRear));
+        uv.push(...plumageAtlasUV(silhouette,point.x,point.y,point.z,hasBrowAtlas?false:tuftRear));
       } else {
         colors.push(color.r*tone,color.g*tone,color.b*tone);
         // Other parts retain their vertex palette through a padded white region.
@@ -874,6 +913,7 @@ export function createAtlas(config) {
       }
       const influences = lidHeadWeights
         ? [['Head',lidHeadWeights.getX(i)],[bone,1-lidHeadWeights.getX(i)]]
+        : browHeadWeights ? [['Head',browHeadWeights.getX(i)],[bone,1-browHeadWeights.getX(i)]]
         : typeof bone === 'function' ? bone(point.y) : [[bone,1]];
       for (let slot = 0; slot < 4; slot++) { joints.push(influences[slot] ? boneIndex.get(influences[slot][0]) : 0); weights.push(influences[slot]?.[1] || 0); }
     }
@@ -892,7 +932,8 @@ export function createAtlas(config) {
     const steps=next&&section[0]<2.75&&next[0]>2.11?Math.ceil((next[0]-section[0])/.020):1;
     return Array.from({length:steps},(_,step)=>profileAt(silhouette,section[0]+(next?next[0]-section[0]:0)*step/steps));
   });
-  append('continuous_eagle_silhouette',loft(coloredSilhouette,config.radialSegments,true),'umber',spineWeight);
+  const headSurface=loft(coloredSilhouette,config.radialSegments,true),browContact=browMeshContact(headSurface);
+  append('continuous_eagle_silhouette',headSurface,'umber',spineWeight);
   const bodyPlumage=plumageShell(silhouette,.46,2.68);
   const bodyContact=plumageContact(bodyPlumage.getAttribute('position'));
   append('continuous_directional_plumage',bodyPlumage,'umber',spineWeight);
@@ -930,7 +971,7 @@ export function createAtlas(config) {
     append(`soft_upper_lid_${suffix}`,eyelid(side,true,false,lidHinge),'umber',`UpperLid${suffix}`,eye);
     append(`upper_lid_seam_${suffix}`,eyelid(side,true,true,lidHinge),'umber',`UpperLid${suffix}`,eye);
     append(`soft_lower_lid_${suffix}`,integratedLowerLid(side,silhouette),'umber','Head',eye);
-    append(`neutral_brow_sweep_${suffix}`,integratedBrow(side,silhouette),'umber',`Brow${suffix}`);
+    append(`neutral_brow_sweep_${suffix}`,integratedBrow(side,browContact),'umber',`Brow${suffix}`);
     for(let j=0;j<2;j++) append(`temple_tuft_${suffix}_${j}`,plumageTuft(silhouette,2.817-j*.073,side*(1.08+j*.25),.16,.040,side*.18),
       'umber','Head');
     // A compact combed crown keeps its broad roots, with a shallow rear lift

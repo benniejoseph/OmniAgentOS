@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {readFile} from 'node:fs/promises';
-import {Color,Vector3,SRGBColorSpace,LinearFilter,ClampToEdgeWrapping} from 'three';
+import {Color,Ray,Vector3,SRGBColorSpace,LinearFilter,ClampToEdgeWrapping} from 'three';
 import {createAtlas} from '../../.design/asael-ace-revamp/atlas-production/source/atlas-model.mjs';
 import {STATE_NAMES,CLIP_NAMES,createPlaybackGate,validateSequence,sequenceIndex} from '../../.design/asael-ace-revamp/atlas-production/web/lifecycle.mjs';
 const config=JSON.parse(await readFile(new URL('../../.design/asael-ace-revamp/atlas-production/source/model.json',import.meta.url),'utf8'));
@@ -125,8 +125,15 @@ test('procedural geometry is finite, indexed and deterministically bound to the 
         assert.ok(colors.getX(i)>=.97&&colors.getX(i)<=1.02,'tufts must retain a scalar tone, with umber supplied by the atlas');
       }
     }
-    const unchanged=a.root.userData.parts.filter(part=>!continuous.includes(part)&&!tufts.includes(part));
-    assert.equal(unchanged.length,121);
+    const brows=a.root.userData.parts.filter(part=>/^neutral_brow_sweep_(Left|Right)$/.test(part.name));
+    assert.equal(brows.length,2);
+    for(const part of brows)for(let i=part.vertexStart;i<part.vertexStart+part.vertexCount;i++) {
+      const column=uv.getX(i)*1024-.5,row=uv.getY(i)*1024-.5;
+      assert.ok(column>=16&&column<=495&&row>480&&row<959,'only the front upper chart may color a fitted brow');
+      assert.equal(colors.getX(i),colors.getY(i));assert.equal(colors.getX(i),colors.getZ(i));
+    }
+    const unchanged=a.root.userData.parts.filter(part=>!continuous.includes(part)&&!tufts.includes(part)&&!brows.includes(part));
+    assert.equal(unchanged.length,119);
     for(const part of unchanged)for(let i=part.vertexStart;i<part.vertexStart+part.vertexCount;i++) {
       assert.equal(uv.getX(i),504/512);assert.equal(uv.getY(i),504/512);
     }
@@ -257,6 +264,60 @@ test('independent eyelids move while the recessed iris stays head-bound',()=>{
     model.bones.find(bone=>bone.name==='UpperLidLeft').rotation.x=Math.PI/3;model.root.updateMatrixWorld(true);
     assert.ok(at(lowerEdge).distanceTo(beforeLid)>.015);assert.ok(at(iris).distanceTo(beforeIris)<.000001);
     model.reset();assert.ok(at(lowerEdge).distanceTo(beforeLid)<.000001);
+  }finally{release(model);}
+});
+
+test('brow attachment borders follow the head while the central ridge retains its authored raise',()=>{
+  const model=createAtlas(config);try{
+    const geometry=model.mesh.geometry,position=geometry.getAttribute('position');
+    const skin=geometry.getAttribute('skinIndex'),weights=geometry.getAttribute('skinWeight');
+    const head=model.root.userData.parts.find(part=>part.name==='continuous_eagle_silhouette');
+    const headBone=model.bones.findIndex(bone=>bone.name==='Head'),triangles=[];
+    for(let offset=0;offset<geometry.index.count;offset+=3) {
+      const indices=[0,1,2].map(corner=>geometry.index.getX(offset+corner));
+      if(!indices.every(index=>index>=head.vertexStart&&index<head.vertexStart+head.vertexCount))continue;
+      const points=indices.map(index=>new Vector3().fromBufferAttribute(position,index));
+      if(Math.max(...points.map(point=>point.y))>=2.74&&Math.min(...points.map(point=>point.y))<=2.92)triangles.push(points);
+    }
+    const influence=(index,bone)=>{
+      let total=0;for(let slot=0;slot<4;slot++)if(skin.array[index*4+slot]===bone)total+=weights.array[index*4+slot];
+      return total;
+    };
+    const at=index=>model.mesh.applyBoneTransform(index,new Vector3().fromBufferAttribute(position,index));
+    const ray=new Ray(new Vector3(),new Vector3(0,0,-1)),hit=new Vector3(),attached=[],centers=[];
+    for(const suffix of ['Left','Right']) {
+      const part=model.root.userData.parts.find(part=>part.name===`neutral_brow_sweep_${suffix}`);
+      const browBone=model.bones.findIndex(bone=>bone.name===`Brow${suffix}`);
+      assert.equal(part.vertexCount,17*8,'retained brow topology');
+      const mobile=[];
+      for(let local=0;local<part.vertexCount;local++) {
+        const index=part.vertexStart+local,row=Math.floor(local/8),column=local%8;
+        const border=row===0||row===16||(column>=2&&column<=6);
+        if(border) {
+          assert.equal(influence(index,headBone),1,'terminal and attachment borders must be fully Head-bound');
+          ray.origin.set(position.getX(index),position.getY(index),1);
+          let surfaceZ=-Infinity;
+          for(const [a,b,c] of triangles)if(ray.intersectTriangle(a,b,c,false,hit))surfaceZ=Math.max(surfaceZ,hit.z);
+          assert.ok(Number.isFinite(surfaceZ),'each border must intersect an actual retained head triangle');
+          const gap=position.getZ(index)-surfaceZ;
+          assert.ok(gap>=-.0041&&gap<=-.0017,'attachment borders must sit just inside the actual mesh');
+          attached.push(index);
+        }
+        if(influence(index,browBone)>.99)mobile.push(index);
+      }
+      assert.ok(mobile.length>=4,'the central ridge must retain independently mobile Brow vertices');
+      centers.push({suffix,indices:mobile});
+    }
+    const peak=config.statePerformances.needs_you.keys.find(key=>key.time===.34).pose;
+    model.bones[headBone].rotation.set(...peak.Head.map(value=>value*Math.PI/180));
+    model.root.updateMatrixWorld(true);
+    const before=new Map([...attached,...centers.flatMap(group=>group.indices)].map(index=>[index,at(index)]));
+    for(const suffix of ['Left','Right'])model.bones.find(bone=>bone.name===`Brow${suffix}`)
+      .rotation.set(...peak[`Brow${suffix}`].map(value=>value*Math.PI/180));
+    model.root.updateMatrixWorld(true);
+    for(const index of attached)assert.ok(at(index).distanceTo(before.get(index))<.000001,'a brow raise must not lift its attachment border');
+    for(const {suffix,indices} of centers)assert.ok(Math.max(...indices.map(index=>at(index).distanceTo(before.get(index))))>.001,
+      `${suffix} central ridge must retain independent movement under its existing needs_you key`);
   }finally{release(model);}
 });
 

@@ -1,16 +1,34 @@
 # ATLAS export and measurement records — 5 October 2026 (IST)
 
-## Current feather-03 retained torso paint and complete matching export
+## Current face-02 retained brow integration and complete matching export
+
+Root and independent review retained `sculpt-04-face-02-anchored-brows` after all seventeen matched sheets / 102 images. Neutral/listening integration is clearer, with no new trench, detached tip or lid obstruction in the sampled phases. The asymmetric crest remains readable, but the distinct eyebrow gesture is substantially quieter, especially at three-quarter. Existing bulky closed lids, final likeness and natural acting remain open. Stills do not prove continuous attachment or small-size `needs_you` readability.
+
+Ten current model checks and exact FEATHER03 scope parity pass. Only `neutral_brow_sweep_Left` and `neutral_brow_sweep_Right` change. The other 165 parts, all ordered indices, every atlas byte, rig/static poses and all 168 animation tracks remain exact. The nine-file comparison archive `face02-comparison/matching-source-and-baseline.tar.gz` has SHA-256 `15966ef551dfda6b6ffa474e2def0a6bb5ffc750deb59aa317f165cc5a78157f`.
+
+The matching export completed at `2026-10-04T22:10:08.914731+00:00`. `atlas-face-02-export-verification.json` verifies **17 source hashes, 104 artifact hashes/bytes and 169 archive members**. The **2,969,076-byte GLB** contains 27,543 vertices, 49,844 triangles, 14 bones, 12 clips, 167 parts, one material and one embedded 1024 × 1024 RGBA8 map, with zero external resources. Decoded RGBA storage stays at 4,194,304 bytes; this is arithmetic size, not a measured GPU allocation or performance result.
+
+The source/GLB comparison covers **42 captures / 21 pairs, seven groups and three views**. Fifteen pairs are pixel-identical. Each listening view differs at two pixels; closed three-quarter at one; completed three-quarter at four and profile at ten. The total is 21 changed pixels, at most one channel byte. Both modes pass hide, reload and disposal without page/console/rejected-request errors. GLB comparison archive SHA-256 is `c95a062aee104efe36139d48025eaa43fc45bfe0faebd4e1f8a91a3e5f05c9d4`. These bounded still and lifecycle observations do not certify continuous attachment, shimmer, reclamation, acting or device performance.
+
+Face-02 export manifest SHA-256: `424b740d77b1da8531b84c7ce9cd57615edee99aa07b56db1d6b31da04a5e95a`.
+
+Face-02 raster manifest SHA-256: `1d5ecf746f98dd23999f3c573fc138f3f667af50beb6fea34bacad7e18e6fdea`.
+
+Face-02 full archive `atlas-face-02-review.tar.gz` SHA-256: `5c51cca88d2df62d38b725ef9c1524532499249e2adecd35a0588aa6ae87508a`.
+
+The ten static-tool checks remain FEATHER02 evidence on unchanged scripts; they were not rerun for FACE02. The 80-state review remains finish-02 evidence. Final character/acting/device acceptance and 3D/state-bundle publication remain open. Feather-03 and earlier exports below are dated history.
+
+## Historical feather-03 retained torso paint and complete matching export
 
 Root and independent review retained `sculpt-04-feather-03-short-vanes` after 96 comparison captures. Close-up chest/flank marks are less hair-like, with no new scales, repeated rows or conspicuous collar transition in the reviewed samples. The gain is small at full-body size. Soft mottling, layered relief, smooth-wing contrast, final likeness and natural acting remain open.
 
-The same accepted motif centers, directions and placement decisions produce painted vanes 25% shorter and 18% broader, with wider soft highlights and occasional curved tip shadows. The change fades back to retained paint over Y=1.90–2.02. Exact parity against feather-02 finds **298,806 lower-atlas pixels changed**; all 167 parts and every mesh attribute, including UVs, remain identical, as do rig, poses and all 168 animation tracks. Full-width atlas rows 480–1023 are byte-identical. The upper-region fixture hashes 2,228,224 RGBA bytes to `2ffac06903676fb1451b46e492ba17ba4d8b8d49f7fc955ad98e4d958c99d0e4`. All nine current model/lifecycle checks pass.
+The same accepted motif centers, directions and placement decisions produce painted vanes 25% shorter and 18% broader, with wider soft highlights and occasional curved tip shadows. The change fades back to retained paint over Y=1.90–2.02. Exact parity against feather-02 finds **298,806 lower-atlas pixels changed**; all 167 parts and every mesh attribute, including UVs, remain identical, as do rig, poses and all 168 animation tracks. Full-width atlas rows 480–1023 are byte-identical. The upper-region fixture hashes 2,228,224 RGBA bytes to `2ffac06903676fb1451b46e492ba17ba4d8b8d49f7fc955ad98e4d958c99d0e4`. All nine FEATHER03 model/lifecycle checks pass.
 
 The matching comparison archive `feather03-comparison/matching-source-and-baseline.tar.gz` has SHA-256 `28a93ff1b23bb545cbade400b9991662801b6ae3467e29a027ab9137f15f69dc`.
 
 The source/GLB round trip contains **24 captures and 12 pairs**: full body, working torso and completed across four angles. All eight full/working pairs are pixel-identical. Completed's front pair differs at six pixels by at most one channel value; its other three pairs are exact. Hide, explicit reload and disposal pass without page/console/rejected-network errors. Parity archive SHA-256 is `8aa84168b5d61c3d7cd4345df2e098d5eacba6a6f08277a77a3d695c09fc129e`. These are bounded appearance/lifecycle observations, not continuous-motion, resource-reclamation or performance measurements.
 
-The matching export completed at `2026-10-04T21:45:36.836138+00:00`. `atlas-feather-03-export-verification.json` verifies **17 source hashes, 104 artifact hashes/bytes and 166 archive members**. The **2,969,080-byte GLB** contains 27,543 vertices, 49,844 triangles, 14 bones, 12 clips, one material and one embedded 1024 × 1024 RGBA8 map, with zero external resources. Decoded RGBA storage remains 4,194,304 bytes, an arithmetic size rather than a measured allocation. All nine current model/lifecycle checks pass. The ten static tool checks passed at feather-02 and those scripts are unchanged; they were not rerun for feather-03. The 80-state review remains finish-02 evidence.
+The matching export completed at `2026-10-04T21:45:36.836138+00:00`. `atlas-feather-03-export-verification.json` verifies **17 source hashes, 104 artifact hashes/bytes and 166 archive members**. The **2,969,080-byte GLB** contains 27,543 vertices, 49,844 triangles, 14 bones, 12 clips, one material and one embedded 1024 × 1024 RGBA8 map, with zero external resources. Decoded RGBA storage remains 4,194,304 bytes, an arithmetic size rather than a measured allocation. All nine FEATHER03 model/lifecycle checks pass. The ten static tool checks passed at feather-02 and those scripts are unchanged; they were not rerun for feather-03. The 80-state review remains finish-02 evidence.
 
 Feather-03 export manifest SHA-256: `590ce12d1c6182c536b47f3b8b8ca866c2cb70a7c3794ff130ef79d15b5b61f4`.
 
