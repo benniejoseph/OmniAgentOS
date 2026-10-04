@@ -5,10 +5,11 @@ PR54 (priority UI / app 1.23.13+48), PR55 (static full-body greeting /
 app 1.23.14+49) and PR56 (scoped language/motion intensity / app 1.23.15+50)
 are accepted and merged, each after all 16 hosted checks passed. The private
 Mac package is verified through 1.23.15 (50), from PR56's exact accepted source.
-The last complete matching 3D export and visual review is completed-01, with all
-nine structure checks passing and the full model still unaccepted. It includes
-retained body-tuft, surface-grain, wing-fit, eyelid-return and completed-gesture
-clearance improvements. Eyelid-03, throat-04 and beak-02 are historical checkpoints;
+The last complete matching 3D export and visual review is primary-01, with all
+nine structure checks passing and the full model still unaccepted. It adds a
+compact overlapping primary fan to retained body-tuft, surface-grain, wing-fit,
+eyelid-return and completed-gesture clearance improvements. Completed-01,
+eyelid-03, throat-04 and beak-02 are historical checkpoints;
 throat-03 was rejected for its coarse staircase boundary. PR57's expanded web
 Voice shared player is accepted and merged after all 14 applicable hosted checks
 passed; native API/version and Mac 1.23.15 (50) are unchanged. Software UI
@@ -1659,30 +1660,35 @@ That historical package-preparation checkpoint is superseded by the signed
 packages and hosted acceptance below. Nine Node geometry/lifecycle checks and
 three Python tool tests also passed for the sculpt-02 source workbench.
 
-The last complete matching completed-01 export at
-`2026-10-04T18:41:03.423334+00:00` (5 October in IST) binds
-`sculpt-04-completed-01-forward-clearance` and has 104 artifacts,
+The last complete matching primary-01 export at
+`2026-10-04T18:55:02.119850+00:00` (5 October in IST) binds
+`sculpt-04-primary-01-overlapping-fan` and has 104 artifacts,
 27,240 vertices, 49,844 triangles, 14 bones and 12 clips: eight states and
-four inspection aliases, in a 2,039,716-byte GLB. All nine structure checks passed.
-Matching source/output is archived as `atlas-completed-01-review.tar.gz`.
-Root verified all 17 source hashes and all 104 artifact hashes/bytes in
-`atlas-completed-01-export-verification.json`; exact manifest and archive hashes
-are recorded in `atlas-production/MEASUREMENTS.md`.
+four inspection aliases, in a 2,039,712-byte GLB. All nine structure checks passed.
+Matching source/output is archived as `atlas-primary-01-review.tar.gz`.
+Root verified all 17 current source hashes, all 104 artifact hashes/bytes and
+reread all 129 archive members in `atlas-primary-01-export-verification.json`;
+exact manifest/archive hashes and the narrow comparison archive are recorded
+in `atlas-production/MEASUREMENTS.md`.
 
-This checkpoint includes retained tuft-01 fit across 44 body parts, quieter
-grain-01 ribbing, wing-01's fitted coverts/underforms and eyelid-04 temporal return.
-Eyelid-04's 24 captures retained coverage of the large profile white wedge and
-readable neutral irises, with fine edge specks remaining. Root reviewed all 48
-completed-01 acting comparison captures against identical geometry and the prior
-eyelid-04 configuration: the wing clears the torso at clearance, peak and settle,
-then returns alongside the body. Long parallel primaries and the coarse
-covert/primary junction remain obvious. Final feather finish, fine throat/lid
-edges, natural all-state acting and physical performance remain unaccepted.
+Only 16 primary parts change; the other 151 parts, all indices, rig, poses,
+clips and palette remain unchanged. Root reviewed all 48 comparison captures
+across seven completed phases in three views plus peak portraits. The shorter
+compact overlapping fan removes the detached-strip appearance, with no new large
+sampled joint gap. An independent rest/peak/peak-portrait review found no regression
+that blocks retention. Mechanical covert/joint tabs, the downward gesture fan,
+fine throat/lid edges, overall likeness/finish, all-state acting/readability and
+device performance remain unaccepted.
 
-Completed-01 keeps geometry byte-identical to eyelid-04 and the other 11 clips
-identical. The maximum difference across 2,172 non-wing quaternion samples is
-`4.246830940246582e-7`. These narrow comparison checks are not artistic or
-performance acceptance.
+The prior completed-01 full export is retained in `atlas-completed-01-review.tar.gz`
+from checkpoint `2e8c330299bbc508211894819c6ace136e3bab23`. It combined tuft-01,
+grain-01, wing-01 and eyelid-04 refinements with torso-clearing completed motion.
+Its 48 acting captures retained clearance/return; eyelid-04's 24 captures retained
+profile coverage and readable neutral irises, with fine edge specks remaining.
+Completed-01 kept geometry byte-identical to eyelid-04 and the other 11 clips
+identical; 2,172 non-wing quaternion samples differed by at most
+`4.246830940246582e-7`. These historical comparison limits and exact full-export
+metadata/hashes remain in MEASUREMENTS.md.
 
 Eyelid-03 and throat-04 remain historical full checkpoints in
 `atlas-eyelid-03-review.tar.gz` and `atlas-throat-04-review.tar.gz`, each with
@@ -1694,7 +1700,7 @@ its 18 comparison captures showed an improved beak without accepting the full
 model. Throat-03 was rejected for its coarse staircase boundary. Historical
 sculpt-04 passed all nine geometry/lifecycle checks. Source/export tooling and
 an explicit hash-verifying publisher exist; final art acceptance does not.
-The archived rough-01 performance comparison does not measure completed-01.
+The archived rough-01 performance comparison does not measure primary-01.
 Details and exact evidence boundaries are in `atlas-production/README.md`,
 `ART_REVIEW.md`, `MEASUREMENTS.md` and `PERFORMANCE_PLAN.md`. A functional release
 with approved static ATLAS is permitted; full-plan completion, physical-device

@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "name": "ATLAS_ROUGH_01",
-  "status": "SCULPT_04_COMPLETED_01_RETAINED_UNACCEPTED_STUDY",
-  "creativeRevision": "sculpt-04-completed-01-forward-clearance",
-  "exportEvidence": "This retained local study incorporates reviewed body-tuft, shallow-grain, fitted-wing, temporal-lid and forward-clearance refinements. Completed-01 has 48 comparison captures, nine passing structure checks and verified unchanged geometry/other clips; non-wing trajectory preservation is sampled numerically. The complete character, natural state acting and physical-device performance remain unaccepted. Full-export evidence is authoritative only when export-manifest.json matches this creativeRevision and every current source hash. Current measurements, archive identities and remaining limits are recorded in ../ART_REVIEW.md. No production art/state publication is implied.",
+  "status": "SCULPT_04_PRIMARY_01_RETAINED_UNACCEPTED_STUDY",
+  "creativeRevision": "sculpt-04-primary-01-overlapping-fan",
+  "exportEvidence": "This retained local study adds a compact overlapping primary fan to the reviewed completed-01 refinements. All 48 narrow comparison captures were inspected; nine structure checks and exact sixteen-part geometry parity pass with zero topology delta. The complete character, natural state acting and physical-device performance remain unaccepted. Full-export evidence is authoritative only when export-manifest.json matches this creativeRevision and every current source hash. Current measurements, archive identities and remaining limits are recorded in ../ART_REVIEW.md. No production art/state publication is implied.",
   "coordinates": "Arbitrary model units. Y up, Z forward, X character left. Overall height about 3 units; not a physical scale claim.",
   "sourceExpectedSha256": "876591c5a2b739df99d6aab647554dc53bcab97d55bf0c3e0864e39e1c98c070",
   "palette": {

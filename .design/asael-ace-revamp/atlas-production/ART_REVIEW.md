@@ -1,6 +1,41 @@
 # ATLAS actual-art review — 5 October 2026 (IST)
 
-## Completed01 — latest matching full export, character still unaccepted
+## Primary01 — latest matching full export, character still unaccepted
+
+The compact overlapping primary fan is retained after root inspected all 48
+comparison captures against the completed01 GLB: seven completed-motion phases
+in three angles plus peak portraits. The shorter overlapping vanes replace the
+separated strips and improve the resting and raised-wing outline. No new large
+joint gap appears in these samples. An independent review of rest, peak and peak
+portraits found no visible regression preventing local retention.
+
+The current matching export is `sculpt-04-primary-01-overlapping-fan`, completed
+at `2026-10-04T18:55:02.119850+00:00`: 104 artifacts, 27,240 vertices, 49,844
+triangles, fourteen bones, twelve clips and a 2,039,712-byte GLB. All nine
+structure/lifecycle checks pass. Exact parity finds only sixteen primary parts
+changed; the other 151 parts, complete indices, rig, poses, clips and palette
+remain identical. All seventeen source hashes and all 104 artifact hashes/byte
+lengths match; all 129 archive members were reread and verified.
+
+Full source/output archive: `atlas-primary-01-review.tar.gz`, SHA256
+`4e6f41976e761ea0cb92b135b77c4f96275c17da63682de826dbeb623e036f99`.
+The receipt is `atlas-primary-01-export-verification.json` in the release evidence
+directory. Export-manifest SHA256:
+`7c8edd39f0914824956523fa9920977daeb82c3564736682c69e524d6263923a`;
+raster-manifest SHA256:
+`a39d4798ad2d3312f63e008d2730f837ab4b0ae35ceaa0b914eb3d36092ec3f6`.
+The pre-export comparison has its own bound source/baseline archive at
+`primary01-comparison/matching-source-and-baseline.tar.gz`, SHA256
+`9255860ff9b93e3e3f075d9f3a7a3880279d7ddb0bb284868112837fb598e5da`.
+
+The highest-priority remaining art issue is the mechanical transition between
+the forward covert mass and downward fan during the gesture, including exposed
+square tabs and hard layered edges. Fine throat/lid edges, overall likeness and
+feather finish, all-state acting, delivery-size readability and physical-device
+performance remain open. This is retained local progress; the complete character
+is unaccepted and unpublished. The approved portrait/static greeting stay active.
+
+## Completed01 — previous matching full export, character still unaccepted
 
 The retained body-tuft, shallow-grain, fitted-wing, temporal-lid and completed
 trajectory refinements are now exported together as

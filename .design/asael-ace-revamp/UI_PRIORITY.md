@@ -112,11 +112,11 @@ recorded below and remain separate from the approved static greeting.
 
 ## ATLAS boundary
 
-The latest separately archived art study is completed01: 49,844 triangles, a
-2,039,716-byte GLB, fourteen bones and twelve clips, with all nine structure checks
+The latest separately archived art study is primary01: 49,844 triangles, a
+2,039,712-byte GLB, fourteen bones and twelve clips, with all nine structure checks
 passing. Fitted body tufts, quieter surface grain, integrated wing coverts,
-temporal lid closure and forward-clearing completion motion improve the model.
-Long parallel primaries, their wing junction, fine throat/lid edges and final
+temporal lid closure, forward-clearing completion motion and an overlapping
+primary fan improve the model. The mechanical wing junction, fine throat/lid edges and final
 state acting keep the character unaccepted.
 No 3D artwork has been published. The approved concept portrait remains active,
 with the static full-body greeting implemented above. The final authored model,
@@ -177,19 +177,21 @@ navigation timed out; the complete exact-head hosted browser suite subsequently
 passed. Native code remains identical to the verified Mac 1.23.15 (50) package.
 
 The unaccepted art source is checkpointed separately. Its latest matching full
-export is `sculpt-04-completed-01-forward-clearance`, exported at
-`2026-10-04T18:41:03.423334+00:00` and archived in
-`atlas-completed-01-review.tar.gz`. All seventeen source hashes and 104 artifact
-hashes/byte counts match. Body/wing refinements preserve topology; the temporal
+export is `sculpt-04-primary-01-overlapping-fan`, exported at
+`2026-10-04T18:55:02.119850+00:00` and archived in
+`atlas-primary-01-review.tar.gz`. All seventeen source hashes and 104 artifact
+hashes/byte counts match, and all 129 archive members were verified. Body/wing refinements preserve topology; the temporal
 lid return adds fifty vertices and ninety-six triangles, for 27,240 vertices and
-49,844 triangles overall. The final acting pass changes only completed's two wing
+49,844 triangles overall. The retained completed acting pass changes only its two wing
 channels; the other eleven clips are identical, and 2,172 sampled non-wing
 quaternions remain within 4.246830940246582e-7 component difference.
 
-Root reviewed the five matching comparisons: 22 tuft, 22 grain, 38 wing, 24 blink
-and 48 completed-trajectory captures. The completed wing now clears the torso and
-returns to its resting side. The next local art task is to integrate the long
-primary feathers with the revised wing, then finish the face/throat edges and
+Root reviewed six matching comparisons: 22 tuft, 22 grain, 38 wing, 24 blink,
+48 completed-trajectory and 48 primary-fan captures. The completed wing now clears
+the torso and returns to its resting side; the overlapping fan replaces the long
+separated strips. Exact primary parity preserves the other 151 parts and all
+indices, rig, poses, clips and palette. The next local art task is to soften the
+mechanical covert/primary transition during the gesture, then finish face/throat edges and
 review all eight states at their actual delivery sizes. Natural acting, final
 art publication and physical-device/performance acceptance remain open.
 

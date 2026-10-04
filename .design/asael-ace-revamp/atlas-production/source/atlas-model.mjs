@@ -1,4 +1,4 @@
-/** ATLAS sculpt 04, completed 01 — retained local study; final art unaccepted.
+/** ATLAS sculpt 04, primary 01 — retained local study; final art unaccepted.
  * No raster planes, generated imagery, physics, audio, providers or app imports.
  * Geometry is deterministic; Three UUIDs are internal and not provenance IDs.
  */
@@ -149,6 +149,45 @@ function feather(length=1,width=.12,depth=.04,sweep=0,curl=.015) {
     rings.push(ring);
   }
   return ringMesh(rings,sides,tones);
+}
+
+/** Gather the primary roots at their child pivot and wrap one shared oblique fan. */
+function overlappingPrimaryFan(side,pivot) {
+  const lengths=[.55,.58,.62,.66,.70,.73,.75,.74];
+  const envelopes=[.18,.82,1,.91,.72,.46,.20,.008];
+  const roots=lengths.map((_,j)=>{
+    const u=j/7;
+    return pivot.clone().add(new THREE.Vector3(side*.012*u,.010-.012*u,.045-.090*u));
+  });
+  const tips=lengths.map((length,j)=>{
+    const u=j/7;
+    return new THREE.Vector3(side*(Math.abs(pivot.x)-.055+.145*u+.015*Math.sin(Math.PI*u)),
+      roots[j].y-length,pivot.z+.037-.280*u);
+  });
+  const center=(j,t)=>roots[j].clone().lerp(tips[j],t)
+    .add(new THREE.Vector3(side*.015*Math.sin(Math.PI*t),0,-.018*Math.sin(Math.PI*t)));
+  return j=>{
+    // Keep the original closed grid, complete index buffer and vertex tones.
+    const result=feather(.85-j*.023,.050,.013,side*(.017+j*.003),.023);
+    const vertices=result.getAttribute('position'),u=j/7,width=.056+.008*Math.sin(Math.PI*u);
+    for(let row=0;row<vaneProfile.length;row++) {
+      const t=vaneProfile[row][0],envelope=envelopes[row],bend=Math.PI*Math.cos(Math.PI*t);
+      const tangent=tips[j].clone().sub(roots[j]).add(new THREE.Vector3(side*.015*bend,0,-.018*bend)).normalize();
+      const across=center(Math.min(7,j+1),t).sub(center(Math.max(0,j-1),t));
+      across.addScaledVector(tangent,-across.dot(tangent)).normalize().multiplyScalar(side);
+      const normal=new THREE.Vector3().crossVectors(tangent,across).normalize();
+      const origin=center(j,t).addScaledVector(normal,.0015*(j-3.5)*Math.sin(Math.PI*t));
+      const depth=Math.max(.00008,.009*envelope);
+      for(let n=0;n<8;n++) {
+        const angle=n*2*Math.PI/8,lateral=Math.cos(angle),front=Math.sin(angle);
+        const point=origin.clone().addScaledVector(across,width*envelope*lateral*(side*lateral<0?.87:1))
+          .addScaledVector(normal,depth*front*(front<0?.30:1));
+        vertices.setXYZ(row*8+n,point.x,point.y,point.z);
+      }
+    }
+    result.computeVertexNormals();
+    return result;
+  };
 }
 
 const wingEase=value=>{const t=clamp(value);return t*t*(3-2*t);};
@@ -597,8 +636,8 @@ export function createAtlas(config) {
     for(let row=0;row<3;row++) for(let j=0;j<4;j++) append(`layered_wing_covert_${suffix}_${row}_${j}`,
       fittedWingCovert(wingEnvelope,.39+row*.063-j*.019,.072-row*.007,.014,side*(.022+j*.011),.022,
         [side*(.421+j*.038),2.033-row*.181-j*.058,.115-j*.088+row*.002],[10,side*(-12+j*28),side*(-6+j*3)]),'umber',`Wing${suffix}`);
-    for(let j=0;j<8;j++) append(`curved_primary_${suffix}_${j}`,feather(.85-j*.023,.050,.013,side*(.017+j*.003),.023),j===5?'feather':'umber',
-      `WingTip${suffix}`,[side*(.442+j*.013),1.452-j*.041,.113-j*.044],[1,1,1],[7,side*(-11+j*17),side*(-2+j*.8)]);
+    const primaryFan=overlappingPrimaryFan(side,worldRest.get(`WingTip${suffix}`));
+    for(let j=0;j<8;j++) append(`curved_primary_${suffix}_${j}`,primaryFan(j),j===5?'feather':'umber',`WingTip${suffix}`);
     // Full feathered thighs conceal the upper tarsus; the planted feet have a
     // broad three-digit fan and visible knuckle bends rather than thin sticks.
     ellipsoid(`feathered_thigh_${suffix}`,'umber','Root',[side*.190,.491,.018],[.116,.245,.133],[0,0,side*9],16);

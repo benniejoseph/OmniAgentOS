@@ -1,4 +1,22 @@
-# ATLAS sculpt 04, completed 01 — retained local study
+# ATLAS sculpt 04, primary 01 — retained overlapping fan
+
+Current status: **local refinement reviewed; full character and natural state acting unaccepted**. Creative revision: `sculpt-04-primary-01-overlapping-fan`.
+
+Root inspected all 48 matching comparison captures across rest, clearance, peak, settle, release, lowering and the held pose in three angles, plus peak portraits. The compact overlapping fan replaces the long separated strips and improves the resting and raised-wing outline. No new large joint gap appears in these samples. Coarse covert/junction tabs, fine throat/lid edges, overall finish and natural all-state acting remain open; these samples do not prove every intermediate collision or final acceptance.
+
+All nine structure/lifecycle checks pass. Exact comparison against completed01 changes only sixteen primary parts; the other 151 parts, complete indices, rig, poses, clips and palette remain identical. The measured model remains 27,240 vertices, 49,844 triangles, fourteen bones and twelve clips. Matching comparison source/baseline are preserved in `primary01-comparison/matching-source-and-baseline.tar.gz`, SHA256 `9255860ff9b93e3e3f075d9f3a7a3880279d7ddb0bb284868112837fb598e5da`.
+
+Full-export measurements and archive identity belong in `../ART_REVIEW.md` and the matching `output/export-manifest.json`; require every source hash to match. This stable source record does not approve publication. The following authoring record and earlier checkpoints remain history.
+
+## Primary 01 authoring record — before root comparison
+
+Status: **authored, unexported, unreviewed source**. Creative revision: `sculpt-04-primary-01-overlapping-fan`. Completed 01 is the matching baseline. The author inspected its rest/peak three-quarter and peak profile captures, then applied the reviewer's gathered-root and shared-fan proposal. Only the sixteen primary geometries change: roots gather around the existing WingTip pivots, curved centerlines form an oblique fan, and broader vanes overlap with a small shingle offset. Closed tips retain finite width/depth.
+
+Each original closed 8 × 8 grid, complete index buffer, vertex-tone array, part name/order, shade and whole-WingTip binding is retained; only positions and derived normals change. Expected topology delta is **zero**. The global feather helper, coverts, underforms, body, eyes, rig, poses and all clips—including completed01—remain unchanged. World-rest positions use identity append transforms.
+
+Only the three assigned source files were edited with static reads/edits and existing image inspection; no runtime, tests, browser, export or Git operation was run. Freeze for root's scoped parity, nine structural checks and 48 phase/angle comparisons. Root-band continuity through the 55-degree child counterpitch, vane overlap, intersections and silhouette remain unverified. Final art and natural acting remain unaccepted; no visual success is claimed.
+
+## Completed 01 retained checkpoint
 
 Current status: **local refinements reviewed; full character and natural state acting unaccepted**. Creative revision: `sculpt-04-completed-01-forward-clearance`.
 
