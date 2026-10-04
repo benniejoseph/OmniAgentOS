@@ -57,9 +57,10 @@ Existing floors remain: Companion 31, Responsibilities 32, Meetings 33,
 Account/Memory records 34, reconciliation 35, consent/Calendar 36 and health 37.
 Source-audio access and binary recording upload remain outside this publication.
 
-Deploy a server supporting v39 before distributing native builds 1.23.17+52 or
-1.23.18+53. The latter refreshes the read-only Quality and Monitoring presentations
-using already-published operations; it adds no migration or mutation authority. A
+Deploy a server supporting v39 before distributing native builds 1.23.17+52,
+1.23.18+53 or 1.23.19+54. Build 53 refreshes read-only Quality and Monitoring;
+build 54 adds the typed Security presentation. Both use already-published
+operations and add no migration or mutation authority. A
 server advertising only v38/v37 refuses its v39 bootstrap. On v39/v38, an installed
 v38 client retains its existing operations and mutation floors; v37 clients
 require an upgrade. A merge does not establish production promotion.

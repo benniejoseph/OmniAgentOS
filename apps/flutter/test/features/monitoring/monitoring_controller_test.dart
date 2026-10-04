@@ -114,6 +114,55 @@ void main() {
     expect(repo.healthRequests, hasLength(1));
   });
   test(
+    'authority refusal on one refresh clears every warm lane and selection',
+    () async {
+      final repo = MonitoringTestRepository();
+      final controller = MonitoringController(repo);
+      addTearDown(controller.dispose);
+      final initial = controller.refresh();
+      await Future<void>.value();
+      repo.completeAll();
+      await initial;
+      for (final source in MonitoringSource.values) {
+        final lane = controller.lane(source);
+        expect(lane.state, MonitoringLoadState.ready);
+        expect(lane.data, isNotNull);
+        expect(lane.receivedAt, isNotNull);
+      }
+      final selectedId = controller.slo.data!.evaluations.first.policy.id;
+      controller.select(selectedId);
+
+      final refused = controller.refreshSource(MonitoringSource.alerts);
+      expect(controller.selectedId, selectedId);
+      expect(controller.slo.data, isNotNull);
+      expect(controller.slo.receivedAt, isNotNull);
+      await Future<void>.value();
+      repo.alertRequests.last.result.completeError(
+        const NativeAuthorityVerificationException(),
+      );
+      await refused;
+
+      expect(controller.authorizationDenied, isTrue);
+      expect(controller.available, isFalse);
+      expect(controller.loading, isFalse);
+      expect(controller.selectedId, isNull);
+      for (final source in MonitoringSource.values) {
+        final lane = controller.lane(source);
+        expect(lane.state, MonitoringLoadState.idle);
+        expect(lane.data, isNull);
+        expect(lane.receivedAt, isNull);
+        expect(lane.error, isNull);
+      }
+      await controller.refresh();
+      await controller.refreshSource(MonitoringSource.slo);
+      expect(repo.healthRequests, hasLength(1));
+      expect(repo.sloRequests, hasLength(1));
+      expect(repo.incidentRequests, hasLength(1));
+      expect(repo.alertRequests, hasLength(2));
+      expect(repo.timelineRequests, hasLength(1));
+    },
+  );
+  test(
     'hiding clears selection and every lane; late reads cannot reappear',
     () async {
       final repo = MonitoringTestRepository();

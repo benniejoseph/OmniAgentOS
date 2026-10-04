@@ -23,8 +23,12 @@ class ApiMonitoringRepository implements MonitoringRepository {
   final Set<CancelToken> _reads = {};
   final Set<void Function()> _invalidationListeners = {};
   @override
-  bool get current =>
-      !_disposed && access.canManage && access.current && !_disposed;
+  bool get current {
+    if (_disposed) return false;
+    if (!access.canManage || !access.current) dispose();
+    return !_disposed;
+  }
+
   @override
   bool get canReadPrivate =>
       {'admin', 'system'}.contains(access.authority.role);

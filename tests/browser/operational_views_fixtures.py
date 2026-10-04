@@ -66,7 +66,11 @@ class OperationalFixtures(Fixtures):
         if key == "alerts":
             return {"deliveries": [] if empty else [{"id": "delivery:" + LONG, "tenantId": self.tenant, "incidentId": "incident:" + LONG, "targetId": "target:" + LONG, "channel": "webhook", "status": "failed", "attempt": 2, "maxAttempts": 3, "runAt": STAMP, "updatedAt": STAMP, "lastError": MESSAGE}], "stats": {"failed": 0 if empty else 1}}
         if key == "context":
-            return {"context": {"tenantId": self.tenant, "actorId": self.actor, "role": "admin"}, "policy": {"rbacRules": {"viewer": ["read"], "operator": ["read", "run.evaluation", "manage.workflow"], "admin": ["read", "read.security", "manage.identity"]}}}
+            return {"context": {"tenantId": self.tenant, "actorId": self.actor, "role": "admin"}, "policy": {"rbacRules": [] if empty else [
+                {"action": "read", "description": "Read dashboards, ledgers, capabilities, memory, knowledge, and audit summaries.", "roles": ["viewer", "operator", "admin", "system"]},
+                {"action": "run.evaluation", "description": "Run regression/evaluation suites.", "roles": ["operator", "admin", "system"]},
+                {"action": "read.security", "description": "Read security context, RBAC policy, and audit records.", "roles": ["admin", "system"]},
+            ]}}
         if key == "audits":
             return {"records": [] if empty else [{"id": "audit:" + LONG, "tenantId": self.tenant, "actorId": self.actor, "actorRole": "admin", "action": "synthetic.audit", "resourceType": "test", "resourceId": "resource:" + LONG, "decision": "deny", "reason": MESSAGE, "createdAt": STAMP}], "stats": {"total": 0 if empty else 1}}
         if key == "isolation":

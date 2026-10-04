@@ -111,6 +111,55 @@ void main() {
     },
   );
 
+  test(
+    'authority refusal on one refresh clears every warm source and selection',
+    () async {
+      final repo = QualityTestRepository();
+      final controller = QualityController(repo);
+      addTearDown(controller.dispose);
+      final initial = controller.refresh();
+      await Future<void>.value();
+      repo.evaluationsRequests.single.result.complete(qualitySnapshot());
+      repo.releaseRequests.single.result.complete(qualityReport());
+      await initial;
+      for (final source in QualitySource.values) {
+        final lane = controller.lane(source);
+        expect(lane.state, QualityLoadState.ready);
+        expect(lane.data, isNotNull);
+        expect(lane.receivedAt, isNotNull);
+      }
+      controller.selectSection(QualitySection.release);
+      final selectedId = controller.release.data!.gates.first.id;
+      controller.select(selectedId);
+
+      final refused = controller.refreshSource(QualitySource.evaluations);
+      expect(controller.selectedId, selectedId);
+      expect(controller.release.data, isNotNull);
+      expect(controller.release.receivedAt, isNotNull);
+      await Future<void>.value();
+      repo.evaluationsRequests.last.result.completeError(
+        const NativeAuthorityVerificationException(),
+      );
+      await refused;
+
+      expect(controller.authorizationDenied, isTrue);
+      expect(controller.available, isFalse);
+      expect(controller.loading, isFalse);
+      expect(controller.selectedId, isNull);
+      for (final source in QualitySource.values) {
+        final lane = controller.lane(source);
+        expect(lane.state, QualityLoadState.idle);
+        expect(lane.data, isNull);
+        expect(lane.receivedAt, isNull);
+        expect(lane.error, isNull);
+      }
+      await controller.refresh();
+      await controller.refreshSource(QualitySource.release);
+      expect(repo.evaluationsRequests, hasLength(2));
+      expect(repo.releaseRequests, hasLength(1));
+    },
+  );
+
   for (final reason in ['hidden', 'invalidated', 'disposed']) {
     test(
       '$reason clears private selection, cancels reads and rejects late results',

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { count, makeSubmission, parseReceipt, parseSource, retentionKeys, retrySupported, sloLabel } from "./operational-contracts";
+import { rbacRules } from "@/lib/security/context";
+import { count, makeSubmission, parseRbacRules, parseReceipt, parseSource, retentionKeys, retrySupported, sloLabel } from "./operational-contracts";
 const scope = { tenantId: "tenant-a", actorId: "actor-a" };
 const stamp = "2026-10-04T12:00:00.000Z";
 const digest = "a".repeat(64);
@@ -25,7 +26,40 @@ describe("operational source truth", () => {
     expect(() => parseSource("events", { ...body, events: [{ id: "event-1", tenantId: "foreign" }] }, scope)).toThrow();
     expect(() => parseSource("events", { ...body, events: [body.events[0], body.events[0]] }, scope)).toThrow();
     expect(() => parseSource("events", { ...body, events: Array.from({ length: 25 }, (_, id) => ({ id: String(id) })) }, scope)).toThrow();
-    expect(() => parseSource("context", { context: { ...scope, actorId: "other" }, policy: { rbacRules: {} } }, scope)).toThrow();
+    for (const changed of [{ tenantId: "foreign" }, { actorId: "other" }]) {
+      expect(() => parseSource("context", { context: { ...scope, ...changed }, policy: { rbacRules } }, scope)).toThrow("Security context does not match this workspace.");
+    }
+  });
+  it("accepts the server's actual action-based RBAC policy and an explicit empty policy", () => {
+    expect(rbacRules.length).toBeGreaterThan(0);
+    expect(parseRbacRules(rbacRules)).toEqual(rbacRules);
+    const body = { context: { ...scope, role: "admin" }, policy: { rbacRules } };
+    expect(parseSource("context", body, scope)).toEqual(body);
+    expect(parseRbacRules([])).toEqual([]);
+    expect(parseSource("context", { ...body, policy: { rbacRules: [] } }, scope).policy).toEqual({ rbacRules: [] });
+  });
+  it("rejects role maps, malformed rules and roles, duplicate actions, and oversized policies", () => {
+    const rule = rbacRules[0];
+    const invalid = [
+      { admin: ["read.security"] }, undefined, null, [null], ["read"],
+      [{ ...rule, action: " " }], [{ ...rule, action: "x".repeat(1_025) }],
+      [{ ...rule, description: undefined }], [{ ...rule, description: ["Read"] }],
+      [{ ...rule, description: " " }], [{ ...rule, description: "x".repeat(2_001) }],
+      [{ ...rule, roles: "admin" }], [{ ...rule, roles: { admin: true } }],
+      [{ ...rule, roles: ["owner"] }], [{ ...rule, roles: [null] }],
+      [{ ...rule, roles: ["admin", "admin"] }], [rule, { ...rule }],
+      Array.from({ length: 501 }, (_, index) => ({ ...rule, action: `action.${index}` })),
+    ];
+    for (const value of invalid) {
+      expect(() => parseRbacRules(value)).toThrow();
+      expect(() => parseSource("context", { context: scope, policy: { rbacRules: value } }, scope)).toThrow();
+    }
+  });
+  it("copies only declared rule fields and never invents roles for an empty role list", () => {
+    const rule = { action: "read", description: "Reported policy only.", roles: [] as string[], granted: true };
+    const parsed = parseRbacRules([rule]);
+    rule.roles.push("admin");
+    expect(parsed).toEqual([{ action: "read", description: "Reported policy only.", roles: [] }]);
   });
   it("rejects contradictory SLO health and measurements without their policies", () => {
     expect(parseSource("slo", slo(true), scope).healthy).toBe(true);

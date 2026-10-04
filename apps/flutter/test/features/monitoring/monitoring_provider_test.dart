@@ -8,6 +8,7 @@ import 'package:asael/features/auth/domain/app_session.dart';
 import 'package:asael/features/monitoring/monitoring_controller.dart';
 import 'package:asael/features/monitoring/monitoring_providers.dart';
 import 'package:asael/features/monitoring/monitoring_workspace_view.dart';
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -37,6 +38,12 @@ class _Sessions extends SessionController {
 
 class _NoSessionEffects extends Fake implements SessionRepository {}
 
+class _MutableOriginApi extends MonitoringTestApi {
+  String origin = 'https://workspace.example.test';
+  @override
+  String get apiBaseUrl => origin;
+}
+
 class _Lock extends BiometricSessionLockController {
   _Lock() : super(_NoSessionEffects());
   bool locked = false;
@@ -59,6 +66,7 @@ void main() {
     'canonical user',
     'role',
     'API',
+    'API base',
     'lock',
     'repository',
   ]) {
@@ -71,7 +79,7 @@ void main() {
           FlutterError.onError = prior;
           expect(errors, isEmpty);
         });
-        var api = MonitoringTestApi();
+        var api = _MutableOriginApi();
         final original = api, lock = _Lock();
         late _Sessions sessions;
         final container = ProviderContainer(
@@ -89,12 +97,21 @@ void main() {
         final subscription = container.listen(provider, (_, _) {});
         addTearDown(subscription.close);
         final c = container.read(provider)!;
+        final repository = container.read(monitoringRepositoryProvider)!;
         await c.refresh();
-        c.select('lcp-p75');
+        for (final source in MonitoringSource.values) {
+          expect(c.lane(source).data, isNotNull);
+          expect(c.lane(source).receivedAt, isNotNull);
+        }
+        final selectedId = c.slo.data!.evaluations.first.policy.id;
+        c.select(selectedId);
         final held = Completer<Map<String, dynamic>>();
         api.reader = (_) => held.future;
         final pending = c.refreshSource(MonitoringSource.alerts);
         await Future<void>.value();
+        expect(c.selectedId, selectedId);
+        var notifications = 0;
+        c.addListener(() => notifications++);
         switch (change) {
           case 'tenant':
             sessions.replace(_session(tenant: 'other'));
@@ -107,8 +124,10 @@ void main() {
           case 'role':
             sessions.replace(_session(role: 'operator'));
           case 'API':
-            api = MonitoringTestApi();
+            api = _MutableOriginApi();
             container.invalidate(apiClientProvider);
+          case 'API base':
+            original.origin = 'https://other-workspace.example.test';
           case 'lock':
             lock.protect();
           case 'repository':
@@ -117,9 +136,19 @@ void main() {
         expect(c.available, isFalse);
         for (final source in MonitoringSource.values) {
           expect(c.lane(source).data, isNull);
+          expect(c.lane(source).receivedAt, isNull);
         }
         expect(c.selectedId, isNull);
         expect(original.tokens.last.isCancelled, isTrue);
+        if (change == 'API base') {
+          expect(notifications, 0);
+          original.origin = 'https://workspace.example.test';
+          expect(repository.current, isFalse);
+          expect(c.available, isFalse);
+          await Future<void>.value();
+          expect(notifications, greaterThan(0));
+          await expectLater(repository.health(CancelToken()), throwsStateError);
+        }
         held.complete(monitoringAlertsJson());
         await pending;
         await c.refresh();

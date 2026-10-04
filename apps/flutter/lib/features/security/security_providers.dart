@@ -4,8 +4,8 @@ import '../../core/network/api_client.dart';
 import '../../core/network/native_workspace_access.dart';
 import '../auth/application/biometric_session_lock_controller.dart';
 import '../auth/application/session_controller.dart';
-import 'monitoring_controller.dart';
-import 'monitoring_repository.dart';
+import 'security_controller.dart';
+import 'security_repository.dart';
 
 void _watchAuthority(
   Ref ref,
@@ -31,27 +31,28 @@ void _watchAuthority(
   });
 }
 
-final monitoringRepositoryProvider =
-    Provider.autoDispose<ApiMonitoringRepository?>((ref) {
-      final access = ref.watch(nativeWorkspaceAccessProvider);
-      if (access == null ||
-          !access.canManage ||
-          !access.current ||
-          !ref.mounted) {
-        return null;
-      }
-      final repository = ApiMonitoringRepository(access);
-      _watchAuthority(ref, access, repository.dispose);
-      ref.onDispose(repository.dispose);
-      return repository;
-    });
-final monitoringControllerProvider = Provider.autoDispose
-    .family<MonitoringController?, Object>((ref, visibility) {
-      final repository = ref.watch(monitoringRepositoryProvider);
+final securityRepositoryProvider = Provider.autoDispose<ApiSecurityRepository?>(
+  (ref) {
+    final access = ref.watch(nativeWorkspaceAccessProvider);
+    if (access == null ||
+        !access.canManage ||
+        !access.current ||
+        !ref.mounted) {
+      return null;
+    }
+    final repository = ApiSecurityRepository(access);
+    _watchAuthority(ref, access, repository.dispose);
+    ref.onDispose(repository.dispose);
+    return repository;
+  },
+);
+final securityControllerProvider = Provider.autoDispose
+    .family<SecurityController?, Object>((ref, visibility) {
+      final repository = ref.watch(securityRepositoryProvider);
       if (repository == null || !repository.current || !ref.mounted) {
         return null;
       }
-      final controller = MonitoringController(repository);
+      final controller = SecurityController(repository);
       final detach = repository.observeInvalidation(
         controller.invalidateAndNotifyLater,
       );
