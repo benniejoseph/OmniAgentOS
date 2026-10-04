@@ -4,6 +4,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../features/search/content_search_targets.dart';
+
 typedef DesktopRouteOpener = void Function(String route);
 typedef DesktopNotificationActionHandler = Future<void> Function(
   DesktopNotificationAction action,
@@ -338,7 +340,9 @@ class DesktopHostBridge {
   );
 
   static bool isWorkspaceRoute(String route) =>
-      route.length <= 600 && _workspaceRoute.hasMatch(route);
+      route.length <= 1600 &&
+      (isNativeContentSearchLocation(route) ||
+          route.length <= 600 && _workspaceRoute.hasMatch(route));
 
   static bool get _isMacOS =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS;

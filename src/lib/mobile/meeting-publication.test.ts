@@ -37,7 +37,7 @@ describe("native v33 Meeting publication", () => {
   });
 
   it("generates bounded scoped paths, exact status envelopes and private receipts", async () => {
-    const prior = JSON.parse(await readFile(new URL("../../../public/native-contracts/v36/openapi.json", import.meta.url), "utf8"));
+    const prior = JSON.parse(await readFile(new URL("../../../public/native-contracts/v37/openapi.json", import.meta.url), "utf8"));
     const wire = JSON.parse(await readFile(new URL(`../../../public/native-contracts/v${NATIVE_API_CURRENT_VERSION}/openapi.json`, import.meta.url), "utf8"));
     for (const operation of nativeOperationsForVersion(33)!.filter(({ id }) => id.startsWith("meetings."))) {
       expect(wire.paths[operation.path][operation.method.toLowerCase()], operation.id).toEqual(prior.paths[operation.path][operation.method.toLowerCase()]);

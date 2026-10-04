@@ -37,10 +37,15 @@ Set these through the platform secret/configuration store, never in source contr
 - `OMNIAGENT_NATIVE_MIN_ANDROID_VERSION`, `OMNIAGENT_NATIVE_MIN_IOS_VERSION`, and `OMNIAGENT_NATIVE_MIN_MACOS_VERSION`: optional stable `major.minor.patch` minimums for native compatibility telemetry. An absent or empty value defaults to `1.0.0`; a malformed configured value invalidates the policy and holds adoption unavailable. These settings do not authorize Agent enrollment.
 
 Native contract artifacts are committed immutable release inputs. This release
-advertises v38 as current and retains v37 as the supported previous version.
-V36 remains a byte-frozen, unadvertised archive; v35 leaves the three-version
-window. Run `npm run check:native-contracts` to verify generated v38 documents
-and SDK against the frozen v36/v37 hashes.
+advertises v39 as current and retains v38 as the supported previous version.
+V37 remains a byte-frozen, unadvertised archive; v36 leaves the three-version
+window. Run `npm run check:native-contracts` to verify generated v39 documents
+and SDK against the frozen v37/v38 hashes.
+
+V39 publishes three existing safe content-search reads: the scoped aggregate and
+exact Work/Memory opening. It adds no mutation capability or migration; provider
+availability and exact current authorization remain authoritative. Native search
+uses cancellable owner-bound reads and the existing detail/mutation controllers.
 
 V38 adds reviewed private Memory promotion, Account workflow setup/outcomes and
 manual facts, custom Agent deletion and Skill mutations, already-linked Meeting
@@ -52,10 +57,10 @@ Existing floors remain: Companion 31, Responsibilities 32, Meetings 33,
 Account/Memory records 34, reconciliation 35, consent/Calendar 36 and health 37.
 Source-audio access and binary recording upload remain outside this publication.
 
-Deploy a server supporting v38 before distributing this v38 build. A server
-advertising only v37/v36 refuses its bootstrap. On v38/v37, an installed v37
-client retains its existing operations but cannot enter v38 mutations; v36
-clients require an upgrade. A merge does not establish production promotion.
+Deploy a server supporting v39 before distributing native build 1.23.17+52. A
+server advertising only v38/v37 refuses its v39 bootstrap. On v39/v38, an installed
+v38 client retains its existing operations and mutation floors; v37 clients
+require an upgrade. A merge does not establish production promotion.
 
 Migrations 227–231 follow the health migration. They bind native promotion
 decisions to immutable Memory review evidence; bind workflow starts/outcomes

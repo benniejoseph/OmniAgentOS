@@ -88,7 +88,7 @@ void main() {
     expect(find.text('Capabilities'), findsOneWidget);
     expect(find.text('Automations'), findsNothing);
     expect(find.text('Connections'), findsNothing);
-    expect(find.text('Ask Asael or run a command'), findsOneWidget);
+    expect(find.text('Search workspace content'), findsOneWidget);
     expect(find.text('Body Today'), findsOneWidget);
     expect(find.byType(NavigationBar), findsNothing);
     _expectDestinationSemantics(

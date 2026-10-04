@@ -3,9 +3,9 @@
 
 abstract final class NativeContract {
   static const id = 'asael.native-api';
-  static const currentVersion = 38;
-  static const previousVersion = 37;
-  static const supportedVersions = <int>[38, 37];
+  static const currentVersion = 39;
+  static const previousVersion = 38;
+  static const supportedVersions = <int>[39, 38];
   static const discoveryPath = '/api/mobile/contracts';
   static const operationIds = <String>{
     'auth.login',
@@ -246,6 +246,9 @@ abstract final class NativeContract {
     'knowledge.cognification.build.review',
     'knowledge.cognification.build',
     'knowledge.cognification.builds.get',
+    'content.search',
+    'content.search.work.get',
+    'content.search.memory.get',
   };
 
   static bool supports(int version) => supportedVersions.contains(version);
@@ -1120,6 +1123,32 @@ abstract final class NativePaths {
   static String knowledgeCognificationBuildReview(String documentId) => '/api/knowledge/cognification/documents/${Uri.encodeComponent(documentId)}/build-review';
   static String knowledgeCognificationBuild(String documentId) => '/api/knowledge/cognification/documents/${Uri.encodeComponent(documentId)}/build';
   static String knowledgeCognificationBuildsGet(String documentId, String keySha256) => '/api/knowledge/cognification/documents/${Uri.encodeComponent(documentId)}/builds/${Uri.encodeComponent(keySha256)}';
+  static String contentSearch({required String q, int? limit, String? provider, String? cursor}) {
+    final path = '/api/content-search';
+    final query = <String, String>{
+      'q': q,
+      if (limit != null) 'limit': limit.toString(),
+      'provider': ?provider,
+      'cursor': ?cursor,
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static String contentSearchWorkGet(String id, {String? task}) {
+    final path = '/api/content-search/work/${Uri.encodeComponent(id)}';
+    final query = <String, String>{
+      'task': ?task,
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static String contentSearchMemoryGet(String id) => '/api/content-search/memory/${Uri.encodeComponent(id)}';
 }
 
 abstract final class NativeConversationEvents {

@@ -228,6 +228,15 @@ const appDestinations = <AppDestination>[
     description: 'Models, environment, identity, and portable data.',
     group: AppDestinationGroup.system,
   ),
+  AppDestination(
+    label: 'Search',
+    path: '/search',
+    icon: Icons.search_rounded,
+    selectedIcon: Icons.search_rounded,
+    eyebrow: 'WORKSPACE CONTENT',
+    description: 'Find conversations, work, private memory and saved sources.',
+    group: AppDestinationGroup.workspace,
+  ),
 ];
 
 int destinationIndex(String path) =>
