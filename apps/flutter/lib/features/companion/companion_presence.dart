@@ -36,6 +36,8 @@ class CompanionPresence extends StatefulWidget {
     this.onHome,
     this.homeDisabledReason,
     this.agentIdentity,
+    this.statusDetail,
+    this.showPortrait = true,
   });
   final CompanionPreferences? preferences;
   final CompanionWork work;
@@ -43,6 +45,8 @@ class CompanionPresence extends StatefulWidget {
   final bool microphoneActive, playbackActive, speechPreparing;
   final VoidCallback? onHome;
   final String? homeDisabledReason, agentIdentity;
+  final String? statusDetail;
+  final bool showPortrait;
   @override
   State<CompanionPresence> createState() => _CompanionPresenceState();
 }
@@ -101,84 +105,135 @@ class _CompanionPresenceState extends State<CompanionPresence> {
         ? 'off'
         : companionEffectiveMotion(preferences, reduced);
     final color = Theme.of(context).colorScheme;
+    final needsAttention = const {
+      'needs_you',
+      'blocked',
+      'paused',
+    }.contains(presentation.state);
+    final detail = needsAttention
+        ? presentation.detail
+        : widget.statusDetail ??
+              (presentation != widget.work ? presentation.detail : null);
     return Semantics(
       container: true,
       label: 'ATLAS status',
-      child: Container(
+      child: KeyedSubtree(
         key: const ValueKey('companion-presence'),
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-        decoration: BoxDecoration(
-          color: color.surfaceContainerLow,
-          border: Border(bottom: BorderSide(color: color.outlineVariant)),
-        ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            AtlasPortrait(
-              state: presentation.state,
-              preferences: preferences,
-              scopeKey: widget.reactionScope,
-              reactionKey: _reaction,
+        child: Theme(
+          data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+          child: ExpansionTile(
+            key: PageStorageKey(('companion-details', widget.reactionScope)),
+            expansionAnimationStyle: reduced
+                ? AnimationStyle.noAnimation
+                : const AnimationStyle(duration: Duration(milliseconds: 180)),
+            tilePadding: const EdgeInsets.symmetric(
+              horizontal: 16,
+              vertical: 4,
             ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    presentation.label,
-                    style: const TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  Text(
-                    presentation.detail,
-                    style: const TextStyle(fontSize: 13, height: 1.4),
-                  ),
-                  if (presentation != widget.work)
-                    Text(
-                      'Work: ${widget.work.label}',
-                      style: const TextStyle(fontSize: 13),
-                    ),
-                  if (widget.work.runId != null)
-                    SelectableText(
-                      'Run ${widget.work.runId}',
-                      style: const TextStyle(fontSize: 13),
-                    ),
-                  if (widget.agentIdentity != null)
-                    Text(
-                      widget.agentIdentity!,
-                      style: const TextStyle(fontSize: 13),
-                    ),
-                  if (preferences != null && preferences.intensity != 'quiet')
-                    Text(
-                      motion == 'full'
-                          ? 'ATLAS · brief state reactions when artwork is available'
-                          : 'Static ATLAS · $motion motion preference',
-                      style: TextStyle(
-                        fontSize: 13,
-                        color: color.onSurfaceVariant,
-                      ),
-                    ),
-                  if (widget.homeDisabledReason != null)
-                    Text(
-                      widget.homeDisabledReason!,
-                      style: const TextStyle(fontSize: 13),
-                    ),
-                  if (widget.onHome != null ||
-                      widget.homeDisabledReason != null)
-                    TextButton(
-                      onPressed: widget.onHome,
-                      style: TextButton.styleFrom(
-                        minimumSize: const Size(48, 48),
-                      ),
-                      child: const Text('Open home conversation'),
-                    ),
-                ],
+            childrenPadding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+            shape: const Border(),
+            collapsedShape: const Border(),
+            leading: Offstage(
+              offstage: !widget.showPortrait,
+              child: AtlasPortrait(
+                state: presentation.state,
+                size: 44,
+                visible: widget.showPortrait,
+                preferences: preferences,
+                scopeKey: widget.reactionScope,
+                reactionKey: _reaction,
               ),
             ),
-          ],
+            title: Text(
+              presentation.label,
+              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+            ),
+            subtitle:
+                detail == null &&
+                    widget.homeDisabledReason == null &&
+                    !(presentation != widget.work && widget.work.runId != null)
+                ? null
+                : Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (detail != null)
+                        Text(
+                          detail,
+                          style: TextStyle(
+                            fontSize: 13,
+                            height: 1.4,
+                            color: color.onSurfaceVariant,
+                          ),
+                        ),
+                      if (presentation != widget.work &&
+                          widget.work.runId != null)
+                        Text(
+                          'Work: ${widget.work.label}',
+                          style: const TextStyle(fontSize: 13),
+                        ),
+                      if (widget.homeDisabledReason != null)
+                        Text(
+                          widget.homeDisabledReason!,
+                          style: const TextStyle(fontSize: 13, height: 1.4),
+                        ),
+                    ],
+                  ),
+            children: [
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 220),
+                child: SingleChildScrollView(
+                  key: PageStorageKey((
+                    'companion-details-scroll',
+                    widget.reactionScope,
+                  )),
+                  primary: false,
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (detail != presentation.detail)
+                          Text(
+                            presentation.detail,
+                            style: const TextStyle(fontSize: 13, height: 1.4),
+                          ),
+                        if (widget.work.runId != null)
+                          SelectableText(
+                            'Run ${widget.work.runId}',
+                            style: const TextStyle(fontSize: 13),
+                          ),
+                        if (widget.agentIdentity != null)
+                          Text(
+                            widget.agentIdentity!,
+                            style: const TextStyle(fontSize: 13),
+                          ),
+                        if (preferences != null &&
+                            preferences.intensity != 'quiet')
+                          Text(
+                            motion == 'full'
+                                ? 'ATLAS motion is on.'
+                                : 'ATLAS motion: $motion.',
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: color.onSurfaceVariant,
+                            ),
+                          ),
+                        if (widget.onHome != null ||
+                            widget.homeDisabledReason != null)
+                          TextButton(
+                            onPressed: widget.onHome,
+                            style: TextButton.styleFrom(
+                              minimumSize: const Size(48, 48),
+                            ),
+                            child: const Text('Open home conversation'),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

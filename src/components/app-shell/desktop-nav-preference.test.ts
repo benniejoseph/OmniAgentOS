@@ -26,7 +26,7 @@ describe("the desktop navigation preference", () => {
   });
 
   it("moves a choice from the browser's storage into the cookie once", () => {
-    for (const [stored, collapsed] of [["true", true], ["false", false], [null, false]] as const) {
+    for (const [stored, collapsed] of [["true", true], ["false", false], [null, true]] as const) {
       const values = new Map<string, string>(
         stored === null ? [] : [[DESKTOP_NAV_COLLAPSED_COOKIE, stored]],
       );

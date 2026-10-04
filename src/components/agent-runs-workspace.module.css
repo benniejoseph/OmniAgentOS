@@ -5,19 +5,13 @@
   inline-size: 100%;
   block-size: calc(100dvh - var(--app-header-height, 4rem) - var(--app-dock-height, 0rem));
   min-block-size: 0;
-  padding: 1.5rem 2rem 1rem;
+  padding: .75rem 2rem 1rem;
   color: var(--foreground);
   background: var(--background);
 }
 
-.topbar { flex: 0 0 auto; padding-block-end: 1rem; }
-.pageIdentity h1 {
-  margin: 0;
-  font-size: 1.75rem;
-  font-weight: 600;
-  line-height: 1.2858;
-  letter-spacing: -.02em;
-}
+.topbar { flex: 0 0 auto; inline-size: 100%; max-inline-size: 45rem; margin-inline: auto; }
+.topbar > :not(:first-child) { margin-block: 0 .75rem; }
 
 .conversationLayout { flex: 1; gap: 1.5rem; min-block-size: 0; min-inline-size: 0; }
 .conversationColumn,
@@ -54,30 +48,51 @@
 }
 
 .chatHeader {
+  position: relative;
+  z-index: 3;
   display: flex;
   flex: 0 0 auto;
-  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: .75rem;
-  min-block-size: 3.5rem;
-  padding: .5rem;
-  border-block-end: 1px solid var(--line);
+  inline-size: 100%;
+  max-inline-size: 45rem;
+  min-block-size: 3rem;
+  margin-inline: auto;
+  padding: .25rem 0;
 }
-.chatHeader > :first-child { flex: 1 1 12rem; }
-.chatHeader h2 { font-size: .875rem; line-height: 1.4286; }
-.conversationIcon {
-  display: grid;
-  flex: 0 0 auto;
-  place-items: center;
-  inline-size: 2.25rem;
-  block-size: 2.25rem;
-  border-radius: .625rem;
-  color: var(--muted);
-  background: var(--surface-raised);
-}
+/* Keep the canvas's internal z-20 controls below the conversation menu,
+   without trapping Voice or other dialogs in a workspace stacking context. */
+.chatShell > section[aria-label="Canonical Conversation lineage canvas"] { isolation: isolate; }
+.chatHeader > :first-child { flex: 1 1 auto; }
+.chatHeader h2 { color: var(--muted); font-size: .8125rem; font-weight: 500; line-height: 1.5; }
 .headerActions,
 .viewSwitch { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+.headerActions { flex: 0 0 auto; gap: .25rem; }
+.conversationMenu { position: relative; }
+.conversationMenu > summary { display: grid; place-items: center; inline-size: 2.25rem; min-block-size: 2.25rem; border-radius: .625rem; color: var(--muted); cursor: pointer; list-style: none; }
+.conversationMenu > summary::-webkit-details-marker { display: none; }
+.conversationMenu > summary:hover { color: var(--foreground); background: var(--surface-raised); }
+.conversationMenuPanel {
+  position: absolute;
+  z-index: 5;
+  inset-block-start: calc(100% + .375rem);
+  inset-inline-end: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: .375rem;
+  inline-size: min(16rem, calc(100vw - 3rem));
+  max-block-size: 65dvh;
+  overflow-y: auto;
+  padding: .75rem;
+  border: 1px solid var(--line-strong);
+  border-radius: .75rem;
+  background: var(--surface);
+  box-shadow: 0 8px 24px rgb(24 23 21 / .08);
+}
+.conversationMenuPanel > button { justify-content: flex-start; text-align: start; }
+.conversationMenuPanel > :first-child { align-self: flex-start; margin-block-end: .375rem; }
 .viewSwitch { gap: .25rem; padding: .25rem; border: 1px solid var(--line); border-radius: .75rem; }
 .viewSwitch button {
   display: inline-flex;
@@ -98,7 +113,7 @@
   position: relative;
   flex: 1 1 auto;
   min-block-size: 8rem;
-  padding: 1.5rem .5rem;
+  padding: 1.25rem .5rem 2rem;
   overflow-y: auto;
   overscroll-behavior-y: contain;
   scroll-padding-block: 1rem;
@@ -108,7 +123,7 @@
 .transcriptInner {
   display: flex;
   flex-direction: column;
-  gap: 1.75rem;
+  gap: 2rem;
   inline-size: 100%;
   max-inline-size: 45rem;
   min-block-size: 100%;
@@ -117,10 +132,19 @@
 .turn { position: relative; min-inline-size: 0; overflow-wrap: anywhere; }
 .assistantMessage { max-inline-size: 100%; }
 .assistantMessage p { text-wrap: pretty; }
+.responseActions { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem; margin-block-start: .75rem; }
+.responseActions button { font-weight: 400; }
+.feedback { margin-block-start: .5rem; }
+.feedback > summary { display: flex; align-items: center; gap: .5rem; inline-size: fit-content; min-block-size: 2.25rem; padding: .25rem .75rem; border-radius: .5rem; color: var(--muted); font-size: .75rem; cursor: pointer; list-style: none; }
+.feedback > summary::-webkit-details-marker { display: none; }
+.feedback > summary:hover { color: var(--foreground); background: var(--surface-raised); }
+.feedback[open] > summary { margin-block-end: .75rem; }
+.feedback > div { padding-inline: .75rem; }
+.feedback > p { padding-inline: .75rem; }
 .userBubble {
   max-inline-size: 85%;
-  padding: 1rem;
-  border-radius: .75rem;
+  padding: .75rem 1rem;
+  border-radius: 1rem 1rem .375rem 1rem;
   color: var(--foreground);
   background: var(--surface-raised);
   box-shadow: none;
@@ -134,22 +158,22 @@
   gap: .75rem;
   inline-size: 100%;
   max-inline-size: 45rem;
-  min-block-size: 4rem;
+  min-block-size: 3rem;
   margin-inline: 0;
-  padding: .75rem;
-  border: 1px solid var(--line);
-  border-radius: .75rem;
-  background: var(--surface);
+  padding: .5rem 0;
+  border: 0;
+  border-radius: .5rem;
+  background: transparent;
   transition: background-color 120ms ease;
 }
-.progressFlow:hover { background: var(--surface-raised); }
+.progressFlow:hover { background: transparent; }
 .progressNode { display: grid; flex: 0 0 auto; place-items: center; inline-size: 2.25rem; block-size: 2.25rem; color: var(--muted); }
 .progressAction { display: inline-flex; align-items: center; gap: .25rem; color: var(--accent); font-size: .8125rem; font-weight: 500; line-height: 1.5385; }
 
-.emptyConversation { display: grid; flex: 1; align-content: center; padding-block: 1.5rem; }
-.emptyConversation > div { max-inline-size: 32rem; }
-.emptyConversation h2 { margin: 0; font-size: 1.5rem; font-weight: 600; line-height: 1.3334; letter-spacing: -.02em; }
-.emptyConversation p { max-inline-size: 29rem; margin-block-start: .75rem; color: var(--muted); font-size: .875rem; line-height: 1.7143; }
+.emptyConversation { display: grid; flex: 1; align-content: start; padding-block: .5rem 1.5rem; }
+.emptyConversation > div { inline-size: 100%; max-inline-size: 32rem; margin-inline: auto; }
+.emptyConversation h2 { margin: 0; font-size: 1.5rem; font-weight: 600; line-height: 1.3334; letter-spacing: -.02em; text-align: center; }
+.emptyConversation p { max-inline-size: 29rem; margin: .75rem auto 0; color: var(--muted); font-size: .875rem; line-height: 1.7143; text-align: center; }
 .startingPrompts { display: grid; gap: .25rem; margin-block-start: 1.5rem; }
 .startingPrompt {
   display: flex;
@@ -175,30 +199,46 @@
 .composerWidth { inline-size: 100%; max-inline-size: 45rem; margin-inline: auto; }
 .composer {
   position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
   padding: .5rem;
   border: 1px solid var(--line-strong);
   border-radius: 1rem;
   background: var(--surface);
-  box-shadow: 0 2px 8px rgb(24 23 21 / .06), 0 12px 32px rgb(24 23 21 / .04);
+  box-shadow: 0 2px 8px rgb(24 23 21 / .04);
 }
-:global(:root[data-theme="dark"]) .composer { box-shadow: 0 8px 32px rgb(0 0 0 / .24); }
+:global(:root[data-theme="dark"]) .composer { box-shadow: 0 4px 16px rgb(0 0 0 / .16); }
+.composerField { grid-column: 1; grid-row: 1; min-inline-size: 0; }
 .composerField textarea {
   field-sizing: content;
   min-block-size: 2.75rem;
   max-block-size: min(15rem, 35dvh);
-  padding: .625rem .75rem;
+  padding: .625rem .5rem;
   color: var(--foreground);
   font-size: 1rem;
   line-height: 1.625;
   overflow-y: auto;
 }
 .composerField textarea::placeholder { color: var(--muted); opacity: 1; }
-.composerToolbar { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: flex-end; gap: .5rem; padding: .5rem; }
-.composerOptions { display: flex; flex: 1 1 24rem; flex-wrap: wrap; align-items: center; gap: .5rem; min-inline-size: 0; }
+.composerToolbar { display: contents; }
+.composerAdvanced { grid-column: 1 / -1; grid-row: 2; min-inline-size: 0; margin-block-start: .25rem; }
+.composerAdvanced > summary { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; min-block-size: 2rem; padding: .25rem .5rem; border-radius: .5rem; color: var(--muted); font-size: .75rem; cursor: pointer; list-style: none; }
+.composerAdvanced > summary::-webkit-details-marker { display: none; }
+.composerAdvanced > summary:hover { color: var(--foreground); background: var(--surface-raised); }
+.disclosureChevron { flex: 0 0 auto; transition: transform 180ms ease; }
+.composerAdvanced[open] .disclosureChevron,
+.feedback[open] .disclosureChevron { transform: rotate(180deg); }
+.composerHint { max-inline-size: 100%; margin-inline-start: auto; font-size: .75rem; text-align: end; }
+.optionSelection { max-inline-size: 12rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.approvalNotice { color: var(--warning); }
+.agentSelection { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .25rem .75rem; margin: .5rem; padding-block: .25rem .5rem; border-block-end: 1px solid var(--line); color: var(--muted); font-size: .8125rem; }
+.agentSelection strong { color: var(--foreground); font-weight: 500; }
+.composerOptions { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; min-inline-size: 0; padding: .75rem .5rem .5rem; }
 .composerOptions button,
 .composerOptions select { min-block-size: 2.25rem; min-inline-size: 2.25rem; max-inline-size: 100%; border-radius: .625rem; font-size: .8125rem; font-weight: 500; line-height: 1.5385; }
 .composerOptions select { border: 1px solid var(--line-strong); }
-.composerActions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: .5rem; margin-inline-start: auto; }
+.composerActions { grid-column: 2; grid-row: 1; display: flex; align-items: center; justify-content: flex-end; gap: .25rem; align-self: end; margin-block-end: .125rem; }
 .composerActions > button { min-inline-size: 2.75rem; min-block-size: 2.75rem; border-radius: .625rem; }
 .sendButton { display: grid; flex: 0 0 auto; place-items: center; color: var(--primary-ink); background: var(--primary); transition: background-color 120ms ease; }
 .sendButton:hover:not(:disabled) { background: var(--primary-hover); }
@@ -211,7 +251,7 @@
 .queueCard button:disabled { color: var(--muted); background: var(--surface-raised); opacity: 1; cursor: not-allowed; }
 
 .queueDock { flex: 0 1 auto; min-block-size: 0; max-block-size: min(18rem, 30dvh); inline-size: calc(100% - 1rem); max-inline-size: 45rem; margin: .25rem auto; overflow-y: auto; }
-.queueCard { border: 1px solid var(--line); border-radius: .75rem; background: var(--surface); }
+.queueCard { border: 0; border-radius: .5rem; background: transparent; }
 .queueCard > ol { max-block-size: none; }
 .queueCard > ol > li { border: 0; border-block-end: 1px solid var(--line); border-radius: 0; background: transparent; }
 .mobileConversationSheet { color: var(--foreground); background: var(--surface); }
@@ -235,32 +275,34 @@
 }
 @media (max-width: 47.999rem) {
   .workspace { padding-inline: 1rem; }
-  .pageIdentity h1 { font-size: 1.5rem; line-height: 1.3334; }
-  .topbar { padding-block-end: .5rem; }
-  .chatHeader { padding-inline: .5rem; }
-  .conversationIcon { display: none; }
+  .chatHeader { gap: .375rem; }
   .transcript { padding-block: 1rem; }
   .emptyConversation { padding-block: 1rem; }
   .emptyConversation h2 { font-size: 1.25rem; line-height: 1.4; }
   .startingPrompts { margin-block-start: 1rem; }
-  .composerOptions { flex-basis: 100%; }
-  .composerActions { inline-size: 100%; }
-  .composerToolbar { padding: .25rem; }
+  .composerDock { padding-inline: 0; }
+  .composer { padding: .375rem; }
+  .composerActions { gap: .125rem; }
   .userBubble { max-inline-size: 90%; }
 }
 
-/* Phone toolbars wrap, and a long draft may outgrow the remaining viewport.
-   Keep that content in document flow so the shell reserves the dock space
-   after the composer, including in short windows and at larger text sizes. */
+/* At normal phone sizes the transcript takes the remaining viewport and the
+   entire composer stays above the shell's reserved navigation dock. Options
+   and long drafts scroll locally; the rem floor permits document expansion
+   at large text sizes/short windows, with the shell's dock padding after it. */
 @media (max-height: 44rem), (max-width: 47.999rem) {
-  .workspace { block-size: auto; min-block-size: calc(100dvh - var(--app-header-height, 4rem) - var(--app-dock-height, 0rem)); }
-  .conversationLayout { flex: auto; }
-  .transcript { flex: auto; min-block-size: 12rem; max-block-size: 42dvh; }
+  .workspace { min-block-size: 28rem; }
+  .topbar { max-block-size: 25dvh; overflow-y: auto; scroll-padding-block: .5rem; }
+  .transcript { flex: 1 1 0; min-block-size: 6rem; max-block-size: none; }
+  .composerDock { flex: 0 1 auto; min-block-size: 0; max-block-size: 50dvh; overflow-y: auto; overscroll-behavior-y: contain; scroll-padding-block: .5rem; scrollbar-width: thin; }
   .threadList { max-block-size: 55dvh; }
   .emptyConversation { padding-block: .5rem; }
 }
 @media (pointer: coarse) {
   .chatHeader button,
+  .conversationMenu > summary,
+  .composerAdvanced > summary,
+  .feedback > summary,
   .threadRail button:not(.threadItem),
   .startingPrompt,
   .composerField button,
@@ -278,6 +320,7 @@
   .composer,
   .progressFlow,
   .queueCard,
+  .conversationMenuPanel,
   .viewSwitch { border-color: CanvasText; box-shadow: none; }
   .threadItemActive::before { background: Highlight; }
   .viewSwitch button[aria-pressed="true"] { border-block-end: 2px solid Highlight; box-shadow: none; }

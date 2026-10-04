@@ -323,14 +323,22 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
 
-      expect(find.byKey(const ValueKey('talk-assigned-agent')), findsOneWidget);
-      expect(find.text('Moltbook Steward · selected Agent'), findsOneWidget);
-      final composer = find.byWidgetPredicate(
-        (widget) =>
-            widget is TextField &&
-            widget.decoration?.hintText ==
-                'Describe an outcome or ask a question',
+      expect(
+        find.text('Moltbook Steward · Options and context').hitTestable(),
+        findsOneWidget,
       );
+      await tester.tap(find.byKey(const ValueKey('talk-composer-options')));
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const ValueKey('talk-assigned-agent')).hitTestable(),
+        findsOneWidget,
+      );
+      expect(find.text('Moltbook Steward · selected Agent'), findsOneWidget);
+      final composer = find.descendant(
+        of: find.byType(TalkCommandComposer),
+        matching: find.byType(TextField),
+      );
+      expect(composer.hitTestable(), findsOneWidget);
       await tester.enterText(composer, 'Read the Moltbook home feed');
       await tester.tap(find.byTooltip('Send message'));
       await tester.pump();

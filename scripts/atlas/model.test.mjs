@@ -65,9 +65,19 @@ test('each exact companion clip settles to its matching static reduced-motion po
 
 test('independent eyelids move while the recessed iris stays head-bound',()=>{
   const model=createAtlas(config);try{
-    const lid=model.root.userData.parts.find(part=>part.name==='upper_lid_Left');
+    const lid=model.root.userData.parts.find(part=>part.name==='soft_upper_lid_Left');
     const iris=model.root.userData.parts.find(part=>part.name==='iris_Left').vertexStart;
-    const lowerEdge=lid.vertexStart+6*21+10;
+    assert.ok(lid,'the independent upper lid must be present');
+    const position=model.mesh.geometry.attributes.position,skin=model.mesh.geometry.attributes.skinIndex,weights=model.mesh.geometry.attributes.skinWeight;
+    const lidBone=model.bones.findIndex(bone=>bone.name==='UpperLidLeft');
+    const eyeX=config.rig.find(bone=>bone.name==='UpperLidLeft').position[0];
+    // Probe the front of the mobile central rim, not an old tessellation offset.
+    const rim=Array.from({length:lid.vertexCount},(_,index)=>lid.vertexStart+index).filter(index=>{
+      let influence=0;for(let slot=0;slot<4;slot++)if(skin.array[index*4+slot]===lidBone)influence+=weights.array[index*4+slot];
+      return influence>.9&&Math.abs(position.getX(index)-eyeX)<.015;
+    }).sort((a,b)=>position.getZ(b)-position.getZ(a));
+    assert.ok(rim.length>0,'the central rim must be independently lid-bound');
+    const lowerEdge=rim[0];
     const at=index=>model.mesh.applyBoneTransform(index,new Vector3().fromBufferAttribute(model.mesh.geometry.attributes.position,index));
     const beforeLid=at(lowerEdge),beforeIris=at(iris);
     model.bones.find(bone=>bone.name==='UpperLidLeft').rotation.x=Math.PI/3;model.root.updateMatrixWorld(true);
@@ -79,7 +89,12 @@ test('independent eyelids move while the recessed iris stays head-bound',()=>{
 test('a jaw pose deforms its lower mandible while the head-bound upper beak stays in place',()=>{
   const model=createAtlas(config);try{
     const upper=model.root.userData.parts.find(part=>part.name==='upper_hooked_beak').vertexStart;
-    const lower=model.root.userData.parts.find(part=>part.name==='lower_beak').vertexStart+3;
+    const mandible=model.root.userData.parts.find(part=>part.name==='lower_beak');
+    assert.ok(mandible,'the lower mandible must be present');
+    // The forward tip is the semantic hinge probe across different ring counts.
+    const position=model.mesh.geometry.attributes.position;
+    const lower=Array.from({length:mandible.vertexCount},(_,index)=>mandible.vertexStart+index)
+      .reduce((tip,index)=>position.getZ(index)>position.getZ(tip)?index:tip,mandible.vertexStart);
     const at=index=>model.mesh.applyBoneTransform(index,new Vector3().fromBufferAttribute(model.mesh.geometry.attributes.position,index));
     const beforeUpper=at(upper),beforeLower=at(lower);model.pose('responding');
     // Responding also tilts the head. Compare a jaw-closed equivalent to isolate the hinge.

@@ -6,8 +6,8 @@ import '../../core/network/api_exception.dart';
 import 'today.dart';
 
 /// Desktop presentation for Today. The repository and controller remain shared
-/// with Android and web, while macOS gets a persistent operating board and
-/// context inspector instead of the mobile Daybook composition.
+/// with Android and web, while macOS keeps a focus list and a persistent brief
+/// and related-work inspector.
 class MacosTodayView extends StatelessWidget {
   const MacosTodayView({super.key, required this.controller, this.focusItemId});
 
@@ -26,7 +26,7 @@ class MacosTodayView extends StatelessWidget {
 
       return MacosPageScaffold(
         title: 'Today',
-        description: 'Priorities, decisions, and the work already in motion.',
+        description: 'Your priorities, daily brief, and recent work.',
         icon: Icons.today_outlined,
         actions: [
           IconButton(
@@ -194,7 +194,7 @@ class _TodayToolbar extends StatelessWidget {
           ),
           const SizedBox(width: 7),
           Text(
-            refreshing ? 'Refreshing server truth' : _longDate(DateTime.now()),
+            refreshing ? 'Refreshing Today…' : _longDate(DateTime.now()),
             style: Theme.of(context).textTheme.labelMedium,
           ),
           _ToolbarDivider(color: mac.divider),
@@ -273,7 +273,7 @@ class _TodayBody extends StatelessWidget {
         return MacosEmptyState(
           icon: Icons.cloud_off_outlined,
           title: 'Today is unavailable',
-          message: 'Asael could not load the current Today projection. No empty or healthy state has been assumed.',
+          message: 'Your priorities and daily brief could not be loaded. Try again to see the latest view.',
           action: FilledButton.icon(
             onPressed: controller.refresh,
             icon: const Icon(Icons.refresh_rounded),
@@ -284,7 +284,8 @@ class _TodayBody extends StatelessWidget {
       return MacosEmptyState(
         icon: Icons.today_outlined,
         title: 'Load your day',
-        message: 'Refresh to retrieve priorities, the daily brief, and current project context.',
+        message:
+            'Refresh to see your priorities, daily brief, and recent work.',
         action: FilledButton.icon(
           onPressed: controller.refresh,
           icon: const Icon(Icons.refresh_rounded),
@@ -343,8 +344,9 @@ class _TodayBody extends StatelessWidget {
                     child: items.isEmpty
                         ? const MacosEmptyState(
                             icon: Icons.task_alt_rounded,
-                            title: 'The focus list is clear',
-                            message: 'Add a focus item when something should be visible in today’s operating view.',
+                            title: 'No focus items yet',
+                            message:
+                                'Add a focus item to keep it in view today.',
                           )
                         : Scrollbar(
                             child: ListView.separated(
@@ -402,7 +404,7 @@ class _TodayTruthBanner extends StatelessWidget {
               child: Text(
                 conflict
                     ? 'This item changed elsewhere. The newer server version is shown.'
-                    : 'An update failed. The last available Today projection remains visible.',
+                    : 'An update failed. You’re seeing the last available Today view.',
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
                   color: conflict
                       ? scheme.onSecondaryContainer
@@ -607,7 +609,7 @@ class _BriefSection extends StatelessWidget {
         const SizedBox(height: 14),
         if (data == null) ...[
           Text(
-            'No brief has been generated for this projection.',
+            'Create a brief to review your current priorities.',
             style: Theme.of(context).textTheme.bodyMedium?.copyWith(
               color: Theme.of(context).colorScheme.onSurfaceVariant,
             ),
@@ -681,7 +683,7 @@ class _BriefSection extends StatelessWidget {
                       const Icon(Icons.warning_amber_rounded, size: 16),
                       const SizedBox(width: 7),
                       Text(
-                        'Watchouts',
+                        'Watch for',
                         style: Theme.of(context).textTheme.labelLarge,
                       ),
                     ],
@@ -713,7 +715,7 @@ class _ProjectContext extends StatelessWidget {
       MacosSectionHeader(
         title: 'Active projects',
         description: projects.isEmpty
-            ? 'No project context is attached.'
+            ? 'No projects are shown in this view.'
             : '${projects.length} project${projects.length == 1 ? '' : 's'} in view',
       ),
       const SizedBox(height: 10),
@@ -772,7 +774,7 @@ class _ConversationContext extends StatelessWidget {
       MacosSectionHeader(
         title: 'Recent conversations',
         description: threads.isEmpty
-            ? 'No recent conversation context.'
+            ? 'No recent conversations are shown in this view.'
             : '${threads.length} recent thread${threads.length == 1 ? '' : 's'}',
       ),
       const SizedBox(height: 8),

@@ -2,6 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
+import { ChevronDown } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useWorkspaceSession } from "@/components/app-shell/session-context";
 import { useCompanionPreferences } from "@/components/use-companion-preferences";
@@ -23,6 +24,8 @@ type PresenceProps = {
   showHome?: boolean;
   onOpenHome?: (threadId: string) => void;
   homeDisabledReason?: string;
+  /** A modest greeting before the first message; active conversations stay compact. */
+  layout?: "compact" | "greeting";
 };
 
 export function CompanionPresence(props: PresenceProps) {
@@ -37,7 +40,7 @@ export function CompanionPresence(props: PresenceProps) {
   return <ScopedPresence key={JSON.stringify([scope, conversationId])} {...props} conversationId={conversationId} scope={scope} manifest={manifest} />;
 }
 
-function ScopedPresence({ scope, conversationId, manifest, showHome = true, onOpenHome, homeDisabledReason, ...input }: PresenceProps & { scope?: string; manifest?: AtlasManifest }) {
+function ScopedPresence({ scope, conversationId, manifest, showHome = true, onOpenHome, homeDisabledReason, layout = "compact", ...input }: PresenceProps & { scope?: string; manifest?: AtlasManifest }) {
   const read = useCompanionPreferences(scope);
   const [assetFailed, setAssetFailed] = useState(false);
   const [failedPosters, setFailedPosters] = useState<ReadonlySet<string>>(() => new Set());
@@ -54,6 +57,7 @@ function ScopedPresence({ scope, conversationId, manifest, showHome = true, onOp
   const preferences = read.response?.snapshot.preferences;
   const motion = effectiveCompanionMotion(preferences?.motion ?? "off", reduced);
   const intensity = preferences?.intensity ?? "quiet";
+  const portraitSize = layout === "greeting" ? 72 : 36;
   const showPortrait = Boolean(read.state === "ready" && preferences?.visible && pageVisible && !assetFailed);
   const clip = manifest?.states[presentation.state];
   const assets = clip?.[theme];
@@ -108,7 +112,7 @@ function ScopedPresence({ scope, conversationId, manifest, showHome = true, onOp
         || image.naturalWidth !== 1024 || image.naturalHeight !== rows * 256) { stop(); return; }
       const started = performance.now();
       sprite.style.backgroundImage = `url("${url}")`;
-      sprite.style.backgroundSize = `144px ${rows * 36}px`;
+      sprite.style.backgroundSize = `${portraitSize * 4}px ${rows * portraitSize}px`;
       portrait.style.display = "none";
       sprite.style.display = "block";
       const tick = () => {
@@ -116,7 +120,7 @@ function ScopedPresence({ scope, conversationId, manifest, showHome = true, onOp
         const elapsed = performance.now() - started;
         const frame = atlasFrameAt(clip, elapsed);
         if (frame.done) { stop(); return; }
-        sprite.style.backgroundPosition = `${-(frame.index % 4) * 36}px ${-Math.floor(frame.index / 4) * 36}px`;
+        sprite.style.backgroundPosition = `${-(frame.index % 4) * portraitSize}px ${-Math.floor(frame.index / 4) * portraitSize}px`;
         timer = window.setTimeout(tick, Math.min(50 - elapsed % 50, clip.durationMs - elapsed));
       };
       tick();
@@ -128,13 +132,16 @@ function ScopedPresence({ scope, conversationId, manifest, showHome = true, onOp
       media.removeEventListener("change", interrupt);
       themeObserver.disconnect();
     };
-  }, [assets, clip, completionIdentity, conversationId, eligible, gate, playback, preferenceIdentity, runId, state, theme, workState]);
+  }, [assets, clip, completionIdentity, conversationId, eligible, gate, playback, portraitSize, preferenceIdentity, runId, state, theme, workState]);
 
   const home = read.response?.home;
   return (
     <section ref={sectionRef} className={styles.presence} aria-label="ATLAS companion status" data-testid="companion-presence"
       data-companion-state={presentation.state} data-companion-motion={motion} data-companion-intensity={intensity}
+      data-companion-layout={layout}
       data-companion-preferences={read.state} data-companion-portrait={showPortrait ? "visible" : assetFailed ? "unavailable" : "hidden"}>
+      <details className={styles.disclosure}>
+      <summary className={styles.summary}>
       <span className={styles.portrait} aria-hidden="true">
         <span ref={posterRef}>{showPortrait ? <Image key={poster} src={poster} alt="" width={108} height={108} unoptimized loading="lazy"
           className={styles.image} onError={() => {
@@ -142,15 +149,18 @@ function ScopedPresence({ scope, conversationId, manifest, showHome = true, onOp
             if (poster === ATLAS_NEUTRAL_POSTER) setAssetFailed(true);
             else setFailedPosters((current) => new Set([...current, poster]));
           }} /> : null}</span>
-        <span ref={spriteRef} style={{ display: "none", width: 36, height: 36, backgroundRepeat: "no-repeat" }} />
+        <span ref={spriteRef} style={{ display: "none", width: portraitSize, height: portraitSize, backgroundRepeat: "no-repeat" }} />
       </span>
+      <span className={styles.status}><span className={styles.name}>ATLAS</span><span className={styles.state}>{presentation.label}</span></span>
+      <ChevronDown size={13} className={styles.chevron} aria-hidden="true" />
+      <span className="sr-only">Status details and companion settings</span>
+      </summary>
+      <div className={styles.panel}>
       <div className={styles.copy}>
-        <p className={styles.status}><span className={styles.name}>ATLAS</span><span>{presentation.label}</span></p>
         <p className={styles.detail}>{presentation.detail}</p>
         {(input.microphoneActive || input.playbackActive || input.speechPreparing) && input.work && input.work.state !== "available" ? <p className={styles.detail}>Work: {input.work.label}. {input.work.detail}</p> : null}
         {!input.microphoneActive && !input.playbackActive && !input.speechPreparing && presentation.work.label !== presentation.label ? <p className={styles.detail}>{presentation.work.label}</p> : null}
         {presentation.work.runId ? <p className={styles.identity}>Run <code>{presentation.work.runId}</code></p> : null}
-        {intensity !== "quiet" ? <p className={styles.caption}>Presentation companion</p> : null}
         {read.state === "unavailable" ? <p className={styles.detail}>Companion preferences unavailable. Status and controls remain available.</p> : null}
         {assetFailed && preferences?.visible ? <p className={styles.detail}>Portrait unavailable.</p> : null}
       </div>
@@ -164,6 +174,8 @@ function ScopedPresence({ scope, conversationId, manifest, showHome = true, onOp
         {homeDisabledReason && home?.state === "available" ? <p className={styles.detail}>{homeDisabledReason}</p> : null}
         {home?.state === "unavailable" || home?.state === "unconfirmed" ? <p className={styles.detail}>Home conversation {home.state === "unavailable" ? "unavailable" : "not confirmed"}; opens Assistant.</p> : null}
       </div> : null}
+      </div>
+      </details>
     </section>
   );
 }

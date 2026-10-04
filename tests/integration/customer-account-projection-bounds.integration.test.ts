@@ -69,6 +69,13 @@ databaseDescribe("bounded Customer Account 360 heads under serving PostgreSQL RL
     await seedFacts(accounts.get("purpose")!, 1, 1, "active");
     await seedFacts(accounts.get("purpose")!, 1, 2, "active", "customer_success.analytics");
     for (const key of ["scope", "private", "foreign"]) await seedFacts(accounts.get(key)!, 1, 1, "active");
+    // Publish statistics for the fresh bulk fixture and its RLS lookup tables
+    // before serving reads, rather than depending on automatic analysis timing.
+    // This runs only on the fixture admin connection; serving budgets stay intact.
+    await admin`ANALYZE
+      omni_customer_accounts, omni_customer_account_revisions, omni_customer_fact_revisions,
+      omni_tenant_workspaces, omni_tenant_workspace_memberships,
+      omni_auth_users, omni_auth_user_actor_identifiers, omni_auth_memberships`;
   }, 180_000);
   afterAll(async () => { await closeDatabaseClient(); await admin?.end(); vi.unstubAllEnvs(); });
 

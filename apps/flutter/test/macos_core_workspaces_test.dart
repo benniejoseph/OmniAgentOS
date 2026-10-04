@@ -61,11 +61,20 @@ void main() {
       );
 
       final scaffold = tester.widget<Scaffold>(find.byType(Scaffold).first);
-      expect((scaffold.appBar! as AppBar).toolbarHeight, 52);
-      expect(find.text('Conversation'), findsOneWidget);
+      expect((scaffold.appBar! as AppBar).toolbarHeight, 56);
+      expect(find.text('Assistant'), findsOneWidget);
+      expect(find.text('Use a team'), findsNothing);
+      final options = find.byKey(const ValueKey('talk-composer-options'));
+      expect(options.hitTestable(), findsOneWidget);
+      await tester.tap(options);
+      await tester.pumpAndSettle();
       expect(find.text('Use a team'), findsOneWidget);
       expect(find.text('Work alone'), findsOneWidget);
-      expect(find.text('Private & protected'), findsOneWidget);
+      expect(
+        find.byTooltip('Conversation actions').hitTestable(),
+        findsOneWidget,
+      );
+      expect(find.text('What Asael is doing'), findsOneWidget);
       expect(tester.takeException(), isNull);
       debugDefaultTargetPlatformOverride = null;
     },

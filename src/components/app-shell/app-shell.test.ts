@@ -46,7 +46,11 @@ const { AppShell, CompactNavigation, MobileNavigation } = await import(
 function renderShell(pathname: string, pending: number | undefined) {
   shell.pathname = pathname;
   shell.pending = pending;
-  return renderToStaticMarkup(createElement(AppShell, null, createElement("p", null, "page")));
+  return renderToStaticMarkup(createElement(
+    AppShell,
+    { initialDesktopNavCollapsed: false } as Parameters<typeof AppShell>[0],
+    createElement("p", null, "page"),
+  ));
 }
 
 function linkTo(html: string, href: string) {
@@ -143,16 +147,15 @@ describe("the desktop navigation width", () => {
   }
 
   it("renders at the width the request's cookie remembers", () => {
-    const collapsed = shellWith(true);
-    expect(collapsed).toContain("lg:pl-20");
-    expect(collapsed).not.toContain("lg:pl-60");
-    expect(collapsed).toContain('aria-label="Expand workspace navigation"');
-
-    for (const value of [false, undefined]) {
-      const expanded = shellWith(value);
-      expect(expanded).toContain("lg:pl-60");
-      expect(expanded).not.toContain("lg:pl-20");
-      expect(expanded).toContain('aria-label="Collapse workspace navigation"');
+    for (const value of [true, undefined]) {
+      const collapsed = shellWith(value);
+      expect(collapsed).toContain("lg:pl-20");
+      expect(collapsed).not.toContain("lg:pl-60");
+      expect(collapsed).toContain('aria-label="Expand workspace navigation"');
     }
+    const expanded = shellWith(false);
+    expect(expanded).toContain("lg:pl-60");
+    expect(expanded).not.toContain("lg:pl-20");
+    expect(expanded).toContain('aria-label="Collapse workspace navigation"');
   });
 });

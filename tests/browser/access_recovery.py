@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, parse_qsl, quote, urlsplit
 from playwright.sync_api import expect, sync_playwright
 
 from access_recovery_fixtures import ANONYMOUS, EMAIL, PASSWORD, AccessFixtures
-from run import Checks, REPO, navigate, preview
+from run import Checks, REPO, navigate, preview, select_theme
 
 DEEP_LINK = "/app/command?thread=11111111-1111-4111-8111-111111111111&view=notes%20today"
 LONG_ERROR = "Synthetic account unavailable: " + "review-reference-" * 22
@@ -38,9 +38,8 @@ def login(page, origin, query=""):
     expect(page.get_by_role("heading", level=1)).to_have_text("Welcome back")
 
 
-def theme(page, color):
-    page.get_by_role("button", name=f"{color.title()} theme", exact=True).click()
-    page.wait_for_function("color=>document.documentElement.dataset.theme===color", arg=color)
+def theme(page, color, coarse):
+    select_theme(page, color, coarse)
     settle(page)
 
 
@@ -273,7 +272,7 @@ def exercise(browser, origin, checks, coarse):
         fixture.plan_session({**ANONYMOUS, "googleLoginConfigured": True})
         for color in ("light", "dark"):
             login(page, origin)
-            theme(page, color)
+            theme(page, color, coarse)
             snapshot(page, checks, f"{label}-login-{color}", coarse)
             navigate(page, origin, "/demo")
             snapshot(page, checks, f"{label}-demo-{color}", coarse)

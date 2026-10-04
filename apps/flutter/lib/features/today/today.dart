@@ -215,7 +215,7 @@ class TodayView extends StatelessWidget {
       if (controller.error != null && data == null) {
         return _Message(
           icon: Icons.cloud_off_rounded,
-          title: 'Today is offline',
+          title: 'Today is unavailable',
           action: controller.refresh,
         );
       }
@@ -239,8 +239,9 @@ class TodayView extends StatelessWidget {
         child: CustomScrollView(
           slivers: [
             SliverToBoxAdapter(
-              child: _TodayHero(
+              child: _TodayHeader(
                 acting: controller.acting,
+                hasBrief: data.brief != null,
                 onBrief: controller.generateBrief,
                 onAdd: () => _addItem(context),
               ),
@@ -273,21 +274,12 @@ class TodayView extends StatelessWidget {
                   ),
                 ),
               ),
-            SliverToBoxAdapter(
-              child: _TodayPulse(
-                pending: pending,
-                completed: completed,
-                projects: data.projects.length,
-                conversations: data.threads.length,
-              ),
-            ),
             if (data.brief case final brief?)
               SliverToBoxAdapter(child: _DailyBriefPanel(brief: brief)),
             SliverToBoxAdapter(
               child: _SectionHeading(
-                eyebrow: 'PRIORITIES',
-                title: 'Focus',
-                detail: '$pending remaining · $completed complete',
+                title: 'Focus list',
+                detail: '$pending open · $completed complete',
               ),
             ),
             if (data.items.isEmpty)
@@ -301,14 +293,11 @@ class TodayView extends StatelessWidget {
                   itemCount: items.length,
                   itemBuilder: (context, index) {
                     final item = items[index];
-                    return _StaggeredReveal(
-                      index: index,
-                      child: _TodayRow(
-                        item: item,
-                        busy: controller.updating.contains(item.id),
-                        focused: item.id == focusItemId,
-                        onToggle: () => controller.toggle(item),
-                      ),
+                    return _TodayRow(
+                      item: item,
+                      busy: controller.updating.contains(item.id),
+                      focused: item.id == focusItemId,
+                      onToggle: () => controller.toggle(item),
                     );
                   },
                 ),
@@ -351,320 +340,54 @@ class TodayView extends StatelessWidget {
   }
 }
 
-class _TodayHero extends StatelessWidget {
-  const _TodayHero({
+class _TodayHeader extends StatelessWidget {
+  const _TodayHeader({
     required this.acting,
+    required this.hasBrief,
     required this.onBrief,
     required this.onAdd,
   });
 
   final bool acting;
+  final bool hasBrief;
   final VoidCallback onBrief;
   final VoidCallback onAdd;
 
   @override
   Widget build(BuildContext context) {
-    final now = DateTime.now();
-    final scheme = Theme.of(context).colorScheme;
-    final greeting = switch (now.hour) {
-      < 12 => 'Good morning.',
-      < 17 => 'Good afternoon.',
-      _ => 'Good evening.',
-    };
+    final theme = Theme.of(context);
+    final date = MaterialLocalizations.of(context)
+        .formatFullDate(DateTime.now());
     return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 22, 20, 14),
-      child: Stack(
-        clipBehavior: Clip.none,
-        children: [
-          Positioned(
-            right: -58,
-            top: -64,
-            child: IgnorePointer(
-              child: CustomPaint(
-                size: const Size(238, 218),
-                painter: _SolarFieldPainter(
-                  sun: scheme.secondary,
-                  planet: scheme.primary,
-                  space: scheme.onSurface,
-                  surface: scheme.surface,
-                ),
-              ),
-            ),
-          ),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  SizedBox(
-                    width: 72,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          '${now.day}',
-                          style: Theme.of(context).textTheme.displaySmall
-                              ?.copyWith(
-                                fontFamily: 'serif',
-                                fontSize: 57,
-                                fontWeight: FontWeight.w400,
-                                height: .8,
-                              ),
-                        ),
-                        const SizedBox(height: 9),
-                        Container(
-                          width: 38,
-                          height: 3,
-                          decoration: BoxDecoration(
-                            color: scheme.primary,
-                            borderRadius: BorderRadius.circular(99),
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          '${_weekdays[now.weekday - 1]}\n${_months[now.month - 1]}',
-                          style: TextStyle(
-                            color: scheme.onSurfaceVariant,
-                            fontSize: 10,
-                            fontWeight: FontWeight.w700,
-                            height: 1.35,
-                            letterSpacing: .8,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'YOUR DAYBOOK',
-                          style: TextStyle(
-                            color: scheme.primary,
-                            fontSize: 10.5,
-                            fontWeight: FontWeight.w700,
-                            letterSpacing: 1.25,
-                          ),
-                        ),
-                        const SizedBox(height: 5),
-                        Text(
-                          greeting,
-                          style: Theme.of(context).textTheme.displaySmall
-                              ?.copyWith(
-                                fontFamily: 'serif',
-                                fontSize: 38,
-                                fontWeight: FontWeight.w400,
-                                height: .96,
-                              ),
-                        ),
-                        const SizedBox(height: 9),
-                        Text(
-                          'One trusted view of your work, decisions, and recent evidence.',
-                          style: TextStyle(
-                            color: scheme.onSurfaceVariant,
-                            fontSize: 13,
-                            height: 1.45,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 20),
-              Row(
-                children: [
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: acting ? null : onBrief,
-                      icon: const Icon(Icons.auto_awesome_outlined, size: 17),
-                      label: const Text('Refresh brief'),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: FilledButton.icon(
-                      onPressed: acting ? null : onAdd,
-                      icon: const Icon(Icons.add_rounded, size: 18),
-                      label: const Text('Add focus'),
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _SolarFieldPainter extends CustomPainter {
-  const _SolarFieldPainter({
-    required this.sun,
-    required this.planet,
-    required this.space,
-    required this.surface,
-  });
-
-  final Color sun;
-  final Color planet;
-  final Color space;
-  final Color surface;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final center = Offset(size.width * .54, size.height * .48);
-    final orbitPaint = Paint()
-      ..color = planet.withValues(alpha: .2)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1;
-    final farOrbitPaint = Paint()
-      ..color = space.withValues(alpha: .1)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1;
-
-    canvas.save();
-    canvas.translate(center.dx, center.dy);
-    canvas.rotate(-.18);
-    canvas.drawOval(
-      Rect.fromCenter(center: Offset.zero, width: 176, height: 72),
-      orbitPaint,
-    );
-    canvas.drawOval(
-      Rect.fromCenter(center: Offset.zero, width: 226, height: 106),
-      farOrbitPaint,
-    );
-    canvas.restore();
-
-    final sunRect = Rect.fromCircle(center: center, radius: 44);
-    canvas.drawCircle(center, 55, Paint()..color = sun.withValues(alpha: .08));
-    canvas.drawCircle(
-      center,
-      44,
-      Paint()
-        ..shader = RadialGradient(
-          center: const Alignment(-.35, -.4),
-          radius: .9,
-          colors: [
-            surface.withValues(alpha: .96),
-            sun.withValues(alpha: .92),
-            sun.withValues(alpha: .52),
-          ],
-          stops: const [0, .42, 1],
-        ).createShader(sunRect),
-    );
-
-    _paintPlanet(canvas, const Offset(31, 77), 11, planet);
-    _paintPlanet(canvas, const Offset(190, 135), 7, sun);
-
-    final starPaint = Paint()..color = space.withValues(alpha: .26);
-    for (final star in const [
-      Offset(24, 34),
-      Offset(202, 38),
-      Offset(218, 84),
-      Offset(42, 162),
-      Offset(156, 18),
-    ]) {
-      canvas.drawCircle(star, 1.2, starPaint);
-    }
-  }
-
-  void _paintPlanet(Canvas canvas, Offset center, double radius, Color color) {
-    final rect = Rect.fromCircle(center: center, radius: radius);
-    canvas.drawCircle(
-      center,
-      radius,
-      Paint()
-        ..shader = RadialGradient(
-          center: const Alignment(-.4, -.45),
-          colors: [
-            surface.withValues(alpha: .95),
-            color,
-            space.withValues(alpha: .72),
-          ],
-          stops: const [0, .48, 1],
-        ).createShader(rect),
-    );
-  }
-
-  @override
-  bool shouldRepaint(covariant _SolarFieldPainter oldDelegate) =>
-      sun != oldDelegate.sun ||
-      planet != oldDelegate.planet ||
-      space != oldDelegate.space ||
-      surface != oldDelegate.surface;
-}
-
-const _weekdays = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
-const _months = [
-  'JAN',
-  'FEB',
-  'MAR',
-  'APR',
-  'MAY',
-  'JUN',
-  'JUL',
-  'AUG',
-  'SEP',
-  'OCT',
-  'NOV',
-  'DEC',
-];
-
-class _TodayPulse extends StatelessWidget {
-  const _TodayPulse({
-    required this.pending,
-    required this.completed,
-    required this.projects,
-    required this.conversations,
-  });
-
-  final int pending;
-  final int completed;
-  final int projects;
-  final int conversations;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Container(
-      margin: const EdgeInsets.fromLTRB(20, 8, 20, 22),
-      padding: const EdgeInsets.symmetric(vertical: 15),
-      decoration: BoxDecoration(
-        border: Border(
-          top: BorderSide(color: scheme.outlineVariant),
-          bottom: BorderSide(color: scheme.outlineVariant),
-        ),
-      ),
+      padding: const EdgeInsets.fromLTRB(20, 24, 20, 24),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          Semantics(
+            header: true,
+            child: Text('Today', style: theme.textTheme.headlineMedium),
+          ),
+          const SizedBox(height: 4),
           Text(
-            'OPERATING LINE',
-            style: Theme.of(context).textTheme.labelSmall?.copyWith(
-              color: scheme.primary,
-              fontWeight: FontWeight.w700,
-              letterSpacing: 1.2,
+            date,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
             ),
           ),
-          const SizedBox(height: 11),
+          const SizedBox(height: 16),
           Wrap(
-            spacing: 7,
-            runSpacing: 7,
+            spacing: 10,
+            runSpacing: 10,
             children: [
-              _PulsePill(
-                label: '$pending open',
-                color: pending > 0 ? scheme.secondary : scheme.tertiary,
+              FilledButton.icon(
+                onPressed: acting ? null : onAdd,
+                icon: const Icon(Icons.add_rounded, size: 18),
+                label: const Text('Add focus'),
               ),
-              _PulsePill(label: '$completed complete', color: scheme.tertiary),
-              _PulsePill(label: '$projects projects', color: scheme.primary),
-              _PulsePill(
-                label: '$conversations conversations',
-                color: scheme.primary,
+              OutlinedButton.icon(
+                onPressed: acting ? null : onBrief,
+                icon: const Icon(Icons.auto_awesome_outlined, size: 17),
+                label: Text(hasBrief ? 'Refresh brief' : 'Create brief'),
               ),
             ],
           ),
@@ -672,88 +395,34 @@ class _TodayPulse extends StatelessWidget {
       ),
     );
   }
-}
-
-class _PulsePill extends StatelessWidget {
-  const _PulsePill({required this.label, required this.color});
-  final String label;
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-    decoration: BoxDecoration(
-      color: Theme.of(context).colorScheme.surface.withValues(alpha: .72),
-      border: Border.all(color: color.withValues(alpha: .35)),
-      borderRadius: BorderRadius.circular(99),
-    ),
-    child: Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Container(
-          width: 6,
-          height: 6,
-          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-        ),
-        const SizedBox(width: 7),
-        Text(
-          label,
-          style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
-        ),
-      ],
-    ),
-  );
 }
 
 class _SectionHeading extends StatelessWidget {
   const _SectionHeading({
-    required this.eyebrow,
     required this.title,
     required this.detail,
+    this.padding = const EdgeInsets.fromLTRB(20, 0, 20, 12),
   });
 
-  final String eyebrow;
   final String title;
   final String detail;
+  final EdgeInsetsGeometry padding;
 
   @override
   Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.fromLTRB(20, 6, 20, 10),
-    child: Row(
-      crossAxisAlignment: CrossAxisAlignment.end,
+    padding: padding,
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Expanded(
-          flex: 3,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                eyebrow,
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.primary,
-                  fontSize: 9.5,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: 1.15,
-                ),
-              ),
-              const SizedBox(height: 2),
-              Text(title, style: Theme.of(context).textTheme.titleLarge),
-            ],
-          ),
+        Semantics(
+          header: true,
+          child: Text(title, style: Theme.of(context).textTheme.titleLarge),
         ),
-        const SizedBox(width: 10),
-        Flexible(
-          flex: 2,
-          child: Text(
-            detail,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-            textAlign: TextAlign.end,
-            style: TextStyle(
-              color: Theme.of(context).colorScheme.onSurfaceVariant,
-              fontSize: 11,
-            ),
-          ),
+        const SizedBox(height: 4),
+        Text(
+          detail,
+          style: Theme.of(context).textTheme.bodySmall
+              ?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
         ),
       ],
     ),
@@ -767,127 +436,105 @@ class _DailyBriefPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final generated = brief.generatedAt?.toLocal();
+    final locale = MaterialLocalizations.of(context);
     return Container(
       margin: const EdgeInsets.fromLTRB(16, 0, 16, 24),
-      padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
       decoration: BoxDecoration(
-        color: scheme.primaryContainer.withValues(alpha: .78),
+        color: scheme.surfaceContainerLow,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: scheme.primary.withValues(alpha: .24)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Icon(Icons.auto_awesome_rounded, size: 17, color: scheme.primary),
-              const SizedBox(width: 8),
-              Text(
-                'DAILY BRIEF',
-                style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                  color: scheme.primary,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: 1.2,
-                ),
-              ),
-            ],
+          Semantics(
+            header: true,
+            child: Text('Daily brief', style: theme.textTheme.titleMedium),
           ),
-          const SizedBox(height: 13),
-          Text(brief.summary, style: Theme.of(context).textTheme.titleMedium),
-          if (brief.focus.isNotEmpty) ...[
+          if (generated != null) ...[
+            const SizedBox(height: 4),
+            Text(
+              'Generated ${locale.formatShortDate(generated)} · '
+              '${locale.formatTimeOfDay(TimeOfDay.fromDateTime(generated), alwaysUse24HourFormat: MediaQuery.alwaysUse24HourFormatOf(context))}',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+          const SizedBox(height: 12),
+          Text(
+            brief.summary.isEmpty
+                ? 'The brief did not include a summary.'
+                : brief.summary,
+            style: theme.textTheme.bodyLarge?.copyWith(height: 1.5),
+          ),
+          if (brief.watchouts.isNotEmpty) ...[
             const SizedBox(height: 16),
-            for (var index = 0; index < brief.focus.take(3).length; index++)
+            Text('Watch for', style: theme.textTheme.titleSmall),
+            const SizedBox(height: 8),
+            for (final watchout in brief.watchouts.take(2))
               Padding(
-                padding: const EdgeInsets.only(bottom: 9),
+                padding: const EdgeInsets.only(bottom: 8),
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      '${index + 1}'.padLeft(2, '0'),
-                      style: TextStyle(
-                        color: scheme.primary,
-                        fontSize: 10,
-                        fontWeight: FontWeight.w700,
-                      ),
+                    Icon(
+                      Icons.info_outline_rounded,
+                      size: 18,
+                      color: scheme.onSurfaceVariant,
                     ),
-                    const SizedBox(width: 10),
+                    const SizedBox(width: 8),
                     Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            brief.focus[index].title,
-                            style: const TextStyle(
-                              fontSize: 12.5,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                          if (brief.focus[index].reason.isNotEmpty)
-                            Text(
-                              brief.focus[index].reason,
-                              style: TextStyle(
-                                color: scheme.onSurfaceVariant,
-                                fontSize: 11,
-                              ),
-                            ),
-                        ],
-                      ),
+                      child: Text(watchout, style: theme.textTheme.bodyMedium),
                     ),
                   ],
                 ),
               ),
           ],
-          if (brief.watchouts.isNotEmpty) ...[
-            const Divider(height: 22),
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
+          if (brief.focus.isNotEmpty)
+            ExpansionTile(
+              key: PageStorageKey<Object>(('today-brief-focus', brief)),
+              title: const Text('Suggested focus'),
+              tilePadding: EdgeInsets.zero,
+              childrenPadding: const EdgeInsets.only(bottom: 8),
+              shape: const Border(),
+              collapsedShape: const Border(),
+              expansionAnimationStyle: MediaQuery.disableAnimationsOf(context)
+                  ? AnimationStyle.noAnimation
+                  : const AnimationStyle(duration: Duration(milliseconds: 180)),
               children: [
-                Icon(
-                  Icons.warning_amber_rounded,
-                  size: 16,
-                  color: scheme.secondary,
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    brief.watchouts.take(2).join(' · '),
-                    style: TextStyle(
-                      color: scheme.onSurfaceVariant,
-                      fontSize: 11,
-                      height: 1.4,
+                for (final focus in brief.focus.take(3))
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Text(
+                          focus.title,
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        if (focus.reason.isNotEmpty) ...[
+                          const SizedBox(height: 4),
+                          Text(
+                            focus.reason,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: scheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
                   ),
-                ),
               ],
-            ),
-          ],
+            )
+          else
+            const SizedBox(height: 8),
         ],
-      ),
-    );
-  }
-}
-
-class _StaggeredReveal extends StatelessWidget {
-  const _StaggeredReveal({required this.index, required this.child});
-
-  final int index;
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) {
-    if (MediaQuery.disableAnimationsOf(context)) return child;
-    return TweenAnimationBuilder<double>(
-      tween: Tween(begin: 0, end: 1),
-      duration: Duration(milliseconds: 260 + (index.clamp(0, 6) * 45)),
-      curve: const Cubic(.16, 1, .3, 1),
-      child: child,
-      builder: (context, value, child) => Opacity(
-        opacity: value,
-        child: Transform.translate(
-          offset: Offset(0, 10 * (1 - value)),
-          child: child,
-        ),
       ),
     );
   }
@@ -913,17 +560,17 @@ class _TodayRow extends StatelessWidget {
       TodayPriority.low => scheme.secondary,
     };
     return AnimatedOpacity(
-      duration: const Duration(milliseconds: 180),
-      opacity: busy
-          ? .45
-          : item.isDone
-          ? .58
-          : 1,
+      duration: MediaQuery.disableAnimationsOf(context)
+          ? Duration.zero
+          : const Duration(milliseconds: 180),
+      opacity: busy ? .65 : 1,
       child: InkWell(
         onTap: busy ? null : onToggle,
         borderRadius: BorderRadius.circular(8),
         child: AnimatedContainer(
-          duration: const Duration(milliseconds: 220),
+          duration: MediaQuery.disableAnimationsOf(context)
+              ? Duration.zero
+              : const Duration(milliseconds: 180),
           padding: const EdgeInsets.symmetric(vertical: 11, horizontal: 4),
           decoration: BoxDecoration(
             color: focused
@@ -949,8 +596,11 @@ class _TodayRow extends StatelessWidget {
                   children: [
                     Text(
                       item.title,
-                      style: TextStyle(
-                        fontWeight: FontWeight.w600,
+                      style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                        fontWeight: FontWeight.w500,
+                        color: item.isDone
+                            ? scheme.onSurfaceVariant
+                            : scheme.onSurface,
                         decoration: item.isDone
                             ? TextDecoration.lineThrough
                             : null,
@@ -1012,13 +662,8 @@ class _RowMeta extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Text(
-    label.toUpperCase(),
-    style: TextStyle(
-      color: color,
-      fontSize: 9.5,
-      fontWeight: FontWeight.w600,
-      letterSpacing: .45,
-    ),
+    label.replaceAll('_', ' '),
+    style: Theme.of(context).textTheme.bodySmall?.copyWith(color: color),
   );
 }
 
@@ -1038,8 +683,8 @@ class _TodayContext extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _SectionHeading(
-            eyebrow: 'ACTIVE CONTEXT',
-            title: 'Around your work',
+            title: 'Related work',
+            padding: EdgeInsets.zero,
             detail:
                 '${snapshot.projects.length} projects · ${snapshot.threads.length} conversations',
           ),
@@ -1077,7 +722,9 @@ class _ContextLabel extends StatelessWidget {
       children: [
         Icon(icon, size: 16, color: Theme.of(context).colorScheme.primary),
         const SizedBox(width: 8),
-        Text(label, style: Theme.of(context).textTheme.titleSmall),
+        Expanded(
+          child: Text(label, style: Theme.of(context).textTheme.titleSmall),
+        ),
       ],
     ),
   );
@@ -1104,12 +751,8 @@ class _ProjectContextRow extends StatelessWidget {
               children: [
                 Text(
                   project.title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 12.5,
-                    fontWeight: FontWeight.w600,
-                  ),
+                  style: Theme.of(context).textTheme.bodyMedium
+                      ?.copyWith(fontWeight: FontWeight.w500),
                 ),
                 const SizedBox(height: 7),
                 ClipRRect(
@@ -1122,7 +765,8 @@ class _ProjectContextRow extends StatelessWidget {
           const SizedBox(width: 14),
           Text(
             '${project.completed}/${project.total}',
-            style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 10.5),
+            style: Theme.of(context).textTheme.bodySmall
+                ?.copyWith(color: scheme.onSurfaceVariant),
           ),
         ],
       ),
@@ -1158,9 +802,8 @@ class _ThreadContextRow extends StatelessWidget {
         Expanded(
           child: Text(
             thread.title,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600),
+            style: Theme.of(context).textTheme.bodyMedium
+                ?.copyWith(fontWeight: FontWeight.w500),
           ),
         ),
       ],
@@ -1172,7 +815,7 @@ class _TodaySkeleton extends StatelessWidget {
   const _TodaySkeleton();
   @override
   Widget build(BuildContext context) => ListView(
-    padding: const EdgeInsets.fromLTRB(20, 72, 20, 20),
+    padding: const EdgeInsets.fromLTRB(20, 24, 20, 20),
     children: const [
       _Skeleton(width: 132, height: 34),
       SizedBox(height: 28),
@@ -1212,14 +855,15 @@ class _EmptyToday extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           Icon(
-            Icons.check_circle_outline_rounded,
+            Icons.checklist_rounded,
             size: 44,
             color: Theme.of(context).colorScheme.primary,
           ),
           const SizedBox(height: 16),
           Text(
-            'Your day is clear',
+            'No focus items yet',
             style: Theme.of(context).textTheme.titleLarge,
+            textAlign: TextAlign.center,
           ),
           const SizedBox(height: 6),
           const Text(
@@ -1249,15 +893,22 @@ class _Message extends StatelessWidget {
   final VoidCallback action;
   @override
   Widget build(BuildContext context) => Center(
-    child: Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(icon, size: 48),
-        const SizedBox(height: 12),
-        Text(title),
-        const SizedBox(height: 12),
-        FilledButton.tonal(onPressed: action, child: const Text('Try again')),
-      ],
+    child: SingleChildScrollView(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 32),
+          const SizedBox(height: 12),
+          Text(
+            title,
+            style: Theme.of(context).textTheme.titleLarge,
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 16),
+          FilledButton.tonal(onPressed: action, child: const Text('Try again')),
+        ],
+      ),
     ),
   );
 }

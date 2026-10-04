@@ -41,18 +41,27 @@ def ready(page, state="completed", label="Completed"):
     return root
 
 
+def open_details(page):
+    root = presence(page)
+    summary = root.locator("summary").first
+    expect(summary).to_be_visible()
+    if not summary.evaluate("el=>el.parentElement.open"):
+        summary.click()
+    return root
+
+
 def home(page):
-    return presence(page).get_by_role("button", name="Home conversation", exact=True)
+    return open_details(page).get_by_role("button", name="Home conversation", exact=True)
 
 
 def snapshot(page, checks, name, coarse):
-    root = presence(page)
+    root = open_details(page)
     page.evaluate("()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))")
     root.scroll_into_view_if_needed()
-    geometry = root.evaluate("""el => { const slot=el.firstElementChild.getBoundingClientRect(); return {
+    geometry = root.evaluate("""el => { const slot=el.querySelector('summary > span[aria-hidden="true"]').getBoundingClientRect(); return {
       viewport:innerWidth,document:document.documentElement.scrollWidth,client:el.clientWidth,scroll:el.scrollWidth,
       portraitWidth:slot.width,portraitHeight:slot.height,
-      targets:[...el.querySelectorAll('button,a')].map(el=>el.getBoundingClientRect().height)}; }""")
+      targets:[...el.querySelectorAll('button,a,summary')].map(el=>el.getBoundingClientRect().height)}; }""")
     checks.check(name + ": stable36px portrait and no horizontal overflow", geometry["document"] <= geometry["viewport"] + 1 and geometry["scroll"] <= geometry["client"] + 1 and geometry["portraitWidth"] == 36 and geometry["portraitHeight"] == 36, geometry)
     checks.check(name + ": control target floor", all(size >= (48 if coarse else 44) - 1 for size in geometry["targets"]))
     checks.check(name + ": no animation claimed", root.evaluate("el=>[el,...el.querySelectorAll('*')].every(node=>getComputedStyle(node).animationName==='none')"))
@@ -123,6 +132,7 @@ def exercise(browser, origin, credentials, checks, coarse):
         expect(root.locator("img")).to_have_count(0)
         fixture.release_preferences()
         expect(root).to_have_attribute("data-companion-preferences", "unavailable")
+        open_details(page)
         expect(root.get_by_role("link", name="Companion settings", exact=True)).to_be_visible()
         checks.check(label + ": unknown/failed preferences never flash the character or fabricate home", root.locator("img").count() == 0 and root.get_by_role("button", name="Home conversation", exact=True).count() == 0)
 
@@ -130,6 +140,7 @@ def exercise(browser, origin, credentials, checks, coarse):
         root = ready(page)
         expect(root).to_have_attribute("data-companion-motion", "reduced")
         expect(root).to_have_attribute("data-companion-portrait", "visible")
+        open_details(page)
         expect(root.locator("code")).to_have_text(RUN_ID)
         page.wait_for_function("selector=>document.querySelector(selector+' img')?.naturalWidth===108", arg=ROOT)
         home(page).focus()
@@ -152,6 +163,7 @@ def exercise(browser, origin, credentials, checks, coarse):
         root = ready(page)
         expect(root).to_have_attribute("data-companion-intensity", "quiet")
         expect(root).to_have_attribute("data-companion-portrait", "hidden")
+        open_details(page)
         expect(root.get_by_role("link", name="Open Assistant", exact=True)).to_have_attribute("href", "/app/command")
         expect(root.get_by_text("Home conversation unavailable; opens Assistant.", exact=True)).to_be_visible()
         checks.check(label + ": hidden quiet character retains verified status and truthful home fallback", root.locator("img").count() == 0)
@@ -162,6 +174,7 @@ def exercise(browser, origin, credentials, checks, coarse):
         root = ready(page)
         expect(root).to_have_attribute("data-companion-portrait", "unavailable")
         expect(root).to_have_attribute("data-companion-motion", "off")
+        open_details(page)
         expect(root.get_by_text("Portrait unavailable.", exact=True)).to_be_visible()
         expect(home(page)).to_be_enabled()
         checks.check(label + ": failed image keeps status, navigation and geometry", True)
@@ -193,8 +206,26 @@ def exercise(browser, origin, credentials, checks, coarse):
                     page.keyboard.press("Tab")
                 expect(links.nth(index)).to_be_focused()
                 page.evaluate("()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))")
-                bounds = links.nth(index).evaluate("""el => {const box=el.getBoundingClientRect();const nav=el.closest('nav').getBoundingClientRect();return {left:box.left,right:box.right,navLeft:nav.left,navRight:nav.right,wrap:getComputedStyle(el).whiteSpace}}""")
-                checks.check("320px/200% dock keyboard destination " + str(index + 1), bounds["left"] >= bounds["navLeft"] - 1 and bounds["right"] <= bounds["navRight"] + 1 and bounds["wrap"] == "nowrap", bounds)
+                bounds = links.nth(index).evaluate("""el => {
+                  const box=el.getBoundingClientRect();
+                  const dock=el.closest('nav');
+                  const nav=dock.getBoundingClientRect();
+                  const label=el.querySelector('span');
+                  const labelBox=label.getBoundingClientRect();
+                  const range=document.createRange();range.selectNodeContents(label);
+                  const contained=(inner,outer)=>inner.left>=outer.left-1 && inner.right<=outer.right+1 && inner.top>=outer.top-1 && inner.bottom<=outer.bottom+1;
+                  const hit=document.elementFromPoint(box.left+box.width/2,box.top+box.height/2);
+                  return {label:label.textContent.trim(),left:box.left,right:box.right,navLeft:nav.left,navRight:nav.right,
+                    itemContained:contained(box,nav),labelContained:contained(labelBox,box) && [...range.getClientRects()].every(rect=>contained(rect,labelBox)),
+                    labelVisible:labelBox.width>0 && labelBox.height>0,labelOverflow:label.scrollWidth>label.clientWidth+1,
+                    hitTarget:hit===el || el.contains(hit),dockHeight:nav.height,
+                    reservedHeight:parseFloat(getComputedStyle(document.getElementById('workspace-content')).paddingBottom),
+                    dockOverflow:dock.scrollWidth>dock.clientWidth+1};
+                }""")
+                checks.check("320px/200% dock keyboard destination " + str(index + 1),
+                             bool(bounds["label"]) and bounds["itemContained"] and bounds["labelContained"] and bounds["labelVisible"] and
+                             not bounds["labelOverflow"] and not bounds["dockOverflow"] and bounds["hitTarget"] and
+                             bounds["dockHeight"] <= bounds["reservedHeight"] + 1, bounds)
             snapshot(page, checks, "presence-320-text-200", False)
             page.set_viewport_size({"width": 1440, "height": 900})
             snapshot(page, checks, "presence-text-200", False)

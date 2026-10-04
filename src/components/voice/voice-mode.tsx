@@ -1,10 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { AlertTriangle, AudioLines, Check, Loader2, Mic, RotateCcw, Send, ShieldCheck, Square, X } from "lucide-react";
+import Image from "next/image";
+import { AlertTriangle, AudioLines, Check, Loader2, Mic, MicOff, RotateCcw, Send, ShieldCheck, Square, X } from "lucide-react";
 import { clsx } from "clsx";
-import { CompanionPresence } from "@/components/companion-presence";
-import { companionWork } from "@/lib/companion/presentation";
+import { useCompanionPreferences } from "@/components/use-companion-preferences";
+import { ATLAS_NEUTRAL_POSTER } from "@/lib/companion/atlas-assets";
+import { companionPresentation, companionWork } from "@/lib/companion/presentation";
 import { requestCurrentMicrophone } from "./microphone-attempt";
 import { ApprovalDecisionUnconfirmedError, postApprovalDecision, type ApprovalDecisionRequest } from "@/components/approvals/approval-decision";
 import {
@@ -127,6 +129,7 @@ export function VoiceMode({
   const [announcement, setAnnouncement] = useState("Voice mode ready.");
   const [microphoneOpen, setMicrophoneOpen] = useState(false);
   const [replyAudioPlaying, setReplyAudioPlaying] = useState(false);
+  const [replyText, setReplyText] = useState("");
   const microphoneObservationRef = useRef<(() => void) | undefined>(undefined);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const dialogRef = useRef<HTMLElement | null>(null);
@@ -270,6 +273,7 @@ export function VoiceMode({
     approvalAgentIdRef.current = undefined;
     approvalConversationIdRef.current = "";
     setTranscriptState(EMPTY_REALTIME_TRANSCRIPT);
+    setReplyText("");
     setReviewAttested(false);
     setPendingApproval(undefined);
     setApprovalNote("");
@@ -694,6 +698,9 @@ export function VoiceMode({
     token: number,
   ) {
     if (!currentVoice(token)) return false;
+    // Presentation only: keep the exact authorized reply readable if playback
+    // is interrupted or unavailable. Session reset clears this with the draft.
+    setReplyText(reply.text);
     const controller = new AbortController();
     const player = new StreamingPcmPlayer();
     speechControllerRef.current = controller;
@@ -971,23 +978,25 @@ export function VoiceMode({
             aria-labelledby="voice-mode-title"
             aria-describedby="voice-mode-status voice-mode-detail"
             className={styles.dialog}
+            data-voice-phase={phase}
           >
             <header className={styles.header}>
               <div className={styles.title}>
-                <Mic size={14} className="text-primary" aria-hidden="true" />
                 <h2 id="voice-mode-title">Realtime voice to {agentName}</h2>
+              </div>
+              <div className={clsx(styles.microphoneStatus, microphoneOpen && styles.microphoneLive)}>
+                {microphoneOpen ? <Mic size={14} aria-hidden="true" /> : <MicOff size={14} aria-hidden="true" />}
+                <span>Microphone {microphoneOpen ? "on" : "off"}</span>
+                {microphoneOpen ? <span className={styles.elapsed}>{formatDuration(elapsedSeconds)}</span> : null}
               </div>
               <button type="button" onClick={() => closeDialog()} className={styles.close} aria-label="Cancel voice mode">
                 <X size={18} aria-hidden="true" />
               </button>
             </header>
 
-            <CompanionPresence conversationId={conversationId} showHome={false} microphoneActive={microphoneOpen} playbackActive={replyAudioPlaying}
-              speechPreparing={phase === "replying" && !replyAudioPlaying}
-              work={companionWork({ status: phase === "approval" ? "waiting_approval"
-                : phase === "review" ? "review" : phase === "reconnecting" ? "reconnecting"
-                : phase === "error" ? "failed" : ["sending", "waiting", "deciding"].includes(phase) ? "running" : undefined })} />
-
+            <div className={styles.stage}>
+            <VoiceAtlasStage key={authorityScope} scope={isAuthorityCurrent() ? authorityScope : undefined}
+              phase={phase} microphoneOpen={microphoneOpen} replyAudioPlaying={replyAudioPlaying} />
             {phase === "consent" ? (
               <div className={styles.consent}>
                 <ShieldCheck size={28} className={styles.consentIcon} aria-hidden="true" />
@@ -1011,13 +1020,19 @@ export function VoiceMode({
                   {["requesting", "connecting", "finishing", "reconnecting", "sending", "waiting", "deciding"].includes(phase) ? (
                     <Loader2 size={28} className={styles.progress} />
                   ) : phase === "replying" ? <AudioLines size={28} /> : phase === "resolved" ? <Check size={28} /> : <Mic size={28} />}
-                  <div className={clsx(styles.meter, isActivePhase(phase) && styles.meterActive)}>
+                  <div className={clsx(styles.meter, microphoneOpen && styles.meterActive)}>
                     {meterLevels.map((level, index) => <span key={index} style={{ transform: `scaleY(${(4 + level * 18) / 22})` }} />)}
                   </div>
                 </div>
                 <p id="voice-mode-status" className={styles.statusTitle}>{status.title}</p>
                 <p id="voice-mode-detail" className={clsx(styles.statusDetail, phase === "error" && styles.error)}>{status.detail}</p>
                 <p role="status" aria-live="polite" className="sr-only">{announcement}</p>
+                {replyText && !(pendingApproval && ["approval", "deciding", "resolved"].includes(phase)) ? (
+                  <section className={styles.reply} aria-label={`${agentName}'s response`}>
+                    <h3>{agentName}&apos;s response{replyAudioPlaying ? <span className={styles.playbackLabel}><AudioLines size={13} aria-hidden="true" />Playing</span> : null}</h3>
+                    <p>{replyText}</p>
+                  </section>
+                ) : null}
                 {pendingApproval && ["approval", "deciding", "resolved"].includes(phase) ? (
                   <div className={styles.approval}>
                     <div className="flex items-start justify-between gap-3">
@@ -1062,7 +1077,7 @@ export function VoiceMode({
                         maxLength={100_000}
                         disabled={["requesting", "connecting", "sending", "waiting", "replying"].includes(phase)}
                         placeholder={isActivePhase(phase) ? "Partial transcription will appear here…" : "No speech recognized yet."}
-                        className={clsx(styles.input, styles.transcript)}
+                        className={clsx(styles.input, styles.transcript, phase === "review" && styles.reviewTranscript)}
                       />
                     </label>
                     {phase === "review" && confidence.requiresExplicitAttestation ? (
@@ -1081,6 +1096,7 @@ export function VoiceMode({
                 )}
               </div>
             )}
+            </div>
 
             <footer className={styles.footer}>
               {["review", "error"].includes(phase) && transcript.trim() && !transcriptSubmitted ? <button type="button" onClick={continueInText} className={clsx("action-button", styles.action)}>Continue in text</button> : null}
@@ -1127,6 +1143,36 @@ export function VoiceMode({
         </div>
       ) : null}
     </>
+  );
+}
+
+/** Decorative, static fallback only. Voice/device/action authority stays in
+ * VoiceMode; the existing scoped preference read controls character visibility. */
+function VoiceAtlasStage({ scope, phase, microphoneOpen, replyAudioPlaying }: {
+  scope?: string;
+  phase: VoicePhase;
+  microphoneOpen: boolean;
+  replyAudioPlaying: boolean;
+}) {
+  const preferences = useCompanionPreferences(scope);
+  const [assetFailed, setAssetFailed] = useState(false);
+  const presentation = companionPresentation({
+    microphoneActive: microphoneOpen,
+    playbackActive: replyAudioPlaying,
+    speechPreparing: phase === "replying" && !replyAudioPlaying,
+    work: companionWork({ status: phase === "approval" ? "waiting_approval"
+      : phase === "review" ? "review" : phase === "reconnecting" ? "reconnecting"
+      : phase === "error" ? "failed" : ["sending", "waiting", "deciding"].includes(phase) ? "running" : undefined }),
+  });
+  if (preferences.state !== "ready" || !preferences.response?.snapshot.preferences.visible) return null;
+  return (
+    <aside className={styles.companion} aria-label="ATLAS companion" data-voice-portrait={assetFailed ? "unavailable" : "visible"}>
+      {!assetFailed ? <Image src={ATLAS_NEUTRAL_POSTER} alt="" width={108} height={108} unoptimized
+        className={styles.portrait} onError={() => setAssetFailed(true)} /> : null}
+      <p className={styles.companionName}>ATLAS</p>
+      <p className={styles.companionState}>{presentation.label}</p>
+      {assetFailed ? <p className={styles.portraitFallback}>Portrait unavailable</p> : null}
+    </aside>
   );
 }
 

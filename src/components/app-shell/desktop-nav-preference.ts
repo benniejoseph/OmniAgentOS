@@ -27,7 +27,9 @@ export function moveStoredDesktopNavPreference(
   storage: Pick<Storage, "getItem" | "removeItem">,
   remember: (collapsed: boolean) => void,
 ) {
-  const collapsed = storage.getItem(DESKTOP_NAV_COLLAPSED_COOKIE) === "true";
+  // New workspaces begin with the compact rail. An explicit expanded choice,
+  // including the older local-storage preference, continues to win.
+  const collapsed = storage.getItem(DESKTOP_NAV_COLLAPSED_COOKIE) !== "false";
   storage.removeItem(DESKTOP_NAV_COLLAPSED_COOKIE);
   remember(collapsed);
   return collapsed;
