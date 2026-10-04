@@ -3,11 +3,11 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   test('retains current and previous contract compatibility', () {
-    expect(NativeContract.currentVersion, 35);
-    expect(NativeContract.previousVersion, 34);
-    expect(NativeContract.supportedVersions, [35, 34]);
-    expect(NativeContract.supports(33), isFalse);
-    expect(NativeContract.supports(36), isFalse);
+    expect(NativeContract.currentVersion, 36);
+    expect(NativeContract.previousVersion, 35);
+    expect(NativeContract.supportedVersions, [36, 35]);
+    expect(NativeContract.supports(34), isFalse);
+    expect(NativeContract.supports(37), isFalse);
     expect(
       NativePaths.meetingsList(
         workspaceId: 'workspace:one',
@@ -200,6 +200,33 @@ void main() {
     expect(
       NativePaths.memoryReconciliationResolve,
       '/api/memory/reconciliation',
+    );
+  });
+
+  test('publishes exact consent and calendar recovery paths', () {
+    final key = List.filled(64, 'a').join();
+    expect(
+      NativePaths.memoryPersonalContextConsentGet(
+        contract: 'asael-personal-context-consent-read:1',
+      ),
+      '/api/memory/personal-context-consent?contract=asael-personal-context-consent-read%3A1',
+    );
+    expect(
+      NativePaths.memoryPersonalContextConsentDecide,
+      '/api/memory/personal-context-consent',
+    );
+    expect(
+      NativePaths.memoryPersonalContextConsentDecisionGet(key),
+      '/api/memory/personal-context-consent/decisions/$key',
+    );
+    expect(NativePaths.meetingsCalendarGet, '/api/meetings/calendar');
+    expect(NativePaths.meetingsCalendarSync, '/api/meetings/calendar/sync');
+    expect(
+      NativePaths.meetingsCalendarSyncGet(
+        'meeting-calendar-sync:$key',
+        acceptanceKeySha256: key,
+      ),
+      '/api/meetings/calendar/sync/meeting-calendar-sync%3A$key?acceptanceKeySha256=$key',
     );
   });
 

@@ -3,9 +3,9 @@
 
 abstract final class NativeContract {
   static const id = 'asael.native-api';
-  static const currentVersion = 35;
-  static const previousVersion = 34;
-  static const supportedVersions = <int>[35, 34];
+  static const currentVersion = 36;
+  static const previousVersion = 35;
+  static const supportedVersions = <int>[36, 35];
   static const discoveryPath = '/api/mobile/contracts';
   static const operationIds = <String>{
     'auth.login',
@@ -194,6 +194,12 @@ abstract final class NativeContract {
     'memory.reconciliation.list',
     'memory.reconciliation.read',
     'memory.reconciliation.resolve',
+    'memory.personal-context-consent.get',
+    'memory.personal-context-consent.decide',
+    'memory.personal-context-consent.decision.get',
+    'meetings.calendar.get',
+    'meetings.calendar.sync',
+    'meetings.calendar.sync.get',
   };
 
   static bool supports(int version) => supportedVersions.contains(version);
@@ -834,6 +840,32 @@ abstract final class NativePaths {
     return '$path?$encoded';
   }
   static const memoryReconciliationResolve = '/api/memory/reconciliation';
+  static String memoryPersonalContextConsentGet({required String contract}) {
+    final path = '/api/memory/personal-context-consent';
+    final query = <String, String>{
+      'contract': contract,
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static const memoryPersonalContextConsentDecide = '/api/memory/personal-context-consent';
+  static String memoryPersonalContextConsentDecisionGet(String id) => '/api/memory/personal-context-consent/decisions/${Uri.encodeComponent(id)}';
+  static const meetingsCalendarGet = '/api/meetings/calendar';
+  static const meetingsCalendarSync = '/api/meetings/calendar/sync';
+  static String meetingsCalendarSyncGet(String id, {required String acceptanceKeySha256}) {
+    final path = '/api/meetings/calendar/sync/${Uri.encodeComponent(id)}';
+    final query = <String, String>{
+      'acceptanceKeySha256': acceptanceKeySha256,
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
 }
 
 abstract final class NativeConversationEvents {

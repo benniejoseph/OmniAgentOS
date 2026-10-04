@@ -1669,3 +1669,66 @@ new migration. Calendar synchronization and media processing remain outside
 native mutation enrollment. Local Webpack does not emit the Turbopack route
 budget report, so that check remains with the hosted production build; no budget
 was changed. The local server-trace check passed.
+
+
+## Native private Memory reconciliation — 4 October 2026
+
+PR #50 is merged as `a90736fb19a4bda1b29c2c0aff2d766425a56a7c` after all
+16 hosted checks passed on `5760f5130e2fde96597688e94f8c346e0dc16b4b`.
+The final correction teaches the route audit to recognize the explicit native
+key check before authorization while retaining the older web envelope. Its
+21 focused key/route regressions passed; no mutation gate was relaxed.
+
+Contract v35 publishes bounded canonical-private review list/detail, exact
+revision-bound decisions, and authenticated acceptance recovery. Migration223
+serializes lifecycle parents and supplies narrowly scoped revision metadata.
+The decision and its acceptance commit together; projection results are reported
+separately and are never repeated on replay. Native encrypted recovery does
+not resend an uncertain decision. The full hosted web build, Flutter lane,
+serving-role integration, browser families and preview passed.
+
+The private universal Mac package `Asael-1.23.9-44-macOS.dmg` was built and
+signed from `5969c5d253cb94642d31d0ea6475f07aa169cced`, before the final
+test-only route-audit correction. Its SHA-256 is
+`83ea7b5f103e5d504e984aec0693b8e63cce221e1b231a700513cf03deb128b5`.
+The next functional package supersedes this intermediate artifact. Production
+has not been migrated/promoted and the installed application is unchanged.
+
+## Personal recall consent and Calendar sync — 4 October 2026
+
+Contract v36 adds six explicit operations. Consent current-state reads expose
+the complete server notice and latest active or revoked generation. A decision
+binds the reviewed generation/state/lifecycle/token and original stable key;
+the transition and exact acceptance are atomic. Current owner/read authority
+is independent from historical receipt recovery. A fresh response must match
+its accepted state; recovery may show a later generation but cannot roll back
+observed history. Native phone and macOS controls use the existing encrypted
+Memory submission slot with no optimistic toggle or uncertain-write retry.
+
+Calendar sync reads the exact private Google account, reviews its authorization
+generation and imports Calendar alone into the canonical personal workspace.
+Migration224 persists the accepted intent before provider work and fences other
+native keys while an outcome is unknown. A response reports settled partial or
+error coverage honestly. Exact GET/replay never executes sync. Provider OAuth
+remains a distinct browser handoff; recording processing is still an open
+native implementation item. The protected Meeting journal retains uncertainty
+across restarts and local storage acknowledgment failures.
+
+Serving-role validation found a real pre-existing consent permission defect:
+the row validator had PUBLIC execution revoked without runtime/maintenance
+execution grants. Migration225 restores only those two role grants on the pure
+immutable SECURITY INVOKER validator. It preserves PUBLIC revocation, RLS,
+owner scope, immutable notice and lifecycle rules.
+
+Standalone TypeScript checking, changed-file ESLint and full Flutter analysis
+passed. A fresh Next route-type generation also passed; its following full
+TypeScript run reached the local default 2 GB Node heap limit. The fresh full
+check and web production build remain with hosted acceptance.
+The focused native runs covered 56 distinct cases across consent, Calendar,
+Memory recovery and generated contracts. The final Calendar pass included all
+10 cases, including committed storage writes whose acknowledgements were lost.
+Publication/compatibility checks passed 48 cases; the service/route/connector
+and contract boundary pass covered 51 cases. All 14 serving-role database cases
+passed, and schema verification confirmed 225 migrations and 254 tenant tables.
+Final packaging and hosted acceptance are recorded separately. This entry does
+not claim production deployment or whole-plan completion.

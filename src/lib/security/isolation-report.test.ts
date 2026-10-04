@@ -21,6 +21,19 @@ function policy(
 }
 
 describe("tenant isolation policy evidence", () => {
+  it("requires the exact Calendar owner restrictions on acceptance rows and their shared event stream", () => {
+    for (const [table, name] of [
+      ["omni_meeting_calendar_sync_acceptances", "omni_meeting_calendar_sync_actor"],
+      ["omni_events", "omni_meeting_calendar_sync_event_actor"],
+    ]) {
+      const tenant = policy(table, "omni_tenant_isolation");
+      expect(hasExpectedTenantIsolationPolicy(table, [tenant, policy(table, name, { permissive: false })])).toBe(true);
+      expect(hasExpectedTenantIsolationPolicy(table, [tenant])).toBe(false);
+      expect(hasExpectedTenantIsolationPolicy(table, [tenant, policy(table, name)])).toBe(false);
+      expect(hasExpectedTenantIsolationPolicy(table, [tenant, policy(table, name, { permissive: false, command: "r" })])).toBe(false);
+      expect(hasExpectedTenantIsolationPolicy(table, [tenant, policy(table, `${table}_actor`, { permissive: false })])).toBe(false);
+    }
+  });
   it("requires both actor and Memory-purpose restrictions on lifecycle acceptances", () => {
     const table = "omni_memory_lifecycle_mutations";
     const tenant = policy(table, "omni_tenant_isolation");

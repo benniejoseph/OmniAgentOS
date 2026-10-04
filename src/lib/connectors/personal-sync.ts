@@ -243,7 +243,10 @@ export async function syncDuePersonalProviders(options: {
   return results;
 }
 
-export function syncPersonalProvider(input: { tenantId: string; actorId: string; provider: OAuthProvider; connectionId?: string; sources?: PersonalSourceId[]; abortSignal?: AbortSignal }) {
+type PersonalSyncInput = { tenantId: string; actorId: string; provider: OAuthProvider; connectionId?: string; sources?: PersonalSourceId[]; abortSignal?: AbortSignal;
+  /** An explicit native Calendar command never follows a renewed authorization. */
+  expectedAuthorizationGeneration?: number; expectedAccountEmail?: string };
+export function syncPersonalProvider(input: PersonalSyncInput) {
   return runWithDatabaseActorScope(
     input.tenantId,
     [input.actorId],
@@ -251,7 +254,7 @@ export function syncPersonalProvider(input: { tenantId: string; actorId: string;
   );
 }
 
-async function syncPersonalProviderWithActorScope(input: { tenantId: string; actorId: string; provider: OAuthProvider; connectionId?: string; sources?: PersonalSourceId[]; abortSignal?: AbortSignal }) {
+async function syncPersonalProviderWithActorScope(input: PersonalSyncInput) {
   if (input.provider !== "google") {
     throw new Error("Personal synchronization supports Google connections only.");
   }
@@ -262,6 +265,12 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
     input.connectionId ? { connectionId: input.connectionId } : undefined,
   );
   if (!secrets) throw new Error("Connected source not found.");
+  if (input.expectedAuthorizationGeneration !== undefined && (
+    !input.connectionId || input.sources?.length !== 1 || input.sources[0] !== "calendar" ||
+    secrets.grant.id !== input.connectionId || secrets.grant.authorizationGeneration !== input.expectedAuthorizationGeneration ||
+    secrets.grant.accountEmail !== input.expectedAccountEmail || secrets.grant.connectionPurpose !== "personal" ||
+    !googleSyncSourcesForScopes(secrets.grant.scopes).includes("calendar")
+  )) throw new Error("The reviewed Calendar connection authorization changed.");
   const grantedSources = googleSyncSourcesForScopes(secrets.grant.scopes).filter((source) =>
     !input.sources?.length || input.sources.includes(source)
   );
@@ -270,6 +279,7 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
     actorId: input.actorId,
     provider: input.provider,
     connectionId: secrets.grant.id,
+    expectedAuthorizationGeneration: input.expectedAuthorizationGeneration,
   });
   if (claim.status !== "claimed") {
     throw new Error("Connected source synchronization is already running.");
@@ -316,6 +326,8 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
         actorId: input.actorId,
         connectionId: secrets.grant.id,
         capability: GOOGLE_SOURCE_ADAPTERS[grantedSources[0]].capability,
+        expectedAuthorizationGeneration: input.expectedAuthorizationGeneration,
+        expectedAccountEmail: input.expectedAccountEmail,
       });
       if (grantedSources.includes("drive")) {
         driveSidecarAccessToken = accessToken;
