@@ -361,7 +361,7 @@ function overlappingPrimaryFan(side,pivot) {
   return j=>{
     // Keep the original closed grid, complete index buffer and vertex tones.
     const result=feather(.85-j*.023,.050,.013,side*(.017+j*.003),.023);
-    const vertices=result.getAttribute('position'),u=j/7,width=.056+.008*Math.sin(Math.PI*u);
+    const vertices=result.getAttribute('position'),coordinates=[],u=j/7,width=.056+.008*Math.sin(Math.PI*u);
     for(let row=0;row<vaneProfile.length;row++) {
       const t=vaneProfile[row][0],envelope=envelopes[row],bend=Math.PI*Math.cos(Math.PI*t);
       const tangent=tips[j].clone().sub(roots[j]).add(new THREE.Vector3(side*.015*bend,0,-.018*bend)).normalize();
@@ -375,9 +375,14 @@ function overlappingPrimaryFan(side,pivot) {
         const point=origin.clone().addScaledVector(across,width*envelope*lateral*(side*lateral<0?.87:1))
           .addScaledVector(normal,depth*front*(front<0?.30:1));
         vertices.setXYZ(row*8+n,point.x,point.y,point.z);
+        // A narrow longitudinal brown strip follows the same tapered vane.
+        // Front/rear share lateral coordinates; no wrap, shaft or new paint.
+        coordinates.push((576.5+54*j+14*envelope*lateral)/1024,
+          (442.5-7*(j%4)-(164+4*(j%3))*t)/1024);
       }
     }
     result.computeVertexNormals();
+    result.setAttribute('uv',new THREE.Float32BufferAttribute(coordinates,2));
     return result;
   };
 }
@@ -892,13 +897,14 @@ export function createAtlas(config) {
     const hasBodyGrain=name.startsWith('breast_flow_tuft_')||name.startsWith('mantle_flow_tuft_');
     const hasBrowAtlas=name==='neutral_brow_sweep_Left'||name==='neutral_brow_sweep_Right';
     const hasWingAtlas=/^(folded_wing_underform_(Left|Right)|layered_wing_covert_(Left|Right)_[0-2]_[0-3])$/.test(name);
+    const hasPrimaryAtlas=/^curved_primary_(Left|Right)_[0-7]$/.test(name);
     // Both continuous layers append in world-rest coordinates with identity transforms.
     if(hasThroat)splitThroatChartUV(mesh);
     const matrix = new THREE.Matrix4().compose(new THREE.Vector3(...position), quaternion(rotation), new THREE.Vector3(...scale));
     const normalMatrix = new THREE.Matrix3().getNormalMatrix(matrix), offset = p.length / 3;
     const vertices = mesh.getAttribute('position'), normals = mesh.getAttribute('normal'), tones=mesh.getAttribute('tone');
     const chartUV=hasThroat?mesh.getAttribute('uv'):null;
-    const wingUV=hasWingAtlas?mesh.getAttribute('uv'):null;
+    const wingUV=hasWingAtlas||hasPrimaryAtlas?mesh.getAttribute('uv'):null;
     // Choose one island for the complete tuft; never span the atlas in a triangle.
     // These 44 meshes, like the continuous layers, use world-rest coordinates.
     let tuftRear=false;
@@ -920,7 +926,7 @@ export function createAtlas(config) {
       } else if(hasBodyGrain||hasBrowAtlas) {
         colors.push(tone,tone,tone);
         uv.push(...plumageAtlasUV(silhouette,point.x,point.y,point.z,hasBrowAtlas?false:tuftRear));
-      } else if(hasWingAtlas) {
+      } else if(hasWingAtlas||hasPrimaryAtlas) {
         // The unchanged atlas supplies umber once; preserve the original tone.
         colors.push(tone,tone,tone);
         uv.push(wingUV.getX(i),wingUV.getY(i));

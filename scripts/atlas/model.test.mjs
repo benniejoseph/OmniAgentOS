@@ -11,6 +11,7 @@ const wingAtlasPartNames=new Set();
 for(const side of ['Left','Right']) {
   wingAtlasPartNames.add(`folded_wing_underform_${side}`);
   for(let row=0;row<3;row++)for(let column=0;column<4;column++)wingAtlasPartNames.add(`layered_wing_covert_${side}_${row}_${column}`);
+  for(let index=0;index<8;index++)wingAtlasPartNames.add(`curved_primary_${side}_${index}`);
 }
 
 test('procedural geometry is finite, indexed and deterministically bound to the 14-bone eyelid rig',()=>{
@@ -138,10 +139,10 @@ test('procedural geometry is finite, indexed and deterministically bound to the 
       assert.equal(colors.getX(i),colors.getY(i));assert.equal(colors.getX(i),colors.getZ(i));
     }
     const wings=a.root.userData.parts.filter(part=>wingAtlasPartNames.has(part.name));
-    assert.equal(wings.length,26);
-    assert.deepEqual(new Set(wings.map(part=>part.name)),wingAtlasPartNames,'only the two underforms and 24 named coverts join the mapped parts');
+    assert.equal(wings.length,42);
+    assert.deepEqual(new Set(wings.map(part=>part.name)),wingAtlasPartNames,'only the two underforms, 24 coverts and 16 named primaries join the mapped parts');
     const unchanged=a.root.userData.parts.filter(part=>!continuous.includes(part)&&!tufts.includes(part)&&!brows.includes(part)&&!wings.includes(part));
-    assert.equal(unchanged.length,93);
+    assert.equal(unchanged.length,77);
     for(const part of unchanged)for(let i=part.vertexStart;i<part.vertexStart+part.vertexCount;i++) {
       assert.equal(uv.getX(i),504/512);assert.equal(uv.getY(i),504/512);
     }
@@ -222,7 +223,7 @@ test('mapped wing surfaces use bounded brown paint with scalar tones and continu
     const geometry=model.mesh.geometry,position=geometry.getAttribute('position'),uv=geometry.getAttribute('uv'),colors=geometry.getAttribute('color');
     const image=model.mesh.material.map.image;
     const wings=model.root.userData.parts.filter(part=>wingAtlasPartNames.has(part.name));
-    assert.equal(wings.length,26);assert.deepEqual(new Set(wings.map(part=>part.name)),wingAtlasPartNames);
+    assert.equal(wings.length,42);assert.deepEqual(new Set(wings.map(part=>part.name)),wingAtlasPartNames);
     const bytes=color=>color.toArray().map(value=>Math.round(value*255));
     const lower=bytes(new Color(config.palette.umber).multiplyScalar(.76).convertLinearToSRGB());
     const upper=bytes(new Color(config.palette.umber).multiplyScalar(1.22).convertLinearToSRGB());
@@ -250,8 +251,21 @@ test('mapped wing surfaces use bounded brown paint with scalar tones and continu
         minimumTone=Math.min(minimumTone,tone);maximumTone=Math.max(maximumTone,tone);
         if(part.name.startsWith('folded_wing_underform_'))assert.equal(tone,1,'underforms retain their unit tone');
       }
-      if(part.name.startsWith('layered_wing_covert_'))assert.ok(minimumTone<.97&&maximumTone>1.005,
+      if(part.name.startsWith('layered_wing_covert_')||part.name.startsWith('curved_primary_'))assert.ok(minimumTone<.97&&maximumTone>1.005,
         `${part.name}: the original crest/root tonal variation must not be flattened to a constant`);
+      if(part.name.startsWith('curved_primary_')) {
+        assert.equal(part.vertexCount,64,'the retained primary vane has eight closed rings of eight vertices');
+        for(let row=0;row<8;row++)for(let column=0;column<8;column++) {
+          const index=part.vertexStart+row*8+column,next=part.vertexStart+row*8+(column+1)%8;
+          assert.ok(Math.abs(uv.getX(index)-uv.getX(next))*1024<11,'every primary ring edge, including closure, avoids a chart-wrap jump');
+          assert.equal(uv.getY(index),uv.getY(next),'each primary ring follows one longitudinal texture level');
+          const mirror=part.vertexStart+row*8+(8-column)%8;
+          assert.ok(Math.abs(uv.getX(index)-uv.getX(mirror))*1024<.001,'front/rear primary surfaces share lateral paint coordinates');
+          if(row<7)assert.ok(uv.getY(index)>uv.getY(index+8),'primary paint progresses root to tip without reversal');
+        }
+        const span=(uv.getY(part.vertexStart)-uv.getY(part.vertexStart+56))*1024;
+        assert.ok(span>160&&span<180,'each primary uses a longitudinal paint strip instead of repeating a single row');
+      }
     }
     const probes=[[1/3,1/3,1/3],[.6,.2,.2],[.2,.6,.2],[.2,.2,.6]];
     for(let offset=0;offset<geometry.index.count;offset+=3) {

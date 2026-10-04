@@ -1,6 +1,16 @@
-# ATLAS sculpt 04, wing color 01 — retained wing-plumage refinement
+# ATLAS sculpt 04, primary color 01 — retained long-feather finish
 
-Current status: **local wing finish retained; final character, natural acting and device acceptance remain open**. Creative revision: `sculpt-04-wing-color-01-coherent-plumage`. Full-export validity is established only by the matching revision in `output/export-manifest.json` and its external verification receipt. The preceding FACE02 export is preserved separately; no current result is inferred from that predecessor.
+Current status: **local primary-feather finish retained; final character, motion and device acceptance remain open**. Creative revision: `sculpt-04-primary-color-01-continuous-wing-finish`. Matching export validity is established by this revision in the output manifest and external verification receipt. The verified wing-color01 predecessor is archived separately.
+
+Exactly sixteen `curved_primary_Left/Right_0..7` vanes gain tapered lengthwise UV strips in the existing brown rear atlas. The coordinates follow the retained vane profile and reuse the same lateral values on front and rear, with no wrap or new paint. Original scalar tones are retained. The two number-5 vanes previously used the lighter feather palette; all sixteen now sample umber paint once. That accent darkening alone does not justify retention.
+
+Root reviewed nine named sheets covering rest/full 256px, raised/full 256px, light/dark 512px, completed .08/.34/.48/.78 and small 72/36px. Independent review covered all 22sheets / 176 captures. Directional color across several vanes improves coherence with the coverts, most clearly at 512px and subtly at 256px. Small-size results remain neutral. No new distracting shaft marks, noisy stripes, abrupt texture edges or wing junction defect was identified in the samples. Fan geometry still reads stiff; color does not resolve silhouette, natural acting or continuous motion.
+
+The exact scope proof preserves all geometry, normals, ordered indices, skin, every atlas byte, rig, poses and all 168 tracks. All151otherparts remain exact. Candidate/baseline sources, all captures and the retention decision are preserved in `primary-color01-comparison/matching-source-baseline-and-captures.tar.gz`, SHA256 `2e923193e73c52c6ba4a72078dbf0649f4d31cd823a06e54b846da82efeb48fb` (15 sources, 220 members). Full art, eyelid finish, likeness, natural acting and device acceptance remain open. The approved static portrait/greeting remains public.
+
+## Wing color 01 — historical retained checkpoint
+
+Status at the wing-color01 checkpoint: **local wing finish retained; final character, natural acting and device acceptance remain open**. Creative revision: `sculpt-04-wing-color-01-coherent-plumage`. Full-export validity is established only by the matching revision in `output/export-manifest.json` and its external verification receipt. The preceding FACE02 export is preserved separately; no current result is inferred from that predecessor.
 
 The two wing underforms and 24 coverts now sample existing brown rear-chart texels through a wing-local angular mapping. Normalized wing-local height maps to pixel-center rows 48.5–447.5; the side-adjusted angular coordinate maps to columns 544.5–991.5. These coordinates stay inside the padded brown body island, away from the pale throat and white patch. Vertex colors retain the original scalar tones instead of multiplying the brown atlas by brown a second time. No atlas pixels are repainted.
 

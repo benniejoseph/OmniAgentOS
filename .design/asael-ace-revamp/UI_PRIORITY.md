@@ -2,14 +2,12 @@
 
 The owner explicitly prioritized the UI revamp and ATLAS, asking to stabilize the current release and return to connector expansion afterward. The full implementation plan remains in scope; this changes execution order.
 
-The UI, static greeting, personality, expanded Voice, native Automation, native
-scoped content search and Quality + Monitoring releases are accepted through PR60. FACE02 is the current
-complete ATLAS export and retains the reviewed brow integration; final character
-artwork, acting and device acceptance remain open. FACE03's upper-lid depth
-experiment was rejected and the exact FACE02 sources restored. The next Security UI
-slice is pending implementation on a new native branch, with build 54 reserved.
-Connector work is preserved in
-`codex/native-connector-controls` and is deferred until after this UI/ATLAS priority.
+The UI, static greeting, personality, expanded Voice, Automation, scoped Search,
+Quality/Monitoring, Security and Settings archive releases are accepted through
+PR62. Mac1.23.20+55 is verified. ATLAS primary-color01 is the current retained
+feather-finish refinement and verified matching export; final character, acting
+and device acceptance remain open. Current eight-state sampled review is complete; held questioning and satisfied-completion expressions are the next art priority. Connector work remains
+in `codex/native-connector-controls` until after UI/ATLAS priority.
 
 Visual thesis: a warm, precise conversation workspace with a quiet graphite rail, readable typography, restrained gold and an expressive umber eagle.
 
@@ -28,28 +26,28 @@ The approved reference in `DESIGN_BRIEF.md` remains authoritative. Sculpt02 rema
 
 ## Current software checkpoint — 5 October
 
-PR60 Quality + Monitoring is accepted for `1.23.18+53`. All sixteen hosted checks
-succeeded on head `51b48d927f707d035e726729ef04eb58555f2d2a`, including 1,292
-Flutter tests. It merged as `45977bded2317bfa04b89b18cc11c971d58f3085` at
-`2026-10-04T22:31:09Z`. The accepted head, built source and merge share the exact
-full Git tree `5b6f845c0d09f683ef4894c93e280e87955cd31d`; the native release
-checkout was clean and detached at accepted main at this checkpoint.
+PR61 Security and PR62 Settings archive export are accepted and merged. PR62
+passed all sixteen checks on `9cfadda5941ecbc189c39b86025ada7ef27cf8c0`, including
+2,073 hosted Flutter cases, and merged as
+`7cfeaf2e9c0268ab150e4c14637260add069b0c8` at 23:35:04 UTC. Accepted and merged
+full trees are identical. The private universal Mac1.23.20+55 package is verified,
+including version, x86_64/arm64 and strict nested signatures; SHA256
+`8d5aa932781c0339768f1b8d1fcc9a3603b8b02e234fb759325181ea7b1c1664`.
 
-All 118 focused cases pass (46 Quality, 57 Monitoring and fifteen existing
-foundation/navigation/admin cases), eight actual-widget captures have passed and
-been root-reviewed, and full Flutter analysis is clean. The universal private
-Mac 1.23.18 (53) package and signatures are verified; its SHA256 is
-`fd6596167fd7e9c4bb7382c041eab2d8c3d71153ae01e02b29969367322035b4`.
-The `pr60-acceptance.json` and
-`macos-native-operations-release/verification.json` receipts record this acceptance.
-PR60 completes this bounded slice; the full plan remains open.
+The package was built from `cafe694a5cd8f8ddfc85563e7a89374fc8cbaeca`; native
+application/packaging inputs match accepted PR62 after a two-file ES2017 fixture
+generator/provenance correction. The full built and accepted Git trees differ.
+`pr62-acceptance.json`, `macos-native-archive-release/verification.json` and
+`native-input-equivalence.json` preserve that distinction.
 
-Security UI is next and remains pending implementation on a new native branch,
-with build 54 reserved. No new database migration or native API version change is
-planned for that slice. Canonical production remains
-`a06aa78b843cce6c8f41a79ec5beb6192f3c4b20`, with the owner release environment
-still pending. Parked connector work must rebase onto native v39 and use the next
-free build number, at least 55; Settings work could advance that minimum further.
+No new database migration or native API version is introduced by these UI slices;
+v39 is the current contract. Canonical production remains
+`a06aa78b843cce6c8f41a79ec5beb6192f3c4b20`, with the complete operator environment
+pending. Production promotion is estimated at 20–40 minutes after that environment
+is available. The current UI implementation inventory is complete through the
+bounded Settings slice; explicit advanced browser handoffs and device gates stay
+visible. ATLAS appearance/acting and matching final-asset admission are next.
+Parked connector work must rebase beyond v39 and use build 56 or later.
 
 ## Historical scoped content search acceptance — 5 October
 

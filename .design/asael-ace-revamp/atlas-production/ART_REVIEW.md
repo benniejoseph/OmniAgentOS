@@ -1,6 +1,45 @@
 # ATLAS actual-art review — 5 October 2026 (IST)
 
-## Wing-color01 — retained wing finish and verified matching full export
+## Primary-color01 — retained long-feather finish and verified matching export
+
+The current creative revision is `sculpt-04-primary-color-01-continuous-wing-finish`.
+Root reviewed nine comparison sheets; independent review covered all twenty-two
+sheets / 176 captures. Multiple primary vanes gain subdued directional variation
+that improves coherence with the coverts beyond merely darkening the two former
+number-5 accents. The benefit is clearest at 512px and subtle at 256px; rest/peak
+72px and 36px results remain effectively neutral. No new distracting shaft marks,
+noisy striping, abrupt texture boundary or junction defect appeared in the samples.
+The raised fan still has geometric stiffness; this color pass does not resolve it.
+
+Only UV/color attributes of sixteen primaries change. All 151 other parts and
+all positions, normals, ordered indices, skin, atlas bytes, rig, poses and 168
+tracks remain exact wing-color01. Original scalar tones are retained; the two
+previously lighter number-5 vanes now use the existing umber atlas family.
+The isolated comparison archive binds fifteen sources, 176 captures, twenty-two
+sheets and 220 members: `primary-color01-comparison/matching-source-baseline-and-captures.tar.gz`,
+SHA256 `2e923193e73c52c6ba4a72078dbf0649f4d31cd823a06e54b846da82efeb48fb`.
+
+The full export completed at `2026-10-04T23:47:56.071581+00:00`. Nineteen source hashes,
+104 artifacts, 33 raster delivery files and 236 archive members verify. Its
+self-contained GLB is 2,969,096 bytes, retaining 27,543 vertices, 49,844 triangles,
+fourteen bones, twelve clips, one material and one embedded 1024 × 1024 RGBA map,
+with zero external resources. All twenty-one targeted model/lid checks pass.
+Seventy-two source/full-export captures form thirty-six pairs: thirty-two exact,
+four differing by seven total pixels at maximum one channel byte. Root reviewed
+full-body and raised-wing sheets; both modes pass hide/reload/dispose without
+page, console or rejected-network errors.
+
+Full archive: `atlas-primary-color01-review.tar.gz`, SHA256
+`fed31fef055fb5b2940efffb9258736c16033e82171a4f19d304c063e85f36a8`. Receipt:
+`atlas-primary-color01-export-verification.json`.
+
+This retained export is not final character or continuous-motion acceptance.
+Root and independent review of all five current state sheets covers 80 sampled frames and sixteen 72px posters. Listening tilt and the transient completed wing-fold read; no new texture/export defect is apparent. At 72px, held needs-you remains close to neutral, and completed/paused both read subdued, with paused sleepier. The next expression pass should preserve stronger questioning tilt/asymmetry and a more satisfied completed hold. Static calm holds are intentional; text remains authoritative. These samples do not establish continuous natural timing. State review is archived separately with a hash-bound reference to this full export. Closed-lid finish,
+final likeness, natural acting, small-size state readability, target-device
+performance and asset publication remain open. The approved static portrait and
+greeting remain the published delivery.
+
+## Wing-color01 — historical retained wing finish and verified export
 
 Root retains wing-color01 after reviewing all fifteen matched comparison sheets /
 120 captures. Independent review of six comparison sheets and the selected
@@ -32,7 +71,7 @@ Full archive: `atlas-wing-color01-review.tar.gz`, SHA256 `b40b163425a7f7cd678db9
 
 Final likeness, lid finish, natural acting, continuous attachment, small-size state readability, device performance and publication remain open. The approved static portrait/greeting remain active.
 
-Next concrete art target: the sixteen primary vanes still read as flat, uniform
+Next art target at that checkpoint, now addressed above: the sixteen primary vanes still read as flat, uniform
 brown strips beside the textured coverts, clearest in the completed .34 front
 and three-quarter samples. The selected reference has a more continuous feather
 finish across that transition. A bounded feather-direction/taper shading pass
