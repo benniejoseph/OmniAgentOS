@@ -9,7 +9,7 @@ import { useCompanionPreferences } from "@/components/use-companion-preferences"
 import { effectiveCompanionMotion } from "@/lib/companion/model";
 import { companionPresentation, type CompanionWork } from "@/lib/companion/presentation";
 import {
-  ATLAS_ASSET_ROOT, ATLAS_GREETING_POSTER, ATLAS_NEUTRAL_POSTER, atlasFrameAt, createAtlasPlaybackGate, fetchAtlasManifest,
+  ATLAS_ASSET_ROOT, ATLAS_GREETING_POSTER, ATLAS_NEUTRAL_POSTER, atlasFrameAt, atlasMotionAllowed, createAtlasPlaybackGate, fetchAtlasManifest,
   type AtlasManifest, type AtlasTheme,
 } from "@/lib/companion/atlas-assets";
 import styles from "./companion-presence.module.css";
@@ -66,7 +66,7 @@ function ScopedPresence({ scope, conversationId, manifest, showHome = true, onOp
     : assets ? `${ATLAS_ASSET_ROOT}${assets.poster}?v=${assets.posterSha256}` : ATLAS_NEUTRAL_POSTER;
   const poster = failedPosters.has(selectedPoster) ? ATLAS_NEUTRAL_POSTER : selectedPoster;
   const fullBody = showPortrait && poster === ATLAS_GREETING_POSTER;
-  const eligible = Boolean(!greeting && scope && showPortrait && onScreen && motion === "full" && intensity !== "quiet" && clip && assets && !failedPosters.has(selectedPoster));
+  const eligible = Boolean(!greeting && scope && showPortrait && onScreen && motion === "full" && atlasMotionAllowed(intensity, presentation.state) && clip && assets && !failedPosters.has(selectedPoster));
   const preferenceIdentity = JSON.stringify([read.state, read.response?.snapshot.revision, preferences]);
   const { state, work: { state: workState, runId, completionIdentity } } = presentation;
 

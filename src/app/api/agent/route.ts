@@ -1940,7 +1940,11 @@ async function POSTHandler(request: Request) {
               : mission?.id,
             correlationId: directRootRunId,
             causationId: requestId,
-            purpose: loopV2CanaryEnrollment
+            // Enrollment eligibility alone does not select the engine: an
+            // explicit model choice dispatches the ordinary direct runner.
+            purpose: !loopV2Enrollment
+              ? "agent.run"
+              : loopV2CanaryEnrollment
               ? "agent.loop.v2.read_only_canary"
               : loopV2ContextTextEnrollment
                 ? "agent.loop.v2.context_text_canary"
@@ -1949,7 +1953,7 @@ async function POSTHandler(request: Request) {
                 : "agent.run",
           },
         );
-        const directEvents = loopV2CanaryEnrollment && !effectiveModelSelection
+        const directEvents = loopV2Enrollment && loopV2CanaryEnrollment
           ? runLoopV2ReadOnlyCanary(
               {
                 runId: directRootRunId,
@@ -1967,7 +1971,7 @@ async function POSTHandler(request: Request) {
               },
               agentAbortController.signal,
             )
-          : loopV2ModelTextEnrollment && !effectiveModelSelection
+          : loopV2Enrollment && loopV2ModelTextEnrollment
             ? runLoopV2ModelText(
                 {
                   runId: directRootRunId,
@@ -1983,7 +1987,7 @@ async function POSTHandler(request: Request) {
                 },
                 agentAbortController.signal,
               )
-          : loopV2ContextTextEnrollment && !effectiveModelSelection
+          : loopV2Enrollment && loopV2ContextTextEnrollment
             ? runLoopV2ModelText(
                 {
                   runId: directRootRunId,

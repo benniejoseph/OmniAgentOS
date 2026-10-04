@@ -187,7 +187,7 @@ class _AtlasPortraitState extends State<AtlasPortrait>
               freshReaction &&
               _motion &&
               preference?.motion == 'full' &&
-              preference?.intensity != 'quiet',
+              atlasMotionAllowed(preference?.intensity, widget.state),
         ),
       );
     }

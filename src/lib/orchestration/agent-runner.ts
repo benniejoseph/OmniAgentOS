@@ -244,6 +244,7 @@ import { getToolExecutionScopeBinding } from "@/lib/tools/execution-scope";
 import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
 import { appendThreadTurn } from "@/lib/threads/store";
 import { findActorTimezone } from "@/lib/today/briefs";
+import { resolveDirectConversationLanguageStyle } from "@/lib/companion/language-style-resolver";
 import { loadTenantAiUsageSince } from "@/lib/usage/allowance";
 import { recordAiUsageSafely } from "@/lib/usage/ledger";
 import { formatLiveWebSearchContext, runLiveWebSearch, shouldUseLiveWebSearch } from "@/lib/web-search/search";
@@ -1286,6 +1287,12 @@ async function* runAgentUntilStopped(
           WORKSPACE_ACCESS_CONTEXT_TIMEOUT_MS,
         )
       : Promise.resolve(undefined);
+    // Resolve once for this new direct conversation. The compiled instructions
+    // already carry their digest and are persisted unchanged on approval pause;
+    // resume paths must not reread a newer preference or apply it to background work.
+    const companionLanguageStylePromise = providerConfigured
+      ? resolveDirectConversationLanguageStyle(request)
+      : Promise.resolve(undefined);
     const adaptationGuidancePromise = !isolatedMemoryContext &&
       durableMemoryEnabled &&
       request.contextSelection?.evidenceIds.length !== 0 &&
@@ -1487,12 +1494,14 @@ async function* runAgentUntilStopped(
       `Activation v${adaptation.activationVersion}: ${adaptation.guidance}`
     );
     const actorTimeZone = await actorTimeZonePromise;
+    const companionLanguageStyle = await companionLanguageStylePromise;
     const instructions = buildAgentInstructions({
       mode,
       runtimeClock: { timeZone: actorTimeZone },
       agentId: request.agentId,
       specialistIds: request.specialistIds,
       adaptationGuidance,
+      companionLanguageStyle,
       profile: request.agentProfile
         ? { ...request.agentProfile, skills: runtimeAgentSkills }
         : runtimeAgentSkills.length

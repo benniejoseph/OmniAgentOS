@@ -218,7 +218,7 @@ class _CompanionSettingsEditorState extends State<CompanionSettingsEditor> {
             Text(
               MediaQuery.disableAnimationsOf(context)
                   ? 'System Reduce Motion is active and takes precedence. ATLAS uses a static portrait.'
-                  : 'Full motion allows brief state reactions when the artwork is available. Quiet, Reduced, and Off keep a static portrait; no setting loops idle animation.',
+                  : 'With reviewed artwork, Balanced reacts to verified results; Expressive also reacts to listening, speaking and work. Quiet, Reduced and Off stay still. Idle animation never loops.',
               style: const TextStyle(fontSize: 13),
             ),
             _choices(

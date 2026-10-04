@@ -16,6 +16,7 @@ import {
 import type { AgentRunContinuation } from "@/lib/runs/types";
 import type { ConversationItem } from "@/lib/openai/client";
 import { DEFAULT_CUSTOM_AGENT_PERSONA } from "@/lib/agents/persona";
+import { COMPANION_LANGUAGE_STYLE_VERSION } from "@/lib/companion/language-style";
 import { AUTHORIZED_CONTEXT_RETRIEVAL_SOURCES } from "@/lib/rag/context-engine";
 import {
   publicGroundingReport,
@@ -61,6 +62,7 @@ const mocks = vi.hoisted(() => ({
   recordRuntimeEventSafely: vi.fn(),
   recordAiUsageSafely: vi.fn(),
   resolvePersonalContextMemoryAccess: vi.fn(),
+  resolveDirectConversationLanguageStyle: vi.fn(),
   runCouncilRound: vi.fn(),
   streamResponseTurn: vi.fn(),
   executeGovernedTool: vi.fn(),
@@ -96,6 +98,10 @@ vi.mock("@/lib/config", async (importOriginal) => {
 
 vi.mock("@/lib/agents/adaptation-store", () => ({
   getActiveAgentAdaptationGuidance: mocks.getActiveAgentAdaptationGuidance,
+}));
+
+vi.mock("@/lib/companion/language-style-resolver", () => ({
+  resolveDirectConversationLanguageStyle: mocks.resolveDirectConversationLanguageStyle,
 }));
 
 vi.mock("@/lib/capabilities/toolbox", async (importOriginal) => ({
@@ -256,6 +262,7 @@ vi.mock("@/lib/today/briefs", () => ({
 describe("agent memory scope", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.resolveDirectConversationLanguageStyle.mockReset().mockResolvedValue(undefined);
     mocks.createAgentRun.mockResolvedValue({
       id: "run-memory-scope",
       tenantId: "paid-test-tenant",
@@ -436,6 +443,25 @@ describe("agent memory scope", () => {
     expect(mocks.streamResponseTurn.mock.calls[1]?.[0].instructions).toContain(
       "- The user's timezone is unknown.",
     );
+  });
+
+  it("passes the server-resolved delivery pin into the model without replacing Agent instructions", async () => {
+    const agentRequest = request("session");
+    const before = JSON.stringify(agentRequest);
+    mocks.resolveDirectConversationLanguageStyle.mockResolvedValueOnce({
+      version: COMPANION_LANGUAGE_STYLE_VERSION, source: "saved", intensity: "expressive", preferenceRevision: 4,
+    });
+
+    await collectRequest(agentRequest);
+
+    expect(mocks.resolveDirectConversationLanguageStyle).toHaveBeenCalledExactlyOnceWith(agentRequest);
+    const modelRequest = mocks.streamResponseTurn.mock.calls[0]?.[0];
+    expect(modelRequest.instructions).toContain("Selection: saved; intensity: expressive; preference revision: 4");
+    expect(modelRequest.instructions).toContain("You are Paid test agent, the Release verifier");
+    expect(modelRequest.instructions).toContain("Reply only ASAEL_LIVE_OK");
+    expect(modelRequest.instructions).toContain("exact output format before this preference");
+    expect(JSON.stringify(agentRequest)).toBe(before);
+    expect(mocks.executeGovernedTool).not.toHaveBeenCalled();
   });
 
   it("lets a reviewed session scope narrow an all-memory agent", async () => {
@@ -1504,6 +1530,27 @@ describe("agent memory scope", () => {
     ["OpenAI", "openai"],
     ["provider-bound", "google"],
   ] as const)("a %s approval resume", (_label, provider) => {
+    it("keeps the original delivery pin when saved preferences change during approval", async () => {
+      mocks.resolveDirectConversationLanguageStyle.mockResolvedValueOnce({
+        version: COMPANION_LANGUAGE_STYLE_VERSION, source: "saved", intensity: "expressive", preferenceRevision: 4,
+      });
+      const continuation = await pauseForApproval(request("session"), provider);
+      expect(continuation.instructions).toContain("intensity: expressive; preference revision: 4");
+      const originalInstructions = continuation.instructions;
+      const originalPolicy = JSON.stringify(continuation.toolPolicy);
+      mocks.resolveDirectConversationLanguageStyle.mockResolvedValue({
+        version: COMPANION_LANGUAGE_STYLE_VERSION, source: "saved", intensity: "quiet", preferenceRevision: 5,
+      });
+      const turns = provider === "openai" ? mocks.streamResponseTurn : mocks.generateModelToolTurn;
+      turns.mockClear();
+
+      await expect(resumeAfterApproval(continuation)).resolves.toMatchObject({ resumed: true, status: "completed" });
+
+      expect(mocks.resolveDirectConversationLanguageStyle).toHaveBeenCalledOnce();
+      expect(turns.mock.calls[0]?.[0]?.instructions).toBe(originalInstructions);
+      expect(JSON.stringify(continuation.toolPolicy)).toBe(originalPolicy);
+    });
+
     it("shares the resumed turn's prompt cache with the agent's other runs", async () => {
       const continuation = await pauseForApproval(request("session"), provider);
       const turns = provider === "openai"

@@ -10,6 +10,11 @@ import {
 } from "@/lib/orchestration/prompts";
 import { DEFAULT_CUSTOM_AGENT_PERSONA } from "@/lib/agents/persona";
 import { MAX_ASSIGNED_SKILLS } from "@/lib/skills/limits";
+import {
+  COMPANION_LANGUAGE_STYLE_VERSION,
+  companionLanguageStyleInstructions,
+  type CompanionLanguageStyle,
+} from "@/lib/companion/language-style";
 
 describe("agent input order", () => {
   const order = (messages: Parameters<typeof buildAgentInput>[0]["messages"]) =>
@@ -76,6 +81,39 @@ describe("agent input order", () => {
 });
 
 describe("agent instruction order", () => {
+  it("adds delivery beneath the selected Agent's identity, instructions, adaptations and exact-format task", () => {
+    const profile = {
+      name: "Exact Auditor", role: "Evidence specialist", description: "Audit the supplied evidence.",
+      instructions: "Return only the requested JSON object. Never add humor.",
+      persona: { ...DEFAULT_CUSTOM_AGENT_PERSONA, voice: "Formal, precise, without jokes." },
+      autonomy: "governed", approvalPolicy: "always", memoryScope: "session",
+      skills: [{ id: "skill.audit", name: "Audit", description: "Check evidence.", instructions: "Keep every uncertainty explicit." }],
+    };
+    const input = {
+      mode: "orchestrate" as const,
+      profile,
+      adaptationGuidance: ["Use the supplied audit rubric."],
+      runtimeClock: { now: new Date("2026-10-04T10:00:00.000Z") },
+    };
+    const style: CompanionLanguageStyle = {
+      version: COMPANION_LANGUAGE_STYLE_VERSION, source: "saved", intensity: "expressive", preferenceRevision: 9,
+    };
+    const unchanged = JSON.stringify(input);
+    const baseline = buildAgentInstructions(input);
+    const styled = buildAgentInstructions({ ...input, companionLanguageStyle: style });
+    expect(styled.replace(companionLanguageStyleInstructions(style), "")).toBe(baseline);
+    expect(styled).toContain("You are Exact Auditor, the Evidence specialist");
+    expect(styled).toContain("Voice: Formal, precise, without jokes.");
+    expect(styled).toContain(profile.instructions);
+    expect(styled).toContain("follow those existing instructions");
+    expect(styled).toContain("requested tone and exact output format before this preference");
+    expect(JSON.stringify(input)).toBe(unchanged);
+    const messages = [{ role: "user" as const, content: 'Return exactly {"ok":true}, without commentary.' }];
+    expect(buildAgentInput({ messages, memoryContext: "" })).toEqual([
+      { type: "message", ...messages[0] },
+    ]);
+  });
+
   it("keeps the mode and the clock after the instructions every run shares", () => {
     const at = (mode: "orchestrate" | "execute", iso: string) => buildAgentInstructions({
       mode,

@@ -119,3 +119,29 @@ No 3D artwork has been published. The approved concept portrait remains active,
 with the static full-body greeting implemented above. The final authored model,
 material pass, convincing facial closure, animated greeting/state delivery and
 state-performance/device acceptance remain open.
+
+## Greeting acceptance and personality follow-up
+
+PR55 passed all sixteen hosted checks on
+`e9f1fbdbcf8f5e4bc576787e7d355820787490ba` and merged at
+`2026-10-04T17:01:53Z` as `c597c204aa49a852da4fe5f02b8708ab5cf3e0e1`.
+The private Mac 1.23.14 (49) package above is verified. Production promotion
+still awaits the owner release environment.
+
+The next implementation pins the initiating person's Quiet/Balanced/Expressive
+language preference for a new authenticated direct conversation, including a
+foreground prompt-queue dispatch. Only fixed delivery guidance enters the prompt;
+Agent identity, instructions, requested format and governed authority keep their
+precedence. Failed or ambiguous reads select neutral wording. Approval resumes
+retain the original compiled instructions rather than rereading changed settings.
+Background, delegated, durable and genuine loop-v2 executions are outside this
+slice. An explicit model selection now labels the execution scope for the ordinary
+runner it actually dispatches, even when the request was canary-eligible.
+
+Web/native decorative motion now differs by intensity: Quiet remains still,
+Balanced permits a newly verified completion reaction, and Expressive also permits
+truthful listening/responding/working transitions. Attention, errors and paused
+states remain composed; no preference change replays consumed history. The static
+greeting and unpublished state manifest remain unchanged. Native build
+`1.23.15+50` is reserved for this follow-up; parked connectors need a later number.
+No database migration, API contract or Agent definition version changes are made.

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  ATLAS_MANIFEST_PATH, ATLAS_STATES, atlasFrameAt, createAtlasPlaybackGate, fetchAtlasManifest, parseAtlasManifest,
+  ATLAS_MANIFEST_PATH, ATLAS_STATES, atlasFrameAt, atlasMotionAllowed, createAtlasPlaybackGate, fetchAtlasManifest, parseAtlasManifest,
   type AtlasManifest,
 } from "./atlas-assets";
 import { companionWork, type CompanionState, type CompanionWork } from "./presentation";
@@ -109,6 +109,25 @@ function observe(gate: ReturnType<typeof createAtlasPlaybackGate>, work: Compani
 }
 
 describe("one-shot ATLAS admission", () => {
+  it("keeps quiet static, balanced result-focused and expressive limited to truthful active states", () => {
+    const admitted = (intensity: "quiet" | "balanced" | "expressive") => ATLAS_STATES.filter((state) => atlasMotionAllowed(intensity, state));
+    expect(admitted("quiet")).toEqual([]);
+    expect(admitted("balanced")).toEqual(["completed"]);
+    expect(admitted("expressive")).toEqual(["listening", "responding", "working", "completed"]);
+  });
+
+  it("does not replay a suppressed transition or completion when intensity increases", () => {
+    const gate = createAtlasPlaybackGate();
+    const working = companionWork({ status: "running", runId: "run-style" });
+    expect(observe(gate, companionWork({}), { eligible: false })).toBe(false);
+    expect(observe(gate, working, { eligible: atlasMotionAllowed("balanced", "working") })).toBe(false);
+    expect(observe(gate, working, { eligible: atlasMotionAllowed("expressive", "working") })).toBe(false);
+    const receipt = completed("run-style");
+    expect(observe(gate, receipt, { eligible: atlasMotionAllowed("quiet", "completed") })).toBe(false);
+    expect(observe(gate, receipt, { eligible: atlasMotionAllowed("expressive", "completed") })).toBe(false);
+    expect(observe(gate, completed("run-style", "new-receipt"), { eligible: atlasMotionAllowed("balanced", "completed") })).toBe(true);
+  });
+
   it("primes a mounted receipt and an asynchronously loaded historical receipt without celebrating", () => {
     const mounted = createAtlasPlaybackGate();
     expect(observe(mounted, completed("run-a"))).toBe(false);

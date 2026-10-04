@@ -1,4 +1,5 @@
 import { createCompanionReactionLedger, type CompanionState, type CompanionWork } from "./presentation";
+import type { CompanionPreferences } from "./model";
 
 export const ATLAS_MANIFEST_PATH = "/companion/atlas-v1/manifest.json";
 export const ATLAS_ASSET_ROOT = "/companion/atlas-v1/";
@@ -12,6 +13,14 @@ export type AtlasManifest = Readonly<{
   schemaVersion: 1; creativeRevision: string; frameSize: 256; fps: 20; columns: 4;
   states: Readonly<Record<CompanionState, AtlasClip>>;
 }>;
+
+/** Delivery intensity only. The playback gate still requires a newly verified
+ * completion; visibility, motion and asset admission remain independent. */
+export function atlasMotionAllowed(intensity: CompanionPreferences["intensity"], state: CompanionState) {
+  if (intensity !== "balanced" && intensity !== "expressive") return false;
+  if (state === "completed") return true;
+  return intensity === "expressive" && (state === "listening" || state === "responding" || state === "working");
+}
 
 function object(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
