@@ -6747,7 +6747,7 @@ databaseDescribe("Postgres schema integration", () => {
       expect(oldReport.status).toBe("degraded");
       expect([...oldReport.summary.missingTables].sort()).toEqual(additiveDraftReplayTables);
       expect([...oldReport.summary.missingPolicies].sort()).toEqual(
-        [...oldRunnerTenantWidePolicyTables, ...additiveDraftReplayTables].sort(),
+        [...oldRunnerTenantWidePolicyTables, ...additiveDraftReplayTables, "omni_events"].sort(),
       );
 
       // A CHECK that matches neither catalog stops the migration, and what it
@@ -6821,13 +6821,15 @@ databaseDescribe("Postgres schema integration", () => {
     `;
     // Each one covers every command and role, as its restore below does.
     expect(restrictivePolicies.map(({ command, roles }) => ({ command, roles })))
-      .toEqual(Array(66).fill({ command: "*", roles: "{0}" }));
+      .toEqual(Array(68).fill({ command: "*", roles: "{0}" }));
     expect(restrictivePolicies.filter((policy) =>
       additiveDraftReplayTables.includes(policy.table_name),
     ).map(({ table_name, policy_name }) => ({ table_name, policy_name })))
       .toEqual(additiveDraftReplayTables.map((tableName) => ({
         table_name: tableName,
-        policy_name: `${tableName}_${meetingResolutionReplayTables.includes(tableName) ? "owner" : "actor"}`,
+        policy_name: tableName === "omni_meeting_calendar_sync_acceptances"
+          ? "omni_meeting_calendar_sync_actor"
+          : `${tableName}_${meetingResolutionReplayTables.includes(tableName) ? "owner" : "actor"}`,
       })));
     const catalog = await schemaCatalogSnapshot(admin);
     const dropped: typeof restrictivePolicies[number][] = [];
