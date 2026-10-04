@@ -143,3 +143,17 @@ start further reads, and exact bookmarks and URL filters remain intact.
 Desktop and phone checks cover themes, 320px reflow, 200% text, focus and axe.
 No legacy executor, review mutation, provider or evidence destination is invoked.
 This suite runs serially in the work-family job within its existing time limit.
+
+`capture_library.py` covers current Library identities/citations, bounded paging,
+malformed and retained reads, exact items outside the visible page, compact
+Results hosting, and exact recording metadata outside the recent history. Private
+transcript reads require an explicit action in the current visible owner epoch;
+A→B→A selection and hidden-view restoration cannot disclose an old response.
+Reindexing uses a three-lane exclusive batch and preserves unknown submitted keys
+across failed reads and subsequent batches for the lifetime of the current view.
+Desktop permits exactly eleven intercepted reindex POSTs; phone permits none.
+No media, microphone or provider is used. Thirteen axe scans cover desktop/phone
+themes, 320px and 200% text. Long panels use scrolled viewport captures with pointer
+checks before and after; element captures must not resize touch contexts.
+Historical content availability and durable unknown-result recovery across page
+reload remain separate server/native acceptance gates.
