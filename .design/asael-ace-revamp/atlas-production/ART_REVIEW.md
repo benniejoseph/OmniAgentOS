@@ -1,6 +1,22 @@
 # ATLAS actual-art review — 5 October 2026 (IST)
 
-## Grain02 — latest matching full export, character still unaccepted
+## FACE01 and FEATHER02 — latest matching full export, character still unaccepted
+
+The retained eye integration and angular feather-color pass are exported as `sculpt-04-feather-02-angular-color` at `2026-10-04T21:32:27.157894+00:00`. All seventeen source hashes, 104 artifact hashes/byte lengths and 163 archive members verify. The GLB is 2,985,740 bytes: 27,543 vertices, 49,844 triangles, fourteen bones, twelve clips, one material and one embedded 1024 × 1024 RGBA8 PNG. Nine model/lifecycle and ten static-tool checks pass. This is a local art checkpoint; the final character is unaccepted and unpublished.
+
+FACE01 recesses the lower eye rims while preserving both contact rows and broadens/reduces the brow relief. Only four parts change position/normal attributes. Completed's two upper-lid tracks retain a coherent half-lidded settle at .48/.64/.78 seconds; the other 166 tracks remain exact. Seventy-two comparisons support local retention, including closed/half blink and four completed samples. Brows still have blunt medial ends and partly separate-looking relief; bounded stills do not prove timing or continuous collision.
+
+FEATHER01 was rejected for curved woodgrain-like loops around the temple, shoulder and flank. FEATHER02 replaces planar X/Y mapping with a profile-relative half-circumference chart, including inversion of the squared front contour. Its original physical throat mask is evaluated after converting chart angle back to surface X. The deterministic tapered color motifs, sparse barbs and weak underpaint add head/throat/body detail. All FACE01 geometry, normals, scalar colors, indices, skin, rig, poses and 168 clip tracks are exact; only 46 mapped-part UVs and the color image change. The other 121 parts remain exact. The image changes 661,439 pixels against FACE01 and still decodes to 4,194,304 RGBA bytes.
+
+Root and independent review retain FEATHER02 after 96 matched light/dark comparisons. The broad loops are removed, with no new obvious pale spill or hard atlas boundary in the reviewed samples. The pale boundary is visually retained, not pixel-identical. Fine texture is largely lost at 36 pixels and gives modest variation at 72 pixels. Torso strokes still look painterly/hair-like rather than layered feathers; smooth wing surfaces and long cheek/neck tuft lines remain finish work. Root inspected six sheets and original profile comparisons; the independent reviewer inspected all twelve sheets and selected originals.
+
+The actual embedded-GLB comparison covers 56 captures, seven groups and 28 pairs. Eight rest pairs are pixel-identical; all posed differences total 39 pixels at maximum one channel value. Closed-eye and completed-hold samples are included. Hide/reload/dispose passes with no page/console/rejected-network errors. The raw helper inherited stale hardcoded 20-pair/40-capture summary values; the unchanged archived receipt and `count-correction.json` bind all 56 hashed captures and 28 comparison rows. Future helper counts derive from the arrays. These observations do not certify shimmer, natural acting, physical performance or final art acceptance.
+
+Comparison archives: `face01-comparison/matching-source-and-baseline.tar.gz` SHA256 `2cc6f8d412d46befd84a48eb07540dd7bc1431d3c4846f6fdec54413aa2fc5f2`; `feather02-comparison/matching-source-and-baseline.tar.gz` SHA256 `0a27626b37ba4267ca04ee22d9b4c2909124ac269eddebf1368b1b5e746ff0c1`; `feather02-glb-parity/matching-source-and-baseline.tar.gz` SHA256 `7a76f0de3795ece4ee447b168151f148840e5d840738cc8d8d22f332d2135b2c`.
+
+Full archive: `atlas-feather-02-review.tar.gz` SHA256 `42a6653c7d0d45f6ce5bd6110b4404812e14d9cd3fbe1fc4df284f379d122910`. Receipt: `atlas-feather-02-export-verification.json`. Export-manifest SHA256: `a640792086fa974e46e6728ee53525e3bbd2ab8e0831052600acf42f5a7561f8`; raster-manifest SHA256: `a18049126eadf73071939585d440478b553b3815451e604c7cee16b50f977725`. Final layered plumage, stronger likeness, wing/face integration, natural acting, device acceptance and publication remain open. The approved portrait/static greeting remain active.
+
+## Grain02 — previous matching full export, character still unaccepted
 
 The retained subtle body-grain pass is exported as `sculpt-04-grain-02-continuous-color` at `2026-10-04T20:49:56.541894+00:00`. All seventeen source hashes, 104 artifact hashes/byte lengths and 156 archive members are verified. The GLB is 2,494,008 bytes, with 27,543 vertices, 49,844 triangles, fourteen bones, twelve clips, one material and one embedded 1024 × 1024 RGBA8 PNG. There are no external image or buffer resources. Nine model/lifecycle and ten static-tool checks pass.
 

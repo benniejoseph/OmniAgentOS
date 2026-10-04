@@ -541,7 +541,7 @@ This is a retained local art improvement. Final likeness/finish, natural acting,
 delivery-size/device acceptance and publication remain unaccepted. This checkpoint
 does not complete the ATLAS program or establish a new performance budget.
 
-## Current ATLAS grain-02 checkpoint — 5 October 2026 (IST)
+## Historical ATLAS grain-02 checkpoint — 5 October 2026 (IST)
 
 The matching `sculpt-04-grain-02-continuous-color` export at
 `2026-10-04T20:49:56.541894+00:00` has 104 artifacts, 17 verified sources and
@@ -563,3 +563,45 @@ on `52e54d2cd14ccc4501d23b46367e94dcd9e30b16`, merged at 20:43:05 UTC on
 1.23.16 (51) is verified; package SHA-256 is
 `3616583ca5151a8373355e2f7f7b35df22739c05439965e0c37983018c79de9f`.
 No production promotion or whole-program completion is claimed.
+
+## Current ATLAS face-01 / feather-02 checkpoint — 5 October 2026 (IST)
+
+Face-01 and `sculpt-04-feather-02-angular-color` are retained local refinements
+after root and independent review of 72 face and 96 feather comparisons. The
+face pass quiets the lower lids/brows and keeps the sampled completed expression
+settling continuously. The angular feather chart removes rejected feather-01's
+broad profile loops without new visible throat spill or chart seams in the
+reviewed views. Fine torso detail remains hair-like, smooth wings contrast with
+it, and existing cheek/neck lines persist. Final face/feather/wing finish, likeness
+and natural acting are unaccepted.
+
+Feather-02 changes only 46 parts' UVs and 661,439 atlas pixels against retained
+face-01; the other 121 parts, all geometry/normals/colors/indices/skin, rig, poses
+and 168 animation tracks are exact. Counts remain 27,543 vertices, 49,844 triangles,
+14 bones, 12 clips, one material and one 1024 × 1024 RGBA8 map. Nine model/lifecycle
+checks pass. The 4,194,304-byte decoded image size is arithmetic evidence, not a
+measured allocation or performance budget.
+
+Source/GLB parity covers 56 captures and 28 pairs: eight rest pairs are identical;
+posed differences total 39 pixels, at most one channel value. Hide/reload/dispose
+pass. The comparison GLB is 2,985,740 bytes. A hash-bound count-correction sidecar
+preserves and corrects the raw helper/receipt's stale 40-capture/20-pair fields.
+The complete matching export at `2026-10-04T21:32:27.157894+00:00` verifies
+17 source hashes, 104 artifact hashes/bytes and 163 archive members; its GLB is
+2,985,740 bytes with zero external resources. Nine model/lifecycle and ten static
+tool checks pass. Archive SHA-256 is
+`42a6653c7d0d45f6ce5bd6110b4404812e14d9cd3fbe1fc4df284f379d122910`;
+exact manifest hashes and the receipt are in
+[ATLAS measurements](../.design/asael-ace-revamp/atlas-production/MEASUREMENTS.md).
+
+The 80-state review remains finish-02 evidence and was not rerun. Motion/shimmer,
+physical-device performance, final artwork and 3D/state-bundle publication remain
+open. The approved static portrait/greeting remains the delivery fallback.
+Production promotion and the remaining implementation program are separate gates.
+
+Native scoped content search is in open PR59 at
+`2d4c1410b400f2d72e1ca7e3ec9ed6471ce8ed49`, publishing native v39 / app 1.23.17+52.
+All 59 focused native cases, full Flutter analysis, 44 contract checks and three
+visual captures pass. Hosted CI and private Mac52 packaging are running; it is not
+yet accepted, merged or deployed. Parked connector work must rebase its contract
+publication and use build 53 or later. No new production promotion is claimed.

@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "name": "ATLAS_ROUGH_01",
-  "status": "SCULPT_04_GRAIN_02_LOCAL_REFINEMENT_RETAINED",
-  "creativeRevision": "sculpt-04-grain-02-continuous-color",
-  "exportEvidence": "Local refinement retained after 64 size/pose comparisons, exact attribute proof and 40 procedural/GLB captures. One deterministic 1024x1024 atlas adds subtle body grain while preserving the old480x480 throat pixels. UVs change in46parts and scalar colors in44tufts; all geometry, normals, indices, skin, rig, poses, clips and121otherparts remain exact. Nine model/lifecycle and ten static-tool checks pass. Decoded RGBA storage is4,194,304bytes, not measured GPU allocation. Final feather density, likeness, natural acting, small-size motion stability and physical performance remain unaccepted; no publication approval is implied.",
+  "status": "SCULPT_04_FEATHER_02_LOCAL_REFINEMENT_RETAINED",
+  "creativeRevision": "sculpt-04-feather-02-angular-color",
+  "exportEvidence": "Local refinement retained after 96 matched light/dark comparison images and independent visual review: angular UVs remove rejected feather01 temple/flank loops while retaining head/throat detail and small-size readability. Exact parity against retained face01 preserves all geometry, normals, vertex colors, indices, skin, rig, poses and 168 clip tracks; changes are confined to 46 mapped-part UVs and one 1024x1024 color atlas. Nine model/lifecycle checks pass. A 56-capture source/embedded-GLB comparison has 39 differing pixels total at maximum one channel value, with rest pairs exact and hide/reload/dispose passing. The raw parity helper inherited stale printed count fields; its preserved receipt plus count-correction.json bind all 56 actual captures and 28 pairs. Throat shape continuity is visually retained, not pixel-identical. Torso strokes remain painterly/hair-like, smooth wings contrast with the body, and cheek/neck tuft lines persist. Layered feathers, final likeness, natural acting, shimmer and device performance remain unaccepted. This is not publication approval.",
   "coordinates": "Arbitrary model units. Y up, Z forward, X character left. Overall height about 3 units; not a physical scale claim.",
   "sourceExpectedSha256": "876591c5a2b739df99d6aab647554dc53bcab97d55bf0c3e0864e39e1c98c070",
   "palette": {
@@ -53,9 +53,9 @@
       {"time":0.08,"pose":{"Head":[-3,0,0],"UpperLidLeft":[6,0,0],"UpperLidRight":[6,0,0],"WingLeft":[-16,0,5],"WingTipLeft":[14,0,0]}},
       {"time":0.20,"pose":{"Head":[1.615379744728,-0.021701352184,0.461489888678],"UpperLidLeft":[11.538461538462,0,0],"UpperLidRight":[11.538461538462,0,0],"WingLeft":[-60,0,5],"WingTipLeft":[45,5,-20]}},
       {"time":0.34,"pose":{"Head":[7,0,1],"WingLeft":[-60,0,-8],"WingTipLeft":[0,30,-115],"UpperLidLeft":[18,0,0],"UpperLidRight":[18,0,0]}},
-      {"time":0.48,"pose":{"Head":[3,0,-1],"WingLeft":[-58,0,-6],"WingTipLeft":[3,28,-109]}},
-      {"time":0.64,"pose":{"Head":[1.476196180827,-0.008232776262,-1.380929571519],"UpperLidLeft":[4.571428571429,0,0],"UpperLidRight":[4.571428571429,0,0],"WingLeft":[-56,0,4],"WingTipLeft":[51,0,-8]}},
-      {"time":0.78,"pose":{"Head":[0.142848257275,-0.007124420306,-1.71432124397],"UpperLidLeft":[8.571428571429,0,0],"UpperLidRight":[8.571428571429,0,0],"WingLeft":[-22,0,4],"WingTipLeft":[20,0,0]}},
+      {"time":0.48,"pose":{"Head":[3,0,-1],"UpperLidLeft":[17,0,0],"UpperLidRight":[17,0,0],"WingLeft":[-58,0,-6],"WingTipLeft":[3,28,-109]}},
+      {"time":0.64,"pose":{"Head":[1.476196180827,-0.008232776262,-1.380929571519],"UpperLidLeft":[14.5,0,0],"UpperLidRight":[14.5,0,0],"WingLeft":[-56,0,4],"WingTipLeft":[51,0,-8]}},
+      {"time":0.78,"pose":{"Head":[0.142848257275,-0.007124420306,-1.71432124397],"UpperLidLeft":[12.5,0,0],"UpperLidRight":[12.5,0,0],"WingLeft":[-22,0,4],"WingTipLeft":[20,0,0]}},
       {"time":0.90,"state":"completed"}
     ]},
     "paused": {"duration":0.66,"intent":"Quiet lids and folded wings settle into a static pause; no sleeping or breathing loop.","keys":[{"time":0,"pose":{}},{"time":0.22,"pose":{"Head":[2,0,0],"UpperLidLeft":[14,0,0],"UpperLidRight":[14,0,0]}},{"time":0.44,"pose":{"Head":[5,0,0],"UpperLidLeft":[27,0,0],"UpperLidRight":[27,0,0]}},{"time":0.66,"state":"paused"}]}

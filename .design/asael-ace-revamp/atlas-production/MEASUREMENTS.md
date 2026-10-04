@@ -1,8 +1,28 @@
 # ATLAS export and measurement records — 5 October 2026 (IST)
 
-## Last complete grain-02 export: no matching performance comparison
+## Current face-01 and feather-02 complete matching export
 
-The retained `output/export-manifest.json` was written at `2026-10-04T20:49:56.541894+00:00` (5 October in IST) for `sculpt-04-grain-02-continuous-color`. It records **104 artifacts** and a **2,494,008-byte GLB**, with **27,543 vertices, 49,844 triangles, 14 bones and 12 clips**: eight application states plus the four inspection aliases `rest`, `quick_reaction`, `speech_test` and `satisfied_nod`. Runtime records Three.js 0.186.0, headless Chrome 154.0.8037.94 and ANGLE/Metal reporting Apple M2. These are export/renderer facts, not measured responsiveness, battery or thermal results. Matching source/output is archived in `atlas-grain-02-review.tar.gz`; root verified all 17 current source hashes, all 104 artifact hashes/bytes and reread all 156 archive members in `atlas-grain-02-export-verification.json`. It has one material, one embedded 1024 × 1024 RGBA8 color texture and zero external resources. Nine model/lifecycle checks and ten static tool checks passed in new runs. Root and independent review retained subtle body variation across 64 comparison stills, including 36/72-pixel and large samples; the small-size benefit is minimal. An initial throat-edge regression impression was withdrawn after matched original PNG/crop review and protected-region differences of at most one channel value. Dense feather finish, overall likeness, head/wing-joint finish, natural acting, shimmer and device performance remain unaccepted. The 80-state review remains finish-02 evidence and was not rerun.
+The retained `sculpt-04-feather-02-angular-color` source includes face-01's eyelid/brow refinement and sampled completed-expression settle. Root and independent review retained face-01 across 72 comparisons, then feather-02 across 96 comparisons covering light/dark, full/portrait, 36/72-pixel and selected gesture views. The angular chart removes rejected feather-01's broad profile loops without new visible throat spill or chart seams in those samples. Fine torso detail remains hair-like, wings remain comparatively smooth, and existing cheek/neck lines persist. Final likeness/finish, continuous motion, shimmer, device acceptance and publication remain open.
+
+Face-01 changes four parts' positions/normals while retaining 163 other parts, all indices/colors/UVs/skin, profiles, rig, poses and the full map. The first two lower-lid contact rows retain exact positions/normals. Only the two completed upper-lid tracks change, at three existing timestamps; the other 166 tracks, all clip durations and all timestamps remain exact against grain-02.
+
+Feather-02's scope proof against retained face-01 records 46 changed UV parts, 121 unchanged parts and 661,439 changed atlas pixels. Geometry, normals, colors, ordered indices, skin, rig, poses and all 168 tracks remain exact. Counts stay at 27,543 vertices, 49,844 triangles, 14 bones, 12 clips, 167 parts, one material and one 1024 × 1024 RGBA8 map. Decoded storage is 4,194,304 bytes; this does not measure GPU allocation. All nine current model/lifecycle checks pass.
+
+The procedural/source-GLB comparison contains **56 captures, seven groups and 28 pairs**. Eight rest pairs are pixel-identical; the posed pairs total 39 differing pixels, with a maximum one-channel-value difference. The comparison GLB is 2,985,740 bytes. Hide, explicit reload and disposal pass. The raw helper/receipt retained hard-coded 20-pair/40-capture metadata; a hash-bound `count-correction.json` sidecar records the corrected counts after verifying all 56 artifact hashes and 28 comparison rows. The original helper and receipt remain archived unchanged. These are appearance and lifecycle observations, not a timing, memory-reclamation or physical-device result.
+
+The matching `sculpt-04-feather-02-angular-color` export completed at `2026-10-04T21:32:27.157894+00:00` (5 October in IST). `atlas-feather-02-export-verification.json` verifies all 17 source hashes, all 104 artifact hashes/bytes and all 163 archive members. The final GLB is 2,985,740 bytes, with the counts above, one embedded texture and zero external resources. The current nine model/lifecycle and ten static tool checks pass. Runtime records Three.js 0.186.0, headless Chrome 154.0.8037.94 and ANGLE/Metal reporting Apple M2. These are export facts, not performance measurements. The 80-state review remains finish-02 evidence and was not rerun.
+
+Feather-02 export manifest SHA-256: `a640792086fa974e46e6728ee53525e3bbd2ab8e0831052600acf42f5a7561f8`.
+
+Feather-02 raster manifest SHA-256: `a18049126eadf73071939585d440478b553b3815451e604c7cee16b50f977725`.
+
+Feather-02 archive `atlas-feather-02-review.tar.gz` SHA-256: `42a6653c7d0d45f6ce5bd6110b4404812e14d9cd3fbe1fc4df284f379d122910`.
+
+The matching state bundle contains 32 transparent WebP assets plus the schema-version-1 manifest: eight states, light/dark poster and sprite slots, 256px frames, four columns and inclusive 20Hz sampling. Durations remain 600–1120ms and frame counts 13–24. Theme pairs have identical image hashes. The complete export is verified; final artwork, natural acting, physical-device performance and 3D/state-bundle publication remain unaccepted. Grain-02 and earlier exports below are historical evidence.
+
+## Historical grain-02 complete export: no matching performance comparison
+
+The archived grain-02 export manifest was written at `2026-10-04T20:49:56.541894+00:00` (5 October in IST) for `sculpt-04-grain-02-continuous-color`. It records **104 artifacts** and a **2,494,008-byte GLB**, with **27,543 vertices, 49,844 triangles, 14 bones and 12 clips**: eight application states plus the four inspection aliases `rest`, `quick_reaction`, `speech_test` and `satisfied_nod`. Runtime records Three.js 0.186.0, headless Chrome 154.0.8037.94 and ANGLE/Metal reporting Apple M2. These are export/renderer facts, not measured responsiveness, battery or thermal results. Matching source/output is archived in `atlas-grain-02-review.tar.gz`; root verified all 17 current source hashes, all 104 artifact hashes/bytes and reread all 156 archive members in `atlas-grain-02-export-verification.json`. It has one material, one embedded 1024 × 1024 RGBA8 color texture and zero external resources. Nine model/lifecycle checks and ten static tool checks passed in new runs. Root and independent review retained subtle body variation across 64 comparison stills, including 36/72-pixel and large samples; the small-size benefit is minimal. An initial throat-edge regression impression was withdrawn after matched original PNG/crop review and protected-region differences of at most one channel value. Dense feather finish, overall likeness, head/wing-joint finish, natural acting, shimmer and device performance remain unaccepted. The 80-state review remains finish-02 evidence and was not rerun.
 
 The grain-02 state bundle contains a schema-version-1 manifest and 32 transparent WebP assets: light/dark poster and sprite for each state, 256px frames, four columns and 20Hz inclusive sampling. Its durations are 600–1120ms and frame counts 13–24; the shared format admits at most 1200ms/25 frames. Theme pairs have identical image hashes. No 3D/state bundle has been published, and actual-art review found final likeness insufficient; see [ART_REVIEW.md](ART_REVIEW.md). The complete export binds grain-02; no matching performance measurement is claimed.
 
@@ -26,7 +46,7 @@ Exact comparison changes only UVs in 46 parts and colors in 44 tufts. All geomet
 
 Forty source/GLB captures preserve one decoded 1024 × 1024 texture per mode. Eight rest pairs are pixel-identical; twelve posed pairs differ by 0–10 pixels each, at most one channel value (31 pixels total). Hide/reload/dispose pass without page/console/rejected-network errors. Nine model/lifecycle and ten static tool checks are new passing runs. The 80-state review was not rerun; it remains finish-02 evidence. Motion shimmer, physical performance and final acting are unaccepted.
 
-**The remaining `output/benchmark.json` is stale rough-01 evidence.** It predates the later sculpts and must not be paired with the grain-02 export manifest or used to claim that the larger model/state bundle meets the old timings. A fresh matching comparison has not been recorded here.
+**The remaining `output/benchmark.json` is stale rough-01 evidence.** It predates the later sculpts and must not be paired with the current export manifest or used to claim that the larger model/state bundle meets the old timings. A fresh matching performance comparison has not been recorded here.
 
 ## Archived finish-03 checkpoint
 
@@ -102,7 +122,7 @@ Archived eyelid-03 export manifest SHA-256: `9eb70a01ed62ce630de1c866b4550064890
 
 Archived eyelid-03 raster manifest SHA-256: `863daf3362c45dd6fe08f8f5361c83ff10a31642923637695e1e8b1be50f45fa`.
 
-The later retained tuft-01, grain-01 and wing-01 comparisons are preserved in `tuft01-comparison/matching-source-and-baseline.tar.gz`, `grain01-comparison/matching-source-and-baseline.tar.gz` and `wing01-comparison/matching-source-and-baseline.tar.gz` under the same release evidence directory. These are matching comparison archives, not separate full exports; their changes are included in completed-01 and subsequent full exports, including current grain-02.
+The later retained tuft-01, grain-01 and wing-01 comparisons are preserved in `tuft01-comparison/matching-source-and-baseline.tar.gz`, `grain01-comparison/matching-source-and-baseline.tar.gz` and `wing01-comparison/matching-source-and-baseline.tar.gz` under the same release evidence directory. These are matching comparison archives, not separate full exports; their changes are included in completed-01 and subsequent full exports, including grain-02 and the later retained source.
 
 ## Archived throat-04 checkpoint
 
@@ -122,7 +142,7 @@ Archived beak-02 raster manifest SHA-256: `90b813ceaac8120a1e5948feac7eb1821f189
 
 ## Archived rough-01 local comparison
 
-The results below belong exclusively to `/Volumes/Extreme Pro/Asael-release-records/2026-10-03-followups/ui-validation/atlas-rough-01-output.tar.gz`, which preserves the matching rough-01 output, export manifest and benchmark. They are retained for comparison, not transferred to later sculpts or grain-02.
+The results below belong exclusively to `/Volumes/Extreme Pro/Asael-release-records/2026-10-03-followups/ui-validation/atlas-rough-01-output.tar.gz`, which preserves the matching rough-01 output, export manifest and benchmark. They are retained for comparison, not transferred to later sculpts or the current face-01/feather-02 checkpoint.
 
 Captured at `2026-10-03T20:20:45.506325+00:00` with headless Chrome 154.0.8037.94 on macOS-27.0-arm64-arm-64bit-Mach-O. All 36 fresh-context cases passed their declared checks. Each row below reports three repetitions; it is a short loopback lab sample, not a production or physical-mobile performance claim.
 

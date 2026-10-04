@@ -6,18 +6,26 @@ app 1.23.14+49) and PR56 (scoped language/motion intensity / app 1.23.15+50)
 are accepted and merged, each after all 16 hosted checks passed. The private
 Mac package is now verified through PR58's 1.23.16 (51), from exact accepted
 source `52e54d2cd14ccc4501d23b46367e94dcd9e30b16`.
-The last complete matching 3D export is grain-02, with nine model/lifecycle and ten
-static tool checks passing in new runs. Sixty-four comparison stills and forty
-source/GLB captures retain subtle body variation; the 80-state review remains
-finish-02 evidence, without a rerun. Final art, shimmer, natural acting and device
-acceptance remain open. Finish-03 and earlier exports are historical checkpoints;
-throat-03 was rejected for its coarse staircase boundary. PR57's expanded web
+Face-01 and feather-02 are retained local art refinements after 72 face and 96
+feather comparisons. Nine current model/lifecycle checks, ten static tool checks
+and 56 source/GLB captures pass. The matching feather-02 export verifies 17 sources,
+104 artifacts and 163 archive members; grain-02 is historical. The 80-state review remains finish-02 evidence, without a
+rerun. Final feather/face/wing finish, likeness, shimmer, natural acting and device
+acceptance remain open. Earlier exports are historical checkpoints; feather-01
+was rejected for side/profile texture stretching. PR57's expanded web
 Voice shared player is accepted and merged after all 14 applicable hosted checks
 passed; that web-only release left native API/version and Mac50 unchanged. Software UI
 priorities through PR58 are accepted. No
 3D/state bundle publication or production promotion has occurred. The dated entries below retain earlier
 preparation and validation boundaries; the final release checkpoints record
 their later acceptance without completing whole-task gates.
+
+PR59's native scoped content search is open at
+`2d4c1410b400f2d72e1ca7e3ec9ed6471ce8ed49`, with native v39 / app 1.23.17+52.
+All 59 focused native cases, full Flutter analysis, 44 contract checks and three
+visual captures pass. Hosted CI and private Mac52 packaging are running; this
+checkpoint is not yet accepted, merged or deployed. Connector expansion remains
+parked and must rebase its contract version and use build 53 or later when resumed.
 
 ## First web slice — merged, 3 October 2026
 
@@ -1661,7 +1669,47 @@ That historical package-preparation checkpoint is superseded by the signed
 packages and hosted acceptance below. Nine Node geometry/lifecycle checks and
 three Python tool tests also passed for the sculpt-02 source workbench.
 
-### Current grain-02 checkpoint
+### Current face-01 and feather-02 retained refinements
+
+Root and independent review retain face-01's quieter lower lids, broader fitted
+brows and sampled completed-expression settle across 72 comparisons. Only four
+parts' positions/normals and three keys in each of two upper-lid tracks change
+against grain-02; the first two lower-lid contact rows remain exact. The other
+163 parts, indices, colors, UVs, skin, profiles, rig, poses and map are retained.
+All track timestamps/durations and the other 166 tracks remain exact.
+
+Feather-01's directional paint improved detail but was rejected for broad curved
+profile marks. Retained `sculpt-04-feather-02-angular-color` uses a profile-relative
+angular chart and evaluates the original physical-X/Y throat mask through that
+chart. Ninety-six light/dark, full/portrait, small-size and selected gesture
+comparisons show the broad loops removed without new visible throat spill or
+chart seams. Fine torso detail remains hair-like, smooth wings contrast with it,
+and existing cheek/neck lines persist. Final finish and natural motion remain open.
+
+Exact comparison against face-01 records 46 changed UV parts, 121 unchanged parts
+and 661,439 changed atlas pixels. All geometry, normals, colors, indices, skin,
+rig, poses and 168 tracks remain exact. Counts stay at 27,543 vertices,
+49,844 triangles, 14 bones, 12 clips, 167 parts, one material and one 1024 × 1024
+RGBA8 map. Nine current model/lifecycle checks pass.
+
+The source/GLB comparison contains 56 captures, seven groups and 28 pairs. Eight
+rest pairs are pixel-identical; posed pairs total 39 differing pixels with at most
+one channel value of difference. Its GLB is 2,985,740 bytes. Hide/reload/dispose
+pass. A hash-bound correction sidecar verifies the actual 56 artifacts and 28
+rows while preserving raw helper/receipt metadata that incorrectly said 40/20.
+The complete export at `2026-10-04T21:32:27.157894+00:00` verifies 17 sources,
+104 artifacts and 163 archive members. Its final GLB is 2,985,740 bytes with one
+embedded texture and zero external resources. All nine model/lifecycle and ten
+static tool checks pass. `atlas-feather-02-review.tar.gz` has SHA-256
+`42a6653c7d0d45f6ce5bd6110b4404812e14d9cd3fbe1fc4df284f379d122910`;
+exact export/raster manifest hashes and receipt are recorded in
+`atlas-production/MEASUREMENTS.md`.
+
+The 80-state review remains finish-02 evidence. Continuous motion, shimmer,
+physical-device/performance acceptance and publication remain open. No complete
+ATLAS or implementation-program acceptance follows from these local refinements.
+
+### Historical grain-02 checkpoint
 
 The matching `sculpt-04-grain-02-continuous-color` export at
 `2026-10-04T20:49:56.541894+00:00` contains 104 artifacts, a 2,494,008-byte GLB,
@@ -1771,7 +1819,7 @@ its 18 comparison captures showed an improved beak without accepting the full
 model. Throat-03 was rejected for its coarse staircase boundary. Historical
 sculpt-04 passed all nine geometry/lifecycle checks. Source/export tooling and
 an explicit hash-verifying publisher exist; final art acceptance does not.
-The archived rough-01 performance comparison does not measure grain-02.
+The archived rough-01 performance comparison does not measure face-01/feather-02.
 Details and exact evidence boundaries are in `atlas-production/README.md`,
 `ART_REVIEW.md`, `MEASUREMENTS.md` and `PERFORMANCE_PLAN.md`. A functional release
 with approved static ATLAS is permitted; full-plan completion, physical-device

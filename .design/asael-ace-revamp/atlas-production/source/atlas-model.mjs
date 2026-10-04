@@ -1,4 +1,4 @@
-/** ATLAS sculpt 04, grain 02 — retained continuous body-color grain.
+/** ATLAS sculpt 04, feather 02 — retained local angular color-surface refinement.
  * No raster planes, generated imagery, physics, audio, providers or app imports.
  * Geometry is deterministic; Three UUIDs are internal and not provenance IDs.
  */
@@ -90,17 +90,108 @@ function fiberNoise(x,y) {
   return lower*(1-v)+upper*v;
 }
 
-function bodyGrainFactor(x,y) {
-  const ramp=value=>{const t=clamp(value);return t*t*(3-2*t);};
-  const fade=ramp((y-.46)/.10)*ramp((2.08-y)/.10);
-  const warped=x+.012*fiberNoise(3*x,3*y);
-  const coarse=fiberNoise(40*warped+.9*Math.sin(1.3*y),14*y);
-  const fine=fiberNoise(68*warped+7*y,24*y);
-  return 1+fade*Math.max(-.075,Math.min(.075,.065*coarse+.025*fine));
+const featherEase=value=>{const t=clamp(value);return t*t*(3-2*t);};
+const featherAtlasRow=y=>y>=2.08?480+479*clamp((y-2.08)/.995):16+464*clamp((y-.38)/1.70);
+
+/** Each candidate/property has its own fixed hash; no sequential random state. */
+function featherHash(candidate,property) {
+  let value=Math.imul(candidate+1,374761393)^Math.imul(property+1,668265263)^0x315fa729;
+  value=Math.imul(value^(value>>>13),1274126177);
+  return ((value^(value>>>16))>>>0)/4294967296;
 }
 
-/** Body fibers share a field; the protected throat retains its exact 480² grid. */
-function plumageColorAtlas(config) {
+/** Irregular anisotropic rejection sampling; bins accelerate only neighbor lookup. */
+function featherMotifs() {
+  const accepted=[],bins=new Map(),binWidth=.06,binHeight=.11;
+  for(let candidate=0;candidate<4096&&accepted.length<1000;candidate++) {
+    const h=property=>featherHash(candidate,property);
+    const x=-.46+.92*h(0),y=.38+2.695*h(1);
+    const neck=featherEase((y-1.98)/.40),head=featherEase((y-2.65)/.25);
+    const widthLow=.040*(1-neck)+.020*neck+(.022-.020)*head;
+    const widthHigh=.070*(1-neck)+.036*neck+(.040-.036)*head;
+    const lengthLow=.11*(1-neck)+.07*neck+(.060-.07)*head;
+    const lengthHigh=.19*(1-neck)+.12*neck+(.10-.12)*head;
+    const width=widthLow+(widthHigh-widthLow)*h(2),length=lengthLow+(lengthHigh-lengthLow)*h(3);
+    const spacing=.8+.4*h(4),exclusionX=width*.45*spacing,exclusionY=length*.42*spacing;
+    const bx=Math.floor((x+.46)/binWidth),by=Math.floor((y-.38)/binHeight);
+    let crowded=false;
+    for(let dy=-1;dy<=1&&!crowded;dy++)for(let dx=-1;dx<=1&&!crowded;dx++) {
+      for(const other of bins.get(`${bx+dx},${by+dy}`)||[]) {
+        const u=(x-other.x)/((exclusionX+other.exclusionX)/2);
+        const v=(y-other.y)/((exclusionY+other.exclusionY)/2);
+        if(u*u+v*v<1){crowded=true;break;}
+      }
+    }
+    if(crowded)continue;
+    const bodyAngle=.24*Math.tanh(x/.26),throatAngle=-.20+.05*x/.46;
+    const angle=(bodyAngle*(1-neck)+throatAngle*neck)*(1-head)+.56*Math.tanh(x/.18)*head+(h(5)*2-1)*12*DEG;
+    const motif={x,y,width,length,exclusionX,exclusionY,sin:Math.sin(angle),cos:Math.cos(angle),
+      bend:(h(6)*2-1)*width*.28,lightSide:h(7)<.7?-1:1,highlight:.16*(.75+.5*h(8)),
+      shadow:.11*(.75+.5*h(9)),terminal:h(10)<.16?.035:0,barbs:[]};
+    const barbCount=3+Math.floor(4*h(11));
+    for(let barb=0;barb<barbCount;barb++) {
+      const property=20+barb*8;
+      if(h(property)<.22)continue;
+      const side=h(property+1)<.5?-1:1,attachment=.23+.57*h(property+2);
+      const rootward=.07+.10*h(property+3),tip=attachment-rootward;
+      const spread=width*.5*(.90+.10*Math.sin(Math.PI*tip))*(1-tip)**.6;
+      motif.barbs.push({x:side*spread*(.50+.32*h(property+4)),y:-rootward*length,
+        attachment:attachment*length,width:.007+.001*h(property+5),strength:(h(property+6)<.58?1:-1)*(.025+.025*h(property+7))});
+    }
+    accepted.push(motif);
+    const key=`${bx},${by}`;
+    if(!bins.has(key))bins.set(key,[]);
+    bins.get(key).push(motif);
+  }
+  return accepted;
+}
+
+/** Paint bounded stamps into one continuous chart-X/rest-Y scalar field.
+ * Chart X spans each angular half-circumference; it is not physical rest X.
+ */
+function featherColorField() {
+  const columns=480,rows=944,sum=new Float32Array(columns*rows),weight=new Float32Array(columns*rows);
+  const ys=Float64Array.from({length:rows},(_,row)=>row<464?.38+1.70*row/464:2.08+.995*(row-464)/479);
+  for(const motif of featherMotifs()) {
+    const reach=motif.width*.6+Math.abs(motif.bend),tipX=motif.x+motif.sin*motif.length,tipY=motif.y-motif.cos*motif.length;
+    const left=Math.max(0,Math.floor((Math.min(motif.x,tipX)-reach+.46)/.92*479));
+    const right=Math.min(479,Math.ceil((Math.max(motif.x,tipX)+reach+.46)/.92*479));
+    const bottom=Math.max(0,Math.floor(featherAtlasRow(Math.min(motif.y,tipY)-reach))-16);
+    const top=Math.min(rows-1,Math.ceil(featherAtlasRow(Math.max(motif.y,tipY)+reach))-16);
+    for(let row=bottom;row<=top;row++)for(let column=left;column<=right;column++) {
+      const x=-.46+.92*column/479,dx=x-motif.x,dy=ys[row]-motif.y;
+      const along=dx*motif.sin-dy*motif.cos,t=along/motif.length;
+      if(t<=0||t>=1)continue;
+      const lateral=dx*motif.cos+dy*motif.sin-motif.bend*t*t;
+      const halfWidth=motif.width*.5*(.90+.10*Math.sin(Math.PI*t))*(1-t)**.6,u=lateral/halfWidth;
+      if(Math.abs(u)>=1)continue;
+      const opacity=featherEase(t/.20)*featherEase((1-t)/.10)*featherEase((1-Math.abs(u))/.30);
+      const light=(u-motif.lightSide*.28)/.42,shadow=(u+motif.lightSide*.35)/.52;
+      let tone=motif.highlight*Math.exp(-light*light)-motif.shadow*Math.exp(-shadow*shadow);
+      for(const barb of motif.barbs) {
+        const by=along-barb.attachment,projection=(lateral*barb.x+by*barb.y)/(barb.x*barb.x+barb.y*barb.y);
+        if(projection<=0||projection>=1)continue;
+        const distance=Math.hypot(lateral-projection*barb.x,by-projection*barb.y);
+        if(distance>=barb.width)continue;
+        tone+=barb.strength*featherEase(1-distance/barb.width)*featherEase(projection/.18)*featherEase((1-projection)/.25);
+      }
+      tone-=motif.terminal*Math.exp(-(((t-.85)/.09)**2))*Math.exp(-((u/.55)**2));
+      const index=row*columns+column;
+      sum[index]+=tone*opacity;weight[index]+=opacity;
+    }
+  }
+  for(let row=0;row<rows;row++)for(let column=0;column<columns;column++) {
+    const index=row*columns+column,x=-.46+.92*column/479,y=ys[row];
+    const warped=x+.012*fiberNoise(3*x,3*y);
+    const underpaint=.012*fiberNoise(40*warped+.9*Math.sin(1.3*y),14*y)+.0045*fiberNoise(68*warped+7*y,24*y);
+    const boundary=featherEase((.46-Math.abs(x))/.018)*featherEase((y-.38)/.018)*featherEase((3.075-y)/.018);
+    sum[index]=(sum[index]/Math.max(1,weight[index])+underpaint)*boundary;
+  }
+  return {values:sum,ys};
+}
+
+/** Both islands share feather data; only the original front throat mask adds pale. */
+function plumageColorAtlas(config,profile) {
   const size=1024,chart=480,data=new Uint8Array(size*size*4).fill(255);
   const mask=throatMask(config.throatProfile),base=new THREE.Color(config.palette.umber);
   const pale=new THREE.Color(config.palette.throat),color=new THREE.Color();
@@ -112,20 +203,25 @@ function plumageColorAtlas(config) {
     const index=(row*size+column)*4;
     data[index]=Math.round(color.r*255);data[index+1]=Math.round(color.g*255);data[index+2]=Math.round(color.b*255);
   }
-  // Generate each body texel once, then copy the exact bytes to both islands.
-  // Row 480 meets the protected chart at Y=2.08, where grain has faded to zero.
-  for(let row=0;row<=464;row++)for(let column=0;column<chart;column++) {
-    const x=-.46+.92*column/(chart-1),y=.38+1.70*row/464;
-    color.copy(base).multiplyScalar(bodyGrainFactor(x,y)).convertLinearToSRGB();
+  const field=featherColorField(),radii=Float64Array.from(field.ys,y=>profileAt(profile,y)[1]);
+  for(let row=0;row<field.ys.length;row++)for(let column=0;column<chart;column++) {
+    const angle=-Math.PI/2+Math.PI*column/(chart-1),y=field.ys[row],tone=field.values[row*chart+column];
+    const head=featherEase((y-2.38)/.36),low=.76+.04*head,high=1.22-.05*head;
+    const factor=Math.max(low,Math.min(high,1+tone));
+    color.copy(base).multiplyScalar(factor).convertLinearToSRGB();
     const front=((16+row)*size+16+column)*4,rear=front+512*4;
     data[front]=Math.round(color.r*255);data[front+1]=Math.round(color.g*255);data[front+2]=Math.round(color.b*255);
+    // Lower-body bytes, the shared Y=2.08 row and all pale-free texels match.
     data.copyWithin(rear,front,front+4);
-  }
-  for(let row=0;row<chart;row++)for(let column=0;column<chart;column++) {
-    const x=-.46+.92*column/(chart-1),y=2.08+.68*row/(chart-1);
-    color.copy(base).lerp(pale,mask({x,y,z:1})).convertLinearToSRGB();
-    const index=((480+row)*size+16+column)*4;
-    data[index]=Math.round(color.r*255);data[index+1]=Math.round(color.g*255);data[index+2]=Math.round(color.b*255);
+    // The paint field is angular, but the retained throat boundary is defined
+    // in physical rest X/Y. Undo only the chart coordinate before evaluating it.
+    const x=radii[row]*Math.sin(angle),paleMask=mask({x,y,z:1});
+    if(paleMask>0) {
+      const paleLow=low*(1-paleMask)+.83*paleMask,paleHigh=high*(1-paleMask)+1.10*paleMask;
+      const paleFactor=Math.max(paleLow,Math.min(paleHigh,1+tone*(1-.35*paleMask)));
+      color.copy(base).lerp(pale,paleMask).multiplyScalar(paleFactor).convertLinearToSRGB();
+      data[front]=Math.round(color.r*255);data[front+1]=Math.round(color.g*255);data[front+2]=Math.round(color.b*255);
+    }
   }
   const texture=new THREE.DataTexture(data,size,size,THREE.RGBAFormat,THREE.UnsignedByteType);
   texture.name='ATLAS_authored_plumage_color';texture.colorSpace=THREE.SRGBColorSpace;
@@ -135,9 +231,16 @@ function plumageColorAtlas(config) {
   return texture;
 }
 
-function plumageAtlasUV(x,y,rear=false) {
-  const column=(rear?528:16)+479*clamp((x+.46)/.92);
-  const row=y>=2.08?480+479*clamp((y-2.08)/.68):16+464*clamp((y-.38)/1.70);
+function plumageAtlasUV(profile,x,y,z,rear=false) {
+  const [,rx,rz,cz=0]=profileAt(profile,y),depth=(z-cz)/rz;
+  // Invert the existing squared front contour before taking a surface angle.
+  // atan2 remains defined on raised shell/tuft points beyond the nominal oval;
+  // a planar projection or clamped asin would stretch/compress them at the side.
+  const face=Math.min(clamp((y-2.59)/.10),clamp((2.96-y)/.08));
+  const cosine=depth>0?Math.pow(depth,1/(1-.50*face)):depth;
+  const angle=Math.atan2(x/rx,Math.abs(cosine));
+  const column=(rear?528:16)+479*clamp(.5+angle/Math.PI);
+  const row=featherAtlasRow(y);
   return [(column+.5)/1024,(row+.5)/1024];
 }
 
@@ -592,6 +695,53 @@ function eyelid(side,upper=true,seam=false,hinge=null) {
   return result;
 }
 
+/** Front-face depth from the existing silhouette; no face vertices are changed. */
+function faceSurfaceZ(profile,x,y) {
+  const [,rx,rz,cz=0]=profileAt(profile,y),lateral=clamp(Math.abs(x)/rx);
+  return cz+rz*frontContour(y,Math.sqrt(Math.max(0,1-lateral*lateral)));
+}
+
+/** Retain the exact closing-contact strip; recess the lower half into the cheek. */
+function integratedLowerLid(side,profile) {
+  const result=eyelid(side,false),vertices=result.getAttribute('position');
+  const contactNormals=result.getAttribute('normal').array.slice(0,50*3);
+  for(let row=2;row<=4;row++)for(let column=0;column<=24;column++) {
+    const index=row*25+column,x=vertices.getX(index),y=vertices.getY(index);
+    const cheek=faceSurfaceZ(profile,side*.180+x,2.761+y)-.258;
+    // The original halfway row meets the cheek; lower rows remain buried.
+    // Keep X/Y and both contact rows exact, including their original normals.
+    vertices.setZ(index,Math.min(vertices.getZ(index),cheek-(.0015+.001*(row-2))));
+  }
+  result.computeVertexNormals();
+  result.getAttribute('normal').array.set(contactNormals);
+  return result;
+}
+
+/** Broader vertical section, less forward relief and buried ends on the same path. */
+function integratedBrow(side,profile) {
+  const points=[[side*.065,2.818,.254],[side*.147,2.840,.259],[side*.240,2.837,.228],[side*.331,2.816,.140]];
+  const result=sweepVolume(points,[.020,.027,.025,.002],[.014,.020,.016,.001],16,8,true);
+  const vertices=result.getAttribute('position');
+  const curve=new THREE.CatmullRomCurve3(points.map(point=>new THREE.Vector3(...point)),false,'centripetal');
+  const ease=value=>{const t=clamp(value);return t*t*(3-2*t);};
+  for(let row=0;row<=16;row++) {
+    const t=row/16,center=curve.getPoint(t),attachment=Math.min(ease(t/.18),ease((1-t)/.22));
+    let underside=Infinity;
+    for(let column=0;column<8;column++)underside=Math.min(underside,vertices.getY(row*8+column));
+    for(let column=0;column<8;column++) {
+      const index=row*8+column,x=vertices.getX(index),oldY=vertices.getY(index),oldZ=vertices.getZ(index);
+      // Flatten the lower three section vertices while retaining the full span.
+      const localY=oldY<center.y+.35*(underside-center.y)?underside-center.y:oldY-center.y;
+      const y=center.y+1.225*localY,skin=faceSurfaceZ(profile,x,y);
+      const relieved=oldZ>skin?skin+.65*(oldZ-skin):oldZ;
+      const buried=Math.min(relieved,skin-.003);
+      vertices.setXYZ(index,x,y,buried+(relieved-buried)*attachment);
+    }
+  }
+  result.computeVertexNormals();
+  return result;
+}
+
 function profileAt(profile, y) {
   const upper=profile.findIndex(row=>row[0]>=y);
   if(upper<0)return profile.at(-1);
@@ -651,11 +801,11 @@ export function createAtlas(config) {
     }
     const coordinates=new Float32Array((vertices.count+shared.length)*2);
     for(let i=0;i<vertices.count;i++) {
-      coordinates.set(plumageAtlasUV(vertices.getX(i),vertices.getY(i),usage[i]===2),i*2);
+      coordinates.set(plumageAtlasUV(silhouette,vertices.getX(i),vertices.getY(i),vertices.getZ(i),usage[i]===2),i*2);
     }
     for(let i=0;i<shared.length;i++) {
       const source=shared[i];
-      coordinates.set(plumageAtlasUV(vertices.getX(source),vertices.getY(source),true),(vertices.count+i)*2);
+      coordinates.set(plumageAtlasUV(silhouette,vertices.getX(source),vertices.getY(source),vertices.getZ(source),true),(vertices.count+i)*2);
     }
     const remapped=Array.from(index.array);
     for(let triangle=0;triangle<front.length;triangle++)if(!front[triangle])for(let corner=0;corner<3;corner++) {
@@ -692,7 +842,7 @@ export function createAtlas(config) {
         uv.push(chartUV.getX(i),chartUV.getY(i));
       } else if(hasBodyGrain) {
         colors.push(tone,tone,tone);
-        uv.push(...plumageAtlasUV(point.x,point.y,tuftRear));
+        uv.push(...plumageAtlasUV(silhouette,point.x,point.y,point.z,tuftRear));
       } else {
         colors.push(color.r*tone,color.g*tone,color.b*tone);
         // Other parts retain their vertex palette through a padded white region.
@@ -755,10 +905,8 @@ export function createAtlas(config) {
     ellipsoid(`eye_highlight_${suffix}`,'eyeWhite','Head',[side*.159,2.769,.296],[.0065,.008,.0015],[0,0,0],12);
     append(`soft_upper_lid_${suffix}`,eyelid(side,true,false,lidHinge),'umber',`UpperLid${suffix}`,eye);
     append(`upper_lid_seam_${suffix}`,eyelid(side,true,true,lidHinge),'umber',`UpperLid${suffix}`,eye);
-    append(`soft_lower_lid_${suffix}`,eyelid(side,false),'umber','Head',eye);
-    // Lift the inner brow enough to read as poised attention, not an eye mask.
-    append(`neutral_brow_sweep_${suffix}`,sweepVolume([[side*.065,2.818,.254],[side*.147,2.840,.259],[side*.240,2.837,.228],[side*.331,2.816,.140]],
-      [.020,.027,.025,.002],[.014,.020,.016,.001],16,8,true),'umber',`Brow${suffix}`);
+    append(`soft_lower_lid_${suffix}`,integratedLowerLid(side,silhouette),'umber','Head',eye);
+    append(`neutral_brow_sweep_${suffix}`,integratedBrow(side,silhouette),'umber',`Brow${suffix}`);
     for(let j=0;j<2;j++) append(`temple_tuft_${suffix}_${j}`,plumageTuft(silhouette,2.817-j*.073,side*(1.08+j*.25),.16,.040,side*.18),
       'umber','Head');
     // A compact combed crown keeps its broad roots, with a shallow rear lift
@@ -807,7 +955,7 @@ export function createAtlas(config) {
   merged.setAttribute('uv',new THREE.Float32BufferAttribute(uv,2));
   merged.setAttribute('skinIndex',new THREE.Uint16BufferAttribute(joints,4));
   merged.setAttribute('skinWeight',new THREE.Float32BufferAttribute(weights,4));
-  const material = new THREE.MeshStandardMaterial({vertexColors:true,map:plumageColorAtlas(config),roughness:.86,metalness:0,side:THREE.DoubleSide});
+  const material = new THREE.MeshStandardMaterial({vertexColors:true,map:plumageColorAtlas(config,silhouette),roughness:.86,metalness:0,side:THREE.DoubleSide});
   material.name = 'ATLAS_ROUGH_matte_authored_color';
   const mesh = new THREE.SkinnedMesh(merged,material); mesh.name = 'ATLAS_ROUGH_skinned_mesh';
   // The bounded prototype does not use stale rest-pose bounds for clip culling.
