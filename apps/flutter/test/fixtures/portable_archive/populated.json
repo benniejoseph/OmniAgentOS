@@ -1,0 +1,270 @@
+{
+  "format": "asael-portable-archive",
+  "version": 2,
+  "exportedAt": "2026-10-05T00:00:00.000Z",
+  "provenance": {
+    "sourceOwnerActorIdSha256": "034961b75c2c4bf997475b9465240e6d11985d7941b266970ffacb56fc653619",
+    "sourceTenantIdSha256": "13be5b7e404970f04bfa169417cd69f03b1e7c89363ebdd6e05846983fc8e319",
+    "exporterId": "asael"
+  },
+  "assetEncryption": null,
+  "data": {
+    "knowledge": [
+      {
+        "sourceId": "fixture-knowledge",
+        "title": "Synthetic knowledge 🦉",
+        "content": "Synthetic archive text: 🦉, é, é, \\, \"quoted\",\nline, \u0000, \ud800, \udfff.",
+        "contentSha256": "0c81d696f3a5be4bb5fc65a90c3535cf5096188acc0b534d6a79cb91516e7544",
+        "source": "synthetic",
+        "sourceType": "text",
+        "tags": [
+          "fixture",
+          "unicode"
+        ],
+        "sourceContentSha256": null,
+        "sourceRevisionIdSha256": "278e89b5cdea7e744d184e1644ae3bede414bb434b4f2f60a9d4ae36a5bbb2ea",
+        "updatedAt": "2026-10-05T00:00:00.000Z"
+      }
+    ],
+    "memories": [
+      {
+        "sourceId": "fixture-memory",
+        "title": "Synthetic memory",
+        "content": "Synthetic bounded memory content. This is not account data.",
+        "contentSha256": "330288ac0281e9ff836c8ec6e0b0a190f824f24b656d7719698e19727f83abd5",
+        "type": "decision",
+        "tier": "decision",
+        "tierPolicyVersion": 1,
+        "formationReason": "explicit_user_request",
+        "tags": [
+          "fixture"
+        ],
+        "scope": "user",
+        "source": "synthetic",
+        "importance": 0.000001,
+        "confidence": 1,
+        "claimStatus": "active",
+        "assertedBy": "user",
+        "evidenceRefs": [
+          "fixture:observation"
+        ],
+        "validFrom": null,
+        "validTo": null,
+        "retentionExpiresAt": null,
+        "lastUsedAt": "2026-10-05T00:00:00.000Z",
+        "useCount": 9007199254740991,
+        "promotedFromTier": null,
+        "promotedAt": null,
+        "supersedesId": null,
+        "contradictionOfId": null,
+        "createdAt": "2026-10-05T00:00:00.000Z",
+        "updatedAt": "2026-10-05T00:00:00.000Z"
+      },
+      {
+        "sourceId": "fixture-memory-optional-absent",
+        "title": "Optional fields absent",
+        "content": "Synthetic optional-field case.",
+        "contentSha256": "110066d1e5d8cc92a927b434dfbb4eb5a7c67de6756bbe8110c410186623e133",
+        "type": "fact",
+        "tags": [],
+        "scope": "project",
+        "source": "",
+        "importance": 0,
+        "confidence": 1e-7,
+        "claimStatus": "candidate",
+        "assertedBy": "import",
+        "evidenceRefs": [],
+        "validFrom": null,
+        "validTo": null,
+        "supersedesId": "fixture-memory",
+        "contradictionOfId": null,
+        "createdAt": null,
+        "updatedAt": null
+      }
+    ],
+    "threads": [
+      {
+        "sourceIdSha256": "d033a44fe04c14424be31d765b05f363fddeef939017517f69cf2914980ae87f",
+        "title": "Synthetic thread",
+        "mode": "learn",
+        "turns": [
+          {
+            "index": 0,
+            "role": "user",
+            "content": "Synthetic conversation turn 🦉.",
+            "contentSha256": "44f33341651b13450e7b89d84b41f9a52ee04e42d9e9b48879f6fe242548db22",
+            "createdAt": null
+          },
+          {
+            "index": 1,
+            "role": "assistant",
+            "content": "Synthetic response.",
+            "contentSha256": "51ab7900253bc046ef5c6992df28a45dc19037a91cd986547bad2aa1da8616ea",
+            "createdAt": "2026-10-05T00:00:00.000Z"
+          }
+        ]
+      }
+    ],
+    "today": [
+      {
+        "sourceIdSha256": "9879a8cefa42de63ac1fae0b2f758f4d61f6a60100f7a9870082ddcfdb7df17c",
+        "title": "Synthetic reminder",
+        "kind": "reminder",
+        "priority": "medium",
+        "status": "open",
+        "dueAt": null
+      }
+    ],
+    "projects": [
+      {
+        "sourceIdSha256": "9ccc8bf50bc687b4d30f557f1ee40ab5c5b9d4a3112725e686e54abe58555035",
+        "title": "Synthetic project",
+        "objective": "Verify synthetic interoperability.",
+        "status": "draft",
+        "targetDate": null,
+        "tasks": [
+          {
+            "sourceIdSha256": "a0b3ab797d78c6b43759993022d2c7173270794fcc57189cf851e4838abdb0f5",
+            "title": "Synthetic task",
+            "detail": "",
+            "priority": "low",
+            "agentId": "atlas",
+            "origin": "manual",
+            "dueAt": "2026-10-05T00:00:00.000Z"
+          }
+        ]
+      }
+    ],
+    "connections": [
+      {
+        "provider": "synthetic_provider",
+        "scopes": [
+          "fixture.read"
+        ],
+        "configurationSha256": "a8198524f58e72b56283ab71ebddada22840f108b46ef7165bb3fca9919c5558",
+        "reauthorizationRequired": true
+      }
+    ],
+    "skills": [
+      {
+        "sourceId": "fixture-skill",
+        "name": "Synthetic skill",
+        "description": "Synthetic skill description.",
+        "instructions": "Synthetic instructions used only for archive verification fixtures.",
+        "category": "analysis",
+        "status": "disabled",
+        "toolIds": [
+          "fixture.read"
+        ],
+        "tags": [],
+        "knowledgeTags": []
+      }
+    ],
+    "agents": [
+      {
+        "sourceId": "fixture-agent",
+        "name": "Synthetic Agent",
+        "role": "Synthetic role",
+        "description": "Synthetic Agent description.",
+        "instructions": "Synthetic instructions used only for archive verification fixtures.",
+        "status": "paused",
+        "accent": "violet",
+        "modelPolicy": "auto",
+        "autonomy": "assist",
+        "approvalPolicy": "read_only",
+        "memoryScope": "session",
+        "skillIds": [
+          "fixture-skill"
+        ],
+        "toolIds": []
+      }
+    ],
+    "assets": []
+  },
+  "manifest": {
+    "schemaVersion": 1,
+    "contractId": "asael.portable.archive.v2",
+    "sections": {
+      "knowledge": {
+        "includedCount": 1,
+        "excludedCount": 3,
+        "contentSha256": "f54a735772672881c7a1b3337525ff48fb9d494a5b5ef2e98d6408f496f7ac30",
+        "restoreDisposition": "restore"
+      },
+      "memories": {
+        "includedCount": 2,
+        "excludedCount": null,
+        "contentSha256": "e3c4ab1e713b6f7cb2b8a0d87b193b393d2c663dcdc183e144384341753b8e6f",
+        "restoreDisposition": "restore"
+      },
+      "threads": {
+        "includedCount": 1,
+        "excludedCount": 0,
+        "contentSha256": "62e1b1b9ca5b535b7d1957e9d8f940601d5b51f28b026b8bc0f9891ddef04a82",
+        "restoreDisposition": "restore"
+      },
+      "today": {
+        "includedCount": 1,
+        "excludedCount": 0,
+        "contentSha256": "f8796720a7243691e224e7546e2cc8e7e3870fe7aad02488139e9d731453a40b",
+        "restoreDisposition": "restore"
+      },
+      "projects": {
+        "includedCount": 1,
+        "excludedCount": 0,
+        "contentSha256": "dcb0fc9c316038f5bc38c171c88c27f980644b2b4b4b34ca1e8aef04bfbebfa2",
+        "restoreDisposition": "restore"
+      },
+      "connections": {
+        "includedCount": 1,
+        "excludedCount": 0,
+        "contentSha256": "d2383eacbf6dee4e851e1232d106ef413ae6e8bd27ac656443d3a3532bd594c5",
+        "restoreDisposition": "reauthorization_required"
+      },
+      "skills": {
+        "includedCount": 1,
+        "excludedCount": 0,
+        "contentSha256": "6a41606146b4455a2651f951594e307bbab8afbde7316bccc3d5da37b9b6dc1e",
+        "restoreDisposition": "restore"
+      },
+      "agents": {
+        "includedCount": 1,
+        "excludedCount": 0,
+        "contentSha256": "9ba69e6c506b325ae3e437983cc51edd17149919baa665ba3fbc34ef35ff330a",
+        "restoreDisposition": "restore"
+      },
+      "assets": {
+        "includedCount": 0,
+        "excludedCount": 2,
+        "contentSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "restoreDisposition": "not_included"
+      }
+    },
+    "exclusions": [
+      {
+        "category": "memories",
+        "reason": "bounded_source_window",
+        "count": null
+      },
+      {
+        "category": "assets",
+        "reason": "not_requested",
+        "count": 2
+      },
+      {
+        "category": "secrets",
+        "reason": "always_excluded",
+        "count": null
+      }
+    ],
+    "totals": {
+      "includedCount": 9,
+      "excludedCount": null
+    },
+    "secretsExcluded": true,
+    "connectorCredentialsExcluded": true,
+    "connectorsRequireReauthorization": true,
+    "manifestSha256": "471d432036bf4cc95148735997d19d351747540badea360bd0cd00d9f29fc0b1"
+  },
+  "archiveSha256": "002e7e56e613e31dfcd4f568b49dc54dccdc9ac14e852f0a8cbfe71f8eb2babe"
+}

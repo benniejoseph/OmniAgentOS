@@ -19,6 +19,17 @@ typedef NativeSessionRefresh = Future<void> Function({
 
 const _requestAuthorityKey = 'asaelNativeRequestAuthority';
 
+/// Exact downloaded bytes and a bounded, allowlisted metadata projection.
+/// This does not establish the content's schema or integrity.
+class AuthorizedByteResponse {
+  AuthorizedByteResponse(Uint8List bytes, Map<String, String> headers)
+    : bytes = Uint8List.fromList(bytes).asUnmodifiableView(),
+      headers = Map<String, String>.unmodifiable(headers);
+
+  final Uint8List bytes;
+  final Map<String, String> headers;
+}
+
 /// Runtime authority for one private write, never an authorization grant stored
 /// with an offline draft. The server still authorizes the selected bearer token.
 class NativeRequestAuthority {
@@ -732,6 +743,128 @@ class ApiClient {
       return body;
     } on DioException catch (error) {
       throw await _streamApiException(error);
+    }
+  }
+
+  /// One bounded private JSON download. The deadline includes bootstrap,
+  /// headers and the complete stream; no offline projection receives its bytes.
+  Future<AuthorizedByteResponse> getBytesAuthorized(
+    String path, {
+    required NativeRequestAuthority authority,
+    required CancelToken cancelToken,
+    int maximumBytes = 16 * 1024 * 1024,
+    Duration timeout = const Duration(seconds: 150),
+  }) async {
+    if (maximumBytes <= 0 || maximumBytes > 64 * 1024 * 1024) {
+      throw ArgumentError.value(maximumBytes, 'maximumBytes');
+    }
+    if (timeout <= Duration.zero || timeout > const Duration(minutes: 3)) {
+      throw ArgumentError.value(timeout, 'timeout');
+    }
+    _requireAuthorityTransport(authority);
+    void requireCurrent() {
+      authority.requireCurrent(apiBaseUrl);
+      if (cancelToken.isCancelled) throw cancelToken.cancelError!;
+    }
+
+    var timedOut = false, completed = false;
+    final deadline = Timer(timeout, () {
+      timedOut = true;
+      cancelToken.cancel('The private download exceeded its deadline.');
+    });
+    StreamIterator<Uint8List>? iterator;
+    try {
+      requireCurrent();
+      final response = await _dio.get<ResponseBody>(
+        path,
+        cancelToken: cancelToken,
+        options: Options(
+          responseType: ResponseType.stream,
+          receiveTimeout: timeout,
+          receiveDataWhenStatusError: false,
+          headers: {'Accept': 'application/json', 'Cache-Control': 'no-store'},
+          extra: {_requestAuthorityKey: authority},
+        ),
+      );
+      requireCurrent();
+      final body = response.data;
+      if (body == null) throw const ApiException('The download was empty.');
+      // Subscribe before inspecting metadata so every exit can cancel the body.
+      iterator = StreamIterator(body.stream);
+      if (response.statusCode != 200) {
+        throw ApiException(
+          'The service did not return a complete download.',
+          statusCode: response.statusCode,
+        );
+      }
+      final type = response.headers.value(Headers.contentTypeHeader);
+      if (type == null ||
+          type.split(';').first.trim().toLowerCase() != 'application/json') {
+        throw const ApiException('The download is not a JSON archive.');
+      }
+      final declaredSize = response.headers.value(Headers.contentLengthHeader);
+      if (declaredSize != null &&
+          (!RegExp(r'^[0-9]+$').hasMatch(declaredSize) ||
+              int.tryParse(declaredSize) == null)) {
+        throw const ApiException('The download size is invalid.');
+      }
+      if (declaredSize != null && int.parse(declaredSize) > maximumBytes) {
+        throw const ApiException(
+          'This download exceeds the native size limit. Use workspace settings in the browser.',
+          diagnosticCode: 'download_size_limit',
+        );
+      }
+      final metadata = <String, String>{};
+      for (final name in const [
+        'content-type',
+        'content-disposition',
+        'content-length',
+        'cache-control',
+        'x-asael-archive-sha256',
+      ]) {
+        final value = response.headers.value(name);
+        if (value == null) continue;
+        if (value.length > 1024 || value.contains(RegExp(r'[\r\n\x00]'))) {
+          throw const ApiException('The download metadata is invalid.');
+        }
+        metadata[name] = value;
+      }
+      final bytes = BytesBuilder(copy: false);
+      while (await iterator.moveNext()) {
+        requireCurrent();
+        final chunk = iterator.current;
+        if (bytes.length + chunk.length > maximumBytes) {
+          throw const ApiException(
+            'This download exceeds the native size limit. Use workspace settings in the browser.',
+            diagnosticCode: 'download_size_limit',
+          );
+        }
+        bytes.add(chunk);
+      }
+      requireCurrent();
+      if (bytes.isEmpty) throw const ApiException('The download was empty.');
+      final result = AuthorizedByteResponse(bytes.takeBytes(), metadata);
+      await iterator.cancel();
+      iterator = null;
+      requireCurrent();
+      completed = true;
+      return result;
+    } on DioException catch (error) {
+      if (timedOut) {
+        throw const ApiException(
+          'The archive download took too long. Try again when the connection is available.',
+          diagnosticCode: 'download_deadline',
+        );
+      }
+      // Error bodies are deliberately discarded by receiveDataWhenStatusError;
+      // status and the trusted local authority marker remain distinguishable.
+      throw ApiException.fromDio(error);
+    } finally {
+      deadline.cancel();
+      if (!completed && !cancelToken.isCancelled) {
+        cancelToken.cancel('The private download ended without a result.');
+      }
+      if (iterator != null) await iterator.cancel();
     }
   }
 

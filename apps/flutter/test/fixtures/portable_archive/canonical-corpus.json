@@ -1,0 +1,3287 @@
+{
+  "schemaVersion": 1,
+  "cases": [
+    {
+      "name": "number-0",
+      "inputJson": "0",
+      "canonicalJson": "0",
+      "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+    },
+    {
+      "name": "number-1",
+      "inputJson": "-0",
+      "canonicalJson": "0",
+      "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+    },
+    {
+      "name": "number-2",
+      "inputJson": "1.0",
+      "canonicalJson": "1",
+      "sha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b"
+    },
+    {
+      "name": "number-3",
+      "inputJson": "-1.0",
+      "canonicalJson": "-1",
+      "sha256": "1bad6b8cf97131fceab8543e81f7757195fbb1d36b376ee994ad1cf17699c464"
+    },
+    {
+      "name": "number-4",
+      "inputJson": "0.1",
+      "canonicalJson": "0.1",
+      "sha256": "14be4b45f18e0d8c67b4f719b5144eee88497e413709d11d85b096d8e2346310"
+    },
+    {
+      "name": "number-5",
+      "inputJson": "0.000001",
+      "canonicalJson": "0.000001",
+      "sha256": "159fb29a827ad04b260aa6c8ab6d8637f8f2b38af5c4f3cb49d6a21205e040f8"
+    },
+    {
+      "name": "number-6",
+      "inputJson": "0.0000001",
+      "canonicalJson": "1e-7",
+      "sha256": "5b33e02f2c5103a05d32f6ba9cb058294452bfbf393967f68bb30c1bdcbbab22"
+    },
+    {
+      "name": "number-7",
+      "inputJson": "1e-5",
+      "canonicalJson": "0.00001",
+      "sha256": "661710915adfa7c40b5dbd6b2122dfa65b1accb57a8b7cdee05423ecfe14b0c7"
+    },
+    {
+      "name": "number-8",
+      "inputJson": "1e-6",
+      "canonicalJson": "0.000001",
+      "sha256": "159fb29a827ad04b260aa6c8ab6d8637f8f2b38af5c4f3cb49d6a21205e040f8"
+    },
+    {
+      "name": "number-9",
+      "inputJson": "1e-7",
+      "canonicalJson": "1e-7",
+      "sha256": "5b33e02f2c5103a05d32f6ba9cb058294452bfbf393967f68bb30c1bdcbbab22"
+    },
+    {
+      "name": "number-10",
+      "inputJson": "1e20",
+      "canonicalJson": "100000000000000000000",
+      "sha256": "c344e9487bfbd5c4e03c9fb90d62a5dde5e00b54d55c46e9f4a803aea162b80c"
+    },
+    {
+      "name": "number-11",
+      "inputJson": "1e21",
+      "canonicalJson": "1e+21",
+      "sha256": "241c4643fa70b1dcde1205b71be4e3bebb17e9f880c8e1a33d0ead6c27271d3c"
+    },
+    {
+      "name": "number-12",
+      "inputJson": "1e22",
+      "canonicalJson": "1e+22",
+      "sha256": "814a97daeb45416e24befc0ae9a6414ac2f41f269a9f2f019fc65a0d03725f34"
+    },
+    {
+      "name": "number-13",
+      "inputJson": "-1e21",
+      "canonicalJson": "-1e+21",
+      "sha256": "d1b781c586a6becc3c6bba876b259268cbead2c6085737f4799c2fd0607f55a4"
+    },
+    {
+      "name": "number-14",
+      "inputJson": "1000000000000000100",
+      "canonicalJson": "1000000000000000100",
+      "sha256": "8fa4a0cdb0a98b4d9a79cc496f69b1d9ea172390094239961266446383d2988b"
+    },
+    {
+      "name": "number-15",
+      "inputJson": "9007199254740991",
+      "canonicalJson": "9007199254740991",
+      "sha256": "f40b423c2dd95ff2b2f027e22208f438cf7242862e5e746860e697308c9add26"
+    },
+    {
+      "name": "number-16",
+      "inputJson": "9007199254740993",
+      "canonicalJson": "9007199254740992",
+      "sha256": "c681da39d7273a6a24c15c9cac3a75526ff2ecf8ba4ee60346a0c70c8163bdb2"
+    },
+    {
+      "name": "number-17",
+      "inputJson": "333333333.33333329",
+      "canonicalJson": "333333333.3333333",
+      "sha256": "6bd9be1c141028789cc35db62f1b43e80d5d4ee24d6d542e775deb16799ff4c7"
+    },
+    {
+      "name": "number-18",
+      "inputJson": "0.84551240822557006",
+      "canonicalJson": "0.8455124082255701",
+      "sha256": "91e0086faf38ba1c9d77138cf863b91ad54e4aaa741ddfc74e3a2188edb65f66"
+    },
+    {
+      "name": "number-19",
+      "inputJson": "2.9802322387695312e-8",
+      "canonicalJson": "2.9802322387695312e-8",
+      "sha256": "0e79d0d12b1bf46274cb0f3e13e3b07db90b91ce2a3e4512ff830b1ca27ad895"
+    },
+    {
+      "name": "number-20",
+      "inputJson": "1.2345678901234567",
+      "canonicalJson": "1.2345678901234567",
+      "sha256": "05c9e796f4a020a2e0cb1008d3a7432483f1b77b0dea768399adcee66d90ac8e"
+    },
+    {
+      "name": "number-21",
+      "inputJson": "5e-324",
+      "canonicalJson": "5e-324",
+      "sha256": "c46e7ca1be4c8734f373a56530787288fa2058d73d07855e9247e949f811a42a"
+    },
+    {
+      "name": "number-22",
+      "inputJson": "-5e-324",
+      "canonicalJson": "-5e-324",
+      "sha256": "046f4049d09944fcb2efbf2ddb0ea8f05e0204591d6d02c9106efc88190fa7f9"
+    },
+    {
+      "name": "number-23",
+      "inputJson": "2.2250738585072014e-308",
+      "canonicalJson": "2.2250738585072014e-308",
+      "sha256": "8d51a73768cb59d15302f6b0a4c7147a04b0cce9df743b5bf50e31ab87b2d807"
+    },
+    {
+      "name": "number-24",
+      "inputJson": "2.225073858507201e-308",
+      "canonicalJson": "2.225073858507201e-308",
+      "sha256": "e702bc3dff32cd2ddd22840752621268554b94aecfdb6f6234a0138bb59447d4"
+    },
+    {
+      "name": "number-25",
+      "inputJson": "1.7976931348623157e308",
+      "canonicalJson": "1.7976931348623157e+308",
+      "sha256": "c2784e1abd6317452708f3fbf9641c16b959561bc621a1d408c23a20aa2cb585"
+    },
+    {
+      "name": "number-26",
+      "inputJson": "1.0000000000000002",
+      "canonicalJson": "1.0000000000000002",
+      "sha256": "19119a03721db7fc2a2f06afad179bdd384cc44b54e1d4f4f57e374c5b44fbd0"
+    },
+    {
+      "name": "number-27",
+      "inputJson": "0.9999999999999999",
+      "canonicalJson": "0.9999999999999999",
+      "sha256": "12d5191c859deac9fee6fecae738d2458bd085951ec1486febd820c1f618f172"
+    },
+    {
+      "name": "number-28",
+      "inputJson": "9.999999999999999e-7",
+      "canonicalJson": "0.000001",
+      "sha256": "159fb29a827ad04b260aa6c8ab6d8637f8f2b38af5c4f3cb49d6a21205e040f8"
+    },
+    {
+      "name": "number-29",
+      "inputJson": "9.999999999999999e20",
+      "canonicalJson": "999999999999999900000",
+      "sha256": "914b4f8b4bbe2f6e7c36ad7791fc842a7516d149e694b3a71b78cee465ff6d7a"
+    },
+    {
+      "name": "null-and-booleans",
+      "inputJson": "[null,true,false]",
+      "canonicalJson": "[null,true,false]",
+      "sha256": "37257214f22b92121c5ff4d7e29ed2d31b3f1129ee698e96e581ec05cb2e3cf7"
+    },
+    {
+      "name": "optional-null-and-order",
+      "inputJson": "{\"z\":null,\"a\":{\"last\":false,\"first\":1.0},\"empty\":{},\"list\":[null,0,-0]}",
+      "canonicalJson": "{\"a\":{\"first\":1,\"last\":false},\"empty\":{},\"list\":[null,0,0],\"z\":null}",
+      "sha256": "81015217998828a7179b8adb1ab50a08f564da07ca05db9ba3b564c8ab6e5d8e"
+    },
+    {
+      "name": "utf16-key-order",
+      "inputJson": "{\"\":1,\"🦉\":2,\"a\":3,\"\ud800\":4,\"\udfff\":5,\"𐀀\":6,\"0\":7,\"10\":8,\"2\":9}",
+      "canonicalJson": "{\"0\":7,\"10\":8,\"2\":9,\"a\":3,\"\\ud800\":4,\"𐀀\":6,\"🦉\":2,\"\\udfff\":5,\"\":1}",
+      "sha256": "45be027221548393c28c77b36cc969bbd5c1b297dd61819c5fbd77db08633ab9"
+    },
+    {
+      "name": "escaping",
+      "inputJson": "\"\\\"\\\\/\\b\\f\\n\\r\\t\\u0000\\u001f  🦉𐏿\\ud800A\\udfff\"",
+      "canonicalJson": "\"\\\"\\\\/\\b\\f\\n\\r\\t\\u0000\\u001f  🦉𐏿\\ud800A\\udfff\"",
+      "sha256": "3e8a89f65868f75e70362371b4f7813a91f145f3202804f6bc38e8de328dbf53"
+    },
+    {
+      "name": "unicode-not-normalized",
+      "inputJson": "[\"é\",\"é\",\"Å\",\"Å\"]",
+      "canonicalJson": "[\"é\",\"é\",\"Å\",\"Å\"]",
+      "sha256": "02ddbadbf50441aa0b85b35951cb9cea7be25d31d99d2255bfd508e309700acf"
+    },
+    {
+      "name": "binary64-0",
+      "inputJson": "-1.8650518308093398e+232",
+      "canonicalJson": "-1.8650518308093398e+232",
+      "sha256": "69bfc676b9bd51474b47946715e3677dd0156bb4b9b7772d95329703e1788cc7"
+    },
+    {
+      "name": "binary64-1",
+      "inputJson": "4.591694605873685e+257",
+      "canonicalJson": "4.591694605873685e+257",
+      "sha256": "b7557a2a9149a4f0836c27e80b1ac497b684645feafea480a1ba5f340eddefc6"
+    },
+    {
+      "name": "binary64-2",
+      "inputJson": "4.6106866700014776e+210",
+      "canonicalJson": "4.6106866700014776e+210",
+      "sha256": "77a27ab9d805f8155521f94168c32ea80108be69aea423c85d6fb01922d610f5"
+    },
+    {
+      "name": "binary64-3",
+      "inputJson": "-506263735.73939383",
+      "canonicalJson": "-506263735.73939383",
+      "sha256": "f558df6e67cccd31c62f95eed58ed6722350bb4c01719938dd286b7690dcc782"
+    },
+    {
+      "name": "binary64-4",
+      "inputJson": "-3.033959624104205e-179",
+      "canonicalJson": "-3.033959624104205e-179",
+      "sha256": "8332727258342d414603f3b66d1f0c486f05ec10e105d3a2316a41245cdae958"
+    },
+    {
+      "name": "binary64-5",
+      "inputJson": "-9.653632656608813e-266",
+      "canonicalJson": "-9.653632656608813e-266",
+      "sha256": "ad7558290214aceaf810e4f18451eca3e9a6111b4546ddb6059a239e61bb92ac"
+    },
+    {
+      "name": "binary64-6",
+      "inputJson": "8.21058912637963e+79",
+      "canonicalJson": "8.21058912637963e+79",
+      "sha256": "eb831ff0e592451e5096546cbc41a3379da3b29eedec1ece5deac1002d423e45"
+    },
+    {
+      "name": "binary64-7",
+      "inputJson": "-7.289037890005016e-76",
+      "canonicalJson": "-7.289037890005016e-76",
+      "sha256": "4ce7e8bb7c9d371976cdf016caa3e0ea30ac356bc6099d85472ad46aed8795e9"
+    },
+    {
+      "name": "binary64-8",
+      "inputJson": "1.249273850582902e-275",
+      "canonicalJson": "1.249273850582902e-275",
+      "sha256": "5f74fb19c66ef8cad3ec57cc825fe4622254152d849098fc29348032f8f153e8"
+    },
+    {
+      "name": "binary64-9",
+      "inputJson": "5.0331872446981675e+121",
+      "canonicalJson": "5.0331872446981675e+121",
+      "sha256": "f6cc7a37a048fb468cec9329e026f0244d326f9f1c255b5663cea72fa210c1f8"
+    },
+    {
+      "name": "binary64-10",
+      "inputJson": "-2.981552338954379e+63",
+      "canonicalJson": "-2.981552338954379e+63",
+      "sha256": "afad7cfa897c3db5a12c4bdbeb6178c9baa150570dc18e4943509ce8d5faa253"
+    },
+    {
+      "name": "binary64-11",
+      "inputJson": "-4.474789182182145e+255",
+      "canonicalJson": "-4.474789182182145e+255",
+      "sha256": "b04ceaa4384ebf00100d4426ebb95848ee13657ceadb1a5b651dc9f8a1e611f6"
+    },
+    {
+      "name": "binary64-12",
+      "inputJson": "-3.139504432940214e-149",
+      "canonicalJson": "-3.139504432940214e-149",
+      "sha256": "faf9401459ab584ed6d9e3757d2a981ba74a8c4fbd53b327c727dd46e209a8cd"
+    },
+    {
+      "name": "binary64-13",
+      "inputJson": "-9.544375081788872e+272",
+      "canonicalJson": "-9.544375081788872e+272",
+      "sha256": "f97e9f4c43a35a694bb1564767242ae676a491dc544c6214529e1fd6d4665f08"
+    },
+    {
+      "name": "binary64-14",
+      "inputJson": "-2.945615078546601e-241",
+      "canonicalJson": "-2.945615078546601e-241",
+      "sha256": "e716a3686b809950a733bbb167f288d8291587cc64172542eda65565b223745c"
+    },
+    {
+      "name": "binary64-15",
+      "inputJson": "3.871236009407772e-115",
+      "canonicalJson": "3.871236009407772e-115",
+      "sha256": "399fe0aec9be2300ec920d58f606962d2a86cdcf567611cc46a82ae1cbfdba36"
+    },
+    {
+      "name": "binary64-16",
+      "inputJson": "562120248461014700000",
+      "canonicalJson": "562120248461014700000",
+      "sha256": "fd4f37265af0860eab9f34119f0d31f1345a0f4d06cf53110addcea9fc5f404e"
+    },
+    {
+      "name": "binary64-17",
+      "inputJson": "-6.051204453260602e+158",
+      "canonicalJson": "-6.051204453260602e+158",
+      "sha256": "11a7e1faed3ab568affec141278f49c91dd0e8a3e4ea753c7b23d7f505e6ea77"
+    },
+    {
+      "name": "binary64-18",
+      "inputJson": "-1.8556487379091238e-140",
+      "canonicalJson": "-1.8556487379091238e-140",
+      "sha256": "469d088715b8771c90672f6d96b4a23250f9d90cba43cfe666327538b5ad01ba"
+    },
+    {
+      "name": "binary64-19",
+      "inputJson": "-1.091273707918656e-30",
+      "canonicalJson": "-1.091273707918656e-30",
+      "sha256": "5357c62e802adc1f3832aaa8a84278b28a1b7d0dbfb0178ade83188771224228"
+    },
+    {
+      "name": "binary64-20",
+      "inputJson": "1.494868083048133e+242",
+      "canonicalJson": "1.494868083048133e+242",
+      "sha256": "787c21179e913ad8fd88de1bd2ab9784519ad92fc35a1f846cc722cf5931a0be"
+    },
+    {
+      "name": "binary64-21",
+      "inputJson": "6.455374499689145e-102",
+      "canonicalJson": "6.455374499689145e-102",
+      "sha256": "503600549d71662d635e9781d89fcd49205013eedc48bd0f7198759e67029221"
+    },
+    {
+      "name": "binary64-22",
+      "inputJson": "-1.2365453238854644e-18",
+      "canonicalJson": "-1.2365453238854644e-18",
+      "sha256": "8f9ebe468190fea906251f5742981d8afd04452f2eed835da077439af0452ad4"
+    },
+    {
+      "name": "binary64-23",
+      "inputJson": "7.950222457407468e+295",
+      "canonicalJson": "7.950222457407468e+295",
+      "sha256": "82b66f7122a9f8c8f516372a8c77115ac4a7bb898f185edce3eab9550947ec67"
+    },
+    {
+      "name": "binary64-24",
+      "inputJson": "7.955904496697431e+152",
+      "canonicalJson": "7.955904496697431e+152",
+      "sha256": "69d5b29cc029b399b363cc3e4e95d122670a5fe65bfc991d56e8c2cce830740f"
+    },
+    {
+      "name": "binary64-25",
+      "inputJson": "5.7750644660055525e-83",
+      "canonicalJson": "5.7750644660055525e-83",
+      "sha256": "7b64c7e649a1a9bf61038632ca5dfe50b36f7420e8d10e84622e6955e0bdc370"
+    },
+    {
+      "name": "binary64-26",
+      "inputJson": "-7.176628221961374e-101",
+      "canonicalJson": "-7.176628221961374e-101",
+      "sha256": "a5752e73292e192a0ca873e40b2c63e137cb269741a0d6b3314dd0ff6aa9187c"
+    },
+    {
+      "name": "binary64-27",
+      "inputJson": "1.1959726406571185e-89",
+      "canonicalJson": "1.1959726406571185e-89",
+      "sha256": "724c368bbfa852ee7922e103b8ad6a5d09817d794a7521b980521474d0d903cd"
+    },
+    {
+      "name": "binary64-28",
+      "inputJson": "7.510923128167693e-75",
+      "canonicalJson": "7.510923128167693e-75",
+      "sha256": "15b0280f45e27c0284d1dcfa56cd33a4de170d9d32bdc2fdfa2ddbc3c99e0eac"
+    },
+    {
+      "name": "binary64-29",
+      "inputJson": "-2.0278435255439768e+187",
+      "canonicalJson": "-2.0278435255439768e+187",
+      "sha256": "dc33eefa4c3c7122efd1a1aa20d01f3016188faea699f6965bd0e64a1c055d5a"
+    },
+    {
+      "name": "binary64-30",
+      "inputJson": "-1.1887315189670319e+235",
+      "canonicalJson": "-1.1887315189670319e+235",
+      "sha256": "cc3eaad2d5f59ba17e7e7b51fd497c366ad3e57d0837f8bdb8d9144173eead6b"
+    },
+    {
+      "name": "binary64-31",
+      "inputJson": "-1.74443031969046e+126",
+      "canonicalJson": "-1.74443031969046e+126",
+      "sha256": "8203ae809a8f0ddaf9e13373e0f0d1d32a8d14579d4fd17810643e3e3122b882"
+    },
+    {
+      "name": "binary64-32",
+      "inputJson": "-7.267539901113507e+177",
+      "canonicalJson": "-7.267539901113507e+177",
+      "sha256": "c5373e89bb610901bd05d0123485c11d86a4840de3059c34d2e7b489361fe57a"
+    },
+    {
+      "name": "binary64-33",
+      "inputJson": "498958676481708850000",
+      "canonicalJson": "498958676481708850000",
+      "sha256": "fb35ed75759bb6453aee8b984fc90bafcd009c3dc615dc94df1c11fca72f5bf5"
+    },
+    {
+      "name": "binary64-34",
+      "inputJson": "-9.653116790035789e-60",
+      "canonicalJson": "-9.653116790035789e-60",
+      "sha256": "4c471ebd0f389ca16dfa9d85ca7b4fdf54ba1940d7214810dbe2c4d12b0cef16"
+    },
+    {
+      "name": "binary64-35",
+      "inputJson": "-6.124792259232834e+206",
+      "canonicalJson": "-6.124792259232834e+206",
+      "sha256": "92a18d567b1266b64eff88347cb561f0bb46c035dcf41beca51de056628a6c1c"
+    },
+    {
+      "name": "binary64-36",
+      "inputJson": "-1.8594431796856159e+282",
+      "canonicalJson": "-1.8594431796856159e+282",
+      "sha256": "bfd00fcfd25a16ab1b1703a204fec9d7d3b1143133981c09ab92c29acb829fdc"
+    },
+    {
+      "name": "binary64-37",
+      "inputJson": "-7.599738649645222e-250",
+      "canonicalJson": "-7.599738649645222e-250",
+      "sha256": "ec0596f6291ac3f449a36f7cd8224fbe98b58816353d7a97a330d2af30349600"
+    },
+    {
+      "name": "binary64-38",
+      "inputJson": "3.1933477151724394e+21",
+      "canonicalJson": "3.1933477151724394e+21",
+      "sha256": "7a1e861e548a09787738d5d63295d2717687e94d0435714433a65bec5feba141"
+    },
+    {
+      "name": "binary64-39",
+      "inputJson": "4.005571024026005e-149",
+      "canonicalJson": "4.005571024026005e-149",
+      "sha256": "0c9ec1c3f0fef8943c51259daaeaf6ff86dbe0ca98090e8773c1659e63cab61d"
+    },
+    {
+      "name": "binary64-40",
+      "inputJson": "1.8041644563762603e+165",
+      "canonicalJson": "1.8041644563762603e+165",
+      "sha256": "abe18fe742b2adfb421004aca5d5519ad90e0c0019597e92ae5c5c334326b40c"
+    },
+    {
+      "name": "binary64-41",
+      "inputJson": "4.390569067527047e-156",
+      "canonicalJson": "4.390569067527047e-156",
+      "sha256": "066d3eaee613e83c43c18c09c7b0c3878aa40b249384425f0a65e83f63c26fc4"
+    },
+    {
+      "name": "binary64-42",
+      "inputJson": "-3.7501876649519124e+248",
+      "canonicalJson": "-3.7501876649519124e+248",
+      "sha256": "1b14a479ff227dc87e6a5fea34d9f50a6ef6fe6a41901f47a6ebcd25bff8ba2e"
+    },
+    {
+      "name": "binary64-43",
+      "inputJson": "3.104723330922663e-9",
+      "canonicalJson": "3.104723330922663e-9",
+      "sha256": "35d719fc7217ec12086f2a8dbd1d58d0e9d739dcb3dd02f48281349a76e55a9a"
+    },
+    {
+      "name": "binary64-44",
+      "inputJson": "1.334266461357769e+33",
+      "canonicalJson": "1.334266461357769e+33",
+      "sha256": "2a64bacb7ce6ba8d8fef3ec15de2d18b1cd2a51561c97f1ea15b24e753a16c1f"
+    },
+    {
+      "name": "binary64-45",
+      "inputJson": "-1.5561443970377856e-43",
+      "canonicalJson": "-1.5561443970377856e-43",
+      "sha256": "be79141645bf943348f4792052d515a2c876ec060754470bd93683345e92073e"
+    },
+    {
+      "name": "binary64-46",
+      "inputJson": "-2.610433854702461e-25",
+      "canonicalJson": "-2.610433854702461e-25",
+      "sha256": "ee0aacbb20eb258c0a95a113c5b312ac4fe62f0b056b6baf99dd8884563de5d3"
+    },
+    {
+      "name": "binary64-47",
+      "inputJson": "9.53644257401255e+70",
+      "canonicalJson": "9.53644257401255e+70",
+      "sha256": "2840179830baf5c01cb789d7f3cec8e6a1e7b51a27aaa0dfc76d9cbfb37caaee"
+    },
+    {
+      "name": "binary64-48",
+      "inputJson": "-2.7001823621106205e-198",
+      "canonicalJson": "-2.7001823621106205e-198",
+      "sha256": "7e2714d5c4d0c6260646d98d184d4ba9ba49f68f9eac032877b85b423f4885bd"
+    },
+    {
+      "name": "binary64-49",
+      "inputJson": "-6.147446725667002e+272",
+      "canonicalJson": "-6.147446725667002e+272",
+      "sha256": "4fc5f67ae07aefd4ed488d80da1c516b5a59977c27f152c53dbf1f91596cde1f"
+    },
+    {
+      "name": "binary64-50",
+      "inputJson": "7.103114454493701e-231",
+      "canonicalJson": "7.103114454493701e-231",
+      "sha256": "89f7d4e02469c9d33e9fe77b14cd7363fd144ce02efd544c49bb2a318ef98f67"
+    },
+    {
+      "name": "binary64-51",
+      "inputJson": "5.161076017091279e+131",
+      "canonicalJson": "5.161076017091279e+131",
+      "sha256": "abfd461711a9c8d0068de1078909e323f3bebfa2f9f9a657befd2f41714c0cdb"
+    },
+    {
+      "name": "binary64-52",
+      "inputJson": "1.927679823858633e+159",
+      "canonicalJson": "1.927679823858633e+159",
+      "sha256": "e3ddd3fb698c4eb16e6d52eed89fa07809cd82970456c9bd09156186123d1baf"
+    },
+    {
+      "name": "binary64-53",
+      "inputJson": "-5.362243211123858e-118",
+      "canonicalJson": "-5.362243211123858e-118",
+      "sha256": "284bb2a91ed0381f1a11b04f369aab8aa969d80af10a995533537a4ae131fd0a"
+    },
+    {
+      "name": "binary64-54",
+      "inputJson": "-1.6588060690306966e+275",
+      "canonicalJson": "-1.6588060690306966e+275",
+      "sha256": "ef2f91b6f4a705e1627abf0460ec94d8e2bc53fda08b543782c17f11375aa033"
+    },
+    {
+      "name": "binary64-55",
+      "inputJson": "1.0248141751465532e+275",
+      "canonicalJson": "1.0248141751465532e+275",
+      "sha256": "30419da39a3a6fdef9cc3e7602868809e45b6d5a7e6661bd0449e34fa50394a0"
+    },
+    {
+      "name": "binary64-56",
+      "inputJson": "2.8484378750425624e+69",
+      "canonicalJson": "2.8484378750425624e+69",
+      "sha256": "71e66ccba69ed7a712c00cdf7334acae4b7bd82925dddfe927fb6d7b050432b0"
+    },
+    {
+      "name": "binary64-57",
+      "inputJson": "9.31732346335148e+79",
+      "canonicalJson": "9.31732346335148e+79",
+      "sha256": "d87a489e4440713ca99e8542d94a35c8e2ef9d3dcc1d92f7e24bd7175ac97301"
+    },
+    {
+      "name": "binary64-58",
+      "inputJson": "6.925970396963433e+80",
+      "canonicalJson": "6.925970396963433e+80",
+      "sha256": "b0f7867703551e1fdcb1ad02198ad53926e73cdf87eb2ea46f5bc9cac6793091"
+    },
+    {
+      "name": "binary64-59",
+      "inputJson": "-6.991716930453773e+157",
+      "canonicalJson": "-6.991716930453773e+157",
+      "sha256": "2488d24864b4df4d7be5728ed9825fbc3be15b601335240b0955437178c4a4d0"
+    },
+    {
+      "name": "binary64-60",
+      "inputJson": "5.556175757261024e-48",
+      "canonicalJson": "5.556175757261024e-48",
+      "sha256": "da5802b68223b4a1e6b966c6a0d7496820dd8fc6eec43bb0955e352a492925be"
+    },
+    {
+      "name": "binary64-61",
+      "inputJson": "1.3896685558390223e+276",
+      "canonicalJson": "1.3896685558390223e+276",
+      "sha256": "083c493d419ca0b2fa85ff8716f564fbaa46cf0cfa40b869375118e7b2a34f90"
+    },
+    {
+      "name": "binary64-62",
+      "inputJson": "1.810448596531084e+116",
+      "canonicalJson": "1.810448596531084e+116",
+      "sha256": "42990c95016268245660c8a2df67bbdc563845f850aa6aa0674a90b60bdffde3"
+    },
+    {
+      "name": "binary64-63",
+      "inputJson": "-0.000002819259957531776",
+      "canonicalJson": "-0.000002819259957531776",
+      "sha256": "42ce9ac6bc4b3ef42ebfd1041e119ae4da92ceeffd58ef29f5222bd568130ee2"
+    },
+    {
+      "name": "binary64-64",
+      "inputJson": "-1.4599235908806964e-136",
+      "canonicalJson": "-1.4599235908806964e-136",
+      "sha256": "437eeb67daff1896a22d43e00c9a806c29522c2cfe11a9d1c4a73cbd716743ef"
+    },
+    {
+      "name": "binary64-65",
+      "inputJson": "1.5747871898137643e+43",
+      "canonicalJson": "1.5747871898137643e+43",
+      "sha256": "2c1b1c7692c3fb88d57501055360f73d7f093f66cf3cbceef8b7c3fe055ebaff"
+    },
+    {
+      "name": "binary64-66",
+      "inputJson": "-1.4516998308000921e+97",
+      "canonicalJson": "-1.4516998308000921e+97",
+      "sha256": "5acdf4fe7ddb6a4e5cdf4c96b3dd1553e0953c1eeac32fc5b3912f11c4312b84"
+    },
+    {
+      "name": "binary64-67",
+      "inputJson": "1.5323978331691432e+188",
+      "canonicalJson": "1.5323978331691432e+188",
+      "sha256": "52fa75cbbba809a1b405016382144fe558b9977e46da73f29e11083cf908e1b8"
+    },
+    {
+      "name": "binary64-68",
+      "inputJson": "-7.039412263004976e-282",
+      "canonicalJson": "-7.039412263004976e-282",
+      "sha256": "3f938e5e4859448a5dfa40bf71edd1d1da381edd94b71b54455d2d74f0af037f"
+    },
+    {
+      "name": "binary64-69",
+      "inputJson": "4.2387253871305634e+105",
+      "canonicalJson": "4.2387253871305634e+105",
+      "sha256": "72a9e93c23828d5ba92cd72dd629118e21308e1f1acf7cfd3c841431b3f5a661"
+    },
+    {
+      "name": "binary64-70",
+      "inputJson": "3.5735753701523627e-56",
+      "canonicalJson": "3.5735753701523627e-56",
+      "sha256": "e4a306d279097cd9c0a8ff4a003b90a2028626fd9a8881e4b85f1e4059580c32"
+    },
+    {
+      "name": "binary64-71",
+      "inputJson": "3.216578405270108e-23",
+      "canonicalJson": "3.216578405270108e-23",
+      "sha256": "d188bade5c576dc0bc64502c0bd591375aee700dea95885ad904bf6017ae9d22"
+    },
+    {
+      "name": "binary64-72",
+      "inputJson": "-7.348779669237556e-151",
+      "canonicalJson": "-7.348779669237556e-151",
+      "sha256": "23e4e5ac4cf6dfac45cae999510386e9ce7b9f3f243cb8f47cb17eb7de49c21f"
+    },
+    {
+      "name": "binary64-73",
+      "inputJson": "-1.8967219075260744e-264",
+      "canonicalJson": "-1.8967219075260744e-264",
+      "sha256": "ce0575bb104b3fc649caa94c74555b8f50fc5237e6c3499e64ca8f5f00000459"
+    },
+    {
+      "name": "binary64-74",
+      "inputJson": "9.968842189834468e+76",
+      "canonicalJson": "9.968842189834468e+76",
+      "sha256": "3b5d2433664491c8f260aec7066aa418fb360784f5af10ac5d50ac1f52ad5645"
+    },
+    {
+      "name": "binary64-75",
+      "inputJson": "2.82929955343163e-286",
+      "canonicalJson": "2.82929955343163e-286",
+      "sha256": "1e1d6ef87cf6c3e7fc56c2dd2bd2b753580dd007ef9ba94e470e8b8185c168eb"
+    },
+    {
+      "name": "binary64-76",
+      "inputJson": "-25690139614.850765",
+      "canonicalJson": "-25690139614.850765",
+      "sha256": "161f4a34c7bf5fc6f1fd082dbe90ca09766c2486bf6794f81f2aec89169e42bc"
+    },
+    {
+      "name": "binary64-77",
+      "inputJson": "-5.049420091523717e+103",
+      "canonicalJson": "-5.049420091523717e+103",
+      "sha256": "56afbbeb114c827a27536e30c0074d36ee41f780642ea3ca8bb4ecb46c859ce5"
+    },
+    {
+      "name": "binary64-78",
+      "inputJson": "1.2687935629955436e-37",
+      "canonicalJson": "1.2687935629955436e-37",
+      "sha256": "35c12a1fb38dd853b00c88729424bd7fd970c72e6d1eeb27ff688412f841cf13"
+    },
+    {
+      "name": "binary64-79",
+      "inputJson": "-1.7627607192102673e-196",
+      "canonicalJson": "-1.7627607192102673e-196",
+      "sha256": "fd644b948ad1c98f9212840d54972aa3cdd87a7a020e5701511ffcf3ba86467b"
+    },
+    {
+      "name": "binary64-80",
+      "inputJson": "4.0038333542993374e-134",
+      "canonicalJson": "4.0038333542993374e-134",
+      "sha256": "131b67bfab8cc7445229557e0df60f0731c9c540f5cdec7366256cd1d84c7d36"
+    },
+    {
+      "name": "binary64-81",
+      "inputJson": "1.5272764375976035e-71",
+      "canonicalJson": "1.5272764375976035e-71",
+      "sha256": "010c692f95df94bea3ff7fc55ed251b85cc77fe6ea9bcd55945612d778aaf043"
+    },
+    {
+      "name": "binary64-82",
+      "inputJson": "3.3672152860523783e+202",
+      "canonicalJson": "3.3672152860523783e+202",
+      "sha256": "f69ee5b2fbee5939004b4ebaa7eb873817530487ceb513b59c045c5352a340cd"
+    },
+    {
+      "name": "binary64-83",
+      "inputJson": "0.00012629157265014372",
+      "canonicalJson": "0.00012629157265014372",
+      "sha256": "1c347d6ebe5c414032358ca2cc75e775b25ed8a1a1c7242915ddb0acad3519bd"
+    },
+    {
+      "name": "binary64-84",
+      "inputJson": "-1.750362592694695e-20",
+      "canonicalJson": "-1.750362592694695e-20",
+      "sha256": "c590db02079e2517c62a1c23aca1f5bc8b1e2b9d153499a6af2c24af200b1203"
+    },
+    {
+      "name": "binary64-85",
+      "inputJson": "-1.1087894951817111e-212",
+      "canonicalJson": "-1.1087894951817111e-212",
+      "sha256": "e0c6cc859cf3db4839a20209f6c9f245f95e1916c5433840da7653326a980859"
+    },
+    {
+      "name": "binary64-86",
+      "inputJson": "7.628338650861467e+132",
+      "canonicalJson": "7.628338650861467e+132",
+      "sha256": "2ffb8035fe8881aa89cf3910c14693b3138649a58c33aa36fb8ed0bf921d1d1e"
+    },
+    {
+      "name": "binary64-87",
+      "inputJson": "-3.4613530257009583e+75",
+      "canonicalJson": "-3.4613530257009583e+75",
+      "sha256": "cecb35ec870481427f9c234b27ea0ebebca622adcfc773a1cc0cc9ebfbeb263d"
+    },
+    {
+      "name": "binary64-88",
+      "inputJson": "-3.821189466018522e+56",
+      "canonicalJson": "-3.821189466018522e+56",
+      "sha256": "e608b6ddc9b531e998e770d646772904e70144624ff96d6a20955eeb070e0b35"
+    },
+    {
+      "name": "binary64-89",
+      "inputJson": "-1.2637878243293646e-112",
+      "canonicalJson": "-1.2637878243293646e-112",
+      "sha256": "5de05105ef28d2b7df6e1602208b82c8037970e69a6d55292c557898499a8a04"
+    },
+    {
+      "name": "binary64-90",
+      "inputJson": "-1.3591406454432433e+302",
+      "canonicalJson": "-1.3591406454432433e+302",
+      "sha256": "2e84f54f8598c1c763882d1848cc6325a1cd427e99a4553edcfdfcab1c63c83e"
+    },
+    {
+      "name": "binary64-91",
+      "inputJson": "1.663333091209049e-217",
+      "canonicalJson": "1.663333091209049e-217",
+      "sha256": "a321d07667aa8f40ae993c8e374cea6b0b1674bd46f5264c171c033a2ab929f7"
+    },
+    {
+      "name": "binary64-92",
+      "inputJson": "-2.713620648251991e+146",
+      "canonicalJson": "-2.713620648251991e+146",
+      "sha256": "49c5235413aad6fcb0bbcaccfa6e2d5947589c3b3fd9e2d26615576f64cfb927"
+    },
+    {
+      "name": "binary64-93",
+      "inputJson": "2.7733774687045512e+141",
+      "canonicalJson": "2.7733774687045512e+141",
+      "sha256": "c8edc6663dd9bbc510819505cf25bf0e884ccdcf65ed848664589a0563a0c5ff"
+    },
+    {
+      "name": "binary64-94",
+      "inputJson": "5.645736789123421e+295",
+      "canonicalJson": "5.645736789123421e+295",
+      "sha256": "503d62b95fc22d67759f7be5e53e9a66c5439db3c28fdedd14619eb982b162e3"
+    },
+    {
+      "name": "binary64-95",
+      "inputJson": "7.913689528336322e+277",
+      "canonicalJson": "7.913689528336322e+277",
+      "sha256": "a2abcede7b8819ed3829531c04faef1f2db0b229745edfb31e84acb836559981"
+    },
+    {
+      "name": "binary64-96",
+      "inputJson": "-5.9602904867709336e-8",
+      "canonicalJson": "-5.9602904867709336e-8",
+      "sha256": "8e1bd09b9bb8a07546caddb3113cc6310fdc7db0dbfa4d857e65232f97746b78"
+    },
+    {
+      "name": "binary64-97",
+      "inputJson": "-2.1877169858466318e+39",
+      "canonicalJson": "-2.1877169858466318e+39",
+      "sha256": "be3cb2ecdfab0e000fca6334e14c73862caa92f8639743130afd33ae9c2cb238"
+    },
+    {
+      "name": "binary64-98",
+      "inputJson": "-1.6058609085741358e-58",
+      "canonicalJson": "-1.6058609085741358e-58",
+      "sha256": "8a0ce77fce7cd1a49a91467ff1e95a6ccfa0577fea62193e5a908194124d6f03"
+    },
+    {
+      "name": "binary64-99",
+      "inputJson": "-3.189061872780413e-284",
+      "canonicalJson": "-3.189061872780413e-284",
+      "sha256": "5037f61ff46e4697eec31fd3ba9bb5df987a0402ae5f2bda3f0fb3a6a076ff3b"
+    },
+    {
+      "name": "binary64-100",
+      "inputJson": "3.9641514625157065e-60",
+      "canonicalJson": "3.9641514625157065e-60",
+      "sha256": "f7f9e624f568e854190cd9728a1755b89ce940c12dbf1958b0197a1792119e47"
+    },
+    {
+      "name": "binary64-101",
+      "inputJson": "2.9825297823603647e-256",
+      "canonicalJson": "2.9825297823603647e-256",
+      "sha256": "ed6b059dd82c3f2b86ad93379ea09e8c3e0a2ebd69c5957aeea9c96f42085a0f"
+    },
+    {
+      "name": "binary64-102",
+      "inputJson": "8.902034411158764e+70",
+      "canonicalJson": "8.902034411158764e+70",
+      "sha256": "9edef3675326ab454090d529aa0a9a03b6ee7f694e25cb19dd20901c24998cdb"
+    },
+    {
+      "name": "binary64-103",
+      "inputJson": "1.147959465930088e+28",
+      "canonicalJson": "1.147959465930088e+28",
+      "sha256": "a281205f09b5d9ad5fca31d43b9ba9b914085451bfaa849a924e73825757456a"
+    },
+    {
+      "name": "binary64-104",
+      "inputJson": "-4052703910288.4424",
+      "canonicalJson": "-4052703910288.4424",
+      "sha256": "9b2c3bbb7eab9ca10922e0b8e1909c8165a5b8f5e5098c485684ce802d5e024b"
+    },
+    {
+      "name": "binary64-105",
+      "inputJson": "-3.6824407988068115e-113",
+      "canonicalJson": "-3.6824407988068115e-113",
+      "sha256": "2a89b427aa9142fff454436fccfca7e3b145845392ae2cf1bbc9f009e1489854"
+    },
+    {
+      "name": "binary64-106",
+      "inputJson": "4.3554610560354626e-144",
+      "canonicalJson": "4.3554610560354626e-144",
+      "sha256": "a6aa3ab0ec64728293d21348bc6c42ed409090b3fd6e0a5f645de9b2c9b6b63a"
+    },
+    {
+      "name": "binary64-107",
+      "inputJson": "-2.2679187442453212e-210",
+      "canonicalJson": "-2.2679187442453212e-210",
+      "sha256": "af944940f6ce249a1a777f116cc41bfdfaa9a32d66e6e5e07262b57ea1bd30f2"
+    },
+    {
+      "name": "binary64-108",
+      "inputJson": "1.202566123340248e+241",
+      "canonicalJson": "1.202566123340248e+241",
+      "sha256": "66af851117d1f188636019e184242bcb841bd63a6bdc1061fbb476a38f9de7b3"
+    },
+    {
+      "name": "binary64-109",
+      "inputJson": "-1.4709369419648754e+236",
+      "canonicalJson": "-1.4709369419648754e+236",
+      "sha256": "61fc31b316f48b8d4437cfed0a6aa51c94f1bb7dc1722d55fd0035c4f731008e"
+    },
+    {
+      "name": "binary64-110",
+      "inputJson": "-3.2913636139702767e-247",
+      "canonicalJson": "-3.2913636139702767e-247",
+      "sha256": "f0747b04cd355aa677d9f3b6a2f140ff65aa099cdd9df56784599cd03a076ebe"
+    },
+    {
+      "name": "binary64-111",
+      "inputJson": "-1.7172448744653943e+252",
+      "canonicalJson": "-1.7172448744653943e+252",
+      "sha256": "f62350ac199d87fc489e8c9d636af0b1a76cc26d0cd196c803684da30012925b"
+    },
+    {
+      "name": "binary64-112",
+      "inputJson": "7.427421128074017e+212",
+      "canonicalJson": "7.427421128074017e+212",
+      "sha256": "ac13a0d605fe917d8be38f7ba2db0a4ed2a623da35286aa954d7399053f4202f"
+    },
+    {
+      "name": "binary64-113",
+      "inputJson": "1.458580034071124e+288",
+      "canonicalJson": "1.458580034071124e+288",
+      "sha256": "96894d35af9cc8a021842d5e1593742cefc7f385c7699d1ec645edaf1503485c"
+    },
+    {
+      "name": "binary64-114",
+      "inputJson": "1.6453762824726504e-291",
+      "canonicalJson": "1.6453762824726504e-291",
+      "sha256": "44ae7672de1591249d7a3340c5da2736a0a0102ba18ce3b2a66ce5eaa72e573d"
+    },
+    {
+      "name": "binary64-115",
+      "inputJson": "1.1679839880684912e-256",
+      "canonicalJson": "1.1679839880684912e-256",
+      "sha256": "8b25024fda3ac8b1a8284356d65e177f5722c97ce3c624ef2b860e9cca9f91e9"
+    },
+    {
+      "name": "binary64-116",
+      "inputJson": "-9.36857453917015e+273",
+      "canonicalJson": "-9.36857453917015e+273",
+      "sha256": "163e790922a4983c065ed70d1742126d53326410d736cd5af954f9135006492d"
+    },
+    {
+      "name": "binary64-117",
+      "inputJson": "8.823912102501938e+149",
+      "canonicalJson": "8.823912102501938e+149",
+      "sha256": "d64abfd74fec236f57c53e92380c469f622560de63b0501c9867c2a3e3b23840"
+    },
+    {
+      "name": "binary64-118",
+      "inputJson": "1.1280895952009614e+279",
+      "canonicalJson": "1.1280895952009614e+279",
+      "sha256": "1cd814910d513c4084d90a64365498af8abb7170e7cca94d994f3ae1ffca28e9"
+    },
+    {
+      "name": "binary64-119",
+      "inputJson": "1.5986499353765727e-32",
+      "canonicalJson": "1.5986499353765727e-32",
+      "sha256": "ee6794533a3113df586c5fb3606ff47603b5d82fb2ba10c81d1fc51834b380ed"
+    },
+    {
+      "name": "binary64-120",
+      "inputJson": "1.0247409397620413e-92",
+      "canonicalJson": "1.0247409397620413e-92",
+      "sha256": "23b535155ec221970ed4209e04918ecc56221378987d6e07cd02862ead62b27b"
+    },
+    {
+      "name": "binary64-121",
+      "inputJson": "8.88128411943896e+290",
+      "canonicalJson": "8.88128411943896e+290",
+      "sha256": "fa655a871659770eb2329337b8519742f840b78bfb93adeaed21098feee4caed"
+    },
+    {
+      "name": "binary64-122",
+      "inputJson": "1.3284953697055494e+150",
+      "canonicalJson": "1.3284953697055494e+150",
+      "sha256": "1f6dc1b78938bd25e95d014b4d09782194b592a8d69613f2bf1f3708d7aab1ae"
+    },
+    {
+      "name": "binary64-123",
+      "inputJson": "-2.1740619657003158e+67",
+      "canonicalJson": "-2.1740619657003158e+67",
+      "sha256": "fb54389532f1e657b2a72ecff76357e4171f01a368807564de5c5687ee3fa9a3"
+    },
+    {
+      "name": "binary64-124",
+      "inputJson": "-2.955222202388292e-183",
+      "canonicalJson": "-2.955222202388292e-183",
+      "sha256": "c44730460a807613d9faca3ebf0ca6e7ade8547316801099ff5e71ccf32bdd3b"
+    },
+    {
+      "name": "binary64-125",
+      "inputJson": "-5.010931065906546e+257",
+      "canonicalJson": "-5.010931065906546e+257",
+      "sha256": "1a8be2394d30fcf732f0f0e160cbbf54f3a30d7174ac97f0369e8625f1d4dec7"
+    },
+    {
+      "name": "binary64-126",
+      "inputJson": "6.210506477208441e+147",
+      "canonicalJson": "6.210506477208441e+147",
+      "sha256": "3269021a710b4fd843266435c277829dd756f3a12efbcc94a080460267e15f11"
+    },
+    {
+      "name": "binary64-127",
+      "inputJson": "2.6324130929057825e-277",
+      "canonicalJson": "2.6324130929057825e-277",
+      "sha256": "0b845faefecd56ea41c18038f02385dd2eadaa29e83c8507419035daa35192a0"
+    },
+    {
+      "name": "binary64-128",
+      "inputJson": "5.591447072223792e+102",
+      "canonicalJson": "5.591447072223792e+102",
+      "sha256": "3f307d98b1a0bbef4a492e97d2a98ec51a624b3c43b8a41cbab074fc553fb032"
+    },
+    {
+      "name": "binary64-129",
+      "inputJson": "5.706056990527475e-56",
+      "canonicalJson": "5.706056990527475e-56",
+      "sha256": "865f55f22ec852fc1c4c378c5b8d89365e44f6dbd153f67a27a8455eee9770af"
+    },
+    {
+      "name": "binary64-130",
+      "inputJson": "-1.807666185304653e-94",
+      "canonicalJson": "-1.807666185304653e-94",
+      "sha256": "d42938d56bca56719270118adc1203e6b13f41b28f083c80dd4b9aa15b7e0b31"
+    },
+    {
+      "name": "binary64-131",
+      "inputJson": "1.664839515639127e-206",
+      "canonicalJson": "1.664839515639127e-206",
+      "sha256": "cdbb8db9915f0691f1e2d11be23c4a1f5dbb9f88b114821a1319a021a211d345"
+    },
+    {
+      "name": "binary64-132",
+      "inputJson": "2.4402238310339706e-245",
+      "canonicalJson": "2.4402238310339706e-245",
+      "sha256": "0998e38da0803748b40d833dac6a8f1b50514a664c528a15c491be0758d376cd"
+    },
+    {
+      "name": "binary64-133",
+      "inputJson": "-7.04811915593634e-211",
+      "canonicalJson": "-7.04811915593634e-211",
+      "sha256": "73b265e69d3a5518aaa00a9c3ad61d41df76631836769644224681f119563fca"
+    },
+    {
+      "name": "binary64-134",
+      "inputJson": "9.652053912699394e-176",
+      "canonicalJson": "9.652053912699394e-176",
+      "sha256": "f64c600f20a4169b2176c2ff3f21ce4ff403b49c2fc22f44fb55c17a8e378d4f"
+    },
+    {
+      "name": "binary64-135",
+      "inputJson": "6.314364674160704e-241",
+      "canonicalJson": "6.314364674160704e-241",
+      "sha256": "f12cdef5ee62d50b043f270f07cfd2b728eafdf6ae36f6dc07e0ae484d753f1c"
+    },
+    {
+      "name": "binary64-136",
+      "inputJson": "2.0676047626019026e+92",
+      "canonicalJson": "2.0676047626019026e+92",
+      "sha256": "955067d5d07262330b74f38666119764a33800e51d641b1f6a6d980955be8310"
+    },
+    {
+      "name": "binary64-137",
+      "inputJson": "-7.082841896891318e-74",
+      "canonicalJson": "-7.082841896891318e-74",
+      "sha256": "e9a2d2333613a4cabd53989a033b0db039dfd7a43764210d7d1027d7452edfb8"
+    },
+    {
+      "name": "binary64-138",
+      "inputJson": "1.9242916048721744e-290",
+      "canonicalJson": "1.9242916048721744e-290",
+      "sha256": "19be8ceaacf27a8d78f37fe1afad0b843ea027e7b9bcf1d435e5b5f9337660be"
+    },
+    {
+      "name": "binary64-139",
+      "inputJson": "-1.9549789341072325e+179",
+      "canonicalJson": "-1.9549789341072325e+179",
+      "sha256": "f9981bbecbe8162b7979291cf96f705c08896e87b455b94c2e9d804ea6f875c6"
+    },
+    {
+      "name": "binary64-140",
+      "inputJson": "-1.2567533976544842e-170",
+      "canonicalJson": "-1.2567533976544842e-170",
+      "sha256": "a25767ccfa13d8e4c711938f22a5f322f1cbfd7e37441626477b1f76bdd0f324"
+    },
+    {
+      "name": "binary64-141",
+      "inputJson": "6.696368411194495e+292",
+      "canonicalJson": "6.696368411194495e+292",
+      "sha256": "a17ef1ba6b71320d982b17f7417661568c93ac74bc65e892e8c6b97354dc7608"
+    },
+    {
+      "name": "binary64-142",
+      "inputJson": "9.038983940385941e-24",
+      "canonicalJson": "9.038983940385941e-24",
+      "sha256": "be70c860fe87a4a5098a3a82cf913cd5cb8e6bc88dbfb077d2e1f5075d5e2c48"
+    },
+    {
+      "name": "binary64-143",
+      "inputJson": "8.645866974162077e-237",
+      "canonicalJson": "8.645866974162077e-237",
+      "sha256": "a8e744e737d667c56f3f62f30bd75c85c24bed7c1408df75598c9baa947085b0"
+    },
+    {
+      "name": "binary64-144",
+      "inputJson": "-273808.23270613985",
+      "canonicalJson": "-273808.23270613985",
+      "sha256": "be70e7b32ca049edee9d1751759ce75d65b662cde6c947eb440a14fdf12cdd55"
+    },
+    {
+      "name": "binary64-145",
+      "inputJson": "-5.206011800556731e-117",
+      "canonicalJson": "-5.206011800556731e-117",
+      "sha256": "c4bf0a11fef0561cf0976c693116c39b0cc37dbe60e495ed345e7918396103e0"
+    },
+    {
+      "name": "binary64-146",
+      "inputJson": "5.382637244146404e+143",
+      "canonicalJson": "5.382637244146404e+143",
+      "sha256": "452e29eeb491709dcb1accca002d2625917e43aabbdbe969c6c4bd98e736658f"
+    },
+    {
+      "name": "binary64-147",
+      "inputJson": "-1.1743830939744546e+70",
+      "canonicalJson": "-1.1743830939744546e+70",
+      "sha256": "c7ed850e0371bd2c71f910a16983b680222faba2580ceacfa6aa2194854f198e"
+    },
+    {
+      "name": "binary64-148",
+      "inputJson": "2.72575664266823e-128",
+      "canonicalJson": "2.72575664266823e-128",
+      "sha256": "29d83b3deda3e553655baf9e018b794b1839054abfb115498c4952ff8c1760c5"
+    },
+    {
+      "name": "binary64-149",
+      "inputJson": "2.250893128427951e+212",
+      "canonicalJson": "2.250893128427951e+212",
+      "sha256": "96d3f8cabd3df7666c1ec5897fb645a35f22d35c36fb91e0b19f0410f37a7422"
+    },
+    {
+      "name": "binary64-150",
+      "inputJson": "-3.433297911848817e+289",
+      "canonicalJson": "-3.433297911848817e+289",
+      "sha256": "d84ae81bd51978bb87aa56f4b1791012454b27451e2519a9857aac2aab7aaa25"
+    },
+    {
+      "name": "binary64-151",
+      "inputJson": "3.8666244710143004e+138",
+      "canonicalJson": "3.8666244710143004e+138",
+      "sha256": "0421716678f35fe1e3d1c18d383165758fb3054e0f6d80420ddae21c7c923193"
+    },
+    {
+      "name": "binary64-152",
+      "inputJson": "1.565428884467737e+240",
+      "canonicalJson": "1.565428884467737e+240",
+      "sha256": "d9eb23c27afe117a0d3fcc7e68596cfc693df0426ced676e6ab37fef573a7415"
+    },
+    {
+      "name": "binary64-153",
+      "inputJson": "2.0813866548338967e+121",
+      "canonicalJson": "2.0813866548338967e+121",
+      "sha256": "b1a2f94e6bc811a5f7e21a37556a0a6a0b36047db79162cd2fc80b9a916ab5e8"
+    },
+    {
+      "name": "binary64-154",
+      "inputJson": "6.972592091570746e-49",
+      "canonicalJson": "6.972592091570746e-49",
+      "sha256": "2c4323b348c19b5ab1780b7395fba8e6948798fa9ecc786b66c09781f0252fc1"
+    },
+    {
+      "name": "binary64-155",
+      "inputJson": "-1.0376981396116137e-57",
+      "canonicalJson": "-1.0376981396116137e-57",
+      "sha256": "3f70486fa18e1bfd60177da5b81feb605898fee8d014f5d72f685f615db26e9e"
+    },
+    {
+      "name": "binary64-156",
+      "inputJson": "-1.759163980501792e+75",
+      "canonicalJson": "-1.759163980501792e+75",
+      "sha256": "fde53dda8f2022294446f181652c622e0780a607ed35adbd165afc5226ef4067"
+    },
+    {
+      "name": "binary64-157",
+      "inputJson": "-1.1542521839332407e+31",
+      "canonicalJson": "-1.1542521839332407e+31",
+      "sha256": "8f92dafeb2e52d257bbd6b94f2d5e9d9215599fe6e20d5fe13da901eb45cfb23"
+    },
+    {
+      "name": "binary64-158",
+      "inputJson": "2.1210031931969387e-44",
+      "canonicalJson": "2.1210031931969387e-44",
+      "sha256": "85c28917caa752dcf37f4a7057bd72ac4040a123f4188c77be2280da9069f72b"
+    },
+    {
+      "name": "binary64-159",
+      "inputJson": "-1.2759448730427212e-282",
+      "canonicalJson": "-1.2759448730427212e-282",
+      "sha256": "5fe1b30c96d7ecf6ee06337d1bfb8385de032d10fbeafa1d332a349de725a4e2"
+    },
+    {
+      "name": "binary64-160",
+      "inputJson": "-5.4107824121826e-299",
+      "canonicalJson": "-5.4107824121826e-299",
+      "sha256": "55e7763c327d1b4dc95b4d8adf364b56fda5767aab63dc03c754ddd2f6268352"
+    },
+    {
+      "name": "binary64-161",
+      "inputJson": "1.629703962429539e+137",
+      "canonicalJson": "1.629703962429539e+137",
+      "sha256": "08a53c42c28c0aca30f1af9c3a9bd6f3aef590863715ee414178a31bd45037d1"
+    },
+    {
+      "name": "binary64-162",
+      "inputJson": "-1.1160802192754832e-88",
+      "canonicalJson": "-1.1160802192754832e-88",
+      "sha256": "9867f0ab46b6471aadb9c8c0a1d6b0c70dc6829de63a41cf79db529c924fdc96"
+    },
+    {
+      "name": "binary64-163",
+      "inputJson": "1.0742933254970072e+122",
+      "canonicalJson": "1.0742933254970072e+122",
+      "sha256": "ccddf3e772002c3378515db44ef13555aa7c59d96ae9c02f7f2c32a5e7579356"
+    },
+    {
+      "name": "binary64-164",
+      "inputJson": "4.489046590523493e-76",
+      "canonicalJson": "4.489046590523493e-76",
+      "sha256": "5d1bfe1dae680af72273a1b25e8d859a33e705d52576eaecc004645da6967529"
+    },
+    {
+      "name": "binary64-165",
+      "inputJson": "-1.5660741730386185e-295",
+      "canonicalJson": "-1.5660741730386185e-295",
+      "sha256": "06f8ce722f6fcf15ceee55d45fb65ecb4d00e18105ce2d44efebd72162592c6d"
+    },
+    {
+      "name": "binary64-166",
+      "inputJson": "-2.663513422722627e+33",
+      "canonicalJson": "-2.663513422722627e+33",
+      "sha256": "133efdc72c2f580e2d90431c5c8f1f7e3bd1b1f43cee3b5693e6040e3c193e82"
+    },
+    {
+      "name": "binary64-167",
+      "inputJson": "4.961500010731811e-140",
+      "canonicalJson": "4.961500010731811e-140",
+      "sha256": "d4ff8d738d93c986c69d82a71eb791aed0de147699979af39b00478d7586e63f"
+    },
+    {
+      "name": "binary64-168",
+      "inputJson": "5.778055832967435e+196",
+      "canonicalJson": "5.778055832967435e+196",
+      "sha256": "eef4c06115c7c41a7718400bfaa31096c1ab1e5e7ac874f655714f512166ed32"
+    },
+    {
+      "name": "binary64-169",
+      "inputJson": "-6.889212629590324e-16",
+      "canonicalJson": "-6.889212629590324e-16",
+      "sha256": "859904b0f43ac9a657a0404da9e1ff078cd3c246882fafa7ec548918e0ed9430"
+    },
+    {
+      "name": "binary64-170",
+      "inputJson": "4.424933365535925e+85",
+      "canonicalJson": "4.424933365535925e+85",
+      "sha256": "6ba067909d08c729321e9ae26ab9de8f5f1e8d8ceee80bedc9bc936a5f36408a"
+    },
+    {
+      "name": "binary64-171",
+      "inputJson": "1.5569213005363868e-198",
+      "canonicalJson": "1.5569213005363868e-198",
+      "sha256": "30d5ec541378182071b540342fd386c59362fbd3961c4b8856f56a6eb5a88792"
+    },
+    {
+      "name": "binary64-172",
+      "inputJson": "3.9086228450907895e+77",
+      "canonicalJson": "3.9086228450907895e+77",
+      "sha256": "8fdf5d693abc3b900e62f5eb93134d8616daf56e4a74b84185d05aa446ba45e1"
+    },
+    {
+      "name": "binary64-173",
+      "inputJson": "-3.1638114561214875e+163",
+      "canonicalJson": "-3.1638114561214875e+163",
+      "sha256": "a61137b86c1ec28fd34c026368779f302a74ed680bc3b0b67785efb5060f7e2f"
+    },
+    {
+      "name": "binary64-174",
+      "inputJson": "-2.591882431260002e+256",
+      "canonicalJson": "-2.591882431260002e+256",
+      "sha256": "c7f205769a5c057f9748ddf2e1d98fcaa92880c8062701d47b5e8762e55a9ff5"
+    },
+    {
+      "name": "binary64-175",
+      "inputJson": "-5.381188725726303e-151",
+      "canonicalJson": "-5.381188725726303e-151",
+      "sha256": "6ec1c0db1d53ffea54c7f5bdfb7e511ac076e29a32bdfae293bbd65107006797"
+    },
+    {
+      "name": "binary64-176",
+      "inputJson": "7.551076361344386e+291",
+      "canonicalJson": "7.551076361344386e+291",
+      "sha256": "a4b997e602d286c520c72f62c9487579dc0dedf990f092bc7b0fd57655ad6021"
+    },
+    {
+      "name": "binary64-177",
+      "inputJson": "-6.531531190598963e-56",
+      "canonicalJson": "-6.531531190598963e-56",
+      "sha256": "cad3d68d9f991728e357d495d7d45c8e47d08293f5c11316299e373e9a8b8886"
+    },
+    {
+      "name": "binary64-178",
+      "inputJson": "1.7307976714990203e-234",
+      "canonicalJson": "1.7307976714990203e-234",
+      "sha256": "2cd4381a532c9b5f7a171f3b34774f055d94a471b01af79903faa6b100b213b0"
+    },
+    {
+      "name": "binary64-179",
+      "inputJson": "-7.849222140249426e-110",
+      "canonicalJson": "-7.849222140249426e-110",
+      "sha256": "641c53dcc909474aac6be1f02e090373ac55ba0dbcae45fe605015b6aeaba4cc"
+    },
+    {
+      "name": "binary64-180",
+      "inputJson": "-2.5093513161767228e-29",
+      "canonicalJson": "-2.5093513161767228e-29",
+      "sha256": "907ce714a6bfef4a67914a23ea15f6e184996ae79771765052b8fe5c865e0c95"
+    },
+    {
+      "name": "binary64-181",
+      "inputJson": "1.9394835398260812e-192",
+      "canonicalJson": "1.9394835398260812e-192",
+      "sha256": "8a36c5320f6e0121e51d0226b397bddc0b0394df8e2ce69203572a0e34b15fb4"
+    },
+    {
+      "name": "binary64-182",
+      "inputJson": "1.4662263647032005e+47",
+      "canonicalJson": "1.4662263647032005e+47",
+      "sha256": "1f3a360ea2eb2b1c8a47a048941cd0af710de855a5c04c55bc641d7d4c89f5a7"
+    },
+    {
+      "name": "binary64-183",
+      "inputJson": "-1.752708771997881e-185",
+      "canonicalJson": "-1.752708771997881e-185",
+      "sha256": "115f744884fc0310cd5ecd606910a43b9930967177f942b5fa64eb690b0508b7"
+    },
+    {
+      "name": "binary64-184",
+      "inputJson": "-3.170110861381629e+57",
+      "canonicalJson": "-3.170110861381629e+57",
+      "sha256": "9e85341f0f1aa6ea691a27bab2239ac4a8e39892712d98591ebffcb1f655c9eb"
+    },
+    {
+      "name": "binary64-185",
+      "inputJson": "1.9076463423869442e+303",
+      "canonicalJson": "1.9076463423869442e+303",
+      "sha256": "8ff12660fa609ccfe1f7cfd762c6a03e9df6b38b71a6fd75a73981bbcee0c17b"
+    },
+    {
+      "name": "binary64-186",
+      "inputJson": "-4.730368305641969e-163",
+      "canonicalJson": "-4.730368305641969e-163",
+      "sha256": "34031ffc8db124178706d1b1a1738c88ec3653014143e92fd681a81a267776db"
+    },
+    {
+      "name": "binary64-187",
+      "inputJson": "-4.679376328658119e+213",
+      "canonicalJson": "-4.679376328658119e+213",
+      "sha256": "05f6d39f24bca1aafa1cb8f750e6105f70706256166efd6bcc7ab24d32c59749"
+    },
+    {
+      "name": "binary64-188",
+      "inputJson": "6.640561246781856e-85",
+      "canonicalJson": "6.640561246781856e-85",
+      "sha256": "bd8b126b03eb258cb5c914ffdf7eae8cd8bc4e69ba11059af205778dd2103021"
+    },
+    {
+      "name": "binary64-189",
+      "inputJson": "1.489269198546203e-68",
+      "canonicalJson": "1.489269198546203e-68",
+      "sha256": "0d267617fe9b65ce44521ba9fc3a370f35315b872eeab043f8c464f30e1d39f6"
+    },
+    {
+      "name": "binary64-190",
+      "inputJson": "-2.691219211177119e+223",
+      "canonicalJson": "-2.691219211177119e+223",
+      "sha256": "eb3d3f9f00812d6b60c95eaa573062f99cac50de15f7c2497a129556bfb821c5"
+    },
+    {
+      "name": "binary64-191",
+      "inputJson": "-3.738390711609417e-112",
+      "canonicalJson": "-3.738390711609417e-112",
+      "sha256": "472c6bbda21fa615163607ff07406daa2d095b657a07ebe5beb551f596832153"
+    },
+    {
+      "name": "binary64-192",
+      "inputJson": "3.883850009068194e+267",
+      "canonicalJson": "3.883850009068194e+267",
+      "sha256": "33104a635ab84c331697e3c2038dafc0781f2c695a09f35507b6ea2c1856acf6"
+    },
+    {
+      "name": "binary64-193",
+      "inputJson": "3.121104329943832e+114",
+      "canonicalJson": "3.121104329943832e+114",
+      "sha256": "55b1c4125ea0806ff88bb02275ea5ace948c96107e664896a49e089aa864178a"
+    },
+    {
+      "name": "binary64-194",
+      "inputJson": "-1.0843855687286931e-167",
+      "canonicalJson": "-1.0843855687286931e-167",
+      "sha256": "e838898bafa894fded9f693e17a0ff27ddcc9e8b9df6d7e84d3c5633bd921864"
+    },
+    {
+      "name": "binary64-195",
+      "inputJson": "3.374941456311912e+293",
+      "canonicalJson": "3.374941456311912e+293",
+      "sha256": "edfd0aa341c11179287710d36d525e508cc807281d4543a8822df1e1ac34bc9f"
+    },
+    {
+      "name": "binary64-196",
+      "inputJson": "1.5559353010232858e-231",
+      "canonicalJson": "1.5559353010232858e-231",
+      "sha256": "3f71a9b8116393af147f9df62f32e56eae0c1c6066afb9b7290651876b9f6260"
+    },
+    {
+      "name": "binary64-197",
+      "inputJson": "-4.116080180502171e-163",
+      "canonicalJson": "-4.116080180502171e-163",
+      "sha256": "3ff1854dc3b66d75a02a3f310a68ef4ca7a91a3171121eeac0680dc11264565d"
+    },
+    {
+      "name": "binary64-198",
+      "inputJson": "-1.198748010984293e+199",
+      "canonicalJson": "-1.198748010984293e+199",
+      "sha256": "af6777a5cce58edb8352df9a2d303a6c6efa7bc42c3ea8a73214080693dbe1d9"
+    },
+    {
+      "name": "binary64-199",
+      "inputJson": "-3.7550706780907966e-287",
+      "canonicalJson": "-3.7550706780907966e-287",
+      "sha256": "ecde5dd3cea5f7b039c2386632bd8848f9ce7d0097e4687fad63067f6577f4e7"
+    },
+    {
+      "name": "binary64-200",
+      "inputJson": "-1.2100006610904601e-36",
+      "canonicalJson": "-1.2100006610904601e-36",
+      "sha256": "8f1e50e95fbf0ec518466f1cb99a80846ac60e735485f3091f5441f535fd9428"
+    },
+    {
+      "name": "binary64-201",
+      "inputJson": "2.9518816061001026e+152",
+      "canonicalJson": "2.9518816061001026e+152",
+      "sha256": "154356baa763d615c3c89ef731e385c06ff9dda3334dd569c25065cc0a280223"
+    },
+    {
+      "name": "binary64-202",
+      "inputJson": "1.871517744800922e-230",
+      "canonicalJson": "1.871517744800922e-230",
+      "sha256": "6de5742a1287eb74a9a22716ed139ed3b5ba3535e4d109a66d1115f2a6a414f3"
+    },
+    {
+      "name": "binary64-203",
+      "inputJson": "-1.1096195466540104e-294",
+      "canonicalJson": "-1.1096195466540104e-294",
+      "sha256": "00758411dd605a986cf9062ebcbb03b496e34dc6f81550dbe74298b0cb6d51d5"
+    },
+    {
+      "name": "binary64-204",
+      "inputJson": "-3.491000613545679e+46",
+      "canonicalJson": "-3.491000613545679e+46",
+      "sha256": "a899891dbfba4e4af7824fa2e07c7d757cfadfdab4930fb95f56625bb9090171"
+    },
+    {
+      "name": "binary64-205",
+      "inputJson": "-2.8613301798715027e+54",
+      "canonicalJson": "-2.8613301798715027e+54",
+      "sha256": "194cc0b6f7824eaa5cdec58b1d3cae791fef5d0e3045aa778ffffcdd80e069c6"
+    },
+    {
+      "name": "binary64-206",
+      "inputJson": "5306344.940936697",
+      "canonicalJson": "5306344.940936697",
+      "sha256": "7b612d0900bff8f117314f629d75c3bca9391d92efdd568463620b04de09d555"
+    },
+    {
+      "name": "binary64-207",
+      "inputJson": "-4.9577364955694116e+50",
+      "canonicalJson": "-4.9577364955694116e+50",
+      "sha256": "1e31de3503a701e7e0b9ccaef1fce2d1ad435d93b509385ddb8f7045d1ac4571"
+    },
+    {
+      "name": "binary64-208",
+      "inputJson": "-8.119976873028136e+195",
+      "canonicalJson": "-8.119976873028136e+195",
+      "sha256": "6e65cd8c10cab8e2d888f84c73bbcddcd457cebf003e2364dcaecdf675661830"
+    },
+    {
+      "name": "binary64-209",
+      "inputJson": "1.508157037237221e+32",
+      "canonicalJson": "1.508157037237221e+32",
+      "sha256": "a68732314f8df57d7ab067a427ef4d0b07530cfdc7c8e7d0fd66224e08a6568d"
+    },
+    {
+      "name": "binary64-210",
+      "inputJson": "-1.4443067049505686e-223",
+      "canonicalJson": "-1.4443067049505686e-223",
+      "sha256": "6599969d26889e8b498a66a333a9a3d2e7b3ac7f23135b985e040603b4755200"
+    },
+    {
+      "name": "binary64-211",
+      "inputJson": "-3.3407787837322494e-213",
+      "canonicalJson": "-3.3407787837322494e-213",
+      "sha256": "03cae427c80812c1c2eec0bc721ae840605abc46954a5a0aea0ebf5f646a3aaf"
+    },
+    {
+      "name": "binary64-212",
+      "inputJson": "-8.795674032664859e-160",
+      "canonicalJson": "-8.795674032664859e-160",
+      "sha256": "cb7acf139a5062ce258ddec2dabfde2701c00dbfb7499c08bf444ebe763070ea"
+    },
+    {
+      "name": "binary64-213",
+      "inputJson": "-1.610242127845571e-189",
+      "canonicalJson": "-1.610242127845571e-189",
+      "sha256": "0dfce175899466f060da797cd0164ea2ad66c4bf655176117c57db121cb91bc7"
+    },
+    {
+      "name": "binary64-214",
+      "inputJson": "3.716268636033642e+244",
+      "canonicalJson": "3.716268636033642e+244",
+      "sha256": "6edf49110af07e7fda3722f9c4c55b8572cd7b4f576da6be738997057048ee14"
+    },
+    {
+      "name": "binary64-215",
+      "inputJson": "1.2043042127339873e-55",
+      "canonicalJson": "1.2043042127339873e-55",
+      "sha256": "de5cff0fb23d50578818ee74fac1a6a6019e9166fe64c01741ec95b1c885bc24"
+    },
+    {
+      "name": "binary64-216",
+      "inputJson": "5.860788083928726e+176",
+      "canonicalJson": "5.860788083928726e+176",
+      "sha256": "453e2db635d2a5aac45135df4dea5784ee257fb4b9ac25550e3fb9a07c4b8334"
+    },
+    {
+      "name": "binary64-217",
+      "inputJson": "4.133315714088137e-55",
+      "canonicalJson": "4.133315714088137e-55",
+      "sha256": "5d453d5cf81f6d2f758f01f5127b62d0ecefdffc2e164b3a358de60bdf4ff166"
+    },
+    {
+      "name": "binary64-218",
+      "inputJson": "3.274240950403202e-206",
+      "canonicalJson": "3.274240950403202e-206",
+      "sha256": "0e63d8ae26f242d5d7cd5c2fba610a9fb41d61ccf2e1eca04f6b61d274f28954"
+    },
+    {
+      "name": "binary64-219",
+      "inputJson": "-1.3651922144018275e+186",
+      "canonicalJson": "-1.3651922144018275e+186",
+      "sha256": "fa3e3385e623739e277561adf6cf62cdb68d1c0af51c31eb9e3943f79ef0af55"
+    },
+    {
+      "name": "binary64-220",
+      "inputJson": "-6.007367892592828e-255",
+      "canonicalJson": "-6.007367892592828e-255",
+      "sha256": "c50d77f788eaee25a43a66a1e7e3eaef9a45b5e374cebb9f2220461b0044293d"
+    },
+    {
+      "name": "binary64-221",
+      "inputJson": "-5.968364258930035e+183",
+      "canonicalJson": "-5.968364258930035e+183",
+      "sha256": "5aed63a3d82290e686ee4d5ad4655596f017bf976d70025effa13a7af9ef3a27"
+    },
+    {
+      "name": "binary64-222",
+      "inputJson": "8.641272081846778e+100",
+      "canonicalJson": "8.641272081846778e+100",
+      "sha256": "04a68e4b683ef745d29d04efc4b509ba4fa8d42ca3fc54ba069bb4af412abac1"
+    },
+    {
+      "name": "binary64-223",
+      "inputJson": "3.2655734549073797e+296",
+      "canonicalJson": "3.2655734549073797e+296",
+      "sha256": "b130c8660d92f4d8f35d6b9af71605c1458d76658d24b71cc361176660156b39"
+    },
+    {
+      "name": "binary64-224",
+      "inputJson": "9.201642876463215e-253",
+      "canonicalJson": "9.201642876463215e-253",
+      "sha256": "841ecfa5797969e8258f68d8c49f094db612d77d789853e41bee4315d86f08a2"
+    },
+    {
+      "name": "binary64-225",
+      "inputJson": "-1.617478816351454e-52",
+      "canonicalJson": "-1.617478816351454e-52",
+      "sha256": "9c3c75c903fcf605be8165ad6d7160eaeec8dd2896175a7f74570cb144791e38"
+    },
+    {
+      "name": "binary64-226",
+      "inputJson": "-1.20130962254121e-173",
+      "canonicalJson": "-1.20130962254121e-173",
+      "sha256": "8536a2160dbb163de0b55ee73ad2ce05eafe9430e4fb39d441a117a1af2d280d"
+    },
+    {
+      "name": "binary64-227",
+      "inputJson": "-9.047001284906936e+84",
+      "canonicalJson": "-9.047001284906936e+84",
+      "sha256": "b2708d74164b712eb964cac4fc157b1600c54bdffeaba9270cdcad3f04935c0f"
+    },
+    {
+      "name": "binary64-228",
+      "inputJson": "2.192532828253064e+223",
+      "canonicalJson": "2.192532828253064e+223",
+      "sha256": "163caae903cc654bf79b7f8e7d3147fd8edc46b772af632ae2d77424d2cf50ee"
+    },
+    {
+      "name": "binary64-229",
+      "inputJson": "-7.0097240712728565e-239",
+      "canonicalJson": "-7.0097240712728565e-239",
+      "sha256": "8e3355c51e89c0d8c6476a9fe22d3604fadf7d2a0c87e88270c8919563c13b3e"
+    },
+    {
+      "name": "binary64-230",
+      "inputJson": "2.6027945240299285e+98",
+      "canonicalJson": "2.6027945240299285e+98",
+      "sha256": "be7a20804ce5b1a5bc5c31e471fcc1e2384e9d7947522b2837414d143f18b059"
+    },
+    {
+      "name": "binary64-231",
+      "inputJson": "-5.155282176786423e+161",
+      "canonicalJson": "-5.155282176786423e+161",
+      "sha256": "3e73413185a93924a2c1305cee4c82535393e5e1cd1d4907f17d18b45ca033c3"
+    },
+    {
+      "name": "binary64-232",
+      "inputJson": "-8.402711601460574e+100",
+      "canonicalJson": "-8.402711601460574e+100",
+      "sha256": "41f73b00c6009a34dc594be9e8e4eabca6b645b2312f5fc062955f5fd75b0d41"
+    },
+    {
+      "name": "binary64-233",
+      "inputJson": "-3.269068340609263e+253",
+      "canonicalJson": "-3.269068340609263e+253",
+      "sha256": "e468ec86624588edca412601081cb1af2e5268b87ef236b83f3db73a0420e3c5"
+    },
+    {
+      "name": "binary64-234",
+      "inputJson": "-1.4265129969557178e-177",
+      "canonicalJson": "-1.4265129969557178e-177",
+      "sha256": "89fd5954fbcaac6a58519ebca17e0015a64c648b3305c71e1e9b04e650b7356d"
+    },
+    {
+      "name": "binary64-235",
+      "inputJson": "1.814861043411613e+165",
+      "canonicalJson": "1.814861043411613e+165",
+      "sha256": "a7b5e13c02922b612895de743b53c9d0ff6cf55e21a3ef8941202ca0eff47be0"
+    },
+    {
+      "name": "binary64-236",
+      "inputJson": "-2.6201576534955923e+135",
+      "canonicalJson": "-2.6201576534955923e+135",
+      "sha256": "2d1fae876df8ee0ad374e07e0d16fc7e2d552312622a19bb5e9642f6597a3db5"
+    },
+    {
+      "name": "binary64-237",
+      "inputJson": "-3.403822093381706e+279",
+      "canonicalJson": "-3.403822093381706e+279",
+      "sha256": "9b3d74761bb83f35cb7028d115231a35f0c33a55420986d4467854b309139e53"
+    },
+    {
+      "name": "binary64-238",
+      "inputJson": "-1.4467566778778863e+306",
+      "canonicalJson": "-1.4467566778778863e+306",
+      "sha256": "985199eee622f22849af4c5eafebbc069ae629f5037b432eedd58510c9c46dbc"
+    },
+    {
+      "name": "binary64-239",
+      "inputJson": "1.1401065751640273e+34",
+      "canonicalJson": "1.1401065751640273e+34",
+      "sha256": "5d46f820c0bef1ef1eccf95907d2032d4487b5d0adab2ad34fd3344d9a51b51a"
+    },
+    {
+      "name": "binary64-240",
+      "inputJson": "-1.297333604781587e-37",
+      "canonicalJson": "-1.297333604781587e-37",
+      "sha256": "48f5399f1587feb1fd3b56a43d51a8170a35631caa43c68a1ffddd2f0dd0a998"
+    },
+    {
+      "name": "binary64-241",
+      "inputJson": "-1.1337896866272906e+96",
+      "canonicalJson": "-1.1337896866272906e+96",
+      "sha256": "6f25c038c6d8375c4f3fada2f0d5bbd1e0b1028539124bc8f19d25ddbcc5aa72"
+    },
+    {
+      "name": "binary64-242",
+      "inputJson": "-4.7463575013779335e-157",
+      "canonicalJson": "-4.7463575013779335e-157",
+      "sha256": "11399e1cca4c171738dd2ee30715dadc332e38d0e6b09a8bf4fa732f80a97548"
+    },
+    {
+      "name": "binary64-243",
+      "inputJson": "-5.667071486320319e-146",
+      "canonicalJson": "-5.667071486320319e-146",
+      "sha256": "4d65384a889dcba7dd76514c9b6e5d2d4406c72e35e2804badfb6b9caf951582"
+    },
+    {
+      "name": "binary64-244",
+      "inputJson": "1.5989795990049882e-207",
+      "canonicalJson": "1.5989795990049882e-207",
+      "sha256": "612592937a16e933b85471777309e68d557e9941f89b14f13931c6eb3b5cd4db"
+    },
+    {
+      "name": "binary64-245",
+      "inputJson": "1.920339841090842e-276",
+      "canonicalJson": "1.920339841090842e-276",
+      "sha256": "81818c7c92ee8e339b9e8ed0574d9f695dcec5bd5737dc63e4fcd2d663a90adb"
+    },
+    {
+      "name": "binary64-246",
+      "inputJson": "-5.307802757415377e+171",
+      "canonicalJson": "-5.307802757415377e+171",
+      "sha256": "d4f93a023f3d5ebd930815698d317784673309b4c044bc3abbdf3df5653bfd01"
+    },
+    {
+      "name": "binary64-247",
+      "inputJson": "-1.9319223324298394e-195",
+      "canonicalJson": "-1.9319223324298394e-195",
+      "sha256": "824cd1888bceddfbb02e0cea5cecb4ba4cb13ffa183a43947f93663d32d2f12d"
+    },
+    {
+      "name": "binary64-248",
+      "inputJson": "-3.7250118168424308e-264",
+      "canonicalJson": "-3.7250118168424308e-264",
+      "sha256": "f4c3f51c8cd164902e432115560f44bff50185ac16469962a48d32b49ab09982"
+    },
+    {
+      "name": "binary64-249",
+      "inputJson": "-3.650648465438452e-111",
+      "canonicalJson": "-3.650648465438452e-111",
+      "sha256": "2254ddc649ccb2214c930fb28f6ea9f041bacb43f65b573b0b4630b35365af5c"
+    },
+    {
+      "name": "binary64-250",
+      "inputJson": "-1.5008421970598203e+258",
+      "canonicalJson": "-1.5008421970598203e+258",
+      "sha256": "fc9dd9e3ca64400fb12af3f0869998cac6265f318344854dfe81bd00893489da"
+    },
+    {
+      "name": "binary64-251",
+      "inputJson": "3.627724300123753e+174",
+      "canonicalJson": "3.627724300123753e+174",
+      "sha256": "f4899d722ba158abcb50c751e81ff3a039a76ff1e4fdcf919dc54e4e3ade8aa1"
+    },
+    {
+      "name": "binary64-252",
+      "inputJson": "6.861755550054756e+125",
+      "canonicalJson": "6.861755550054756e+125",
+      "sha256": "4d9ceb948cd85d2d3c501bfc34506a70f31b8e26eb9f5457f9c8eb9ba1fd043c"
+    },
+    {
+      "name": "binary64-253",
+      "inputJson": "-2821562367496.159",
+      "canonicalJson": "-2821562367496.159",
+      "sha256": "7c3a46ee64b5e3775be9180756ac4001da8cf2ee4c0b4e18dff04eccb76b9598"
+    },
+    {
+      "name": "binary64-254",
+      "inputJson": "6.180516863264547e+110",
+      "canonicalJson": "6.180516863264547e+110",
+      "sha256": "386ca92610af5bd8c279bd584b19313a126fc617dcc95f3e4c821a19b4bbaba1"
+    },
+    {
+      "name": "binary64-255",
+      "inputJson": "7.802277066870594e+93",
+      "canonicalJson": "7.802277066870594e+93",
+      "sha256": "e36a5818becd96c0b01ac113e953ba0d837beebd0765da9178bd10bc4b469699"
+    },
+    {
+      "name": "binary64-256",
+      "inputJson": "-4.552035777184899e-199",
+      "canonicalJson": "-4.552035777184899e-199",
+      "sha256": "f76266d9e568615a6a6799fb8f4fdec6307f6e7385b21b79266efa22cbbc672a"
+    },
+    {
+      "name": "binary64-257",
+      "inputJson": "-8.082383178749832e-21",
+      "canonicalJson": "-8.082383178749832e-21",
+      "sha256": "73f0d997295d3da187f38042419c0cda2c04aa433b7ff4f2e4d9c2587c83754d"
+    },
+    {
+      "name": "binary64-258",
+      "inputJson": "-1359105677225.6365",
+      "canonicalJson": "-1359105677225.6365",
+      "sha256": "7c18cb145cd0db33e9b04c34c21be4216ad729fce99fbcb0217766df0e113d0c"
+    },
+    {
+      "name": "binary64-259",
+      "inputJson": "-1.750874527036463e+181",
+      "canonicalJson": "-1.750874527036463e+181",
+      "sha256": "bb75c360f09cca8f391cbd2c62e5f3a1d32b9bdcfea43959c49de7c6822152ba"
+    },
+    {
+      "name": "binary64-260",
+      "inputJson": "103185179109088.28",
+      "canonicalJson": "103185179109088.28",
+      "sha256": "ef5336377f1bdba9ce4a550c52cf0355f005c12ea2955f49bfc5a4da83699e39"
+    },
+    {
+      "name": "binary64-261",
+      "inputJson": "4.8153116586424315e-296",
+      "canonicalJson": "4.8153116586424315e-296",
+      "sha256": "81a84aa8cf44d179b4da2c903c5558d11b85bbb84d09605bf30df813072a2fcf"
+    },
+    {
+      "name": "binary64-262",
+      "inputJson": "-8.439032255116185e+291",
+      "canonicalJson": "-8.439032255116185e+291",
+      "sha256": "96366fe5bad68cf534eaf3d1eafa7a82fa07ec9b8716b502e7b3ce1587b09e72"
+    },
+    {
+      "name": "binary64-263",
+      "inputJson": "1.6988281102268035e-153",
+      "canonicalJson": "1.6988281102268035e-153",
+      "sha256": "52a0d91289ae889ed24687aa213b71336dd8f6dfc2430681af67fb018ffd00f6"
+    },
+    {
+      "name": "binary64-264",
+      "inputJson": "-7.124671231919578e-116",
+      "canonicalJson": "-7.124671231919578e-116",
+      "sha256": "b682ca69c039327c2ca34ea0225ca303d990fc81cdc47b91494fcec2a2163637"
+    },
+    {
+      "name": "binary64-265",
+      "inputJson": "-1.340341628624232e-199",
+      "canonicalJson": "-1.340341628624232e-199",
+      "sha256": "7abdb2b5372e56f836d3cd411f9fb77dd46b4887a3bc5c58a7ec5a53bbe061ee"
+    },
+    {
+      "name": "binary64-266",
+      "inputJson": "1.7947353986069352e-255",
+      "canonicalJson": "1.7947353986069352e-255",
+      "sha256": "db2b8bacafd9b865a73a772438861b435798020b50090c632c9babbf0af8e520"
+    },
+    {
+      "name": "binary64-267",
+      "inputJson": "4.727597707533488e-13",
+      "canonicalJson": "4.727597707533488e-13",
+      "sha256": "054575269b1afe57691ad4642568de736b4e38c0ecde69e2f65ad1d7b57af3f8"
+    },
+    {
+      "name": "binary64-268",
+      "inputJson": "-3.3668793687498488e+128",
+      "canonicalJson": "-3.3668793687498488e+128",
+      "sha256": "ff34c515fdd5b21dd0b40b7c2872cf770c4f52e2454a9bc29e363fc1c5078051"
+    },
+    {
+      "name": "binary64-269",
+      "inputJson": "-2.4484099883549763e-189",
+      "canonicalJson": "-2.4484099883549763e-189",
+      "sha256": "76ddb8a033d7b7abf8f142a8e57d3b3525c0629db888ab6ecf58e85c893ac617"
+    },
+    {
+      "name": "binary64-270",
+      "inputJson": "4.911517088109244e-12",
+      "canonicalJson": "4.911517088109244e-12",
+      "sha256": "c3f9518c32737b5f67cd6abfc223cd0890786cb0740f2a9cb3dd1243f800c8f7"
+    },
+    {
+      "name": "binary64-271",
+      "inputJson": "4.1203534526074485e+176",
+      "canonicalJson": "4.1203534526074485e+176",
+      "sha256": "c7dd3f6d09282fa91cb2f6d2649289c44938958872417e429bfaa38c2b617993"
+    },
+    {
+      "name": "binary64-272",
+      "inputJson": "-3.307574258956717e+259",
+      "canonicalJson": "-3.307574258956717e+259",
+      "sha256": "c96f55b2ae103f168409fcfddeab7de5963e7e13c3462588bf593d64b6596f65"
+    },
+    {
+      "name": "binary64-273",
+      "inputJson": "-2.0686411632058094e+172",
+      "canonicalJson": "-2.0686411632058094e+172",
+      "sha256": "7bc7b860b40e1fae57daba012d9384caed984b636474e6cf44ab36c0d9e3f73f"
+    },
+    {
+      "name": "binary64-274",
+      "inputJson": "7.580476897869381e+288",
+      "canonicalJson": "7.580476897869381e+288",
+      "sha256": "3fd15b0e8acc2591077265a86f6975bf21a09898fcdc2421192db79c6778d2d9"
+    },
+    {
+      "name": "binary64-275",
+      "inputJson": "3.864653969238824e-175",
+      "canonicalJson": "3.864653969238824e-175",
+      "sha256": "9d02e6c49b8d551381597cf25f840f2f94af158a0a98e3678001cf63d2db05ee"
+    },
+    {
+      "name": "binary64-276",
+      "inputJson": "-2.4899257791029624e+301",
+      "canonicalJson": "-2.4899257791029624e+301",
+      "sha256": "f4bf49619057cbc8314fb08d35708c5d4dfaad04632d9e0b655122fafa05a18f"
+    },
+    {
+      "name": "binary64-277",
+      "inputJson": "-8.461724618665818e+79",
+      "canonicalJson": "-8.461724618665818e+79",
+      "sha256": "b91494b36580ae081b4a35072d7a57ee64460492521082b154187d7a81845a21"
+    },
+    {
+      "name": "binary64-278",
+      "inputJson": "7.88227555698484e-86",
+      "canonicalJson": "7.88227555698484e-86",
+      "sha256": "52c541880ce3d6c15b9da753f86bfd9783d5dd34a57feddf3dac629105753b0e"
+    },
+    {
+      "name": "binary64-279",
+      "inputJson": "-8.812554182888141e-77",
+      "canonicalJson": "-8.812554182888141e-77",
+      "sha256": "c6da13e499c075328f05549b4f6628281579301b0f0837fad917cec69ec194e2"
+    },
+    {
+      "name": "binary64-280",
+      "inputJson": "-3.1579700643539543e-65",
+      "canonicalJson": "-3.1579700643539543e-65",
+      "sha256": "00d6c862d08cc9d4aa7f422335c102ab3e71a8df50a7f766c05794f9187fa086"
+    },
+    {
+      "name": "binary64-281",
+      "inputJson": "-2.1761005935293644e+274",
+      "canonicalJson": "-2.1761005935293644e+274",
+      "sha256": "8d7549053ae8bc462e18574c0a90672809a042970a30310fbab00e299b0a8448"
+    },
+    {
+      "name": "binary64-282",
+      "inputJson": "-7.626226104208716e+301",
+      "canonicalJson": "-7.626226104208716e+301",
+      "sha256": "e005855bb9f252812ca10c751b455ccd76a07d431ffd0a2c8d3f4f6bbda0873f"
+    },
+    {
+      "name": "binary64-283",
+      "inputJson": "1.8458722344674858e+154",
+      "canonicalJson": "1.8458722344674858e+154",
+      "sha256": "04c0bf4e199d4677138f26b993cd01205e577ec692499c136848758b4164dcfd"
+    },
+    {
+      "name": "binary64-284",
+      "inputJson": "1.046769349025036e+140",
+      "canonicalJson": "1.046769349025036e+140",
+      "sha256": "5bfc25b920f184d852fa1851106c3ad0d32536d07372ceda6ef035f6fc4340a2"
+    },
+    {
+      "name": "binary64-285",
+      "inputJson": "1.821311350706458e-47",
+      "canonicalJson": "1.821311350706458e-47",
+      "sha256": "fd68b2566e1b7d6d6a4d211e9f17e0621d1f3c9b4ae4232fbfdc9e77b3b3ffc6"
+    },
+    {
+      "name": "binary64-286",
+      "inputJson": "1.2486774666717838e+288",
+      "canonicalJson": "1.2486774666717838e+288",
+      "sha256": "6863148f6f8313972bba8b0b77d7436041ab6e60d40ed92d0a900d9bf2bf585d"
+    },
+    {
+      "name": "binary64-287",
+      "inputJson": "6.0282229027815395e+106",
+      "canonicalJson": "6.0282229027815395e+106",
+      "sha256": "b3e032ca01ac2ff862ffbc5387f37d222bb65f1e9a2494eb40d8b0c3f7bf0382"
+    },
+    {
+      "name": "binary64-288",
+      "inputJson": "1.5856306439861445e+106",
+      "canonicalJson": "1.5856306439861445e+106",
+      "sha256": "c05441c4061f737144c877dd4b92090ab07b9aa4354f383ee6ff9796cc4057e4"
+    },
+    {
+      "name": "binary64-289",
+      "inputJson": "-3.522263370171812e+50",
+      "canonicalJson": "-3.522263370171812e+50",
+      "sha256": "556180bdc0231cb3cce20681b51bdfa9f88ee652796f65e36fa9bb665dc4a770"
+    },
+    {
+      "name": "binary64-290",
+      "inputJson": "1.0927989847107202e+121",
+      "canonicalJson": "1.0927989847107202e+121",
+      "sha256": "9319e13d50bb334b2f63397e89eb3f1e3085a662b6604c0b370a4f2407a22fcc"
+    },
+    {
+      "name": "binary64-291",
+      "inputJson": "5.385815944903e+126",
+      "canonicalJson": "5.385815944903e+126",
+      "sha256": "be3da4af7dd6d6bac97bd2bbaa445d9338768a6cdf2aebdf18a9fa9adceb1495"
+    },
+    {
+      "name": "binary64-292",
+      "inputJson": "2.5493488312229365e+294",
+      "canonicalJson": "2.5493488312229365e+294",
+      "sha256": "cf80be1634b7cefd2c09ff783367cbc08714d139bfce7035370530787a452042"
+    },
+    {
+      "name": "binary64-293",
+      "inputJson": "-1.1353088068162693e-182",
+      "canonicalJson": "-1.1353088068162693e-182",
+      "sha256": "7f1ed05eb78bd791046fb99ead98c95c50b4a1c6fdf15834ccebf86a3a583094"
+    },
+    {
+      "name": "binary64-294",
+      "inputJson": "2.038099366955104e-104",
+      "canonicalJson": "2.038099366955104e-104",
+      "sha256": "64462b149f645c7e13035c0de24bcf368c12f83a66f47830ca8b00629446b92d"
+    },
+    {
+      "name": "binary64-295",
+      "inputJson": "-8.94002797529813e+213",
+      "canonicalJson": "-8.94002797529813e+213",
+      "sha256": "0b155c54937884bde7ffc55dcb87b9d5f32ffa25d137f47ccc7ec10515e91a7c"
+    },
+    {
+      "name": "binary64-296",
+      "inputJson": "4.0156856067829827e-10",
+      "canonicalJson": "4.0156856067829827e-10",
+      "sha256": "6e70a500981aed7540186c4eac98fb7b61c257d93329911019e90a2a365e79b4"
+    },
+    {
+      "name": "binary64-297",
+      "inputJson": "-1.4631483426001473e+95",
+      "canonicalJson": "-1.4631483426001473e+95",
+      "sha256": "207ec7273071bfcaba45ed913cf6abb0a066aff9bc60932857e385cf77003a93"
+    },
+    {
+      "name": "binary64-298",
+      "inputJson": "6.084615488630914e-276",
+      "canonicalJson": "6.084615488630914e-276",
+      "sha256": "68997f0455ecf8754be8821a685e0fcca173a7d9431ab74fca7913e9d1432bfe"
+    },
+    {
+      "name": "binary64-299",
+      "inputJson": "-1.1792524905889734e+201",
+      "canonicalJson": "-1.1792524905889734e+201",
+      "sha256": "8b2ba2747b41abf50ba28da7dcd56505eb69533e3000a917dda84a563b5ee39c"
+    },
+    {
+      "name": "binary64-300",
+      "inputJson": "4.873586823197474e-164",
+      "canonicalJson": "4.873586823197474e-164",
+      "sha256": "3751d3f58619f5101c2d12988d799a3809f8a3e004bb1137136f908d0bdf7c9d"
+    },
+    {
+      "name": "binary64-301",
+      "inputJson": "-1.561123103672884e+123",
+      "canonicalJson": "-1.561123103672884e+123",
+      "sha256": "9a42eb3a65527a3cdd7c48337ca0cd057ab85d099e962b4c30c02beb2e2fe3b5"
+    },
+    {
+      "name": "binary64-302",
+      "inputJson": "1683155061377608.5",
+      "canonicalJson": "1683155061377608.5",
+      "sha256": "3649f4b63632307017bc72bdf830e78799ee43cd7a67efb06d63c31944bc9763"
+    },
+    {
+      "name": "binary64-303",
+      "inputJson": "1.371645588851329e+27",
+      "canonicalJson": "1.371645588851329e+27",
+      "sha256": "ea4463b9a5f07b79ca8dc745a473e2bb7396f8322d22dc769c805f84774b0370"
+    },
+    {
+      "name": "binary64-304",
+      "inputJson": "1.0377383601375505e+110",
+      "canonicalJson": "1.0377383601375505e+110",
+      "sha256": "adae574a967f45a98ac467f830ffa0297597eb28adc07d998fe776baf8755ef5"
+    },
+    {
+      "name": "binary64-305",
+      "inputJson": "7.048588498932392e+114",
+      "canonicalJson": "7.048588498932392e+114",
+      "sha256": "9420037f3970cadbf0391ffa78c962f5a23311a4547152dbee1b8a49a2b0d18b"
+    },
+    {
+      "name": "binary64-306",
+      "inputJson": "-9.355834247552703e+100",
+      "canonicalJson": "-9.355834247552703e+100",
+      "sha256": "48f6490207e13a13b516edb9f51b0b27582b9ceb7e9aa98fceffe7892cd15e54"
+    },
+    {
+      "name": "binary64-307",
+      "inputJson": "1.304598737296011e+286",
+      "canonicalJson": "1.304598737296011e+286",
+      "sha256": "42f960afd233ffc8665fc2e1264f89f4492de40a6c253c219121159b4d14bf77"
+    },
+    {
+      "name": "binary64-308",
+      "inputJson": "2.3414870416237075e-95",
+      "canonicalJson": "2.3414870416237075e-95",
+      "sha256": "6bbb5e14daddf6aabc72dc51eb972b7c5ddde2e21db682469b9f0bd9ddf4e985"
+    },
+    {
+      "name": "binary64-309",
+      "inputJson": "1.024688977313989e+93",
+      "canonicalJson": "1.024688977313989e+93",
+      "sha256": "ffedd96c0a07e6c481b877e2186aa0c217f0ba3065062abf73ac93521329baf3"
+    },
+    {
+      "name": "binary64-310",
+      "inputJson": "8.861013962706935e+44",
+      "canonicalJson": "8.861013962706935e+44",
+      "sha256": "9da9f859e5fb5b95d80ddfbecc89e8db1e9958237c692e2c1b34d3fd801ac120"
+    },
+    {
+      "name": "binary64-311",
+      "inputJson": "7.942206123349449e-209",
+      "canonicalJson": "7.942206123349449e-209",
+      "sha256": "7002f85e52fa05891b68f7a2c56fcf52eca1dc8a2dc9b874e3db6dd6b1db23d4"
+    },
+    {
+      "name": "binary64-312",
+      "inputJson": "-6.609664289150315e+106",
+      "canonicalJson": "-6.609664289150315e+106",
+      "sha256": "a1f80d355a8a7aadf880e2f8ce65732ac15b9f9aed94156b3648bf8b32e46b9c"
+    },
+    {
+      "name": "binary64-313",
+      "inputJson": "2.217653553861143e+216",
+      "canonicalJson": "2.217653553861143e+216",
+      "sha256": "88dd88f4e7a37539995e5811dba60da37a47822fb24df551728062863f967f3d"
+    },
+    {
+      "name": "binary64-314",
+      "inputJson": "-2.6346649650133288e+281",
+      "canonicalJson": "-2.6346649650133288e+281",
+      "sha256": "199c3a5e0df3c2fdb3bf458f653982ac8a1afe3e66c284cdc3c3eae4c1ba0ce6"
+    },
+    {
+      "name": "binary64-315",
+      "inputJson": "5.5354398996567974e-27",
+      "canonicalJson": "5.5354398996567974e-27",
+      "sha256": "7238066d7beb25635134746634109c18536b4e2c390bd044b4421715d42f6246"
+    },
+    {
+      "name": "binary64-316",
+      "inputJson": "7.136425116370843e+52",
+      "canonicalJson": "7.136425116370843e+52",
+      "sha256": "e4fb3df8c0faf85485ca2d47c7b561c41740c513b4be831426932b276117bf02"
+    },
+    {
+      "name": "binary64-317",
+      "inputJson": "-3.3402354000261666e+118",
+      "canonicalJson": "-3.3402354000261666e+118",
+      "sha256": "0171a55c10299b6b0207dc76ebe8a354f91c8a0efd4a0a77f78266d30d3e8a33"
+    },
+    {
+      "name": "binary64-318",
+      "inputJson": "1.892766529705056e+277",
+      "canonicalJson": "1.892766529705056e+277",
+      "sha256": "741da76b9b1a52645d14f3b77a62412bc426e85816668c5e8afd5afed0499f6f"
+    },
+    {
+      "name": "binary64-319",
+      "inputJson": "-3.367369877247957e+174",
+      "canonicalJson": "-3.367369877247957e+174",
+      "sha256": "f026b488b549e1e29e368070bbb6d956b6127b12edd75edeeedcd0f00795a5cb"
+    },
+    {
+      "name": "binary64-320",
+      "inputJson": "-2.5120019805629585e+109",
+      "canonicalJson": "-2.5120019805629585e+109",
+      "sha256": "553e705b5a8daa84bb63743c48b96eb14a82d36a7af57d2cf1f32c01e8aa75e2"
+    },
+    {
+      "name": "binary64-321",
+      "inputJson": "1.6347749654354653e-278",
+      "canonicalJson": "1.6347749654354653e-278",
+      "sha256": "79d53658fbc17385282d00d7f104107f03d6440a92d79ed9d57b3bc5a3f7b778"
+    },
+    {
+      "name": "binary64-322",
+      "inputJson": "1.303693692100963e+215",
+      "canonicalJson": "1.303693692100963e+215",
+      "sha256": "4735f5fa77f33d2844b30d1b0d0bcb94581b33bff87bcf1636ce74a911a4d354"
+    },
+    {
+      "name": "binary64-323",
+      "inputJson": "-1.6710199459860367e+134",
+      "canonicalJson": "-1.6710199459860367e+134",
+      "sha256": "eb17b13bd45453dcfe9a915cc91a465027239b996139d98de66d2d243392e290"
+    },
+    {
+      "name": "binary64-324",
+      "inputJson": "-1.3933552344790739e-269",
+      "canonicalJson": "-1.3933552344790739e-269",
+      "sha256": "9327c0a43a23a710e2255ac3a65705818f008db20a676f2f7e794efacd851ba9"
+    },
+    {
+      "name": "binary64-325",
+      "inputJson": "-4.782330334905913e-119",
+      "canonicalJson": "-4.782330334905913e-119",
+      "sha256": "f15648561d3353f061fa2942231e873fd25b7dd14439b07eebecc3dd44676dbd"
+    },
+    {
+      "name": "binary64-326",
+      "inputJson": "-2.485604879875995e+34",
+      "canonicalJson": "-2.485604879875995e+34",
+      "sha256": "58516870fa0c343d5e210abc20f179a0cecbd93b9bb8355412b095c06b61030d"
+    },
+    {
+      "name": "binary64-327",
+      "inputJson": "-3.2919981894975676e+222",
+      "canonicalJson": "-3.2919981894975676e+222",
+      "sha256": "d68e4e20d8ff11cf27b53b4111351e12689272ecbd94918c9188b1a52f5e4b8b"
+    },
+    {
+      "name": "binary64-328",
+      "inputJson": "-1.826773389775232e+156",
+      "canonicalJson": "-1.826773389775232e+156",
+      "sha256": "f1480c92348a1a348341847080aba1bb600182ccb9be665ec859b57a130b63c3"
+    },
+    {
+      "name": "binary64-329",
+      "inputJson": "6.129734287315411e+249",
+      "canonicalJson": "6.129734287315411e+249",
+      "sha256": "a36c4e7d74ba5f66252ee9eac70835b6c071d321ae222eda5e49f99596c0330d"
+    },
+    {
+      "name": "binary64-330",
+      "inputJson": "-5.302605045866722e-95",
+      "canonicalJson": "-5.302605045866722e-95",
+      "sha256": "fe4f13d4904773c212e1c48e355b99f9fb9066fa83a23626fdef80d959a84e29"
+    },
+    {
+      "name": "binary64-331",
+      "inputJson": "-2.0188888633139845e-176",
+      "canonicalJson": "-2.0188888633139845e-176",
+      "sha256": "a75822b27e8988833245a01cfc2bf9b324683d3935588dc34992d161ab9fcff1"
+    },
+    {
+      "name": "binary64-332",
+      "inputJson": "6.164071353901304e+162",
+      "canonicalJson": "6.164071353901304e+162",
+      "sha256": "db0cbcf692319211fc0f07e5170f7a64f1f64d5458201f2b4012225f57a95bee"
+    },
+    {
+      "name": "binary64-333",
+      "inputJson": "-4.043942207979197e-167",
+      "canonicalJson": "-4.043942207979197e-167",
+      "sha256": "8546b31764a5ec1ed7a780bb7a4710d15fbae4f08aaf901443f268be95a95a77"
+    },
+    {
+      "name": "binary64-334",
+      "inputJson": "-3.843788223070705e-306",
+      "canonicalJson": "-3.843788223070705e-306",
+      "sha256": "fe1b239575226860963de740b911fb147eabbf6fb421beac8e98585670855a63"
+    },
+    {
+      "name": "binary64-335",
+      "inputJson": "5.164286417313914e+107",
+      "canonicalJson": "5.164286417313914e+107",
+      "sha256": "75bd2d855a6269e4e43a4d75501918e4106009492558b5193f39c472f6bfdd17"
+    },
+    {
+      "name": "binary64-336",
+      "inputJson": "1.2613865082714754e-245",
+      "canonicalJson": "1.2613865082714754e-245",
+      "sha256": "aa5fae088dcbc05139d6324214ed7d417095a7e1e65b777c0be7547738b926ef"
+    },
+    {
+      "name": "binary64-337",
+      "inputJson": "-7.456622715554628e-66",
+      "canonicalJson": "-7.456622715554628e-66",
+      "sha256": "ad618446c729e9585cfa80f40486f2242c53fee8b8aabf76c1deb36fcc63a192"
+    },
+    {
+      "name": "binary64-338",
+      "inputJson": "1.548692853751434e-92",
+      "canonicalJson": "1.548692853751434e-92",
+      "sha256": "680df4c0240831426dcd6645aebb305e842f88a3c276d34af6da26812e4565af"
+    },
+    {
+      "name": "binary64-339",
+      "inputJson": "-1.1308485195362638e-133",
+      "canonicalJson": "-1.1308485195362638e-133",
+      "sha256": "019990bf7fb36a1fd9de76987df4d4dff334bfab2cb2c8ab0102ae7f459d4704"
+    },
+    {
+      "name": "binary64-340",
+      "inputJson": "1.5666954245366013e-132",
+      "canonicalJson": "1.5666954245366013e-132",
+      "sha256": "5a434ae29b21d9a376f9dc3291c2e576c4518a2a3d222115632992cbcbaa8975"
+    },
+    {
+      "name": "binary64-341",
+      "inputJson": "-1.6961047521968228e-68",
+      "canonicalJson": "-1.6961047521968228e-68",
+      "sha256": "ac6a7daf0bdeb6851c1dfbd23c4cc2e97525a7807428a98643e36a1bdda8a422"
+    },
+    {
+      "name": "binary64-342",
+      "inputJson": "4.469121252047232e+99",
+      "canonicalJson": "4.469121252047232e+99",
+      "sha256": "d9fd7ee5344f88c38f4ebc6e24e2fd336c6c9e811adf416741346730d40fec93"
+    },
+    {
+      "name": "binary64-343",
+      "inputJson": "1.8571665456075033e-108",
+      "canonicalJson": "1.8571665456075033e-108",
+      "sha256": "6300765be5bb9c78d0a9d56f5229b04b051a9f958d39890acc1a90e4f707d02e"
+    },
+    {
+      "name": "binary64-344",
+      "inputJson": "-9.765055867607312e+294",
+      "canonicalJson": "-9.765055867607312e+294",
+      "sha256": "fdde86f517902e8d3607e77280c35952bb7251344d25fbe6e0fb65b33b7f8135"
+    },
+    {
+      "name": "binary64-345",
+      "inputJson": "1.0959387673866664e-14",
+      "canonicalJson": "1.0959387673866664e-14",
+      "sha256": "9f6cd58e79f971037a01faafb1d2a4d0eba0f588615f65a10a080336ef298de5"
+    },
+    {
+      "name": "binary64-346",
+      "inputJson": "-1.8569411974496212e+63",
+      "canonicalJson": "-1.8569411974496212e+63",
+      "sha256": "a055641a6b62a101d9019fe4f90403173f1b07b5c1475f6cbfb2620fc890eb1e"
+    },
+    {
+      "name": "binary64-347",
+      "inputJson": "1.5159759954144067e+261",
+      "canonicalJson": "1.5159759954144067e+261",
+      "sha256": "28d2c392b34824e4b5165450520504460c8f3d13c67a82f02a53e3e2ef6fffa1"
+    },
+    {
+      "name": "binary64-348",
+      "inputJson": "-3.7723358147791233e-187",
+      "canonicalJson": "-3.7723358147791233e-187",
+      "sha256": "813392e8d563580828138e307f69241caedfd9bd2ff37a06b763665166e3ad68"
+    },
+    {
+      "name": "binary64-349",
+      "inputJson": "1.6792705404140483e-245",
+      "canonicalJson": "1.6792705404140483e-245",
+      "sha256": "b666c4c71f62ac002f2e313b76ce80412a2429c55c08bec3647bc3021c3b6066"
+    },
+    {
+      "name": "binary64-350",
+      "inputJson": "-1.879452242283726e-53",
+      "canonicalJson": "-1.879452242283726e-53",
+      "sha256": "cc9cd65cc81acb59e87c47407f671670c39b7391b27e661388a50e5a99e88c30"
+    },
+    {
+      "name": "binary64-351",
+      "inputJson": "3.5078532224669307e+37",
+      "canonicalJson": "3.5078532224669307e+37",
+      "sha256": "1592d526aa958b12b5d199290887628c09170b5b10013d878cdc6935499280db"
+    },
+    {
+      "name": "binary64-352",
+      "inputJson": "5.307791601977179e+239",
+      "canonicalJson": "5.307791601977179e+239",
+      "sha256": "2b71bb3cceba3512f0454df50b23412cded9675f042881cbbfb934e6bd59e5e6"
+    },
+    {
+      "name": "binary64-353",
+      "inputJson": "1.0379360964342296e-23",
+      "canonicalJson": "1.0379360964342296e-23",
+      "sha256": "6a3ab20796d7fecf4fe5acbbffc5cd947a362ef35ddd58110132ec74511b888e"
+    },
+    {
+      "name": "binary64-354",
+      "inputJson": "-4.07636115891516e+152",
+      "canonicalJson": "-4.07636115891516e+152",
+      "sha256": "7e11117d5dfab831fc4d415e3bd937e8847777230562478691a9f2e2251c8035"
+    },
+    {
+      "name": "binary64-355",
+      "inputJson": "-7.980608643655391e+45",
+      "canonicalJson": "-7.980608643655391e+45",
+      "sha256": "4b40877f9a9ff8972f35c7052617b2dbf107e8af6684daff9974646a43780903"
+    },
+    {
+      "name": "binary64-356",
+      "inputJson": "3.1907672085639206e+42",
+      "canonicalJson": "3.1907672085639206e+42",
+      "sha256": "73048e3d6f3e37ec22b67bdc914db4763d9a00e8b0dfa9959dca391710fab5e5"
+    },
+    {
+      "name": "binary64-357",
+      "inputJson": "-3.3517027115954226e+162",
+      "canonicalJson": "-3.3517027115954226e+162",
+      "sha256": "0a4f51e61887e47a889316f1fc605781a769bd8f52021ce9ad2161cc2dc99052"
+    },
+    {
+      "name": "binary64-358",
+      "inputJson": "-2.773255293065535e-281",
+      "canonicalJson": "-2.773255293065535e-281",
+      "sha256": "c2ab3d226b4f39597040d1d7048af38c0926fdb6218f117e1178e94234f99a8a"
+    },
+    {
+      "name": "binary64-359",
+      "inputJson": "-6.166161091509765e+24",
+      "canonicalJson": "-6.166161091509765e+24",
+      "sha256": "8dd97efdb96e2f0a80bd3c70fb0f59de7e3370ccd397f8ac153161bf8469f618"
+    },
+    {
+      "name": "binary64-360",
+      "inputJson": "-1.1941574821678882e-103",
+      "canonicalJson": "-1.1941574821678882e-103",
+      "sha256": "95fe6a6a1d4e6a12d6f53b5462a0f7c9cd51604ebba6d41e8d98755dc1e42b7e"
+    },
+    {
+      "name": "binary64-361",
+      "inputJson": "-3.4878010194969133e-127",
+      "canonicalJson": "-3.4878010194969133e-127",
+      "sha256": "a0f03ac560caf37e1f47ff3e1c2624015dc37a65a233ad5c0a49e6dd40668cab"
+    },
+    {
+      "name": "binary64-362",
+      "inputJson": "1.4970780588783524e+112",
+      "canonicalJson": "1.4970780588783524e+112",
+      "sha256": "a6e12b627f1288e47724be1a3200f3f6ecc3b8e8028c481566b83e38f6f381e4"
+    },
+    {
+      "name": "binary64-363",
+      "inputJson": "2.2217906275618469e+263",
+      "canonicalJson": "2.2217906275618469e+263",
+      "sha256": "3d95f6aaf0bf48946bd2c77638980ff17aa704b9270876fdb12e4f94fb41f5ed"
+    },
+    {
+      "name": "binary64-364",
+      "inputJson": "6.370391131091769e+146",
+      "canonicalJson": "6.370391131091769e+146",
+      "sha256": "f6cc8ca0963a086fd04e3e78df8fb1f146a3f8737086168741783d46d5b3e62e"
+    },
+    {
+      "name": "binary64-365",
+      "inputJson": "-3.4080037463154936e-199",
+      "canonicalJson": "-3.4080037463154936e-199",
+      "sha256": "6e94a52c443e48fd185eaf3b9b90fc6de58612355cb809f76dfa695f45efe553"
+    },
+    {
+      "name": "binary64-366",
+      "inputJson": "4.8679574965215085e-27",
+      "canonicalJson": "4.8679574965215085e-27",
+      "sha256": "cbbf6be03e99a3fa5f7cf63e3d81082fa38d92db73e26ce99c2c7866b7cedb59"
+    },
+    {
+      "name": "binary64-367",
+      "inputJson": "-1.3018811152684638e-17",
+      "canonicalJson": "-1.3018811152684638e-17",
+      "sha256": "57fa5b5cd0b6c034d388a5bdeec74902bf1497591176776ed8ef8a1be0162f02"
+    },
+    {
+      "name": "binary64-368",
+      "inputJson": "3.0597566580502835e+202",
+      "canonicalJson": "3.0597566580502835e+202",
+      "sha256": "7b33a6ebf9e988c322c3f1c49eb2db49d6555256dc4f04c8ec00f98ead66f7bc"
+    },
+    {
+      "name": "binary64-369",
+      "inputJson": "-9.113124490977526e-162",
+      "canonicalJson": "-9.113124490977526e-162",
+      "sha256": "456ed413f77c891b3a5349a54f467a703a0002eaa1aca4d6a75a04f83b893d74"
+    },
+    {
+      "name": "binary64-370",
+      "inputJson": "-2.5173858090282703e+61",
+      "canonicalJson": "-2.5173858090282703e+61",
+      "sha256": "a841c2a4c00a36f6461b9e5feb55f312f7c99e520411696657a52e8eedc8698d"
+    },
+    {
+      "name": "binary64-371",
+      "inputJson": "-3.1950249209181174e+92",
+      "canonicalJson": "-3.1950249209181174e+92",
+      "sha256": "e97c672c35b6c53dfdc7f117180b7082dbc9dcf6a8aedcfbe753beb92f7a5b88"
+    },
+    {
+      "name": "binary64-372",
+      "inputJson": "1.423625939891129e+255",
+      "canonicalJson": "1.423625939891129e+255",
+      "sha256": "d89bb9a4ae83ff567e05d4af82f0f3df8498c0d204d957558f6894a60acc889c"
+    },
+    {
+      "name": "binary64-373",
+      "inputJson": "-4.416677686946584e-95",
+      "canonicalJson": "-4.416677686946584e-95",
+      "sha256": "bfc8255528ee9cb35d89dedca8642c7c5c5900dfe82832c0f672aef50cda406c"
+    },
+    {
+      "name": "binary64-374",
+      "inputJson": "-8.697023919744098e-137",
+      "canonicalJson": "-8.697023919744098e-137",
+      "sha256": "27e0397ff183970633623bff3430b1bc76c13d2d3aceaf8f36ab33144e6c234a"
+    },
+    {
+      "name": "binary64-375",
+      "inputJson": "6.5327369703677394e+296",
+      "canonicalJson": "6.5327369703677394e+296",
+      "sha256": "570e2677e2069b108375dc54fb4974a09567880b376817716b73892d1e2ec69a"
+    },
+    {
+      "name": "binary64-376",
+      "inputJson": "1.6178032635764465e+282",
+      "canonicalJson": "1.6178032635764465e+282",
+      "sha256": "c14ff568dd9957ade33c542acd6e7ee4ba03309e224acc43ffb3c999d8e93f47"
+    },
+    {
+      "name": "binary64-377",
+      "inputJson": "-2.7960813336769153e-73",
+      "canonicalJson": "-2.7960813336769153e-73",
+      "sha256": "4148a74559269dcd4dafa07a0bec5a2c2bea0b9249deeecf648513839b3e77ac"
+    },
+    {
+      "name": "binary64-378",
+      "inputJson": "-2.9924129966594413e-49",
+      "canonicalJson": "-2.9924129966594413e-49",
+      "sha256": "efa18f993b2d656869f677e0b6b8eceeecd9fc30b7607511173b4a63d09970a7"
+    },
+    {
+      "name": "binary64-379",
+      "inputJson": "3.812807557516786e+222",
+      "canonicalJson": "3.812807557516786e+222",
+      "sha256": "b000b9f471f036ef4cc07783ee168d7eb20291c33f1ab08c393c2477bf29e09b"
+    },
+    {
+      "name": "binary64-380",
+      "inputJson": "-2.885449196704308e-178",
+      "canonicalJson": "-2.885449196704308e-178",
+      "sha256": "abd01ecbc150d30b35dbc6880ff98b605076499d3c0bf289de850410d7dc6b62"
+    },
+    {
+      "name": "binary64-381",
+      "inputJson": "-6.370342118027175e+125",
+      "canonicalJson": "-6.370342118027175e+125",
+      "sha256": "7484de44efd6b5eae91e18bd2c7e40a028a8c31a3a00b10266d25601664d8816"
+    },
+    {
+      "name": "binary64-382",
+      "inputJson": "-3.033241382648545e-264",
+      "canonicalJson": "-3.033241382648545e-264",
+      "sha256": "9b942cb1af51a4f0a330a3041d3a01bba5fb2a817e127fa89de7fe3f5e6165c8"
+    },
+    {
+      "name": "binary64-383",
+      "inputJson": "6.2501870645872566e-12",
+      "canonicalJson": "6.2501870645872566e-12",
+      "sha256": "1c6455c5c8752c3c843fb81daad3ae77f41231ca075db9b4f25050451c232e11"
+    },
+    {
+      "name": "binary64-384",
+      "inputJson": "4.399759177679124e+118",
+      "canonicalJson": "4.399759177679124e+118",
+      "sha256": "30d11fb9df1876b92806c1add6cb592c4706dcb15a487ffaa43c217f8730ce92"
+    },
+    {
+      "name": "binary64-385",
+      "inputJson": "-1.438837788712931e-106",
+      "canonicalJson": "-1.438837788712931e-106",
+      "sha256": "0ae9e4a92e990854bf8fd6f77306b4b236ef38f5545a6980562b37f6f792abe5"
+    },
+    {
+      "name": "binary64-386",
+      "inputJson": "-1.6353818506382023e+274",
+      "canonicalJson": "-1.6353818506382023e+274",
+      "sha256": "83d84288755d54713003f5f5860db9049ca262dcc4df9408429bbe7da975d616"
+    },
+    {
+      "name": "binary64-387",
+      "inputJson": "-1.813057711933431e-272",
+      "canonicalJson": "-1.813057711933431e-272",
+      "sha256": "3eda4e71678da9eda0663c13e2c936f3eb4d4225ac7fc0fe01ffacbb070635bf"
+    },
+    {
+      "name": "binary64-388",
+      "inputJson": "1.3145861719711208e-132",
+      "canonicalJson": "1.3145861719711208e-132",
+      "sha256": "181b372cc3d03ec57dee1672531e3ae6eb6ced4ddedb6db5efa42418348e387a"
+    },
+    {
+      "name": "binary64-389",
+      "inputJson": "4.970407772994481e-64",
+      "canonicalJson": "4.970407772994481e-64",
+      "sha256": "8e29eb4f16c9f1e9dfb8bcf1b5f24414d7b3bdbab63868ea4b1ae54d9480e2f9"
+    },
+    {
+      "name": "binary64-390",
+      "inputJson": "-2.213303322157865e-218",
+      "canonicalJson": "-2.213303322157865e-218",
+      "sha256": "0ed6331bf6adf71e5589dec0330730a983f3353dd68cad37f43c98e69bbff37e"
+    },
+    {
+      "name": "binary64-391",
+      "inputJson": "1.1517303672445276e+80",
+      "canonicalJson": "1.1517303672445276e+80",
+      "sha256": "558af5c3f6ccbf30c8a919d44c0f0cb731b6909e385ed45a43913beabde8501c"
+    },
+    {
+      "name": "binary64-392",
+      "inputJson": "-9.561518496425238e-138",
+      "canonicalJson": "-9.561518496425238e-138",
+      "sha256": "e88920b713ad684ced7e26326b614d057e29d1c8c488fc3479486da11565704d"
+    },
+    {
+      "name": "binary64-393",
+      "inputJson": "2.2554181412776576e-250",
+      "canonicalJson": "2.2554181412776576e-250",
+      "sha256": "3505236e064248aac55a0e576e7c62ae000f974ac9c5ead9a6778d5983686b0c"
+    },
+    {
+      "name": "binary64-394",
+      "inputJson": "6.058191430809662e+172",
+      "canonicalJson": "6.058191430809662e+172",
+      "sha256": "257dc978b734e18d307dd2eab592ed9e91efdafe77094040f4680caff05fd0f8"
+    },
+    {
+      "name": "binary64-395",
+      "inputJson": "-2.087615856061292e+203",
+      "canonicalJson": "-2.087615856061292e+203",
+      "sha256": "18c8db9f16ac18df621ab5f8dbeb8a90e2aab193a167d92c5d1f651a85f2d170"
+    },
+    {
+      "name": "binary64-396",
+      "inputJson": "6.373579385742421e+108",
+      "canonicalJson": "6.373579385742421e+108",
+      "sha256": "3bf8f3798083c2a199686d144a784a5df36057fa770038f0c4fbbaf09eba4936"
+    },
+    {
+      "name": "binary64-397",
+      "inputJson": "-25.508931777466856",
+      "canonicalJson": "-25.508931777466856",
+      "sha256": "766508424b2369c77089bac2a44c79b26fb6ed380fdeff359978e277bb9aed39"
+    },
+    {
+      "name": "binary64-398",
+      "inputJson": "4.250173838853114e+227",
+      "canonicalJson": "4.250173838853114e+227",
+      "sha256": "5db167e1a03e4d4ed2923ae2c494e221e497b03b1b651aa01807c174667676e2"
+    },
+    {
+      "name": "binary64-399",
+      "inputJson": "2.0825933693193765e+125",
+      "canonicalJson": "2.0825933693193765e+125",
+      "sha256": "2a166d1e354189a73c43f102a340a23e313d6471847b548cc8ee335f5c779e4c"
+    },
+    {
+      "name": "binary64-400",
+      "inputJson": "-1.675020061000205e+232",
+      "canonicalJson": "-1.675020061000205e+232",
+      "sha256": "cbb252fdd84c7a2f0e62a2439331d1e5ab56e35525a218b20395354c28b8cc80"
+    },
+    {
+      "name": "binary64-401",
+      "inputJson": "-3.614588661234247e-40",
+      "canonicalJson": "-3.614588661234247e-40",
+      "sha256": "e7070fe322113c2c340f32c1a8f0fb503fed0d9bbe6585ab3e850e52785fe97c"
+    },
+    {
+      "name": "binary64-402",
+      "inputJson": "-1.8592685118453652e-301",
+      "canonicalJson": "-1.8592685118453652e-301",
+      "sha256": "4b7241219e27eebd971482f0bd9eeb9eb04ad77aec6c9485f3663ec70ef273ff"
+    },
+    {
+      "name": "binary64-403",
+      "inputJson": "2.1552252532661383e-193",
+      "canonicalJson": "2.1552252532661383e-193",
+      "sha256": "a6193fc03ad393de7990191897708b1fa9bdc3007a05b35b2ed36be196309093"
+    },
+    {
+      "name": "binary64-404",
+      "inputJson": "4.3321177550788127e-277",
+      "canonicalJson": "4.3321177550788127e-277",
+      "sha256": "8e0a271b7101a356a6265f74ce26bf73ce4cbb7b056af65ec1879bb50972fdae"
+    },
+    {
+      "name": "binary64-405",
+      "inputJson": "2.0804962307547534e-276",
+      "canonicalJson": "2.0804962307547534e-276",
+      "sha256": "1c8aa0baa2a89e217c8e89110b24bd0b4698992f6cb51e8ac5940c4332213db3"
+    },
+    {
+      "name": "binary64-406",
+      "inputJson": "-1.2919912446258318e+33",
+      "canonicalJson": "-1.2919912446258318e+33",
+      "sha256": "c7424c6ba8842f6490e5255bc341e24db09b13d684f2d39890b8810164f4fe15"
+    },
+    {
+      "name": "binary64-407",
+      "inputJson": "-4.925306486962242e+107",
+      "canonicalJson": "-4.925306486962242e+107",
+      "sha256": "a46587e0f72f32e00097e107392b71fed6e6aef2fd29c618cffdd16dacf3ddab"
+    },
+    {
+      "name": "binary64-408",
+      "inputJson": "1.6841802272815688e-124",
+      "canonicalJson": "1.6841802272815688e-124",
+      "sha256": "f1c349c72401465b7f269141166bf4fdde5da3ecd2387dc421be94c97229a413"
+    },
+    {
+      "name": "binary64-409",
+      "inputJson": "9.07504672938754e+196",
+      "canonicalJson": "9.07504672938754e+196",
+      "sha256": "c43203d88d5c4117014ca87dddbabce9a44178291f0c39ce728914428509167f"
+    },
+    {
+      "name": "binary64-410",
+      "inputJson": "-3.5622560456440616e-125",
+      "canonicalJson": "-3.5622560456440616e-125",
+      "sha256": "9a23021502358f5d5f948dd4b83ada369a6d5e0d76d41cca5fe73f926cb18382"
+    },
+    {
+      "name": "binary64-411",
+      "inputJson": "-4.833490493356213e-210",
+      "canonicalJson": "-4.833490493356213e-210",
+      "sha256": "d74a9bc4d66d5fcfb2de4f582cb2c1ad2e7a545c62834419ce7dcffcd99012c2"
+    },
+    {
+      "name": "binary64-412",
+      "inputJson": "-6.191239145677175e+47",
+      "canonicalJson": "-6.191239145677175e+47",
+      "sha256": "8bb4d08aa930cc6cb1b44de56d4b75c39034dfae9a7ca29996a69a696f720747"
+    },
+    {
+      "name": "binary64-413",
+      "inputJson": "1.4158796899704857e+119",
+      "canonicalJson": "1.4158796899704857e+119",
+      "sha256": "0b9b5c4e17ee418aa6d00fdbd2752f6eef1943564d3ee192eecb7e8ef7e54a96"
+    },
+    {
+      "name": "binary64-414",
+      "inputJson": "-15834413507265790",
+      "canonicalJson": "-15834413507265790",
+      "sha256": "934729f785d836bf340ee4f97590965f83abaa1c8dc281a595c2aaf42427ebbd"
+    },
+    {
+      "name": "binary64-415",
+      "inputJson": "-5.877546633719099e-125",
+      "canonicalJson": "-5.877546633719099e-125",
+      "sha256": "21bd2a5dbc7a4d9b947831b7c63ba4023a97fd46c447b6fa1a7953188d66ed80"
+    },
+    {
+      "name": "binary64-416",
+      "inputJson": "-3.1825621078703947e-84",
+      "canonicalJson": "-3.1825621078703947e-84",
+      "sha256": "c741960984ac1aef2969ec5edbaa7ead4f8432ef25b0c3b29137c054df7c0841"
+    },
+    {
+      "name": "binary64-417",
+      "inputJson": "-2.0684137994711696e-210",
+      "canonicalJson": "-2.0684137994711696e-210",
+      "sha256": "3046c6cb28bf543bb4a5e1ffe5fc5406dcd344b890f40c537f5707c8436bdba6"
+    },
+    {
+      "name": "binary64-418",
+      "inputJson": "8.862833111383458e-94",
+      "canonicalJson": "8.862833111383458e-94",
+      "sha256": "f6ee7ef2cd63b9bffc8a97391f323df9bf5d126eb6880cf42e6a373b0f498829"
+    },
+    {
+      "name": "binary64-419",
+      "inputJson": "6.821394872273891e-10",
+      "canonicalJson": "6.821394872273891e-10",
+      "sha256": "5ba5cec488ff387e4bfa787eb475b5f43a97273354127b3e754b6edad4b01d4c"
+    },
+    {
+      "name": "binary64-420",
+      "inputJson": "-5.545740080986597e+137",
+      "canonicalJson": "-5.545740080986597e+137",
+      "sha256": "b398bb30196b84610d1f92b6bb68dda1331099090760d3ad326b68ef674937cf"
+    },
+    {
+      "name": "binary64-421",
+      "inputJson": "3.356701346615936e+256",
+      "canonicalJson": "3.356701346615936e+256",
+      "sha256": "71d1fde880a9f6f5dfd78b03890bfb6f580cf3d06eb4d55852dffb3b37af3e7b"
+    },
+    {
+      "name": "binary64-422",
+      "inputJson": "8.191366606300924e+215",
+      "canonicalJson": "8.191366606300924e+215",
+      "sha256": "7accccbb59a005c7721cecda690f5da00d89b402997a93695026d602f4c3fef9"
+    },
+    {
+      "name": "binary64-423",
+      "inputJson": "-799213931913624700",
+      "canonicalJson": "-799213931913624700",
+      "sha256": "caf797fff00cd29b9ca2be1a340e2b9ab6caf77a2451b8a9dbfc6cdb4995ea62"
+    },
+    {
+      "name": "binary64-424",
+      "inputJson": "6.494990838081427e-152",
+      "canonicalJson": "6.494990838081427e-152",
+      "sha256": "ef08d37c8278f0df2f3946e6f5761f62cb7e9f41a39c4572d236c203c3174270"
+    },
+    {
+      "name": "binary64-425",
+      "inputJson": "-5.3730995068250985e-270",
+      "canonicalJson": "-5.3730995068250985e-270",
+      "sha256": "7f47ad6fe112367604eba11d2699a401ffbaa7baa3e6b77916581bd8054cb648"
+    },
+    {
+      "name": "binary64-426",
+      "inputJson": "-3.151088687045428e-122",
+      "canonicalJson": "-3.151088687045428e-122",
+      "sha256": "58e1931ee50e6613a8160fcaf7ba2d9e2f0dff587426ad79f2f61c5e13062870"
+    },
+    {
+      "name": "binary64-427",
+      "inputJson": "-3.259888816615033e+191",
+      "canonicalJson": "-3.259888816615033e+191",
+      "sha256": "548c0f077e966e7d0e446a3cff2b845bfb87197aeca1d260e0fa298a563e0bb5"
+    },
+    {
+      "name": "binary64-428",
+      "inputJson": "9.245664137363517e-287",
+      "canonicalJson": "9.245664137363517e-287",
+      "sha256": "d34a760913575eaa195ecf7493110d6e21ea1669c9d415a7fd12021000f1bd51"
+    },
+    {
+      "name": "binary64-429",
+      "inputJson": "3.541832102123577e+210",
+      "canonicalJson": "3.541832102123577e+210",
+      "sha256": "dba19cfc469926d87cdeaa97dcdb635b0e393f7a9de43cb01cbf2111141a3717"
+    },
+    {
+      "name": "binary64-430",
+      "inputJson": "1.8198586783874696e-273",
+      "canonicalJson": "1.8198586783874696e-273",
+      "sha256": "c0367400e609adc73b799a58cf116d821fa05f899f58badbe227f964e1a1ee66"
+    },
+    {
+      "name": "binary64-431",
+      "inputJson": "2.205887109468628e+40",
+      "canonicalJson": "2.205887109468628e+40",
+      "sha256": "8aaa7fe8a87cde8d7b6153e66bbc04431589f487aa1138bce7eb980d23584be1"
+    },
+    {
+      "name": "binary64-432",
+      "inputJson": "4.774854952029023e-175",
+      "canonicalJson": "4.774854952029023e-175",
+      "sha256": "725f75bc85f7f541e92bfbffd97860ec22c93498996d1e601e071af19c662789"
+    },
+    {
+      "name": "binary64-433",
+      "inputJson": "2.434208292975891e-107",
+      "canonicalJson": "2.434208292975891e-107",
+      "sha256": "e285900538ff1d60a41d776994e359c6c2b1251dfcc345cb16dd1f2754c0565b"
+    },
+    {
+      "name": "binary64-434",
+      "inputJson": "-5.00478286813273e-35",
+      "canonicalJson": "-5.00478286813273e-35",
+      "sha256": "ac17062cfa5e25d4c128d537dd4dc0f77b052e839e8d8587cf02effc4b6ff126"
+    },
+    {
+      "name": "binary64-435",
+      "inputJson": "5.812070019254098e-190",
+      "canonicalJson": "5.812070019254098e-190",
+      "sha256": "33f88decc849479996c03c12129bc599c56b171bd80f9eee4cb041d20af5ac5c"
+    },
+    {
+      "name": "binary64-436",
+      "inputJson": "-1.2696308150354534e-177",
+      "canonicalJson": "-1.2696308150354534e-177",
+      "sha256": "f2390ecb6450e6400fed70b1db770bd6c0811d823d63b00278dfaf82f2fc35b9"
+    },
+    {
+      "name": "binary64-437",
+      "inputJson": "-2.1627694607566106e-276",
+      "canonicalJson": "-2.1627694607566106e-276",
+      "sha256": "8e9ea5510bed2377fdba50ba79c18c599e1a0a830daecf0603afa1a9f87bfbce"
+    },
+    {
+      "name": "binary64-438",
+      "inputJson": "-5.0614442506592224e-61",
+      "canonicalJson": "-5.0614442506592224e-61",
+      "sha256": "a1bae326da8e241c052efca885733d4d34ebe6ba5d6622a18a10775807580714"
+    },
+    {
+      "name": "binary64-439",
+      "inputJson": "6.135142100408336e-99",
+      "canonicalJson": "6.135142100408336e-99",
+      "sha256": "b8b7b360325b2731352bfb26176827c8397a823656e89040b2f00a5936d58e3f"
+    },
+    {
+      "name": "binary64-440",
+      "inputJson": "-2.2157461693840876e-293",
+      "canonicalJson": "-2.2157461693840876e-293",
+      "sha256": "5e0cf7f09956e796406523264a411e416412652410cf6cec89b2d7b23ba03f94"
+    },
+    {
+      "name": "binary64-441",
+      "inputJson": "2.4900248753516617e+172",
+      "canonicalJson": "2.4900248753516617e+172",
+      "sha256": "e3667fcbc9829954e73f7a978134968e2a419f22d6c3aff4bbac8673fbf22f3b"
+    },
+    {
+      "name": "binary64-442",
+      "inputJson": "-2.5610836987397933e+96",
+      "canonicalJson": "-2.5610836987397933e+96",
+      "sha256": "15169a3111c45cfb96c90cca8e7530938f865fb808cbf68350c91b9c9da0a416"
+    },
+    {
+      "name": "binary64-443",
+      "inputJson": "-3.778311894445811e-42",
+      "canonicalJson": "-3.778311894445811e-42",
+      "sha256": "49ad053539deca71e17c03158cf9745750b2c2892828003913ff3a1ab277b9bb"
+    },
+    {
+      "name": "binary64-444",
+      "inputJson": "6.476352135718987e+228",
+      "canonicalJson": "6.476352135718987e+228",
+      "sha256": "69e468dc1a6d115ee7f2ee354f48b98ad09257620c0db4fc73744cfbcdcebb33"
+    },
+    {
+      "name": "binary64-445",
+      "inputJson": "-2.4321011152040335e+269",
+      "canonicalJson": "-2.4321011152040335e+269",
+      "sha256": "7c7fc4f89f453d36dc52eb2a71aa9325ba12071e1745e459de0ad24935472f1f"
+    },
+    {
+      "name": "binary64-446",
+      "inputJson": "4.130772301013524e-142",
+      "canonicalJson": "4.130772301013524e-142",
+      "sha256": "1e1a085ddc2e77886f2e738b3318d7f8f63aaf4ce9fcd2459d77d61103e3380a"
+    },
+    {
+      "name": "binary64-447",
+      "inputJson": "-5.315857726428052e+188",
+      "canonicalJson": "-5.315857726428052e+188",
+      "sha256": "1e874a853f21d2fd1ba63668709a55ad963f183e1716a44b9ce9e5f9d8b5e074"
+    },
+    {
+      "name": "binary64-448",
+      "inputJson": "-3.0825513765307722e-230",
+      "canonicalJson": "-3.0825513765307722e-230",
+      "sha256": "6bf9cdda0182fedad74ae868cf58f9900c5df356c046c968d3ad18e2dce96262"
+    },
+    {
+      "name": "binary64-449",
+      "inputJson": "-9.009733604346491e-265",
+      "canonicalJson": "-9.009733604346491e-265",
+      "sha256": "32c1fd417603b097b21ca6e292cee1f6299aa8f171d720da51f56928a4793db3"
+    },
+    {
+      "name": "binary64-450",
+      "inputJson": "-1.9812920450325697e+128",
+      "canonicalJson": "-1.9812920450325697e+128",
+      "sha256": "37b5ef15f0b55703f86c1a04fb1aa9115d52e67c93a4cc1e1b023a1628cf6b7f"
+    },
+    {
+      "name": "binary64-451",
+      "inputJson": "1.912439622183633e+126",
+      "canonicalJson": "1.912439622183633e+126",
+      "sha256": "83957bdf3c10a32766a84c326032ae534982f0bb83738cc26f26d72f6bafe93c"
+    },
+    {
+      "name": "binary64-452",
+      "inputJson": "8.892358730296078e+33",
+      "canonicalJson": "8.892358730296078e+33",
+      "sha256": "88805e3a2da043a35f64adc3773627ec68dd00ddfff204da9f353a3a1420e14f"
+    },
+    {
+      "name": "binary64-453",
+      "inputJson": "-4.8223405137982184e-18",
+      "canonicalJson": "-4.8223405137982184e-18",
+      "sha256": "554afc4ac6fc0f3fc9363b76e1d1f1ee079eca97aa8c7d2927ef20db24b1fabc"
+    },
+    {
+      "name": "binary64-454",
+      "inputJson": "1.60265928885401e+201",
+      "canonicalJson": "1.60265928885401e+201",
+      "sha256": "86c18be75fc8480342d392d7228c2d18ad6eab8edb3111eb87dc630569c77d3f"
+    },
+    {
+      "name": "binary64-455",
+      "inputJson": "5.617247155885922e-302",
+      "canonicalJson": "5.617247155885922e-302",
+      "sha256": "1342063ff9bd7df67c1012bc9eed1ac3a1b6d94a17aa7250e846f519a43c0043"
+    },
+    {
+      "name": "binary64-456",
+      "inputJson": "2.9801128620604723e+110",
+      "canonicalJson": "2.9801128620604723e+110",
+      "sha256": "4f6128107cae18ddffc209639d668379f93caf52999f498d46bc78314d222d24"
+    },
+    {
+      "name": "binary64-457",
+      "inputJson": "2.386255898510909e-28",
+      "canonicalJson": "2.386255898510909e-28",
+      "sha256": "666387e939aa7e2d11dc9b719498e42058f9466ec6558c97ade72e99ee05ab16"
+    },
+    {
+      "name": "binary64-458",
+      "inputJson": "-7.125381773470931e-133",
+      "canonicalJson": "-7.125381773470931e-133",
+      "sha256": "7e387739b733a2fb8137543ea36f315d7212695386b7b87ebc09ea331199d85f"
+    },
+    {
+      "name": "binary64-459",
+      "inputJson": "-2.509365448156565e-8",
+      "canonicalJson": "-2.509365448156565e-8",
+      "sha256": "f247a86dd8f56b4c7f0f2cccc2b678b152575c179626bb27d8a6645589d62012"
+    },
+    {
+      "name": "binary64-460",
+      "inputJson": "5.154140667408753e-176",
+      "canonicalJson": "5.154140667408753e-176",
+      "sha256": "55767365d04469d97734e3f688922c6819a1da33ce7eb03c2bf1096027b0f958"
+    },
+    {
+      "name": "binary64-461",
+      "inputJson": "-9.427592202637654e-123",
+      "canonicalJson": "-9.427592202637654e-123",
+      "sha256": "d2372cedac96c2712bccd56bd994a49c609ed3bcab6d030777c389c4fa183f1a"
+    },
+    {
+      "name": "binary64-462",
+      "inputJson": "1.2246326713144902e+30",
+      "canonicalJson": "1.2246326713144902e+30",
+      "sha256": "cd500bf2f554ba8ee0f72415785d3ad07eeeb54013a83b12f72c201d8675490a"
+    },
+    {
+      "name": "binary64-463",
+      "inputJson": "2.1125516219661272e+58",
+      "canonicalJson": "2.1125516219661272e+58",
+      "sha256": "b4605dd46d27427f74289b2e24789d386aba08800f160810104828a367f7bee3"
+    },
+    {
+      "name": "binary64-464",
+      "inputJson": "-2.4501919369064313e+307",
+      "canonicalJson": "-2.4501919369064313e+307",
+      "sha256": "4e03706f97639d88b4d08211afd9e08b2671d8ac90fd0027e59d110a13cc719f"
+    },
+    {
+      "name": "binary64-465",
+      "inputJson": "-9.026254487905901e-257",
+      "canonicalJson": "-9.026254487905901e-257",
+      "sha256": "34e05c74f7c3741da8935b94e1b4fc42cd906c1ab0603babec404f0ef4377ba1"
+    },
+    {
+      "name": "binary64-466",
+      "inputJson": "1.9212643605735705e-162",
+      "canonicalJson": "1.9212643605735705e-162",
+      "sha256": "32e32bd2f08caa81dfa0c51b51806fc7e2a4933074fc4b64307a2ac0c286d767"
+    },
+    {
+      "name": "binary64-467",
+      "inputJson": "5.024699117477564e-222",
+      "canonicalJson": "5.024699117477564e-222",
+      "sha256": "65e38c30eecb0419c442decef08dc96649481d6db0a600350fc04ad13d9bf3c7"
+    },
+    {
+      "name": "binary64-468",
+      "inputJson": "-0.0044884933382057565",
+      "canonicalJson": "-0.0044884933382057565",
+      "sha256": "0b4133b3d74b693747d72bdeb97f26295cfb314b7eeb6c9092d000f1e8f822d1"
+    },
+    {
+      "name": "binary64-469",
+      "inputJson": "-2.669126998768326e+83",
+      "canonicalJson": "-2.669126998768326e+83",
+      "sha256": "edf9cde250713638489183d48329267a63376a79265a6e3032a75f15f129cf0d"
+    },
+    {
+      "name": "binary64-470",
+      "inputJson": "2.341138014243947e+200",
+      "canonicalJson": "2.341138014243947e+200",
+      "sha256": "04ffdff57a10b19e425665f0bebca7f8ad6a1a201209ccfa3843315de57e0d87"
+    },
+    {
+      "name": "binary64-471",
+      "inputJson": "8.721145360040575e-143",
+      "canonicalJson": "8.721145360040575e-143",
+      "sha256": "f7c33244529f12b1f9c1b3dabd6811f15c9266988ab343576ba332536d7e3a18"
+    },
+    {
+      "name": "binary64-472",
+      "inputJson": "1.420897709449596e-163",
+      "canonicalJson": "1.420897709449596e-163",
+      "sha256": "0079d268df816f8a382b0918d515bf2afc606e2efde45d41752ca0b01748a247"
+    },
+    {
+      "name": "binary64-473",
+      "inputJson": "-1.1160237162102033e-91",
+      "canonicalJson": "-1.1160237162102033e-91",
+      "sha256": "2ba8b3a60c9149e83e6618a426687c72d420266e166ae8ce762cae66b7bac468"
+    },
+    {
+      "name": "binary64-474",
+      "inputJson": "-4.298350399478981e-239",
+      "canonicalJson": "-4.298350399478981e-239",
+      "sha256": "b8d02adce4eb14dcd063b84788460b6e87376d6a83784efa0c3f01affdc4318b"
+    },
+    {
+      "name": "binary64-475",
+      "inputJson": "-2.151781330434012e-74",
+      "canonicalJson": "-2.151781330434012e-74",
+      "sha256": "cdecf1f6b4fa426f05927204073355a58a7cc5dd6c1a807d7b1a1f9c1c72a841"
+    },
+    {
+      "name": "binary64-476",
+      "inputJson": "-2.888998122236036e+131",
+      "canonicalJson": "-2.888998122236036e+131",
+      "sha256": "a5062869d893b4d40e5e25954cb611ddab8a7d64f40aa03acbcf0e8164248369"
+    },
+    {
+      "name": "binary64-477",
+      "inputJson": "4.3944790677298297e-268",
+      "canonicalJson": "4.3944790677298297e-268",
+      "sha256": "2bcf2b1dd9ac136564e6d3f5a9d50e55efe64af0414b725ec24aa6bc16a4b15b"
+    },
+    {
+      "name": "binary64-478",
+      "inputJson": "-9.371497779038318e+182",
+      "canonicalJson": "-9.371497779038318e+182",
+      "sha256": "8a44cdc44f67f6389637a74a1af4c65094528a7f18eea4897a97001ddfbeea7e"
+    },
+    {
+      "name": "binary64-479",
+      "inputJson": "-1.24845527992817e-174",
+      "canonicalJson": "-1.24845527992817e-174",
+      "sha256": "6fd96e349fcbab78e0fee94012170de8617a153262b8e59f5f3b6f738912708d"
+    },
+    {
+      "name": "binary64-480",
+      "inputJson": "4.7725891217920206e-163",
+      "canonicalJson": "4.7725891217920206e-163",
+      "sha256": "e7a74d19c2ee75721b000c0767e429c6ce0958bb88f12bd4cf53f79139768a49"
+    },
+    {
+      "name": "binary64-481",
+      "inputJson": "6.154507252578566e+56",
+      "canonicalJson": "6.154507252578566e+56",
+      "sha256": "caa77cbc6728371cdb09dc6f20f28ed7611247206bc3b6952a53d62ea1e32ff1"
+    },
+    {
+      "name": "binary64-482",
+      "inputJson": "8.465852454742209e-141",
+      "canonicalJson": "8.465852454742209e-141",
+      "sha256": "0b8d7df5dd56e859e5de3a32084d6e594dd57423327fb6c71f6e74addf744f3d"
+    },
+    {
+      "name": "binary64-483",
+      "inputJson": "-3.6680787754504056e+230",
+      "canonicalJson": "-3.6680787754504056e+230",
+      "sha256": "856a54a1115805bef832819ab499e98dbdfe76dcef947cf662caf7fb5a23b662"
+    },
+    {
+      "name": "binary64-484",
+      "inputJson": "-5.565206295021337e+267",
+      "canonicalJson": "-5.565206295021337e+267",
+      "sha256": "fa3e04c706e7a7984d5f5e701cb5a1876c56728ac0a2988695e92082d4c30c5b"
+    },
+    {
+      "name": "binary64-485",
+      "inputJson": "3.3815372280461284e-229",
+      "canonicalJson": "3.3815372280461284e-229",
+      "sha256": "a5ba018485f8a8921c128b0a7546e51c49d51ac890862e99eb354b9b0d8e2ae6"
+    },
+    {
+      "name": "binary64-486",
+      "inputJson": "-1.226875663666768e+24",
+      "canonicalJson": "-1.226875663666768e+24",
+      "sha256": "48980e2f5348494e03716b8fd85606f95872ee365e37cf3b339b318941615908"
+    },
+    {
+      "name": "binary64-487",
+      "inputJson": "1.7869320257320079e+230",
+      "canonicalJson": "1.7869320257320079e+230",
+      "sha256": "835718168ccab9ce2b63a8cb2c53d673399b346e46b7ce27c84c63dcd0533b5e"
+    },
+    {
+      "name": "binary64-488",
+      "inputJson": "2.236859141064028e+31",
+      "canonicalJson": "2.236859141064028e+31",
+      "sha256": "be47d270313aced71cdbfb5425935bb1a7ec5a512ce7899dcea6db1805eacd4b"
+    },
+    {
+      "name": "binary64-489",
+      "inputJson": "-8.887591240787151e-308",
+      "canonicalJson": "-8.887591240787151e-308",
+      "sha256": "87191341d5379b586cefbbe0001d47860e4e89e27a844aeefd4d81215cb043a3"
+    },
+    {
+      "name": "binary64-490",
+      "inputJson": "-1.2351169086347026e-122",
+      "canonicalJson": "-1.2351169086347026e-122",
+      "sha256": "daa50065d4ee57d2b1176f352ed5136e8cb0275f62b1c45f136e48abdb360755"
+    },
+    {
+      "name": "binary64-491",
+      "inputJson": "-5.2630726994018834e-11",
+      "canonicalJson": "-5.2630726994018834e-11",
+      "sha256": "c95f50e742118b33e841734d2ecb517727cc315b603934a0bd84c858c8a63d4f"
+    },
+    {
+      "name": "binary64-492",
+      "inputJson": "40093.8311464393",
+      "canonicalJson": "40093.8311464393",
+      "sha256": "a6cc9c5bb011ccac5751696a4a728ffc38c4483e53754d9f8e20e705e8509b7e"
+    },
+    {
+      "name": "binary64-493",
+      "inputJson": "-2.2475930457004538e+119",
+      "canonicalJson": "-2.2475930457004538e+119",
+      "sha256": "f905aea1ac66ed35015f652bba72c023e5a1edb97a5c0a29ba04c1008bce4063"
+    },
+    {
+      "name": "binary64-494",
+      "inputJson": "-7.550053160175933e+306",
+      "canonicalJson": "-7.550053160175933e+306",
+      "sha256": "d8bb1be174ece9cc73b3fb076005482c3f15092bcf934f06fdc1de3ae4b045a1"
+    },
+    {
+      "name": "binary64-495",
+      "inputJson": "8.336349354930652e-129",
+      "canonicalJson": "8.336349354930652e-129",
+      "sha256": "f608dce16e95b43a40dc5f134ddfceecbc2ea83078c961c6db7eefc3fca96549"
+    },
+    {
+      "name": "binary64-496",
+      "inputJson": "-3.311475346147241e-36",
+      "canonicalJson": "-3.311475346147241e-36",
+      "sha256": "753ab82298c396cfd73c5789688471d6495488bdf8e4c7e7accaf0b507577ec8"
+    },
+    {
+      "name": "binary64-497",
+      "inputJson": "2.788298342841201e+142",
+      "canonicalJson": "2.788298342841201e+142",
+      "sha256": "e0e1c8da90fdd9e0fe5db8071b10618a2e2c777dc1f13d64be3091fff68d8cdd"
+    },
+    {
+      "name": "binary64-498",
+      "inputJson": "-9.440237201285923e-215",
+      "canonicalJson": "-9.440237201285923e-215",
+      "sha256": "32b8f3cae85c0991506c2819dc55d6f7f9dfb6702610020b83e16344b7b70c9e"
+    },
+    {
+      "name": "binary64-499",
+      "inputJson": "-7.559836883569097e-83",
+      "canonicalJson": "-7.559836883569097e-83",
+      "sha256": "610180d6854bc9bf0258a79dcdeab1e1dfb7126ee098f8977820823a281b0bd7"
+    },
+    {
+      "name": "binary64-500",
+      "inputJson": "7.647939298600421e-50",
+      "canonicalJson": "7.647939298600421e-50",
+      "sha256": "1b65ad2190ba9561a8e90ebb485560e07fc06d9a652b84e82ab1318497d24b02"
+    },
+    {
+      "name": "binary64-501",
+      "inputJson": "-8.243800501382757e+248",
+      "canonicalJson": "-8.243800501382757e+248",
+      "sha256": "6b24cd5c2ca153873d42b9cc2746081c3d29996b58e19bb482e1d4351e2eac9b"
+    },
+    {
+      "name": "binary64-502",
+      "inputJson": "540264841018.0671",
+      "canonicalJson": "540264841018.0671",
+      "sha256": "880e8f87285eb717b53fd059bbcb4a393a9c7c1700566df5b5b7f9933afb47c5"
+    },
+    {
+      "name": "binary64-503",
+      "inputJson": "3.9559912083241987e+121",
+      "canonicalJson": "3.9559912083241987e+121",
+      "sha256": "6bf7e2aeaf2484a102833158711fbaaf2e66872e0ae2029d7dcabe06b8965616"
+    },
+    {
+      "name": "binary64-504",
+      "inputJson": "3.4603189292778134e-177",
+      "canonicalJson": "3.4603189292778134e-177",
+      "sha256": "5e58e375cea0b39211a9174acd3f59869eb113f416545e49f0e4b67b791d725f"
+    },
+    {
+      "name": "binary64-505",
+      "inputJson": "1.1057330990815696e+234",
+      "canonicalJson": "1.1057330990815696e+234",
+      "sha256": "2a8df1a86b37939418d6f9507f85eeef48c07fe1daabf41fe0160e979d35ddcc"
+    },
+    {
+      "name": "binary64-506",
+      "inputJson": "-1.4429643971853602e+86",
+      "canonicalJson": "-1.4429643971853602e+86",
+      "sha256": "6e6c0df6f56bdacfb24876b462c68639e03b7ef653bc0995ad524320ccb9b21a"
+    },
+    {
+      "name": "binary64-507",
+      "inputJson": "5.1600276400879466e-92",
+      "canonicalJson": "5.1600276400879466e-92",
+      "sha256": "002e1474d48fb6e1f10e29de32472ef989f38fc1acd0acda129c8feb501ba329"
+    },
+    {
+      "name": "binary64-508",
+      "inputJson": "2.2369980766510136e-95",
+      "canonicalJson": "2.2369980766510136e-95",
+      "sha256": "ccc7f29bff3f102bebdf124c3f0f618177a4388457a4cfe88cf904beec83098a"
+    },
+    {
+      "name": "binary64-509",
+      "inputJson": "1.4410368130467697e-196",
+      "canonicalJson": "1.4410368130467697e-196",
+      "sha256": "fb23f214a123759b0825f4a0853e5eeb7686d76d2c8780bfcb99ec48ff9bc672"
+    },
+    {
+      "name": "binary64-510",
+      "inputJson": "1.4447163661204772e+171",
+      "canonicalJson": "1.4447163661204772e+171",
+      "sha256": "fe11e8f9b6fa84ff97f916d86d71aad4946d843e79b0c1bd2e6c2210af1f4215"
+    },
+    {
+      "name": "binary64-511",
+      "inputJson": "0.05583769032578785",
+      "canonicalJson": "0.05583769032578785",
+      "sha256": "853a97e590db34337a9136aa97b4e8b19d8ba2142da876a94686e8e931a3fc71"
+    }
+  ]
+}

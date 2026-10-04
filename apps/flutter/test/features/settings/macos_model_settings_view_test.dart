@@ -2,9 +2,15 @@ import 'package:asael/app/theme/macos_app_theme.dart';
 import 'package:asael/core/network/api_client.dart';
 import 'package:asael/core/platform/local_computer_bridge.dart';
 import 'package:asael/core/storage/secure_session_store.dart';
+import 'package:asael/features/auth/application/biometric_session_lock_controller.dart';
+import 'package:asael/features/auth/application/session_controller.dart';
 import 'package:asael/features/computer_use/local_computer.dart';
 import 'package:asael/features/companion/companion_providers.dart';
+import 'package:asael/features/results/created_file_export.dart';
 import 'package:asael/features/settings/model_settings_view.dart';
+import 'package:asael/features/settings/portable_archive_controller.dart';
+import 'package:asael/features/settings/portable_archive_panel.dart';
+import 'package:asael/features/settings/portable_archive_providers.dart';
 import 'package:asael/generated/native_contract.g.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
@@ -15,6 +21,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import '../../native_workspace_fixture.dart';
 import '../companion/companion_fixtures.dart';
+import '../portable_archive/portable_archive_test_support.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -84,6 +91,128 @@ void main() {
     expect(tester.takeException(), isNull);
     debugDefaultTargetPlatformOverride = null;
   });
+
+  testWidgets(
+    'switching Settings category fences an open archive chooser in the first transition frame',
+    (tester) async {
+      FlutterSecureStorage.setMockInitialValues({});
+      // Keep the archive mounted below Companion without dragging the lazy
+      // General list through unrelated panel lifetimes.
+      tester.view.physicalSize = const Size(1440, 1800);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final coordinator = LocalComputerCoordinator(
+        repository: _ComputerRepository(),
+        host: _ComputerHost(),
+        windowContext: const LocalComputerWindowContext(
+          role: LocalComputerWindowRole.primary,
+        ),
+        authenticated: false,
+      );
+      addTearDown(coordinator.dispose);
+      final api = _SettingsApi(), adapter = PortableArchiveTestAdapter();
+      final container = ProviderContainer(
+        overrides: [
+          apiClientProvider.overrideWithValue(api),
+          sessionControllerProvider.overrideWith(
+            PortableArchiveTestSessions.new,
+          ),
+          biometricSessionLockControllerProvider.overrideWith(
+            (_) => PortableArchiveTestLock(),
+          ),
+          companionScopeProvider.overrideWithValue((
+            deployment: nativeWorkspaceFixtureOrigin,
+            tenantId: portableArchiveTenant,
+            actorId: portableArchiveActor,
+            role: 'admin',
+          )),
+          companionRepositoryProvider.overrideWith(
+            (_) => FakeCompanionRepository(),
+          ),
+          localComputerCoordinatorProvider.overrideWith((ref) => coordinator),
+          portableArchiveControllerProvider.overrideWith((ref, visibility) {
+            final controller = PortableArchiveController(
+              PortableArchiveTestRepository(),
+              exporter: ScopedCreatedFileExporter(adapter: adapter),
+              verifier: PortableArchiveTestVerifier(),
+            );
+            ref.onDispose(controller.dispose);
+            return controller;
+          }),
+        ],
+      );
+      addTearDown(container.dispose);
+      await container.read(sessionControllerProvider.future);
+
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: MaterialApp(
+            theme: MacosAppTheme.light(),
+            home: ModelSettingsView(api: api),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final general = find.byKey(const ValueKey('macos-settings-general'));
+      final panel = find.descendant(
+        of: general,
+        matching: find.byType(PortableArchivePanel),
+      );
+      expect(general, findsOneWidget);
+      expect(panel, findsOneWidget);
+      final generalElement = tester.element(general),
+          panelElement = tester.element(panel);
+      final mountedView = tester.widget<PortableArchivePanelView>(
+        find.descendant(
+          of: panel,
+          matching: find.byType(PortableArchivePanelView),
+        ),
+      );
+      final controller = mountedView.controller,
+          repository = controller.repository as PortableArchiveTestRepository,
+          verifier = controller.verifier as PortableArchiveTestVerifier;
+      expect(controller.available, isTrue);
+      expect(controller.phase, PortableArchivePhase.idle);
+      expect(TickerMode.valuesOf(panelElement).enabled, isTrue);
+      expect(adapter.destinations, isEmpty);
+      expect(repository.requests, isEmpty);
+      // Button interaction is covered by the panel tests. Start only after the
+      // actual Settings panel has attached this controller to its lifetime.
+      final pending = controller.verifyAndSave();
+      await tester.pump();
+      expect(controller.phase, PortableArchivePhase.choosingDestination);
+      expect(adapter.destinations, hasLength(1));
+      expect(repository.requests, isEmpty);
+
+      await tester.tap(find.text('Models & roles'));
+      // No elapsed duration: the outgoing General child is still mounted in
+      // the 140 ms transition, but it must already have lost export authority.
+      await tester.pump();
+      expect(general, findsOneWidget);
+      expect(tester.element(general), same(generalElement));
+      expect(panelElement.mounted, isTrue);
+      expect(TickerMode.valuesOf(panelElement).enabled, isFalse);
+      expect(find.text('Model routes'), findsOneWidget);
+      expect(controller.available, isFalse);
+      expect(controller.receipt, isNull);
+      expect(controller.busy, isFalse);
+
+      adapter.destinations.single.complete('/chosen/archive.json');
+      await tester.pump();
+      await pending;
+      expect(repository.requests, isEmpty);
+      expect(verifier.calls, isEmpty);
+      expect(adapter.writeCalls, 0);
+      expect(adapter.writes, isEmpty);
+      expect(controller.receipt, isNull);
+      expect(find.text('Verification receipt'), findsNothing);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+    variant: TargetPlatformVariant.only(TargetPlatform.macOS),
+  );
 }
 
 class _SettingsApi extends ApiClient {

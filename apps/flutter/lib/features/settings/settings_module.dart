@@ -13,6 +13,5 @@ const settingsModule = AdminModule(
     AdminEndpoint('Workspace summary', NativePaths.workspaceSummary),
     AdminEndpoint('Control plane identity', NativePaths.adminAuthControlPlane),
     AdminEndpoint('Schema migrations', NativePaths.adminSystemMigrations),
-    AdminEndpoint('Portable data export', NativePaths.adminDataExport),
   ],
 );

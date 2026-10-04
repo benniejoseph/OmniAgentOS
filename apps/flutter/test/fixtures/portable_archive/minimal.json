@@ -1,0 +1,92 @@
+{
+  "format": "asael-portable-archive",
+  "version": 2,
+  "exportedAt": "2026-10-05T00:00:00.000Z",
+  "provenance": {
+    "sourceOwnerActorIdSha256": "034961b75c2c4bf997475b9465240e6d11985d7941b266970ffacb56fc653619",
+    "sourceTenantIdSha256": "13be5b7e404970f04bfa169417cd69f03b1e7c89363ebdd6e05846983fc8e319",
+    "exporterId": "asael"
+  },
+  "assetEncryption": null,
+  "data": {
+    "knowledge": [],
+    "memories": [],
+    "threads": [],
+    "today": [],
+    "projects": [],
+    "connections": [],
+    "skills": [],
+    "agents": [],
+    "assets": []
+  },
+  "manifest": {
+    "schemaVersion": 1,
+    "contractId": "asael.portable.archive.v2",
+    "sections": {
+      "knowledge": {
+        "includedCount": 0,
+        "excludedCount": 0,
+        "contentSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "restoreDisposition": "restore"
+      },
+      "memories": {
+        "includedCount": 0,
+        "excludedCount": 0,
+        "contentSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "restoreDisposition": "restore"
+      },
+      "threads": {
+        "includedCount": 0,
+        "excludedCount": 0,
+        "contentSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "restoreDisposition": "restore"
+      },
+      "today": {
+        "includedCount": 0,
+        "excludedCount": 0,
+        "contentSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "restoreDisposition": "restore"
+      },
+      "projects": {
+        "includedCount": 0,
+        "excludedCount": 0,
+        "contentSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "restoreDisposition": "restore"
+      },
+      "connections": {
+        "includedCount": 0,
+        "excludedCount": 0,
+        "contentSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "restoreDisposition": "reauthorization_required"
+      },
+      "skills": {
+        "includedCount": 0,
+        "excludedCount": 0,
+        "contentSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "restoreDisposition": "restore"
+      },
+      "agents": {
+        "includedCount": 0,
+        "excludedCount": 0,
+        "contentSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "restoreDisposition": "restore"
+      },
+      "assets": {
+        "includedCount": 0,
+        "excludedCount": 0,
+        "contentSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "restoreDisposition": "not_included"
+      }
+    },
+    "exclusions": [],
+    "totals": {
+      "includedCount": 0,
+      "excludedCount": 0
+    },
+    "secretsExcluded": true,
+    "connectorCredentialsExcluded": true,
+    "connectorsRequireReauthorization": true,
+    "manifestSha256": "7c5c93634ff57c93a1a1031632c570a664d4629066830e463da077f4109a4e04"
+  },
+  "archiveSha256": "3b760a8c71693a295284f16aeed5ee0291ac1d88444b6eb2d7173e13ff7c5690"
+}
