@@ -108,7 +108,7 @@ describe("paired production deployment", () => {
     );
     // The staged manifest is checked before anything production runs on.
     expect(commands[5]).toBe(
-      "DRY RUN BASE_URL=https://staged-deployment.example SMOKE_EXPECTED_REVISION=test-release npm run smoke:manifest",
+      "DRY RUN BASE_URL=https://staged-deployment.example SMOKE_EXPECTED_REVISION=test-release SMOKE_EXPECTED_MANIFEST_SHA256=<signed-candidate-manifest-sha256> npm run smoke:manifest",
     );
     expect(commands[6]).toContain(
       "stage candidate gateway overlap on Fly through secret stdin; values redacted",
@@ -151,8 +151,13 @@ describe("paired production deployment", () => {
       command.includes("https://asael.bennierichard.com/api/health") &&
       command.includes("revision=test-release"),
     );
-    const canonicalManifestIndex = commands.indexOf(
-      "DRY RUN BASE_URL=https://asael.bennierichard.com SMOKE_EXPECTED_REVISION=test-release npm run smoke:manifest",
+    const canonicalManifestIndex = commands.findIndex((command) =>
+      command.includes("BASE_URL=https://asael.bennierichard.com") &&
+      command.includes("SMOKE_EXPECTED_REVISION=test-release") &&
+      command.includes("SMOKE_EXPECTED_MANIFEST_SHA256=<signed-candidate-manifest-sha256>") &&
+      command.includes("SMOKE_MANIFEST_PREVIOUS_REVISION=<current-production-revision>") &&
+      command.includes("SMOKE_MANIFEST_CONVERGENCE_TIMEOUT_MS=180000") &&
+      command.includes("npm run smoke:manifest"),
     );
     const canonicalSmokeIndex = commands.findIndex((command) =>
       command.includes("BASE_URL=https://asael.bennierichard.com") &&
@@ -1903,6 +1908,14 @@ const FAKE_PLATFORM_SCRIPTS: Record<string, string> = {
 expected="\${SMOKE_EXPECTED_REVISION:-$EXPECTED_REVISION}"
 line="npm $*\${BASE_URL:+ against $BASE_URL}\${expected:+ expecting $expected}"
 log "$line"
+if [ "$1 $2" = "run smoke:manifest" ]; then
+  if [ "\${#SMOKE_EXPECTED_MANIFEST_SHA256}" -ne 64 ]; then exit 96; fi
+  if [ "$BASE_URL" = "https://asael.bennierichard.com" ]; then
+    if [ "$SMOKE_MANIFEST_PREVIOUS_REVISION" != "$FAKE_PRIOR_REVISION" ] || [ "$SMOKE_MANIFEST_CONVERGENCE_TIMEOUT_MS" != "$OMNIAGENT_DEPLOY_READINESS_TIMEOUT_MS" ]; then exit 94; fi
+  elif [ -n "$SMOKE_MANIFEST_PREVIOUS_REVISION" ] || [ -n "$SMOKE_MANIFEST_CONVERGENCE_TIMEOUT_MS" ]; then
+    exit 95
+  fi
+fi
 if [ -n "$FAKE_FORWARD_SCHEMA_ARTIFACT" ]; then
   if [ -n "$OMNIAGENT_RELEASE_FORWARD_SCHEMA_RECOVERY" ]; then exit 91; fi
   if [ "$1 $2" != "run db:verify" ] && [ -n "$MIGRATION_DATABASE_URL" ]; then exit 92; fi
