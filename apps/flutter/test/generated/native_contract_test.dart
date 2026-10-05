@@ -47,14 +47,15 @@ void main() {
   });
 
   test('retains current and previous contract compatibility', () {
-    expect(NativeContract.currentVersion, 45);
-    expect(NativeContract.previousVersion, 44);
-    expect(NativeContract.supportedVersions, [45, 44]);
-    expect(NativeContract.supports(44), isTrue);
+    expect(NativeContract.currentVersion, 46);
+    expect(NativeContract.previousVersion, 45);
+    expect(NativeContract.supportedVersions, [46, 45]);
+    expect(NativeContract.supports(44), isFalse);
     expect(NativeContract.supports(43), isFalse);
     expect(NativeContract.supports(42), isFalse);
     expect(NativeContract.supports(45), isTrue);
-    expect(NativeContract.supports(46), isFalse);
+    expect(NativeContract.supports(46), isTrue);
+    expect(NativeContract.supports(47), isFalse);
     expect(
       NativePaths.meetingsList(
         workspaceId: 'workspace:one',
@@ -451,6 +452,32 @@ void main() {
       '/api/connectors/native/trash-actions/$key',
     );
   });
+
+  test(
+    'publishes exact MCP discovery submission recovery and owner close paths',
+    () {
+      for (final operation in [
+        'connectors.native.mcpDiscoveries.submit',
+        'connectors.native.mcpDiscoveries.read',
+        'connectors.native.mcpDiscoveries.close',
+      ]) {
+        expect(NativeContract.supportsOperation(operation), isTrue);
+      }
+      final key = 'd' * 64;
+      expect(
+        NativePaths.connectorsNativeMcpDiscoveriesSubmit,
+        '/api/connectors/native/mcp-discoveries',
+      );
+      expect(
+        NativePaths.connectorsNativeMcpDiscoveriesRead(key),
+        '/api/connectors/native/mcp-discoveries/$key',
+      );
+      expect(
+        NativePaths.connectorsNativeMcpDiscoveriesClose(key),
+        '/api/connectors/native/mcp-discoveries/$key/close',
+      );
+    },
+  );
 
   test('publishes authenticated generated artifact inventory and bytes', () {
     expect(NativeContract.supportsOperation('artifacts.list'), isTrue);

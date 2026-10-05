@@ -61,14 +61,22 @@ export async function discoverMcpTools(
     abortSignal?: AbortSignal;
     actorId?: string;
     actorRole?: SecurityRole;
+    /** Native admission owns this absolute deadline; never renew its budget. */
+    deadlineAt?: number;
+    /** Server-only guard over the exact credential selected for this session. */
+    verifyCredential?: (secretValues: readonly string[]) => void;
   } = {},
 ) {
   assertSupportedMcpConnector(connector);
-  const deadlineAt = Date.now() + MCP_DISCOVERY_DEADLINE_MS;
+  const deadlineAt = Math.min(Date.now() + MCP_DISCOVERY_DEADLINE_MS, options.deadlineAt ?? Infinity);
+  if (!Number.isFinite(deadlineAt)) throw new Error("MCP discovery deadline is invalid.");
+  remainingMs(deadlineAt);
   const session = await connectMcp(connector, {
     deadlineAt,
     abortSignal: options.abortSignal,
     actorRole: options.actorRole,
+    boundAdmission: options.deadlineAt !== undefined,
+    verifyCredential: options.verifyCredential,
   });
   try {
     const discoveredTools = redactExactSecrets(
@@ -105,7 +113,7 @@ export async function discoverMcpTools(
   } catch (error) {
     throw sanitizedConnectorError(error, session.secretValues);
   } finally {
-    await closeMcp(session);
+    await closeMcp(session, options.deadlineAt === undefined ? undefined : deadlineAt);
   }
 }
 
@@ -320,6 +328,8 @@ async function connectMcp(
     sessionScope?: McpSessionScope;
     responseMaxBytes?: number;
     requestPolicy?: McpRequestPolicy;
+    boundAdmission?: boolean;
+    verifyCredential?: (secretValues: readonly string[]) => void;
   },
 ): Promise<McpConnectedSession> {
   assertSupportedMcpConnector(connector);
@@ -327,7 +337,8 @@ async function connectMcp(
     throw new Error(`Unsupported MCP transport: ${connector.transport}`);
   }
 
-  await assertPublicHttpUrl(connector.endpoint, "MCP endpoint");
+  const admission = assertPublicHttpUrl(connector.endpoint, "MCP endpoint");
+  await (options.boundAdmission ? withMcpDeadline(admission, options.deadlineAt, options.abortSignal) : admission);
   const endpoint = new URL(connector.endpoint);
   if (endpoint.protocol !== "https:" && endpoint.protocol !== "http:") {
     throw new Error("MCP endpoint must use http or https.");
@@ -336,10 +347,10 @@ async function connectMcp(
   const client = new Client(CLIENT_INFO, {
     capabilities: {},
   });
-  const auth = await createRequestInit(
-    connector,
-    options.actorRole,
-  );
+  const credential = createRequestInit(connector, options.actorRole);
+  const auth = await (options.boundAdmission ? withMcpDeadline(credential, options.deadlineAt, options.abortSignal) : credential);
+  options.verifyCredential?.(auth.secretValues);
+  remainingMs(options.deadlineAt);
   const transport = new StreamableHTTPClientTransport(endpoint, {
     requestInit: auth.requestInit,
     fetch: createValidatedMcpFetch(
@@ -356,7 +367,7 @@ async function connectMcp(
     });
     return { client, transport, secretValues: auth.secretValues };
   } catch (error) {
-    await closeMcp({ client, transport });
+    await closeMcp({ client, transport }, options.boundAdmission ? options.deadlineAt : undefined);
     throw sanitizedConnectorError(error, auth.secretValues);
   }
 }
@@ -404,9 +415,27 @@ async function collectTools(client: Client, deadlineAt: number, abortSignal?: Ab
 async function closeMcp(session: {
   client: Client;
   transport: StreamableHTTPClientTransport;
-}) {
-  await session.transport.terminateSession().catch(() => undefined);
-  await session.client.close().catch(() => undefined);
+}, deadlineAt?: number) {
+  const termination = session.transport.terminateSession().catch(() => undefined);
+  await (deadlineAt === undefined ? termination : withMcpDeadline(termination, deadlineAt).catch(() => undefined));
+  const closure = session.client.close().catch(() => undefined);
+  await (deadlineAt === undefined ? closure : withMcpDeadline(closure, deadlineAt).catch(() => undefined));
+}
+
+/** A late DNS/credential result cannot continue admission after this rejects. */
+function withMcpDeadline<T>(operation: Promise<T>, deadlineAt: number, signal?: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timeoutRef: { current?: ReturnType<typeof setTimeout> } = {};
+    const cleanup = () => {
+      if (timeoutRef.current !== undefined) clearTimeout(timeoutRef.current);
+      signal?.removeEventListener("abort", abort);
+    };
+    const abort = () => { cleanup(); reject(new Error("MCP operation exceeded its admission lifetime.")); };
+    operation.then((value) => { cleanup(); resolve(value); }, (error: unknown) => { cleanup(); reject(error); });
+    if (signal?.aborted || deadlineAt <= Date.now()) { abort(); return; }
+    signal?.addEventListener("abort", abort, { once: true });
+    timeoutRef.current = setTimeout(abort, Math.max(1, deadlineAt - Date.now()));
+  });
 }
 
 async function createRequestInit(

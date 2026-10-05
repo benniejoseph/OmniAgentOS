@@ -24,7 +24,7 @@ import { createExecutionScope } from "@/lib/security/execution-scope";
 import * as network from "@/lib/security/network";
 import { sealCredentialBundle, openCredentialBundle } from "@/lib/settings/credential-vault";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
-import { removeNativeMcpRegistrationsForReplay, removeNativeOpenapiImportsForReplay } from "./helpers/native-catalog-replay";
+import { removeNativeMcpRegistrationsForReplay, removeNativeOpenapiImportsForReplay, removeNativeMcpDiscoveriesForReplay } from "./helpers/native-catalog-replay";
 
 const databaseUrl = process.env.DATABASE_URL;
 const integration = databaseUrl && process.env.OMNIAGENT_INTEGRATION_DATABASE_RESET === "true" ? describe : describe.skip;
@@ -164,7 +164,10 @@ integration("prepared MCP registration under serving-role RLS", () => {
     const migration = await readSqlMigrationFile({ file: "20261005203000_native_mcp_registrations.sql", sha256: row.checksum, migrations: [row] });
     const openapiImport = databaseSchemaMigrations.find((migration) => migration.version === 242)!;
     const openapiImportMigration = await readSqlMigrationFile({ file: "20261005210000_native_openapi_imports.sql", sha256: openapiImport.checksum, migrations: [openapiImport] });
+    const discovery = databaseSchemaMigrations.find((migration) => migration.version === 243)!;
+    const discoveryMigration = await readSqlMigrationFile({ file: "20261006100000_native_mcp_discoveries.sql", sha256: discovery.checksum, migrations: [discovery] });
     await admin.begin(async (sql) => {
+      await removeNativeMcpDiscoveriesForReplay(sql); await sql`DELETE FROM omni_schema_version WHERE version=243`;
       await removeNativeOpenapiImportsForReplay(sql); await sql`DELETE FROM omni_schema_version WHERE version=242`;
       await removeNativeMcpRegistrationsForReplay(sql); await sql`DELETE FROM omni_schema_version WHERE version=241`;
       const migrationSql: Parameters<typeof applySqlMigrationFile>[0] = { unsafe: async (text, params) => {
@@ -173,6 +176,7 @@ integration("prepared MCP registration under serving-role RLS", () => {
       } };
       await applySqlMigrationFile(migrationSql, migration, [row], []);
       await applySqlMigrationFile(migrationSql, openapiImportMigration, [openapiImport], []);
+      await applySqlMigrationFile(migrationSql, discoveryMigration, [discovery], []);
       expect(await sql`SELECT intent,acceptance,state,settlement FROM omni_native_connector_actions ORDER BY id`).toEqual(before);
       expect(await sql`SELECT * FROM omni_native_connector_credential_preparations ORDER BY id`).toEqual(stages);
     });

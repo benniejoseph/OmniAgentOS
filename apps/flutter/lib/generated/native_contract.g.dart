@@ -3,9 +3,9 @@
 
 abstract final class NativeContract {
   static const id = 'asael.native-api';
-  static const currentVersion = 45;
-  static const previousVersion = 44;
-  static const supportedVersions = <int>[45, 44];
+  static const currentVersion = 46;
+  static const previousVersion = 45;
+  static const supportedVersions = <int>[46, 45];
   static const discoveryPath = '/api/mobile/contracts';
   static const operationIds = <String>{
     'auth.login',
@@ -276,6 +276,9 @@ abstract final class NativeContract {
     'connectors.native.openapiImportPreparations.abandon',
     'connectors.native.openapiImports.submit',
     'connectors.native.openapiImports.read',
+    'connectors.native.mcpDiscoveries.submit',
+    'connectors.native.mcpDiscoveries.read',
+    'connectors.native.mcpDiscoveries.close',
   };
 
   static bool supports(int version) => supportedVersions.contains(version);
@@ -1203,6 +1206,9 @@ abstract final class NativePaths {
   static String connectorsNativeOpenapiImportPreparationsAbandon(String keySha256) => '/api/connectors/native/openapi-import-preparations/${Uri.encodeComponent(keySha256)}/abandon';
   static const connectorsNativeOpenapiImportsSubmit = '/api/connectors/native/openapi-imports';
   static String connectorsNativeOpenapiImportsRead(String keySha256) => '/api/connectors/native/openapi-imports/${Uri.encodeComponent(keySha256)}';
+  static const connectorsNativeMcpDiscoveriesSubmit = '/api/connectors/native/mcp-discoveries';
+  static String connectorsNativeMcpDiscoveriesRead(String keySha256) => '/api/connectors/native/mcp-discoveries/${Uri.encodeComponent(keySha256)}';
+  static String connectorsNativeMcpDiscoveriesClose(String keySha256) => '/api/connectors/native/mcp-discoveries/${Uri.encodeComponent(keySha256)}/close';
 }
 
 abstract final class NativeConversationEvents {

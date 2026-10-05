@@ -60,6 +60,7 @@ import { nativeConnectorCredentialRemovalSchemas } from "@/lib/mobile/connector-
 import { nativeConnectorTrashSchemas } from "@/lib/mobile/connector-trash-contracts";
 import { nativeConnectorCredentialRotationSchemas } from "@/lib/mobile/connector-credential-rotation-contracts";
 import { nativeConnectorMcpRegistrationSchemas } from "@/lib/mobile/connector-mcp-registration-contracts";
+import { nativeConnectorMcpDiscoverySchemas } from "@/lib/mobile/connector-mcp-discovery-contracts";
 import { nativeConnectorOpenapiImportSchemas } from "@/lib/mobile/connector-openapi-import-contracts";
 
 import { pluginManifestSchema } from "@/lib/plugins/contracts";
@@ -70,10 +71,10 @@ import {
 import { voiceCommandInputSchema } from "@/lib/voice/command-input";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 45 as const;
+export const NATIVE_API_CURRENT_VERSION = 46 as const;
 // v43/v44 remain byte-frozen. v45 adds only bounded new OpenAPI import,
 // exact preparation/action recovery and terminal staging abandonment.
-export const NATIVE_API_PREVIOUS_VERSION = 44 as const;
+export const NATIVE_API_PREVIOUS_VERSION = 45 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -2399,6 +2400,21 @@ const v45Operations: readonly NativeOperation[] = [
   }),
 ];
 
+const v46Operations: readonly NativeOperation[] = [
+  ...v45Operations,
+  operation("connectors.native.mcpDiscoveries.submit", "POST", "/api/connectors/native/mcp-discoveries", "Reserve one exact disabled MCP discovery attempt and publish its complete policy-preserving catalog atomically, without executing a tool or enabling the connector.", "bearer", "NativeConnectorMcpDiscoveryRequest", "NativeConnectorMcpDiscoverySubmitResponse", {
+    ...connectorNativeOptions, headerParameters: pluginMutationHeaders, requestBodyMaxBytes: 8192,
+    successStatuses: [200, 201], errorStatuses: [400, 401, 403, 404, 409, 413, 415, 500, 503],
+  }),
+  operation("connectors.native.mcpDiscoveries.read", "GET", "/api/connectors/native/mcp-discoveries/{keySha256}", "Read the original owner's exact discovery attempt or terminal evidence without contacting a provider or authorizing a retry.", "bearer", undefined, "NativeConnectorMcpDiscoveryReadResponse", {
+    ...connectorNativeOptions, pathParameters: nativeActionRecoveryPath,
+  }),
+  operation("connectors.native.mcpDiscoveries.close", "POST", "/api/connectors/native/mcp-discoveries/{keySha256}/close", "Permanently close the exact original discovery attempt or absent-key tombstone; existing settlement always wins and is never undone.", "bearer", "NativeConnectorMcpDiscoveryCloseRequest", "NativeConnectorMcpDiscoveryCloseResponse", {
+    ...connectorNativeOptions, pathParameters: nativeActionRecoveryPath, headerParameters: pluginMutationHeaders, requestBodyMaxBytes: 16_384,
+    successStatuses: [200, 201], errorStatuses: [400, 401, 403, 409, 413, 415, 500, 503],
+  }),
+];
+
 const nativeCompanionPreferencesResponseSchema = z.object({
   schemaVersion: z.literal(1), contract: z.literal(COMPANION_PREFERENCES_CONTRACT),
   snapshot: z.object({
@@ -2426,6 +2442,7 @@ export const nativeContractSchemas = Object.freeze({
   ...nativeConnectorCredentialRotationSchemas,
   ...nativeConnectorMcpRegistrationSchemas,
   ...nativeConnectorOpenapiImportSchemas,
+  ...nativeConnectorMcpDiscoverySchemas,
   ...nativeResponsibilityContractSchemas,
   ...nativeMeetingContractSchemas,
   ...nativeCustomerContractSchemas,
@@ -2596,6 +2613,7 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 43) return v43Operations;
   if (version === 44) return v44Operations;
   if (version === 45) return v45Operations;
+  if (version === 46) return v46Operations;
   return undefined;
 }
 

@@ -1,6 +1,17 @@
 import type postgres from "postgres";
 import { expect } from "vitest";
 
+/** Restore242 only when this disposable fixture has no discovery evidence. */
+export async function removeNativeMcpDiscoveriesForReplay(sql: postgres.TransactionSql) {
+  expect(await sql`SELECT count(*)::int AS discoveries FROM public.omni_native_mcp_discoveries`).toEqual([{ discoveries: 0 }]);
+  await sql`DROP TABLE public.omni_native_mcp_discoveries`;
+  await sql`DROP FUNCTION public.omni_protect_native_mcp_discovery_v1()`;
+  await sql`DROP FUNCTION public.omni_native_mcp_discovery_closure_valid_v1(JSONB,JSONB,JSONB)`;
+  await sql`DROP FUNCTION public.omni_native_mcp_discovery_settlement_valid_v1(JSONB,JSONB,JSONB)`;
+  await sql`DROP FUNCTION public.omni_native_mcp_discovery_attempt_valid_v1(JSONB,JSONB)`;
+  await sql`DROP FUNCTION public.omni_native_mcp_discovery_intent_valid_v1(JSONB)`;
+}
+
 /** Restore241 only when this disposable fixture has no OpenAPI import evidence. */
 export async function removeNativeOpenapiImportsForReplay(sql: postgres.TransactionSql) {
   expect(await sql`SELECT (SELECT count(*)::int FROM public.omni_native_openapi_import_preparations) AS preparations,

@@ -14,6 +14,7 @@ import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import { connectorNativePrivateDigest, connectorNativePrivateFingerprint, connectorNativePublicEndpoint } from "@/lib/connectors/native-control-private";
 import { evaluateConnectorSecretBinding } from "@/lib/connectors/secret-binding";
 import type { OpenApiConnectorRecord, OpenApiOperationRecord } from "@/lib/connectors/openapi-types";
+import type { McpConnectorRecord, McpToolRecord } from "@/lib/connectors/types";
 
 type Sql = ReturnType<typeof getSql>;
 export type ConnectorNativeAuthority = { scope: ConnectorNativeScope; executionScope?: ExecutionScope };
@@ -71,9 +72,7 @@ async function current(sql: Sql, scope: ConnectorNativeScope, kind: ConnectorNat
   if (tools.length + operations.length !== children.length) fail("The complete connector contract set changed during review.");
   let supported = true;
   if (mcp) { try { assertMcpConnectorIsSupported(mcp); } catch { supported = false; } }
-  const rows = mcp ? tools.map((tool) => ({ id: tool.id, name: tool.name, description: tool.description ?? null, status: tool.status,
-    riskLevel: tool.riskLevel, approvalRequired: tool.approvalRequired, fingerprint: connectorNativePrivateFingerprint(tenantId, mcpToolContractFingerprint(tool, mcp)),
-    definition: { title: tool.title ?? null, inputSchema: tool.inputSchema, outputSchema: tool.outputSchema ?? null, annotations: tool.annotations ?? null } }))
+  const rows = mcp ? nativeMcpContractRows(tenantId, mcp, tools)
     : nativeOpenapiContractRows(tenantId, openapi!, operations);
   rows.sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
   if (Buffer.byteLength(JSON.stringify(rows), "utf8") > 1_048_576 || rows.some((row) => !connectorNativeContractSchema.safeParse(row).success)) {
@@ -119,6 +118,35 @@ function nativeOpenapiContractRows(tenantId: string, connector: OpenApiConnector
     fingerprint: connectorNativePrivateFingerprint(tenantId, openApiOperationContractFingerprint(operation, connector)),
     definition: { summary: operation.summary ?? null, method: operation.method, path: operation.path, inputSchema: operation.inputSchema,
       requestContentType: operation.requestContentType ?? null, responseContentTypes: operation.responseContentTypes } }));
+}
+
+function nativeMcpContractRows(tenantId: string, connector: McpConnectorRecord, tools: McpToolRecord[]) {
+  return tools.map((tool) => ({ id: tool.id, name: tool.name, description: tool.description ?? null, status: tool.status,
+    riskLevel: tool.riskLevel, approvalRequired: tool.approvalRequired,
+    fingerprint: connectorNativePrivateFingerprint(tenantId, mcpToolContractFingerprint(tool, connector)),
+    definition: { title: tool.title ?? null, inputSchema: tool.inputSchema, outputSchema: tool.outputSchema ?? null, annotations: tool.annotations ?? null } }));
+}
+
+/** Complete prospective native review; it opens no database or provider call. */
+export function projectNativeMcpReview(scope: ConnectorNativeScope, connector: McpConnectorRecord, tools: McpToolRecord[]) {
+  if (connector.tenantId !== scope.tenantId || connector.status !== "disabled" || connector.toolCount !== tools.length || tools.length > 200 ||
+    tools.some((tool) => tool.tenantId !== scope.tenantId || tool.connectorId !== connector.id || tool.connectorName !== connector.name)) {
+    fail("The complete disabled MCP review is unavailable.");
+  }
+  assertMcpConnectorIsSupported(connector);
+  const summary = connectorNativeSummarySchema.parse({ kind: "mcp", id: connector.id, name: connector.name,
+    ...connectorNativePublicEndpoint(connector.endpoint), status: connector.status, authType: connector.authType,
+    authTokenEnv: connector.authTokenEnv ?? null, authHeaderName: null, credentialConfigured: Boolean(connector.credentialConfigured),
+    credentialVersion: connector.credentialVersion ?? 0, credentialOriginMatch: Boolean(connector.credentialOriginMatch),
+    defaultRiskLevel: connector.defaultRiskLevel, approvalRequired: connector.approvalRequired, contractCount: tools.length,
+    discoveredAt: connector.lastDiscoveredAt ?? null, updatedAt: connector.updatedAt });
+  const rows = nativeMcpContractRows(scope.tenantId, connector, tools).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  if (Buffer.byteLength(JSON.stringify(rows), "utf8") > 1_048_576) fail("The complete native MCP review is too large.");
+  const contracts = rows.map((row) => connectorNativeContractSchema.parse(row)), review = mcpContractReviewSummary(tools, connector);
+  const pin = sealConnectorNativePin({ kind: "mcp", connectorId: connector.id, connectorSha256: canonicalJsonSha256(summary),
+    contractsSha256: canonicalJsonSha256(contracts), configurationSha256: connectorNativePrivateDigest(scope.tenantId, ["connector-configuration:1", "mcp", connector]),
+    credentialVersion: summary.credentialVersion, reviewFingerprint: review.fingerprint ? connectorNativePrivateFingerprint(scope.tenantId, review.fingerprint) : null });
+  return connectorNativeReviewSchema.parse({ connector: summary, contracts, pin, availableActions: [], unavailableReason: null });
 }
 
 /** Pure prospective projection for the native import's complete immutable
