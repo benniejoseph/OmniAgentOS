@@ -77,7 +77,7 @@ checks.push(previousReleaseWithoutErrorBudget
   : assert(gateById.get("agent_error_budget")?.status === "pass", "agent error budget gate passes", gateDetail(gateById.get("agent_error_budget"))));
 checks.push(assert(gateById.get("eval_report_signing")?.status === "pass", "eval report signing gate passes", gateDetail(gateById.get("eval_report_signing"))));
 checks.push(report
-  ? assert(await writeReleaseEvidenceArtifact(report), "release evidence artifact is present and bounded", "artifact validation failed")
+  ? assert(await writeReleaseEvidenceArtifact(report, response.status), "release evidence artifact is present and bounded", "artifact validation failed")
   : assert(false, "release evidence artifact is present and bounded", "report was missing, so no artifact was written"));
 
 const failures = checks.filter((check) => !check.ok);
@@ -143,7 +143,7 @@ async function clearReleaseEvidenceArtifact() {
   await rm(outputPath, { force: true });
 }
 
-async function writeReleaseEvidenceArtifact(report) {
+async function writeReleaseEvidenceArtifact(report, httpStatus) {
   const outputPath = process.env.RELEASE_EVIDENCE_OUTPUT?.trim();
   if (!outputPath) {
     failSmoke("RELEASE_EVIDENCE_OUTPUT is required for the release evidence gate.");
@@ -160,6 +160,8 @@ async function writeReleaseEvidenceArtifact(report) {
   ]);
   const content = `${JSON.stringify({
     generatedAt: new Date().toISOString(),
+    httpStatus,
+    reportCheckedAt: report.checkedAt,
     baseUrl,
     smokeRunId: process.env.SMOKE_RUN_ID,
     ...(previousReleaseWithoutErrorBudget
@@ -177,6 +179,7 @@ async function writeReleaseEvidenceArtifact(report) {
       status: gate.status,
       summary: limitText(gate.summary),
     })),
+    tenantIsolationStatus: report.tenantIsolation?.status,
     tenantIsolation: report.tenantIsolation?.summary,
     observability: {
       ...report.observability,
