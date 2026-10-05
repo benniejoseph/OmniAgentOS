@@ -56,6 +56,11 @@ task_run_suite() {
   "$task_build_dir/$task_name"
 }
 
+task_run_suite PowerStateBridgeTests POWER_STATE_POLICY_TESTS \
+  -framework AppKit \
+  "$task_macos_dir/Runner/PowerStateBridge.swift" \
+  "$task_macos_dir/RunnerTests/PowerStateBridgeTests.swift"
+
 # Includes process-termination and atomic-publication recovery cases. These
 # are crash-boundary checks, not certification against machine power loss.
 task_run_suite RecoveryStorageBrokerTests RECOVERY_STORAGE_POLICY_TESTS \

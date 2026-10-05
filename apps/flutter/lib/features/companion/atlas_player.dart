@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 
+import '../../core/platform/macos_power_state.dart';
 import 'atlas_assets.dart';
 import 'companion_models.dart';
 
@@ -19,6 +21,7 @@ class AtlasPortrait extends StatefulWidget {
     this.preferences,
     this.scopeKey,
     this.reactionKey,
+    this.powerState,
   });
   final String state;
   final double size;
@@ -28,6 +31,7 @@ class AtlasPortrait extends StatefulWidget {
   final bool greeting;
   final CompanionPreferences? preferences;
   final Object? scopeKey, reactionKey;
+  final ValueListenable<MacosPowerState>? powerState;
   @override
   State<AtlasPortrait> createState() => _AtlasPortraitState();
 }
@@ -35,6 +39,7 @@ class AtlasPortrait extends StatefulWidget {
 class _AtlasPortraitState extends State<AtlasPortrait>
     with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   late final AnimationController _clock;
+  late ValueListenable<MacosPowerState> _powerState;
   final _scrollPositions = <ScrollPosition>{};
   AssetBundle? _bundle;
   Object? _configuration, _handledReaction;
@@ -54,6 +59,8 @@ class _AtlasPortraitState extends State<AtlasPortrait>
     // A completed ticker stops at the exact final pose. The single current
     // texture stays until a state/scope change; no idle ticker or clip loop.
     _clock = AnimationController(vsync: this);
+    _powerState = widget.powerState ?? MacosPowerStateMonitor.instance;
+    _powerState.addListener(_synchronize);
   }
 
   @override
@@ -85,6 +92,11 @@ class _AtlasPortraitState extends State<AtlasPortrait>
   @override
   void didUpdateWidget(covariant AtlasPortrait oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.powerState, widget.powerState)) {
+      _powerState.removeListener(_synchronize);
+      _powerState = widget.powerState ?? MacosPowerStateMonitor.instance;
+      _powerState.addListener(_synchronize);
+    }
     _synchronize();
     _queueVisibilityCheck();
   }
@@ -167,6 +179,8 @@ class _AtlasPortraitState extends State<AtlasPortrait>
       _foreground,
       _allowed,
       _motion,
+      _powerState,
+      _powerState.value,
       visible,
     );
     final freshReaction =
@@ -186,6 +200,7 @@ class _AtlasPortraitState extends State<AtlasPortrait>
           sprite:
               freshReaction &&
               _motion &&
+              _powerState.value == MacosPowerState.disabled &&
               preference?.motion == 'full' &&
               atlasMotionAllowed(preference?.intensity, widget.state),
         ),
@@ -257,6 +272,7 @@ class _AtlasPortraitState extends State<AtlasPortrait>
   @override
   void dispose() {
     _generation++;
+    _powerState.removeListener(_synchronize);
     WidgetsBinding.instance.removeObserver(this);
     for (final position in _scrollPositions) {
       position.removeListener(_queueVisibilityCheck);

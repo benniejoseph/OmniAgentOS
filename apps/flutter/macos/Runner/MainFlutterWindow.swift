@@ -29,6 +29,7 @@ class MainFlutterWindow: NSWindow {
   private static let desktopChannelName = "app.omniagent.omniagent/desktop"
   private static let localComputerChannelName = "app.omniagent.omniagent/local-computer"
   private static let secureStorageChannelName = "app.omniagent.omniagent/secure-storage"
+  private var powerStateChannel: FlutterEventChannel?
 
   override func awakeFromNib() {
     let flutterViewController = FlutterViewController()
@@ -55,9 +56,18 @@ class MainFlutterWindow: NSWindow {
       binaryMessenger: flutterViewController.engine.binaryMessenger
     )
     (NSApp.delegate as? AppDelegate)?.attachCredentialBrokerBridge(channel: secureStorageChannel)
+    powerStateChannel = (NSApp.delegate as? AppDelegate)?.attachPowerStateBridge(
+      to: flutterViewController.engine.binaryMessenger
+    )
 
     RegisterGeneratedPlugins(registry: flutterViewController)
     super.awakeFromNib()
+  }
+
+  deinit {
+    if let powerStateChannel {
+      (NSApp.delegate as? AppDelegate)?.detachPowerStateBridge(powerStateChannel)
+    }
   }
 
   private func configureDesktopWindow() {

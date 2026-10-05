@@ -52,6 +52,13 @@ ready material or change a connector. GETs remain read-only. Deploy and verify
 the v43 server and migration chain before distributing a v43 native build.
 Existing mutation floors remain unchanged, including Trash 42 and removal 41.
 
+App `1.23.27+63` retains v43 and adds automatic macOS Low Power Mode fallback
+for ATLAS in primary and auxiliary windows. Enabled or unavailable host power
+state keeps the existing static portrait; returning to normal power does not
+replay suppressed reactions. No backend, preference, artwork or migration change
+is introduced. It still requires a compatible v43 server before distribution;
+package verification does not establish physical power or energy measurements.
+
 Migration 240 adds one tenant- and owner-scoped preparation table, taking the
 expected tenant inventory to 264, and narrowly extends the shared native action
 ledger for `rotate_mcp`. Apply and verify its checksum-linked chain after 239
