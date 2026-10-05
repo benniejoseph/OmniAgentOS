@@ -47,11 +47,11 @@ void main() {
   });
 
   test('retains current and previous contract compatibility', () {
-    expect(NativeContract.currentVersion, 42);
-    expect(NativeContract.previousVersion, 41);
-    expect(NativeContract.supportedVersions, [42, 41]);
+    expect(NativeContract.currentVersion, 43);
+    expect(NativeContract.previousVersion, 42);
+    expect(NativeContract.supportedVersions, [43, 42]);
     expect(NativeContract.supports(40), isFalse);
-    expect(NativeContract.supports(43), isFalse);
+    expect(NativeContract.supports(44), isFalse);
     expect(
       NativePaths.meetingsList(
         workspaceId: 'workspace:one',

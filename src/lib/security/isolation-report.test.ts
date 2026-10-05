@@ -29,6 +29,7 @@ describe("tenant isolation policy evidence", () => {
       ["omni_native_private_memory_actions", "omni_native_private_memory_actor"],
       ["omni_google_personal_native_actions", "omni_google_personal_native_actor"],
       ["omni_native_connector_actions", "omni_native_connector_actor"],
+      ["omni_native_connector_credential_preparations", "omni_native_credential_preparation_actor"],
       ["omni_knowledge_native_cognition_builds", "omni_native_cognition_build_actor"],
       ["omni_knowledge_native_cognition_effects", "omni_native_cognition_build_actor"],
       ["omni_meeting_recording_processing_effects", "omni_native_recording_actor"],

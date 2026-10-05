@@ -185,6 +185,25 @@ void main() {
     },
   );
 
+  test('one-shot secret POST never refreshes or replays after a 401', () async {
+    final store = await _store(), service = _Service()..refuseFirstPost = true;
+    await expectLater(
+      _client(store, service).postJsonAuthorizedOnce(
+        '/api/connectors/native/credential-preparations',
+        authority: _authority(),
+        data: {
+          'payload': {'bearerToken': 'synthetic-one-shot'},
+        },
+        headers: {'Idempotency-Key': 'preparation-one'},
+      ),
+      throwsA(isA<ApiException>()),
+    );
+    expect(service.posts, hasLength(1));
+    expect(service.posts.single.key, 'preparation-one');
+    expect(service.validatedTokens, ['Bearer access-one']);
+    expect(service.refreshes, 0);
+  });
+
   test('401 replay validates the replacement token before resending original bytes with the same key', () async {
     final store = await _store(), service = _Service()..refuseFirstPost = true;
     await _upload(_client(store, service), _authority());

@@ -1465,5 +1465,12 @@
     "checksum": "6af2db420131c4c68b3279b4030f161d72c85b2a740477fc6f77aa6b85482d83",
     "file": "20261005193000_native_connector_trash.sql",
     "sha256": "6af2db420131c4c68b3279b4030f161d72c85b2a740477fc6f77aa6b85482d83"
+  },
+  {
+    "version": 240,
+    "name": "native_connector_credential_rotations_v1",
+    "checksum": "a7d4cadf15b68e774a580a1cac9e1fbf226c6cd7fe1fcfadf83d49cb781e936b",
+    "file": "20261005200000_native_connector_credential_rotations.sql",
+    "sha256": "a7d4cadf15b68e774a580a1cac9e1fbf226c6cd7fe1fcfadf83d49cb781e936b"
   }
 ]

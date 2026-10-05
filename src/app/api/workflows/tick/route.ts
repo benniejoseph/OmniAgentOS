@@ -26,6 +26,7 @@ import { redactSensitive, SecurityPolicyError } from "@/lib/security/context";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { processPendingMemoryGraphRebuilds } from "@/lib/security/retention";
 import { scrubExpiredLocalComputerObservations } from "@/lib/local-computer/store";
+import { scrubExpiredNativeConnectorCredentialPreparations, type NativeCredentialPreparationScrub } from "@/lib/connectors/native-credential-rotation-store";
 import { processPendingTemporalRelationProjections } from "@/lib/entities/relation-projection-queue";
 import { processPendingMemoryDeletionScrubs } from "@/lib/memory/deletion-scrub";
 import { runTenantMemoryMaintenance } from "@/lib/memory/maintenance-store";
@@ -653,6 +654,9 @@ function summarizeScheduledOutcome(
       0,
     );
   const counts = {
+    nativeCredentialPreparationsScrubbed: scheduled.maintenance.reduce((sum, item) => sum + item.credentialPreparationScrub.scrubbed, 0),
+    nativeCredentialPreparationScrubFailures: scheduled.maintenance.filter((item) => item.credentialPreparationScrub.status === "failed").length,
+    nativeCredentialPreparationScrubDeferred: scheduled.maintenance.filter((item) => item.credentialPreparationScrub.status === "deferred").length,
     localComputerObservationsScrubbed:
       scheduled.localComputerObservationScrub?.scrubbed || 0,
     workflowLeased: scheduled.queue?.leased || 0,
@@ -975,6 +979,7 @@ async function runAllTenantScheduledWork({
   const maintenanceTenantIds: string[] = [];
   const maintenance: Array<{
     tenantId: string;
+    credentialPreparationScrub: NativeCredentialPreparationScrub;
     agentRunsRepaired: number;
     missionProjectionsRepaired: number;
     toolClaimsRecovered: number;
@@ -1011,6 +1016,7 @@ async function runAllTenantScheduledWork({
     if (Date.now() >= deadlineAt) {
       break;
     }
+    let credentialPreparationScrub = emptyCredentialPreparationScrub();
     try {
       maintenance.push(
         await runWithDatabaseTenantScope(tenantId, () =>
@@ -1024,6 +1030,7 @@ async function runAllTenantScheduledWork({
             alertQueueLimit,
             alertDispatchLimit,
             deadlineAt,
+            recordPreparationScrub: (report) => { credentialPreparationScrub = report; },
           }),
         ),
       );
@@ -1035,7 +1042,7 @@ async function runAllTenantScheduledWork({
         tenantId,
         error: maintenanceError,
       }));
-      maintenance.push(failedTenantMaintenance(tenantId, maintenanceError));
+      maintenance.push(failedTenantMaintenance(tenantId, maintenanceError, credentialPreparationScrub));
     }
     maintenanceTenantIds.push(tenantId);
   }
@@ -1110,6 +1117,7 @@ async function runTenantMaintenance({
   alertQueueLimit,
   alertDispatchLimit,
   deadlineAt,
+  recordPreparationScrub,
 }: {
   tenantId: string;
   trigger: string;
@@ -1120,9 +1128,11 @@ async function runTenantMaintenance({
   alertQueueLimit: number;
   alertDispatchLimit: number;
   deadlineAt: number;
+  recordPreparationScrub: (report: NativeCredentialPreparationScrub) => void;
 }) {
   const result: {
     tenantId: string;
+    credentialPreparationScrub: NativeCredentialPreparationScrub;
     agentRunsRepaired: number;
     missionProjectionsRepaired: number;
     toolClaimsRecovered: number;
@@ -1155,6 +1165,7 @@ async function runTenantMaintenance({
     >;
   } = {
     tenantId,
+    credentialPreparationScrub: emptyCredentialPreparationScrub(),
     agentRunsRepaired: 0,
     missionProjectionsRepaired: 0,
     toolClaimsRecovered: 0,
@@ -1175,6 +1186,16 @@ async function runTenantMaintenance({
     workflowSchedules: emptyWorkflowScheduleTotals(),
     loopV2Recovery: emptyLoopV2RecoverySummary(),
   };
+  if (Date.now() < deadlineAt) {
+    try {
+      result.credentialPreparationScrub = await scrubExpiredNativeConnectorCredentialPreparations({ tenantId, limit: 100, deadlineAt });
+    } catch {
+      result.credentialPreparationScrub = { status: "failed", scrubbed: 0, moreAvailable: true, oldestExpiredAt: null };
+      console.error(JSON.stringify({ level: "error", msg: "native_credential_preparation_scrub_failed", tenantId }));
+    }
+    // Preserve this committed/failed scrub evidence if a later tenant stage throws.
+    recordPreparationScrub(result.credentialPreparationScrub);
+  }
   if (Date.now() < deadlineAt) {
     result.loopV2Recovery = await recoverInterruptedLoopV2Runs({
       tenantId,
@@ -1354,9 +1375,11 @@ async function runTenantMaintenance({
 function failedTenantMaintenance(
   tenantId: string,
   maintenanceError: string,
+  credentialPreparationScrub: NativeCredentialPreparationScrub,
 ) {
   return {
     tenantId,
+    credentialPreparationScrub,
     agentRunsRepaired: 0,
     missionProjectionsRepaired: 0,
     toolClaimsRecovered: 0,
@@ -1378,6 +1401,10 @@ function failedTenantMaintenance(
     maintenanceError,
     loopV2Recovery: emptyLoopV2RecoverySummary(),
   };
+}
+
+function emptyCredentialPreparationScrub(): NativeCredentialPreparationScrub {
+  return { status: "deferred", scrubbed: 0, moreAvailable: true, oldestExpiredAt: null };
 }
 
 function safeTenantMaintenanceError(error: unknown) {

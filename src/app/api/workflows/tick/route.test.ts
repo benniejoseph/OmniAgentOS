@@ -13,6 +13,7 @@ const routeMocks = vi.hoisted(() => ({
   processPendingMemoryGraphRebuilds: vi.fn(),
   processPendingTemporalRelationProjections: vi.fn(),
   scrubExpiredLocalComputerObservations: vi.fn(),
+  scrubExpiredNativeConnectorCredentialPreparations: vi.fn(),
   runTenantMemoryMaintenance: vi.fn(),
   listMaintenanceTenantIds: vi.fn(),
   recoverInterruptedLoopV2Runs: vi.fn(),
@@ -117,6 +118,10 @@ vi.mock("@/lib/local-computer/store", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/local-computer/store")>()),
   scrubExpiredLocalComputerObservations:
     routeMocks.scrubExpiredLocalComputerObservations,
+}));
+
+vi.mock("@/lib/connectors/native-credential-rotation-store", () => ({
+  scrubExpiredNativeConnectorCredentialPreparations: routeMocks.scrubExpiredNativeConnectorCredentialPreparations,
 }));
 
 vi.mock("@/lib/memory/deletion-scrub", async (importOriginal) => ({
@@ -296,6 +301,9 @@ beforeEach(() => {
   routeMocks.scrubExpiredLocalComputerObservations
     .mockReset()
     .mockResolvedValue({ scrubbed: 0, moreAvailable: false });
+  routeMocks.scrubExpiredNativeConnectorCredentialPreparations.mockReset().mockResolvedValue({
+    status: "complete", scrubbed: 0, moreAvailable: false, oldestExpiredAt: null,
+  });
   routeMocks.processAllTenantAgentResumeQueues
     .mockReset()
     .mockResolvedValue(emptyResumeQueue);
@@ -1164,6 +1172,53 @@ describe("dedicated worker heartbeat timing", () => {
     } finally {
       errorLog.mockRestore();
     }
+  });
+
+  it("scrubs one exact tenant before its recovery and provider work", async () => {
+    const order: string[] = [], before = Date.now();
+    routeMocks.listMaintenanceTenantIds.mockResolvedValue(["credential-tenant"]);
+    routeMocks.scrubExpiredNativeConnectorCredentialPreparations.mockImplementation(async (input) => {
+      order.push("scrub");
+      expect(input).toMatchObject({ tenantId: "credential-tenant", limit: 100 });
+      expect(input.deadlineAt).toBeGreaterThan(before);
+      return { status: "complete", scrubbed: 2, moreAvailable: true, oldestExpiredAt: "2026-10-05T00:00:00.000Z" };
+    });
+    routeMocks.recoverInterruptedLoopV2Runs.mockImplementation(async () => { order.push("recovery"); return emptyLoopV2Recovery; });
+    const response = await POST(workerRequest({ startup: false, lane: "maintenance" }));
+    const body = await response.json();
+    expect(response.status).toBe(200);
+    expect(order.slice(0, 2)).toEqual(["scrub", "recovery"]);
+    expect(body.maintenance[0].credentialPreparationScrub).toMatchObject({ status: "complete", scrubbed: 2, moreAvailable: true });
+  });
+
+  it.each([false, true])("retains scrub evidence when later tenant work fails (scrub failure=%s)", async (scrubFailure) => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      routeMocks.listMaintenanceTenantIds.mockResolvedValue(["credential-first", "credential-later"]);
+      if (scrubFailure) routeMocks.scrubExpiredNativeConnectorCredentialPreparations.mockRejectedValueOnce(new Error("private prepared payload detail"));
+      else routeMocks.scrubExpiredNativeConnectorCredentialPreparations.mockResolvedValueOnce({ status: "complete", scrubbed: 3, moreAvailable: false, oldestExpiredAt: null });
+      routeMocks.recoverInterruptedLoopV2Runs.mockRejectedValueOnce(new Error("later recovery failed"));
+      const response = await POST(workerRequest({ startup: false, lane: "maintenance" }));
+      const body = await response.json();
+      expect(response.status).toBe(200);
+      expect(body.maintenance[0].credentialPreparationScrub).toEqual(scrubFailure
+        ? { status: "failed", scrubbed: 0, moreAvailable: true, oldestExpiredAt: null }
+        : { status: "complete", scrubbed: 3, moreAvailable: false, oldestExpiredAt: null });
+      expect(body.maintenance[0].maintenanceError).toBe("later recovery failed");
+      expect(body.maintenanceTenantIds).toEqual(["credential-first", "credential-later"]);
+      expect(routeMocks.scrubExpiredNativeConnectorCredentialPreparations).toHaveBeenCalledTimes(2);
+      expect(log.mock.calls.flat().join(" ")).not.toContain("private prepared payload detail");
+    } finally { log.mockRestore(); }
+  });
+
+  it("does not start preparation cleanup after the tenant-page budget expires", async () => {
+    const now = Date.now(), clock = vi.spyOn(Date, "now").mockReturnValue(now);
+    try {
+      routeMocks.listMaintenanceTenantIds.mockImplementation(async () => { clock.mockReturnValue(now + 300_000); return ["late-tenant"]; });
+      const response = await POST(workerRequest({ startup: false, lane: "maintenance" }));
+      expect(response.status).toBe(200);
+      expect(routeMocks.scrubExpiredNativeConnectorCredentialPreparations).not.toHaveBeenCalled();
+    } finally { clock.mockRestore(); }
   });
 
   it("serializes system-scope maintenance work before listing tenants", async () => {

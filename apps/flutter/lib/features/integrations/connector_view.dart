@@ -9,6 +9,7 @@ import 'connector_contracts.dart';
 import 'connector_control_contracts.dart';
 import 'connector_controller.dart';
 import 'connector_credential_removal_view.dart';
+import 'connector_credential_rotation_view.dart';
 import 'connector_providers.dart';
 import 'connector_trash_view.dart';
 
@@ -148,6 +149,11 @@ class _ConnectorControlPanelState extends State<ConnectorControlPanel>
                 onPressed: c.busy ? null : () => _openTrash(),
                 icon: const Icon(Icons.restore_from_trash_outlined),
                 label: const Text('Connector Trash recovery'),
+              ),
+              OutlinedButton.icon(
+                onPressed: c.busy ? null : () => _openCredentialRotation(),
+                icon: const Icon(Icons.key_outlined),
+                label: const Text('Credential preparation recovery'),
               ),
             ],
           ),
@@ -416,6 +422,14 @@ class _ConnectorControlPanelState extends State<ConnectorControlPanel>
               icon: const Icon(Icons.key_outlined),
               label: const Text('Review saved credential'),
             ),
+          if (row['kind'] == 'mcp' && c.mayManage)
+            OutlinedButton.icon(
+              onPressed: c.busy
+                  ? null
+                  : () => _openCredentialRotation(row['id'] as String),
+              icon: const Icon(Icons.key),
+              label: const Text('Prepare bearer credential'),
+            ),
           if (row['kind'] == 'mcp' &&
               review.pin != null &&
               review.value!['unavailableReason'] == null &&
@@ -436,6 +450,25 @@ class _ConnectorControlPanelState extends State<ConnectorControlPanel>
       if (review.actions.isEmpty && review.value!['unavailableReason'] == null)
         const Text('No current action is available with this account access.'),
     ];
+  }
+
+  Future<void> _openCredentialRotation([String? id]) async {
+    if (!_visible || c.busy) {
+      return;
+    }
+    final controller = c;
+    await Navigator.of(context, rootNavigator: true).push(
+      MaterialPageRoute<void>(
+        builder: (_) =>
+            NativeConnectorCredentialRotationWorkspace(connectorId: id),
+      ),
+    );
+    if (mounted && identical(controller, c) && _visible) {
+      unawaited(c.refresh());
+      if (id != null) {
+        unawaited(c.select('mcp', id));
+      }
+    }
   }
 
   Future<void> _openTrash([String? id]) async {

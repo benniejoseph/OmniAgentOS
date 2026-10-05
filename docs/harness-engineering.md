@@ -345,6 +345,17 @@ queries. Passing `JSON.stringify(receipt)` through the driver's JSON serializer
 can persist a JSON string instead of the required object. Keep the SQL shape and
 binding checks active so malformed acceptance cannot commit.
 
+When a native integration fixture rebuilds a generic preview or request, parse it
+through the endpoint's narrow schema before passing it to a typed store. Preserve
+the intended negative case, such as expiry or stale review, without widening the
+request or hiding the mismatch with a cast. Hosted TypeScript checks include
+integration fixtures as well as application code.
+
+When adding application-service operations, update the architecture guide's
+active count and include `src/lib/app-services/coverage.test.ts` in the first
+focused validation pass alongside contract generation and route cases. The
+registry and documented inventory must agree before a release build is published.
+
 ## Transitional paths expire
 
 Every shadow, canary, legacy, versioned and retired path is registered in

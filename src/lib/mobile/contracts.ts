@@ -58,6 +58,7 @@ import { nativeGooglePersonalSchemas } from "@/lib/mobile/google-personal-native
 import { nativeConnectorSchemas } from "@/lib/mobile/connector-native-contracts";
 import { nativeConnectorCredentialRemovalSchemas } from "@/lib/mobile/connector-credential-removal-contracts";
 import { nativeConnectorTrashSchemas } from "@/lib/mobile/connector-trash-contracts";
+import { nativeConnectorCredentialRotationSchemas } from "@/lib/mobile/connector-credential-rotation-contracts";
 
 import { pluginManifestSchema } from "@/lib/plugins/contracts";
 import {
@@ -67,10 +68,10 @@ import {
 import { voiceCommandInputSchema } from "@/lib/voice/command-input";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 42 as const;
-// v41's exact saved credential removal remains byte-frozen. v42 adds only
-// reviewed MCP Trash previews, confirmed moves and exact receipt recovery.
-export const NATIVE_API_PREVIOUS_VERSION = 41 as const;
+export const NATIVE_API_CURRENT_VERSION = 43 as const;
+// v41/v42 remain byte-frozen. v43 adds only prepared existing-MCP bearer
+// credential save/rotation, exact recovery and terminal staging abandonment.
+export const NATIVE_API_PREVIOUS_VERSION = 42 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -2330,6 +2331,28 @@ const v42Operations: readonly NativeOperation[] = [
   }),
 ];
 
+const v43Operations: readonly NativeOperation[] = [
+  ...v42Operations,
+  operation("connectors.native.credentialPreparations.submit", "POST", "/api/connectors/native/credential-preparations", "Prepare one write-only bearer credential for an unchanged reviewed MCP connector without changing its live credential.", "bearer", "NativeConnectorCredentialPrepareRequest", "NativeConnectorCredentialPreparationSubmitResponse", {
+    ...connectorNativeOptions, headerParameters: pluginMutationHeaders, requestBodyMaxBytes: 65_536,
+    successStatuses: [200, 201], errorStatuses: [400, 401, 403, 404, 409, 413, 415, 500, 503],
+  }),
+  operation("connectors.native.credentialPreparations.read", "GET", "/api/connectors/native/credential-preparations/{keySha256}", "Read the original owner's exact safe preparation proof or terminal abandonment without exposing or resending its credential.", "bearer", undefined, "NativeConnectorCredentialPreparationReadResponse", {
+    ...connectorNativeOptions, pathParameters: nativeActionRecoveryPath,
+  }),
+  operation("connectors.native.credentialPreparations.abandon", "POST", "/api/connectors/native/credential-preparations/{keySha256}/abandon", "Permanently abandon only the original owner's exact staging intent, including a tombstone that fences a delayed preparation.", "bearer", "NativeConnectorCredentialPreparationAbandonRequest", "NativeConnectorCredentialPreparationAbandonResponse", {
+    ...connectorNativeOptions, pathParameters: nativeActionRecoveryPath, headerParameters: pluginMutationHeaders, requestBodyMaxBytes: 16_384,
+    successStatuses: [200, 201], errorStatuses: [400, 401, 403, 409, 413, 415, 500, 503],
+  }),
+  operation("connectors.native.credentialRotations.submit", "POST", "/api/connectors/native/credential-rotations", "Consume one exact prepared MCP bearer credential once, disable its connector and clear its discovered contracts without provider calls.", "bearer", "NativeConnectorCredentialRotationRequest", "NativeConnectorCredentialRotationSubmitResponse", {
+    ...connectorNativeOptions, headerParameters: pluginMutationHeaders, requestBodyMaxBytes: 8192,
+    successStatuses: [200, 201], errorStatuses: [400, 401, 403, 404, 409, 413, 415, 500, 503],
+  }),
+  operation("connectors.native.credentialRotations.read", "GET", "/api/connectors/native/credential-rotations/{keySha256}", "Read the original exact MCP credential rotation receipt without repeating preparation or credential effects.", "bearer", undefined, "NativeConnectorCredentialRotationReadResponse", {
+    ...connectorNativeOptions, pathParameters: nativeActionRecoveryPath,
+  }),
+];
+
 const nativeCompanionPreferencesResponseSchema = z.object({
   schemaVersion: z.literal(1), contract: z.literal(COMPANION_PREFERENCES_CONTRACT),
   snapshot: z.object({
@@ -2354,6 +2377,7 @@ export const nativeContractSchemas = Object.freeze({
   ...nativeConnectorSchemas,
   ...nativeConnectorCredentialRemovalSchemas,
   ...nativeConnectorTrashSchemas,
+  ...nativeConnectorCredentialRotationSchemas,
   ...nativeResponsibilityContractSchemas,
   ...nativeMeetingContractSchemas,
   ...nativeCustomerContractSchemas,
@@ -2521,6 +2545,7 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 40) return v40Operations;
   if (version === 41) return v41Operations;
   if (version === 42) return v42Operations;
+  if (version === 43) return v43Operations;
   return undefined;
 }
 
