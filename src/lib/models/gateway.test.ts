@@ -122,6 +122,64 @@ describe("model gateway", () => {
     expect(google.generateText).not.toHaveBeenCalled();
   });
 
+  it("retries a streamed overload once on the same selected model within its attempt budget", async () => {
+    openAI.configured.mockReturnValue(true);
+    google.configured.mockReturnValue(true);
+    const beforeRetry = vi.fn(async () => true);
+    const overload = () => Object.assign(new Error("temporary overload"), {
+      provider: "openai",
+      kind: "overloaded",
+      retryable: true,
+    });
+    openAI.generateText
+      .mockRejectedValueOnce(overload())
+      .mockResolvedValueOnce(result("openai"));
+
+    const generated = await generateModelText({
+      input: "bounded private context",
+      preferredProvider: "openai",
+      maxAttempts: 2,
+      beforeRetry,
+    });
+    expect(generated.attempts.map(({ provider, model, status }) => ({ provider, model, status }))).toEqual([
+      { provider: "openai", model: "openai-model", status: "failed" },
+      { provider: "openai", model: "openai-model", status: "completed" },
+    ]);
+    expect(beforeRetry).toHaveBeenCalledTimes(1);
+    expect(openAI.generateText).toHaveBeenCalledTimes(2);
+    expect(google.generateText).not.toHaveBeenCalled();
+
+    openAI.generateText.mockReset().mockRejectedValue(overload());
+    await expect(generateModelText({
+      input: "bounded private context",
+      preferredProvider: "openai",
+      maxAttempts: 4,
+      beforeRetry,
+    })).rejects.toMatchObject({ kind: "overloaded", attempts: [
+      { status: "failed" }, { status: "failed" },
+    ] });
+    expect(openAI.generateText).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not repeat an overloaded model when the caller declines the retry", async () => {
+    openAI.configured.mockReturnValue(true);
+    openAI.generateText.mockRejectedValue(Object.assign(new Error("temporary overload"), {
+      provider: "openai",
+      kind: "overloaded",
+      retryable: true,
+    }));
+    const beforeRetry = vi.fn(async () => false);
+
+    await expect(generateModelText({
+      input: "bounded private context",
+      preferredProvider: "openai",
+      maxAttempts: 2,
+      beforeRetry,
+    })).rejects.toMatchObject({ kind: "overloaded" });
+    expect(beforeRetry).toHaveBeenCalledTimes(1);
+    expect(openAI.generateText).toHaveBeenCalledTimes(1);
+  });
+
   it("adds a failed attempt's billed tokens to the call's usage", async () => {
     openAI.configured.mockReturnValue(true);
     openAI.targets.mockReturnValue([

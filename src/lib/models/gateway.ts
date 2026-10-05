@@ -247,7 +247,9 @@ async function executeGateway<
 
   const attempts: ModelAttemptReceipt[] = [];
   let lastError: ModelProviderError | undefined;
-  for (const [index, candidate] of candidates.entries()) {
+  let overloadRetryAdded = false;
+  for (let index = 0; index < candidates.length; index += 1) {
+    const candidate = candidates[index];
     const startedAt = Date.now();
     try {
       const result = await execute(candidate.adapter, candidate.target);
@@ -316,6 +318,19 @@ async function executeGateway<
           : {}),
       });
       lastError = failure;
+      // A streamed response can report overload after HTTP admission, beyond
+      // the SDK's transport retries. Retry the final selected target once,
+      // within the caller's existing attempt and budget limits.
+      if (
+        failure.kind === "overloaded" &&
+        failure.retryable &&
+        index === candidates.length - 1 &&
+        candidates.length < maxAttempts &&
+        !overloadRetryAdded
+      ) {
+        candidates.push(candidate);
+        overloadRetryAdded = true;
+      }
       if (
         !failure.retryable ||
         index === candidates.length - 1 ||

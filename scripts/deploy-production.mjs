@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -18,6 +19,11 @@ import {
   loadReleaseSigningKey,
   signReleaseManifest,
 } from "./release-manifest.mjs";
+import {
+  parseForwardSchemaRecovery,
+  validateForwardSchemaDatabaseVerification,
+  validateForwardSchemaPriorArtifact,
+} from "./forward-schema-recovery.mjs";
 
 class ReadinessAccessError extends Error {
   constructor(status) {
@@ -54,6 +60,8 @@ const OPENAI_GATEWAY_PREVIOUS_TOKEN_ENV =
 const OPENAI_GATEWAY_INITIAL_CUTOVER_ENV =
   "OMNIAGENT_OPENAI_GATEWAY_INITIAL_CUTOVER";
 const RELEASE_SPLIT_RECOVERY_ENV = "OMNIAGENT_RELEASE_SPLIT_RECOVERY";
+const RELEASE_FORWARD_SCHEMA_RECOVERY_ENV =
+  "OMNIAGENT_RELEASE_FORWARD_SCHEMA_RECOVERY";
 const PAID_INFERENCE_SENTINEL = "ASAEL_RELEASE_OK";
 const PAID_INFERENCE_MAX_OUTPUT_TOKENS = 16;
 // This identifier is never sent to OpenAI. The gateway rejects the request at
@@ -223,11 +231,24 @@ if (dryRun) {
   } else {
     printDryRun("npm", ["run", "verify"]);
   }
-  printDryRun(
-    "npm",
-    ["run", "smoke:release", "--", "--previous-release"],
-    { BASE_URL: PRODUCTION_BASE_URL },
-  );
+  if (process.env[RELEASE_FORWARD_SCHEMA_RECOVERY_ENV]?.trim()) {
+    printDryRun("npm", ["run", "smoke:preflight"], {
+      BASE_URL: PRODUCTION_BASE_URL,
+    });
+    printDryRun(
+      "npm",
+      ["run", "smoke:release", "--", "--previous-release"],
+      { BASE_URL: PRODUCTION_BASE_URL },
+    );
+    printDryRun("npm", ["run", "db:verify"]);
+    console.log("DRY RUN validate exact prior isolation discrepancy and fresh candidate database verification before any deploy");
+  } else {
+    printDryRun(
+      "npm",
+      ["run", "smoke:release", "--", "--previous-release"],
+      { BASE_URL: PRODUCTION_BASE_URL },
+    );
+  }
   printDryRun(
     "vercel",
     [
@@ -287,7 +308,17 @@ const openAIGateway = releaseConfiguration.openAIGateway;
 const initialOpenAIGatewayCutover =
   releaseConfiguration.initialOpenAIGatewayCutover;
 const splitRecovery = releaseConfiguration.splitRecovery;
+const forwardSchemaRecovery = releaseConfiguration.forwardSchemaRecovery;
 const signingKey = releaseConfiguration.signingKey;
+// The one-time recovery pin is consumed by this runner, never by a candidate
+// application, smoke process, or platform CLI.
+delete process.env[RELEASE_FORWARD_SCHEMA_RECOVERY_ENV];
+// Keep the privileged migration connection out of every child except the
+// single read-only database verification in the prior-release check.
+const recoveryMigrationDatabaseUrl = forwardSchemaRecovery
+  ? process.env.MIGRATION_DATABASE_URL
+  : undefined;
+if (forwardSchemaRecovery) delete process.env.MIGRATION_DATABASE_URL;
 await requireCleanWorkingTree();
 // Vercel and Fly build the checked-out tree, so prove that tree is a reviewed
 // commit on main with green CI before spending time on local verification.
@@ -314,6 +345,12 @@ const rollbackOpenAIGateway = openAIGateway && !initialOpenAIGatewayCutover
 const previousGatewayRevision = splitRecovery
   ? await getSplitGatewayRevision(openAIGateway, previousHealthRevision)
   : previousHealthRevision;
+if (forwardSchemaRecovery && (
+  forwardSchemaRecovery.previousRevision !== previousHealthRevision ||
+  previousGatewayRevision !== previousHealthRevision
+)) {
+  fail("Forward-schema recovery does not match the currently paired production web and gateway revision.");
+}
 if (initialOpenAIGatewayCutover) {
   console.log(
     "Initial OpenAI gateway cutover confirmed: prior-gateway preflight is skipped and rollback uses the pre-gateway worker topology.",
@@ -347,6 +384,13 @@ try {
         SMOKE_REQUEST_TIMEOUT_MS: "60000",
       },
     });
+  } else if (forwardSchemaRecovery) {
+    await runForwardSchemaPriorCheck(
+      forwardSchemaRecovery,
+      productionBaseUrl,
+      previousHealthRevision,
+      recoveryMigrationDatabaseUrl,
+    );
   } else {
     // The prior release may predate the new agent error budget gate. Only
     // this pre-deployment check permits its absence; all new-release checks
@@ -640,6 +684,25 @@ function validateReleaseConfiguration() {
     previousToken,
     initialOpenAIGatewayCutover,
   });
+  let forwardSchemaRecovery;
+  try {
+    forwardSchemaRecovery = parseForwardSchemaRecovery(
+      process.env[RELEASE_FORWARD_SCHEMA_RECOVERY_ENV],
+      {
+        candidateRevision: revision,
+        manifestPath: path.resolve("schema-migrations.json"),
+        repositoryRoot: process.cwd(),
+      },
+    );
+  } catch (error) {
+    fail(`Forward-schema recovery configuration failed: ${errorMessage(error)}`);
+  }
+  if (forwardSchemaRecovery && (splitRecovery || initialOpenAIGatewayCutover)) {
+    fail(`${RELEASE_FORWARD_SCHEMA_RECOVERY_ENV} cannot accompany split recovery or initial gateway cutover.`);
+  }
+  if (forwardSchemaRecovery && !process.env.MIGRATION_DATABASE_URL?.trim()) {
+    fail(`${RELEASE_FORWARD_SCHEMA_RECOVERY_ENV} requires MIGRATION_DATABASE_URL for a fresh candidate schema check.`);
+  }
   if (openAIGateway && openAIGateway.baseUrl.origin === productionOrigin) {
     fail("OMNIAGENT_OPENAI_GATEWAY_URL must use a separate gateway origin.");
   }
@@ -653,6 +716,7 @@ function validateReleaseConfiguration() {
     baseUrl,
     initialOpenAIGatewayCutover,
     splitRecovery,
+    forwardSchemaRecovery,
     signingKey,
     openAIGateway: openAIGateway
       ? withPreviousGatewayToken(openAIGateway, previousToken)
@@ -1154,6 +1218,99 @@ async function getCurrentHealthRevision(baseUrl) {
     fail("Current production health is missing a healthy rollback revision.");
   }
   return healthRevision;
+}
+
+/**
+ * A previous binary may not classify a newly migrated, fully protected table.
+ * Preserve its blocked report, prove that this is its only defect, and verify
+ * the candidate's exact schema against the live migration connection before
+ * either platform changes. Candidate smokes still use their ordinary gates.
+ */
+async function runForwardSchemaPriorCheck(pin, baseUrl, previousRevision, migrationDatabaseUrl) {
+  const environment = {
+    BASE_URL: baseUrl,
+    SMOKE_EXPECTED_REVISION: previousRevision,
+    SMOKE_REQUEST_TIMEOUT_MS: "60000",
+  };
+  await run("npm", ["run", "smoke:preflight"], { environment });
+
+  const evidencePath = path.resolve(process.env.RELEASE_EVIDENCE_OUTPUT);
+  await rm(evidencePath, { force: true });
+  let priorSmokeFailed = false;
+  try {
+    await run("npm", ["run", "smoke:release", "--", "--previous-release"], {
+      environment,
+    });
+  } catch {
+    priorSmokeFailed = true;
+  }
+  if (!priorSmokeFailed) {
+    fail("Forward-schema recovery was requested, but the previous release passed. Unset the recovery pin.");
+  }
+
+  let priorEvidenceRaw;
+  let priorEvidence;
+  try {
+    priorEvidenceRaw = readFileSync(evidencePath, "utf8");
+    if (Buffer.byteLength(priorEvidenceRaw) > 1_048_576) {
+      throw new Error("Prior release evidence is above the bounded artifact limit.");
+    }
+    priorEvidence = JSON.parse(priorEvidenceRaw);
+  } catch {
+    fail("Forward-schema recovery requires the fresh bounded blocked prior-release evidence artifact.");
+  }
+  let prior;
+  try {
+    prior = validateForwardSchemaPriorArtifact(priorEvidence, pin, {
+      baseUrl,
+      previousRevision,
+      now: Date.now(),
+    });
+  } catch (error) {
+    fail(`Forward-schema recovery rejected the prior release: ${errorMessage(error)}`);
+  }
+
+  const verificationOutput = await capture("npm", ["run", "db:verify"], {
+    echo: true,
+    environment: { MIGRATION_DATABASE_URL: migrationDatabaseUrl },
+  }).catch((error) =>
+    fail(`Fresh candidate database verification failed: ${errorMessage(error)}`)
+  );
+  let database;
+  try {
+    database = validateForwardSchemaDatabaseVerification(
+      verificationOutput,
+      pin,
+      { priorExpectedTables: prior.priorExpectedTables, now: Date.now() },
+    );
+  } catch (error) {
+    fail(`Forward-schema recovery rejected candidate database verification: ${errorMessage(error)}`);
+  }
+
+  const recordRoot = evidencePath.slice(0, -".json".length);
+  const priorPath = `${recordRoot}.forward-prior-blocked.json`;
+  const admissionPath = `${recordRoot}.forward-schema-admission.json`;
+  const sha256 = (value) => createHash("sha256").update(value).digest("hex");
+  await rm(priorPath, { force: true });
+  await rm(admissionPath, { force: true });
+  writeFileSync(priorPath, priorEvidenceRaw, { mode: 0o600 });
+  writeFileSync(admissionPath, `${JSON.stringify({
+    status: "admitted_prior_inventory_delta",
+    admittedAt: new Date().toISOString(),
+    previousRevision,
+    candidateRevision: revision,
+    migrationVersion: pin.migrationVersion,
+    migrationChecksum: pin.migrationChecksum,
+    unclassifiedTables: pin.unclassifiedTables,
+    priorExpectedTables: prior.priorExpectedTables,
+    priorEvidenceSha256: sha256(priorEvidenceRaw),
+    databaseVerification: database,
+    databaseVerificationOutputSha256: sha256(verificationOutput),
+  }, null, 2)}\n`, { mode: 0o600 });
+  console.log(
+    `Forward-schema recovery admitted the prior inventory delta at revision ${previousRevision}; ` +
+    `fresh candidate database verification covers ${database.migrations} migrations and ${database.tenantTables} tenant tables.`,
+  );
 }
 
 async function runVerificationCommands(baseUrl) {

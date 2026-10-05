@@ -42,8 +42,15 @@ export function classifyProviderError(provider: ProviderId, error: unknown) {
   }
   if (status === 400 || status === 404 || status === 422) return preserve(new ModelProviderError(message, provider, "invalid_request", false, status));
   if (status === 429) return preserve(new ModelProviderError(message, provider, "rate_limit", true, status, { retryAfterMs }));
-  if (status === 529 || normalized.includes("overloaded")) {
-    return preserve(new ModelProviderError(message, provider, "overloaded", true, status, { retryAfterMs }));
+  if (status === 529 || /\boverload(?:ed|ing)?\b/.test(normalized)) {
+    return preserve(new ModelProviderError(
+      message,
+      provider,
+      "overloaded",
+      true,
+      Number.isFinite(status) ? status : undefined,
+      { retryAfterMs },
+    ));
   }
   if (normalized.includes("safety") || normalized.includes("refusal") || normalized.includes("blocked")) {
     return preserve(new ModelProviderError(message, provider, "safety", false, status));

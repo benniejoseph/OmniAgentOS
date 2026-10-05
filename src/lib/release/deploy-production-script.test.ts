@@ -1218,6 +1218,63 @@ describe("rolling back a failed production release", () => {
     });
   });
 
+  it("forward-schema recovery verifies the exact gap before platform mutation and retains every candidate gate", async () => {
+    await withForwardSchemaFixture(async ({ overrides, evidencePath, prior }) => {
+      await withFakeReleasePlatform(async ({ deploy }) => {
+        const result = await deploy(overrides);
+        expect(result.code, result.stderr).toBe(0);
+        const preflight = `npm run smoke:preflight against ${canonical} expecting ${prior}`;
+        const blockedSmoke = `npm run smoke:release -- --previous-release against ${canonical} expecting ${prior}`;
+        const database = `npm run db:verify against ${canonical}`;
+        const firstMutation = result.log.findIndex((line) => /^(?:vercel (?:deploy|promote)|fly (?:deploy|secrets import|ssh console)) /.test(line));
+        expect(result.log.indexOf(preflight)).toBeGreaterThanOrEqual(0);
+        expect(result.log.indexOf(blockedSmoke)).toBeGreaterThan(result.log.indexOf(preflight));
+        expect(result.log.indexOf(database)).toBeGreaterThan(result.log.indexOf(blockedSmoke));
+        expect(firstMutation).toBeGreaterThan(result.log.indexOf(database));
+        expect(result.log[firstMutation]).toBe(stagedDeploy);
+        expect(result.log.filter((line) => line.includes("--previous-release"))).toEqual([blockedSmoke]);
+        expect(result.log.filter((line) => line.includes("npm run db:verify"))).toEqual([database]);
+        for (const baseUrl of [staged, canonical]) {
+          expect(result.log).toContain(manifestCheck(baseUrl));
+          for (const command of verificationCommands(baseUrl)) expect(result.log).toContain(command);
+          expect(result.log).toContain(`npm run smoke:paid-agent against ${baseUrl} expecting ${head}`);
+        }
+        expect(result.log.indexOf(promotion)).toBeGreaterThan(result.log.indexOf(verificationCommands(staged).at(-1)!));
+        expect(result.log).toContain(`npm run smoke:release against ${canonical} expecting ${head}`);
+        expect(result.stdout).toContain("Forward-schema recovery admitted the prior inventory delta");
+        const recordRoot = evidencePath.slice(0, -".json".length);
+        const blocked = JSON.parse(await readFile(`${recordRoot}.forward-prior-blocked.json`, "utf8"));
+        expect(blocked.releaseGate).toMatchObject({ approved: false, status: "blocked" });
+        expect(blocked.gates.find((gate: { id: string }) => gate.id === "tenant_isolation_database").status).toBe("fail");
+        const admitted = JSON.parse(await readFile(`${recordRoot}.forward-schema-admission.json`, "utf8"));
+        expect(admitted).toMatchObject({ status: "admitted_prior_inventory_delta", previousRevision: prior,
+          candidateRevision: head, priorExpectedTables: 265, unclassifiedTables: ["omni_native_openapi_import_preparations"],
+          databaseVerification: { tenantTables: 266 } });
+      });
+    });
+  });
+
+  it.each(["different table", "second prior failure"])("forward-schema recovery refuses %s before db verification or platform mutation", async (failure) => {
+    await withForwardSchemaFixture(async ({ overrides }) => {
+      const artifact = JSON.parse(overrides.FAKE_FORWARD_SCHEMA_ARTIFACT);
+      if (failure === "different table") {
+        artifact.tenantIsolation.unclassifiedTables = ["omni_unexpected_table"];
+      } else {
+        artifact.gates.find((gate: { id: string }) => gate.id === "agent_error_budget").status = "fail";
+        artifact.releaseGate.reasons.push("agent_error_budget: Ready.");
+        artifact.releaseGate.summary.failures++;
+        artifact.releaseGate.summary.passed--;
+      }
+      await withFakeReleasePlatform(async ({ deploy }) => {
+        const result = await deploy({ ...overrides, FAKE_FORWARD_SCHEMA_ARTIFACT: JSON.stringify(artifact) });
+        expect(result.code).toBe(1);
+        expect(result.stderr).toContain("Forward-schema recovery rejected the prior release");
+        expect(result.log.some((line) => line.includes("npm run db:verify"))).toBe(false);
+        expect(result.log.some((line) => /^(?:vercel (?:deploy|promote)|fly (?:deploy|secrets import|ssh console)) /.test(line))).toBe(false);
+      });
+    });
+  });
+
   it("signs the manifest it deploys and checks it staged, then canonical", async () => {
     await withFakeReleasePlatform(async ({ deploy }) => {
       const signingStarted = Date.now();
@@ -1793,6 +1850,44 @@ function passwordWitness(name: string) {
 
 const FAKE_RELEASE_HEAD = "a53a77aee2e1056f8989cc19b24b0a6a620cf084";
 
+async function withForwardSchemaFixture(callback: (fixture: {
+  overrides: Record<string, string>; evidencePath: string; prior: string;
+}) => Promise<void>) {
+  const directory = await mkdtemp(path.join(tmpdir(), "asael-release-forward-fixture-"));
+  try {
+    const evidencePath = path.join(directory, "asael-release-evidence-forward.json");
+    const prior = "1".repeat(40), at = new Date().toISOString();
+    const manifest = JSON.parse(await readFile("schema-migrations.json", "utf8"));
+    const latest = manifest.at(-1);
+    const pin = { previousRevision: prior, candidateRevision: FAKE_RELEASE_HEAD,
+      migrationVersion: latest.version, migrationChecksum: latest.checksum,
+      unclassifiedTables: ["omni_native_openapi_import_preparations"] };
+    const gates = ["deployment_environment", "internal_smoke_auth", "openai_us_egress_gateway", "openai_provider",
+      "cron_auth", "runtime_database_role", "maintenance_database_role", "dedicated_worker", "tenant_isolation_database",
+      "latest_tenant_isolation_eval", "observability_slo", "agent_error_budget", "eval_report_signing"].map((id) => ({
+        id, name: id === "tenant_isolation_database" ? "Database tenant isolation" : id,
+        status: id === "tenant_isolation_database" ? "fail" : "pass",
+        summary: id === "tenant_isolation_database" ? "Tenant isolation schema evidence is incomplete." : "Ready.",
+      }));
+    const artifact = { httpStatus: 200, generatedAt: at, reportCheckedAt: at,
+      baseUrl: "https://asael.bennierichard.com", deployment: { commitSha: prior }, tenantIsolationStatus: "degraded", gates,
+      releaseGate: { approved: false, status: "blocked", reasons: ["Database tenant isolation: Tenant isolation schema evidence is incomplete."],
+        warnings: [], summary: { total: gates.length, passed: gates.length - 1, warnings: 0, failures: 1 } },
+      tenantIsolation: { expectedTables: 265, protectedTables: 265, failingTables: 0, childTables: 0,
+        unclassifiedTables: pin.unclassifiedTables, missingTables: [], missingTenantColumns: [], rlsDisabled: [], forceRlsDisabled: [], missingPolicies: [] } };
+    await callback({ evidencePath, prior, overrides: {
+      OMNIAGENT_RELEASE_FORWARD_SCHEMA_RECOVERY: JSON.stringify(pin),
+      MIGRATION_DATABASE_URL: "postgresql://synthetic.invalid/not-a-real-database",
+      RELEASE_EVIDENCE_OUTPUT: evidencePath, FAKE_PRIOR_REVISION: prior,
+      FAKE_FORWARD_SCHEMA_ARTIFACT: JSON.stringify(artifact),
+      FAKE_FORWARD_SCHEMA_DATABASE: JSON.stringify({ level: "info", event: "database_verification_completed",
+        migrations: latest.version, tenantTables: 266, completedAt: at }),
+    } });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
 // Each platform stand-in logs its call and fails when FAKE_RELEASE_FAIL lists
 // one of its lines.
 const FAKE_PLATFORM_PRELUDE = `
@@ -1808,6 +1903,18 @@ const FAKE_PLATFORM_SCRIPTS: Record<string, string> = {
 expected="\${SMOKE_EXPECTED_REVISION:-$EXPECTED_REVISION}"
 line="npm $*\${BASE_URL:+ against $BASE_URL}\${expected:+ expecting $expected}"
 log "$line"
+if [ -n "$FAKE_FORWARD_SCHEMA_ARTIFACT" ]; then
+  if [ -n "$OMNIAGENT_RELEASE_FORWARD_SCHEMA_RECOVERY" ]; then exit 91; fi
+  if [ "$1 $2" != "run db:verify" ] && [ -n "$MIGRATION_DATABASE_URL" ]; then exit 92; fi
+  if [ "$*" = "run smoke:release -- --previous-release" ]; then
+    printf '%s\\n' "$FAKE_FORWARD_SCHEMA_ARTIFACT" > "$RELEASE_EVIDENCE_OUTPUT"
+    exit 1
+  fi
+  if [ "$1 $2" = "run db:verify" ]; then
+    if [ -z "$MIGRATION_DATABASE_URL" ]; then exit 93; fi
+    printf '%s\\n' "$FAKE_FORWARD_SCHEMA_DATABASE"
+  fi
+fi
 if fails "$line"; then exit 1; fi`,
   vercel: `${FAKE_PLATFORM_PRELUDE}
 for argument in "$@"; do
