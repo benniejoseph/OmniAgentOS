@@ -1,6 +1,29 @@
-# Connector checkpoint and resumed delivery — 5 October 2026
+# Connector checkpoint and UI/ATLAS delivery priority — 5 October 2026
 
-## Resumed after accepted UI/ATLAS
+## Current checkpoint
+
+The owner has prioritized UI revamp and ATLAS delivery again. Further connector
+expansion is parked after stabilization of the authored v43 candidate. Accepted
+main is `374805e1583b83fa45466a84334d074843ae9377`: PR65 credential removal,
+PR66 Payments states and PR67 Trash are accepted and merged. Private Mac61 is
+verified with all 33 accepted ATLAS assets. Production promotion and installation
+remain separate; the installed app is unchanged.
+
+The v43 preparation/rotation implementation passes 72 API/publication cases,
+5 domain cases, full Flutter analysis and 62 focused native cases. The 81 catalog
+replay, 30 prior connector and 18 new serving-role database cases pass, with all
+240 migrations and 264 tenant tables verified. Private Mac62 is built and
+independently verified from `9148f045`; all sixteen hosted checkpoint checks pass
+at `38385dd8`. The final commit and its acceptance remain pending. These results
+do not claim production promotion, installation or physical-device acceptance.
+Registration/import, rediscovery and conditional GitHub upgrade stay parked.
+
+The detailed sections below retain their original implementation checkpoints;
+their then-pending build, hosted and follow-on work is superseded by this summary.
+The external [release status](</Volumes/Extreme Pro/Asael-release-records/2026-10-03-followups/ui-validation/ATLAS_RELEASE_STATUS.md>)
+records current delivery evidence and operator dependencies.
+
+## Historical resumption after accepted UI/ATLAS
 
 PR63 passed all sixteen hosted checks and merged as `561de1e30af3d2407a11fec9bbbe2cc93499c360`. Its exact reviewed ATLAS assets and verified private Mac56 package complete the current UI/ATLAS implementation and build checkpoint. Production promotion remains dependent on the operator environment; the installed app is unchanged.
 
@@ -8,7 +31,7 @@ PR63 passed all sixteen hosted checks and merged as `561de1e30af3d2407a11fec9bbb
 
 The implementation reconciles the seven added operations into native v40 while freezing accepted Search v39, completes the native Google review/action/recovery flow and stabilizes the authored MCP/OpenAPI controls. Google controls review one exact account, authorization generation and permitted source set before sync/disconnect. Protected intent storage precedes dispatch; uncertain results recover by exact GET without repeating the provider action. Both controllers permanently close and clear private state on authority loss, fence replaced/hidden lifetimes and preserve a competing window’s pending intent during receipt save. OAuth changes remain an explicit browser handoff. App `1.23.22+57` preserves the greeting and all HELD01 asset registrations. Migrations 236–237 retain their existing identity; no migration 238 is introduced. The resumed source passes full Flutter analysis, fifty focused native cases, fifty-two contract/authorization/isolation cases, changed-TypeScript lint and native artifact generation/check. Three deferred-repaint assertions were corrected to pump the actual mounted panel while retaining notification and private-content-removal checks; the complete Google rerun passes. The original eight PostgreSQL cases remain historical checkpoint evidence, not a fresh candidate result. Private Mac57 is built and verified, with all 33 ATLAS assets exact. PR64 passed all sixteen hosted checks at `5a363991c103a122eee086247430f97da5b6b937`, including 2,113 Flutter cases, and merged as `b322fd5da7b2586650972f15213beff5125918c2`; accepted and merged full trees are identical. Application/native inputs equal the built source. Test-only corrections pass all 42 personal-sync cases, all 81 database integration cases and fresh verification of 237 migrations/263 tenant tables. Fresh main-revision hosted checks and paired-runner provenance passed on the exact merged revision.
 
-## Exact native MCP credential removal — stabilization only
+## Historical exact native MCP credential removal — v41 stabilization
 
 The next isolated slice adds review and explicit confirmation for removing one
 configured app-managed MCP bearer credential. It reuses the existing exact
@@ -60,7 +83,7 @@ bounded Trash slice has since resumed on the accepted priority baseline as
 described below. Credential rotation, registration/import, rediscovery and
 GitHub upgrade remain separate unfinished work.
 
-## Exact native MCP Trash — v42 candidate
+## Historical exact native MCP Trash — v42 candidate
 
 The isolated Trash checkout is rebased onto the accepted priority baseline
 `c0f495f1`. Source now declares native v42 with frozen v40/v41 archives and only
@@ -91,7 +114,7 @@ all changed TypeScript/TSX files and generated-artifact verification passed. The
 establish hosted acceptance, package verification, installation or production
 promotion.
 
-## Prepared MCP credential save/rotation — v43 implementation
+## Historical prepared MCP credential save/rotation — v43 implementation
 
 The next isolated checkout starts from `9715812e`. Its five-operation native
 publication covers existing-MCP credential preparation, exact preparation GET,

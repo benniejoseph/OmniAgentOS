@@ -15,7 +15,7 @@ including 2,183 Flutter cases, and it merged as
 `374805e1583b83fa45466a84334d074843ae9377`; accepted and merged full trees match.
 Mac61 was built from `60686db7`; tracked Flutter and web ATLAS inputs match the
 accepted revision, while the full trees differ only in test typing and inventory
-documentation. Fresh merged-main provenance remains a separate pending gate.
+documentation. Fresh merged-main hosted checks and the paired-runner provenance gate passed.
 The [acceptance receipt](</Volumes/Extreme Pro/Asael-release-records/2026-10-03-followups/ui-validation/pr67-acceptance.json>)
 and [package receipt](</Volumes/Extreme Pro/Asael-release-records/2026-10-03-followups/ui-validation/macos-native-trash-release/verification.json>)
 retain those exact boundaries.
@@ -23,10 +23,16 @@ retain those exact boundaries.
 Production migration/promotion and app installation have not occurred; the
 existing operator environment dependency remains. Physical-device acceptance,
 Apple notarization and real provider APNs delivery are not inferred from builds.
-Credential preparation/rotation is the active isolated v43 slice after this
-completed priority checkpoint. Registration/import, rediscovery and conditional
-GitHub upgrade remain afterward. Unchecked tasks keep their complete cross-platform,
-pilot and device acceptance criteria; no whole-task checkbox is changed here.
+Credential preparation/rotation is limited to final v43 stabilization. Mac62
+(`1.23.26+62`) is built and independently verified from `9148f045`, preserving
+all 33 ATLAS assets. The 18 new serving-role cases and schema verification pass;
+the original run also passed all 81 migration replay and 30 prior connector
+cases. All sixteen hosted checks passed at `38385dd8`; final-head acceptance
+remains after the test-only corrections and status updates. Further connector
+registration/import, rediscovery and GitHub expansion are parked. The next
+concrete local UI/ATLAS gap is automatic macOS Low Power Mode fallback, followed
+by compatible delivery and device acceptance. Unchecked tasks keep their complete
+cross-platform, pilot and device criteria; no whole-task checkbox is changed here.
 
 ## Earlier 5 October checkpoint — retained history
 
