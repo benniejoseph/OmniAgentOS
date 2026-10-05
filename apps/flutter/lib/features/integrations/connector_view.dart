@@ -11,6 +11,7 @@ import 'connector_controller.dart';
 import 'connector_credential_removal_view.dart';
 import 'connector_credential_rotation_view.dart';
 import 'connector_mcp_registration_view.dart';
+import 'connector_mcp_discovery_view.dart';
 import 'connector_openapi_import_view.dart';
 import 'connector_providers.dart';
 import 'connector_trash_view.dart';
@@ -147,6 +148,10 @@ class _ConnectorControlPanelState extends State<ConnectorControlPanel>
               OutlinedButton(
                 onPressed: c.busy ? null : _openMcpRegistration,
                 child: const Text('MCP registration recovery'),
+              ),
+              OutlinedButton(
+                onPressed: c.busy ? null : () => _openMcpDiscovery(),
+                child: const Text('MCP discovery recovery'),
               ),
               if (c.mayManage)
                 FilledButton.icon(
@@ -455,6 +460,14 @@ class _ConnectorControlPanelState extends State<ConnectorControlPanel>
               icon: const Icon(Icons.key),
               label: const Text('Prepare bearer credential'),
             ),
+          if (row['kind'] == 'mcp')
+            OutlinedButton.icon(
+              onPressed: c.busy
+                  ? null
+                  : () => _openMcpDiscovery(row['id'] as String),
+              icon: const Icon(Icons.refresh),
+              label: const Text('Review tool discovery'),
+            ),
           if (row['kind'] == 'mcp' &&
               review.pin != null &&
               review.value!['unavailableReason'] == null &&
@@ -482,16 +495,21 @@ class _ConnectorControlPanelState extends State<ConnectorControlPanel>
       return;
     }
     final controller = c, epoch = _viewEpoch;
-    await Navigator.of(context).push<void>(
-      MaterialPageRoute(
-        builder: (_) => const NativeConnectorMcpRegistrationWorkspace(),
-      ),
+    final route = MaterialPageRoute<String>(
+      builder: (_) => const NativeConnectorMcpRegistrationWorkspace(),
     );
+    final id = await Navigator.of(context).push<String>(route);
+    await route.completed;
+    await WidgetsBinding.instance.endOfFrame;
     if (mounted &&
         identical(controller, c) &&
         _visible &&
         epoch == _viewEpoch) {
-      await controller.refresh();
+      if (id != null) {
+        await controller.select('mcp', id);
+      } else {
+        await controller.refresh();
+      }
     }
   }
 
@@ -526,18 +544,54 @@ class _ConnectorControlPanelState extends State<ConnectorControlPanel>
     if (!_visible || c.busy) {
       return;
     }
-    final controller = c;
-    await Navigator.of(context, rootNavigator: true).push(
-      MaterialPageRoute<void>(
-        builder: (_) =>
-            NativeConnectorCredentialRotationWorkspace(connectorId: id),
-      ),
+    final controller = c, epoch = _viewEpoch;
+    final route = MaterialPageRoute<String>(
+      builder: (_) =>
+          NativeConnectorCredentialRotationWorkspace(connectorId: id),
     );
-    if (mounted && identical(controller, c) && _visible) {
-      unawaited(c.refresh());
-      if (id != null) {
-        unawaited(c.select('mcp', id));
-      }
+    final result = await Navigator.of(
+      context,
+      rootNavigator: true,
+    ).push<String>(route);
+    await route.completed;
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted ||
+        !identical(controller, c) ||
+        !_visible ||
+        epoch != _viewEpoch) {
+      return;
+    }
+    final target = result ?? id;
+    if (target != null) {
+      await controller.select('mcp', target);
+    } else {
+      await controller.refresh();
+    }
+  }
+
+  Future<void> _openMcpDiscovery([String? id]) async {
+    if (!_visible || c.busy) {
+      return;
+    }
+    final controller = c, epoch = _viewEpoch;
+    final route = MaterialPageRoute<String>(
+      builder: (_) => NativeConnectorMcpDiscoveryWorkspace(connectorId: id),
+    );
+    final target = await Navigator.of(context).push<String>(route);
+    await route.completed;
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted ||
+        !identical(controller, c) ||
+        !_visible ||
+        epoch != _viewEpoch) {
+      return;
+    }
+    if (target != null) {
+      await controller.select('mcp', target);
+    } else if (id != null) {
+      await controller.select('mcp', id);
+    } else {
+      await controller.refresh();
     }
   }
 
@@ -616,7 +670,7 @@ class _ConnectorControlPanelState extends State<ConnectorControlPanel>
             const SizedBox(height: 12),
             Text(
               action == 'review_contracts'
-                  ? 'Approve the exact ${review.connector!['contractCount']} contracts shown in this review. Consequential tool use remains governed by its approval rules.'
+                  ? 'Approve the exact ${review.connector!['contractCount']} contracts shown in this review and activate this connection. Consequential tool use remains governed by its approval rules.'
                   : action == 'disable'
                   ? 'Disable this exact MCP connection. This does not revoke its stored credentials.'
                   : 'Enable this exact MCP connection using its current reviewed configuration.',

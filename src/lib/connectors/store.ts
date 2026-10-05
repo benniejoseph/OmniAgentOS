@@ -675,6 +675,32 @@ export function preserveReviewedMcpToolPolicy({
   });
 }
 
+/** Native publication already owns the parent/child locks and transaction.
+ * This never inserts/enables a connector or rewrites credential/configuration. */
+export async function replaceDisabledNativeMcpCatalog(
+  connector: McpConnectorRecord,
+  tools: McpToolRecord[],
+  options: McpConnectorMutationOptions & { sql: ReturnType<typeof getSql> },
+) {
+  const tenantId = normalizeTenantId(connector.tenantId);
+  const executionScope = requireMcpMutationScope(options.executionScope, tenantId);
+  assertMcpDiscoveryIsSupported(connector, tools);
+  if (!hasDatabaseUrl() || connector.status !== "disabled" || tools.length > 200 || connector.toolCount !== tools.length ||
+    tools.some((tool) => tool.tenantId !== tenantId || tool.connectorId !== connector.id || tool.connectorName !== connector.name)) {
+    throw new Error("An exact disabled native catalog is required.");
+  }
+  const sql = options.sql;
+  const parents = await sql`UPDATE omni_mcp_connectors SET tool_count=${tools.length}, capabilities=${connector.capabilities || {}}::JSONB,
+    instructions=${connector.instructions || null}, server_version=${connector.serverVersion || null}::JSONB,
+    last_discovered_at=${connector.lastDiscoveredAt}, last_error=NULL, updated_at=${connector.updatedAt}
+    WHERE tenant_id=${tenantId} AND id=${connector.id} AND status='disabled' RETURNING id`;
+  if (parents.length !== 1) throw new Error("The disabled MCP connector changed before catalog publication.");
+  await sql`DELETE FROM omni_mcp_tools WHERE tenant_id=${tenantId} AND connector_id=${connector.id}`;
+  for (const tool of tools) await persistMcpTool(tool, { sql });
+  await appendMcpConnectorEvent({ connectorId: connector.id, type: "connector.mcp.discovery_saved", executionScope,
+    payload: { ...mcpConnectorEventMetadata(connector), discoveredToolCount: tools.length, resetReviewedPolicy: false } }, { sql });
+}
+
 function assertMcpDiscoveryIsSupported(
   connector: McpConnectorRecord,
   tools: readonly McpToolRecord[],

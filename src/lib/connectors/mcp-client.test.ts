@@ -30,6 +30,31 @@ describe("MCP client", () => {
       .mockResolvedValue("generic-mcp-test-key");
   });
 
+  it("fences delayed admission before any network request after an absolute native deadline", async () => {
+    let finish!: () => void;
+    networkMocks.assertPublicHttpUrl.mockImplementation(() => new Promise<void>((resolve) => { finish = resolve; }));
+    await expect(discoverMcpTools(connector({ status: "disabled" }), { deadlineAt: Date.now() + 20 })).rejects.toThrow("lifetime");
+    finish(); await Promise.resolve(); await Promise.resolve();
+    expect(networkMocks.fetchPublicHttpUrl).not.toHaveBeenCalled();
+    expect(credentialMocks.resolveMcpBearerCredential).not.toHaveBeenCalled();
+  });
+  it("fences delayed vault resolution and compares the exact selected credential before opening transport", async () => {
+    let finish!: (value: string) => void;
+    credentialMocks.resolveMcpBearerCredential.mockImplementation(() => new Promise<string>((resolve) => { finish = resolve; }));
+    const target = connector({ status: "disabled", authType: "bearer_vault", credentialConfigured: true, credentialOriginMatch: true });
+    await expect(discoverMcpTools(target, { deadlineAt: Date.now() + 20 })).rejects.toThrow("lifetime");
+    finish("fixture-only-late-value"); await Promise.resolve(); await Promise.resolve();
+    expect(networkMocks.fetchPublicHttpUrl).not.toHaveBeenCalled();
+    credentialMocks.resolveMcpBearerCredential.mockResolvedValue("fixture-only-selected-value");
+    const verify = vi.fn(() => { throw new Error("Credential generation changed"); });
+    await expect(discoverMcpTools(target, { deadlineAt: Date.now() + 500, verifyCredential: verify })).rejects.toThrow("generation changed");
+    expect(verify).toHaveBeenCalledExactlyOnceWith(["fixture-only-selected-value"]);
+    expect(networkMocks.fetchPublicHttpUrl).not.toHaveBeenCalled();
+  });
+  it("rejects an already expired native deadline before DNS or credential admission", async () => {
+    await expect(discoverMcpTools(connector({ status: "disabled" }), { deadlineAt: Date.now() - 1 })).rejects.toThrow();
+    expect(networkMocks.assertPublicHttpUrl).not.toHaveBeenCalled(); expect(networkMocks.fetchPublicHttpUrl).not.toHaveBeenCalled();
+  });
   it("discovers paginated tools from a generic Streamable HTTP server", async () => {
     networkMocks.fetchPublicHttpUrl.mockImplementation(async (
       _input: RequestInfo | URL,

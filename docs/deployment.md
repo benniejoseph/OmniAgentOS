@@ -36,12 +36,27 @@ Set these through the platform secret/configuration store, never in source contr
 - `NEXT_PUBLIC_APP_URL`: canonical HTTPS origin. Set it to exactly `https://asael.bennierichard.com`. It is public and build-inlined, not a secret.
 - `OMNIAGENT_NATIVE_MIN_ANDROID_VERSION`, `OMNIAGENT_NATIVE_MIN_IOS_VERSION`, and `OMNIAGENT_NATIVE_MIN_MACOS_VERSION`: optional stable `major.minor.patch` minimums for native compatibility telemetry. An absent or empty value defaults to `1.0.0`; a malformed configured value invalidates the policy and holds adoption unavailable. These settings do not authorize Agent enrollment.
 
-Native contract artifacts are committed immutable release inputs. This release
-advertises v45 as current and retains v44 as the supported previous version.
-V43 remains a byte-frozen, unadvertised archive; v42 leaves the three-version
-window. Run `npm run check:native-contracts` to verify generated v45 documents
-and SDK against the frozen v43/v44 hashes. Archive availability does not make a
-v43 client compatible with the v45/v44 server window.
+Native contract artifacts are committed immutable release inputs. The v46 candidate
+advertises v46 as current and retains v45 as the supported previous version.
+V44 remains a byte-frozen, unadvertised archive; v43 leaves the three-version
+window. Run `npm run check:native-contracts` to verify generated v46 documents
+and SDK against frozen v44/v45 hashes. Archive availability does not make a
+v44 client compatible with the v46/v45 server window. This source declaration
+is not a claim that the candidate has been built, validated or deployed.
+
+V46 adds three exact disabled-MCP rediscovery operations under
+`connectors.mcp.discover` at floor 46. Apply migration 243
+(`20261006100000_native_mcp_discoveries.sql`) after 242 using the existing
+backup, quiescence and verification procedure before serving this candidate.
+The dedicated `omni_native_mcp_discoveries` table takes the tenant inventory to
+267 tables and 88 restrictive actor policies. It does not widen any old action
+family. A durable pending target reservation remains after logical expiry until
+the original active owner explicitly closes it; neither maintenance nor GET
+may steal, delete or reopen this evidence. Final catalog publication remains
+atomic, disabled and policy-preserving, with exact current authority and a
+45-second database-clock deadline. Preserve these immutable rows during any
+rollback and use a compatible server for admitted attempts. See the
+[rediscovery protocol](native-mcp-rediscovery.md) for its provider and recovery boundaries.
 
 V45 adds five new-OpenAPI import operations under `connectors.openapi.import`
 at floor 45. Both public specification URLs and pasted JSON/YAML are supported,

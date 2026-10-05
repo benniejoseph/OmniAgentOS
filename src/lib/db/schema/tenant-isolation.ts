@@ -247,6 +247,7 @@ export const migrationScopedTenantTables = [
   "omni_native_connector_credential_preparations",
   "omni_native_mcp_registration_preparations",
   "omni_native_openapi_import_preparations",
+  "omni_native_mcp_discoveries",
   "omni_knowledge_native_cognition_builds",
   "omni_knowledge_native_cognition_effects",
   "omni_native_private_memory_actions",

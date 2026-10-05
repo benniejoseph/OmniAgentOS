@@ -23,7 +23,7 @@ class NativeConnectorCredentialRotationWorkspace extends StatelessWidget {
       child: NativePrivateWorkspace(
         ownNavigator: true,
         builder: (_) => Consumer(
-          builder: (context, ref, _) {
+          builder: (panelContext, ref, _) {
             final controller = ref.watch(
               connectorCredentialRotationControllerProvider,
             );
@@ -38,7 +38,8 @@ class NativeConnectorCredentialRotationWorkspace extends StatelessWidget {
               key: ObjectKey(controller),
               controller: controller,
               initialConnectorId: connectorId,
-              routeCurrent: _RotationRouteVisibility.of(context),
+              routeCurrent: _RotationRouteVisibility.of(panelContext),
+              onReview: (id) => Navigator.of(context).pop(id),
             );
           },
         ),
@@ -64,10 +65,12 @@ class ConnectorCredentialRotationPanel extends StatefulWidget {
     required this.controller,
     this.initialConnectorId,
     this.routeCurrent = true,
+    this.onReview,
   });
   final ConnectorCredentialRotationController controller;
   final String? initialConnectorId;
   final bool routeCurrent;
+  final ValueChanged<String>? onReview;
   @override
   State<ConnectorCredentialRotationPanel> createState() =>
       _ConnectorCredentialRotationPanelState();
@@ -376,8 +379,19 @@ class _ConnectorCredentialRotationPanelState
                 'Saved credential version ${connectorMap(connectorMap(s.action!.action!['settlement'])['result'])['credentialVersion']}',
               ),
               const Text(
-                'This historical receipt records a saved credential, a disabled connection and zero discovered tools. It does not establish current provider connectivity or tool readiness. Rediscovery and review are still required in the browser.',
+                'This historical receipt records a saved credential, a disabled connection and zero discovered tools. It does not establish current provider connectivity or tool readiness. Open its exact current review to rediscover tools, then approve their contracts separately.',
               ),
+              if (widget.onReview != null)
+                OutlinedButton(
+                  onPressed: c.busy || c.storageUnconfirmed
+                      ? null
+                      : () {
+                          if (_visible) {
+                            widget.onReview!(s.intent.id);
+                          }
+                        },
+                  child: const Text('Open exact connection review'),
+                ),
               const NativeWorkspaceBrowserButton(
                 path: '/app/connectors',
                 label: 'Open connectors in browser',
@@ -481,7 +495,7 @@ class _ConnectorCredentialRotationPanelState
           ),
           Text('Preparation expires ${held.prepared!.proof!.raw['expiresAt']}'),
           const Text(
-            'The connection will be disabled. Rediscovery and review require the browser. Existing provider tokens remain valid until revoked with the provider.',
+            'The connection will be disabled. Rediscover tools from its exact connection review, then approve their contracts separately. Existing provider tokens remain valid until revoked with the provider.',
           ),
         ],
       ),

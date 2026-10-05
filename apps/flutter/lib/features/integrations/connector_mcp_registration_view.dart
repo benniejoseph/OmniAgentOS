@@ -19,7 +19,7 @@ class NativeConnectorMcpRegistrationWorkspace extends StatelessWidget {
       child: NativePrivateWorkspace(
         ownNavigator: true,
         builder: (_) => Consumer(
-          builder: (context, ref, _) {
+          builder: (panelContext, ref, _) {
             final controller = ref.watch(
               connectorMcpRegistrationControllerProvider,
             );
@@ -35,7 +35,8 @@ class NativeConnectorMcpRegistrationWorkspace extends StatelessWidget {
               child: ConnectorMcpRegistrationPanel(
                 key: ObjectKey(controller),
                 controller: controller,
-                routeCurrent: _RegistrationRouteVisibility.of(context),
+                routeCurrent: _RegistrationRouteVisibility.of(panelContext),
+                onReview: (id) => Navigator.of(context).pop(id),
               ),
             );
           },
@@ -64,9 +65,11 @@ class ConnectorMcpRegistrationPanel extends StatefulWidget {
     super.key,
     required this.controller,
     this.routeCurrent = true,
+    this.onReview,
   });
   final ConnectorMcpRegistrationController controller;
   final bool routeCurrent;
+  final ValueChanged<String>? onReview;
   @override
   State<ConnectorMcpRegistrationPanel> createState() =>
       _ConnectorMcpRegistrationPanelState();
@@ -471,8 +474,19 @@ class _ConnectorMcpRegistrationPanelState
               ),
             if (s.action?.settled == true) ...[
               const Text(
-                'This historical receipt records a disabled local MCP connection with zero tools. It does not establish current provider connectivity or tool readiness. Discover and review tools in the browser before enabling it.',
+                'This historical receipt records a disabled local MCP connection with zero tools. It does not establish current provider connectivity or tool readiness. Open its exact current review to discover tools, then approve their contracts separately.',
               ),
+              if (widget.onReview != null)
+                OutlinedButton(
+                  onPressed: c.busy || c.storageUnconfirmed
+                      ? null
+                      : () {
+                          if (_visible) {
+                            widget.onReview!(s.intent.id);
+                          }
+                        },
+                  child: const Text('Open exact connection review'),
+                ),
               const NativeWorkspaceBrowserButton(
                 path: '/app/connectors',
                 label: 'Open connectors in browser',
@@ -589,7 +603,7 @@ class _ConnectorMcpRegistrationPanelState
           SelectableText(held.intent.id),
           Text('Preparation expires ${held.prepared!.proof!.raw['expiresAt']}'),
           const Text(
-            'Create this local configuration disabled, with no tools or provider discovery. Later discovery, review and enablement require the browser. Provider tokens remain valid until revoked with their provider.',
+            'Create this local configuration disabled, with no tools or provider discovery. Discover tools from its exact connection review, then approve their contracts separately. Provider tokens remain valid until revoked with their provider.',
           ),
         ],
       ),
