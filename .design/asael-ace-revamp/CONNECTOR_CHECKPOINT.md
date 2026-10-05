@@ -2,24 +2,21 @@
 
 ## Current checkpoint
 
-The owner has prioritized UI revamp and ATLAS delivery again. Further connector
-expansion is parked after stabilization of the authored v43 candidate. Accepted
-main is `374805e1583b83fa45466a84334d074843ae9377`: PR65 credential removal,
-PR66 Payments states and PR67 Trash are accepted and merged. Private Mac61 is
-verified with all 33 accepted ATLAS assets. Production promotion and installation
-remain separate; the installed app is unchanged.
+PR68 is accepted and merged. All sixteen hosted checks passed on
+`8397b1f09efde4bbe91f2bd966788ca63594e756`, including 2,214 Flutter cases;
+merged main is `8b9d23b4a8e37620b2fd8fc0acce13b08925f35e`, with an identical
+full tree. Native v43, migration240 and verified Mac62 are accepted for this
+implementation/build checkpoint. The 81 catalog replay, 30 previous connector
+and 18 new serving-role cases pass; all 240 migrations and 264 tenant tables
+verify. Package source `9148f045` has identical native/public inputs at acceptance.
 
-The v43 preparation/rotation implementation passes 72 API/publication cases,
-5 domain cases, full Flutter analysis and 62 focused native cases. The 81 catalog
-replay, 30 prior connector and 18 new serving-role database cases pass, with all
-240 migrations and 264 tenant tables verified. Private Mac62 is built and
-independently verified from `9148f045`; all sixteen hosted checkpoint checks pass
-at `38385dd8`. The final commit and its acceptance remain pending. These results
-do not claim production promotion, installation or physical-device acceptance.
-Registration/import, rediscovery and conditional GitHub upgrade stay parked.
+Further connector expansion is parked for UI/ATLAS. The active Mac63 follow-up
+adds only macOS power-aware static ATLAS fallback and retains contract43 and the
+reviewed artwork. Registration/import, rediscovery and conditional GitHub upgrade
+remain unfinished. Production promotion, installation and physical-device
+acceptance are separate; the installed app is unchanged.
 
-The detailed sections below retain their original implementation checkpoints;
-their then-pending build, hosted and follow-on work is superseded by this summary.
+The detailed sections below retain their original implementation checkpoints.
 The external [release status](</Volumes/Extreme Pro/Asael-release-records/2026-10-03-followups/ui-validation/ATLAS_RELEASE_STATUS.md>)
 records current delivery evidence and operator dependencies.
 

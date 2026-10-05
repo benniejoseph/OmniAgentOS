@@ -2,37 +2,24 @@
 
 ## Current checkpoint — 5 October 2026
 
-The UI/ATLAS priority checkpoint is accepted and preserved. PR63 delivered the
-reviewed 33-file HELD01 bundle for bounded decorative raster playback. PR65
-completed native credential-removal stabilization; PR66 completed the native
-Payments unavailable/partial/stale-state correction. Each passed all sixteen
-hosted gates. The current verified private package is Mac `1.23.25+61`, which
-preserves those UI and ATLAS inputs unchanged.
+The prior connector work is stabilized and accepted through PR68. All sixteen
+hosted checks passed on `8397b1f09efde4bbe91f2bd966788ca63594e756`, including
+2,214 Flutter cases, and it merged as `8b9d23b4a8e37620b2fd8fc0acce13b08925f35e`.
+Accepted and merged full trees match. Native v43, migration240 and the verified
+Mac `1.23.26+62` package are ready at that checkpoint; production promotion and
+installation have not occurred.
 
-PR67 adds exact native MCP Trash and recovery, native v42 and migration239.
-All sixteen hosted gates passed on `9715812e657f2eca92babd465230e07eb8b393b6`,
-including 2,183 Flutter cases, and it merged as
-`374805e1583b83fa45466a84334d074843ae9377`; accepted and merged full trees match.
-Mac61 was built from `60686db7`; tracked Flutter and web ATLAS inputs match the
-accepted revision, while the full trees differ only in test typing and inventory
-documentation. Fresh merged-main hosted checks and the paired-runner provenance gate passed.
-The [acceptance receipt](</Volumes/Extreme Pro/Asael-release-records/2026-10-03-followups/ui-validation/pr67-acceptance.json>)
-and [package receipt](</Volumes/Extreme Pro/Asael-release-records/2026-10-03-followups/ui-validation/macos-native-trash-release/verification.json>)
-retain those exact boundaries.
+UI/ATLAS is the active workstream. Automatic macOS Low Power Mode fallback is
+implemented in app `1.23.27+63`; full Flutter analysis, twenty adapter/player
+cases and five native host policy cases pass. Independent review has no unresolved
+finding. Mac63 packaging and exact-head hosted acceptance remain. The native
+contract, backend, migrations and all 33 reviewed ATLAS assets are unchanged.
+Further connector registration/import, rediscovery and GitHub work is parked.
 
-Production migration/promotion and app installation have not occurred; the
-existing operator environment dependency remains. Physical-device acceptance,
-Apple notarization and real provider APNs delivery are not inferred from builds.
-Credential preparation/rotation is limited to final v43 stabilization. Mac62
-(`1.23.26+62`) is built and independently verified from `9148f045`, preserving
-all 33 ATLAS assets. The 18 new serving-role cases and schema verification pass;
-the original run also passed all 81 migration replay and 30 prior connector
-cases. All sixteen hosted checks passed at `38385dd8`; final-head acceptance
-remains after the test-only corrections and status updates. Further connector
-registration/import, rediscovery and GitHub expansion are parked. The next
-concrete local UI/ATLAS gap is automatic macOS Low Power Mode fallback, followed
-by compatible delivery and device acceptance. Unchecked tasks keep their complete
-cross-platform, pilot and device criteria; no whole-task checkbox is changed here.
+Delivery still requires the complete paired-release operator environment.
+Device audio/VoiceOver, current-asset performance, physical power behavior and
+broader pilot acceptance retain their own gates. Unchecked whole-task boxes do
+not imply that every implementation is absent, and none is marked complete here.
 
 ## Earlier 5 October checkpoint — retained history
 
