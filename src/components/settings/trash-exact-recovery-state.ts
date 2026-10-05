@@ -81,9 +81,9 @@ export function createTrashSelection() {
 export type TrashRecoveryReview = { item: TrashItemV1; preview: TrashActionPreviewV1; source: "list" | "exact" };
 export function trashReviewMatches(review: Pick<TrashRecoveryReview, "item" | "source">, state: {
   items?: readonly TrashItemV1[]; listFresh: boolean; listLoading: boolean;
-  exactItem?: TrashItemV1; exactFresh: boolean; exactLoading: boolean;
+  exactItem?: TrashItemV1; exactFresh: boolean; exactLoading: boolean; exactCurrent?: () => boolean;
 }) {
-  const current = review.source === "exact" ? state.exactFresh && !state.exactLoading && state.exactItem
+  const current = review.source === "exact" ? state.exactFresh && state.exactCurrent?.() === true && !state.exactLoading && state.exactItem
     : state.listFresh && !state.listLoading && state.items?.find((item) => item.trashId === review.item.trashId);
   return Boolean(current && current.state === "retained" && current.trashId === review.item.trashId &&
     current.itemSha256 === review.item.itemSha256 && current.tenantId === review.item.tenantId && current.ownerActorId === review.item.ownerActorId);

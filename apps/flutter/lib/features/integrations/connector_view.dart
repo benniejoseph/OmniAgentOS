@@ -416,7 +416,10 @@ class _ConnectorControlPanelState extends State<ConnectorControlPanel>
               icon: const Icon(Icons.key_outlined),
               label: const Text('Review saved credential'),
             ),
-          if (row['kind'] == 'mcp' && review.pin != null && review.value!['unavailableReason'] == null && c.mayManage)
+          if (row['kind'] == 'mcp' &&
+              review.pin != null &&
+              review.value!['unavailableReason'] == null &&
+              c.mayManage)
             OutlinedButton.icon(
               onPressed: c.busy ? null : () => _openTrash(row['id'] as String),
               icon: const Icon(Icons.delete_outline),
@@ -439,7 +442,9 @@ class _ConnectorControlPanelState extends State<ConnectorControlPanel>
     if (!_visible || c.busy) return;
     final controller = c;
     await Navigator.of(context, rootNavigator: true).push(
-      MaterialPageRoute<void>(builder: (_) => NativeConnectorTrashWorkspace(connectorId: id)),
+      MaterialPageRoute<void>(
+        builder: (_) => NativeConnectorTrashWorkspace(connectorId: id),
+      ),
     );
     if (mounted && identical(controller, c) && _visible) {
       unawaited(c.refresh());

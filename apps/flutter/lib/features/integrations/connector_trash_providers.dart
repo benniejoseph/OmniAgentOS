@@ -11,7 +11,8 @@ import 'connector_trash_controller.dart';
 import 'connector_trash_recovery_store.dart';
 import 'connector_trash_repository.dart';
 
-final connectorTrashControllerProvider = Provider.autoDispose<ConnectorTrashController?>((ref) {
+final connectorTrashControllerProvider =
+    Provider.autoDispose<ConnectorTrashController?>((ref) {
       var active = true;
       ConnectorTrashController? controller;
       ref.onDispose(() {
@@ -31,10 +32,7 @@ final connectorTrashControllerProvider = Provider.autoDispose<ConnectorTrashCont
           access,
           isCurrent: () => active && ref.mounted,
         ),
-        ProtectedConnectorTrashRecoveryStore(
-          access,
-          store,
-        ),
+        ProtectedConnectorTrashRecoveryStore(access, store),
       );
       controller = next;
       ref.listen(apiClientProvider, (_, value) {

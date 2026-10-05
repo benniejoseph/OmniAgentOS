@@ -7,76 +7,149 @@ const connectorTrashReconnectLimitation =
     'Connector configuration and contracts can be restored, but its vault credential must be reconnected by a human.';
 
 bool connectorTrashEligible(ConnectorReview review) =>
-    review.connector != null && review.pin != null &&
-    review.value!['unavailableReason'] == null && review.connector!['kind'] == 'mcp';
+    review.connector != null &&
+    review.pin != null &&
+    review.value!['unavailableReason'] == null &&
+    review.connector!['kind'] == 'mcp';
 
 ConnectorJson connectorTrashCompensation(ConnectorReview review) {
-  final reconnect = review.connector!['credentialConfigured'] == true ||
+  final reconnect =
+      review.connector!['credentialConfigured'] == true ||
       review.connector!['authType'] == 'bearer_vault';
-  return {'kind': reconnect ? 'equivalent_action' : 'exact_restore',
-    'handlerId': reconnect ? 'trash.compensate.mcp_connector' : 'trash.restore.mcp_connector',
-    'limitation': reconnect ? connectorTrashReconnectLimitation : null};
+  return {
+    'kind': reconnect ? 'equivalent_action' : 'exact_restore',
+    'handlerId': reconnect
+        ? 'trash.compensate.mcp_connector'
+        : 'trash.restore.mcp_connector',
+    'limitation': reconnect ? connectorTrashReconnectLimitation : null,
+  };
 }
 
 Future<ConnectorJson> _preview(Object? value, ConnectorJson pin) async {
-  final p = connectorObject(value,
-    'version action trashId resourceType resourceId lifecycleRevision targetSha256 effectSummary reversible issuedAt expiresAt previewSha256');
-  final issued = connectorInstant(p['issuedAt']), expires = connectorInstant(p['expiresAt']);
+  final p = connectorObject(
+    value,
+    'version action trashId resourceType resourceId lifecycleRevision targetSha256 effectSummary reversible issuedAt expiresAt previewSha256',
+  );
+  final issued = connectorInstant(p['issuedAt']),
+      expires = connectorInstant(p['expiresAt']);
   connectorText(p['effectSummary'], 500);
-  connectorHash(p['targetSha256']); connectorHash(p['previewSha256']);
-  connectorRequire(p['version'] == 'p9.3-trash-preview:1' && p['action'] == 'trash' &&
-    p['trashId'] == null && p['resourceType'] == 'mcp_connector' &&
-    p['resourceId'] == pin['connectorId'] && p['lifecycleRevision'] == 0 && p['reversible'] == true &&
-    DateTime.parse(expires).difference(DateTime.parse(issued)).inMilliseconds == 600000 &&
-    p['targetSha256'] == await connectorSha({'kind': 'mcp', 'connectorId': pin['connectorId'], 'reviewSha256': pin['reviewSha256']}) &&
-    p['previewSha256'] == await connectorSha({...p}..remove('previewSha256')));
+  connectorHash(p['targetSha256']);
+  connectorHash(p['previewSha256']);
+  connectorRequire(
+    p['version'] == 'p9.3-trash-preview:1' &&
+        p['action'] == 'trash' &&
+        p['trashId'] == null &&
+        p['resourceType'] == 'mcp_connector' &&
+        p['resourceId'] == pin['connectorId'] &&
+        p['lifecycleRevision'] == 0 &&
+        p['reversible'] == true &&
+        DateTime.parse(expires)
+                .difference(DateTime.parse(issued))
+                .inMilliseconds ==
+            600000 &&
+        p['targetSha256'] ==
+            await connectorSha({
+              'kind': 'mcp',
+              'connectorId': pin['connectorId'],
+              'reviewSha256': pin['reviewSha256'],
+            }) &&
+        p['previewSha256'] ==
+            await connectorSha({...p}..remove('previewSha256')),
+  );
   return connectorFreeze(p);
 }
 
 /// A GET preview has management authorization but no execution scope or effect.
 Future<void> _previewReceipt(ConnectorJson row, ConnectorOwner owner) async {
-  connectorRequire(row['contract'] == connectorControlContract && connectorSame(row['scope'], owner.scope));
-  final r = connectorObject(row['serviceReceipt'],
-    'schemaVersion receiptKind boundaryVersion operation action resourceType accessMode eventContract authoritySha256 idempotencyKeySha256 outcomeSha256 resourceCount occurredAt receiptSha256');
+  connectorRequire(
+    row['contract'] == connectorControlContract &&
+        connectorSame(row['scope'], owner.scope),
+  );
+  final r = connectorObject(
+    row['serviceReceipt'],
+    'schemaVersion receiptKind boundaryVersion operation action resourceType accessMode eventContract authoritySha256 idempotencyKeySha256 outcomeSha256 resourceCount occurredAt receiptSha256',
+  );
   connectorInstant(r['occurredAt']);
-  connectorRequire(r['schemaVersion'] == 1 && r['receiptKind'] == 'app_service_receipt' &&
-    r['boundaryVersion'] == 'p9.1-app-service-boundary:1' &&
-    r['operation'] == 'app.connectors.native.trash.preview' && r['action'] == 'manage.connector' &&
-    r['resourceType'] == 'connector_native_action' && r['accessMode'] == 'read' &&
-    r['eventContract'] == 'read_only:no_domain_mutation' && r['idempotencyKeySha256'] == null &&
-    r['resourceCount'] == (row['review'] == null ? 0 : 1) &&
-    r['authoritySha256'] == await connectorSha({'boundaryVersion': 'p9.1-app-service-boundary:1',
-      'tenantId': owner.tenantId, 'actorId': owner.actorId, 'role': owner.role, 'executionScope': null}) &&
-    r['outcomeSha256'] == await connectorSha({...row}..remove('serviceReceipt')) &&
-    r['receiptSha256'] == await connectorSha({...r}..remove('receiptSha256')));
+  connectorRequire(
+    r['schemaVersion'] == 1 &&
+        r['receiptKind'] == 'app_service_receipt' &&
+        r['boundaryVersion'] == 'p9.1-app-service-boundary:1' &&
+        r['operation'] == 'app.connectors.native.trash.preview' &&
+        r['action'] == 'manage.connector' &&
+        r['resourceType'] == 'connector_native_action' &&
+        r['accessMode'] == 'read' &&
+        r['eventContract'] == 'read_only:no_domain_mutation' &&
+        r['idempotencyKeySha256'] == null &&
+        r['resourceCount'] == (row['review'] == null ? 0 : 1) &&
+        r['authoritySha256'] ==
+            await connectorSha({
+              'boundaryVersion': 'p9.1-app-service-boundary:1',
+              'tenantId': owner.tenantId,
+              'actorId': owner.actorId,
+              'role': owner.role,
+              'executionScope': null,
+            }) &&
+        r['outcomeSha256'] ==
+            await connectorSha({...row}..remove('serviceReceipt')) &&
+        r['receiptSha256'] ==
+            await connectorSha({...r}..remove('receiptSha256')),
+  );
 }
 
 class ConnectorTrashPreview {
-  const ConnectorTrashPreview._(this.raw, this.review, this.preview, this.compensation);
+  const ConnectorTrashPreview._(
+    this.raw,
+    this.review,
+    this.preview,
+    this.compensation,
+  );
   final ConnectorJson raw;
   final ConnectorReview review;
   final ConnectorJson? preview, compensation;
   String? get id => review.connector?['id'] as String?;
-  bool freshAt(DateTime now) => preview != null &&
+  bool freshAt(DateTime now) =>
+      preview != null &&
       !now.isBefore(DateTime.parse(preview!['issuedAt'] as String)) &&
       now.isBefore(DateTime.parse(preview!['expiresAt'] as String));
 
-  static Future<ConnectorTrashPreview> parse(Object? value, ConnectorOwner owner, String id) async {
-    final row = connectorObject(value, 'contract scope review preview compensation serviceReceipt');
+  static Future<ConnectorTrashPreview> parse(
+    Object? value,
+    ConnectorOwner owner,
+    String id,
+  ) async {
+    final row = connectorObject(
+      value,
+      'contract scope review preview compensation serviceReceipt',
+    );
     await _previewReceipt(row, owner);
-    final review = ConnectorReview(connectorFreeze(row), await ConnectorReview.parseValue(row['review'], 'mcp', id));
+    final review = ConnectorReview(
+      connectorFreeze(row),
+      await ConnectorReview.parseValue(row['review'], 'mcp', id),
+    );
     ConnectorJson? preview, compensation;
     if (row['preview'] != null) {
       connectorRequire(connectorTrashEligible(review));
       preview = await _preview(row['preview'], review.pin!);
-      compensation = connectorObject(row['compensation'], 'kind handlerId limitation');
-      connectorRequire(connectorSame(compensation, connectorTrashCompensation(review)) &&
-        preview['effectSummary'] == 'Move MCP connector ${review.connector!['name']} and ${(review.value!['contracts'] as List).length} contract(s) to Trash.');
+      compensation = connectorObject(
+        row['compensation'],
+        'kind handlerId limitation',
+      );
+      connectorRequire(
+        connectorSame(compensation, connectorTrashCompensation(review)) &&
+            preview['effectSummary'] ==
+                'Move MCP connector ${review.connector!['name']} and ${(review.value!['contracts'] as List).length} contract(s) to Trash.',
+      );
     } else {
-      connectorRequire(!connectorTrashEligible(review) && row['compensation'] == null);
+      connectorRequire(
+        !connectorTrashEligible(review) && row['compensation'] == null,
+      );
     }
-    return ConnectorTrashPreview._(connectorFreeze(row), review, preview,
-      compensation == null ? null : connectorFreeze(compensation));
+    return ConnectorTrashPreview._(
+      connectorFreeze(row),
+      review,
+      preview,
+      compensation == null ? null : connectorFreeze(compensation),
+    );
   }
 }
 
@@ -147,8 +220,11 @@ class ConnectorTrashIntent {
     DateTime? now,
   }) async {
     final review = reviewed.review;
-    connectorRequire(connectorTrashEligible(review) && reviewed.freshAt(now ?? DateTime.now()) &&
-      connectorSame(reviewed.raw['scope'], owner.scope));
+    connectorRequire(
+      connectorTrashEligible(review) &&
+          reviewed.freshAt(now ?? DateTime.now()) &&
+          connectorSame(reviewed.raw['scope'], owner.scope),
+    );
     return _create(
       owner,
       key ??
@@ -285,20 +361,45 @@ class ConnectorTrashRead {
         );
         final settledAt = connectorInstant(s['settledAt']);
         connectorHash(s['settlementSha256']);
-        final trash = connectorObject(result['trash'], 'trashId proofSha256 restoreUntil compensation limitation');
-        connectorRequire(trash['trashId'] is String && RegExp(r'^trash:[0-9a-f-]{36}$').hasMatch(trash['trashId'] as String));
+        final trash = connectorObject(
+          result['trash'],
+          'trashId proofSha256 restoreUntil compensation limitation',
+        );
+        connectorRequire(
+          trash['trashId'] is String &&
+              RegExp(r'^trash:[0-9a-f-]{36}$')
+                  .hasMatch(trash['trashId'] as String),
+        );
         connectorHash(trash['proofSha256']);
         final restoreUntil = connectorInstant(trash['restoreUntil']);
-        connectorRequire(s['contract'] == 'asael-connector-settlement:2' && s['acceptanceId'] == a['id'] &&
-          settledAt.endsWith('Z') && !DateTime.parse(settledAt).isBefore(DateTime.parse(acceptedAt)) &&
-          restoreUntil.endsWith('Z') && DateTime.parse(restoreUntil).isAfter(DateTime.parse(settledAt)) &&
-          result['kind'] == 'mcp' && result['connectorId'] == intent.id && result['operation'] == 'trash' &&
-          result['status'] == 'complete' && result['failureCode'] == null &&
-          ['connectorStatus', 'contractCount', 'credentialVersion', 'connectorSha256', 'contractsSha256', 'configurationSha256']
-            .every((field) => result[field] == null) &&
-          (trash['compensation'] == 'exact_restore' && trash['limitation'] == null ||
-            trash['compensation'] == 'equivalent_action' && trash['limitation'] == connectorTrashReconnectLimitation) &&
-          s['settlementSha256'] == await connectorSha({...s}..remove('settlementSha256')));
+        connectorRequire(
+          s['contract'] == 'asael-connector-settlement:2' &&
+              s['acceptanceId'] == a['id'] &&
+              settledAt.endsWith('Z') &&
+              !DateTime.parse(settledAt).isBefore(DateTime.parse(acceptedAt)) &&
+              restoreUntil.endsWith('Z') &&
+              DateTime.parse(restoreUntil).isAfter(DateTime.parse(settledAt)) &&
+              result['kind'] == 'mcp' &&
+              result['connectorId'] == intent.id &&
+              result['operation'] == 'trash' &&
+              result['status'] == 'complete' &&
+              result['failureCode'] == null &&
+              [
+                'connectorStatus',
+                'contractCount',
+                'credentialVersion',
+                'connectorSha256',
+                'contractsSha256',
+                'configurationSha256',
+              ].every((field) => result[field] == null) &&
+              (trash['compensation'] == 'exact_restore' &&
+                      trash['limitation'] == null ||
+                  trash['compensation'] == 'equivalent_action' &&
+                      trash['limitation'] ==
+                          connectorTrashReconnectLimitation) &&
+              s['settlementSha256'] ==
+                  await connectorSha({...s}..remove('settlementSha256')),
+        );
       }
     }
     await connectorServiceReceipt(

@@ -427,13 +427,26 @@ void main() {
   });
 
   test('publishes exact MCP Trash preview and independent receipt paths', () {
-    for (final operation in ['connectors.native.trash.preview', 'connectors.native.trash.submit', 'connectors.native.trash.read']) {
+    for (final operation in [
+      'connectors.native.trash.preview',
+      'connectors.native.trash.submit',
+      'connectors.native.trash.read',
+    ]) {
       expect(NativeContract.supportsOperation(operation), isTrue);
     }
-    expect(NativePaths.connectorsNativeTrashPreview('connector:one'), '/api/connectors/native/mcp/connector%3Aone/trash-preview');
-    expect(NativePaths.connectorsNativeTrashSubmit, '/api/connectors/native/trash-actions');
+    expect(
+      NativePaths.connectorsNativeTrashPreview('connector:one'),
+      '/api/connectors/native/mcp/connector%3Aone/trash-preview',
+    );
+    expect(
+      NativePaths.connectorsNativeTrashSubmit,
+      '/api/connectors/native/trash-actions',
+    );
     final key = List.filled(64, 'c').join();
-    expect(NativePaths.connectorsNativeTrashRead(key), '/api/connectors/native/trash-actions/$key');
+    expect(
+      NativePaths.connectorsNativeTrashRead(key),
+      '/api/connectors/native/trash-actions/$key',
+    );
   });
 
   test('publishes authenticated generated artifact inventory and bytes', () {

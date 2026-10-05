@@ -184,7 +184,11 @@ class ConnectorReview {
   }
 
   /// Shared strict nested review validation; callers verify their own envelope.
-  static Future<ConnectorJson?> parseValue(Object? value, String kind, String id) async {
+  static Future<ConnectorJson?> parseValue(
+    Object? value,
+    String kind,
+    String id,
+  ) async {
     controlKind(kind);
     controlId(id);
     ConnectorJson? review;

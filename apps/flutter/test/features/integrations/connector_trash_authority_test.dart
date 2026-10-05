@@ -78,8 +78,6 @@ class _Api extends ApiClient {
     posts++;
     throw StateError('Unexpected mutation');
   }
-
-
 }
 
 class _Sessions extends SessionController {
@@ -128,9 +126,7 @@ void main() {
       'authority refusal retires private state and repaints: $refusal',
       (tester) async {
         final api = _Api()..refusal = refusal;
-        final repository = ApiConnectorTrashRepository(
-          _access(api),
-        );
+        final repository = ApiConnectorTrashRepository(_access(api));
         final controller = ConnectorTrashController(
           repository,
           TrashFixtureStore(),
@@ -146,10 +142,7 @@ void main() {
         );
         controller.reviewed = review;
         controller.loaded = true;
-        controller.pending = ConnectorTrashPending(
-          intent,
-          dispatched: true,
-        );
+        controller.pending = ConnectorTrashPending(intent, dispatched: true);
         controller.accepted = ConnectorTrashSavedAction(
           intent,
           await trashActionFixture(intent, settled: false),
@@ -164,9 +157,7 @@ void main() {
               nativeWorkspaceAccessProvider.overrideWithValue(_access(api)),
             ],
             child: MaterialApp(
-              home: Scaffold(
-                body: ConnectorTrashPanel(controller: controller),
-              ),
+              home: Scaffold(body: ConnectorTrashPanel(controller: controller)),
             ),
           ),
         );
@@ -279,14 +270,10 @@ void main() {
         (_, _) {},
       );
       addTearDown(subscription.close);
-      final outgoing = container.read(
-        connectorTrashControllerProvider,
-      )!;
+      final outgoing = container.read(connectorTrashControllerProvider)!;
       probe = () {
         probe = null;
-        container.invalidate(
-          connectorTrashControllerProvider,
-        );
+        container.invalidate(connectorTrashControllerProvider);
       };
       expect(outgoing.current, isFalse);
       expect(outgoing.reviewed, isNull);
@@ -313,9 +300,7 @@ void main() {
         current: () {
           if (!firstProbe) return false;
           firstProbe = false;
-          container.invalidate(
-            connectorTrashControllerProvider,
-          );
+          container.invalidate(connectorTrashControllerProvider);
           return true;
         },
       );
@@ -330,9 +315,7 @@ void main() {
       );
       addTearDown(container.dispose);
       expect(
-        () => container.read(
-          connectorTrashControllerProvider,
-        ),
+        () => container.read(connectorTrashControllerProvider),
         returnsNormally,
       );
       expect(storageReads, 0);
@@ -353,12 +336,11 @@ void main() {
       final container = ProviderContainer(
         overrides: [
           nativeWorkspaceAccessProvider.overrideWithValue(_access(_Api())),
-          connectorTrashControllerProvider
-              .overrideWith((ref) {
-                final controller = current;
-                ref.onDispose(controller.dispose);
-                return controller;
-              }),
+          connectorTrashControllerProvider.overrideWith((ref) {
+            final controller = current;
+            ref.onDispose(controller.dispose);
+            return controller;
+          }),
         ],
       );
       addTearDown(container.dispose);
@@ -366,9 +348,7 @@ void main() {
         UncontrolledProviderScope(
           container: container,
           child: const MaterialApp(
-            home: NativeConnectorTrashWorkspace(
-              connectorId: 'mcp:one',
-            ),
+            home: NativeConnectorTrashWorkspace(connectorId: 'mcp:one'),
           ),
         ),
       );
@@ -387,9 +367,7 @@ void main() {
         now: () => trashNow,
       );
       await current.initialize();
-      container.invalidate(
-        connectorTrashControllerProvider,
-      );
+      container.invalidate(connectorTrashControllerProvider);
       expect(first.current, isFalse);
       gate.complete(await trashPreviewFixture(name: 'Late tools'));
       await held;
@@ -405,8 +383,7 @@ void main() {
   testWidgets(
     'hiding and restoring the outer route cancels a confirmed preflight',
     (tester) async {
-      final repository = TrashFixtureRepository(),
-          store = TrashFixtureStore();
+      final repository = TrashFixtureRepository(), store = TrashFixtureStore();
       final controller = ConnectorTrashController(
         repository,
         store,
@@ -417,11 +394,10 @@ void main() {
       final container = ProviderContainer(
         overrides: [
           nativeWorkspaceAccessProvider.overrideWithValue(_access(_Api())),
-          connectorTrashControllerProvider
-              .overrideWith((ref) {
-                ref.onDispose(controller.dispose);
-                return controller;
-              }),
+          connectorTrashControllerProvider.overrideWith((ref) {
+            ref.onDispose(controller.dispose);
+            return controller;
+          }),
         ],
       );
       addTearDown(container.dispose);
@@ -430,15 +406,16 @@ void main() {
           container: container,
           child: MaterialApp(
             navigatorKey: navigator,
-            home: const NativeConnectorTrashWorkspace(
-              connectorId: 'mcp:one',
-            ),
+            home: const NativeConnectorTrashWorkspace(connectorId: 'mcp:one'),
           ),
         ),
       );
       await tester.pumpAndSettle();
-      await tester.scrollUntilVisible(find.text('Move to Trash'), 200,
-        scrollable: find.byType(Scrollable).first);
+      await tester.scrollUntilVisible(
+        find.text('Move to Trash'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
       await tester.tap(find.text('Move to Trash'));
       await tester.pumpAndSettle();
       final gate = Completer<ConnectorReview>();
@@ -468,8 +445,7 @@ void main() {
   testWidgets('TickerMode hide and restore retires an open confirmation', (
     tester,
   ) async {
-    final repository = TrashFixtureRepository(),
-        store = TrashFixtureStore();
+    final repository = TrashFixtureRepository(), store = TrashFixtureStore();
     final controller = ConnectorTrashController(
       repository,
       store,
@@ -481,11 +457,10 @@ void main() {
     final container = ProviderContainer(
       overrides: [
         nativeWorkspaceAccessProvider.overrideWithValue(_access(_Api())),
-        connectorTrashControllerProvider
-            .overrideWith((ref) {
-              ref.onDispose(controller.dispose);
-              return controller;
-            }),
+        connectorTrashControllerProvider.overrideWith((ref) {
+          ref.onDispose(controller.dispose);
+          return controller;
+        }),
       ],
     );
     addTearDown(container.dispose);
@@ -497,16 +472,17 @@ void main() {
           builder: (_, value, child) =>
               TickerMode(enabled: value, child: child!),
           child: const MaterialApp(
-            home: NativeConnectorTrashWorkspace(
-              connectorId: 'mcp:one',
-            ),
+            home: NativeConnectorTrashWorkspace(connectorId: 'mcp:one'),
           ),
         ),
       ),
     );
     await tester.pumpAndSettle();
-    await tester.scrollUntilVisible(find.text('Move to Trash'), 200,
-        scrollable: find.byType(Scrollable).first);
+    await tester.scrollUntilVisible(
+      find.text('Move to Trash'),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
     await tester.tap(find.text('Move to Trash'));
     await tester.pumpAndSettle();
     visible.value = false;
@@ -540,11 +516,10 @@ void main() {
         final container = ProviderContainer(
           overrides: [
             nativeWorkspaceAccessProvider.overrideWithValue(_access(_Api())),
-            connectorTrashControllerProvider
-                .overrideWith((ref) {
-                  ref.onDispose(controller.dispose);
-                  return controller;
-                }),
+            connectorTrashControllerProvider.overrideWith((ref) {
+              ref.onDispose(controller.dispose);
+              return controller;
+            }),
           ],
         );
         addTearDown(container.dispose);
@@ -553,15 +528,16 @@ void main() {
             container: container,
             child: MaterialApp(
               navigatorKey: navigator,
-              home: const NativeConnectorTrashWorkspace(
-                connectorId: 'mcp:one',
-              ),
+              home: const NativeConnectorTrashWorkspace(connectorId: 'mcp:one'),
             ),
           ),
         );
         await tester.pumpAndSettle();
-        await tester.scrollUntilVisible(find.text('Move to Trash'), 200,
-        scrollable: find.byType(Scrollable).first);
+        await tester.scrollUntilVisible(
+          find.text('Move to Trash'),
+          200,
+          scrollable: find.byType(Scrollable).first,
+        );
         await tester.tap(find.text('Move to Trash'));
         await tester.pumpAndSettle();
         expect(
@@ -589,11 +565,19 @@ void main() {
           expect(controller.accepted, isNull);
         } else {
           expect(controller.accepted!.settled, isTrue);
-          await tester.scrollUntilVisible(find.text('Move to Trash confirmed'), -200,
-            scrollable: find.byType(Scrollable).first);
+          await tester.scrollUntilVisible(
+            find.text('Move to Trash confirmed'),
+            -200,
+            scrollable: find.byType(Scrollable).first,
+          );
           expect(find.text('Move to Trash confirmed'), findsOneWidget);
           expect(find.text('Trash ID: $trashId'), findsOneWidget);
-          expect(find.textContaining('does not establish current restore availability'), findsOneWidget);
+          expect(
+            find.textContaining(
+              'does not establish current restore availability',
+            ),
+            findsOneWidget,
+          );
         }
         expect(tester.takeException(), isNull);
         await tester.pumpWidget(const SizedBox());
@@ -601,92 +585,150 @@ void main() {
     );
   }
 
-  testWidgets('expiry while explicit confirmation is open requires a newly reviewed preview', (tester) async {
-    var now = trashNow;
-    final repository = TrashFixtureRepository(), store = TrashFixtureStore();
-    final controller = ConnectorTrashController(repository, store, now: () => now);
-    final container = ProviderContainer(overrides: [
-      nativeWorkspaceAccessProvider.overrideWithValue(_access(_Api())),
-      connectorTrashControllerProvider.overrideWith((ref) {
-        ref.onDispose(controller.dispose);
-        return controller;
-      }),
-    ]);
-    addTearDown(container.dispose);
-    await tester.pumpWidget(UncontrolledProviderScope(container: container,
-      child: const MaterialApp(home: NativeConnectorTrashWorkspace(connectorId: 'mcp:one'))));
-    await tester.pumpAndSettle();
-    await tester.scrollUntilVisible(find.text('Move to Trash'), 200,
-      scrollable: find.byType(Scrollable).first);
-    await tester.tap(find.text('Move to Trash'));
-    await tester.pumpAndSettle();
-    now = trashNow.add(const Duration(minutes: 10));
-    await tester.tap(find.text('Confirm move to Trash'));
-    await tester.pumpAndSettle();
-    expect(repository.posts, 0);
-    expect(repository.previewReads, 1);
-    expect(repository.reviewReads, 0);
-    expect(store.writes, 0);
-    expect(controller.canAct, isFalse);
-    expect(tester.takeException(), isNull);
-    await tester.pumpWidget(const SizedBox());
-  });
+  testWidgets(
+    'expiry while explicit confirmation is open requires a newly reviewed preview',
+    (tester) async {
+      var now = trashNow;
+      final repository = TrashFixtureRepository(), store = TrashFixtureStore();
+      final controller = ConnectorTrashController(
+        repository,
+        store,
+        now: () => now,
+      );
+      final container = ProviderContainer(
+        overrides: [
+          nativeWorkspaceAccessProvider.overrideWithValue(_access(_Api())),
+          connectorTrashControllerProvider.overrideWith((ref) {
+            ref.onDispose(controller.dispose);
+            return controller;
+          }),
+        ],
+      );
+      addTearDown(container.dispose);
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: const MaterialApp(
+            home: NativeConnectorTrashWorkspace(connectorId: 'mcp:one'),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.text('Move to Trash'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.tap(find.text('Move to Trash'));
+      await tester.pumpAndSettle();
+      now = trashNow.add(const Duration(minutes: 10));
+      await tester.tap(find.text('Confirm move to Trash'));
+      await tester.pumpAndSettle();
+      expect(repository.posts, 0);
+      expect(repository.previewReads, 1);
+      expect(repository.reviewReads, 0);
+      expect(store.writes, 0);
+      expect(controller.canAct, isFalse);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
 
-  testWidgets('empty inventory opens the owner Trash journal and recovers a deleted target by exact GET', (tester) async {
-    final intent = await ConnectorTrashIntent.prepare(connectorOwner,
-      await trashPreviewFixture(), now: trashNow, key: 'deleted-target-trash');
-    final store = TrashFixtureStore()..value = connectorFreeze({
-      'schemaVersion': 'connector-trash:1',
-      'pending': ConnectorTrashPending(intent, dispatched: true).stored,
-      'accepted': null,
-    });
-    final repository = TrashFixtureRepository();
-    final trash = ConnectorTrashController(repository, store,
-      now: () => trashNow.add(const Duration(days: 100)));
-    final controls = ConnectorController(_MissingConnectorRepository(), ConnectorFixtureStore());
-    await controls.initialize();
-    final container = ProviderContainer(overrides: [
-      nativeWorkspaceAccessProvider.overrideWithValue(_access(_Api())),
-      connectorControllerProvider.overrideWith((ref) {
-        ref.onDispose(controls.dispose);
-        return controls;
-      }),
-      connectorTrashControllerProvider.overrideWith((ref) {
-        ref.onDispose(trash.dispose);
-        return trash;
-      }),
-    ]);
-    addTearDown(container.dispose);
-    await tester.pumpWidget(UncontrolledProviderScope(container: container,
-      child: const MaterialApp(home: NativeConnectorWorkspace())));
-    await tester.pumpAndSettle();
-    expect(find.text('No MCP or OpenAPI connections are visible.'), findsOneWidget);
-    await tester.tap(find.text('Connector Trash recovery'));
-    await tester.pumpAndSettle();
-    expect(find.text('Move to Trash unconfirmed'), findsOneWidget);
-    expect(find.text('Move to Trash'), findsNothing);
-    await tester.scrollUntilVisible(find.text('Check exact receipt'), 150,
-      scrollable: find.byType(Scrollable).first);
-    await tester.tap(find.text('Check exact receipt'));
-    await tester.pumpAndSettle();
-    expect(repository.posts, 0);
-    expect(repository.gets, 1);
-    expect(repository.previewReads, 0);
-    expect(repository.reviewReads, 0);
-    expect(trash.accepted!.intent.key, intent.key);
-    expect(find.text('Move to Trash confirmed'), findsOneWidget);
-    expect(find.widgetWithText(SelectableText, 'Trash ID: $trashId'), findsOneWidget);
-    expect(find.textContaining('does not establish current restore availability'), findsOneWidget);
-    await tester.scrollUntilVisible(find.text('Open Trash recovery in browser'), 150,
-      scrollable: find.byType(Scrollable).first);
-    final handoff = tester.widget<NativeWorkspaceBrowserButton>(find.byType(NativeWorkspaceBrowserButton));
-    expect(handoff.path, '/app/settings');
-    await tester.scrollUntilVisible(find.text('Receipt details'), 150,
-      scrollable: find.byType(Scrollable).first);
-    await tester.tap(find.text('Receipt details'));
-    await tester.pumpAndSettle();
-    expect(tester.takeException(), isNull);
-    expect(repository.posts, 0);
-    await tester.pumpWidget(const SizedBox());
-  });
+  testWidgets(
+    'empty inventory opens the owner Trash journal and recovers a deleted target by exact GET',
+    (tester) async {
+      final intent = await ConnectorTrashIntent.prepare(
+        connectorOwner,
+        await trashPreviewFixture(),
+        now: trashNow,
+        key: 'deleted-target-trash',
+      );
+      final store = TrashFixtureStore()
+        ..value = connectorFreeze({
+          'schemaVersion': 'connector-trash:1',
+          'pending': ConnectorTrashPending(intent, dispatched: true).stored,
+          'accepted': null,
+        });
+      final repository = TrashFixtureRepository();
+      final trash = ConnectorTrashController(
+        repository,
+        store,
+        now: () => trashNow.add(const Duration(days: 100)),
+      );
+      final controls = ConnectorController(
+        _MissingConnectorRepository(),
+        ConnectorFixtureStore(),
+      );
+      await controls.initialize();
+      final container = ProviderContainer(
+        overrides: [
+          nativeWorkspaceAccessProvider.overrideWithValue(_access(_Api())),
+          connectorControllerProvider.overrideWith((ref) {
+            ref.onDispose(controls.dispose);
+            return controls;
+          }),
+          connectorTrashControllerProvider.overrideWith((ref) {
+            ref.onDispose(trash.dispose);
+            return trash;
+          }),
+        ],
+      );
+      addTearDown(container.dispose);
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: const MaterialApp(home: NativeConnectorWorkspace()),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.text('No MCP or OpenAPI connections are visible.'),
+        findsOneWidget,
+      );
+      await tester.tap(find.text('Connector Trash recovery'));
+      await tester.pumpAndSettle();
+      expect(find.text('Move to Trash unconfirmed'), findsOneWidget);
+      expect(find.text('Move to Trash'), findsNothing);
+      await tester.scrollUntilVisible(
+        find.text('Check exact receipt'),
+        150,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.tap(find.text('Check exact receipt'));
+      await tester.pumpAndSettle();
+      expect(repository.posts, 0);
+      expect(repository.gets, 1);
+      expect(repository.previewReads, 0);
+      expect(repository.reviewReads, 0);
+      expect(trash.accepted!.intent.key, intent.key);
+      expect(find.text('Move to Trash confirmed'), findsOneWidget);
+      expect(
+        find.widgetWithText(SelectableText, 'Trash ID: $trashId'),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('does not establish current restore availability'),
+        findsOneWidget,
+      );
+      await tester.scrollUntilVisible(
+        find.text('Open Trash recovery in browser'),
+        150,
+        scrollable: find.byType(Scrollable).first,
+      );
+      final handoff = tester.widget<NativeWorkspaceBrowserButton>(
+        find.byType(NativeWorkspaceBrowserButton),
+      );
+      expect(handoff.path, '/app/settings');
+      await tester.scrollUntilVisible(
+        find.text('Receipt details'),
+        150,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.tap(find.text('Receipt details'));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      expect(repository.posts, 0);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
 }

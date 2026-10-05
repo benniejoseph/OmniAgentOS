@@ -25,7 +25,7 @@ function envelope(record = item) {
   const completed = completeAppServiceCall(authorizeAppServiceCall(caller, getAppServiceOperationContract("app.trash.show")), { item: record }, { resourceCount: 1 });
   return { ...completed.data, receipts: [], serviceReceipt: completed.receipt };
 }
-const retained = { items: [item], listFresh: true, listLoading: false, exactItem: item, exactFresh: true, exactLoading: false };
+const retained = { items: [item], listFresh: true, listLoading: false, exactItem: item, exactFresh: true, exactLoading: false, exactCurrent: () => true };
 
 describe("Exact browser Trash recovery", () => {
   it("finds item101 without broadening the first100 list and uses its exact restore preview and receipt", async () => {
@@ -88,6 +88,17 @@ describe("Exact browser Trash recovery", () => {
     expect(previous()).toBe(false); expect(first.current()).toBe(false); expect(first.signal.aborted).toBe(true);
     const selected = selection.capture(); expect(selected() && second.current()).toBe(true);
     selection.dispose(); expect(selected()).toBe(false); selection.mount(); expect(selected()).toBe(false);
+  });
+
+  it("rechecks the exact read at admission even when a retained render still says fresh", () => {
+    const gate = createAdvancedSettingsGate(), selection = createTrashSelection();
+    const selected = selection.capture(), ticket = gate.read("trash-exact");
+    const captured = { ...retained, exactCurrent: () => selected() && ticket.current() };
+    expect(trashReviewMatches({ item, source: "exact" }, captured)).toBe(true);
+    selection.invalidate();
+    expect(captured.exactFresh).toBe(true);
+    expect(trashReviewMatches({ item, source: "exact" }, captured)).toBe(false);
+    expect(trashReviewMatches({ item, source: "exact" }, { ...retained, exactCurrent: undefined })).toBe(false);
   });
 
   it("never revives a read across a settings mutation or same-owner authority loss", () => {

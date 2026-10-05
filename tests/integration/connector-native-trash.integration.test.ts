@@ -237,9 +237,11 @@ integration("native MCP Trash under forced serving RLS", () => {
   test.each([true, false])("existing browser restore helper preserves vault=%s compensation and immutable native history", async (vault) => {
     const f = await fixture(vault ? "restore-vault" : "restore-none");
     if (!vault) {
-      await admin`UPDATE omni_mcp_connectors SET auth_type='none',credential_version=0,credential_key_id=NULL,credential_fingerprint=NULL,
+      // An absent stored version is NULL; the native review projects it as zero.
+      await admin`UPDATE omni_mcp_connectors SET auth_type='none',credential_version=NULL,credential_key_id=NULL,credential_fingerprint=NULL,
         credential_origin=NULL,sealed_credential=NULL WHERE id=${f.id}`;
       const updated = await previewNativeConnectorTrash({ scope: f.scope }, f.id);
+      expect(updated.review?.connector).toMatchObject({ authType: "none", credentialConfigured: false, credentialVersion: 0 });
       f.request = connectorNativeTrashRequestSchema.parse({ ...f.request, review: updated.review!.pin, preview: updated.preview });
     }
     const result = await submit(f), trash = result.action.settlement!.result.trash;

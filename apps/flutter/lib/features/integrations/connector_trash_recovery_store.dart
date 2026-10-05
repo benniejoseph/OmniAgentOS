@@ -12,10 +12,8 @@ abstract interface class ConnectorTrashRecoveryStore {
 /// identifies evidence for one service/tenant/canonical user, never authority.
 class ProtectedConnectorTrashRecoveryStore
     implements ConnectorTrashRecoveryStore {
-  ProtectedConnectorTrashRecoveryStore(
-    this.access,
-    this.store,
-  ) : owner = SpecialistOwner(access);
+  ProtectedConnectorTrashRecoveryStore(this.access, this.store)
+    : owner = SpecialistOwner(access);
 
   final NativeWorkspaceAccess access;
   final SpecialistRecoveryStore store;
@@ -43,10 +41,7 @@ class ProtectedConnectorTrashRecoveryStore
       return current();
     }
 
-    connectorRequire(
-      allowed(),
-      'Connector Trash recovery access changed.',
-    );
+    connectorRequire(allowed(), 'Connector Trash recovery access changed.');
     await store.write(
       owner,
       namespace,
@@ -60,8 +55,7 @@ class ProtectedConnectorTrashRecoveryStore
   }
 }
 
-class MemoryConnectorTrashRecoveryStore
-    implements ConnectorTrashRecoveryStore {
+class MemoryConnectorTrashRecoveryStore implements ConnectorTrashRecoveryStore {
   ConnectorJson? value;
 
   @override

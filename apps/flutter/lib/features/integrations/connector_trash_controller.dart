@@ -6,19 +6,13 @@ import 'connector_trash_contracts.dart';
 import 'connector_trash_recovery_store.dart';
 import 'connector_trash_repository.dart';
 
-bool _sameIntent(
-  ConnectorTrashIntent a,
-  ConnectorTrashIntent b,
-) =>
+bool _sameIntent(ConnectorTrashIntent a, ConnectorTrashIntent b) =>
     a.key == b.key &&
     a.requestSha256 == b.requestSha256 &&
     connectorSame(a.identity, b.identity);
 
 class ConnectorTrashPending {
-  const ConnectorTrashPending(
-    this.intent, {
-    required this.dispatched,
-  });
+  const ConnectorTrashPending(this.intent, {required this.dispatched});
   final ConnectorTrashIntent intent;
   final bool dispatched;
   ConnectorJson get stored => {
@@ -52,10 +46,7 @@ class ConnectorTrashSavedAction {
   ) async {
     final row = connectorObject(value, 'intent response responder mutation');
     connectorRequire(row['mutation'] is bool);
-    final intent = await ConnectorTrashIntent.restore(
-      row['intent'],
-      owner,
-    );
+    final intent = await ConnectorTrashIntent.restore(row['intent'], owner);
     final responder = ConnectorOwner.restore(row['responder'], owner);
     final response = await ConnectorTrashRead.parse(
       row['response'],
@@ -94,10 +85,7 @@ class _Journal {
     }
     final accepted = row['accepted'] == null
         ? null
-        : await ConnectorTrashSavedAction.restore(
-            row['accepted'],
-            owner,
-          );
+        : await ConnectorTrashSavedAction.restore(row['accepted'], owner);
     connectorRequire(
       accepted == null ||
           accepted.settled ||
@@ -112,8 +100,11 @@ class _Journal {
 /// A protected submission is never an upload queue. After dispatch becomes
 /// possible, only the exact authenticated receipt may settle that submission.
 class ConnectorTrashController extends ChangeNotifier {
-  ConnectorTrashController(this.repository, this.store, {DateTime Function()? now})
-      : now = now ?? DateTime.now;
+  ConnectorTrashController(
+    this.repository,
+    this.store, {
+    DateTime Function()? now,
+  }) : now = now ?? DateTime.now;
   final DateTime Function() now;
   String? selectedId;
   Future<void>? _initialization;
@@ -154,7 +145,8 @@ class ConnectorTrashController extends ChangeNotifier {
       pending == null &&
       (accepted == null || accepted!.settled) &&
       reviewed != null &&
-      reviewed!.freshAt(now()) && connectorTrashEligible(reviewed!.review);
+      reviewed!.freshAt(now()) &&
+      connectorTrashEligible(reviewed!.review);
 
   void _emit() {
     if (_open) notifyListeners();
@@ -222,10 +214,7 @@ class ConnectorTrashController extends ChangeNotifier {
           connectorRequire(next.accepted == null || next.accepted!.settled);
           pending = known.settled
               ? null
-              : ConnectorTrashPending(
-                  known.intent,
-                  dispatched: true,
-                );
+              : ConnectorTrashPending(known.intent, dispatched: true);
           accepted = known;
           loaded = true;
           storageUnconfirmed = true;
@@ -281,7 +270,10 @@ class ConnectorTrashController extends ChangeNotifier {
     }
   }
 
-  Future<void> act(ConnectorTrashPreview review, bool Function() admission) async {
+  Future<void> act(
+    ConnectorTrashPreview review,
+    bool Function() admission,
+  ) async {
     if (!canAct ||
         !admission() ||
         !current ||
@@ -293,7 +285,12 @@ class ConnectorTrashController extends ChangeNotifier {
     final epoch = ++_actionEpoch, selection = _reviewEpoch;
     bool owned() => current && epoch == _actionEpoch;
     bool live() {
-      if (!owned() || selection != _reviewEpoch || !review.freshAt(now()) || !admission()) return false;
+      if (!owned() ||
+          selection != _reviewEpoch ||
+          !review.freshAt(now()) ||
+          !admission()) {
+        return false;
+      }
       return owned();
     }
 

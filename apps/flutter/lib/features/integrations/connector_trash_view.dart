@@ -11,10 +11,7 @@ import 'connector_trash_controller.dart';
 import 'connector_trash_providers.dart';
 
 class NativeConnectorTrashWorkspace extends StatelessWidget {
-  const NativeConnectorTrashWorkspace({
-    super.key,
-    this.connectorId,
-  });
+  const NativeConnectorTrashWorkspace({super.key, this.connectorId});
   final String? connectorId;
   @override
   Widget build(BuildContext context) => Scaffold(
@@ -25,9 +22,7 @@ class NativeConnectorTrashWorkspace extends StatelessWidget {
         ownNavigator: true,
         builder: (_) => Consumer(
           builder: (context, ref, _) {
-            final controller = ref.watch(
-              connectorTrashControllerProvider,
-            );
+            final controller = ref.watch(connectorTrashControllerProvider);
             if (controller == null || !controller.current) {
               return const Center(
                 child: Text(
@@ -70,12 +65,10 @@ class ConnectorTrashPanel extends StatefulWidget {
   final bool routeCurrent;
   final String? initialConnectorId;
   @override
-  State<ConnectorTrashPanel> createState() =>
-      _ConnectorTrashPanelState();
+  State<ConnectorTrashPanel> createState() => _ConnectorTrashPanelState();
 }
 
-class _ConnectorTrashPanelState
-    extends State<ConnectorTrashPanel>
+class _ConnectorTrashPanelState extends State<ConnectorTrashPanel>
     with WidgetsBindingObserver {
   bool _foreground = true,
       _confirming = false,
@@ -103,7 +96,12 @@ class _ConnectorTrashPanelState
   Future<void> _load() async {
     final controller = c, epoch = _viewEpoch;
     await controller.initialize();
-    if (!mounted || !identical(controller, c) || !_visible || epoch != _viewEpoch) return;
+    if (!mounted ||
+        !identical(controller, c) ||
+        !_visible ||
+        epoch != _viewEpoch) {
+      return;
+    }
     final id = widget.initialConnectorId;
     if (id != null) await controller.select(id);
   }
@@ -181,12 +179,13 @@ class _ConnectorTrashPanelState
             runSpacing: 8,
             children: [
               OutlinedButton.icon(
-                onPressed: c.busy || c.reading || !c.mayChange || c.selectedId == null ? null : c.refresh,
+                onPressed:
+                    c.busy || c.reading || !c.mayChange || c.selectedId == null
+                    ? null
+                    : c.refresh,
                 icon: const Icon(Icons.refresh),
                 label: Text(
-                  c.reading
-                      ? 'Reading connection…'
-                      : 'Refresh Trash preview',
+                  c.reading ? 'Reading connection…' : 'Refresh Trash preview',
                 ),
               ),
               if (!c.loaded || c.storageUnconfirmed)
@@ -270,58 +269,133 @@ class _ConnectorTrashPanelState
 
   List<Widget> _review(ConnectorTrashPreview reviewed) {
     final review = reviewed.review;
-    if (review.connector == null) return [const Padding(padding: EdgeInsets.symmetric(vertical: 16),
-      child: Text('This connection is no longer available. The saved submission can still be recovered by its exact receipt.'))];
-    final row = review.connector!, contracts = review.value!['contracts'] as List;
+    if (review.connector == null) {
+      return [
+        const Padding(
+          padding: EdgeInsets.symmetric(vertical: 16),
+          child: Text(
+            'This connection is no longer available. The saved submission can still be recovered by its exact receipt.',
+          ),
+        ),
+      ];
+    }
+    final row = review.connector!,
+        contracts = review.value!['contracts'] as List;
     return [
       const Divider(height: 32),
-      Text(row['name'] as String, style: Theme.of(context).textTheme.titleLarge),
+      Text(
+        row['name'] as String,
+        style: Theme.of(context).textTheme.titleLarge,
+      ),
       SelectableText('${row['id']}\n${row['endpoint']}'),
-      if (row['endpointRedacted'] == true) const Text('Endpoint query and fragment are hidden.'),
-      Text('${contracts.length} discovered tools are included in this exact review.'),
+      if (row['endpointRedacted'] == true)
+        const Text('Endpoint query and fragment are hidden.'),
+      Text(
+        '${contracts.length} discovered tools are included in this exact review.',
+      ),
       if (reviewed.preview != null) ...[
         Text('Preview expires ${reviewed.preview!['expiresAt']}'),
-        if (!reviewed.freshAt(c.now())) const Text('This preview expired. Refresh it and review again before confirming.'),
-        if (reviewed.compensation!['limitation'] != null) Text(reviewed.compensation!['limitation'] as String),
-        if (contracts.isNotEmpty) ExpansionTile(
-          key: PageStorageKey(('connector-trash-tools', c, review.pin!['reviewSha256'])),
-          title: const Text('Affected discovered tools'),
-          children: [for (final tool in contracts) ListTile(title: Text(connectorMap(tool)['name'] as String))],
+        if (!reviewed.freshAt(c.now()))
+          const Text(
+            'This preview expired. Refresh it and review again before confirming.',
+          ),
+        if (reviewed.compensation!['limitation'] != null)
+          Text(reviewed.compensation!['limitation'] as String),
+        if (contracts.isNotEmpty)
+          ExpansionTile(
+            key: PageStorageKey((
+              'connector-trash-tools',
+              c,
+              review.pin!['reviewSha256'],
+            )),
+            title: const Text('Affected discovered tools'),
+            children: [
+              for (final tool in contracts)
+                ListTile(title: Text(connectorMap(tool)['name'] as String)),
+            ],
+          ),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: FilledButton.icon(
+            onPressed: c.canAct ? () => _confirm(reviewed) : null,
+            icon: const Icon(Icons.delete_outline),
+            label: const Text('Move to Trash'),
+          ),
         ),
-        Align(alignment: Alignment.centerLeft, child: FilledButton.icon(
-          onPressed: c.canAct ? () => _confirm(reviewed) : null,
-          icon: const Icon(Icons.delete_outline), label: const Text('Move to Trash'))),
-      ] else const Text('A complete supported review is required before moving this connection to Trash.'),
+      ] else
+        const Text(
+          'A complete supported review is required before moving this connection to Trash.',
+        ),
     ];
   }
 
   Widget _receipt() {
     final saved = c.accepted!, acceptance = saved.response.acceptance!;
     final settlement = saved.response.action!['settlement'];
-    final trash = settlement == null ? null : connectorMap(connectorMap(settlement)['result'])['trash'];
-    return Card(child: Padding(padding: const EdgeInsets.all(16), child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text(saved.settled ? 'Move to Trash confirmed' : 'Move accepted; result unconfirmed',
-          style: Theme.of(context).textTheme.titleMedium),
-        SelectableText('Connection ${saved.intent.id}'),
-        Text('Accepted ${acceptance['acceptedAt']}'),
-        if (trash is Map) ...[
-          SelectableText('Trash ID: ${trash['trashId']}'),
-          Text('Original restore deadline: ${trash['restoreUntil']}'),
-          const Text('This receipt records the original move. It does not establish current restore availability; the item may since have been restored, purged or expired.'),
-          if (trash['limitation'] != null) Text(trash['limitation'] as String),
-          const Text('To review restoration, sign into the same account and workspace in the browser. Choose Data & privacy → Trash recovery and enter this exact Trash ID. Review and confirm there.'),
-          const NativeWorkspaceBrowserButton(path: '/app/settings', label: 'Open Trash recovery in browser'),
-        ],
-        const Text('Moving to Trash does not revoke a provider token or change external environment credentials.'),
-        if (c.storageUnconfirmed) OutlinedButton(onPressed: c.busy ? null : c.saveAcceptedLocally,
-          child: const Text('Save verified receipt locally')),
-        ExpansionTile(key: PageStorageKey(('connector-trash-receipt', c, acceptance['id'])),
-          title: const Text('Receipt details'), children: [
-            SelectableText(key: PageStorageKey(('connector-trash-receipt-text', c, acceptance['id'])),
-              const JsonEncoder.withIndent('  ').convert(saved.response.action)),
-          ]),
-      ])));
+    final trash = settlement == null
+        ? null
+        : connectorMap(connectorMap(settlement)['result'])['trash'];
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              saved.settled
+                  ? 'Move to Trash confirmed'
+                  : 'Move accepted; result unconfirmed',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            SelectableText('Connection ${saved.intent.id}'),
+            Text('Accepted ${acceptance['acceptedAt']}'),
+            if (trash is Map) ...[
+              SelectableText('Trash ID: ${trash['trashId']}'),
+              Text('Original restore deadline: ${trash['restoreUntil']}'),
+              const Text(
+                'This receipt records the original move. It does not establish current restore availability; the item may since have been restored, purged or expired.',
+              ),
+              if (trash['limitation'] != null)
+                Text(trash['limitation'] as String),
+              const Text(
+                'To review restoration, sign into the same account and workspace in the browser. Choose Data & privacy → Trash recovery and enter this exact Trash ID. Review and confirm there.',
+              ),
+              const NativeWorkspaceBrowserButton(
+                path: '/app/settings',
+                label: 'Open Trash recovery in browser',
+              ),
+            ],
+            const Text(
+              'Moving to Trash does not revoke a provider token or change external environment credentials.',
+            ),
+            if (c.storageUnconfirmed)
+              OutlinedButton(
+                onPressed: c.busy ? null : c.saveAcceptedLocally,
+                child: const Text('Save verified receipt locally'),
+              ),
+            ExpansionTile(
+              key: PageStorageKey((
+                'connector-trash-receipt',
+                c,
+                acceptance['id'],
+              )),
+              title: const Text('Receipt details'),
+              children: [
+                SelectableText(
+                  key: PageStorageKey((
+                    'connector-trash-receipt-text',
+                    c,
+                    acceptance['id'],
+                  )),
+                  const JsonEncoder.withIndent('  ')
+                      .convert(saved.response.action),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _confirm(ConnectorTrashPreview review) async {
@@ -330,23 +404,58 @@ class _ConnectorTrashPanelState
     _confirming = true;
     bool? confirmed;
     try {
-      confirmed = await showDialog<bool>(context: context, useRootNavigator: false,
-        builder: (dialogContext) => AlertDialog(scrollable: true,
+      confirmed = await showDialog<bool>(
+        context: context,
+        useRootNavigator: false,
+        builder: (dialogContext) => AlertDialog(
+          scrollable: true,
           title: const Text('Move this connection to Trash?'),
-          content: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
-            Text(row['name'] as String), SelectableText('${row['id']}\n${row['endpoint']}'),
-            const SizedBox(height: 12),
-            Text(review.preview!['effectSummary'] as String),
-            Text('Preview expires ${review.preview!['expiresAt']}'),
-            if (review.compensation!['limitation'] != null) Text(review.compensation!['limitation'] as String),
-            const SizedBox(height: 12),
-            const Text('This removes the live connection and its tools from Asael. It does not revoke the provider token or change external environment credentials. Browser restoration requires a separate current review and confirmation.'),
-          ]),
-          actions: [TextButton(onPressed: () => Navigator.of(dialogContext).pop(false), child: const Text('Cancel')),
-            FilledButton(onPressed: () => Navigator.of(dialogContext).pop(true), child: const Text('Confirm move to Trash'))],
-        ));
-    } finally { _confirming = false; }
-    if (confirmed != true || !mounted || !identical(controller, c) || !_visible || epoch != _viewEpoch) return;
-    await controller.act(review, () => mounted && identical(controller, c) && _visible && epoch == _viewEpoch);
+          content: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(row['name'] as String),
+              SelectableText('${row['id']}\n${row['endpoint']}'),
+              const SizedBox(height: 12),
+              Text(review.preview!['effectSummary'] as String),
+              Text('Preview expires ${review.preview!['expiresAt']}'),
+              if (review.compensation!['limitation'] != null)
+                Text(review.compensation!['limitation'] as String),
+              const SizedBox(height: 12),
+              const Text(
+                'This removes the live connection and its tools from Asael. It does not revoke the provider token or change external environment credentials. Browser restoration requires a separate current review and confirmation.',
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('Confirm move to Trash'),
+            ),
+          ],
+        ),
+      );
+    } finally {
+      _confirming = false;
+    }
+    if (confirmed != true ||
+        !mounted ||
+        !identical(controller, c) ||
+        !_visible ||
+        epoch != _viewEpoch) {
+      return;
+    }
+    await controller.act(
+      review,
+      () =>
+          mounted &&
+          identical(controller, c) &&
+          _visible &&
+          epoch == _viewEpoch,
+    );
   }
 }

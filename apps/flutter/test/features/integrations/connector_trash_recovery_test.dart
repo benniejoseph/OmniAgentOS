@@ -67,61 +67,49 @@ EncryptedSpecialistRecoveryStore _encrypted(
 );
 
 void main() {
-  test(
-    'two native windows cannot replace a competing protected Trash slot across different targets',
-    () async {
-      final broker = _Broker();
-      final firstRepository = TrashFixtureRepository(),
-          secondRepository = TrashFixtureRepository();
-      final first = ConnectorTrashController(
-        firstRepository,
-        ProtectedConnectorTrashRecoveryStore(
-          _access(),
-          _encrypted(broker),
-        ),
-        now: () => trashNow,
-      );
-      final second = ConnectorTrashController(
-        secondRepository,
-        ProtectedConnectorTrashRecoveryStore(
-          _access(),
-          _encrypted(broker),
-        ),
-        now: () => trashNow,
-      );
-      await first.initialize();
-      await second.initialize();
-      await first.select('mcp:one');
-      await second.select('mcp:two');
-      await first.act(first.reviewed!, () => true);
-      final acceptedKey = first.accepted!.intent.key;
-      await second.act(second.reviewed!, () => true);
-      expect(firstRepository.posts, 1);
-      expect(secondRepository.posts, 0);
-      expect(second.pending!.dispatched, isFalse);
-      expect(second.storageUnconfirmed, isTrue);
-      await second.reloadProtected();
-      expect(second.pending, isNull);
-      expect(second.accepted!.intent.key, acceptedKey);
-      expect(second.storageUnconfirmed, isFalse);
-      expect(secondRepository.posts, 0);
-      expect(
-        broker.values.values.single.content,
-        isNot(contains('asael-connector-lifecycle-action')),
-      );
-      first.dispose();
-      second.dispose();
-    },
-  );
+  test('two native windows cannot replace a competing protected Trash slot across different targets', () async {
+    final broker = _Broker();
+    final firstRepository = TrashFixtureRepository(),
+        secondRepository = TrashFixtureRepository();
+    final first = ConnectorTrashController(
+      firstRepository,
+      ProtectedConnectorTrashRecoveryStore(_access(), _encrypted(broker)),
+      now: () => trashNow,
+    );
+    final second = ConnectorTrashController(
+      secondRepository,
+      ProtectedConnectorTrashRecoveryStore(_access(), _encrypted(broker)),
+      now: () => trashNow,
+    );
+    await first.initialize();
+    await second.initialize();
+    await first.select('mcp:one');
+    await second.select('mcp:two');
+    await first.act(first.reviewed!, () => true);
+    final acceptedKey = first.accepted!.intent.key;
+    await second.act(second.reviewed!, () => true);
+    expect(firstRepository.posts, 1);
+    expect(secondRepository.posts, 0);
+    expect(second.pending!.dispatched, isFalse);
+    expect(second.storageUnconfirmed, isTrue);
+    await second.reloadProtected();
+    expect(second.pending, isNull);
+    expect(second.accepted!.intent.key, acceptedKey);
+    expect(second.storageUnconfirmed, isFalse);
+    expect(secondRepository.posts, 0);
+    expect(
+      broker.values.values.single.content,
+      isNot(contains('asael-connector-lifecycle-action')),
+    );
+    first.dispose();
+    second.dispose();
+  });
 
   test('one protected Trash namespace separates device, service, tenant and owner, survives role loss, and cannot read v40/v41', () async {
     final broker = _Broker();
     // Use one shared broker for every scope check; unrelated scopes must find no evidence.
     final protected = _encrypted(broker);
-    final first = ProtectedConnectorTrashRecoveryStore(
-      _access(),
-      protected,
-    );
+    final first = ProtectedConnectorTrashRecoveryStore(_access(), protected);
     await first.read();
     await first.write({'proof': 'exact target evidence'}, () => true);
     final roleChanged = ConnectorOwner(
@@ -177,11 +165,17 @@ void main() {
       );
     }
     expect(broker.values.length, 1);
-    expect(await ProtectedConnectorCredentialRemovalRecoveryStore(_access(), protected, 'mcp:one').read(), isNull);
+    expect(
+      await ProtectedConnectorCredentialRemovalRecoveryStore(
+        _access(),
+        protected,
+        'mcp:one',
+      ).read(),
+      isNull,
+    );
     expect(
       await ProtectedConnectorRecoveryStore(_access(), protected).read(),
       isNull,
     );
   });
 }
-

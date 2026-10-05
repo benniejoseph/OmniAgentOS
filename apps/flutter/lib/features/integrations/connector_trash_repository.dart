@@ -24,8 +24,7 @@ abstract interface class ConnectorTrashRepository {
   void close();
 }
 
-class ApiConnectorTrashRepository
-    implements ConnectorTrashRepository {
+class ApiConnectorTrashRepository implements ConnectorTrashRepository {
   ApiConnectorTrashRepository(this.access, {this.isCurrent})
     : owner = ConnectorOwner.fromAccess(access);
 
@@ -67,8 +66,7 @@ class ApiConnectorTrashRepository
         isCurrent: () => _admitted(admission),
       );
 
-  void _check() =>
-      connectorRequire(current, 'Connector Trash access changed.');
+  void _check() => connectorRequire(current, 'Connector Trash access changed.');
 
   Future<T> _request<T>(Future<T> Function() operation) async {
     try {
@@ -108,9 +106,13 @@ class ApiConnectorTrashRepository
   Future<ConnectorTrashPreview> preview(String connectorId) async {
     _check();
     connectorRequire(const ['admin', 'system'].contains(owner.role));
-    final value = await _request(() => access.api.getJsonAuthorized(
-      NativePaths.connectorsNativeTrashPreview(controlId(connectorId)),
-      authority: _authority(), cancelToken: _reads));
+    final value = await _request(
+      () => access.api.getJsonAuthorized(
+        NativePaths.connectorsNativeTrashPreview(controlId(connectorId)),
+        authority: _authority(),
+        cancelToken: _reads,
+      ),
+    );
     _check();
     final result = await ConnectorTrashPreview.parse(value, owner, connectorId);
     _check();
