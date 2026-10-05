@@ -666,8 +666,23 @@ void main() {
       await tester.tap(find.text('Open an exact connection'));
       await tester.pumpAndSettle();
       await tester.enterText(find.byType(TextField), 'mcp:one');
-      await tester.ensureVisible(find.text('Read exact connection'));
-      await tester.tap(find.text('Read exact connection'));
+      // Settle the editor's focus scroll before positioning the action below it.
+      FocusManager.instance.primaryFocus?.unfocus();
+      await tester.pumpAndSettle();
+      final readExact = find.widgetWithText(
+        OutlinedButton,
+        'Read exact connection',
+      );
+      await tester.scrollUntilVisible(
+        readExact,
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await Scrollable.ensureVisible(tester.element(readExact), alignment: 0.5);
+      await tester.pumpAndSettle();
+      expect(tester.widget<OutlinedButton>(readExact).onPressed, isNotNull);
+      expect(readExact.hitTestable(), findsOneWidget);
+      await tester.tap(readExact.hitTestable());
       await tester.pumpAndSettle();
       expect(
         find.text('This exact connection is not currently available.'),
