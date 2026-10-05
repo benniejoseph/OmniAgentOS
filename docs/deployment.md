@@ -37,25 +37,65 @@ Set these through the platform secret/configuration store, never in source contr
 - `OMNIAGENT_NATIVE_MIN_ANDROID_VERSION`, `OMNIAGENT_NATIVE_MIN_IOS_VERSION`, and `OMNIAGENT_NATIVE_MIN_MACOS_VERSION`: optional stable `major.minor.patch` minimums for native compatibility telemetry. An absent or empty value defaults to `1.0.0`; a malformed configured value invalidates the policy and holds adoption unavailable. These settings do not authorize Agent enrollment.
 
 Native contract artifacts are committed immutable release inputs. This release
-advertises v42 as current and retains v41 as the supported previous version.
-V40 remains a byte-frozen, unadvertised archive; v39 leaves the three-version
-window. Run `npm run check:native-contracts` to verify generated v42 documents
-and SDK against the frozen v40/v41 hashes. Archive availability does not make a
-v40 client compatible with the v42/v41 server window.
+advertises v43 as current and retains v42 as the supported previous version.
+V41 remains a byte-frozen, unadvertised archive; v40 leaves the three-version
+window. Run `npm run check:native-contracts` to verify generated v43 documents
+and SDK against the frozen v41/v42 hashes. Archive availability does not make a
+v41 client compatible with the v43/v42 server window.
 
-V42 adds exact MCP Trash preview, confirmed submit and receipt recovery only.
+V43 adds existing-MCP bearer preparation, exact preparation recovery, explicit
+staging abandonment, confirmed credential rotation and exact action recovery.
+`connectors.credentials.rotate` starts at 43; prepare and final submit require
+management authority. Abandonment is an enrolled mutation under current active
+original-owner read authority and a distinct cleanup purpose; it cannot create
+ready material or change a connector. GETs remain read-only. Deploy and verify
+the v43 server and migration chain before distributing a v43 native build.
+Existing mutation floors remain unchanged, including Trash 42 and removal 41.
+
+Migration 240 adds one tenant- and owner-scoped preparation table, taking the
+expected tenant inventory to 264, and narrowly extends the shared native action
+ledger for `rotate_mcp`. Apply and verify its checksum-linked chain after 239
+using the normal backup/quiescence procedure. The independent
+`OMNIAGENT_CREDENTIAL_KEYRING` seals transient staging under a preparation
+binding, then the existing credential helper reseals the confirmed value for the
+connector's origin/version. Safe proofs, receipts, events and native journals
+contain no token or staging ciphertext. Private token commitments survive scrub
+only for exact replay comparison. Existing family validators stay strict;
+rollback retains terminal evidence, original receipts and the additive schema.
+
+Fresh consumption has exactly a fifteen-minute admission lifetime, measured by
+the database clock after locks and rechecked immediately before credential
+effects. A replay cannot renew it. An admitted local transaction may finish
+after that boundary; historical receipts remain valid. Consumption and explicit
+abandonment remove live staging ciphertext atomically. Expired staging is scrubbed
+as the first bounded work in each visited tenant's maintenance tick: at most
+100 expired rows, skipping locked rows, within the lesser of two seconds or the
+remaining tick budget. Cleanup uses audited system maintenance scope with an
+explicit tenant predicate and never needs the vault keyring or active owner
+membership. Failures remain visible in tenant outcomes while later work proceeds.
+
+No finite wall-clock cleanup maximum is promised during worker outage, release
+hold, contention or backlog. The next successful bounded pass that reaches an
+expired row removes its live ciphertext; oldest-expired/backlog reporting exposes
+delay. This does not alter WAL or backup retention. Exact preparation GET does
+not report physical scrub completion. Native final-action uncertainty remains
+bound to its original action GET and cannot be replaced by expiry or abandonment.
+Local credential save leaves the connector disabled with zero discovered tools;
+rediscovery/review is a separate browser handoff, not proof of provider connectivity.
+
+The earlier v42 publication added exact MCP Trash preview, confirmed submit and receipt recovery only.
 `connectors.trash` has a v42 mutation floor; existing Google/connector management
 floors remain 40 and saved-credential removal remains 41. Preview and submit need
 current connector management authority; exact receipt GET needs current read
-membership for its original owner. Deploy and verify a server supporting v42
-before distributing app `1.23.25+61`. The v41 builds retain their existing
-operations while v41 remains the supported previous contract. Build or merge
+membership for its original owner. That rollout required a server supporting v42
+before distributing app `1.23.25+61`. Under its v42/v41 window, v41 builds retained
+their existing operations. Build or merge
 evidence alone does not establish migration, production promotion or installation.
 
 Migration 239 follows 238 and extends the existing native connector action ledger
 for the narrow MCP Trash branch. Apply the checksum-linked migration and verify
 the schema before serving v42, using the existing backup/quiescence procedure.
-It adds no tenant table: the expected inventory remains 263. Prior state/removal
+It added no tenant table: the inventory at that point remained 263. Prior state/removal
 validators and receipts remain strict; cross-family receipt GET returns no action
 and same-key submission conflicts. Rollback retains accepted receipts, Trash
 snapshots and the additive schema; do not drop evidence to run an older client.

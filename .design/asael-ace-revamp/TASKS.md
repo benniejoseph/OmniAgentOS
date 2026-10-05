@@ -2,6 +2,34 @@
 
 ## Current checkpoint — 5 October 2026
 
+The UI/ATLAS priority checkpoint is accepted and preserved. PR63 delivered the
+reviewed 33-file HELD01 bundle for bounded decorative raster playback. PR65
+completed native credential-removal stabilization; PR66 completed the native
+Payments unavailable/partial/stale-state correction. Each passed all sixteen
+hosted gates. The current verified private package is Mac `1.23.25+61`, which
+preserves those UI and ATLAS inputs unchanged.
+
+PR67 adds exact native MCP Trash and recovery, native v42 and migration239.
+All sixteen hosted gates passed on `9715812e657f2eca92babd465230e07eb8b393b6`,
+including 2,183 Flutter cases, and it merged as
+`374805e1583b83fa45466a84334d074843ae9377`; accepted and merged full trees match.
+Mac61 was built from `60686db7`; tracked Flutter and web ATLAS inputs match the
+accepted revision, while the full trees differ only in test typing and inventory
+documentation. Fresh merged-main provenance remains a separate pending gate.
+The [acceptance receipt](</Volumes/Extreme Pro/Asael-release-records/2026-10-03-followups/ui-validation/pr67-acceptance.json>)
+and [package receipt](</Volumes/Extreme Pro/Asael-release-records/2026-10-03-followups/ui-validation/macos-native-trash-release/verification.json>)
+retain those exact boundaries.
+
+Production migration/promotion and app installation have not occurred; the
+existing operator environment dependency remains. Physical-device acceptance,
+Apple notarization and real provider APNs delivery are not inferred from builds.
+Credential preparation/rotation is the active isolated v43 slice after this
+completed priority checkpoint. Registration/import, rediscovery and conditional
+GitHub upgrade remain afterward. Unchecked tasks keep their complete cross-platform,
+pilot and device acceptance criteria; no whole-task checkbox is changed here.
+
+## Earlier 5 October checkpoint — retained history
+
 **UI and ATLAS remain the priority. Their current asset/UI checkpoint is accepted through PR63; the open connector candidate is limited to stabilization.**
 Further connector expansion is parked. The immediate UI follow-up corrects native
 Payments unavailable/partial-data presentation; production promotion and external

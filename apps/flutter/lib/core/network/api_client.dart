@@ -285,6 +285,7 @@ ApiClient createApiClient(
         final request = error.requestOptions;
         if (error.response?.statusCode != 401 ||
             _isCredentialRoute(request.path) ||
+            request.extra['asaelNativeOneShot'] == true ||
             request.extra['asaelNativeRefreshRetried'] == true) {
           handler.next(error);
           return;
@@ -582,6 +583,27 @@ class ApiClient {
         options: Options(
           headers: headers,
           extra: {_requestAuthorityKey: authority},
+        ),
+      ),
+    );
+  }
+
+  /// Secret-bearing preparation is one attempt, including after a 401. The
+  /// normal pre-dispatch authority/token checks still apply.
+  Future<Map<String, dynamic>> postJsonAuthorizedOnce(
+    String path, {
+    required NativeRequestAuthority authority,
+    Map<String, dynamic>? data,
+    Map<String, dynamic>? headers,
+  }) {
+    _requireAuthorityTransport(authority);
+    return _json(
+      () => _dio.post<Object?>(
+        path,
+        data: data,
+        options: Options(
+          headers: headers,
+          extra: {_requestAuthorityKey: authority, 'asaelNativeOneShot': true},
         ),
       ),
     );

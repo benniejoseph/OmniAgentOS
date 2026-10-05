@@ -60,11 +60,25 @@ describe("native mutation capability enrollment", () => {
   });
   it("enrolls exact MCP Trash only from v42 with fresh native authority", () => {
     for (const platform of ["android", "ios", "macos"] as const) {
-      expect(nativeMutationEnrollment(context(42, undefined, platform), "connectors.trash", asOf))
-        .toEqual({ state: "active", minimumContractVersion: 42 });
-      for (const client of [context(41, undefined, platform), context(43, undefined, platform),
+      for (const version of [NATIVE_API_PREVIOUS_VERSION, NATIVE_API_CURRENT_VERSION]) {
+        expect(nativeMutationEnrollment(context(version, undefined, platform), "connectors.trash", asOf))
+          .toEqual({ state: "active", minimumContractVersion: 42 });
+      }
+      for (const client of [context(41, undefined, platform), context(NATIVE_API_CURRENT_VERSION + 1, undefined, platform),
         context(42, "2026-01-01T00:00:00.000Z", platform), { source: "session" as const }, { source: "mobile" as const }]) {
-        expect(nativeMutationEnrollment(client, "connectors.trash", asOf)).toMatchObject({ state: "held", minimumContractVersion: 42 });
+        expect(nativeMutationEnrollment(client, "connectors.trash", asOf))
+          .toMatchObject({ state: "held", minimumContractVersion: "native" in client ? 42 : NATIVE_API_CURRENT_VERSION });
+      }
+    }
+  });
+  it("enrolls prepared MCP credential rotation and cleanup only from v43", () => {
+    for (const platform of ["android", "ios", "macos"] as const) {
+      expect(nativeMutationEnrollment(context(43, undefined, platform), "connectors.credentials.rotate", asOf))
+        .toEqual({ state: "active", minimumContractVersion: 43 });
+      for (const client of [context(42, undefined, platform), context(NATIVE_API_CURRENT_VERSION + 1, undefined, platform),
+        context(43, "2026-01-01T00:00:00.000Z", platform), { source: "session" as const }, { source: "mobile" as const }]) {
+        expect(nativeMutationEnrollment(client, "connectors.credentials.rotate", asOf))
+          .toMatchObject({ state: "held", minimumContractVersion: 43 });
       }
     }
   });

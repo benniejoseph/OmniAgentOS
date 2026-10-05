@@ -103,7 +103,7 @@ async function accepted(sql: Sql, scope: ConnectorNativeScope, keySha256: string
     WHERE tenant_id=${scope.tenantId} AND owner_actor_id=${scope.ownerActorId} AND idempotency_key_sha256=${keySha256}`;
   if (!rows.length) return null;
   // A lifecycle key is not a v40 state-action receipt. Never widen its parser.
-  if (rows[0].action === "remove_credential" || rows[0].action === "trash") {
+  if (rows[0].action === "remove_credential" || rows[0].action === "trash" || rows[0].action === "rotate_mcp") {
     if (conflictOnOtherAction) fail("This key already accepted another connector request.");
     return null;
   }

@@ -91,6 +91,32 @@ all changed TypeScript/TSX files and generated-artifact verification passed. The
 establish hosted acceptance, package verification, installation or production
 promotion.
 
+## Prepared MCP credential save/rotation — v43 implementation
+
+The next isolated checkout starts from `9715812e`. Its five-operation native
+publication covers existing-MCP credential preparation, exact preparation GET,
+explicit original-owner abandonment, confirmed rotation and exact action GET.
+The declaration keeps the reviewed endpoint/configuration unchanged; supported
+targets include vault-backed and unconfigured `none` connectors, including a
+configuration restored from Trash. Environment-auth conversion, registration,
+import, discovery, enablement and provider revocation remain separate work.
+
+Preparation carries a transient token only on its one-shot POST. The protected
+journal holds safe intent/proof and separate preparation, abandonment and final
+dispatch phases. Final dispatch uncertainty permits only original action GET
+recovery. Null is not a terminal preparation result; explicit server abandonment
+fences delayed preparation and supports active owners after management loss.
+Consumed results carry the exact final action key. All mutations are v43-gated;
+prior families retain their schemas and capability floors.
+
+Migration 240 adds the staging table and bounded maintenance scrub. Fifteen
+minutes bounds fresh consumption, not physical ciphertext cleanup during
+outage/backlog. Local credential save remains disabled and requires subsequent
+rediscovery/review. Source implementation and focused validation are in progress;
+this checkpoint does not establish hosted, package or production acceptance.
+The root validation checklist includes application-service coverage so the
+architecture's 264-operation count follows the registry.
+
 ## Historical 4 October checkpoint
 
 The owner prioritized the UI revamp and ATLAS at this point. Connector expansion was deferred and preserved in `codex/native-connector-controls`; the following evidence describes that historical source, not acceptance of the resumed release.

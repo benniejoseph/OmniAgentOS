@@ -1,6 +1,27 @@
 import type postgres from "postgres";
 import { expect } from "vitest";
 
+/** Restore239 only when this disposable fixture has no preparation/rotation evidence. */
+export async function removeNativeConnectorCredentialRotationsForReplay(sql: postgres.TransactionSql) {
+  expect(await sql`SELECT (SELECT count(*)::int FROM public.omni_native_connector_credential_preparations) AS preparations,
+    (SELECT count(*)::int FROM public.omni_native_connector_actions WHERE action='rotate_mcp') AS rotations`).toEqual([{ preparations: 0, rotations: 0 }]);
+  await sql`DROP TABLE public.omni_native_connector_credential_preparations`;
+  await sql`DROP FUNCTION public.omni_protect_native_credential_preparation_v1()`;
+  await sql`DROP FUNCTION public.omni_native_credential_abandonment_valid_v1(JSONB,JSONB,JSONB)`;
+  await sql`DROP FUNCTION public.omni_native_credential_preparation_proof_valid_v1(JSONB,JSONB)`;
+  await sql`DROP FUNCTION public.omni_native_credential_preparation_intent_valid_v1(JSONB)`;
+  await sql`ALTER TABLE public.omni_native_connector_actions
+    DROP CONSTRAINT omni_native_connector_intent_v4,
+    DROP CONSTRAINT omni_native_connector_settlement_v4,
+    DROP CONSTRAINT omni_native_connector_rotation_version,
+    DROP CONSTRAINT omni_native_connector_actions_action_check,
+    ADD CONSTRAINT omni_native_connector_actions_action_check CHECK(action IN ('review_contracts','enable','disable','remove_credential','trash')),
+    ADD CONSTRAINT omni_native_connector_intent_v3 CHECK(public.omni_native_connector_intent_valid_v3(intent,acceptance)),
+    ADD CONSTRAINT omni_native_connector_settlement_v3 CHECK(public.omni_native_connector_settlement_valid_v3(settlement,acceptance))`;
+  await sql`DROP FUNCTION public.omni_native_connector_settlement_valid_v4(JSONB,JSONB)`;
+  await sql`DROP FUNCTION public.omni_native_connector_intent_valid_v4(JSONB,JSONB)`;
+}
+
 /** Restore238 without altering historical state/removal evidence on a disposable DB. */
 export async function removeNativeConnectorTrashForReplay(sql: postgres.TransactionSql) {
   expect(await sql`SELECT count(*)::int AS moves FROM public.omni_native_connector_actions WHERE action='trash'`).toEqual([{ moves: 0 }]);

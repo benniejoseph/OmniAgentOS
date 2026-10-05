@@ -4,14 +4,39 @@ The owner explicitly prioritized the UI revamp and ATLAS, asking to stabilize th
 
 ## Current execution order
 
-Stabilize the open v41 candidate, then finish UI/ATLAS release work. Fresh main
-checks and paired-runner provenance passed at `b322fd5d`. The remaining concrete
-UI stabilization identified by the current review is native Payments failure and
-partial-data presentation. Native Trash implementation is preserved separately;
-its generation, validation and publication are parked. Further connector
-expansion follows UI/ATLAS.
+The requested UI/ATLAS implementation and package checkpoint is accepted. Preserve
+that visual work while completing remaining connector implementation. Production
+promotion follows its existing operator and paired-release gates.
 
 ## Current release checkpoint
+
+The UI/ATLAS priority checkpoint is accepted and preserved. PR63 delivered the
+reviewed 33-file HELD01 bundle for bounded decorative raster playback. PR65
+completed native credential-removal stabilization; PR66 completed the native
+Payments unavailable/partial/stale-state correction. Each passed all sixteen
+hosted gates. The current verified private package is Mac `1.23.25+61`, which
+preserves those UI and ATLAS inputs unchanged.
+
+PR67 adds exact native MCP Trash and recovery, native v42 and migration239.
+All sixteen hosted gates passed on `9715812e657f2eca92babd465230e07eb8b393b6`,
+including 2,183 Flutter cases, and it merged as
+`374805e1583b83fa45466a84334d074843ae9377`; accepted and merged full trees match.
+Mac61 was built from `60686db7`; tracked Flutter and web ATLAS inputs match the
+accepted revision, while the full trees differ only in test typing and inventory
+documentation. Fresh merged-main provenance remains a separate pending gate.
+The [acceptance receipt](</Volumes/Extreme Pro/Asael-release-records/2026-10-03-followups/ui-validation/pr67-acceptance.json>)
+and [package receipt](</Volumes/Extreme Pro/Asael-release-records/2026-10-03-followups/ui-validation/macos-native-trash-release/verification.json>)
+retain those exact boundaries.
+
+Production migration/promotion and app installation have not occurred; the
+existing operator environment dependency remains. Physical-device acceptance,
+Apple notarization and real provider APNs delivery are not inferred from builds.
+Credential preparation/rotation is the active isolated v43 slice after this
+completed priority checkpoint. Registration/import, rediscovery and conditional
+GitHub upgrade remain afterward. Unchecked tasks keep their complete cross-platform,
+pilot and device acceptance criteria; no whole-task checkbox is changed here.
+
+## Earlier accepted checkpoints — retained history
 
 The UI is accepted and merged through **PR62, native Settings archive v2**.
 Accepted source `9cfadda5941ecbc189c39b86025ada7ef27cf8c0` passed all sixteen

@@ -3,9 +3,9 @@
 
 abstract final class NativeContract {
   static const id = 'asael.native-api';
-  static const currentVersion = 42;
-  static const previousVersion = 41;
-  static const supportedVersions = <int>[42, 41];
+  static const currentVersion = 43;
+  static const previousVersion = 42;
+  static const supportedVersions = <int>[43, 42];
   static const discoveryPath = '/api/mobile/contracts';
   static const operationIds = <String>{
     'auth.login',
@@ -261,6 +261,11 @@ abstract final class NativeContract {
     'connectors.native.trash.preview',
     'connectors.native.trash.submit',
     'connectors.native.trash.read',
+    'connectors.native.credentialPreparations.submit',
+    'connectors.native.credentialPreparations.read',
+    'connectors.native.credentialPreparations.abandon',
+    'connectors.native.credentialRotations.submit',
+    'connectors.native.credentialRotations.read',
   };
 
   static bool supports(int version) => supportedVersions.contains(version);
@@ -1173,6 +1178,11 @@ abstract final class NativePaths {
   static String connectorsNativeTrashPreview(String id) => '/api/connectors/native/mcp/${Uri.encodeComponent(id)}/trash-preview';
   static const connectorsNativeTrashSubmit = '/api/connectors/native/trash-actions';
   static String connectorsNativeTrashRead(String keySha256) => '/api/connectors/native/trash-actions/${Uri.encodeComponent(keySha256)}';
+  static const connectorsNativeCredentialPreparationsSubmit = '/api/connectors/native/credential-preparations';
+  static String connectorsNativeCredentialPreparationsRead(String keySha256) => '/api/connectors/native/credential-preparations/${Uri.encodeComponent(keySha256)}';
+  static String connectorsNativeCredentialPreparationsAbandon(String keySha256) => '/api/connectors/native/credential-preparations/${Uri.encodeComponent(keySha256)}/abandon';
+  static const connectorsNativeCredentialRotationsSubmit = '/api/connectors/native/credential-rotations';
+  static String connectorsNativeCredentialRotationsRead(String keySha256) => '/api/connectors/native/credential-rotations/${Uri.encodeComponent(keySha256)}';
 }
 
 abstract final class NativeConversationEvents {

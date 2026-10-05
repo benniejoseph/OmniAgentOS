@@ -8,6 +8,7 @@ import { removeEmptyResponsibilityRuntimeForReplay } from "./helpers/responsibil
 import { removeEmptyMemoryLifecycleForReplay } from "./helpers/memory-lifecycle-replay";
 import { removeEmptyMemoryPromotionForReplay } from "./helpers/memory-promotion-replay";
 import { removeEmptyCustomerWorkflowIntentsForReplay, removeEmptyAgentSkillMutationsForReplay, removeEmptyMeetingRecordingProcessingForReplay, removeEmptyCustomerFactIntentsForReplay, removeEmptySalesforceNativeActionsForReplay, removeEmptyNativePrivateMemoryActionsForReplay, removeEmptyNativeKnowledgeCognitionBuildsForReplay, removeEmptyGooglePersonalNativeActionsForReplay, removeEmptyNativeConnectorControlsForReplay, removeNativeConnectorCredentialRemovalsForReplay, removeNativeConnectorTrashForReplay } from "./helpers/native-catalog-replay";
+import { removeNativeConnectorCredentialRotationsForReplay } from "./helpers/native-catalog-replay";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import {
   buildAgentRunIdentityPinV1,
@@ -6823,7 +6824,7 @@ databaseDescribe("Postgres schema integration", () => {
     `;
     // Each one covers every command and role, as its restore below does.
     expect(restrictivePolicies.map(({ command, roles }) => ({ command, roles })))
-      .toEqual(Array(84).fill({ command: "*", roles: "{0}" }));
+      .toEqual(Array(85).fill({ command: "*", roles: "{0}" }));
     expect(restrictivePolicies.filter((policy) =>
       additiveDraftReplayTables.includes(policy.table_name),
     ).map(({ table_name, policy_name }) => ({ table_name, policy_name })))
@@ -6833,6 +6834,8 @@ databaseDescribe("Postgres schema integration", () => {
           ? "omni_google_personal_native_actor"
           : tableName === "omni_native_connector_actions"
           ? "omni_native_connector_actor"
+          : tableName === "omni_native_connector_credential_preparations"
+          ? "omni_native_credential_preparation_actor"
           : tableName.startsWith("omni_knowledge_native_cognition_")
           ? "omni_native_cognition_build_actor"
           : tableName === "omni_native_private_memory_actions"
@@ -9631,6 +9634,7 @@ const googlePersonalNativeActionsVersion = 236;
 const nativeConnectorControlsVersion = 237;
 const nativeConnectorCredentialRemovalsVersion = 238;
 const nativeConnectorTrashVersion = 239;
+const nativeConnectorCredentialRotationsVersion = 240;
 const additiveReplayVersions = [
   companionPreferencesVersion,
   responsibilityDraftsVersion,
@@ -9657,6 +9661,7 @@ const additiveReplayVersions = [
   nativeConnectorControlsVersion,
   nativeConnectorCredentialRemovalsVersion,
   nativeConnectorTrashVersion,
+  nativeConnectorCredentialRotationsVersion,
 ].filter((version) => databaseSchemaMigrations.some((migration) => migration.version === version));
 const meetingResolutionReplayTables: readonly string[] = [
   "omni_meeting_commitment_resolution_intents",
@@ -9665,6 +9670,7 @@ const meetingResolutionReplayTables: readonly string[] = [
 const additiveDraftReplayTables: readonly string[] = [
   "omni_google_personal_native_actions",
   "omni_native_connector_actions",
+  "omni_native_connector_credential_preparations",
   "omni_knowledge_native_cognition_builds",
   "omni_knowledge_native_cognition_effects",
   "omni_native_private_memory_actions",
@@ -10037,6 +10043,9 @@ async function withMigrationsPendingFrom<T>(
   }
   await client.begin(async (transaction) => {
     if (replay) {
+      if (additiveReplayVersions.includes(nativeConnectorCredentialRotationsVersion)) {
+        await removeNativeConnectorCredentialRotationsForReplay(transaction);
+      }
       if (additiveReplayVersions.includes(nativeConnectorTrashVersion)) {
         await removeNativeConnectorTrashForReplay(transaction);
       }

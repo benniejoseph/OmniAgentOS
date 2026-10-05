@@ -1,14 +1,14 @@
 import { randomBytes } from "node:crypto";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
-import { closeDatabaseClient, ensureDatabaseSchema, getSql, runWithDatabaseActorScope, runWithDatabaseTenantScope } from "@/lib/db/client";
+import { closeDatabaseClient, databaseSchemaMigrations, ensureDatabaseSchema, getSql, runWithDatabaseActorScope, runWithDatabaseTenantScope } from "@/lib/db/client";
 import { applySqlMigrationFile, readSqlMigrationFile } from "@/lib/db/sql-migration-files";
 import { readNativeConnectorAction, reviewNativeConnector, submitNativeConnectorAction } from "@/lib/connectors/native-control-store";
 import { connectorNativeActionSchema, sealConnectorNativePin, type ConnectorNativeRequest, type ConnectorNativeScope } from "@/lib/connectors/native-control-contracts";
 import { readNativeConnectorCredentialRemoval, submitNativeConnectorCredentialRemoval } from "@/lib/connectors/native-credential-removal-store";
 import { buildConnectorNativeCredentialRemovalIntent, canRemoveNativeConnectorCredential, type ConnectorNativeCredentialRemovalRequest } from "@/lib/connectors/native-credential-removal-contracts";
 import { createExecutionScope } from "@/lib/security/execution-scope";
-import { removeNativeConnectorCredentialRemovalsForReplay, removeNativeConnectorTrashForReplay } from "./helpers/native-catalog-replay";
+import { removeNativeConnectorCredentialRemovalsForReplay, removeNativeConnectorTrashForReplay, removeNativeConnectorCredentialRotationsForReplay } from "./helpers/native-catalog-replay";
 
 const databaseUrl = process.env.DATABASE_URL;
 const integration = databaseUrl && process.env.OMNIAGENT_INTEGRATION_DATABASE_RESET === "true" ? describe : describe.skip;
@@ -86,7 +86,11 @@ integration("native credential removal under forced serving RLS", () => {
     const migration = await readSqlMigrationFile({ file: "20261005190000_native_connector_credential_removals.sql", sha256: checksum, migrations: [row] });
     const next = { version: 239, name: "native_connector_trash_v1", checksum: "6af2db420131c4c68b3279b4030f161d72c85b2a740477fc6f77aa6b85482d83" };
     const trashMigration = await readSqlMigrationFile({ file: "20261005193000_native_connector_trash.sql", sha256: next.checksum, migrations: [next] });
+    const latest = databaseSchemaMigrations.find((migration) => migration.version === 240)!;
+    const rotationMigration = await readSqlMigrationFile({ file: "20261005200000_native_connector_credential_rotations.sql", sha256: latest.checksum, migrations: [latest] });
     await admin.begin(async (sql) => {
+      await removeNativeConnectorCredentialRotationsForReplay(sql);
+      await sql`DELETE FROM omni_schema_version WHERE version=240`;
       await removeNativeConnectorTrashForReplay(sql);
       await sql`DELETE FROM omni_schema_version WHERE version=239`;
       await removeNativeConnectorCredentialRemovalsForReplay(sql);
@@ -102,6 +106,7 @@ integration("native credential removal under forced serving RLS", () => {
       };
       await applySqlMigrationFile(migrationSql, migration, [row], []);
       await applySqlMigrationFile(migrationSql, trashMigration, [next], []);
+      await applySqlMigrationFile(migrationSql, rotationMigration, [latest], []);
       expect((await sql`SELECT intent,acceptance,state,settlement FROM omni_native_connector_actions WHERE tenant_id=${f.scope.tenantId}`)[0]).toEqual(before);
     });
     expect(connectorNativeActionSchema.parse(await readNativeConnectorAction({ scope: f.scope }, legacy.action.acceptance.keySha256))).toEqual(legacy.action);
