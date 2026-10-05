@@ -165,7 +165,10 @@ describe("error budget", () => {
 
   it("ships a held release under a named exception, and records it", () => {
     const gate = errorBudgetGate(
-      report({ id: "agent_runs", verdict: "exhausted" }),
+      report(
+        { id: "agent_runs", verdict: "exhausted" },
+        { id: "tool_calls", objective: 0.9, verdict: "within" },
+      ),
       "Ships the fix for failing runs.",
     );
     expect(gate.status).toBe("pass");
@@ -178,10 +181,37 @@ describe("error budget", () => {
     });
 
     // An exception with nothing to excuse is kept, but not applied.
-    const unneeded = errorBudgetGate(report({ verdict: "within" }), "Just in case.");
+    const unneeded = errorBudgetGate(report(
+      { id: "agent_runs", verdict: "within" },
+      { id: "tool_calls", objective: 0.9, verdict: "within" },
+    ), "Just in case.");
     expect(unneeded.status).toBe("pass");
     expect(unneeded.summary).toBe("No error budget is spent this week.");
     expect(unneeded.details.exception).toEqual({ reason: "Just in case.", applied: false });
+  });
+
+  it.each([
+    ["tool calls alone", report(
+      { id: "agent_runs", verdict: "within" },
+      { id: "tool_calls", objective: 0.9, verdict: "exhausted" },
+    )],
+    ["both objectives", report(
+      { id: "agent_runs", verdict: "exhausted" },
+      { id: "tool_calls", objective: 0.9, verdict: "exhausted" },
+    )],
+    ["missing tool calls", report({ id: "agent_runs", verdict: "exhausted" })],
+    ["duplicate agent runs", report(
+      { id: "agent_runs", verdict: "exhausted" },
+      { id: "agent_runs", verdict: "within" },
+    )],
+    ["wrong tool objective", report(
+      { id: "agent_runs", verdict: "exhausted" },
+      { id: "tool_calls", objective: 0.95, verdict: "within" },
+    )],
+  ] as const)("does not except %s", (_label, budget) => {
+    const gate = errorBudgetGate(budget, "Fix failing runs.");
+    expect(gate.status).toBe("fail");
+    expect(gate.details.exception).toEqual({ reason: "Fix failing runs.", applied: false });
   });
 
   it("fails closed when the budget cannot be read", () => {
@@ -196,8 +226,17 @@ describe("error budget", () => {
       details: { measured: false },
     });
     expect(errorBudgetGate(unread, "The database is being restored.")).toMatchObject({
-      status: "pass",
-      details: { exception: { applied: true } },
+      status: "fail",
+      details: { exception: { reason: "The database is being restored.", applied: false } },
+    });
+    const unreadWithObjectives = report(
+      { id: "agent_runs", verdict: "exhausted" },
+      { id: "tool_calls", objective: 0.9, verdict: "within" },
+    );
+    unreadWithObjectives.measured = false;
+    expect(errorBudgetGate(unreadWithObjectives, "Fix failing runs.")).toMatchObject({
+      status: "fail",
+      details: { exception: { applied: false } },
     });
   });
 

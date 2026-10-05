@@ -14,6 +14,7 @@ const previousRevision = "a".repeat(40);
 const baseUrl = "https://asael.bennierichard.com";
 const now = new Date("2026-10-06T12:00:00.000Z");
 const instant = (ageMs = 0) => new Date(now.getTime() - ageMs).toISOString();
+const exceptionReason = "Owner-authorized measured agent-run fix.";
 const directories: string[] = [];
 const gateIds = [
   "deployment_environment", "internal_smoke_auth", "openai_us_egress_gateway",
@@ -57,9 +58,11 @@ function priorArtifact() {
   }));
   return {
     httpStatus: 200, generatedAt: instant(1000), reportCheckedAt: instant(2000), baseUrl,
+    tenantId: "production_smoke",
     deployment: { commitSha: previousRevision, environment: "production", provider: "vercel" },
     tenantIsolationStatus: "degraded",
     previousReleaseCompatibility: undefined as { missingAgentErrorBudget: boolean } | undefined,
+    errorBudgetProof: undefined as unknown,
     gates,
     releaseGate: {
       approved: false, status: "blocked",
@@ -72,6 +75,17 @@ function priorArtifact() {
       missingTables: [] as string[], missingTenantColumns: [] as string[], rlsDisabled: [] as string[],
       forceRlsDisabled: [] as string[], missingPolicies: [] as string[],
     },
+  };
+}
+
+function agentRunProof() {
+  return {
+    measured: true,
+    exception: { reason: exceptionReason, applied: true },
+    objectives: [
+      { id: "agent_runs", objective: 0.95, verdict: "exhausted" },
+      { id: "tool_calls", objective: 0.9, verdict: "within" },
+    ],
   };
 }
 
@@ -175,6 +189,7 @@ describe("explicit forward-schema recovery pin", () => {
 
 describe("prior-release schema classification evidence", () => {
   const options = { baseUrl, previousRevision, now };
+  const withException = { ...options, errorBudgetException: exceptionReason };
   it("admits exactly the known gap while retaining the original blocked report", () => {
     const { pin } = candidate(), artifact = priorArtifact();
     const before = structuredClone(artifact);
@@ -195,6 +210,61 @@ describe("prior-release schema classification evidence", () => {
     expect(() => validateForwardSchemaPriorArtifact(artifact, pin, options)).toThrow("budget absence");
   });
 
+  it("admits only a fresh measured agent-run exception with the exact recorded reason", () => {
+    const { pin } = candidate(), artifact = priorArtifact();
+    artifact.errorBudgetProof = agentRunProof();
+    expect(validateForwardSchemaPriorArtifact(artifact, pin, withException))
+      .toEqual({ priorExpectedTables: 10 });
+    expect(() => validateForwardSchemaPriorArtifact(artifact, pin, options))
+      .toThrow("prior budget exception");
+    expect(() => validateForwardSchemaPriorArtifact(artifact, pin,
+      { ...withException, errorBudgetException: "Different reason." }))
+      .toThrow("prior budget exception");
+  });
+
+  it("also admits the exact named exception after both measured objectives recover", () => {
+    const { pin } = candidate(), artifact = priorArtifact();
+    const proof = agentRunProof();
+    proof.objectives[0].verdict = "recovering";
+    proof.objectives[1].verdict = "insufficient";
+    proof.exception.applied = false;
+    artifact.errorBudgetProof = proof;
+    expect(validateForwardSchemaPriorArtifact(artifact, pin, withException))
+      .toEqual({ priorExpectedTables: 10 });
+  });
+
+  it("rejects missing proof or budget gate even if the old server reported a passing budget gate", () => {
+    const { pin } = candidate(), artifact = priorArtifact();
+    expect(() => validateForwardSchemaPriorArtifact(artifact, pin, withException))
+      .toThrow("prior budget exception");
+    artifact.errorBudgetProof = agentRunProof();
+    artifact.gates = artifact.gates.filter((gate) => gate.id !== "agent_error_budget");
+    artifact.releaseGate.summary.total--;
+    artifact.releaseGate.summary.passed--;
+    artifact.previousReleaseCompatibility = { missingAgentErrorBudget: true };
+    expect(() => validateForwardSchemaPriorArtifact(artifact, pin, withException))
+      .toThrow("prior budget exception");
+  });
+
+  it.each([
+    ["unread telemetry", (proof: ReturnType<typeof agentRunProof>) => { proof.measured = false; }],
+    ["tool-call exhaustion", (proof: ReturnType<typeof agentRunProof>) => { proof.objectives[1].verdict = "exhausted"; }],
+    ["agent runs not exhausted", (proof: ReturnType<typeof agentRunProof>) => { proof.objectives[0].verdict = "within"; }],
+    ["wrong objective", (proof: ReturnType<typeof agentRunProof>) => { proof.objectives[1].objective = 0.95; }],
+    ["duplicate objective", (proof: ReturnType<typeof agentRunProof>) => { proof.objectives[1].id = "agent_runs"; }],
+    ["missing objective", (proof: ReturnType<typeof agentRunProof>) => { proof.objectives.pop(); }],
+    ["extra objective", (proof: ReturnType<typeof agentRunProof>) => { proof.objectives.push({ id: "other", objective: 0.99, verdict: "within" }); }],
+    ["exception not applied", (proof: ReturnType<typeof agentRunProof>) => { proof.exception.applied = false; }],
+    ["wrong reason", (proof: ReturnType<typeof agentRunProof>) => { proof.exception.reason = "Different reason."; }],
+  ])("rejects old-server %s before forward-schema recovery", (_label, mutate) => {
+    const { pin } = candidate(), artifact = priorArtifact();
+    const proof = agentRunProof();
+    mutate(proof);
+    artifact.errorBudgetProof = proof;
+    expect(() => validateForwardSchemaPriorArtifact(artifact, pin, withException))
+      .toThrow("prior budget exception");
+  });
+
   it.each(gateIds.filter((id) => id !== "tenant_isolation_database"))("never exempts another failed or warning gate: %s", (id) => {
     const { pin } = candidate();
     for (const status of ["fail", "warn", "unknown"]) {
@@ -207,6 +277,8 @@ describe("prior-release schema classification evidence", () => {
   const corruptions: Array<[string, (artifact: ReturnType<typeof priorArtifact>) => void]> = [
     ["HTTP failure", (a) => { a.httpStatus = 503; }],
     ["wrong origin", (a) => { a.baseUrl = "https://other.example"; }],
+    ["missing tenant", (a) => { a.tenantId = ""; }],
+    ["wrong tenant", (a) => { a.tenantId = "another_tenant"; }],
     ["wrong deployment", (a) => { a.deployment.commitSha = candidateRevision; }],
     ["stale report", (a) => { a.reportCheckedAt = instant(300001); }],
     ["stale artifact", (a) => { a.generatedAt = instant(300001); }],

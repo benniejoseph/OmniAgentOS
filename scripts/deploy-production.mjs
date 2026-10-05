@@ -1264,6 +1264,7 @@ async function runForwardSchemaPriorCheck(pin, baseUrl, previousRevision, migrat
     prior = validateForwardSchemaPriorArtifact(priorEvidence, pin, {
       baseUrl,
       previousRevision,
+      errorBudgetException: process.env.OMNIAGENT_RELEASE_ERROR_BUDGET_EXCEPTION?.trim(),
       now: Date.now(),
     });
   } catch (error) {

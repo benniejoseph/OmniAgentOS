@@ -125,7 +125,14 @@ export function errorBudgetGate(
     : exhausted
       ? `${capitalize(exhausted)} have spent the week's error budget, and the last day still fails faster than the objective allows.`
       : undefined;
-  const applied = Boolean(hold && exceptionReason);
+  const runs = report.objectives.find((item) => item.id === "agent_runs");
+  const tools = report.objectives.find((item) => item.id === "tool_calls");
+  const toolsNotExhausted = tools?.verdict === "insufficient" ||
+    tools?.verdict === "within" || tools?.verdict === "recovering";
+  const exceptionEligible = report.measured && report.objectives.length === 2 &&
+    runs?.objective === 0.95 && runs.verdict === "exhausted" &&
+    tools?.objective === 0.9 && toolsNotExhausted;
+  const applied = Boolean(hold && exceptionReason && exceptionEligible);
   return {
     id: "agent_error_budget",
     name: "Agent error budget",
