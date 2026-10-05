@@ -37,3 +37,17 @@ d4ad92594adc0514f3f1acac3c2ad4d29540c348:src/lib/mobile/contracts.test.ts:generi
 # Public deterministic credential-removal fixture hashes, recomputed by the contract test.
 a42a0596f8670c8b49072d68b146989b04312970:apps/flutter/test/features/integrations/connector_credential_removal_contract_test.dart:generic-api-key:21
 a42a0596f8670c8b49072d68b146989b04312970:apps/flutter/test/features/integrations/connector_credential_removal_contract_test.dart:generic-api-key:49
+
+# Public synthetic Trash key digests generated from the fixed trash-key fixture.
+7fbc1f9223d8d9c943a53338485f787917d27c5d:apps/flutter/test/fixtures/connector_trash/server.json:generic-api-key:158
+7fbc1f9223d8d9c943a53338485f787917d27c5d:apps/flutter/test/fixtures/connector_trash/server.json:generic-api-key:198
+7fbc1f9223d8d9c943a53338485f787917d27c5d:apps/flutter/test/fixtures/connector_trash/server.json:generic-api-key:242
+7fbc1f9223d8d9c943a53338485f787917d27c5d:apps/flutter/test/fixtures/connector_trash/server.json:generic-api-key:288
+7fbc1f9223d8d9c943a53338485f787917d27c5d:apps/flutter/test/fixtures/connector_trash/server.json:generic-api-key:454
+7fbc1f9223d8d9c943a53338485f787917d27c5d:apps/flutter/test/fixtures/connector_trash/server.json:generic-api-key:494
+7fbc1f9223d8d9c943a53338485f787917d27c5d:apps/flutter/test/fixtures/connector_trash/server.json:generic-api-key:538
+7fbc1f9223d8d9c943a53338485f787917d27c5d:apps/flutter/test/fixtures/connector_trash/server.json:generic-api-key:584
+7fbc1f9223d8d9c943a53338485f787917d27c5d:apps/flutter/test/fixtures/connector_trash/server.json:generic-api-key:750
+7fbc1f9223d8d9c943a53338485f787917d27c5d:apps/flutter/test/fixtures/connector_trash/server.json:generic-api-key:790
+7fbc1f9223d8d9c943a53338485f787917d27c5d:apps/flutter/test/fixtures/connector_trash/server.json:generic-api-key:834
+7fbc1f9223d8d9c943a53338485f787917d27c5d:apps/flutter/test/fixtures/connector_trash/server.json:generic-api-key:880
