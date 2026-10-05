@@ -54,11 +54,42 @@ match. Exact public-fixture scanner exceptions preserve the existing scan rules.
 Fresh exact-head hosted gates remain.
 This is not production promotion.
 
-The owner has reaffirmed UI/ATLAS priority. This candidate is limited to stabilizing
-the already implemented release. Native Trash source is preserved separately and
-its generation, validation and publication are parked. Credential rotation,
-registration/import, rediscovery and GitHub upgrade remain deferred until the
-UI/ATLAS release work is resolved.
+At the UI/ATLAS priority checkpoint, this candidate was limited to stabilizing
+the already implemented release and native Trash was parked separately. The
+bounded Trash slice has since resumed on the accepted priority baseline as
+described below. Credential rotation, registration/import, rediscovery and
+GitHub upgrade remain separate unfinished work.
+
+## Exact native MCP Trash — v42 candidate
+
+The isolated Trash checkout is rebased onto the accepted priority baseline
+`c0f495f1`. Source now declares native v42 with frozen v40/v41 archives and only
+three new operations: manager-authorized exact Trash preview, confirmed MCP
+submit and original-owner receipt GET. Capability `connectors.trash` starts at 42.
+Migration 239 retains the shared immutable native ledger and prior family
+validators, adding no tenant table. App `1.23.25+61` is the candidate package;
+package verification, hosted acceptance and production promotion are not claimed
+by this source checkpoint.
+
+The move atomically retains the bounded private snapshot, removes the live
+connector/tools and records Trash/native receipts. It never calls a provider.
+The native family journal remains reachable without a live inventory row and
+uses exact GET recovery after possible dispatch. Its receipt states the original
+Trash ID and restore deadline without claiming current restore availability.
+Vault-backed configuration restores disabled and unconfigured through a separate
+browser review; a human must reconnect credentials.
+
+The browser exact-ID selector reuses the authenticated item GET and existing
+restore preview/confirmation, including an owned item beyond the first 100 list.
+It binds owner, item digest, current read and preview selection independently of
+list freshness. Hidden/replaced reads cannot authorize confirmation. Focused
+source review rechecked archive pins and corrected a retained-render freshness
+edge. The initial 67-case TypeScript run and the eight-case exact recovery rerun
+passed, as did Flutter analysis and 90 focused native tests. All 16 Trash database
+cases and migration 239 verification against 263 tables passed. Final lint for
+all changed TypeScript/TSX files and generated-artifact verification passed. These focused checks do not
+establish hosted acceptance, package verification, installation or production
+promotion.
 
 ## Historical 4 October checkpoint
 

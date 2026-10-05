@@ -47,11 +47,11 @@ void main() {
   });
 
   test('retains current and previous contract compatibility', () {
-    expect(NativeContract.currentVersion, 41);
-    expect(NativeContract.previousVersion, 40);
-    expect(NativeContract.supportedVersions, [41, 40]);
-    expect(NativeContract.supports(39), isFalse);
-    expect(NativeContract.supports(42), isFalse);
+    expect(NativeContract.currentVersion, 42);
+    expect(NativeContract.previousVersion, 41);
+    expect(NativeContract.supportedVersions, [42, 41]);
+    expect(NativeContract.supports(40), isFalse);
+    expect(NativeContract.supports(43), isFalse);
     expect(
       NativePaths.meetingsList(
         workspaceId: 'workspace:one',
@@ -423,6 +423,29 @@ void main() {
     expect(
       NativePaths.connectorsNativeCredentialRemovalsRead(key),
       '/api/connectors/native/credential-removals/$key',
+    );
+  });
+
+  test('publishes exact MCP Trash preview and independent receipt paths', () {
+    for (final operation in [
+      'connectors.native.trash.preview',
+      'connectors.native.trash.submit',
+      'connectors.native.trash.read',
+    ]) {
+      expect(NativeContract.supportsOperation(operation), isTrue);
+    }
+    expect(
+      NativePaths.connectorsNativeTrashPreview('connector:one'),
+      '/api/connectors/native/mcp/connector%3Aone/trash-preview',
+    );
+    expect(
+      NativePaths.connectorsNativeTrashSubmit,
+      '/api/connectors/native/trash-actions',
+    );
+    final key = List.filled(64, 'c').join();
+    expect(
+      NativePaths.connectorsNativeTrashRead(key),
+      '/api/connectors/native/trash-actions/$key',
     );
   });
 

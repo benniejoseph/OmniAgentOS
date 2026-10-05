@@ -3,9 +3,9 @@
 
 abstract final class NativeContract {
   static const id = 'asael.native-api';
-  static const currentVersion = 41;
-  static const previousVersion = 40;
-  static const supportedVersions = <int>[41, 40];
+  static const currentVersion = 42;
+  static const previousVersion = 41;
+  static const supportedVersions = <int>[42, 41];
   static const discoveryPath = '/api/mobile/contracts';
   static const operationIds = <String>{
     'auth.login',
@@ -258,6 +258,9 @@ abstract final class NativeContract {
     'connectors.native.actions.get',
     'connectors.native.credentialRemovals.submit',
     'connectors.native.credentialRemovals.read',
+    'connectors.native.trash.preview',
+    'connectors.native.trash.submit',
+    'connectors.native.trash.read',
   };
 
   static bool supports(int version) => supportedVersions.contains(version);
@@ -1167,6 +1170,9 @@ abstract final class NativePaths {
   static String connectorsNativeActionsGet(String keySha256) => '/api/connectors/native/actions/${Uri.encodeComponent(keySha256)}';
   static const connectorsNativeCredentialRemovalsSubmit = '/api/connectors/native/credential-removals';
   static String connectorsNativeCredentialRemovalsRead(String keySha256) => '/api/connectors/native/credential-removals/${Uri.encodeComponent(keySha256)}';
+  static String connectorsNativeTrashPreview(String id) => '/api/connectors/native/mcp/${Uri.encodeComponent(id)}/trash-preview';
+  static const connectorsNativeTrashSubmit = '/api/connectors/native/trash-actions';
+  static String connectorsNativeTrashRead(String keySha256) => '/api/connectors/native/trash-actions/${Uri.encodeComponent(keySha256)}';
 }
 
 abstract final class NativeConversationEvents {

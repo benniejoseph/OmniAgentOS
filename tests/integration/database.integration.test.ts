@@ -7,7 +7,7 @@ import postgres from "postgres";
 import { removeEmptyResponsibilityRuntimeForReplay } from "./helpers/responsibility-replay";
 import { removeEmptyMemoryLifecycleForReplay } from "./helpers/memory-lifecycle-replay";
 import { removeEmptyMemoryPromotionForReplay } from "./helpers/memory-promotion-replay";
-import { removeEmptyCustomerWorkflowIntentsForReplay, removeEmptyAgentSkillMutationsForReplay, removeEmptyMeetingRecordingProcessingForReplay, removeEmptyCustomerFactIntentsForReplay, removeEmptySalesforceNativeActionsForReplay, removeEmptyNativePrivateMemoryActionsForReplay, removeEmptyNativeKnowledgeCognitionBuildsForReplay, removeEmptyGooglePersonalNativeActionsForReplay, removeEmptyNativeConnectorControlsForReplay, removeNativeConnectorCredentialRemovalsForReplay } from "./helpers/native-catalog-replay";
+import { removeEmptyCustomerWorkflowIntentsForReplay, removeEmptyAgentSkillMutationsForReplay, removeEmptyMeetingRecordingProcessingForReplay, removeEmptyCustomerFactIntentsForReplay, removeEmptySalesforceNativeActionsForReplay, removeEmptyNativePrivateMemoryActionsForReplay, removeEmptyNativeKnowledgeCognitionBuildsForReplay, removeEmptyGooglePersonalNativeActionsForReplay, removeEmptyNativeConnectorControlsForReplay, removeNativeConnectorCredentialRemovalsForReplay, removeNativeConnectorTrashForReplay } from "./helpers/native-catalog-replay";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import {
   buildAgentRunIdentityPinV1,
@@ -9630,6 +9630,7 @@ const nativeKnowledgeCognitionBuildsVersion = 235;
 const googlePersonalNativeActionsVersion = 236;
 const nativeConnectorControlsVersion = 237;
 const nativeConnectorCredentialRemovalsVersion = 238;
+const nativeConnectorTrashVersion = 239;
 const additiveReplayVersions = [
   companionPreferencesVersion,
   responsibilityDraftsVersion,
@@ -9655,6 +9656,7 @@ const additiveReplayVersions = [
   googlePersonalNativeActionsVersion,
   nativeConnectorControlsVersion,
   nativeConnectorCredentialRemovalsVersion,
+  nativeConnectorTrashVersion,
 ].filter((version) => databaseSchemaMigrations.some((migration) => migration.version === version));
 const meetingResolutionReplayTables: readonly string[] = [
   "omni_meeting_commitment_resolution_intents",
@@ -10035,6 +10037,9 @@ async function withMigrationsPendingFrom<T>(
   }
   await client.begin(async (transaction) => {
     if (replay) {
+      if (additiveReplayVersions.includes(nativeConnectorTrashVersion)) {
+        await removeNativeConnectorTrashForReplay(transaction);
+      }
       if (additiveReplayVersions.includes(nativeConnectorCredentialRemovalsVersion)) {
         await removeNativeConnectorCredentialRemovalsForReplay(transaction);
       }

@@ -37,12 +37,49 @@ Set these through the platform secret/configuration store, never in source contr
 - `OMNIAGENT_NATIVE_MIN_ANDROID_VERSION`, `OMNIAGENT_NATIVE_MIN_IOS_VERSION`, and `OMNIAGENT_NATIVE_MIN_MACOS_VERSION`: optional stable `major.minor.patch` minimums for native compatibility telemetry. An absent or empty value defaults to `1.0.0`; a malformed configured value invalidates the policy and holds adoption unavailable. These settings do not authorize Agent enrollment.
 
 Native contract artifacts are committed immutable release inputs. This release
-advertises v39 as current and retains v38 as the supported previous version.
-V37 remains a byte-frozen, unadvertised archive; v36 leaves the three-version
-window. Run `npm run check:native-contracts` to verify generated v39 documents
-and SDK against the frozen v37/v38 hashes.
+advertises v42 as current and retains v41 as the supported previous version.
+V40 remains a byte-frozen, unadvertised archive; v39 leaves the three-version
+window. Run `npm run check:native-contracts` to verify generated v42 documents
+and SDK against the frozen v40/v41 hashes. Archive availability does not make a
+v40 client compatible with the v42/v41 server window.
 
-V39 publishes three existing safe content-search reads: the scoped aggregate and
+V42 adds exact MCP Trash preview, confirmed submit and receipt recovery only.
+`connectors.trash` has a v42 mutation floor; existing Google/connector management
+floors remain 40 and saved-credential removal remains 41. Preview and submit need
+current connector management authority; exact receipt GET needs current read
+membership for its original owner. Deploy and verify a server supporting v42
+before distributing app `1.23.25+61`. The v41 builds retain their existing
+operations while v41 remains the supported previous contract. Build or merge
+evidence alone does not establish migration, production promotion or installation.
+
+Migration 239 follows 238 and extends the existing native connector action ledger
+for the narrow MCP Trash branch. Apply the checksum-linked migration and verify
+the schema before serving v42, using the existing backup/quiescence procedure.
+It adds no tenant table: the expected inventory remains 263. Prior state/removal
+validators and receipts remain strict; cross-family receipt GET returns no action
+and same-key submission conflicts. Rollback retains accepted receipts, Trash
+snapshots and the additive schema; do not drop evidence to run an older client.
+
+Fresh Trash locks and rechecks the complete connector/tool review and ten-minute
+preview, captures the bounded private snapshot, then commits the Trash entry,
+live connector/tool deletion and native settlement together. The snapshot limit
+is 1,000,000 UTF-8 bytes, distinct from the native review projection limit. There
+is no provider call. Vault credentials are never restored from Trash: equivalent
+compensation restores configuration/contracts disabled and unconfigured, and a
+human must reconnect credentials. Provider token revocation and external
+environment changes remain separate actions.
+
+Native uncertainty is held in one protected owner-scoped Trash-family journal;
+once dispatch may have occurred, recovery reads the original key without another
+POST. The always-reachable Connector Trash recovery entry survives removal from
+inventory. Its browser handoff supplies a copyable Trash ID and the original
+deadline; the receipt does not prove that restoration remains available. The
+existing Settings exact-ID lookup finds owned items beyond the first 100 list,
+then uses the existing fresh restore preview and explicit confirmation under
+current workflow/connector permissions. Native restore/purge and OpenAPI Trash
+remain outside this publication.
+
+Earlier v39 published three existing safe content-search reads: the scoped aggregate and
 exact Work/Memory opening. It adds no mutation capability or migration; provider
 availability and exact current authorization remain authoritative. Native search
 uses cancellable owner-bound reads and the existing detail/mutation controllers.
@@ -57,13 +94,13 @@ Existing floors remain: Companion 31, Responsibilities 32, Meetings 33,
 Account/Memory records 34, reconciliation 35, consent/Calendar 36 and health 37.
 Source-audio access and binary recording upload remain outside this publication.
 
-Deploy a server supporting v39 before distributing native builds 1.23.17+52,
+The earlier v39 rollout required a supporting server before distributing builds 1.23.17+52,
 1.23.18+53, 1.23.19+54 or 1.23.20+55. Build 53 refreshes read-only Quality and Monitoring;
 build 54 adds the typed Security presentation. Build 55 adds explicit desktop
 asset-free portable archive v2 download, local integrity/owner verification and
 scoped save, with a 16 MiB native limit and mobile browser handoff. These use
 already-published operations and add no migration or server mutation authority. A
-server advertising only v38/v37 refuses its v39 bootstrap. On v39/v38, an installed
+server advertising only v38/v37 refused its v39 bootstrap. On that v39/v38 window, an installed
 v38 client retains its existing operations and mutation floors; v37 clients
 require an upgrade. A merge does not establish production promotion.
 

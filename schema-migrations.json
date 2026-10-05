@@ -1458,5 +1458,12 @@
     "checksum": "9b77ab90dd862d16a4cb1c670fa11f41436e58cfc8e7273c3e50e95725906ebe",
     "file": "20261005190000_native_connector_credential_removals.sql",
     "sha256": "9b77ab90dd862d16a4cb1c670fa11f41436e58cfc8e7273c3e50e95725906ebe"
+  },
+  {
+    "version": 239,
+    "name": "native_connector_trash_v1",
+    "checksum": "6af2db420131c4c68b3279b4030f161d72c85b2a740477fc6f77aa6b85482d83",
+    "file": "20261005193000_native_connector_trash.sql",
+    "sha256": "6af2db420131c4c68b3279b4030f161d72c85b2a740477fc6f77aa6b85482d83"
   }
 ]

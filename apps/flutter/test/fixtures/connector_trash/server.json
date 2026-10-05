@@ -1,0 +1,899 @@
+{
+  "schemaVersion": 1,
+  "description": "Synthetic historical protocol evidence; not an actual Trash receipt or restore authority.",
+  "cases": [
+    {
+      "name": "vault",
+      "key": "trash-key",
+      "scope": {
+        "tenantId": "trash-contract",
+        "ownerActorId": "owner@example.test",
+        "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+      },
+      "review": {
+        "connector": {
+          "kind": "mcp",
+          "id": "connector-one",
+          "name": "Notes",
+          "endpoint": "https://example.test/mcp",
+          "endpointRedacted": true,
+          "status": "active",
+          "authType": "bearer_vault",
+          "authTokenEnv": null,
+          "authHeaderName": null,
+          "credentialConfigured": true,
+          "credentialVersion": 2,
+          "credentialOriginMatch": false,
+          "defaultRiskLevel": 2,
+          "approvalRequired": true,
+          "contractCount": 0,
+          "discoveredAt": null,
+          "updatedAt": "2026-10-05T01:00:00.000Z"
+        },
+        "contracts": [],
+        "pin": {
+          "kind": "mcp",
+          "connectorId": "connector-one",
+          "connectorSha256": "d4df86fee3a6ada713c10c76b0076ad99ecc1d1abbc294f48d06a77a83f6496b",
+          "contractsSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "configurationSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "reviewFingerprint": null,
+          "credentialVersion": 2,
+          "reviewSha256": "15a5264c3d2519a5cf95edabc06cb18f75fb64344f3b438c56265170b4f27c0a"
+        },
+        "availableActions": [],
+        "unavailableReason": null
+      },
+      "preview": {
+        "version": "p9.3-trash-preview:1",
+        "action": "trash",
+        "trashId": null,
+        "resourceType": "mcp_connector",
+        "resourceId": "connector-one",
+        "lifecycleRevision": 0,
+        "targetSha256": "50a11d7f10940010dc8d85999302ea4660847d08f6a833cc4e67b79cd3d8de87",
+        "effectSummary": "Move MCP connector Notes and 0 contract(s) to Trash.",
+        "reversible": true,
+        "issuedAt": "2026-10-05T01:00:00.000Z",
+        "expiresAt": "2026-10-05T01:10:00.000Z",
+        "previewSha256": "0e1a105a9425711251020735d66308115cc4934c84875b244184171383b09fcb"
+      },
+      "compensation": {
+        "kind": "equivalent_action",
+        "handlerId": "trash.compensate.mcp_connector",
+        "limitation": "Connector configuration and contracts can be restored, but its vault credential must be reconnected by a human."
+      },
+      "previewResponse": {
+        "review": {
+          "connector": {
+            "kind": "mcp",
+            "id": "connector-one",
+            "name": "Notes",
+            "endpoint": "https://example.test/mcp",
+            "endpointRedacted": true,
+            "status": "active",
+            "authType": "bearer_vault",
+            "authTokenEnv": null,
+            "authHeaderName": null,
+            "credentialConfigured": true,
+            "credentialVersion": 2,
+            "credentialOriginMatch": false,
+            "defaultRiskLevel": 2,
+            "approvalRequired": true,
+            "contractCount": 0,
+            "discoveredAt": null,
+            "updatedAt": "2026-10-05T01:00:00.000Z"
+          },
+          "contracts": [],
+          "pin": {
+            "kind": "mcp",
+            "connectorId": "connector-one",
+            "connectorSha256": "d4df86fee3a6ada713c10c76b0076ad99ecc1d1abbc294f48d06a77a83f6496b",
+            "contractsSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "configurationSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "reviewFingerprint": null,
+            "credentialVersion": 2,
+            "reviewSha256": "15a5264c3d2519a5cf95edabc06cb18f75fb64344f3b438c56265170b4f27c0a"
+          },
+          "availableActions": [],
+          "unavailableReason": null
+        },
+        "preview": {
+          "version": "p9.3-trash-preview:1",
+          "action": "trash",
+          "trashId": null,
+          "resourceType": "mcp_connector",
+          "resourceId": "connector-one",
+          "lifecycleRevision": 0,
+          "targetSha256": "50a11d7f10940010dc8d85999302ea4660847d08f6a833cc4e67b79cd3d8de87",
+          "effectSummary": "Move MCP connector Notes and 0 contract(s) to Trash.",
+          "reversible": true,
+          "issuedAt": "2026-10-05T01:00:00.000Z",
+          "expiresAt": "2026-10-05T01:10:00.000Z",
+          "previewSha256": "0e1a105a9425711251020735d66308115cc4934c84875b244184171383b09fcb"
+        },
+        "compensation": {
+          "kind": "equivalent_action",
+          "handlerId": "trash.compensate.mcp_connector",
+          "limitation": "Connector configuration and contracts can be restored, but its vault credential must be reconnected by a human."
+        }
+      },
+      "request": {
+        "contract": "asael-connector-lifecycle-action:1",
+        "kind": "mcp",
+        "connectorId": "connector-one",
+        "action": "trash",
+        "review": {
+          "kind": "mcp",
+          "connectorId": "connector-one",
+          "connectorSha256": "d4df86fee3a6ada713c10c76b0076ad99ecc1d1abbc294f48d06a77a83f6496b",
+          "contractsSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "configurationSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "reviewFingerprint": null,
+          "credentialVersion": 2,
+          "reviewSha256": "15a5264c3d2519a5cf95edabc06cb18f75fb64344f3b438c56265170b4f27c0a"
+        },
+        "preview": {
+          "version": "p9.3-trash-preview:1",
+          "action": "trash",
+          "trashId": null,
+          "resourceType": "mcp_connector",
+          "resourceId": "connector-one",
+          "lifecycleRevision": 0,
+          "targetSha256": "50a11d7f10940010dc8d85999302ea4660847d08f6a833cc4e67b79cd3d8de87",
+          "effectSummary": "Move MCP connector Notes and 0 contract(s) to Trash.",
+          "reversible": true,
+          "issuedAt": "2026-10-05T01:00:00.000Z",
+          "expiresAt": "2026-10-05T01:10:00.000Z",
+          "previewSha256": "0e1a105a9425711251020735d66308115cc4934c84875b244184171383b09fcb"
+        }
+      },
+      "intent": {
+        "contract": "asael-connector-action-intent:1",
+        "scope": {
+          "tenantId": "trash-contract",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "dacccdbd35e97d62729a1edd77236293828aefc86ed1e2dc4d10f7c32086f762",
+        "request": {
+          "contract": "asael-connector-lifecycle-action:1",
+          "kind": "mcp",
+          "connectorId": "connector-one",
+          "action": "trash",
+          "review": {
+            "kind": "mcp",
+            "connectorId": "connector-one",
+            "connectorSha256": "d4df86fee3a6ada713c10c76b0076ad99ecc1d1abbc294f48d06a77a83f6496b",
+            "contractsSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "configurationSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "reviewFingerprint": null,
+            "credentialVersion": 2,
+            "reviewSha256": "15a5264c3d2519a5cf95edabc06cb18f75fb64344f3b438c56265170b4f27c0a"
+          },
+          "preview": {
+            "version": "p9.3-trash-preview:1",
+            "action": "trash",
+            "trashId": null,
+            "resourceType": "mcp_connector",
+            "resourceId": "connector-one",
+            "lifecycleRevision": 0,
+            "targetSha256": "50a11d7f10940010dc8d85999302ea4660847d08f6a833cc4e67b79cd3d8de87",
+            "effectSummary": "Move MCP connector Notes and 0 contract(s) to Trash.",
+            "reversible": true,
+            "issuedAt": "2026-10-05T01:00:00.000Z",
+            "expiresAt": "2026-10-05T01:10:00.000Z",
+            "previewSha256": "0e1a105a9425711251020735d66308115cc4934c84875b244184171383b09fcb"
+          }
+        }
+      },
+      "acceptance": {
+        "contract": "asael-connector-acceptance:1",
+        "id": "connector-acceptance:2dfea49975a7c838e4bfaadb4341668ccff792fedd1352e62b63cf2ab97b79fb",
+        "scope": {
+          "tenantId": "trash-contract",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "dacccdbd35e97d62729a1edd77236293828aefc86ed1e2dc4d10f7c32086f762",
+        "requestSha256": "2a763eaca013a63f41005effa199fe090f378e2f0a0fa48eb7acd267ac70a501",
+        "kind": "mcp",
+        "connectorId": "connector-one",
+        "action": "trash",
+        "reviewSha256": "15a5264c3d2519a5cf95edabc06cb18f75fb64344f3b438c56265170b4f27c0a",
+        "acceptedAt": "2026-10-05T01:00:01.000Z",
+        "acceptanceSha256": "07da7c4f3a1c15fd323c063b07041405d80005a5c0b11924ef9de571c1a62f2f"
+      },
+      "settlement": {
+        "contract": "asael-connector-settlement:2",
+        "acceptanceId": "connector-acceptance:2dfea49975a7c838e4bfaadb4341668ccff792fedd1352e62b63cf2ab97b79fb",
+        "settledAt": "2026-10-05T01:00:01.001Z",
+        "result": {
+          "kind": "mcp",
+          "connectorId": "connector-one",
+          "operation": "trash",
+          "status": "complete",
+          "connectorStatus": null,
+          "contractCount": null,
+          "credentialVersion": null,
+          "connectorSha256": null,
+          "contractsSha256": null,
+          "configurationSha256": null,
+          "trash": {
+            "trashId": "trash:11111111-1111-4111-8111-111111111111",
+            "proofSha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "restoreUntil": "2026-11-04T01:00:01.000Z",
+            "compensation": "equivalent_action",
+            "limitation": "Connector configuration and contracts can be restored, but its vault credential must be reconnected by a human."
+          },
+          "failureCode": null
+        },
+        "settlementSha256": "42e32cfd4bfcdb1d6896528b72fc4e41b84dca8a9cecf014cbe3e432cce0878e"
+      },
+      "action": {
+        "acceptance": {
+          "contract": "asael-connector-acceptance:1",
+          "id": "connector-acceptance:2dfea49975a7c838e4bfaadb4341668ccff792fedd1352e62b63cf2ab97b79fb",
+          "scope": {
+            "tenantId": "trash-contract",
+            "ownerActorId": "owner@example.test",
+            "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+          },
+          "keySha256": "dacccdbd35e97d62729a1edd77236293828aefc86ed1e2dc4d10f7c32086f762",
+          "requestSha256": "2a763eaca013a63f41005effa199fe090f378e2f0a0fa48eb7acd267ac70a501",
+          "kind": "mcp",
+          "connectorId": "connector-one",
+          "action": "trash",
+          "reviewSha256": "15a5264c3d2519a5cf95edabc06cb18f75fb64344f3b438c56265170b4f27c0a",
+          "acceptedAt": "2026-10-05T01:00:01.000Z",
+          "acceptanceSha256": "07da7c4f3a1c15fd323c063b07041405d80005a5c0b11924ef9de571c1a62f2f"
+        },
+        "state": "settled",
+        "settlement": {
+          "contract": "asael-connector-settlement:2",
+          "acceptanceId": "connector-acceptance:2dfea49975a7c838e4bfaadb4341668ccff792fedd1352e62b63cf2ab97b79fb",
+          "settledAt": "2026-10-05T01:00:01.001Z",
+          "result": {
+            "kind": "mcp",
+            "connectorId": "connector-one",
+            "operation": "trash",
+            "status": "complete",
+            "connectorStatus": null,
+            "contractCount": null,
+            "credentialVersion": null,
+            "connectorSha256": null,
+            "contractsSha256": null,
+            "configurationSha256": null,
+            "trash": {
+              "trashId": "trash:11111111-1111-4111-8111-111111111111",
+              "proofSha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "restoreUntil": "2026-11-04T01:00:01.000Z",
+              "compensation": "equivalent_action",
+              "limitation": "Connector configuration and contracts can be restored, but its vault credential must be reconnected by a human."
+            },
+            "failureCode": null
+          },
+          "settlementSha256": "42e32cfd4bfcdb1d6896528b72fc4e41b84dca8a9cecf014cbe3e432cce0878e"
+        }
+      },
+      "pendingAction": {
+        "acceptance": {
+          "contract": "asael-connector-acceptance:1",
+          "id": "connector-acceptance:2dfea49975a7c838e4bfaadb4341668ccff792fedd1352e62b63cf2ab97b79fb",
+          "scope": {
+            "tenantId": "trash-contract",
+            "ownerActorId": "owner@example.test",
+            "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+          },
+          "keySha256": "dacccdbd35e97d62729a1edd77236293828aefc86ed1e2dc4d10f7c32086f762",
+          "requestSha256": "2a763eaca013a63f41005effa199fe090f378e2f0a0fa48eb7acd267ac70a501",
+          "kind": "mcp",
+          "connectorId": "connector-one",
+          "action": "trash",
+          "reviewSha256": "15a5264c3d2519a5cf95edabc06cb18f75fb64344f3b438c56265170b4f27c0a",
+          "acceptedAt": "2026-10-05T01:00:01.000Z",
+          "acceptanceSha256": "07da7c4f3a1c15fd323c063b07041405d80005a5c0b11924ef9de571c1a62f2f"
+        },
+        "state": "accepted",
+        "settlement": null
+      }
+    },
+    {
+      "name": "none-zero",
+      "key": "trash-key",
+      "scope": {
+        "tenantId": "trash-contract",
+        "ownerActorId": "owner@example.test",
+        "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+      },
+      "review": {
+        "connector": {
+          "kind": "mcp",
+          "id": "connector-one",
+          "name": "Notes",
+          "endpoint": "https://example.test/mcp",
+          "endpointRedacted": true,
+          "status": "active",
+          "authType": "none",
+          "authTokenEnv": null,
+          "authHeaderName": null,
+          "credentialConfigured": false,
+          "credentialVersion": 0,
+          "credentialOriginMatch": false,
+          "defaultRiskLevel": 2,
+          "approvalRequired": true,
+          "contractCount": 0,
+          "discoveredAt": null,
+          "updatedAt": "2026-10-05T01:00:00.000Z"
+        },
+        "contracts": [],
+        "pin": {
+          "kind": "mcp",
+          "connectorId": "connector-one",
+          "connectorSha256": "38a2ab7866a0d9398d8c4cbd999c75ec0b5636638f865426245835296c029bf6",
+          "contractsSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "configurationSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "reviewFingerprint": null,
+          "credentialVersion": 0,
+          "reviewSha256": "72e1af6de66540306166ac862a57e6a22aba84fdaecff099fc09c9d8a5999f33"
+        },
+        "availableActions": [],
+        "unavailableReason": null
+      },
+      "preview": {
+        "version": "p9.3-trash-preview:1",
+        "action": "trash",
+        "trashId": null,
+        "resourceType": "mcp_connector",
+        "resourceId": "connector-one",
+        "lifecycleRevision": 0,
+        "targetSha256": "162ed050e98e9ef773bc680d91b3c7c52f77975c8252a9a99b7daac2a67df01a",
+        "effectSummary": "Move MCP connector Notes and 0 contract(s) to Trash.",
+        "reversible": true,
+        "issuedAt": "2026-10-05T01:00:00.000Z",
+        "expiresAt": "2026-10-05T01:10:00.000Z",
+        "previewSha256": "dfe1774a45dbbbf7d3e54738041130540af5b060ed870c05166cce20b1454e30"
+      },
+      "compensation": {
+        "kind": "exact_restore",
+        "handlerId": "trash.restore.mcp_connector",
+        "limitation": null
+      },
+      "previewResponse": {
+        "review": {
+          "connector": {
+            "kind": "mcp",
+            "id": "connector-one",
+            "name": "Notes",
+            "endpoint": "https://example.test/mcp",
+            "endpointRedacted": true,
+            "status": "active",
+            "authType": "none",
+            "authTokenEnv": null,
+            "authHeaderName": null,
+            "credentialConfigured": false,
+            "credentialVersion": 0,
+            "credentialOriginMatch": false,
+            "defaultRiskLevel": 2,
+            "approvalRequired": true,
+            "contractCount": 0,
+            "discoveredAt": null,
+            "updatedAt": "2026-10-05T01:00:00.000Z"
+          },
+          "contracts": [],
+          "pin": {
+            "kind": "mcp",
+            "connectorId": "connector-one",
+            "connectorSha256": "38a2ab7866a0d9398d8c4cbd999c75ec0b5636638f865426245835296c029bf6",
+            "contractsSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "configurationSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "reviewFingerprint": null,
+            "credentialVersion": 0,
+            "reviewSha256": "72e1af6de66540306166ac862a57e6a22aba84fdaecff099fc09c9d8a5999f33"
+          },
+          "availableActions": [],
+          "unavailableReason": null
+        },
+        "preview": {
+          "version": "p9.3-trash-preview:1",
+          "action": "trash",
+          "trashId": null,
+          "resourceType": "mcp_connector",
+          "resourceId": "connector-one",
+          "lifecycleRevision": 0,
+          "targetSha256": "162ed050e98e9ef773bc680d91b3c7c52f77975c8252a9a99b7daac2a67df01a",
+          "effectSummary": "Move MCP connector Notes and 0 contract(s) to Trash.",
+          "reversible": true,
+          "issuedAt": "2026-10-05T01:00:00.000Z",
+          "expiresAt": "2026-10-05T01:10:00.000Z",
+          "previewSha256": "dfe1774a45dbbbf7d3e54738041130540af5b060ed870c05166cce20b1454e30"
+        },
+        "compensation": {
+          "kind": "exact_restore",
+          "handlerId": "trash.restore.mcp_connector",
+          "limitation": null
+        }
+      },
+      "request": {
+        "contract": "asael-connector-lifecycle-action:1",
+        "kind": "mcp",
+        "connectorId": "connector-one",
+        "action": "trash",
+        "review": {
+          "kind": "mcp",
+          "connectorId": "connector-one",
+          "connectorSha256": "38a2ab7866a0d9398d8c4cbd999c75ec0b5636638f865426245835296c029bf6",
+          "contractsSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "configurationSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "reviewFingerprint": null,
+          "credentialVersion": 0,
+          "reviewSha256": "72e1af6de66540306166ac862a57e6a22aba84fdaecff099fc09c9d8a5999f33"
+        },
+        "preview": {
+          "version": "p9.3-trash-preview:1",
+          "action": "trash",
+          "trashId": null,
+          "resourceType": "mcp_connector",
+          "resourceId": "connector-one",
+          "lifecycleRevision": 0,
+          "targetSha256": "162ed050e98e9ef773bc680d91b3c7c52f77975c8252a9a99b7daac2a67df01a",
+          "effectSummary": "Move MCP connector Notes and 0 contract(s) to Trash.",
+          "reversible": true,
+          "issuedAt": "2026-10-05T01:00:00.000Z",
+          "expiresAt": "2026-10-05T01:10:00.000Z",
+          "previewSha256": "dfe1774a45dbbbf7d3e54738041130540af5b060ed870c05166cce20b1454e30"
+        }
+      },
+      "intent": {
+        "contract": "asael-connector-action-intent:1",
+        "scope": {
+          "tenantId": "trash-contract",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "dacccdbd35e97d62729a1edd77236293828aefc86ed1e2dc4d10f7c32086f762",
+        "request": {
+          "contract": "asael-connector-lifecycle-action:1",
+          "kind": "mcp",
+          "connectorId": "connector-one",
+          "action": "trash",
+          "review": {
+            "kind": "mcp",
+            "connectorId": "connector-one",
+            "connectorSha256": "38a2ab7866a0d9398d8c4cbd999c75ec0b5636638f865426245835296c029bf6",
+            "contractsSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "configurationSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "reviewFingerprint": null,
+            "credentialVersion": 0,
+            "reviewSha256": "72e1af6de66540306166ac862a57e6a22aba84fdaecff099fc09c9d8a5999f33"
+          },
+          "preview": {
+            "version": "p9.3-trash-preview:1",
+            "action": "trash",
+            "trashId": null,
+            "resourceType": "mcp_connector",
+            "resourceId": "connector-one",
+            "lifecycleRevision": 0,
+            "targetSha256": "162ed050e98e9ef773bc680d91b3c7c52f77975c8252a9a99b7daac2a67df01a",
+            "effectSummary": "Move MCP connector Notes and 0 contract(s) to Trash.",
+            "reversible": true,
+            "issuedAt": "2026-10-05T01:00:00.000Z",
+            "expiresAt": "2026-10-05T01:10:00.000Z",
+            "previewSha256": "dfe1774a45dbbbf7d3e54738041130540af5b060ed870c05166cce20b1454e30"
+          }
+        }
+      },
+      "acceptance": {
+        "contract": "asael-connector-acceptance:1",
+        "id": "connector-acceptance:2dfea49975a7c838e4bfaadb4341668ccff792fedd1352e62b63cf2ab97b79fb",
+        "scope": {
+          "tenantId": "trash-contract",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "dacccdbd35e97d62729a1edd77236293828aefc86ed1e2dc4d10f7c32086f762",
+        "requestSha256": "c62ba6bb0dde5dbc3d7815f92339568dde6d4aa2002169ec94dc797cd704db8b",
+        "kind": "mcp",
+        "connectorId": "connector-one",
+        "action": "trash",
+        "reviewSha256": "72e1af6de66540306166ac862a57e6a22aba84fdaecff099fc09c9d8a5999f33",
+        "acceptedAt": "2026-10-05T01:00:01.000Z",
+        "acceptanceSha256": "1f352613e8f30c568bf70bc38709b075b62edafe52851449799cef57c2024867"
+      },
+      "settlement": {
+        "contract": "asael-connector-settlement:2",
+        "acceptanceId": "connector-acceptance:2dfea49975a7c838e4bfaadb4341668ccff792fedd1352e62b63cf2ab97b79fb",
+        "settledAt": "2026-10-05T01:00:01.001Z",
+        "result": {
+          "kind": "mcp",
+          "connectorId": "connector-one",
+          "operation": "trash",
+          "status": "complete",
+          "connectorStatus": null,
+          "contractCount": null,
+          "credentialVersion": null,
+          "connectorSha256": null,
+          "contractsSha256": null,
+          "configurationSha256": null,
+          "trash": {
+            "trashId": "trash:11111111-1111-4111-8111-111111111111",
+            "proofSha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "restoreUntil": "2026-11-04T01:00:01.000Z",
+            "compensation": "exact_restore",
+            "limitation": null
+          },
+          "failureCode": null
+        },
+        "settlementSha256": "e090f965f1e4ec82687fdaadda07763d07016c312000e7c92b7d4a50b64d59be"
+      },
+      "action": {
+        "acceptance": {
+          "contract": "asael-connector-acceptance:1",
+          "id": "connector-acceptance:2dfea49975a7c838e4bfaadb4341668ccff792fedd1352e62b63cf2ab97b79fb",
+          "scope": {
+            "tenantId": "trash-contract",
+            "ownerActorId": "owner@example.test",
+            "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+          },
+          "keySha256": "dacccdbd35e97d62729a1edd77236293828aefc86ed1e2dc4d10f7c32086f762",
+          "requestSha256": "c62ba6bb0dde5dbc3d7815f92339568dde6d4aa2002169ec94dc797cd704db8b",
+          "kind": "mcp",
+          "connectorId": "connector-one",
+          "action": "trash",
+          "reviewSha256": "72e1af6de66540306166ac862a57e6a22aba84fdaecff099fc09c9d8a5999f33",
+          "acceptedAt": "2026-10-05T01:00:01.000Z",
+          "acceptanceSha256": "1f352613e8f30c568bf70bc38709b075b62edafe52851449799cef57c2024867"
+        },
+        "state": "settled",
+        "settlement": {
+          "contract": "asael-connector-settlement:2",
+          "acceptanceId": "connector-acceptance:2dfea49975a7c838e4bfaadb4341668ccff792fedd1352e62b63cf2ab97b79fb",
+          "settledAt": "2026-10-05T01:00:01.001Z",
+          "result": {
+            "kind": "mcp",
+            "connectorId": "connector-one",
+            "operation": "trash",
+            "status": "complete",
+            "connectorStatus": null,
+            "contractCount": null,
+            "credentialVersion": null,
+            "connectorSha256": null,
+            "contractsSha256": null,
+            "configurationSha256": null,
+            "trash": {
+              "trashId": "trash:11111111-1111-4111-8111-111111111111",
+              "proofSha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "restoreUntil": "2026-11-04T01:00:01.000Z",
+              "compensation": "exact_restore",
+              "limitation": null
+            },
+            "failureCode": null
+          },
+          "settlementSha256": "e090f965f1e4ec82687fdaadda07763d07016c312000e7c92b7d4a50b64d59be"
+        }
+      },
+      "pendingAction": {
+        "acceptance": {
+          "contract": "asael-connector-acceptance:1",
+          "id": "connector-acceptance:2dfea49975a7c838e4bfaadb4341668ccff792fedd1352e62b63cf2ab97b79fb",
+          "scope": {
+            "tenantId": "trash-contract",
+            "ownerActorId": "owner@example.test",
+            "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+          },
+          "keySha256": "dacccdbd35e97d62729a1edd77236293828aefc86ed1e2dc4d10f7c32086f762",
+          "requestSha256": "c62ba6bb0dde5dbc3d7815f92339568dde6d4aa2002169ec94dc797cd704db8b",
+          "kind": "mcp",
+          "connectorId": "connector-one",
+          "action": "trash",
+          "reviewSha256": "72e1af6de66540306166ac862a57e6a22aba84fdaecff099fc09c9d8a5999f33",
+          "acceptedAt": "2026-10-05T01:00:01.000Z",
+          "acceptanceSha256": "1f352613e8f30c568bf70bc38709b075b62edafe52851449799cef57c2024867"
+        },
+        "state": "accepted",
+        "settlement": null
+      }
+    },
+    {
+      "name": "vault-max",
+      "key": "trash-key",
+      "scope": {
+        "tenantId": "trash-contract",
+        "ownerActorId": "owner@example.test",
+        "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+      },
+      "review": {
+        "connector": {
+          "kind": "mcp",
+          "id": "connector-one",
+          "name": "Notes",
+          "endpoint": "https://example.test/mcp",
+          "endpointRedacted": true,
+          "status": "active",
+          "authType": "bearer_vault",
+          "authTokenEnv": null,
+          "authHeaderName": null,
+          "credentialConfigured": true,
+          "credentialVersion": 2147483647,
+          "credentialOriginMatch": false,
+          "defaultRiskLevel": 2,
+          "approvalRequired": true,
+          "contractCount": 0,
+          "discoveredAt": null,
+          "updatedAt": "2026-10-05T01:00:00.000Z"
+        },
+        "contracts": [],
+        "pin": {
+          "kind": "mcp",
+          "connectorId": "connector-one",
+          "connectorSha256": "6302aa8e008375bce8302b26cd35440b4872c7e1136cbe15659d92e2145efe2e",
+          "contractsSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "configurationSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "reviewFingerprint": null,
+          "credentialVersion": 2147483647,
+          "reviewSha256": "4e82ac11f12f605f9e58b33c386dce69a641004f83a73c442cf9634917b47ae6"
+        },
+        "availableActions": [],
+        "unavailableReason": null
+      },
+      "preview": {
+        "version": "p9.3-trash-preview:1",
+        "action": "trash",
+        "trashId": null,
+        "resourceType": "mcp_connector",
+        "resourceId": "connector-one",
+        "lifecycleRevision": 0,
+        "targetSha256": "c27c79c543d92c58ce87f21c9564b90055bbe31be1e0885de66917ccd4a3e0ff",
+        "effectSummary": "Move MCP connector Notes and 0 contract(s) to Trash.",
+        "reversible": true,
+        "issuedAt": "2026-10-05T01:00:00.000Z",
+        "expiresAt": "2026-10-05T01:10:00.000Z",
+        "previewSha256": "55611a762ce7790fd1b2c5283dd54c65cf9856438ccef7b055b5d1140c841209"
+      },
+      "compensation": {
+        "kind": "equivalent_action",
+        "handlerId": "trash.compensate.mcp_connector",
+        "limitation": "Connector configuration and contracts can be restored, but its vault credential must be reconnected by a human."
+      },
+      "previewResponse": {
+        "review": {
+          "connector": {
+            "kind": "mcp",
+            "id": "connector-one",
+            "name": "Notes",
+            "endpoint": "https://example.test/mcp",
+            "endpointRedacted": true,
+            "status": "active",
+            "authType": "bearer_vault",
+            "authTokenEnv": null,
+            "authHeaderName": null,
+            "credentialConfigured": true,
+            "credentialVersion": 2147483647,
+            "credentialOriginMatch": false,
+            "defaultRiskLevel": 2,
+            "approvalRequired": true,
+            "contractCount": 0,
+            "discoveredAt": null,
+            "updatedAt": "2026-10-05T01:00:00.000Z"
+          },
+          "contracts": [],
+          "pin": {
+            "kind": "mcp",
+            "connectorId": "connector-one",
+            "connectorSha256": "6302aa8e008375bce8302b26cd35440b4872c7e1136cbe15659d92e2145efe2e",
+            "contractsSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "configurationSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "reviewFingerprint": null,
+            "credentialVersion": 2147483647,
+            "reviewSha256": "4e82ac11f12f605f9e58b33c386dce69a641004f83a73c442cf9634917b47ae6"
+          },
+          "availableActions": [],
+          "unavailableReason": null
+        },
+        "preview": {
+          "version": "p9.3-trash-preview:1",
+          "action": "trash",
+          "trashId": null,
+          "resourceType": "mcp_connector",
+          "resourceId": "connector-one",
+          "lifecycleRevision": 0,
+          "targetSha256": "c27c79c543d92c58ce87f21c9564b90055bbe31be1e0885de66917ccd4a3e0ff",
+          "effectSummary": "Move MCP connector Notes and 0 contract(s) to Trash.",
+          "reversible": true,
+          "issuedAt": "2026-10-05T01:00:00.000Z",
+          "expiresAt": "2026-10-05T01:10:00.000Z",
+          "previewSha256": "55611a762ce7790fd1b2c5283dd54c65cf9856438ccef7b055b5d1140c841209"
+        },
+        "compensation": {
+          "kind": "equivalent_action",
+          "handlerId": "trash.compensate.mcp_connector",
+          "limitation": "Connector configuration and contracts can be restored, but its vault credential must be reconnected by a human."
+        }
+      },
+      "request": {
+        "contract": "asael-connector-lifecycle-action:1",
+        "kind": "mcp",
+        "connectorId": "connector-one",
+        "action": "trash",
+        "review": {
+          "kind": "mcp",
+          "connectorId": "connector-one",
+          "connectorSha256": "6302aa8e008375bce8302b26cd35440b4872c7e1136cbe15659d92e2145efe2e",
+          "contractsSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "configurationSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "reviewFingerprint": null,
+          "credentialVersion": 2147483647,
+          "reviewSha256": "4e82ac11f12f605f9e58b33c386dce69a641004f83a73c442cf9634917b47ae6"
+        },
+        "preview": {
+          "version": "p9.3-trash-preview:1",
+          "action": "trash",
+          "trashId": null,
+          "resourceType": "mcp_connector",
+          "resourceId": "connector-one",
+          "lifecycleRevision": 0,
+          "targetSha256": "c27c79c543d92c58ce87f21c9564b90055bbe31be1e0885de66917ccd4a3e0ff",
+          "effectSummary": "Move MCP connector Notes and 0 contract(s) to Trash.",
+          "reversible": true,
+          "issuedAt": "2026-10-05T01:00:00.000Z",
+          "expiresAt": "2026-10-05T01:10:00.000Z",
+          "previewSha256": "55611a762ce7790fd1b2c5283dd54c65cf9856438ccef7b055b5d1140c841209"
+        }
+      },
+      "intent": {
+        "contract": "asael-connector-action-intent:1",
+        "scope": {
+          "tenantId": "trash-contract",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "dacccdbd35e97d62729a1edd77236293828aefc86ed1e2dc4d10f7c32086f762",
+        "request": {
+          "contract": "asael-connector-lifecycle-action:1",
+          "kind": "mcp",
+          "connectorId": "connector-one",
+          "action": "trash",
+          "review": {
+            "kind": "mcp",
+            "connectorId": "connector-one",
+            "connectorSha256": "6302aa8e008375bce8302b26cd35440b4872c7e1136cbe15659d92e2145efe2e",
+            "contractsSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "configurationSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "reviewFingerprint": null,
+            "credentialVersion": 2147483647,
+            "reviewSha256": "4e82ac11f12f605f9e58b33c386dce69a641004f83a73c442cf9634917b47ae6"
+          },
+          "preview": {
+            "version": "p9.3-trash-preview:1",
+            "action": "trash",
+            "trashId": null,
+            "resourceType": "mcp_connector",
+            "resourceId": "connector-one",
+            "lifecycleRevision": 0,
+            "targetSha256": "c27c79c543d92c58ce87f21c9564b90055bbe31be1e0885de66917ccd4a3e0ff",
+            "effectSummary": "Move MCP connector Notes and 0 contract(s) to Trash.",
+            "reversible": true,
+            "issuedAt": "2026-10-05T01:00:00.000Z",
+            "expiresAt": "2026-10-05T01:10:00.000Z",
+            "previewSha256": "55611a762ce7790fd1b2c5283dd54c65cf9856438ccef7b055b5d1140c841209"
+          }
+        }
+      },
+      "acceptance": {
+        "contract": "asael-connector-acceptance:1",
+        "id": "connector-acceptance:2dfea49975a7c838e4bfaadb4341668ccff792fedd1352e62b63cf2ab97b79fb",
+        "scope": {
+          "tenantId": "trash-contract",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "dacccdbd35e97d62729a1edd77236293828aefc86ed1e2dc4d10f7c32086f762",
+        "requestSha256": "f81df399458c8ca3198c694dc09dd55491eb9c2dc1733ed587513e6edf60b9ed",
+        "kind": "mcp",
+        "connectorId": "connector-one",
+        "action": "trash",
+        "reviewSha256": "4e82ac11f12f605f9e58b33c386dce69a641004f83a73c442cf9634917b47ae6",
+        "acceptedAt": "2026-10-05T01:00:01.000Z",
+        "acceptanceSha256": "d97cda710ad2dc20175773ddabe21abd7805782d3d7448db3449635ecb24eeec"
+      },
+      "settlement": {
+        "contract": "asael-connector-settlement:2",
+        "acceptanceId": "connector-acceptance:2dfea49975a7c838e4bfaadb4341668ccff792fedd1352e62b63cf2ab97b79fb",
+        "settledAt": "2026-10-05T01:00:01.001Z",
+        "result": {
+          "kind": "mcp",
+          "connectorId": "connector-one",
+          "operation": "trash",
+          "status": "complete",
+          "connectorStatus": null,
+          "contractCount": null,
+          "credentialVersion": null,
+          "connectorSha256": null,
+          "contractsSha256": null,
+          "configurationSha256": null,
+          "trash": {
+            "trashId": "trash:11111111-1111-4111-8111-111111111111",
+            "proofSha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "restoreUntil": "2026-11-04T01:00:01.000Z",
+            "compensation": "equivalent_action",
+            "limitation": "Connector configuration and contracts can be restored, but its vault credential must be reconnected by a human."
+          },
+          "failureCode": null
+        },
+        "settlementSha256": "42e32cfd4bfcdb1d6896528b72fc4e41b84dca8a9cecf014cbe3e432cce0878e"
+      },
+      "action": {
+        "acceptance": {
+          "contract": "asael-connector-acceptance:1",
+          "id": "connector-acceptance:2dfea49975a7c838e4bfaadb4341668ccff792fedd1352e62b63cf2ab97b79fb",
+          "scope": {
+            "tenantId": "trash-contract",
+            "ownerActorId": "owner@example.test",
+            "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+          },
+          "keySha256": "dacccdbd35e97d62729a1edd77236293828aefc86ed1e2dc4d10f7c32086f762",
+          "requestSha256": "f81df399458c8ca3198c694dc09dd55491eb9c2dc1733ed587513e6edf60b9ed",
+          "kind": "mcp",
+          "connectorId": "connector-one",
+          "action": "trash",
+          "reviewSha256": "4e82ac11f12f605f9e58b33c386dce69a641004f83a73c442cf9634917b47ae6",
+          "acceptedAt": "2026-10-05T01:00:01.000Z",
+          "acceptanceSha256": "d97cda710ad2dc20175773ddabe21abd7805782d3d7448db3449635ecb24eeec"
+        },
+        "state": "settled",
+        "settlement": {
+          "contract": "asael-connector-settlement:2",
+          "acceptanceId": "connector-acceptance:2dfea49975a7c838e4bfaadb4341668ccff792fedd1352e62b63cf2ab97b79fb",
+          "settledAt": "2026-10-05T01:00:01.001Z",
+          "result": {
+            "kind": "mcp",
+            "connectorId": "connector-one",
+            "operation": "trash",
+            "status": "complete",
+            "connectorStatus": null,
+            "contractCount": null,
+            "credentialVersion": null,
+            "connectorSha256": null,
+            "contractsSha256": null,
+            "configurationSha256": null,
+            "trash": {
+              "trashId": "trash:11111111-1111-4111-8111-111111111111",
+              "proofSha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "restoreUntil": "2026-11-04T01:00:01.000Z",
+              "compensation": "equivalent_action",
+              "limitation": "Connector configuration and contracts can be restored, but its vault credential must be reconnected by a human."
+            },
+            "failureCode": null
+          },
+          "settlementSha256": "42e32cfd4bfcdb1d6896528b72fc4e41b84dca8a9cecf014cbe3e432cce0878e"
+        }
+      },
+      "pendingAction": {
+        "acceptance": {
+          "contract": "asael-connector-acceptance:1",
+          "id": "connector-acceptance:2dfea49975a7c838e4bfaadb4341668ccff792fedd1352e62b63cf2ab97b79fb",
+          "scope": {
+            "tenantId": "trash-contract",
+            "ownerActorId": "owner@example.test",
+            "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+          },
+          "keySha256": "dacccdbd35e97d62729a1edd77236293828aefc86ed1e2dc4d10f7c32086f762",
+          "requestSha256": "f81df399458c8ca3198c694dc09dd55491eb9c2dc1733ed587513e6edf60b9ed",
+          "kind": "mcp",
+          "connectorId": "connector-one",
+          "action": "trash",
+          "reviewSha256": "4e82ac11f12f605f9e58b33c386dce69a641004f83a73c442cf9634917b47ae6",
+          "acceptedAt": "2026-10-05T01:00:01.000Z",
+          "acceptanceSha256": "d97cda710ad2dc20175773ddabe21abd7805782d3d7448db3449635ecb24eeec"
+        },
+        "state": "accepted",
+        "settlement": null
+      }
+    }
+  ],
+  "missing": {
+    "review": null,
+    "preview": null,
+    "compensation": null
+  }
+}

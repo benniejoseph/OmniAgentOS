@@ -57,6 +57,7 @@ import { nativeMeetingCalendarSchemas } from "@/lib/mobile/meeting-calendar-cont
 import { nativeGooglePersonalSchemas } from "@/lib/mobile/google-personal-native-contracts";
 import { nativeConnectorSchemas } from "@/lib/mobile/connector-native-contracts";
 import { nativeConnectorCredentialRemovalSchemas } from "@/lib/mobile/connector-credential-removal-contracts";
+import { nativeConnectorTrashSchemas } from "@/lib/mobile/connector-trash-contracts";
 
 import { pluginManifestSchema } from "@/lib/plugins/contracts";
 import {
@@ -66,10 +67,10 @@ import {
 import { voiceCommandInputSchema } from "@/lib/voice/command-input";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 41 as const;
-// v40's connector controls and personal Google actions remain byte-frozen. v41
-// adds only exact saved MCP credential removal and its read-only recovery.
-export const NATIVE_API_PREVIOUS_VERSION = 40 as const;
+export const NATIVE_API_CURRENT_VERSION = 42 as const;
+// v41's exact saved credential removal remains byte-frozen. v42 adds only
+// reviewed MCP Trash previews, confirmed moves and exact receipt recovery.
+export const NATIVE_API_PREVIOUS_VERSION = 41 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -2315,6 +2316,20 @@ const v41Operations: readonly NativeOperation[] = [
   }),
 ];
 
+const v42Operations: readonly NativeOperation[] = [
+  ...v41Operations,
+  operation("connectors.native.trash.preview", "GET", "/api/connectors/native/mcp/{id}/trash-preview", "Review an exact supported MCP connector and its bounded ten-minute Trash preview and compensation plan.", "bearer", undefined, "NativeConnectorTrashPreviewResponse", {
+    ...connectorNativeOptions, pathParameters: [{ name: "id", minLength: 1, maxLength: 200, pattern: "^[A-Za-z0-9][A-Za-z0-9._:@+~-]{0,199}$" }],
+  }),
+  operation("connectors.native.trash.submit", "POST", "/api/connectors/native/trash-actions", "Move one exactly reviewed MCP connector to Trash once and atomically record its immutable acceptance and settlement.", "bearer", "NativeConnectorTrashRequest", "NativeConnectorTrashSubmitResponse", {
+    ...connectorNativeOptions, headerParameters: pluginMutationHeaders, requestBodyMaxBytes: 8192,
+    successStatuses: [200, 201], errorStatuses: [400, 401, 403, 404, 409, 413, 415, 500, 503],
+  }),
+  operation("connectors.native.trash.read", "GET", "/api/connectors/native/trash-actions/{keySha256}", "Read the original exact MCP Trash action acceptance and settlement without repeating deletion or requiring the live connector.", "bearer", undefined, "NativeConnectorTrashReadResponse", {
+    ...connectorNativeOptions, pathParameters: nativeActionRecoveryPath,
+  }),
+];
+
 const nativeCompanionPreferencesResponseSchema = z.object({
   schemaVersion: z.literal(1), contract: z.literal(COMPANION_PREFERENCES_CONTRACT),
   snapshot: z.object({
@@ -2338,6 +2353,7 @@ export const nativeContractSchemas = Object.freeze({
   ...nativeGooglePersonalSchemas,
   ...nativeConnectorSchemas,
   ...nativeConnectorCredentialRemovalSchemas,
+  ...nativeConnectorTrashSchemas,
   ...nativeResponsibilityContractSchemas,
   ...nativeMeetingContractSchemas,
   ...nativeCustomerContractSchemas,
@@ -2504,6 +2520,7 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 39) return v39Operations;
   if (version === 40) return v40Operations;
   if (version === 41) return v41Operations;
+  if (version === 42) return v42Operations;
   return undefined;
 }
 

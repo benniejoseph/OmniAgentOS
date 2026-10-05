@@ -168,10 +168,33 @@ class ConnectorReview {
     controlKind(kind);
     controlId(id);
     final raw = connectorObject(input, 'contract scope review serviceReceipt');
+    final review = await parseValue(raw['review'], kind, id);
+    await connectorServiceReceipt(
+      raw,
+      owner,
+      contract: connectorControlContract,
+      operation: 'app.connectors.native.review',
+      resource: 'connector_native_action',
+      count: review == null ? 0 : 1,
+    );
+    return ConnectorReview(
+      connectorFreeze(raw),
+      review == null ? null : connectorFreeze(review),
+    );
+  }
+
+  /// Shared strict nested review validation; callers verify their own envelope.
+  static Future<ConnectorJson?> parseValue(
+    Object? value,
+    String kind,
+    String id,
+  ) async {
+    controlKind(kind);
+    controlId(id);
     ConnectorJson? review;
-    if (raw['review'] != null) {
+    if (value != null) {
       review = connectorObject(
-        raw['review'],
+        value,
         'connector contracts pin availableActions unavailableReason',
       );
       final summary = _summary(review['connector']),
@@ -238,18 +261,7 @@ class ConnectorReview {
         );
       }
     }
-    await connectorServiceReceipt(
-      raw,
-      owner,
-      contract: connectorControlContract,
-      operation: 'app.connectors.native.review',
-      resource: 'connector_native_action',
-      count: review == null ? 0 : 1,
-    );
-    return ConnectorReview(
-      connectorFreeze(raw),
-      review == null ? null : connectorFreeze(review),
-    );
+    return review == null ? null : connectorFreeze(review);
   }
 }
 
