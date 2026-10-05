@@ -2,7 +2,11 @@
 
 ## Current checkpoint — 5 October 2026
 
-**UI and ATLAS are accepted through PR63; the next connector candidate is implemented and in release validation.**
+**UI and ATLAS remain the priority. Their current asset/UI checkpoint is accepted through PR63; the open connector candidate is limited to stabilization.**
+Further connector expansion is parked. The immediate UI follow-up corrects native
+Payments unavailable/partial-data presentation; production promotion and external
+device acceptance remain separate. Fresh main checks and release provenance
+passed at `b322fd5d`.
 Native Settings archive v2 passed all sixteen hosted gates and 2,073 Flutter cases
 at `9cfadda5941ecbc189c39b86025ada7ef27cf8c0`, then merged as
 `7cfeaf2e9c0268ab150e4c14637260add069b0c8`.
@@ -31,9 +35,15 @@ Connector work resumed from accepted UI/ATLAS main, preserving checkpoint
 with native v40, frozen Search v39 and app `1.23.22+57`; Google review/action/
 recovery and MCP/OpenAPI control stabilization are authored. Flutter analysis,
 fifty focused native cases, fifty-two contract/authorization/isolation cases,
-changed-TypeScript lint and generated artifact checks pass. Packaging and
-exact-head hosted acceptance remain before its release. Later lifecycle,
-credential and registration prototypes remain explicitly unfinished; see
+changed-TypeScript lint and generated artifact checks pass. Mac57 is built and
+verified, preserving all 33 reviewed ATLAS assets. PR64 passed all sixteen hosted
+checks, including 2,113 Flutter cases, and merged as `b322fd5d`; the accepted and
+merged full trees match. The next isolated v41 slice implements exact local
+MCP saved-credential removal and durable recovery in app `1.23.23+58`; 60 focused
+TypeScript cases, 14 disposable PostgreSQL cases and full 238-migration verification
+pass. Full Flutter analysis and all 56 focused native cases pass. Private Mac58
+is built and verified with the exact accepted ATLAS bundle; hosted acceptance remains. Rotation, registration/import,
+rediscovery, conditional GitHub upgrade and Trash remain unfinished; see
 [connector checkpoint](CONNECTOR_CHECKPOINT.md) and [UI priority](UI_PRIORITY.md).
 
 Unchecked tasks retain their whole-task, cross-platform and device acceptance

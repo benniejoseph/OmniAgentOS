@@ -33,3 +33,7 @@ e800e58ffc180af8d65a868f40ae281ad46bd340:src/lib/workflows/personal-context.test
 
 # Verified public native-contract integrity pin; no credential material.
 d4ad92594adc0514f3f1acac3c2ad4d29540c348:src/lib/mobile/contracts.test.ts:generic-api-key:595
+
+# Public deterministic credential-removal fixture hashes, recomputed by the contract test.
+a42a0596f8670c8b49072d68b146989b04312970:apps/flutter/test/features/integrations/connector_credential_removal_contract_test.dart:generic-api-key:21
+a42a0596f8670c8b49072d68b146989b04312970:apps/flutter/test/features/integrations/connector_credential_removal_contract_test.dart:generic-api-key:49

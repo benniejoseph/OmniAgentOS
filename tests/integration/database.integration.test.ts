@@ -7,7 +7,7 @@ import postgres from "postgres";
 import { removeEmptyResponsibilityRuntimeForReplay } from "./helpers/responsibility-replay";
 import { removeEmptyMemoryLifecycleForReplay } from "./helpers/memory-lifecycle-replay";
 import { removeEmptyMemoryPromotionForReplay } from "./helpers/memory-promotion-replay";
-import { removeEmptyCustomerWorkflowIntentsForReplay, removeEmptyAgentSkillMutationsForReplay, removeEmptyMeetingRecordingProcessingForReplay, removeEmptyCustomerFactIntentsForReplay, removeEmptySalesforceNativeActionsForReplay, removeEmptyNativePrivateMemoryActionsForReplay, removeEmptyNativeKnowledgeCognitionBuildsForReplay, removeEmptyGooglePersonalNativeActionsForReplay, removeEmptyNativeConnectorControlsForReplay } from "./helpers/native-catalog-replay";
+import { removeEmptyCustomerWorkflowIntentsForReplay, removeEmptyAgentSkillMutationsForReplay, removeEmptyMeetingRecordingProcessingForReplay, removeEmptyCustomerFactIntentsForReplay, removeEmptySalesforceNativeActionsForReplay, removeEmptyNativePrivateMemoryActionsForReplay, removeEmptyNativeKnowledgeCognitionBuildsForReplay, removeEmptyGooglePersonalNativeActionsForReplay, removeEmptyNativeConnectorControlsForReplay, removeNativeConnectorCredentialRemovalsForReplay } from "./helpers/native-catalog-replay";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import {
   buildAgentRunIdentityPinV1,
@@ -9629,6 +9629,7 @@ const nativePrivateMemoryMaintenanceGraphVersion = 234;
 const nativeKnowledgeCognitionBuildsVersion = 235;
 const googlePersonalNativeActionsVersion = 236;
 const nativeConnectorControlsVersion = 237;
+const nativeConnectorCredentialRemovalsVersion = 238;
 const additiveReplayVersions = [
   companionPreferencesVersion,
   responsibilityDraftsVersion,
@@ -9653,6 +9654,7 @@ const additiveReplayVersions = [
   nativeKnowledgeCognitionBuildsVersion,
   googlePersonalNativeActionsVersion,
   nativeConnectorControlsVersion,
+  nativeConnectorCredentialRemovalsVersion,
 ].filter((version) => databaseSchemaMigrations.some((migration) => migration.version === version));
 const meetingResolutionReplayTables: readonly string[] = [
   "omni_meeting_commitment_resolution_intents",
@@ -10033,6 +10035,9 @@ async function withMigrationsPendingFrom<T>(
   }
   await client.begin(async (transaction) => {
     if (replay) {
+      if (additiveReplayVersions.includes(nativeConnectorCredentialRemovalsVersion)) {
+        await removeNativeConnectorCredentialRemovalsForReplay(transaction);
+      }
       if (additiveReplayVersions.includes(nativeConnectorControlsVersion)) {
         await removeEmptyNativeConnectorControlsForReplay(transaction);
       }
@@ -10385,10 +10390,11 @@ async function convergenceDdlDuring(
         tg_tag,
         CASE
           -- Other additive migrations can use the same local dollar tag.
-          -- Only v208's original policy block belongs to this convergence probe.
+          -- Only v208's original blocks belong to this convergence probe.
           WHEN strpos(current_query(), '$policies$') > 0
             AND strpos(current_query(), 'omni_ap2_payment_receipts') > 0 THEN 'policies'
-          WHEN strpos(current_query(), '$constraints$') > 0 THEN 'constraints'
+          WHEN strpos(current_query(), '$constraints$') > 0
+            AND strpos(current_query(), 'omni_mobile_push_deliveries_check5') > 0 THEN 'constraints'
           WHEN strpos(
             current_query(),
             'FUNCTION public.omni_system_scope_enabled()'

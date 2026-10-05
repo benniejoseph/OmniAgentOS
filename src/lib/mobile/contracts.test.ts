@@ -18,6 +18,26 @@ import {
 } from "@/lib/mobile/contracts";
 
 describe("native API contracts", () => {
+  it("adds only exact MCP credential removal and recovery in v41", () => {
+    const previous = nativeOperationsForVersion(40)!;
+    const current = nativeOperationsForVersion(41)!;
+    expect(current.slice(0, previous.length)).toEqual(previous);
+    const added = current.slice(previous.length);
+    expect(added.map(({ id, method, path, requestSchema, responseSchema }) => [id, method, path, requestSchema, responseSchema])).toEqual([
+      ["connectors.native.credentialRemovals.submit", "POST", "/api/connectors/native/credential-removals", "NativeConnectorCredentialRemovalRequest", "NativeConnectorCredentialRemovalSubmitResponse"],
+      ["connectors.native.credentialRemovals.read", "GET", "/api/connectors/native/credential-removals/{keySha256}", undefined, "NativeConnectorCredentialRemovalReadResponse"],
+    ]);
+    for (const operation of added) {
+      expect(operation).toMatchObject({ auth: "bearer", queryPolicy: "exact", errorResponseSchema: "NativeConnectorError" });
+      expect(operation.responseHeaders).toContainEqual(expect.objectContaining({ name: "cache-control", constValue: "private, no-store" }));
+    }
+    expect(added[0].headerParameters).toContainEqual(expect.objectContaining({ name: "Idempotency-Key", required: true }));
+    expect(added[0].requestBodyMaxBytes).toBe(8192);
+    expect(added[0].successStatuses).toEqual([200, 201]);
+    expect(added[1].headerParameters).toBeUndefined();
+    expect(added[1].pathParameters).toEqual([{ name: "keySha256", minLength: 64, maxLength: 64, pattern: "^[a-f0-9]{64}$" }]);
+  });
+
   it("publishes scoped search as three private reads from v39 without enrolling mutations", () => {
     expect(nativeOperationsForVersion(38)?.some(({ id }) => id.startsWith("content.search"))).toBe(false);
     const search = nativeOperationsForVersion(39)!.filter(({ id }) => id.startsWith("content.search"));
@@ -127,8 +147,8 @@ describe("native API contracts", () => {
   it("retains exactly the current and previous rollout versions", () => {
     // Tripwire: a native contract bump must be a deliberate, reviewed change.
     // The other tests follow these constants.
-    expect(NATIVE_API_CURRENT_VERSION).toBe(40);
-    expect(NATIVE_API_PREVIOUS_VERSION).toBe(39);
+    expect(NATIVE_API_CURRENT_VERSION).toBe(41);
+    expect(NATIVE_API_PREVIOUS_VERSION).toBe(40);
     expect(NATIVE_API_SUPPORTED_VERSIONS).toEqual([
       NATIVE_API_CURRENT_VERSION,
       NATIVE_API_PREVIOUS_VERSION,
@@ -376,6 +396,7 @@ describe("native API contracts", () => {
       38: added("agents.delete.review", "agents.delete", "agents.mutations.get", "skills.mutation.review", "skills.create", "skills.update", "skills.delete", "skills.mutations.get", "memory.promotions.list", "memory.promotions.read", "memory.promotions.decide", "customers.workflows.start", "customers.workflows.outcome", "customers.workflows.get", "customers.workflows.mutations.get", "meetings.recordings.review", "meetings.recordings.process", "meetings.recordings.processing.get", "customers.facts.record", "customers.facts.acceptance.get", "customers.salesforce.actions.review", "customers.salesforce.actions.submit", "customers.salesforce.actions.get", "knowledge.cognification.list", "knowledge.cognification.read", "knowledge.cognification.decide", "knowledge.cognification.decisions.get", "knowledge.sources.deletion.review", "knowledge.sources.delete", "knowledge.sources.deletions.get", "memory.graph.universe", "memory.graph.node", "memory.graph.entity", "memory.graph.temporalRelations", "memory.graph.relationshipPaths", "memory.maintenance.review", "memory.maintenance.run", "memory.maintenance.runs.get", "memory.graph.rebuild.review", "memory.graph.rebuild", "memory.graph.rebuilds.get", "knowledge.cognification.build.review", "knowledge.cognification.build", "knowledge.cognification.builds.get"),
       39: added("content.search", "content.search.work.get", "content.search.memory.get"),
       40: added("google.personal.actions.review", "google.personal.actions.submit", "google.personal.actions.read", "connectors.native.list", "connectors.native.review", "connectors.native.act", "connectors.native.actions.get"),
+      41: added("connectors.native.credentialRemovals.submit", "connectors.native.credentialRemovals.read"),
     });
     // v20 and v23 changed only request and push schemas.
     expect(nativeOperationsForVersion(20)).toEqual(nativeOperationsForVersion(19));
@@ -614,19 +635,19 @@ describe("native API contracts", () => {
     });
   });
 
-  it("retains every published v38 and v39 document byte for byte", async () => {
+  it("retains every published v39 and v40 document byte for byte", async () => {
     const frozen = {
-      "38": {
-        "openapi.json": "d53c27a1f2f65840c2c6322130a57656cecfe1938af25f6e4c3da4bb4fd94545", // gitleaks:allow -- public artifact integrity digest
-        "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
-        "fixtures.json": "99af3b313dc0eeaa68f5523f9ba6754b97f53769339c3860d29f44892c88e6af", // gitleaks:allow -- public artifact integrity digest
-        "manifest.json": "74683356d10e3c316375d63a5cbc28618bb5dc307b6a30ae9e8c0acff23796a0", // gitleaks:allow -- public artifact integrity digest
-      },
       "39": {
         "openapi.json": "fd61af76b501e3227526f870c60f6f8e2b1e710ce324e9fee7c371b5db51e059", // gitleaks:allow -- public artifact integrity digest
         "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
         "fixtures.json": "82e5e82e8d736f703f6390ec650d1537687e46145c7939ed48dc1d72e4f1f91f", // gitleaks:allow -- public artifact integrity digest
         "manifest.json": "e69fd6ca2ae522289dd6edd416f4a20f1761d6273fe0d9fccbfc28936e4513e8", // gitleaks:allow -- public artifact integrity digest
+      },
+      "40": {
+        "openapi.json": "751acd2d142ffafee62e8f0cbb384f3b9b7b9189c69fa7457aeec78afc3ccf83", // gitleaks:allow -- public artifact integrity digest
+        "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
+        "fixtures.json": "6b4186cb28e1a75d6686ac4354a2afe60d534a665b81a9d725b5d5db06d107ab", // gitleaks:allow -- public artifact integrity digest
+        "manifest.json": "ca108a77c326553faac40fee41e25b3c30af1ff76feb710d445be8ce5e5701dd", // gitleaks:allow -- public artifact integrity digest
       },
     };
     for (const [version, documents] of Object.entries(frozen)) {

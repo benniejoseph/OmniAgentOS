@@ -8,6 +8,7 @@ import '../../core/network/native_workspace_access.dart';
 import 'connector_contracts.dart';
 import 'connector_control_contracts.dart';
 import 'connector_controller.dart';
+import 'connector_credential_removal_view.dart';
 import 'connector_providers.dart';
 
 class NativeConnectorWorkspace extends StatelessWidget {
@@ -210,6 +211,12 @@ class _ConnectorControlPanelState extends State<ConnectorControlPanel>
                     : (value) => setState(() => _kind = value!),
               ),
               TextField(
+                key: PageStorageKey((
+                  'connector-exact-input',
+                  c,
+                  c.owner.key,
+                  _kind,
+                )),
                 controller: _exactId,
                 enabled: !c.busy,
                 decoration: const InputDecoration(labelText: 'Connection ID'),
@@ -348,6 +355,13 @@ class _ConnectorControlPanelState extends State<ConnectorControlPanel>
           padding: EdgeInsets.all(16),
           child: Text('This exact connection is not currently available.'),
         ),
+        if (c.selectedKind == 'mcp' && c.selectedId != null)
+          OutlinedButton(
+            onPressed: c.busy
+                ? null
+                : () => _openCredentialRemoval(c.selectedId!),
+            child: const Text('Open saved credential recovery'),
+          ),
       ];
     }
     final row = review.connector!,
@@ -388,6 +402,14 @@ class _ConnectorControlPanelState extends State<ConnectorControlPanel>
               onPressed: c.canAct ? () => _confirm(review, action) : null,
               child: Text(connectorActionLabel(action)),
             ),
+          if (row['kind'] == 'mcp')
+            OutlinedButton.icon(
+              onPressed: c.busy
+                  ? null
+                  : () => _openCredentialRemoval(row['id'] as String),
+              icon: const Icon(Icons.key_outlined),
+              label: const Text('Review saved credential'),
+            ),
           OutlinedButton(
             onPressed: c.busy
                 ? null
@@ -399,6 +421,20 @@ class _ConnectorControlPanelState extends State<ConnectorControlPanel>
       if (review.actions.isEmpty && review.value!['unavailableReason'] == null)
         const Text('No current action is available with this account access.'),
     ];
+  }
+
+  Future<void> _openCredentialRemoval(String id) async {
+    if (!_visible || c.busy) return;
+    final controller = c;
+    await Navigator.of(context, rootNavigator: true).push(
+      MaterialPageRoute<void>(
+        builder: (_) =>
+            NativeConnectorCredentialRemovalWorkspace(connectorId: id),
+      ),
+    );
+    if (mounted && identical(controller, c) && _visible) {
+      unawaited(c.select('mcp', id));
+    }
   }
 
   Widget _contract(

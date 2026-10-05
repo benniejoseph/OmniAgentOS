@@ -17,6 +17,8 @@ export const APP_SERVICE_OPERATION_CONTRACTS = Object.freeze([
   read("app.connectors.native.review", "read", "connector_native_action"),
   mutation("app.connectors.native.act", "manage.connector", "connector_native_action", "connector-native-events.v1"),
   read("app.connectors.native.show", "read", "connector_native_action"),
+  mutation("app.connectors.native.credentialRemovals.submit", "manage.connector", "connector_native_action", "connector-native-credential-removal-events.v1"),
+  read("app.connectors.native.credentialRemovals.read", "read", "connector_native_action"),
   read("app.sources.coverage.show", "read", "source_coverage"),
   read("app.market_research.overview.show", "read", "market_research"),
   read("app.market_research.bars.list", "read", "market_snapshot"),

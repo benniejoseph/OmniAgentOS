@@ -1,6 +1,21 @@
 import type postgres from "postgres";
 import { expect } from "vitest";
 
+/** Restore the exact237 validation boundary before replaying238 on a disposable DB. */
+export async function removeNativeConnectorCredentialRemovalsForReplay(sql: postgres.TransactionSql) {
+  expect(await sql`SELECT count(*)::int AS removals FROM public.omni_native_connector_actions WHERE action='remove_credential'`).toEqual([{ removals: 0 }]);
+  await sql`ALTER TABLE public.omni_native_connector_actions
+    DROP CONSTRAINT omni_native_connector_intent_v2,
+    DROP CONSTRAINT omni_native_connector_settlement_v2,
+    DROP CONSTRAINT omni_native_connector_removal_version,
+    DROP CONSTRAINT omni_native_connector_actions_action_check,
+    ADD CONSTRAINT omni_native_connector_actions_action_check CHECK(action IN ('review_contracts','enable','disable')),
+    ADD CONSTRAINT omni_native_connector_actions_check CHECK(public.omni_native_connector_intent_valid_v1(intent,acceptance)),
+    ADD CONSTRAINT omni_native_connector_actions_check3 CHECK(public.omni_native_connector_settlement_valid_v1(settlement,acceptance))`;
+  await sql`DROP FUNCTION public.omni_native_connector_settlement_valid_v2(JSONB,JSONB)`;
+  await sql`DROP FUNCTION public.omni_native_connector_intent_valid_v2(JSONB,JSONB)`;
+}
+
 export async function removeEmptyNativeConnectorControlsForReplay(sql: postgres.TransactionSql) {
   expect(await sql`SELECT count(*)::int AS acceptances FROM public.omni_native_connector_actions`).toEqual([{ acceptances: 0 }]);
   await sql`DROP POLICY omni_native_connector_event_actor ON public.omni_events`;
