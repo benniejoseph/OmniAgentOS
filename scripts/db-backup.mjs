@@ -201,6 +201,10 @@ function postgresEnvironment(value) {
     PGPASSWORD: decodeURIComponent(url.password),
     PGDATABASE: decodeURIComponent(url.pathname.replace(/^\//, "")),
     PGSSLMODE: url.searchParams.get("sslmode") || "require",
+    // The identity probe uses psql rather than the URL-aware postgres client.
+    // Carry the selected connection's startup role, without leaking an
+    // operator PGOPTIONS value into the separate backup-role connection.
+    PGOPTIONS: url.searchParams.get("options") || "",
   };
 }
 
