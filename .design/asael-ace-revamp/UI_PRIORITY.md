@@ -14,7 +14,7 @@ pilot acceptance remain separate.
 
 ## Current release checkpoint
 
-The release is accepted through **PR71**, preserving the UI/ATLAS work through
+The release baseline for this follow-up is **PR71**, preserving UI/ATLAS work through
 PR69 and completing native MCP registration v44. All sixteen hosted checks passed
 on `7920391138389f235988626c949d66e6a6f4ed89`, including **2,272 Flutter cases**,
 and merged main is `f7a3157291af0d0d6c2c9964cfc9c165e58940b3`. Accepted and merged
@@ -51,16 +51,20 @@ earlier main69/r3 result and its source-equivalence proof remain preserved.
 These are observed load/DOM/control timings, not presented-frame, energy, physical
 device or field-interaction certification.
 
-The separate baseline main71
-[route comparison](</Volumes/Extreme Pro/Asael-release-records/2026-10-03-followups/ui-validation/atlas-production-route-comparison-r1/comparison.json>)
+The final code candidate `31a68aead25e5a310d6394f9140ce27224541dbb`
+[route comparison](</Volumes/Extreme Pro/Asael-release-records/2026-10-03-followups/ui-validation/atlas-production-route-comparison-r2/comparison.json>)
 passes all **42 unchanged route budgets** in both production-compiled variants.
-Main71 Command first-load JavaScript is **912,538 bytes**, versus **906,862 bytes** for
+Command first-load JavaScript is **912,874 bytes**, versus **907,198 bytes** for
 the static-only player baseline: **5,676 additional uncompressed bytes**, within
 the existing **920,000-byte** budget. Compile-mode evidence does not claim a full
-release build, static generation, deployment or field performance.
+release build, static generation, deployment or field performance. Capture is
+799,931 bytes, within its unchanged 800,000-byte limit by 69 bytes. The dock
+correction passes all 114 existing desktop/phone browser checks, including all
+five keyboard destinations at 320px/200% with dock/reserved height both 144px.
 
-UI/ATLAS delivery remains the priority. The measurement harness, documentation and compact-dock
-spacing follow-up await PR acceptance. The web shell measures its actual dock
+UI/ATLAS delivery remains the priority. This follow-up adds the measurement harness, documentation and compact-dock
+spacing fix. Local evidence passes; hosted acceptance is recorded in the external
+release status. The web shell measures its actual dock
 height on mount and resize, supports shrinking, and retains desktop zero reserve.
 No native package/version or migration changes are introduced. Further connector expansion, including OpenAPI
 registration/import, rediscovery and conditional GitHub upgrade, is parked.

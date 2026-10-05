@@ -21,7 +21,7 @@ input/asset files are byte-identical at main71. Five uncommitted measurement fil
 and 27 installed dependency inputs are separately identified. This is not a
 full-tree or main71 runtime equivalence claim.
 
-A separate actual-versus-static-only production compilation uses main71
+The preserved first actual-versus-static-only production compilation uses main71
 `f7a3157291af0d0d6c2c9964cfc9c165e58940b3`. All 42 unchanged route budgets pass in
 both variants. Command is 912,538 bytes actual versus 906,862 static-only, a
 5,676-byte difference and 7,462-byte headroom below its 920,000-byte budget.
@@ -43,10 +43,30 @@ workload. Physical/native performance, energy, natural motion and live 3D remain
 unmeasured. The maintained commands and provenance rules are in
 [PRODUCTION_MEASUREMENTS.md](../../../scripts/atlas/PRODUCTION_MEASUREMENTS.md).
 
-The compact-dock correction after main71 changes the shared web shell. Its
-current route-budget result must be recorded separately; main71's byte totals
-are baseline evidence. All following art/export records retain their original
-checkpoint scope and hashes.
+The final compact-dock code candidate
+`31a68aead25e5a310d6394f9140ce27224541dbb` passes all **114 existing browser checks**,
+including all five keyboard destinations at 320px/200% with actual dock and
+reserved space both 144px. Its
+[browser receipt](</Volumes/Extreme Pro/Asael-release-records/2026-10-03-followups/ui-validation/atlas-dock-reservation-browser-r2-receipt.json>)
+retains the earlier failures and unchanged assertion source. The dock measures
+its border box, reserves at least the current CSS minimum during text resize,
+allows shrinking and retains zero desktop reservation.
+
+The candidate's separate
+[r2 route comparison](</Volumes/Extreme Pro/Asael-release-records/2026-10-03-followups/ui-validation/atlas-production-route-comparison-r2/comparison.json>)
+passes **42 budgets in both variants**: Command 912,874 versus 907,198 bytes,
+unchanged 5,676-byte ATLAS delta and 7,126-byte budget headroom. The observer adds
+336 shared JavaScript bytes versus main71; Capture is 799,931 bytes, leaving
+69 bytes under its unchanged 800,000-byte limit. The other 41 routes have no
+actual-versus-static player delta. These are candidate compile-mode results,
+not main71 byte totals or a claim of hosted acceptance/production deployment.
+
+The [r4 input-equivalence receipt](</Volumes/Extreme Pro/Asael-release-records/2026-10-03-followups/ui-validation/atlas-held01-main71-r4-input-equivalence-31a68aead25e.json>)
+proves all 54 repository inputs/assets used in the main71 component run match
+the candidate, including its now-tracked harness. The 27 installed dependency
+files are verified separately. That is input equivalence, not a new browser
+execution or full-tree equivalence. All following art/export records retain
+their original checkpoint scope and hashes.
 
 ## HELD01 bounded raster acceptance and complete matching export — historical checkpoint
 

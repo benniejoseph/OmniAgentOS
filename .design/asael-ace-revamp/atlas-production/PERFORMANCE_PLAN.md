@@ -1,6 +1,6 @@
 # ATLAS delivery evidence plan
 
-**Current boundary, 5 October 2026 (IST):** HELD01 artwork, `sculpt-04-held-01-clearer-state-holds`, is accepted for bounded decorative raster delivery at 72px/256px. Exact 33-file web/native admission is complete; accepted main `f7a3157291af0d0d6c2c9964cfc9c165e58940b3` and verified private Mac64 retain that bundle and PR69's macOS Low Power Mode fallback. The current production-component lab passed 180 cases at five CSS sizes, two themes and DPR1/2. A separate same-source production compilation compares the actual player with a declared static-only counterfactual and passes all 42 unchanged route budgets. [MEASUREMENTS.md](MEASUREMENTS.md) binds the receipts and their limited timing meanings. Physical-device acceptance, production promotion and installation remain open. UI/ATLAS delivery is the priority; further connector expansion is parked.
+**Current boundary, 5 October 2026 (IST):** HELD01 artwork, `sculpt-04-held-01-clearer-state-holds`, is accepted for bounded decorative raster delivery at 72px/256px. Exact 33-file web/native admission is complete; accepted main `f7a3157291af0d0d6c2c9964cfc9c165e58940b3` and verified private Mac64 retain that bundle and PR69's macOS Low Power Mode fallback. The current production-component lab passed 180 cases at five CSS sizes, two themes and DPR1/2. The compact-dock code candidate `31a68aea` passes all 114 existing browser checks. Its separate same-source production compilation compares the actual player with a declared static-only counterfactual and passes all 42 unchanged route budgets. [MEASUREMENTS.md](MEASUREMENTS.md) binds the receipts and their limited timing meanings. Physical-device acceptance, production promotion and installation remain open. UI/ATLAS delivery is the priority; further connector expansion is parked.
 
 The unchanged export verifies nineteen sources, 104 artifacts, 33 raster files and 256 archive members; the GLB is 2,969,084 bytes. All 21 targeted model/lid checks pass. Source/GLB comparison covers 96 captures / 48 pairs: 32 exact pairs and 58 changed pixels. Fifty-seven pixels differ by at most one channel byte; one completed-held profile beak-outline pixel differs by 62. Root reviewed four parity sheets and independent review all twelve, including that enlarged exception. These are structural and bounded visual facts, with receipts and hashes in [MEASUREMENTS.md](MEASUREMENTS.md), not new performance measurements. The previous 80-frame/sixteen-poster review belongs to primary-color01. The approved static portrait/greeting and fallback remain supported; live 3D delivery is not certified.
 
@@ -50,11 +50,12 @@ The component matrix covers neutral fallback, admitted poster and finite
 available-to-working motion at 36/64/72/108/256 CSS pixels, light/dark, DPR1/2 and
 three repetitions. The strict read-only loopback fixture imports the actual
 production player, preference hook and `next/image`; no application action occurs.
-The separate route helper archives accepted main71, materializes matching
+The separate route helper archives exact code candidate `31a68aea`, materializes matching
 installed dependencies inside its disposable project and compiles both variants
 serially with the same environment/configuration. Only the player module is
-substituted. Command is 912,538 bytes actual versus 906,862 static-only, within its
-unchanged 920,000-byte budget; the other 41 routes are identical. Compile mode
+substituted. Command is 912,874 bytes actual versus 907,198 static-only, within its
+unchanged 920,000-byte budget; the other 41 routes are identical between variants.
+Capture is 799,931 bytes against 800,000, retaining 69 bytes of headroom. Compile mode
 skips typechecking/prerender and does not replace the full hosted release build.
 
 
@@ -88,7 +89,7 @@ The production player must preserve actual microphone/playback precedence and ex
 | Supported macOS native build and auxiliary windows | Packaged asset admission, quick-entry/voice/control independence, background/reopen/disposal, memory and energy | Analyzer and companion cases passed; signed private packages ready; physical measurements pending |
 | Supported iOS native build | Packaged static/pre-rendered path, startup, voice/control independence, failure fallback, lifecycle and energy | Pending; no live 3D renderer required or assumed |
 | Supported Android native build | Same evidence as iOS, including lifecycle loss/recreate | Pending; no live 3D renderer required or assumed |
-| Production web route | Main71 paired production compilation: 42 budgets pass; Command +5,676 bytes versus declared static-only player; loopback asset costs recorded separately | Actual deployed transfer, field latency and full-release behavior remain separate |
+| Production web route | Candidate `31a68aea` paired production compilation: 42 budgets pass; Command +5,676 bytes versus declared static-only player; loopback asset costs recorded separately | Actual deployed transfer, field latency and full-release behavior remain separate |
 
 For battery/thermal work, record physical device, ambient conditions, display brightness, battery/charging state, network, workload duration, measurement tool/version and baseline. Compare static and candidate under the same conditions. Do not infer watts, GPU allocation or thermal suitability from browser frame timing.
 
