@@ -24,7 +24,7 @@ import { createExecutionScope } from "@/lib/security/execution-scope";
 import * as network from "@/lib/security/network";
 import { sealCredentialBundle, openCredentialBundle } from "@/lib/settings/credential-vault";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
-import { removeNativeMcpRegistrationsForReplay, removeNativeOpenapiImportsForReplay, removeNativeMcpDiscoveriesForReplay } from "./helpers/native-catalog-replay";
+import { removeNativeMcpRegistrationsForReplay, removeNativeOpenapiImportsForReplay, removeNativeMcpDiscoveriesForReplay, removeNativeGithubUpgradesForReplay } from "./helpers/native-catalog-replay";
 
 const databaseUrl = process.env.DATABASE_URL;
 const integration = databaseUrl && process.env.OMNIAGENT_INTEGRATION_DATABASE_RESET === "true" ? describe : describe.skip;
@@ -166,7 +166,10 @@ integration("prepared MCP registration under serving-role RLS", () => {
     const openapiImportMigration = await readSqlMigrationFile({ file: "20261005210000_native_openapi_imports.sql", sha256: openapiImport.checksum, migrations: [openapiImport] });
     const discovery = databaseSchemaMigrations.find((migration) => migration.version === 243)!;
     const discoveryMigration = await readSqlMigrationFile({ file: "20261006100000_native_mcp_discoveries.sql", sha256: discovery.checksum, migrations: [discovery] });
+    const githubUpgrade = databaseSchemaMigrations.find((migration) => migration.version === 244)!;
+    const githubUpgradeMigration = await readSqlMigrationFile({ file: "20261006103000_native_github_upgrades.sql", sha256: githubUpgrade.checksum, migrations: [githubUpgrade] });
     await admin.begin(async (sql) => {
+      await removeNativeGithubUpgradesForReplay(sql); await sql`DELETE FROM omni_schema_version WHERE version=244`;
       await removeNativeMcpDiscoveriesForReplay(sql); await sql`DELETE FROM omni_schema_version WHERE version=243`;
       await removeNativeOpenapiImportsForReplay(sql); await sql`DELETE FROM omni_schema_version WHERE version=242`;
       await removeNativeMcpRegistrationsForReplay(sql); await sql`DELETE FROM omni_schema_version WHERE version=241`;
@@ -177,6 +180,7 @@ integration("prepared MCP registration under serving-role RLS", () => {
       await applySqlMigrationFile(migrationSql, migration, [row], []);
       await applySqlMigrationFile(migrationSql, openapiImportMigration, [openapiImport], []);
       await applySqlMigrationFile(migrationSql, discoveryMigration, [discovery], []);
+      await applySqlMigrationFile(migrationSql, githubUpgradeMigration, [githubUpgrade], []);
       expect(await sql`SELECT intent,acceptance,state,settlement FROM omni_native_connector_actions ORDER BY id`).toEqual(before);
       expect(await sql`SELECT * FROM omni_native_connector_credential_preparations ORDER BY id`).toEqual(stages);
     });

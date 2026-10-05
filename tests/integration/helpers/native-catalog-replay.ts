@@ -1,6 +1,20 @@
 import type postgres from "postgres";
 import { expect } from "vitest";
 
+/** Restore243 only when this disposable fixture has no GitHub upgrade evidence. */
+export async function removeNativeGithubUpgradesForReplay(sql: postgres.TransactionSql) {
+  expect(await sql`SELECT count(*)::int AS upgrades FROM public.omni_native_github_upgrades`).toEqual([{ upgrades: 0 }]);
+  await sql`DROP TRIGGER omni_native_00_provider_singleflight ON public.omni_native_mcp_discoveries`;
+  await sql`DROP TABLE public.omni_native_github_upgrades`;
+  await sql`DROP FUNCTION public.omni_native_provider_singleflight_v1()`;
+  await sql`DROP FUNCTION public.omni_native_provider_pending_v1(TEXT,TEXT,TEXT,TEXT)`;
+  await sql`DROP FUNCTION public.omni_protect_native_github_upgrade_v1()`;
+  await sql`DROP FUNCTION public.omni_native_github_upgrade_closure_valid_v1(JSONB,JSONB,JSONB)`;
+  await sql`DROP FUNCTION public.omni_native_github_upgrade_settlement_valid_v1(JSONB,JSONB,JSONB)`;
+  await sql`DROP FUNCTION public.omni_native_github_upgrade_attempt_valid_v1(JSONB,JSONB)`;
+  await sql`DROP FUNCTION public.omni_native_github_upgrade_intent_valid_v1(JSONB)`;
+}
+
 /** Restore242 only when this disposable fixture has no discovery evidence. */
 export async function removeNativeMcpDiscoveriesForReplay(sql: postgres.TransactionSql) {
   expect(await sql`SELECT count(*)::int AS discoveries FROM public.omni_native_mcp_discoveries`).toEqual([{ discoveries: 0 }]);

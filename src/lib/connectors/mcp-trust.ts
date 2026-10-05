@@ -12,6 +12,27 @@ export const LEGACY_PLAYWRIGHT_MCP_ENDPOINT =
 export const RETIRED_REMOTE_BROWSER_MCP_MESSAGE =
   "Remote browser automation MCP is retired. Use the governed installed-Mac Computer Use target instead.";
 
+export const OFFICIAL_GITHUB_MCP_ALL_ENDPOINT =
+  "https://api.githubcopilot.com/mcp/x/all" as const;
+export const OFFICIAL_GITHUB_MCP_LEGACY_ENDPOINT =
+  "https://api.githubcopilot.com/mcp" as const;
+
+/** Only the original official endpoint is eligible for a GitHub upgrade.
+ * Broader /mcp/* endpoints are already distinct configurations. */
+export function isLegacyOfficialGitHubMcpEndpoint(endpoint?: string) {
+  return endpoint === OFFICIAL_GITHUB_MCP_LEGACY_ENDPOINT ||
+    endpoint === `${OFFICIAL_GITHUB_MCP_LEGACY_ENDPOINT}/`;
+}
+
+/** Check the raw stored transport as well as its endpoint before offering an
+ * upgrade. The public native review does not expose transport. */
+export function isLegacyOfficialGitHubMcpConnector(input: {
+  endpoint?: string; transport?: string;
+}) {
+  return input.transport === "streamable_http" &&
+    isLegacyOfficialGitHubMcpEndpoint(input.endpoint);
+}
+
 export function isOfficialGitHubMcpEndpoint(endpoint?: string) {
   if (!endpoint) return false;
   try {

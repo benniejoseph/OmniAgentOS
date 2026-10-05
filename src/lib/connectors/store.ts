@@ -19,6 +19,7 @@ import {
   assertMcpConnectorIsSupported,
   isOfficialGitHubMcpEndpoint,
   isRemoteBrowserMcpTool,
+  OFFICIAL_GITHUB_MCP_ALL_ENDPOINT,
   RETIRED_REMOTE_BROWSER_MCP_MESSAGE,
 } from "@/lib/connectors/mcp-trust";
 import { recordRuntimeEventSafely } from "@/lib/observability/store";
@@ -623,7 +624,7 @@ export async function saveMcpDiscovery({
   return { connector: nextConnector, tools: nextTools };
 }
 
-function resetMcpToolPolicyForReview({
+export function resetMcpToolPolicyForReview({
   discovered,
   existing,
   connector,
@@ -699,6 +700,43 @@ export async function replaceDisabledNativeMcpCatalog(
   for (const tool of tools) await persistMcpTool(tool, { sql });
   await appendMcpConnectorEvent({ connectorId: connector.id, type: "connector.mcp.discovery_saved", executionScope,
     payload: { ...mcpConnectorEventMetadata(connector), discoveredToolCount: tools.length, resetReviewedPolicy: false } }, { sql });
+}
+
+/** The official GitHub endpoint and complete staged catalog are one database
+ * effect. The native attempt owns admission, deadline and current review. */
+export async function publishNativeGithubMcpUpgrade(
+  connector: McpConnectorRecord,
+  tools: McpToolRecord[],
+  options: McpConnectorMutationOptions & { sql: ReturnType<typeof getSql> },
+) {
+  const tenantId = normalizeTenantId(connector.tenantId);
+  const executionScope = requireMcpMutationScope(options.executionScope, tenantId);
+  assertMcpDiscoveryIsSupported(connector, tools);
+  if (!hasDatabaseUrl() || connector.endpoint !== OFFICIAL_GITHUB_MCP_ALL_ENDPOINT ||
+    connector.status !== "disabled" || connector.defaultRiskLevel !== 2 ||
+    connector.approvalRequired || tools.length < 1 || tools.length > 200 ||
+    connector.toolCount !== tools.length || tools.some((tool) =>
+      tool.tenantId !== tenantId || tool.connectorId !== connector.id ||
+      tool.connectorName !== connector.name || tool.status !== "pending_review")) {
+    throw new Error("An exact disabled official GitHub catalog is required.");
+  }
+  const sql = options.sql;
+  const parents = await sql`UPDATE omni_mcp_connectors SET endpoint=${OFFICIAL_GITHUB_MCP_ALL_ENDPOINT},
+    status='disabled',default_risk_level=2,approval_required=FALSE,tool_count=${tools.length},
+    capabilities=${connector.capabilities || {}}::JSONB,instructions=${connector.instructions || null},
+    server_version=${connector.serverVersion || null}::JSONB,last_discovered_at=${connector.lastDiscoveredAt},
+    last_error=NULL,updated_at=${connector.updatedAt}
+    WHERE tenant_id=${tenantId} AND id=${connector.id}
+      AND (endpoint='https://api.githubcopilot.com/mcp' OR endpoint='https://api.githubcopilot.com/mcp/')
+    RETURNING id`;
+  if (parents.length !== 1) throw new Error("The legacy official GitHub target changed before publication.");
+  await sql`DELETE FROM omni_mcp_tools WHERE tenant_id=${tenantId} AND connector_id=${connector.id}`;
+  for (const tool of tools) await persistMcpTool(tool, { sql });
+  await appendMcpConnectorEvent({ connectorId: connector.id, type: "connector.mcp.updated", executionScope,
+    payload: { ...mcpConnectorEventMetadata(connector), changedFields: ["endpoint", "status", "defaultRiskLevel", "approvalRequired"],
+      contractConfigurationChanged: true } }, { sql });
+  await appendMcpConnectorEvent({ connectorId: connector.id, type: "connector.mcp.discovery_saved", executionScope,
+    payload: { ...mcpConnectorEventMetadata(connector), discoveredToolCount: tools.length, resetReviewedPolicy: true } }, { sql });
 }
 
 function assertMcpDiscoveryIsSupported(

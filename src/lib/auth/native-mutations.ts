@@ -56,6 +56,7 @@ export const NATIVE_MUTATION_CAPABILITIES = [
   "connectors.mcp.register",
   "connectors.openapi.import",
   "connectors.mcp.discover",
+  "connectors.github.upgrade",
   "agents.create",
   "agents.update",
   "agents.delete",
@@ -134,6 +135,7 @@ export function nativeMutationCapabilityPolicy(
 }
 
 function minimumVersion(capability: NativeMutationCapability) {
+  if (capability === "connectors.github.upgrade") return 47;
   if (capability === "connectors.mcp.discover") return 46;
   if (capability === "connectors.openapi.import") return 45;
   if (capability === "connectors.mcp.register") return 44;

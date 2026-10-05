@@ -30,22 +30,37 @@ function context(
 }
 
 describe("native mutation capability enrollment", () => {
-  it("enrolls exact MCP rediscovery and owner closure only from v46", () => {
+  it("enrolls exact MCP rediscovery and owner closure from the supported v46/v47 window", () => {
     for (const platform of ["android", "ios", "macos"] as const) {
-      expect(nativeMutationEnrollment(context(46, undefined, platform), "connectors.mcp.discover", asOf))
-        .toEqual({ state: "active", minimumContractVersion: 46 });
-      for (const client of [context(45, undefined, platform), context(47, undefined, platform),
+      for (const version of [NATIVE_API_PREVIOUS_VERSION, NATIVE_API_CURRENT_VERSION]) {
+        expect(nativeMutationEnrollment(context(version, undefined, platform), "connectors.mcp.discover", asOf))
+          .toEqual({ state: "active", minimumContractVersion: 46 });
+      }
+      for (const client of [context(45, undefined, platform), context(48, undefined, platform),
         context(46, "2026-01-01T00:00:00.000Z", platform), { source: "session" as const }, { source: "mobile" as const }]) {
-        expect(nativeMutationEnrollment(client, "connectors.mcp.discover", asOf)).toMatchObject({ state: "held", minimumContractVersion: 46 });
+        expect(nativeMutationEnrollment(client, "connectors.mcp.discover", asOf)).toMatchObject({
+          state: "held", minimumContractVersion: "native" in client ? 46 : NATIVE_API_CURRENT_VERSION,
+        });
       }
     }
   });
-  it("enrolls OpenAPI import and cleanup only from v45 with current native authority", () => {
+  it("enrolls official GitHub upgrade only from fresh v47 native authority", () => {
     for (const platform of ["android", "ios", "macos"] as const) {
-      expect(nativeMutationEnrollment(context(45, undefined, platform), "connectors.openapi.import", asOf))
+      expect(nativeMutationEnrollment(context(47, undefined, platform), "connectors.github.upgrade", asOf))
+        .toEqual({ state: "active", minimumContractVersion: 47 });
+      for (const client of [context(46, undefined, platform), context(48, undefined, platform),
+        context(47, "2026-01-01T00:00:00.000Z", platform), { source: "session" as const }, { source: "mobile" as const }]) {
+        expect(nativeMutationEnrollment(client, "connectors.github.upgrade", asOf))
+          .toMatchObject({ state: "held", minimumContractVersion: "native" in client ? 47 : NATIVE_API_CURRENT_VERSION });
+      }
+    }
+  });
+  it("keeps OpenAPI import floor 45 in the supported v46/v47 native window", () => {
+    for (const platform of ["android", "ios", "macos"] as const) {
+      expect(nativeMutationEnrollment(context(46, undefined, platform), "connectors.openapi.import", asOf))
         .toEqual({ state: "active", minimumContractVersion: 45 });
-      for (const client of [context(44, undefined, platform), context(NATIVE_API_CURRENT_VERSION + 1, undefined, platform),
-        context(45, "2026-01-01T00:00:00.000Z", platform), { source: "session" as const }, { source: "mobile" as const }]) {
+      for (const client of [context(45, undefined, platform), context(NATIVE_API_CURRENT_VERSION + 1, undefined, platform),
+        context(46, "2026-01-01T00:00:00.000Z", platform), { source: "session" as const }, { source: "mobile" as const }]) {
         expect(nativeMutationEnrollment(client, "connectors.openapi.import", asOf))
           .toMatchObject({ state: "held", minimumContractVersion: "native" in client ? 45 : NATIVE_API_CURRENT_VERSION });
       }

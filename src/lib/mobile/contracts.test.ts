@@ -18,6 +18,26 @@ import {
 } from "@/lib/mobile/contracts";
 
 describe("native API contracts", () => {
+  it("adds only reviewed official GitHub upgrade, exact recovery and closure in v47", () => {
+    const previous = nativeOperationsForVersion(46)!, current = nativeOperationsForVersion(47)!;
+    expect(current.slice(0, previous.length)).toEqual(previous);
+    const added = current.slice(previous.length);
+    expect(added.map(({ id, method, path, requestSchema, responseSchema }) =>
+      [id, method, path, requestSchema, responseSchema])).toEqual([
+      ["connectors.native.githubUpgrades.review", "GET", "/api/connectors/native/mcp/{id}/github-upgrade-review", undefined, "NativeConnectorGithubUpgradeReviewResponse"],
+      ["connectors.native.githubUpgrades.submit", "POST", "/api/connectors/native/github-upgrades", "NativeConnectorGithubUpgradeRequest", "NativeConnectorGithubUpgradeSubmitResponse"],
+      ["connectors.native.githubUpgrades.read", "GET", "/api/connectors/native/github-upgrades/{keySha256}", undefined, "NativeConnectorGithubUpgradeReadResponse"],
+      ["connectors.native.githubUpgrades.close", "POST", "/api/connectors/native/github-upgrades/{keySha256}/close", "NativeConnectorGithubUpgradeCloseRequest", "NativeConnectorGithubUpgradeCloseResponse"],
+    ]);
+    for (const operation of added) {
+      expect(operation).toMatchObject({ auth: "bearer", queryPolicy: "exact", errorResponseSchema: "NativeConnectorError" });
+      expect(operation.responseHeaders).toContainEqual(expect.objectContaining({ name: "cache-control", constValue: "private, no-store" }));
+      if (operation.method === "POST") expect(operation.headerParameters).toContainEqual(expect.objectContaining({ name: "Idempotency-Key", required: true }));
+      else expect(operation.headerParameters).toBeUndefined();
+    }
+    expect(added.map((operation) => operation.requestBodyMaxBytes)).toEqual([undefined, 8192, undefined, 16_384]);
+    expect(added[0].pathParameters).toEqual([{ name: "id", minLength: 1, maxLength: 200, pattern: "^[A-Za-z0-9][A-Za-z0-9._:@+~-]{0,199}$" }]);
+  });
   it("adds only bounded disabled MCP discovery, exact recovery and permanent closure in v46", () => {
     const previous = nativeOperationsForVersion(45)!, current = nativeOperationsForVersion(46)!;
     expect(current.slice(0, previous.length)).toEqual(previous);
@@ -239,8 +259,8 @@ describe("native API contracts", () => {
   it("retains exactly the current and previous rollout versions", () => {
     // Tripwire: a native contract bump must be a deliberate, reviewed change.
     // The other tests follow these constants.
-    expect(NATIVE_API_CURRENT_VERSION).toBe(46);
-    expect(NATIVE_API_PREVIOUS_VERSION).toBe(45);
+    expect(NATIVE_API_CURRENT_VERSION).toBe(47);
+    expect(NATIVE_API_PREVIOUS_VERSION).toBe(46);
     expect(NATIVE_API_SUPPORTED_VERSIONS).toEqual([
       NATIVE_API_CURRENT_VERSION,
       NATIVE_API_PREVIOUS_VERSION,
@@ -494,6 +514,7 @@ describe("native API contracts", () => {
       44: added("connectors.native.mcpRegistrationPreparations.submit", "connectors.native.mcpRegistrationPreparations.read", "connectors.native.mcpRegistrationPreparations.abandon", "connectors.native.mcpRegistrations.submit", "connectors.native.mcpRegistrations.read"),
       46: added("connectors.native.mcpDiscoveries.submit", "connectors.native.mcpDiscoveries.read", "connectors.native.mcpDiscoveries.close"),
       45: added("connectors.native.openapiImportPreparations.submit", "connectors.native.openapiImportPreparations.read", "connectors.native.openapiImportPreparations.abandon", "connectors.native.openapiImports.submit", "connectors.native.openapiImports.read"),
+      47: added("connectors.native.githubUpgrades.review", "connectors.native.githubUpgrades.submit", "connectors.native.githubUpgrades.read", "connectors.native.githubUpgrades.close"),
     });
     // v20 and v23 changed only request and push schemas.
     expect(nativeOperationsForVersion(20)).toEqual(nativeOperationsForVersion(19));
@@ -732,19 +753,19 @@ describe("native API contracts", () => {
     });
   });
 
-  it("retains every published v44 and v45 document byte for byte", async () => {
+  it("retains every published v45 and v46 document byte for byte", async () => {
     const frozen = {
-      "44": {
-        "openapi.json": "0b0a9165b10a7fbcd218ce89ba20070f9b4aa212bb290059fdc9c62ec041e8b6", // gitleaks:allow -- public artifact integrity digest
-        "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
-        "fixtures.json": "0b84c1c1f46acfe0b914d32e9d387a53dfe4b322c0bba037be8f048bd211dc91", // gitleaks:allow -- public artifact integrity digest
-        "manifest.json": "cd93cf0deda0f42b8b00af90ce5b26b97726c0334621ab0bf9a431b8e770d45a", // gitleaks:allow -- public artifact integrity digest
-      },
       "45": {
         "openapi.json": "0550a5cd1cc7df01168164ec8e68710e90743c2145d2a6db2162127f7ab22123", // gitleaks:allow -- public artifact integrity digest
         "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
         "fixtures.json": "066eb546a3043a1bb16f89f8bea771f00f43b9b80cf91bf77d0eca43a7dd7d6e", // gitleaks:allow -- public artifact integrity digest
         "manifest.json": "cd5c20e3cffeb331d0f4ce7c4288604ac3e9f1d0e327292e3ce2bfdfad40a5a9", // gitleaks:allow -- public artifact integrity digest
+      },
+      "46": {
+        "openapi.json": "338f0ffe6f4e2051a87b85d77f8aec605bb639b7c06de232b4989a69e15a1233", // gitleaks:allow -- public artifact integrity digest
+        "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
+        "fixtures.json": "7dbf329ac4ad5f51c78fb00012421d4c6e9832e204b4744d7eb06bbf542f79f7", // gitleaks:allow -- public artifact integrity digest
+        "manifest.json": "80df210e108bcaa7f281504f154b50c7e53cdc3c13cd0b65553c486ce1f2657c", // gitleaks:allow -- public artifact integrity digest
       },
     };
     for (const [version, documents] of Object.entries(frozen)) {

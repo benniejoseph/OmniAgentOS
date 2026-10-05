@@ -1,0 +1,683 @@
+{
+  "scope": {
+    "tenantId": "github-upgrade-fixture",
+    "ownerActorId": "owner@example.test",
+    "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+  },
+  "key": "fixture-github-key-bearer_vault-2",
+  "connectorId": "fixture-github-bearer_vault",
+  "authType": "bearer_vault",
+  "request": {
+    "contract": "asael-connector-lifecycle-action:1",
+    "kind": "mcp",
+    "connectorId": "fixture-github-bearer_vault",
+    "action": "upgrade_github",
+    "review": {
+      "kind": "mcp",
+      "connectorId": "fixture-github-bearer_vault",
+      "connectorSha256": "acda5e7a7f55b22552a31c2a53748c73404b52a7aae8e444f186709bd104e492",
+      "contractsSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "configurationSha256": "b981069e61ea2a7d20479f9054ea68789c1b3c0c17a45e8f18138119096ae014",
+      "reviewFingerprint": null,
+      "credentialVersion": 7,
+      "reviewSha256": "706dceda2a65768ca3f6548d139bb06454f82b39a1f2332b9cb99a243ecf5172"
+    },
+    "preview": null
+  },
+  "intent": {
+    "contract": "asael-connector-action-intent:1",
+    "scope": {
+      "tenantId": "github-upgrade-fixture",
+      "ownerActorId": "owner@example.test",
+      "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+    },
+    "keySha256": "f8a5b694db03110db19e38b2a925541f5c918d2bea5ed5e6d93ade8925c33468",
+    "request": {
+      "contract": "asael-connector-lifecycle-action:1",
+      "kind": "mcp",
+      "connectorId": "fixture-github-bearer_vault",
+      "action": "upgrade_github",
+      "review": {
+        "kind": "mcp",
+        "connectorId": "fixture-github-bearer_vault",
+        "connectorSha256": "acda5e7a7f55b22552a31c2a53748c73404b52a7aae8e444f186709bd104e492",
+        "contractsSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "configurationSha256": "b981069e61ea2a7d20479f9054ea68789c1b3c0c17a45e8f18138119096ae014",
+        "reviewFingerprint": null,
+        "credentialVersion": 7,
+        "reviewSha256": "706dceda2a65768ca3f6548d139bb06454f82b39a1f2332b9cb99a243ecf5172"
+      },
+      "preview": null
+    }
+  },
+  "attempt": {
+    "contract": "asael-github-upgrade-attempt:1",
+    "id": "github-upgrade-attempt:2bfb19b7c38a5b2df912b442f4a304f0014a0b59311a0cb0f913874b86c8e777",
+    "scope": {
+      "tenantId": "github-upgrade-fixture",
+      "ownerActorId": "owner@example.test",
+      "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+    },
+    "keySha256": "f8a5b694db03110db19e38b2a925541f5c918d2bea5ed5e6d93ade8925c33468",
+    "intentSha256": "9554506260cfd0fee77067963e5b95cd1abd1beafb720efebd3661de4756cecd",
+    "connectorId": "fixture-github-bearer_vault",
+    "reviewSha256": "706dceda2a65768ca3f6548d139bb06454f82b39a1f2332b9cb99a243ecf5172",
+    "targetEndpoint": "https://api.githubcopilot.com/mcp/x/all",
+    "startedAt": "2026-10-05T10:00:00.000Z",
+    "expiresAt": "2026-10-05T10:00:45.000Z",
+    "attemptSha256": "bc87f57ccdf4296950dc3ffec98ba1503cd0a4eb554729a96d6d78db4f537891"
+  },
+  "pending": {
+    "state": "pending",
+    "intent": {
+      "contract": "asael-connector-action-intent:1",
+      "scope": {
+        "tenantId": "github-upgrade-fixture",
+        "ownerActorId": "owner@example.test",
+        "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+      },
+      "keySha256": "f8a5b694db03110db19e38b2a925541f5c918d2bea5ed5e6d93ade8925c33468",
+      "request": {
+        "contract": "asael-connector-lifecycle-action:1",
+        "kind": "mcp",
+        "connectorId": "fixture-github-bearer_vault",
+        "action": "upgrade_github",
+        "review": {
+          "kind": "mcp",
+          "connectorId": "fixture-github-bearer_vault",
+          "connectorSha256": "acda5e7a7f55b22552a31c2a53748c73404b52a7aae8e444f186709bd104e492",
+          "contractsSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "configurationSha256": "b981069e61ea2a7d20479f9054ea68789c1b3c0c17a45e8f18138119096ae014",
+          "reviewFingerprint": null,
+          "credentialVersion": 7,
+          "reviewSha256": "706dceda2a65768ca3f6548d139bb06454f82b39a1f2332b9cb99a243ecf5172"
+        },
+        "preview": null
+      }
+    },
+    "attempt": {
+      "contract": "asael-github-upgrade-attempt:1",
+      "id": "github-upgrade-attempt:2bfb19b7c38a5b2df912b442f4a304f0014a0b59311a0cb0f913874b86c8e777",
+      "scope": {
+        "tenantId": "github-upgrade-fixture",
+        "ownerActorId": "owner@example.test",
+        "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+      },
+      "keySha256": "f8a5b694db03110db19e38b2a925541f5c918d2bea5ed5e6d93ade8925c33468",
+      "intentSha256": "9554506260cfd0fee77067963e5b95cd1abd1beafb720efebd3661de4756cecd",
+      "connectorId": "fixture-github-bearer_vault",
+      "reviewSha256": "706dceda2a65768ca3f6548d139bb06454f82b39a1f2332b9cb99a243ecf5172",
+      "targetEndpoint": "https://api.githubcopilot.com/mcp/x/all",
+      "startedAt": "2026-10-05T10:00:00.000Z",
+      "expiresAt": "2026-10-05T10:00:45.000Z",
+      "attemptSha256": "bc87f57ccdf4296950dc3ffec98ba1503cd0a4eb554729a96d6d78db4f537891"
+    }
+  },
+  "expired": {
+    "state": "expired",
+    "intent": {
+      "contract": "asael-connector-action-intent:1",
+      "scope": {
+        "tenantId": "github-upgrade-fixture",
+        "ownerActorId": "owner@example.test",
+        "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+      },
+      "keySha256": "f8a5b694db03110db19e38b2a925541f5c918d2bea5ed5e6d93ade8925c33468",
+      "request": {
+        "contract": "asael-connector-lifecycle-action:1",
+        "kind": "mcp",
+        "connectorId": "fixture-github-bearer_vault",
+        "action": "upgrade_github",
+        "review": {
+          "kind": "mcp",
+          "connectorId": "fixture-github-bearer_vault",
+          "connectorSha256": "acda5e7a7f55b22552a31c2a53748c73404b52a7aae8e444f186709bd104e492",
+          "contractsSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "configurationSha256": "b981069e61ea2a7d20479f9054ea68789c1b3c0c17a45e8f18138119096ae014",
+          "reviewFingerprint": null,
+          "credentialVersion": 7,
+          "reviewSha256": "706dceda2a65768ca3f6548d139bb06454f82b39a1f2332b9cb99a243ecf5172"
+        },
+        "preview": null
+      }
+    },
+    "attempt": {
+      "contract": "asael-github-upgrade-attempt:1",
+      "id": "github-upgrade-attempt:2bfb19b7c38a5b2df912b442f4a304f0014a0b59311a0cb0f913874b86c8e777",
+      "scope": {
+        "tenantId": "github-upgrade-fixture",
+        "ownerActorId": "owner@example.test",
+        "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+      },
+      "keySha256": "f8a5b694db03110db19e38b2a925541f5c918d2bea5ed5e6d93ade8925c33468",
+      "intentSha256": "9554506260cfd0fee77067963e5b95cd1abd1beafb720efebd3661de4756cecd",
+      "connectorId": "fixture-github-bearer_vault",
+      "reviewSha256": "706dceda2a65768ca3f6548d139bb06454f82b39a1f2332b9cb99a243ecf5172",
+      "targetEndpoint": "https://api.githubcopilot.com/mcp/x/all",
+      "startedAt": "2026-10-05T10:00:00.000Z",
+      "expiresAt": "2026-10-05T10:00:45.000Z",
+      "attemptSha256": "bc87f57ccdf4296950dc3ffec98ba1503cd0a4eb554729a96d6d78db4f537891"
+    }
+  },
+  "settled": {
+    "state": "settled",
+    "intent": {
+      "contract": "asael-connector-action-intent:1",
+      "scope": {
+        "tenantId": "github-upgrade-fixture",
+        "ownerActorId": "owner@example.test",
+        "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+      },
+      "keySha256": "f8a5b694db03110db19e38b2a925541f5c918d2bea5ed5e6d93ade8925c33468",
+      "request": {
+        "contract": "asael-connector-lifecycle-action:1",
+        "kind": "mcp",
+        "connectorId": "fixture-github-bearer_vault",
+        "action": "upgrade_github",
+        "review": {
+          "kind": "mcp",
+          "connectorId": "fixture-github-bearer_vault",
+          "connectorSha256": "acda5e7a7f55b22552a31c2a53748c73404b52a7aae8e444f186709bd104e492",
+          "contractsSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "configurationSha256": "b981069e61ea2a7d20479f9054ea68789c1b3c0c17a45e8f18138119096ae014",
+          "reviewFingerprint": null,
+          "credentialVersion": 7,
+          "reviewSha256": "706dceda2a65768ca3f6548d139bb06454f82b39a1f2332b9cb99a243ecf5172"
+        },
+        "preview": null
+      }
+    },
+    "attempt": {
+      "contract": "asael-github-upgrade-attempt:1",
+      "id": "github-upgrade-attempt:2bfb19b7c38a5b2df912b442f4a304f0014a0b59311a0cb0f913874b86c8e777",
+      "scope": {
+        "tenantId": "github-upgrade-fixture",
+        "ownerActorId": "owner@example.test",
+        "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+      },
+      "keySha256": "f8a5b694db03110db19e38b2a925541f5c918d2bea5ed5e6d93ade8925c33468",
+      "intentSha256": "9554506260cfd0fee77067963e5b95cd1abd1beafb720efebd3661de4756cecd",
+      "connectorId": "fixture-github-bearer_vault",
+      "reviewSha256": "706dceda2a65768ca3f6548d139bb06454f82b39a1f2332b9cb99a243ecf5172",
+      "targetEndpoint": "https://api.githubcopilot.com/mcp/x/all",
+      "startedAt": "2026-10-05T10:00:00.000Z",
+      "expiresAt": "2026-10-05T10:00:45.000Z",
+      "attemptSha256": "bc87f57ccdf4296950dc3ffec98ba1503cd0a4eb554729a96d6d78db4f537891"
+    },
+    "settlement": {
+      "contract": "asael-github-upgrade-settlement:1",
+      "attemptId": "github-upgrade-attempt:2bfb19b7c38a5b2df912b442f4a304f0014a0b59311a0cb0f913874b86c8e777",
+      "attemptSha256": "bc87f57ccdf4296950dc3ffec98ba1503cd0a4eb554729a96d6d78db4f537891",
+      "settledAt": "2026-10-05T10:00:01.000Z",
+      "result": {
+        "status": "complete",
+        "kind": "mcp",
+        "connectorId": "fixture-github-bearer_vault",
+        "connectorStatus": "disabled",
+        "endpoint": "https://api.githubcopilot.com/mcp/x/all",
+        "defaultRiskLevel": 2,
+        "approvalRequired": false,
+        "contractCount": 2,
+        "pendingCount": 2,
+        "credentialVersion": 7,
+        "review": {
+          "kind": "mcp",
+          "connectorId": "fixture-github-bearer_vault",
+          "connectorSha256": "c6aeb3ba78c091e7522c487e3590f17dffda1b56ff237324e1f8f32ce1f12087",
+          "contractsSha256": "2b761684ba77125d77549231eb5ae072cd9e5324e2dcadf975741088eca951f5",
+          "configurationSha256": "80b394405ce6b312b080c5be1f85da4bec01064b65dd7d64c80417df9e499c79",
+          "reviewFingerprint": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "credentialVersion": 7,
+          "reviewSha256": "7192595cdb1aab2cac68ab28e45f5f7876ff0f398dab58a5944ee89a43ecd366"
+        }
+      },
+      "settlementSha256": "7f1a1804e80352dc1711e74c009582df20d2aaaff018c87e93b915a335f137f7"
+    }
+  },
+  "failed": [
+    {
+      "state": "settled",
+      "intent": {
+        "contract": "asael-connector-action-intent:1",
+        "scope": {
+          "tenantId": "github-upgrade-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "f8a5b694db03110db19e38b2a925541f5c918d2bea5ed5e6d93ade8925c33468",
+        "request": {
+          "contract": "asael-connector-lifecycle-action:1",
+          "kind": "mcp",
+          "connectorId": "fixture-github-bearer_vault",
+          "action": "upgrade_github",
+          "review": {
+            "kind": "mcp",
+            "connectorId": "fixture-github-bearer_vault",
+            "connectorSha256": "acda5e7a7f55b22552a31c2a53748c73404b52a7aae8e444f186709bd104e492",
+            "contractsSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "configurationSha256": "b981069e61ea2a7d20479f9054ea68789c1b3c0c17a45e8f18138119096ae014",
+            "reviewFingerprint": null,
+            "credentialVersion": 7,
+            "reviewSha256": "706dceda2a65768ca3f6548d139bb06454f82b39a1f2332b9cb99a243ecf5172"
+          },
+          "preview": null
+        }
+      },
+      "attempt": {
+        "contract": "asael-github-upgrade-attempt:1",
+        "id": "github-upgrade-attempt:2bfb19b7c38a5b2df912b442f4a304f0014a0b59311a0cb0f913874b86c8e777",
+        "scope": {
+          "tenantId": "github-upgrade-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "f8a5b694db03110db19e38b2a925541f5c918d2bea5ed5e6d93ade8925c33468",
+        "intentSha256": "9554506260cfd0fee77067963e5b95cd1abd1beafb720efebd3661de4756cecd",
+        "connectorId": "fixture-github-bearer_vault",
+        "reviewSha256": "706dceda2a65768ca3f6548d139bb06454f82b39a1f2332b9cb99a243ecf5172",
+        "targetEndpoint": "https://api.githubcopilot.com/mcp/x/all",
+        "startedAt": "2026-10-05T10:00:00.000Z",
+        "expiresAt": "2026-10-05T10:00:45.000Z",
+        "attemptSha256": "bc87f57ccdf4296950dc3ffec98ba1503cd0a4eb554729a96d6d78db4f537891"
+      },
+      "settlement": {
+        "contract": "asael-github-upgrade-settlement:1",
+        "attemptId": "github-upgrade-attempt:2bfb19b7c38a5b2df912b442f4a304f0014a0b59311a0cb0f913874b86c8e777",
+        "attemptSha256": "bc87f57ccdf4296950dc3ffec98ba1503cd0a4eb554729a96d6d78db4f537891",
+        "settledAt": "2026-10-05T10:00:01.000Z",
+        "result": {
+          "status": "failed",
+          "kind": "mcp",
+          "connectorId": "fixture-github-bearer_vault",
+          "failureCode": "discovery_failed"
+        },
+        "settlementSha256": "fd504e07cc6c167f2cc9484560a3d1316801e4d03e6e2d9d2ba28d2bbeede6e1"
+      }
+    },
+    {
+      "state": "settled",
+      "intent": {
+        "contract": "asael-connector-action-intent:1",
+        "scope": {
+          "tenantId": "github-upgrade-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "f8a5b694db03110db19e38b2a925541f5c918d2bea5ed5e6d93ade8925c33468",
+        "request": {
+          "contract": "asael-connector-lifecycle-action:1",
+          "kind": "mcp",
+          "connectorId": "fixture-github-bearer_vault",
+          "action": "upgrade_github",
+          "review": {
+            "kind": "mcp",
+            "connectorId": "fixture-github-bearer_vault",
+            "connectorSha256": "acda5e7a7f55b22552a31c2a53748c73404b52a7aae8e444f186709bd104e492",
+            "contractsSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "configurationSha256": "b981069e61ea2a7d20479f9054ea68789c1b3c0c17a45e8f18138119096ae014",
+            "reviewFingerprint": null,
+            "credentialVersion": 7,
+            "reviewSha256": "706dceda2a65768ca3f6548d139bb06454f82b39a1f2332b9cb99a243ecf5172"
+          },
+          "preview": null
+        }
+      },
+      "attempt": {
+        "contract": "asael-github-upgrade-attempt:1",
+        "id": "github-upgrade-attempt:2bfb19b7c38a5b2df912b442f4a304f0014a0b59311a0cb0f913874b86c8e777",
+        "scope": {
+          "tenantId": "github-upgrade-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "f8a5b694db03110db19e38b2a925541f5c918d2bea5ed5e6d93ade8925c33468",
+        "intentSha256": "9554506260cfd0fee77067963e5b95cd1abd1beafb720efebd3661de4756cecd",
+        "connectorId": "fixture-github-bearer_vault",
+        "reviewSha256": "706dceda2a65768ca3f6548d139bb06454f82b39a1f2332b9cb99a243ecf5172",
+        "targetEndpoint": "https://api.githubcopilot.com/mcp/x/all",
+        "startedAt": "2026-10-05T10:00:00.000Z",
+        "expiresAt": "2026-10-05T10:00:45.000Z",
+        "attemptSha256": "bc87f57ccdf4296950dc3ffec98ba1503cd0a4eb554729a96d6d78db4f537891"
+      },
+      "settlement": {
+        "contract": "asael-github-upgrade-settlement:1",
+        "attemptId": "github-upgrade-attempt:2bfb19b7c38a5b2df912b442f4a304f0014a0b59311a0cb0f913874b86c8e777",
+        "attemptSha256": "bc87f57ccdf4296950dc3ffec98ba1503cd0a4eb554729a96d6d78db4f537891",
+        "settledAt": "2026-10-05T10:00:01.000Z",
+        "result": {
+          "status": "failed",
+          "kind": "mcp",
+          "connectorId": "fixture-github-bearer_vault",
+          "failureCode": "catalog_unreviewable"
+        },
+        "settlementSha256": "2a6f3448b9a842e104ac630a7d3c414eb0eb9dbbf2fca2e38e0ab96484085855"
+      }
+    },
+    {
+      "state": "settled",
+      "intent": {
+        "contract": "asael-connector-action-intent:1",
+        "scope": {
+          "tenantId": "github-upgrade-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "f8a5b694db03110db19e38b2a925541f5c918d2bea5ed5e6d93ade8925c33468",
+        "request": {
+          "contract": "asael-connector-lifecycle-action:1",
+          "kind": "mcp",
+          "connectorId": "fixture-github-bearer_vault",
+          "action": "upgrade_github",
+          "review": {
+            "kind": "mcp",
+            "connectorId": "fixture-github-bearer_vault",
+            "connectorSha256": "acda5e7a7f55b22552a31c2a53748c73404b52a7aae8e444f186709bd104e492",
+            "contractsSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "configurationSha256": "b981069e61ea2a7d20479f9054ea68789c1b3c0c17a45e8f18138119096ae014",
+            "reviewFingerprint": null,
+            "credentialVersion": 7,
+            "reviewSha256": "706dceda2a65768ca3f6548d139bb06454f82b39a1f2332b9cb99a243ecf5172"
+          },
+          "preview": null
+        }
+      },
+      "attempt": {
+        "contract": "asael-github-upgrade-attempt:1",
+        "id": "github-upgrade-attempt:2bfb19b7c38a5b2df912b442f4a304f0014a0b59311a0cb0f913874b86c8e777",
+        "scope": {
+          "tenantId": "github-upgrade-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "f8a5b694db03110db19e38b2a925541f5c918d2bea5ed5e6d93ade8925c33468",
+        "intentSha256": "9554506260cfd0fee77067963e5b95cd1abd1beafb720efebd3661de4756cecd",
+        "connectorId": "fixture-github-bearer_vault",
+        "reviewSha256": "706dceda2a65768ca3f6548d139bb06454f82b39a1f2332b9cb99a243ecf5172",
+        "targetEndpoint": "https://api.githubcopilot.com/mcp/x/all",
+        "startedAt": "2026-10-05T10:00:00.000Z",
+        "expiresAt": "2026-10-05T10:00:45.000Z",
+        "attemptSha256": "bc87f57ccdf4296950dc3ffec98ba1503cd0a4eb554729a96d6d78db4f537891"
+      },
+      "settlement": {
+        "contract": "asael-github-upgrade-settlement:1",
+        "attemptId": "github-upgrade-attempt:2bfb19b7c38a5b2df912b442f4a304f0014a0b59311a0cb0f913874b86c8e777",
+        "attemptSha256": "bc87f57ccdf4296950dc3ffec98ba1503cd0a4eb554729a96d6d78db4f537891",
+        "settledAt": "2026-10-05T10:00:01.000Z",
+        "result": {
+          "status": "failed",
+          "kind": "mcp",
+          "connectorId": "fixture-github-bearer_vault",
+          "failureCode": "target_changed"
+        },
+        "settlementSha256": "b094018507ab87af22b0ff99e03ee2fef41d53577aa5c3b1bfb5d6a9eca4ec50"
+      }
+    },
+    {
+      "state": "settled",
+      "intent": {
+        "contract": "asael-connector-action-intent:1",
+        "scope": {
+          "tenantId": "github-upgrade-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "f8a5b694db03110db19e38b2a925541f5c918d2bea5ed5e6d93ade8925c33468",
+        "request": {
+          "contract": "asael-connector-lifecycle-action:1",
+          "kind": "mcp",
+          "connectorId": "fixture-github-bearer_vault",
+          "action": "upgrade_github",
+          "review": {
+            "kind": "mcp",
+            "connectorId": "fixture-github-bearer_vault",
+            "connectorSha256": "acda5e7a7f55b22552a31c2a53748c73404b52a7aae8e444f186709bd104e492",
+            "contractsSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "configurationSha256": "b981069e61ea2a7d20479f9054ea68789c1b3c0c17a45e8f18138119096ae014",
+            "reviewFingerprint": null,
+            "credentialVersion": 7,
+            "reviewSha256": "706dceda2a65768ca3f6548d139bb06454f82b39a1f2332b9cb99a243ecf5172"
+          },
+          "preview": null
+        }
+      },
+      "attempt": {
+        "contract": "asael-github-upgrade-attempt:1",
+        "id": "github-upgrade-attempt:2bfb19b7c38a5b2df912b442f4a304f0014a0b59311a0cb0f913874b86c8e777",
+        "scope": {
+          "tenantId": "github-upgrade-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "f8a5b694db03110db19e38b2a925541f5c918d2bea5ed5e6d93ade8925c33468",
+        "intentSha256": "9554506260cfd0fee77067963e5b95cd1abd1beafb720efebd3661de4756cecd",
+        "connectorId": "fixture-github-bearer_vault",
+        "reviewSha256": "706dceda2a65768ca3f6548d139bb06454f82b39a1f2332b9cb99a243ecf5172",
+        "targetEndpoint": "https://api.githubcopilot.com/mcp/x/all",
+        "startedAt": "2026-10-05T10:00:00.000Z",
+        "expiresAt": "2026-10-05T10:00:45.000Z",
+        "attemptSha256": "bc87f57ccdf4296950dc3ffec98ba1503cd0a4eb554729a96d6d78db4f537891"
+      },
+      "settlement": {
+        "contract": "asael-github-upgrade-settlement:1",
+        "attemptId": "github-upgrade-attempt:2bfb19b7c38a5b2df912b442f4a304f0014a0b59311a0cb0f913874b86c8e777",
+        "attemptSha256": "bc87f57ccdf4296950dc3ffec98ba1503cd0a4eb554729a96d6d78db4f537891",
+        "settledAt": "2026-10-05T10:00:45.000Z",
+        "result": {
+          "status": "failed",
+          "kind": "mcp",
+          "connectorId": "fixture-github-bearer_vault",
+          "failureCode": "deadline_exceeded"
+        },
+        "settlementSha256": "e7d391321e6f3c94f77ab95e3fa21332832a25a671215ae34ed3bee62a383782"
+      }
+    }
+  ],
+  "closeRequest": {
+    "contract": "asael-github-upgrade-close:1",
+    "intent": {
+      "contract": "asael-connector-action-intent:1",
+      "scope": {
+        "tenantId": "github-upgrade-fixture",
+        "ownerActorId": "owner@example.test",
+        "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+      },
+      "keySha256": "f8a5b694db03110db19e38b2a925541f5c918d2bea5ed5e6d93ade8925c33468",
+      "request": {
+        "contract": "asael-connector-lifecycle-action:1",
+        "kind": "mcp",
+        "connectorId": "fixture-github-bearer_vault",
+        "action": "upgrade_github",
+        "review": {
+          "kind": "mcp",
+          "connectorId": "fixture-github-bearer_vault",
+          "connectorSha256": "acda5e7a7f55b22552a31c2a53748c73404b52a7aae8e444f186709bd104e492",
+          "contractsSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "configurationSha256": "b981069e61ea2a7d20479f9054ea68789c1b3c0c17a45e8f18138119096ae014",
+          "reviewFingerprint": null,
+          "credentialVersion": 7,
+          "reviewSha256": "706dceda2a65768ca3f6548d139bb06454f82b39a1f2332b9cb99a243ecf5172"
+        },
+        "preview": null
+      }
+    }
+  },
+  "closedAttempt": {
+    "state": "closed",
+    "intent": {
+      "contract": "asael-connector-action-intent:1",
+      "scope": {
+        "tenantId": "github-upgrade-fixture",
+        "ownerActorId": "owner@example.test",
+        "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+      },
+      "keySha256": "f8a5b694db03110db19e38b2a925541f5c918d2bea5ed5e6d93ade8925c33468",
+      "request": {
+        "contract": "asael-connector-lifecycle-action:1",
+        "kind": "mcp",
+        "connectorId": "fixture-github-bearer_vault",
+        "action": "upgrade_github",
+        "review": {
+          "kind": "mcp",
+          "connectorId": "fixture-github-bearer_vault",
+          "connectorSha256": "acda5e7a7f55b22552a31c2a53748c73404b52a7aae8e444f186709bd104e492",
+          "contractsSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "configurationSha256": "b981069e61ea2a7d20479f9054ea68789c1b3c0c17a45e8f18138119096ae014",
+          "reviewFingerprint": null,
+          "credentialVersion": 7,
+          "reviewSha256": "706dceda2a65768ca3f6548d139bb06454f82b39a1f2332b9cb99a243ecf5172"
+        },
+        "preview": null
+      }
+    },
+    "attempt": {
+      "contract": "asael-github-upgrade-attempt:1",
+      "id": "github-upgrade-attempt:2bfb19b7c38a5b2df912b442f4a304f0014a0b59311a0cb0f913874b86c8e777",
+      "scope": {
+        "tenantId": "github-upgrade-fixture",
+        "ownerActorId": "owner@example.test",
+        "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+      },
+      "keySha256": "f8a5b694db03110db19e38b2a925541f5c918d2bea5ed5e6d93ade8925c33468",
+      "intentSha256": "9554506260cfd0fee77067963e5b95cd1abd1beafb720efebd3661de4756cecd",
+      "connectorId": "fixture-github-bearer_vault",
+      "reviewSha256": "706dceda2a65768ca3f6548d139bb06454f82b39a1f2332b9cb99a243ecf5172",
+      "targetEndpoint": "https://api.githubcopilot.com/mcp/x/all",
+      "startedAt": "2026-10-05T10:00:00.000Z",
+      "expiresAt": "2026-10-05T10:00:45.000Z",
+      "attemptSha256": "bc87f57ccdf4296950dc3ffec98ba1503cd0a4eb554729a96d6d78db4f537891"
+    },
+    "closure": {
+      "contract": "asael-github-upgrade-closure:1",
+      "scope": {
+        "tenantId": "github-upgrade-fixture",
+        "ownerActorId": "owner@example.test",
+        "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+      },
+      "keySha256": "f8a5b694db03110db19e38b2a925541f5c918d2bea5ed5e6d93ade8925c33468",
+      "intentSha256": "9554506260cfd0fee77067963e5b95cd1abd1beafb720efebd3661de4756cecd",
+      "attemptId": "github-upgrade-attempt:2bfb19b7c38a5b2df912b442f4a304f0014a0b59311a0cb0f913874b86c8e777",
+      "attemptSha256": "bc87f57ccdf4296950dc3ffec98ba1503cd0a4eb554729a96d6d78db4f537891",
+      "closedAt": "2026-10-05T10:00:02.000Z",
+      "closureSha256": "dccb5db86570016fcbc33c33ea56b1f4d15415c7d24b8f2e256d8512458c5372"
+    }
+  },
+  "closedAbsent": {
+    "state": "closed",
+    "intent": {
+      "contract": "asael-connector-action-intent:1",
+      "scope": {
+        "tenantId": "github-upgrade-fixture",
+        "ownerActorId": "owner@example.test",
+        "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+      },
+      "keySha256": "f8a5b694db03110db19e38b2a925541f5c918d2bea5ed5e6d93ade8925c33468",
+      "request": {
+        "contract": "asael-connector-lifecycle-action:1",
+        "kind": "mcp",
+        "connectorId": "fixture-github-bearer_vault",
+        "action": "upgrade_github",
+        "review": {
+          "kind": "mcp",
+          "connectorId": "fixture-github-bearer_vault",
+          "connectorSha256": "acda5e7a7f55b22552a31c2a53748c73404b52a7aae8e444f186709bd104e492",
+          "contractsSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "configurationSha256": "b981069e61ea2a7d20479f9054ea68789c1b3c0c17a45e8f18138119096ae014",
+          "reviewFingerprint": null,
+          "credentialVersion": 7,
+          "reviewSha256": "706dceda2a65768ca3f6548d139bb06454f82b39a1f2332b9cb99a243ecf5172"
+        },
+        "preview": null
+      }
+    },
+    "attempt": null,
+    "closure": {
+      "contract": "asael-github-upgrade-closure:1",
+      "scope": {
+        "tenantId": "github-upgrade-fixture",
+        "ownerActorId": "owner@example.test",
+        "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+      },
+      "keySha256": "f8a5b694db03110db19e38b2a925541f5c918d2bea5ed5e6d93ade8925c33468",
+      "intentSha256": "9554506260cfd0fee77067963e5b95cd1abd1beafb720efebd3661de4756cecd",
+      "attemptId": null,
+      "attemptSha256": null,
+      "closedAt": "2026-10-05T10:00:02.000Z",
+      "closureSha256": "53a90ad39c8e9e72c4b7593abdcdf3f27186ff6f99c1dbdacf81bca942ae84ed"
+    }
+  },
+  "closeSettled": {
+    "state": "settled",
+    "intent": {
+      "contract": "asael-connector-action-intent:1",
+      "scope": {
+        "tenantId": "github-upgrade-fixture",
+        "ownerActorId": "owner@example.test",
+        "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+      },
+      "keySha256": "f8a5b694db03110db19e38b2a925541f5c918d2bea5ed5e6d93ade8925c33468",
+      "request": {
+        "contract": "asael-connector-lifecycle-action:1",
+        "kind": "mcp",
+        "connectorId": "fixture-github-bearer_vault",
+        "action": "upgrade_github",
+        "review": {
+          "kind": "mcp",
+          "connectorId": "fixture-github-bearer_vault",
+          "connectorSha256": "acda5e7a7f55b22552a31c2a53748c73404b52a7aae8e444f186709bd104e492",
+          "contractsSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "configurationSha256": "b981069e61ea2a7d20479f9054ea68789c1b3c0c17a45e8f18138119096ae014",
+          "reviewFingerprint": null,
+          "credentialVersion": 7,
+          "reviewSha256": "706dceda2a65768ca3f6548d139bb06454f82b39a1f2332b9cb99a243ecf5172"
+        },
+        "preview": null
+      }
+    },
+    "attempt": {
+      "contract": "asael-github-upgrade-attempt:1",
+      "id": "github-upgrade-attempt:2bfb19b7c38a5b2df912b442f4a304f0014a0b59311a0cb0f913874b86c8e777",
+      "scope": {
+        "tenantId": "github-upgrade-fixture",
+        "ownerActorId": "owner@example.test",
+        "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+      },
+      "keySha256": "f8a5b694db03110db19e38b2a925541f5c918d2bea5ed5e6d93ade8925c33468",
+      "intentSha256": "9554506260cfd0fee77067963e5b95cd1abd1beafb720efebd3661de4756cecd",
+      "connectorId": "fixture-github-bearer_vault",
+      "reviewSha256": "706dceda2a65768ca3f6548d139bb06454f82b39a1f2332b9cb99a243ecf5172",
+      "targetEndpoint": "https://api.githubcopilot.com/mcp/x/all",
+      "startedAt": "2026-10-05T10:00:00.000Z",
+      "expiresAt": "2026-10-05T10:00:45.000Z",
+      "attemptSha256": "bc87f57ccdf4296950dc3ffec98ba1503cd0a4eb554729a96d6d78db4f537891"
+    },
+    "settlement": {
+      "contract": "asael-github-upgrade-settlement:1",
+      "attemptId": "github-upgrade-attempt:2bfb19b7c38a5b2df912b442f4a304f0014a0b59311a0cb0f913874b86c8e777",
+      "attemptSha256": "bc87f57ccdf4296950dc3ffec98ba1503cd0a4eb554729a96d6d78db4f537891",
+      "settledAt": "2026-10-05T10:00:01.000Z",
+      "result": {
+        "status": "complete",
+        "kind": "mcp",
+        "connectorId": "fixture-github-bearer_vault",
+        "connectorStatus": "disabled",
+        "endpoint": "https://api.githubcopilot.com/mcp/x/all",
+        "defaultRiskLevel": 2,
+        "approvalRequired": false,
+        "contractCount": 2,
+        "pendingCount": 2,
+        "credentialVersion": 7,
+        "review": {
+          "kind": "mcp",
+          "connectorId": "fixture-github-bearer_vault",
+          "connectorSha256": "c6aeb3ba78c091e7522c487e3590f17dffda1b56ff237324e1f8f32ce1f12087",
+          "contractsSha256": "2b761684ba77125d77549231eb5ae072cd9e5324e2dcadf975741088eca951f5",
+          "configurationSha256": "80b394405ce6b312b080c5be1f85da4bec01064b65dd7d64c80417df9e499c79",
+          "reviewFingerprint": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "credentialVersion": 7,
+          "reviewSha256": "7192595cdb1aab2cac68ab28e45f5f7876ff0f398dab58a5944ee89a43ecd366"
+        }
+      },
+      "settlementSha256": "7f1a1804e80352dc1711e74c009582df20d2aaaff018c87e93b915a335f137f7"
+    }
+  }
+}

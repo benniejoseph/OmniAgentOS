@@ -8,7 +8,7 @@
       "platform": "macos",
       "appVersion": "1.0.0",
       "buildNumber": 2,
-      "clientContractVersion": 44
+      "clientContractVersion": 47
     }
   },
   "refreshRequest": {
@@ -18,7 +18,7 @@
       "platform": "macos",
       "appVersion": "1.0.0",
       "buildNumber": 2,
-      "clientContractVersion": 44
+      "clientContractVersion": 47
     }
   },
   "conversationRequest": {
