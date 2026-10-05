@@ -101,9 +101,16 @@ class _CompanionPresenceState extends State<CompanionPresence> {
     final preferences = widget.preferences;
     final presentation = _presentation;
     final reduced = MediaQuery.disableAnimationsOf(context);
-    final motion = preferences == null
-        ? 'off'
-        : companionEffectiveMotion(preferences, reduced);
+    final motionPreference = switch (preferences?.motion) {
+      'full' => 'Full',
+      'reduced' => 'Reduced',
+      _ => 'Off',
+    };
+    final motionLimit = reduced
+        ? 'System Reduce Motion keeps ATLAS still.'
+        : preferences?.motion == 'full'
+        ? 'System motion and power settings may keep ATLAS still.'
+        : 'ATLAS stays still.';
     final color = Theme.of(context).colorScheme;
     final needsAttention = const {
       'needs_you',
@@ -210,9 +217,7 @@ class _CompanionPresenceState extends State<CompanionPresence> {
                         if (preferences != null &&
                             preferences.intensity != 'quiet')
                           Text(
-                            motion == 'full'
-                                ? 'ATLAS motion is on.'
-                                : 'ATLAS motion: $motion.',
+                            'Motion preference: $motionPreference. $motionLimit',
                             style: TextStyle(
                               fontSize: 13,
                               color: color.onSurfaceVariant,

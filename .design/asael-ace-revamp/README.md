@@ -1,16 +1,16 @@
 # Asael UI revamp and companion plan
 
-**Status: first web implementation slice in progress.** Operational code follow-ups and the design plan are merged. See [implementation scope and evidence](IMPLEMENTATION.md); the complete revamp is not yet delivered.
+**Current status — 5 October 2026:** the core web/native UI revamp and reviewed ATLAS bundle are implemented and accepted through PR72. Two small native presentation corrections pass focused validation and await packaging/hosted acceptance. Production promotion, installation and physical-device acceptance remain pending. See [current delivery status and priority](CURRENT_STATUS.md) for remaining work and estimates; the original planning baseline below is retained history.
 
-**Latest decision:** 3 October 2026, Asia/Kolkata.
+**Original planning decision:** 3 October 2026, Asia/Kolkata.
 
-**Implementation baseline:** `origin/main` at `dc1cfe6e9c51e84f85c78bb482fe1d082dfc735a` (`dc1cfe6e`, includes PRs #9–#13).
+**Original implementation baseline:** `origin/main` at `dc1cfe6e9c51e84f85c78bb482fe1d082dfc735a` (`dc1cfe6e`, includes PRs #9–#13).
 
 **Approved UI direction:** elegant light conversation and graphite voice interface.
 
 **Selected character:** ATLAS, an original eagle, with energetic wit, expressive reactions and Kevin-Hart-inspired comic timing in its own identity and voice.
 
-The original route inspection began at `e5f1f5b9ffc4e80c8c536af75024f10cbbdcbb94`; the 38 web routes and native route definitions remain unchanged at the baseline above. The first slice migrates shared web presentation, Today and Command. Production character assets remain outstanding.
+The original route inspection began at `e5f1f5b9ffc4e80c8c536af75024f10cbbdcbb94`; the 38 web routes and native route definitions remain unchanged at the baseline above. The first slice originally covered shared web presentation, Today and Command. Those surfaces and the reviewed raster character bundle have since been accepted; see the current status above.
 
 This plan covers all 38 current web page routes, their shared surfaces, and the Flutter/mobile/macOS route families. It separates visual migration from new functionality. Source inspection establishes what is implemented in this checkout; it does not certify production configuration, rollout activation, or runtime health.
 
@@ -44,7 +44,7 @@ The first usable milestone is the companion experience over today's capabilities
 - Web establishes the reviewed visual system first. Native asset feasibility is tested at the start, and shared contracts stay compatible while mobile/macOS presentation follows by family.
 - ATLAS is the selected original eagle character. Asael remains the product and assistant name; the appearance does not replace the executing Agent/principal. The existing Supervisor Agent is also named Atlas, so visual selection must not rewrite its charter or other specialist personas.
 - Both light and dark themes apply across the product. Voice respects the selected theme, with the approved graphite treatment as its dark reference.
-- The owner has authorized the implementation sequence after the operational follow-ups. The first presentation slice is now in progress; new runtime flags, dependencies, migrations, endpoints and character assets are outside that slice. See the evidence record for actual validation and delivery status.
+- The owner authorized the implementation sequence and has renewed UI/ATLAS priority. The original first-slice exclusions are historical; current scope and delivery limits are recorded in CURRENT_STATUS.md.
 - Scheduling estimates should follow the first asset/rendering spike and a representative page slice. The sequencing and acceptance gates are defined now; a calendar promise would hide the current 3D/native uncertainty.
 
 ## Design precedence

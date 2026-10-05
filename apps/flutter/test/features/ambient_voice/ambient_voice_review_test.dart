@@ -6,12 +6,16 @@ import 'package:asael/core/storage/secure_session_store.dart';
 import 'package:asael/features/ambient_voice/ambient_voice_consent.dart';
 import 'package:asael/features/ambient_voice/ambient_voice_view.dart';
 import 'package:asael/features/ambient_voice/realtime_voice_controller.dart';
+import 'package:asael/features/companion/atlas_player.dart';
+import 'package:asael/features/companion/companion_presentation.dart';
 import 'package:asael/features/talk/talk.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import '../companion/companion_fixtures.dart';
 
 class _Api extends Fake implements ApiClient {}
 
@@ -441,13 +445,22 @@ void main() {
   group('review surface', () {
     Widget surface({
       required AmbientVoiceConfidenceBand band,
+      AmbientVoicePhase phase = AmbientVoicePhase.review,
+      CompanionWork work = availableCompanion,
+      bool replyReady = false,
+      bool microphoneActive = false,
+      bool playbackActive = false,
       bool reviewRequired = false,
       bool reviewAttested = false,
       ValueChanged<bool>? onReviewAttested,
       VoidCallback? onSend,
     }) => MaterialApp(
       home: AmbientVoiceSurface(
-        phase: AmbientVoicePhase.review,
+        phase: phase,
+        work: work,
+        replyReady: replyReady,
+        microphoneActive: microphoneActive,
+        playbackActive: playbackActive,
         level: 0,
         transcript: _request,
         useThisMac: false,
@@ -466,6 +479,83 @@ void main() {
         onReviewAttested: onReviewAttested,
       ),
     );
+
+    testWidgets('static portrait follows work and attention without replay', (
+      tester,
+    ) async {
+      for (final (phase, work, state) in [
+        (
+          AmbientVoicePhase.running,
+          companionWork(status: 'running', runId: 'run:1'),
+          'working',
+        ),
+        (
+          AmbientVoicePhase.approval,
+          companionWork(status: 'waiting_approval', runId: 'run:1'),
+          'needs_you',
+        ),
+        (
+          AmbientVoicePhase.asleep,
+          companionWork(status: 'paused', runId: 'run:1'),
+          'paused',
+        ),
+        (AmbientVoicePhase.offline, availableCompanion, 'blocked'),
+        (AmbientVoicePhase.error, availableCompanion, 'blocked'),
+        (AmbientVoicePhase.transcribing, availableCompanion, 'working'),
+        (AmbientVoicePhase.review, availableCompanion, 'needs_you'),
+      ]) {
+        await tester.pumpWidget(
+          surface(
+            band: AmbientVoiceConfidenceBand.high,
+            phase: phase,
+            work: work,
+          ),
+        );
+        final portrait = tester.widget<AtlasPortrait>(
+          find.byType(AtlasPortrait),
+        );
+        expect(portrait.state, state);
+        expect(portrait.reactionKey, isNull);
+        expect(tester.takeException(), isNull);
+      }
+    });
+
+    testWidgets('verified work supplies completion and actual audio wins', (
+      tester,
+    ) async {
+      final verified = companionWork(
+        status: 'completed',
+        runId: 'run:1',
+        terminalReceipt: verifiedTerminalFixture(),
+      );
+      final unverified = companionWork(status: 'completed', runId: 'run:1');
+      for (final (work, microphone, playback, state) in [
+        (verified, false, false, 'completed'),
+        (unverified, false, false, 'available'),
+        (verified, true, false, 'listening'),
+        (verified, true, true, 'responding'),
+        (verified, false, false, 'completed'),
+      ]) {
+        await tester.pumpWidget(
+          surface(
+            band: AmbientVoiceConfidenceBand.high,
+            phase: AmbientVoicePhase.completed,
+            work: work,
+            microphoneActive: microphone,
+            playbackActive: playback,
+          ),
+        );
+        final portrait = tester.widget<AtlasPortrait>(
+          find.byType(AtlasPortrait),
+        );
+        expect(portrait.state, state);
+        expect(portrait.reactionKey, isNull);
+        if (microphone || playback) {
+          expect(find.text('Work: Completed'), findsOneWidget);
+        }
+        expect(tester.takeException(), isNull);
+      }
+    });
 
     testWidgets('shows how confidently the transcript was recognized', (
       tester,
@@ -636,6 +726,10 @@ void main() {
         expect(repository.sent, [_request]);
         expect(find.text('Reply ready'), findsOneWidget);
         expect(find.text('Completed'), findsNothing);
+        expect(
+          tester.widget<AtlasPortrait>(find.byType(AtlasPortrait)).state,
+          'available',
+        );
         expect(find.text('Not spoken'), findsOneWidget);
         expect(
           find.byTooltip('Asael could not play the answer aloud.'),

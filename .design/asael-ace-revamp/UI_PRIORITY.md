@@ -1,8 +1,10 @@
 # UI and ATLAS priority — 5 October 2026
 
+**Current execution status — 5 October 2026:** [UI and ATLAS delivery status](CURRENT_STATUS.md) records accepted PR72, the two bounded native UI corrections, the parked OpenAPI candidate, and release prerequisites. The dated sections below retain their original checkpoint evidence.
+
 The owner explicitly prioritized the UI revamp and ATLAS, asking to stabilize the current release and return to connector expansion afterward. The full implementation plan remains in scope; this changes execution order.
 
-## Current execution order
+## Earlier execution order
 
 The UI/ATLAS implementation through PR69 and native MCP registration through PR71
 are accepted. Complete acceptance of the HELD01 measurement harness/documentation
@@ -12,7 +14,7 @@ rediscovery and GitHub expansion remain parked. Production promotion retains its
 existing operator and paired-release gates; installation, physical-device and
 pilot acceptance remain separate.
 
-## Current release checkpoint
+## Earlier release checkpoint
 
 The release baseline for this follow-up is **PR71**, preserving UI/ATLAS work through
 PR69 and completing native MCP registration v44. All sixteen hosted checks passed

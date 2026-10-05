@@ -1,5 +1,7 @@
 # ATLAS implementation evidence
 
+**Current execution status — 5 October 2026:** [UI and ATLAS delivery status](CURRENT_STATUS.md) records accepted PR72, the two bounded native UI corrections, the parked OpenAPI candidate, and release prerequisites. The dated sections below retain their original checkpoint evidence.
+
 ## First web slice — merged, 3 October 2026
 
 Source baseline: `dc1cfe6e9c51e84f85c78bb482fe1d082dfc735a` on `main`,
