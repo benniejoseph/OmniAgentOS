@@ -54,7 +54,7 @@ connector with every operation pending review and makes no API connectivity clai
 
 Apply migration 242 (`20261005210000_native_openapi_imports.sql`) after 241,
 using the existing backup, quiescence and verification procedure before serving
-v45 or distributing app `1.23.29+65`. It adds
+v45 or distributing app `1.23.31+67`. It adds
 `omni_native_openapi_import_preparations`, taking the tenant inventory to 266,
 and admits only the distinct `import_openapi` family in the shared action ledger.
 Existing connector control and preparation records remain unchanged. Preserve the
