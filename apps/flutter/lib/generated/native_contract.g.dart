@@ -3,9 +3,9 @@
 
 abstract final class NativeContract {
   static const id = 'asael.native-api';
-  static const currentVersion = 43;
-  static const previousVersion = 42;
-  static const supportedVersions = <int>[43, 42];
+  static const currentVersion = 44;
+  static const previousVersion = 43;
+  static const supportedVersions = <int>[44, 43];
   static const discoveryPath = '/api/mobile/contracts';
   static const operationIds = <String>{
     'auth.login',
@@ -266,6 +266,11 @@ abstract final class NativeContract {
     'connectors.native.credentialPreparations.abandon',
     'connectors.native.credentialRotations.submit',
     'connectors.native.credentialRotations.read',
+    'connectors.native.mcpRegistrationPreparations.submit',
+    'connectors.native.mcpRegistrationPreparations.read',
+    'connectors.native.mcpRegistrationPreparations.abandon',
+    'connectors.native.mcpRegistrations.submit',
+    'connectors.native.mcpRegistrations.read',
   };
 
   static bool supports(int version) => supportedVersions.contains(version);
@@ -1183,6 +1188,11 @@ abstract final class NativePaths {
   static String connectorsNativeCredentialPreparationsAbandon(String keySha256) => '/api/connectors/native/credential-preparations/${Uri.encodeComponent(keySha256)}/abandon';
   static const connectorsNativeCredentialRotationsSubmit = '/api/connectors/native/credential-rotations';
   static String connectorsNativeCredentialRotationsRead(String keySha256) => '/api/connectors/native/credential-rotations/${Uri.encodeComponent(keySha256)}';
+  static const connectorsNativeMcpRegistrationPreparationsSubmit = '/api/connectors/native/mcp-registration-preparations';
+  static String connectorsNativeMcpRegistrationPreparationsRead(String keySha256) => '/api/connectors/native/mcp-registration-preparations/${Uri.encodeComponent(keySha256)}';
+  static String connectorsNativeMcpRegistrationPreparationsAbandon(String keySha256) => '/api/connectors/native/mcp-registration-preparations/${Uri.encodeComponent(keySha256)}/abandon';
+  static const connectorsNativeMcpRegistrationsSubmit = '/api/connectors/native/mcp-registrations';
+  static String connectorsNativeMcpRegistrationsRead(String keySha256) => '/api/connectors/native/mcp-registrations/${Uri.encodeComponent(keySha256)}';
 }
 
 abstract final class NativeConversationEvents {
