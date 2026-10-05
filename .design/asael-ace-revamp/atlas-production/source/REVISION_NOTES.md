@@ -1,6 +1,18 @@
-# ATLAS sculpt 04, primary color 01 — retained long-feather finish
+# ATLAS sculpt 04, held 01 — clearer questioning and completion holds
 
-Current status: **local primary-feather finish retained; final character, motion and device acceptance remain open**. Creative revision: `sculpt-04-primary-color-01-continuous-wing-finish`. Matching export validity is established by this revision in the output manifest and external verification receipt. The verified wing-color01 predecessor is archived separately.
+Current status: **local held-expression improvement retained; final character, continuous motion and device acceptance remain open**. Creative revision: `sculpt-04-held-01-clearer-state-holds`. Matching export validity requires this revision in the output manifest and its external verification receipt. The complete primary-color01 export is preserved separately.
+
+`needs_you` holds a restrained questioning tilt and brow asymmetry: Head `[-2,5,6]`, BrowLeft `[-11,0,-11]`, BrowRight `[0,0,3]`, including the existing .48-second key. The original raised lids and .34 peak remain. `completed` settles to Head `[-4,0,-4]` with both upper lids at eight degrees and the wings at their existing rest. Its .64/.78 Head keys use quaternion interpolation from unchanged .48 to the new .90 endpoint; corresponding lids use linear interpolation. Every clip endpoint equals its static held pose.
+
+Only fifteen configuration vectors and six of 168 tracks change against primary-color01. All geometry, normals, UV/color, ordered indices, skin, atlas bytes, rig/binds, durations, key times, earlier peaks and wing motion remain exact. The other six states and ten complete clips are unchanged. No model-source geometry or texture change is part of this refinement.
+
+Root reviewed eleven named comparison sheets, including actual 72px summaries, both 256px holds, late frames, a 36px hold and the closed control. Independent review covered all 28 sheets / 152 captures. Both meanings improve modestly at actual 72px without increased sternness or exaggerated tilt; 36px distinction stays subtle. No newly obvious white pinhole, enlarged lid gap or detached brow appeared. All eight paused/closed control pairs are hash-identical. Existing bulky closed caps remain.
+
+Frozen baseline, candidate, scope proof, captures and decision are archived in `held01-comparison/matching-source-baseline-and-captures.tar.gz`, SHA256 `e418fa83a90b13cddf3fb77b48981e8877b9252194f90868d1bd53d111aa3fce` (16 comparison-source entries, 201 members). This is local retention, not final artistic or publication acceptance. The next step is whole-character and actual-speed playback review, especially whether brief eye closure makes the existing cap shape conspicuous. The speculative .003 assembly recession is skipped because it cannot improve frontal cap shape. The approved static portrait/greeting remains published.
+
+# Historical primary color 01 — retained long-feather finish
+
+Status at the primary-color01 checkpoint: **local primary-feather finish retained; final character, motion and device acceptance remain open**. Creative revision: `sculpt-04-primary-color-01-continuous-wing-finish`. Matching export validity is established by this revision in the output manifest and external verification receipt. The verified wing-color01 predecessor is archived separately.
 
 Exactly sixteen `curved_primary_Left/Right_0..7` vanes gain tapered lengthwise UV strips in the existing brown rear atlas. The coordinates follow the retained vane profile and reuse the same lateral values on front and rear, with no wrap or new paint. Original scalar tones are retained. The two number-5 vanes previously used the lighter feather palette; all sixteen now sample umber paint once. That accent darkening alone does not justify retention.
 

@@ -1,8 +1,38 @@
 # ATLAS actual-art review — 5 October 2026 (IST)
 
-## Primary-color01 — retained long-feather finish and verified matching export
+## Current decision — bounded raster artwork accepted
 
-The current creative revision is `sculpt-04-primary-color-01-continuous-wing-finish`.
+Root and independent review accept HELD01 for the existing decorative **72px/256px raster delivery**, following the complete matching export. Root inspected six final PNG sheets plus the reference and earlier expression/export comparisons; independent review covered all ten final PNG sheets and the approved reference. Tapered umber plumage, pale throat, golden beak, amber eyes and charcoal collar preserve the original eagle identity in a simpler stylized form. No visible blocker justifies another geometry micro-revision for this delivery. Questioning/listening and completion/paused distinctions support the authoritative text/audio state; the art is not an eight-symbol status language.
+
+The delivered 100/150ms blink samples read as a brief closure at 72px. Padded caps remain at 256px, but introduce no new visible gap or broken attachment and do not block this bounded delivery. The review does not include the unsampled 120ms peak; its separate exact-peak guard passes. Four one-pass animated previews decode to 143 exact lossless composed frames each and 22.2 seconds: 6.2 seconds of declared clip timing plus 16 seconds of explicitly labelled review-only holds. Reviewers inspected stills and verified timing; no continuous-video watching or subjective temporal-smoothness certification is claimed.
+
+Decision: `held01-final-review/review-decision.json`. The 79-member final-review/input archive `held01-final-review/matching-review-and-inputs.tar.gz` has SHA256 `c8fe4b057e321eb24b2087d809eb90f1996ef2563d7cc33f29f688f4ade18a28`. It binds preview receipt SHA256 `83a4e37aa75ef8f97cd3bc8effbfe1d564148c2dd096f05d929454cccfc70f92` and the exact HELD01 export/raster manifests below. Source/export metadata retains its pre-final-review status to preserve the verified hashes; this later separate decision establishes bounded artistic acceptance.
+
+Next is exact reviewed bundle admission on accepted UI main, native asset registration and a new release build with hosted gates. Admission/build/deployment are not claimed complete here. Live 3D delivery, lip sync, device startup/memory/energy performance and Apple notarization are outside this artistic decision. Existing static portrait/greeting, fallback, labels, preferences and non-looping lifecycle remain supported.
+
+## Release admission — source assets copied, build pending
+
+The reviewed HELD01 bundle was admitted with `scripts/atlas/publish.py --accept-reviewed` on `codex/atlas-raster-release`, based on accepted UI main `7cfeaf2e9c0268ab150e4c14637260add069b0c8`. All 33 files in each web/native destination match the reviewed export exactly; `atlas-held01-release-publication.json` and `atlas-held01-release-admission.json` retain the receipts. The native asset directory is now registered in pubspec, with release version `1.23.21+56`. Existing players, static fallback/greeting, state governance and native API v39 are unchanged. No migration is added.
+
+This is repository asset admission, not a completed app build, hosted acceptance or production deployment. The render-source metadata and full-export receipt retain their earlier pre-review state; the later bounded-art decision above authorizes this exact admission.
+
+## HELD01 export checkpoint — retained expressions and verified matching export
+
+The current creative revision is `sculpt-04-held-01-clearer-state-holds`. Root reviewed eleven matched comparison sheets; independent review covered all 28 sheets / 152 captures. The questioning hold retains clearer restrained tilt and brow asymmetry at actual 72px. Completion appears modestly more alert and satisfied than unchanged paused. Differences remain subtle at 36px; status text is authoritative. No new obvious eye-white pinhole, enlarged lid gap or detached brow appeared. All eight paused/closed control image pairs are hash-identical.
+
+Exactly fifteen configuration vectors and six of 168 animation tracks change against primary-color01. All geometry, UV/color, atlas bytes, skin, rig/binds, durations, key times, early peaks, wing motion and the other 162 tracks remain exact. Late completion Head keys use quaternion interpolation and lids linear interpolation from unchanged .48 to the new .90 endpoint. All clip endpoints match their static holds. The comparison archive binds sixteen comparison-source entries and 201 members: `held01-comparison/matching-source-baseline-and-captures.tar.gz`, SHA256 `e418fa83a90b13cddf3fb77b48981e8877b9252194f90868d1bd53d111aa3fce`.
+
+The full export completed at `2026-10-05T00:10:23.302645+00:00` and verified at `00:13:58.535547+00:00`. Nineteen sources, 104 artifacts, 33 raster files and 256 archive members verify. The self-contained GLB is 2,969,084 bytes, with unchanged 27,543 vertices, 49,844 triangles, fourteen bones, twelve clips, one material, one embedded 1024×1024 RGBA map and zero external resources. All 21 targeted model/lid checks pass.
+
+Source/exact-export comparison covers 96 captures / 48 pairs / twelve sheets. Thirty-two pairs are exact. Fifty-eight pixels differ overall: 57 by at most one channel byte, and one completed-held profile beak-outline pixel at (153,191) by 62. Root and independent review inspected its enlarged crop; it does not materially change the perceived contour, and its cause is not inferred. Root reviewed full, both held-state and closed sheets; independent review covered all twelve. Both modes pass hide/reload/dispose without page, console or rejected-network errors. These are bounded fidelity and lifecycle observations, not continuous-motion or performance certification.
+
+Full archive: `atlas-held01-review.tar.gz`, SHA256 `eb9a36ae1033884d3dd1950cf864043769b360b31b4c055bff3485413b14a6f3`. Receipt: `atlas-held01-export-verification.json`. The archive includes the frozen comparison archive. Export manifest SHA256: `cedecae54e065293e3862030fa5d95c91fad7d2a00b04fb43b71d485f6745ffc`; raster manifest SHA256: `d485ef524ff7441ea663c38a59e21e7b258f9a6186b832c9d0a3b3ce866c19a8`.
+
+At this earlier export checkpoint, whole-character and actual-speed playback review remained next, especially the existing padded closed-lid shape. The speculative .003 assembly recess is skipped because it cannot address frontal cap shape. The previous primary-color01 80-frame/16-poster review is historical for its unchanged states and earlier held expressions. The later bounded raster decision is recorded above; live 3D, subjective continuous motion, device acceptance and production deployment remain separate. The approved static portrait and greeting remain supported.
+
+## Primary-color01 — historical retained finish and verified export
+
+The creative revision at that checkpoint was `sculpt-04-primary-color-01-continuous-wing-finish`.
 Root reviewed nine comparison sheets; independent review covered all twenty-two
 sheets / 176 captures. Multiple primary vanes gain subdued directional variation
 that improves coherence with the coverts beyond merely darkening the two former

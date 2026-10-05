@@ -4,9 +4,12 @@ The owner explicitly prioritized the UI revamp and ATLAS, asking to stabilize th
 
 The UI, static greeting, personality, expanded Voice, Automation, scoped Search,
 Quality/Monitoring, Security and Settings archive releases are accepted through
-PR62. Mac1.23.20+55 is verified. ATLAS primary-color01 is the current retained
-feather-finish refinement and verified matching export; final character, acting
-and device acceptance remain open. Current eight-state sampled review is complete; held questioning and satisfied-completion expressions are the next art priority. Connector work remains
+PR62. Mac1.23.20+55 is verified. ATLAS HELD01 is the current retained
+expression refinement and verified matching export: clearer questioning and
+satisfied-completion holds at actual 72px, with geometry and feather finish
+unchanged. Whole-character review accepts the bounded 72px/256px raster delivery.
+Exact asset admission, native registration and a fresh build are next; subjective
+continuous motion, live 3D and device acceptance remain separate. Connector work stays
 in `codex/native-connector-controls` until after UI/ATLAS priority.
 
 Visual thesis: a warm, precise conversation workspace with a quiet graphite rail, readable typography, restrained gold and an expressive umber eagle.
@@ -46,7 +49,7 @@ v39 is the current contract. Canonical production remains
 pending. Production promotion is estimated at 20–40 minutes after that environment
 is available. The current UI implementation inventory is complete through the
 bounded Settings slice; explicit advanced browser handoffs and device gates stay
-visible. ATLAS appearance/acting and matching final-asset admission are next.
+visible. ATLAS bounded raster art is accepted; matching final-asset admission and its new build are next.
 Parked connector work must rebase beyond v39 and use build 56 or later.
 
 ## Historical scoped content search acceptance — 5 October
