@@ -19,7 +19,7 @@ const requiredPreviousGates = [
 
 function passingReport(budgetStatus?: string) {
   return {
-    releaseGate: { approved: true, status: "passed", reasons: [], warnings: [] },
+    releaseGate: { approved: true, status: "passed", reasons: [] as string[], warnings: [] as string[] },
     gates: [
       ...requiredPreviousGates.map((id) => ({ id, status: "pass", summary: "Ready." })),
       ...(budgetStatus === undefined ? [] : [{
@@ -95,6 +95,37 @@ globalThis.fetch = async (url) => {
     expect(result.requested).toEqual(["https://asael.example/api/release/evidence?refresh=true"]);
     expect(result.artifact.previousReleaseCompatibility).toEqual({ missingAgentErrorBudget: true });
     expect(result.artifact.gates).not.toContainEqual(expect.objectContaining({ id: "agent_error_budget" }));
+  });
+
+  it("keeps the exact blocked prior-report metadata available for audited recovery", () => {
+    const report = {
+      ...passingReport("pass"),
+      checkedAt: "2026-10-05T10:44:22.372Z",
+      releaseGate: {
+        approved: false,
+        status: "blocked",
+        reasons: ["Database tenant isolation: Tenant isolation schema evidence is incomplete."],
+        warnings: [],
+      },
+      gates: passingReport("pass").gates.map((gate) => gate.id === "tenant_isolation_database"
+        ? { ...gate, status: "fail", name: "Database tenant isolation", summary: "Tenant isolation schema evidence is incomplete." }
+        : gate),
+      tenantIsolation: {
+        status: "degraded",
+        summary: { expectedTables: 265, protectedTables: 265, failingTables: 0,
+          unclassifiedTables: ["omni_native_openapi_import_preparations"] },
+      },
+    };
+    const result = smoke(report, true);
+
+    expect(result.code).toBe(1);
+    expect(result.artifact).toMatchObject({
+      httpStatus: 200,
+      reportCheckedAt: report.checkedAt,
+      tenantIsolationStatus: "degraded",
+      tenantIsolation: report.tenantIsolation.summary,
+      releaseGate: report.releaseGate,
+    });
   });
 
   it.each([false, true])("checks a present passing budget gate in previous-release mode %s", (previousRelease) => {

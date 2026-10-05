@@ -56,6 +56,15 @@ const FAKE_PSQL = [
   "  shift",
   "done",
   'record() { echo "$1" >> "$FAKE_PSQL_LOG"; }',
+  'if [ -n "$FAKE_PSQL_CHECK_URL_OPTIONS" ]; then',
+  '  if [ "$PGUSER" = migration ]; then',
+  '    if [ "$PGOPTIONS" != "-c role=postgres" ]; then record wrong-source-options; exit 9; fi',
+  '    record source-options-preserved',
+  '  elif [ "$PGUSER" = backup ]; then',
+  '    if [ -n "$PGOPTIONS" ]; then record source-options-leaked-to-backup; exit 9; fi',
+  '    record backup-options-isolated',
+  '  fi',
+  'fi',
   // How many functions a statement alters, and how many pg_restore runs came before it.
   "altered() { printf '%s\\n' \"$sql\" | grep -c 'ALTER FUNCTION'; }",
   "restored() { wc -l < \"$FAKE_PG_RESTORE_LOG\" | tr -d ' '; }",
@@ -155,6 +164,26 @@ afterEach(async () => {
 });
 
 describe("database backup script", () => {
+  it("uses each URL's startup options for identity checks without leaking the source role into backup", async () => {
+    const result = await runBackup(ledgerRows, {
+      DATABASE_URL:
+        "postgres://migration:unused@127.0.0.1:1/prod?sslmode=disable&options=-c%20role%3Dpostgres",
+      OMNIAGENT_BACKUP_DATABASE_URL:
+        "postgres://backup:unused@127.0.0.1:1/prod?sslmode=disable",
+      PGOPTIONS: undefined,
+      FAKE_PSQL_CHECK_URL_OPTIONS: "1",
+    });
+
+    // The fake database lets the checks run, then refuses the snapshot. Both
+    // independent identity connections must have reached the ledger query.
+    expect(result.code).toBe(1);
+    expect(result.queries).toContain("source-options-preserved");
+    expect(result.queries).toContain("backup-options-isolated");
+    expect(result.queries).toContain("forced-rls");
+    expect(result.queries).not.toContain("wrong-source-options");
+    expect(result.queries).not.toContain("source-options-leaked-to-backup");
+  });
+
   it("accepts a database whose ledger rows match schema-migrations.json", async () => {
     const result = await runBackup(ledgerRows);
 

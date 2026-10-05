@@ -73,11 +73,14 @@ describe("model provider error classification", () => {
       status: 503,
       message: "The model is overloaded. Please try again later.",
     }],
+    ["a streamed temporary overload", {
+      message: "The model is recovering from a temporary overload. Please retry after a brief delay.",
+    }],
   ])("names %s an overloaded provider that a retry can help", (_, error) => {
     expect(classifyProviderError("anthropic", error)).toMatchObject({
       kind: "overloaded",
       retryable: true,
-      status: error.status,
+      status: "status" in error ? error.status : undefined,
     });
   });
 
