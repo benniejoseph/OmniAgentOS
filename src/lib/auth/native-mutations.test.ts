@@ -47,12 +47,24 @@ describe("native mutation capability enrollment", () => {
   });
   it("enrolls saved MCP credential removal only from v41 with fresh native authority", () => {
     for (const platform of ["android", "ios", "macos"] as const) {
-      expect(nativeMutationEnrollment(context(41, undefined, platform), "connectors.credentials.remove", asOf))
-        .toEqual({ state: "active", minimumContractVersion: 41 });
-      for (const client of [context(40, undefined, platform), context(42, undefined, platform),
+      for (const version of [NATIVE_API_PREVIOUS_VERSION, NATIVE_API_CURRENT_VERSION]) {
+        expect(nativeMutationEnrollment(context(version, undefined, platform), "connectors.credentials.remove", asOf))
+          .toEqual({ state: "active", minimumContractVersion: 41 });
+      }
+      for (const client of [context(40, undefined, platform), context(NATIVE_API_CURRENT_VERSION + 1, undefined, platform),
         context(41, "2026-01-01T00:00:00.000Z", platform), { source: "session" as const }, { source: "mobile" as const }]) {
         expect(nativeMutationEnrollment(client, "connectors.credentials.remove", asOf))
-          .toMatchObject({ state: "held", minimumContractVersion: 41 });
+          .toMatchObject({ state: "held", minimumContractVersion: "native" in client ? 41 : NATIVE_API_CURRENT_VERSION });
+      }
+    }
+  });
+  it("enrolls exact MCP Trash only from v42 with fresh native authority", () => {
+    for (const platform of ["android", "ios", "macos"] as const) {
+      expect(nativeMutationEnrollment(context(42, undefined, platform), "connectors.trash", asOf))
+        .toEqual({ state: "active", minimumContractVersion: 42 });
+      for (const client of [context(41, undefined, platform), context(43, undefined, platform),
+        context(42, "2026-01-01T00:00:00.000Z", platform), { source: "session" as const }, { source: "mobile" as const }]) {
+        expect(nativeMutationEnrollment(client, "connectors.trash", asOf)).toMatchObject({ state: "held", minimumContractVersion: 42 });
       }
     }
   });

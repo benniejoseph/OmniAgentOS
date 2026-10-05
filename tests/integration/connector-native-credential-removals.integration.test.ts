@@ -8,7 +8,7 @@ import { connectorNativeActionSchema, sealConnectorNativePin, type ConnectorNati
 import { readNativeConnectorCredentialRemoval, submitNativeConnectorCredentialRemoval } from "@/lib/connectors/native-credential-removal-store";
 import { buildConnectorNativeCredentialRemovalIntent, canRemoveNativeConnectorCredential, type ConnectorNativeCredentialRemovalRequest } from "@/lib/connectors/native-credential-removal-contracts";
 import { createExecutionScope } from "@/lib/security/execution-scope";
-import { removeNativeConnectorCredentialRemovalsForReplay } from "./helpers/native-catalog-replay";
+import { removeNativeConnectorCredentialRemovalsForReplay, removeNativeConnectorTrashForReplay } from "./helpers/native-catalog-replay";
 
 const databaseUrl = process.env.DATABASE_URL;
 const integration = databaseUrl && process.env.OMNIAGENT_INTEGRATION_DATABASE_RESET === "true" ? describe : describe.skip;
@@ -84,10 +84,14 @@ integration("native credential removal under forced serving RLS", () => {
     const checksum = "9b77ab90dd862d16a4cb1c670fa11f41436e58cfc8e7273c3e50e95725906ebe";
     const row = { version: 238, name: "native_connector_credential_removals_v1", checksum };
     const migration = await readSqlMigrationFile({ file: "20261005190000_native_connector_credential_removals.sql", sha256: checksum, migrations: [row] });
+    const next = { version: 239, name: "native_connector_trash_v1", checksum: "6af2db420131c4c68b3279b4030f161d72c85b2a740477fc6f77aa6b85482d83" };
+    const trashMigration = await readSqlMigrationFile({ file: "20261005193000_native_connector_trash.sql", sha256: next.checksum, migrations: [next] });
     await admin.begin(async (sql) => {
+      await removeNativeConnectorTrashForReplay(sql);
+      await sql`DELETE FROM omni_schema_version WHERE version=239`;
       await removeNativeConnectorCredentialRemovalsForReplay(sql);
       await sql`DELETE FROM omni_schema_version WHERE version=238`;
-      await applySqlMigrationFile({
+      const migrationSql: Parameters<typeof applySqlMigrationFile>[0] = {
         unsafe: async (text, params) => {
           const values = (params ?? []).map((value) => {
             if (typeof value !== "string") throw new Error("Migration replay settings must use string parameters.");
@@ -95,7 +99,9 @@ integration("native credential removal under forced serving RLS", () => {
           });
           return await sql.unsafe<Record<string, unknown>[]>(text, values);
         },
-      }, migration, [row], []);
+      };
+      await applySqlMigrationFile(migrationSql, migration, [row], []);
+      await applySqlMigrationFile(migrationSql, trashMigration, [next], []);
       expect((await sql`SELECT intent,acceptance,state,settlement FROM omni_native_connector_actions WHERE tenant_id=${f.scope.tenantId}`)[0]).toEqual(before);
     });
     expect(connectorNativeActionSchema.parse(await readNativeConnectorAction({ scope: f.scope }, legacy.action.acceptance.keySha256))).toEqual(legacy.action);

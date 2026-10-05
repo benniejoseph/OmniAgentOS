@@ -10,6 +10,7 @@ import 'connector_control_contracts.dart';
 import 'connector_controller.dart';
 import 'connector_credential_removal_view.dart';
 import 'connector_providers.dart';
+import 'connector_trash_view.dart';
 
 class NativeConnectorWorkspace extends StatelessWidget {
   const NativeConnectorWorkspace({super.key});
@@ -143,6 +144,11 @@ class _ConnectorControlPanelState extends State<ConnectorControlPanel>
                   onPressed: c.busy ? null : c.reloadProtected,
                   child: const Text('Reload protected recovery'),
                 ),
+              OutlinedButton.icon(
+                onPressed: c.busy ? null : () => _openTrash(),
+                icon: const Icon(Icons.restore_from_trash_outlined),
+                label: const Text('Connector Trash recovery'),
+              ),
             ],
           ),
           if (c.readError != null)
@@ -410,6 +416,12 @@ class _ConnectorControlPanelState extends State<ConnectorControlPanel>
               icon: const Icon(Icons.key_outlined),
               label: const Text('Review saved credential'),
             ),
+          if (row['kind'] == 'mcp' && review.pin != null && review.value!['unavailableReason'] == null && c.mayManage)
+            OutlinedButton.icon(
+              onPressed: c.busy ? null : () => _openTrash(row['id'] as String),
+              icon: const Icon(Icons.delete_outline),
+              label: const Text('Review move to Trash'),
+            ),
           OutlinedButton(
             onPressed: c.busy
                 ? null
@@ -421,6 +433,18 @@ class _ConnectorControlPanelState extends State<ConnectorControlPanel>
       if (review.actions.isEmpty && review.value!['unavailableReason'] == null)
         const Text('No current action is available with this account access.'),
     ];
+  }
+
+  Future<void> _openTrash([String? id]) async {
+    if (!_visible || c.busy) return;
+    final controller = c;
+    await Navigator.of(context, rootNavigator: true).push(
+      MaterialPageRoute<void>(builder: (_) => NativeConnectorTrashWorkspace(connectorId: id)),
+    );
+    if (mounted && identical(controller, c) && _visible) {
+      unawaited(c.refresh());
+      if (id != null) unawaited(c.select('mcp', id));
+    }
   }
 
   Future<void> _openCredentialRemoval(String id) async {

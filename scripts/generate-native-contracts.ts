@@ -19,17 +19,17 @@ const checkOnly = process.argv.includes("--check");
 // The previous contract and the one archive before it, byte for byte. When a
 // new contract ships, the oldest entry goes, and its directory with it.
 const frozenDocumentSha256ByVersion = Object.freeze({
-  39: Object.freeze({
-    "openapi.json": "fd61af76b501e3227526f870c60f6f8e2b1e710ce324e9fee7c371b5db51e059", // gitleaks:allow -- public artifact integrity digest
-    "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
-    "fixtures.json": "82e5e82e8d736f703f6390ec650d1537687e46145c7939ed48dc1d72e4f1f91f", // gitleaks:allow -- public artifact integrity digest
-    "manifest.json": "e69fd6ca2ae522289dd6edd416f4a20f1761d6273fe0d9fccbfc28936e4513e8", // gitleaks:allow -- public artifact integrity digest
-  }),
   40: Object.freeze({
     "openapi.json": "751acd2d142ffafee62e8f0cbb384f3b9b7b9189c69fa7457aeec78afc3ccf83", // gitleaks:allow -- public artifact integrity digest
     "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
     "fixtures.json": "6b4186cb28e1a75d6686ac4354a2afe60d534a665b81a9d725b5d5db06d107ab", // gitleaks:allow -- public artifact integrity digest
     "manifest.json": "ca108a77c326553faac40fee41e25b3c30af1ff76feb710d445be8ce5e5701dd", // gitleaks:allow -- public artifact integrity digest
+  }),
+  41: Object.freeze({
+    "openapi.json": "a84efa4b839697a47641ea2b963c6f2b4ce8061d91be1d985115ced415b679e2", // gitleaks:allow -- public artifact integrity digest
+    "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
+    "fixtures.json": "b8c5cfd5eec9dcb3b85941d3daa9b848f069799fbcdb0ef83559da6df465b3fe", // gitleaks:allow -- public artifact integrity digest
+    "manifest.json": "f3114d89634d11fa57134542a09885fb1376e83d9f70372939c756d61d20f45b", // gitleaks:allow -- public artifact integrity digest
   }),
 });
 

@@ -51,6 +51,7 @@ export const NATIVE_MUTATION_CAPABILITIES = [
   "google.personal.manage",
   "connectors.manage",
   "connectors.credentials.remove",
+  "connectors.trash",
   "agents.create",
   "agents.update",
   "agents.delete",
@@ -129,6 +130,7 @@ export function nativeMutationCapabilityPolicy(
 }
 
 function minimumVersion(capability: NativeMutationCapability) {
+  if (capability === "connectors.trash") return 42;
   if (capability === "connectors.credentials.remove") return 41;
   if (capability === "google.personal.manage" || capability === "connectors.manage") return 40;
   if (capability === "memory.maintenance.run" || capability === "memory.graph.rebuild") return 38;
