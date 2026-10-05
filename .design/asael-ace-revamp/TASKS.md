@@ -1,10 +1,50 @@
 # Proposed delivery backlog
 
+## Current checkpoint — 5 October 2026
+
+**UI implementation is accepted through PR62; ATLAS PR63 is in release validation.**
+Native Settings archive v2 passed all sixteen hosted gates and 2,073 Flutter cases
+at `9cfadda5941ecbc189c39b86025ada7ef27cf8c0`, then merged as
+`7cfeaf2e9c0268ab150e4c14637260add069b0c8`.
+
+HELD01 has bounded artistic acceptance for decorative 72px/256px raster delivery.
+PR63 source `6c7397b5b28bbac2a38f055d117f01f2106bb2de` admits the exact reviewed
+33 files to each web/native destination and registers the native assets in
+`1.23.21+56`. Universal private Mac56 is built and verified, including all 33
+packaged ATLAS files; its installer SHA256 is
+`0583bcd3be365a0bfff88955a2a8788d95c425f5827fbe45cb5940eb70a17aca`.
+The [package receipt](</Volumes/Extreme Pro/Asael-release-records/2026-10-03-followups/ui-validation/macos-atlas-raster-release/verification.json>)
+records private signing, no Apple notarization, and no installation or app launch.
+Native API v39 and the nineteen-source art/export identity remain unchanged; this
+slice adds no migration.
+
+PR63 build, Flutter and integration checks passed. Its browser gate still assumes
+the old 108px neutral fallback instead of the newly admitted 256px state poster.
+The corrected desktop/phone browser run passes all 120 assertions, including
+the actual light/dark posters and explicit unavailable-manifest neutral fallback.
+Subsequent exact-head hosted acceptance remains pending. PR63 is
+not yet merged or deployed. Production promotion still depends on the operator
+release environment. Connector expansion remains parked at `ba468e7f` until the
+UI/ATLAS priority is completed; any subsequent native build must use the next free
+number, at least 57. See [UI priority](UI_PRIORITY.md) for the current release
+checkpoint and [implementation evidence](IMPLEMENTATION.md) for earlier slices.
+
+Unchecked tasks retain their whole-task, cross-platform and device acceptance
+criteria. They do not imply that every implementation is missing. Bounded raster
+acceptance does not establish live 3D delivery, physical-device performance or
+completion of the full revamp. No whole-task or device checkbox is changed here.
+
+## Historical implementation summary
+
+The following detailed summary records an earlier implementation checkpoint.
+Its then-current v38 batch, missing final assets and pending packages are
+superseded by the current checkpoint above; retain it as implementation history.
+
 **Status: complete implementation program in progress.** Web presentation and data-safety slices are merged through PR #38, including the maintained browser gate, Activity, scoped companion preferences/presence/entry, Meetings and customer Accounts. Native Activity/foundations are merged; native companion and default-entry code is merged with hosted acceptance; physical-device gates remain. All nine specialist/public/access web families are merged through PR #39 after local browser/accessibility and exact-head hosted validation; Builder and scoped Search are merged through PR #40 after all 14 exact-head hosted checks passed. Responsibility backend/web and native v32 contracts are merged through PR #41 after all 16 exact-head hosted checks passed; Meeting decision recovery and native v33 contracts are merged through PR #42 after all 16 exact-head hosted checks passed. Read-only Mission history and exact bookmarks are merged through PR #43 after all 14 exact-head hosted checks passed. Native Work/Build, Results, Memory reads, Capture, Responsibilities, Meetings and Account reads are merged through PR #44 (16 hosted checks including 965 Flutter tests). Capture/Library recovery is merged through PR #45 and Library history/entity selectors through PR #47 (14 checks each). Account exact mutation intents and their replay fixtures are merged through PR #46 after all 14 hosted checks passed. Assistant recovery, native Memory/Markets controls and v34 publication are merged through PR #48 after all 16 exact-head hosted checks passed. Scoped ATLAS playback and native Meeting source selection are merged through PR #49 after all 16 checks passed; the universal signed Mac installer and web build are ready, with production promotion awaiting the owner release environment. Native private Memory reconciliation is merged through PR #50 after all 16 checks passed, including v35 publication and migration 223. Native personal recall consent and Calendar-only sync are merged through PR #51 with v36 publication and migrations 224–225 after all 16 hosted checks passed. Native deterministic Account health evaluation and exact receipt recovery are merged through PR #52 with v37 publication and migration 226 after all 16 hosted checks passed; its universal signed Mac package is ready. The current v38 batch implements Memory promotion, Account workflows/facts, Agent/Skill mutations, linked Recording processing, Salesforce actions, source-map decisions and local source deletion. Private graph inspection, maintenance/rebuild and paid single-document cognition are implemented, and the full Flutter analyzer passes; the full 235-migration chain and web production build pass, while the signed Mac package and production promotion remain pending. Integrated pilot, remaining native parity and final ATLAS production assets remain active. See [implementation evidence](IMPLEMENTATION.md) for exact commits and validation boundaries. Unchecked boxes retain whole-task acceptance gates. No calendar estimate or production-promotion claim is implied by a local test or repository merge.
 
 **4 October release direction:** The owner prioritizes completing implementation, builds, migration and deployment, with broad local regression suites deferred. The paired release can reuse green exact-commit hosted checks with `--use-hosted-verification`; schema verification, signed provenance and deployed health checks remain. This changes validation scheduling, not the truth of unchecked feature or physical-device gates.
 
-**3 October 2026 decision:** ATLAS is the selected original eagle, with energetic quick wit, expressive reactions and Kevin-Hart-inspired comic timing in its own identity and voice. The approved light conversation/graphite UI is retained. The actual ATLAS study has been exported and visually inspected; its reference and provenance receipt are saved locally. There is no production model, rig or clip.
+**Historical 3 October 2026 concept decision:** ATLAS is the selected original eagle, with energetic quick wit, expressive reactions and Kevin-Hart-inspired comic timing in its own identity and voice. The approved light conversation/graphite UI is retained. The actual ATLAS study had been exported and visually inspected; its reference and provenance receipt were saved locally. At that checkpoint there was no production model, rig or clip; the later HELD01 source, export and bounded raster admission are recorded above.
 
 Tasks are grouped by visible, testable outcomes. Each task extends the existing feature's controller/service unless explicitly marked new. A large task should be split at a usable behavior boundary before execution; avoid completing a collection of empty components without a working screen.
 
