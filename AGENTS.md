@@ -12,6 +12,8 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 Keep this file short. Read only the guide relevant to the change:
 
+- `docs/project-management/README.md` — current task queue, ownership, and evidence
+- `docs/project-management/parallel-agent-workflow.md` — Codex/Claude worktree and integration rules
 - `docs/harness-engineering.md` — execution harness, golden rules, and failure workflow
 - `docs/architecture.md` — system map, agent loop, storage, and security boundaries
 - `docs/api-reference.md` — route groups, authorization, and response contracts
