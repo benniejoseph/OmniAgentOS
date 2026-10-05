@@ -38,6 +38,7 @@ describe("native API contracts", () => {
     expect(search[0].queryParameters).toContainEqual(expect.objectContaining({ name: "cursor", maxLength: 1800 }));
     expect(search[1].queryPolicy).toBeUndefined();
     expect(search[2].queryPolicy).toBeUndefined();
+    expect(nativeOperationsForVersion(40)!.filter(({ id }) => id.startsWith("content.search"))).toEqual(search);
     for (const schema of [nativeContractSchemas.NativeContentSearchWorkResponse, nativeContractSchemas.NativeContentSearchMemoryResponse]) {
       expect(schema.safeParse({}).success).toBe(false);
       expect(schema.safeParse({ project: {}, memory: {}, actorId: "other" }).success).toBe(false);
@@ -90,7 +91,7 @@ describe("native API contracts", () => {
   });
 
   it("generates exact Responsibility paths, bounds and status schemas without changing older operation defaults", async () => {
-    const previous = JSON.parse(await readFile(new URL("../../../public/native-contracts/v37/openapi.json", import.meta.url), "utf8"));
+    const previous = JSON.parse(await readFile(new URL(`../../../public/native-contracts/v${NATIVE_API_PREVIOUS_VERSION}/openapi.json`, import.meta.url), "utf8"));
     const current = JSON.parse(await readFile(new URL(`../../../public/native-contracts/v${NATIVE_API_CURRENT_VERSION}/openapi.json`, import.meta.url), "utf8"));
     for (const operation of nativeOperationsForVersion(32)!.filter(({ id }) => id.startsWith("responsibilities."))) {
       expect(current.paths[operation.path][operation.method.toLowerCase()], operation.id).toEqual(previous.paths[operation.path][operation.method.toLowerCase()]);
@@ -126,8 +127,8 @@ describe("native API contracts", () => {
   it("retains exactly the current and previous rollout versions", () => {
     // Tripwire: a native contract bump must be a deliberate, reviewed change.
     // The other tests follow these constants.
-    expect(NATIVE_API_CURRENT_VERSION).toBe(39);
-    expect(NATIVE_API_PREVIOUS_VERSION).toBe(38);
+    expect(NATIVE_API_CURRENT_VERSION).toBe(40);
+    expect(NATIVE_API_PREVIOUS_VERSION).toBe(39);
     expect(NATIVE_API_SUPPORTED_VERSIONS).toEqual([
       NATIVE_API_CURRENT_VERSION,
       NATIVE_API_PREVIOUS_VERSION,
@@ -374,6 +375,7 @@ describe("native API contracts", () => {
       37: added("customers.health.evaluate", "customers.health.evaluations.get"),
       38: added("agents.delete.review", "agents.delete", "agents.mutations.get", "skills.mutation.review", "skills.create", "skills.update", "skills.delete", "skills.mutations.get", "memory.promotions.list", "memory.promotions.read", "memory.promotions.decide", "customers.workflows.start", "customers.workflows.outcome", "customers.workflows.get", "customers.workflows.mutations.get", "meetings.recordings.review", "meetings.recordings.process", "meetings.recordings.processing.get", "customers.facts.record", "customers.facts.acceptance.get", "customers.salesforce.actions.review", "customers.salesforce.actions.submit", "customers.salesforce.actions.get", "knowledge.cognification.list", "knowledge.cognification.read", "knowledge.cognification.decide", "knowledge.cognification.decisions.get", "knowledge.sources.deletion.review", "knowledge.sources.delete", "knowledge.sources.deletions.get", "memory.graph.universe", "memory.graph.node", "memory.graph.entity", "memory.graph.temporalRelations", "memory.graph.relationshipPaths", "memory.maintenance.review", "memory.maintenance.run", "memory.maintenance.runs.get", "memory.graph.rebuild.review", "memory.graph.rebuild", "memory.graph.rebuilds.get", "knowledge.cognification.build.review", "knowledge.cognification.build", "knowledge.cognification.builds.get"),
       39: added("content.search", "content.search.work.get", "content.search.memory.get"),
+      40: added("google.personal.actions.review", "google.personal.actions.submit", "google.personal.actions.read", "connectors.native.list", "connectors.native.review", "connectors.native.act", "connectors.native.actions.get"),
     });
     // v20 and v23 changed only request and push schemas.
     expect(nativeOperationsForVersion(20)).toEqual(nativeOperationsForVersion(19));
@@ -612,19 +614,19 @@ describe("native API contracts", () => {
     });
   });
 
-  it("retains every published v37 and v38 document byte for byte", async () => {
+  it("retains every published v38 and v39 document byte for byte", async () => {
     const frozen = {
-      "37": {
-        "openapi.json": "996b2e4efc644c66ae6f706d59d19825c17d8e605fb06a31c67cda625a56eefe", // gitleaks:allow -- public artifact integrity digest
-        "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
-        "fixtures.json": "f8678d98b6111eb59f3e5fb2deb94dc60f7d5173342ec551015e9489291a8947", // gitleaks:allow -- public artifact integrity digest
-        "manifest.json": "65d474906ae509f88327a0b6f600ab53ec0c3b9d31ec2b6cd4b54fa4fa1e26c6", // gitleaks:allow -- public artifact integrity digest
-      },
       "38": {
         "openapi.json": "d53c27a1f2f65840c2c6322130a57656cecfe1938af25f6e4c3da4bb4fd94545", // gitleaks:allow -- public artifact integrity digest
         "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
         "fixtures.json": "99af3b313dc0eeaa68f5523f9ba6754b97f53769339c3860d29f44892c88e6af", // gitleaks:allow -- public artifact integrity digest
         "manifest.json": "74683356d10e3c316375d63a5cbc28618bb5dc307b6a30ae9e8c0acff23796a0", // gitleaks:allow -- public artifact integrity digest
+      },
+      "39": {
+        "openapi.json": "fd61af76b501e3227526f870c60f6f8e2b1e710ce324e9fee7c371b5db51e059", // gitleaks:allow -- public artifact integrity digest
+        "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
+        "fixtures.json": "82e5e82e8d736f703f6390ec650d1537687e46145c7939ed48dc1d72e4f1f91f", // gitleaks:allow -- public artifact integrity digest
+        "manifest.json": "e69fd6ca2ae522289dd6edd416f4a20f1761d6273fe0d9fccbfc28936e4513e8", // gitleaks:allow -- public artifact integrity digest
       },
     };
     for (const [version, documents] of Object.entries(frozen)) {

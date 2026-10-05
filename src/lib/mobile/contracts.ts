@@ -54,6 +54,8 @@ import { nativeMemoryReconciliationSchemas } from "@/lib/mobile/memory-reconcili
 import { nativeMemoryPromotionSchemas } from "@/lib/mobile/memory-promotion-contracts";
 import { nativePersonalContextConsentSchemas } from "@/lib/mobile/personal-context-consent-contracts";
 import { nativeMeetingCalendarSchemas } from "@/lib/mobile/meeting-calendar-contracts";
+import { nativeGooglePersonalSchemas } from "@/lib/mobile/google-personal-native-contracts";
+import { nativeConnectorSchemas } from "@/lib/mobile/connector-native-contracts";
 
 import { pluginManifestSchema } from "@/lib/plugins/contracts";
 import {
@@ -63,10 +65,10 @@ import {
 import { voiceCommandInputSchema } from "@/lib/voice/command-input";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 39 as const;
-// v38 remains byte-frozen. v39 publishes existing scoped content-search reads;
-// it grants no new mutation capability and retains the existing version floors.
-export const NATIVE_API_PREVIOUS_VERSION = 38 as const;
+export const NATIVE_API_CURRENT_VERSION = 40 as const;
+// v39's scoped content-search publication remains byte-frozen. v40 adds reviewed
+// connector controls and personal Google actions with exact acceptance recovery.
+export const NATIVE_API_PREVIOUS_VERSION = 39 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -2264,6 +2266,43 @@ const v39Operations: readonly NativeOperation[] = [
   }),
 ];
 
+const googlePersonalActionOptions = {
+  ...privateReadOptions, queryPolicy: "exact", errorResponseSchema: "NativeGooglePersonalError",
+  errorStatuses: [400, 401, 403, 404, 409, 500, 503],
+} as const satisfies Partial<NativeOperation>;
+const connectorNativeOptions = {
+  ...privateReadOptions, queryPolicy: "exact", errorResponseSchema: "NativeConnectorError",
+  errorStatuses: [400, 401, 403, 404, 409, 500, 503],
+} as const satisfies Partial<NativeOperation>;
+const nativeActionRecoveryPath = [
+  { name: "keySha256", minLength: 64, maxLength: 64, pattern: "^[a-f0-9]{64}$" },
+];
+const v40Operations: readonly NativeOperation[] = [
+  ...v39Operations,
+  operation("google.personal.actions.review", "GET", "/api/oauth/google/actions", "Review the exact personal Google account and permitted sources before syncing or disconnecting it.", "bearer", undefined, "NativeGooglePersonalReviewResponse", googlePersonalActionOptions),
+  operation("google.personal.actions.submit", "POST", "/api/oauth/google/actions", "Accept the exact reviewed personal Google sync or disconnect once and report its settlement.", "bearer", "NativeGooglePersonalRequest", "NativeGooglePersonalSubmitResponse", {
+    ...googlePersonalActionOptions, headerParameters: pluginMutationHeaders, requestBodyMaxBytes: 16384,
+    successStatuses: [200, 201], errorStatuses: [400, 401, 403, 404, 409, 413, 415, 500, 503],
+  }),
+  operation("google.personal.actions.read", "GET", "/api/oauth/google/actions/{keySha256}", "Read an exact personal Google action acceptance and settlement without repeating provider work.", "bearer", undefined, "NativeGooglePersonalReadResponse", {
+    ...googlePersonalActionOptions, pathParameters: nativeActionRecoveryPath,
+  }),
+  operation("connectors.native.list", "GET", "/api/connectors/native", "List currently authorized MCP and OpenAPI connectors with explicit coverage.", "bearer", undefined, "NativeConnectorListResponse", connectorNativeOptions),
+  operation("connectors.native.review", "GET", "/api/connectors/native/{kind}/{id}/review", "Review the exact current connector configuration and complete discovered contract inventory.", "bearer", undefined, "NativeConnectorReviewResponse", {
+    ...connectorNativeOptions, pathParameters: [
+      { name: "kind", minLength: 3, maxLength: 7, pattern: "^(mcp|openapi)$" },
+      { name: "id", minLength: 1, maxLength: 200, pattern: "^[A-Za-z0-9][A-Za-z0-9._:@+~-]{0,199}$" },
+    ],
+  }),
+  operation("connectors.native.act", "POST", "/api/connectors/native/actions", "Apply an exact reviewed connector action once and atomically record its acceptance.", "bearer", "NativeConnectorActionRequest", "NativeConnectorActionResponse", {
+    ...connectorNativeOptions, headerParameters: pluginMutationHeaders, requestBodyMaxBytes: 8192,
+    successStatuses: [200, 201], errorStatuses: [400, 401, 403, 404, 409, 413, 415, 500, 503],
+  }),
+  operation("connectors.native.actions.get", "GET", "/api/connectors/native/actions/{keySha256}", "Read an exact connector action acceptance without applying the action again.", "bearer", undefined, "NativeConnectorReadResponse", {
+    ...connectorNativeOptions, pathParameters: nativeActionRecoveryPath,
+  }),
+];
+
 const nativeCompanionPreferencesResponseSchema = z.object({
   schemaVersion: z.literal(1), contract: z.literal(COMPANION_PREFERENCES_CONTRACT),
   snapshot: z.object({
@@ -2284,6 +2323,8 @@ const nativeCompanionPreferencesResponseSchema = z.object({
 }).strict();
 
 export const nativeContractSchemas = Object.freeze({
+  ...nativeGooglePersonalSchemas,
+  ...nativeConnectorSchemas,
   ...nativeResponsibilityContractSchemas,
   ...nativeMeetingContractSchemas,
   ...nativeCustomerContractSchemas,
@@ -2448,6 +2489,7 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 37) return v37Operations;
   if (version === 38) return v38Operations;
   if (version === 39) return v39Operations;
+  if (version === 40) return v40Operations;
   return undefined;
 }
 

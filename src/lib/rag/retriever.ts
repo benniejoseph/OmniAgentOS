@@ -63,6 +63,9 @@ export async function ingestTextDocument({
   reuseExactCommittedRevision = false,
   onProgress,
   beforeEmbeddingProvider,
+  failOnEmbeddingError = false,
+  commitSourceProjection,
+  prepareSourceProjection,
 }: {
   idempotencyKey?: string;
   tenantId?: string;
@@ -87,6 +90,11 @@ export async function ingestTextDocument({
   reuseExactCommittedRevision?: boolean;
   onProgress?: (progress: KnowledgeIngestProgress) => void | Promise<void>;
   beforeEmbeddingProvider?: () => Promise<void>;
+  failOnEmbeddingError?: boolean;
+  /** Native connector admission wraps only the closed post-provider DB graph. */
+  commitSourceProjection?: <T>(work: () => Promise<T>) => Promise<T>;
+  /** Runs inside the guarded database commit only when no exact revision exists. */
+  prepareSourceProjection?: () => Promise<void>;
 }) {
   if ((usageScope?.actorId || captureIngestGuard?.actorId) && !sourceLineage) {
     throw new Error(
@@ -153,10 +161,13 @@ export async function ingestTextDocument({
         abortSignal,
         usageScope,
         beforeEmbeddingProvider,
+        failOnEmbeddingError,
       );
   abortSignal?.throwIfAborted();
   await onProgress?.({ stage: "knowledge", chunkCount: chunks.length });
   abortSignal?.throwIfAborted();
+  const persist = async () => {
+  if (!reusableKnowledge) await prepareSourceProjection?.();
   const knowledge = reusableKnowledge || await createKnowledgeDocument({
       idempotencyKey,
       tenantId,
@@ -267,6 +278,8 @@ export async function ingestTextDocument({
     memories: records,
     retired,
   };
+  };
+  return commitSourceProjection ? commitSourceProjection(persist) : persist();
 }
 
 function normalizeStructuredIngestUnits(
@@ -325,6 +338,7 @@ async function embedKnowledgeTexts(
   abortSignal?: AbortSignal,
   usageScope?: AiUsageScope,
   beforeProvider?: () => Promise<void>,
+  failOnError = false,
 ) {
   let preflightRejected = false;
   try {
@@ -332,7 +346,7 @@ async function embedKnowledgeTexts(
       try { await beforeProvider(); } catch (error) { preflightRejected = true; throw error; }
     }) : await embedTexts(input, abortSignal, usageScope);
   } catch (error) {
-    if (preflightRejected) throw error;
+    if (preflightRejected || failOnError) throw error;
     if (abortSignal?.aborted) throw abortSignal.reason || error;
     // Lexical RAG and durable memory remain useful when the optional vector
     // provider is unavailable; a later re-index can add embeddings.

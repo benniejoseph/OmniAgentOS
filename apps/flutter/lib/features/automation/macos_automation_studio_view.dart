@@ -10,6 +10,8 @@ import '../../app/theme/macos_app_theme.dart';
 import '../../core/config/app_config.dart';
 import '../auth/application/biometric_session_lock_controller.dart';
 import '../auth/application/session_controller.dart';
+import '../integrations/connector_view.dart';
+import '../integrations/google_personal_view.dart';
 import 'automation_controller.dart';
 import 'automation_models.dart';
 import 'automation_open_run_button.dart';
@@ -931,14 +933,49 @@ class _ConnectionsSectionState extends State<_ConnectionsSection>
   @override
   Widget build(BuildContext context) => _SplitInventory(
     key: const ValueKey('automation-connections'),
-    header: _ConnectionAccessCard(
-      busy: _openingBrowser,
-      refreshing: widget.controller.refreshing,
-      error: _linkError,
-      onManage: _openWebConnection,
-      onRefresh: widget.controller.refreshing
-          ? null
-          : widget.controller.refresh,
+    header: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _ConnectionAccessCard(
+          busy: _openingBrowser,
+          refreshing: widget.controller.refreshing,
+          error: _linkError,
+          onManage: _openWebConnection,
+          onRefresh: widget.controller.refreshing
+              ? null
+              : widget.controller.refresh,
+        ),
+        const SizedBox(height: 12),
+        Wrap(
+          spacing: 12,
+          runSpacing: 8,
+          children: [
+            OutlinedButton.icon(
+              key: const ValueKey('automation-google-controls'),
+              onPressed: widget.protectedAccessAvailable
+                  ? () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => const NativeGooglePersonalWorkspace(),
+                      ),
+                    )
+                  : null,
+              icon: const Icon(Icons.account_circle_outlined),
+              label: const Text('Review Google account'),
+            ),
+            OutlinedButton.icon(
+              onPressed: widget.protectedAccessAvailable
+                  ? () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => const NativeConnectorWorkspace(),
+                      ),
+                    )
+                  : null,
+              icon: const Icon(Icons.hub_outlined),
+              label: const Text('Open connector controls'),
+            ),
+          ],
+        ),
+      ],
     ),
     footer: const _McpDirectionNote(),
     left: _WorkspaceSection(

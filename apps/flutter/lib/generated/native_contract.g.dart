@@ -3,9 +3,9 @@
 
 abstract final class NativeContract {
   static const id = 'asael.native-api';
-  static const currentVersion = 39;
-  static const previousVersion = 38;
-  static const supportedVersions = <int>[39, 38];
+  static const currentVersion = 40;
+  static const previousVersion = 39;
+  static const supportedVersions = <int>[40, 39];
   static const discoveryPath = '/api/mobile/contracts';
   static const operationIds = <String>{
     'auth.login',
@@ -249,6 +249,13 @@ abstract final class NativeContract {
     'content.search',
     'content.search.work.get',
     'content.search.memory.get',
+    'google.personal.actions.review',
+    'google.personal.actions.submit',
+    'google.personal.actions.read',
+    'connectors.native.list',
+    'connectors.native.review',
+    'connectors.native.act',
+    'connectors.native.actions.get',
   };
 
   static bool supports(int version) => supportedVersions.contains(version);
@@ -1149,6 +1156,13 @@ abstract final class NativePaths {
     return '$path?$encoded';
   }
   static String contentSearchMemoryGet(String id) => '/api/content-search/memory/${Uri.encodeComponent(id)}';
+  static const googlePersonalActionsReview = '/api/oauth/google/actions';
+  static const googlePersonalActionsSubmit = '/api/oauth/google/actions';
+  static String googlePersonalActionsRead(String keySha256) => '/api/oauth/google/actions/${Uri.encodeComponent(keySha256)}';
+  static const connectorsNativeList = '/api/connectors/native';
+  static String connectorsNativeReview(String kind, String id) => '/api/connectors/native/${Uri.encodeComponent(kind)}/${Uri.encodeComponent(id)}/review';
+  static const connectorsNativeAct = '/api/connectors/native/actions';
+  static String connectorsNativeActionsGet(String keySha256) => '/api/connectors/native/actions/${Uri.encodeComponent(keySha256)}';
 }
 
 abstract final class NativeConversationEvents {

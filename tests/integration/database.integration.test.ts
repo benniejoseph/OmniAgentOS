@@ -7,7 +7,7 @@ import postgres from "postgres";
 import { removeEmptyResponsibilityRuntimeForReplay } from "./helpers/responsibility-replay";
 import { removeEmptyMemoryLifecycleForReplay } from "./helpers/memory-lifecycle-replay";
 import { removeEmptyMemoryPromotionForReplay } from "./helpers/memory-promotion-replay";
-import { removeEmptyCustomerWorkflowIntentsForReplay, removeEmptyAgentSkillMutationsForReplay, removeEmptyMeetingRecordingProcessingForReplay, removeEmptyCustomerFactIntentsForReplay, removeEmptySalesforceNativeActionsForReplay, removeEmptyNativePrivateMemoryActionsForReplay, removeEmptyNativeKnowledgeCognitionBuildsForReplay } from "./helpers/native-catalog-replay";
+import { removeEmptyCustomerWorkflowIntentsForReplay, removeEmptyAgentSkillMutationsForReplay, removeEmptyMeetingRecordingProcessingForReplay, removeEmptyCustomerFactIntentsForReplay, removeEmptySalesforceNativeActionsForReplay, removeEmptyNativePrivateMemoryActionsForReplay, removeEmptyNativeKnowledgeCognitionBuildsForReplay, removeEmptyGooglePersonalNativeActionsForReplay, removeEmptyNativeConnectorControlsForReplay } from "./helpers/native-catalog-replay";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import {
   buildAgentRunIdentityPinV1,
@@ -6823,13 +6823,17 @@ databaseDescribe("Postgres schema integration", () => {
     `;
     // Each one covers every command and role, as its restore below does.
     expect(restrictivePolicies.map(({ command, roles }) => ({ command, roles })))
-      .toEqual(Array(80).fill({ command: "*", roles: "{0}" }));
+      .toEqual(Array(84).fill({ command: "*", roles: "{0}" }));
     expect(restrictivePolicies.filter((policy) =>
       additiveDraftReplayTables.includes(policy.table_name),
     ).map(({ table_name, policy_name }) => ({ table_name, policy_name })))
       .toEqual(additiveDraftReplayTables.map((tableName) => ({
         table_name: tableName,
-        policy_name: tableName.startsWith("omni_knowledge_native_cognition_")
+        policy_name: tableName === "omni_google_personal_native_actions"
+          ? "omni_google_personal_native_actor"
+          : tableName === "omni_native_connector_actions"
+          ? "omni_native_connector_actor"
+          : tableName.startsWith("omni_knowledge_native_cognition_")
           ? "omni_native_cognition_build_actor"
           : tableName === "omni_native_private_memory_actions"
           ? "omni_native_private_memory_actor"
@@ -7145,12 +7149,31 @@ databaseDescribe("Postgres schema integration", () => {
   });
 
   test("holds an OAuth connection back after syncs that reach no source, doubling the wait up to six hours", async () => {
-    const tenantId = "oauth_backoff_tenant";
-    const actorId = "oauth-backoff-owner";
-    const owner = { tenantId, actorId, provider: "google" as const };
+    // Migration replay resets the module cache. Use the same database module as
+    // the dynamically loaded store so its AsyncLocalStorage receives the scope.
+    const database = await import("@/lib/db/client");
     const store = await import("@/lib/connectors/oauth-store");
+    const tenantId = "oauth_backoff_tenant";
+    const userId = crypto.randomUUID();
+    const actorId = `actor:${userId}`;
+    // Google lease claims validate current actor authority even when there is
+    // no native action pending. Exercise backoff as a real active owner.
+    await database.ensureDatabaseSchema();
+    await admin`
+      INSERT INTO omni_auth_tenants (id, name, slug)
+      VALUES (${tenantId}, 'OAuth backoff', 'oauth-backoff-tenant')
+    `;
+    await admin`
+      INSERT INTO omni_auth_users (id, email, password_hash)
+      VALUES (${userId}, 'oauth-backoff@example.com', 'test-only')
+    `;
+    await admin`
+      INSERT INTO omni_auth_memberships (id, tenant_id, user_id, role, status)
+      VALUES ('oauth-backoff-member', ${tenantId}, ${userId}, 'operator', 'active')
+    `;
+    const owner = { tenantId, actorId, provider: "google" as const };
     const asOwner = <T,>(operation: () => Promise<T>) =>
-      runWithDatabaseActorScope(tenantId, [actorId], operation);
+      database.runWithDatabaseActorScope(tenantId, [actorId], operation);
     const save = (
       refresh?: { connectionId: string; expectedAuthorizationGeneration: number },
     ) => {
@@ -9604,6 +9627,8 @@ const salesforceNativeActionsVersion = 232;
 const nativePrivateMemoryActionsVersion = 233;
 const nativePrivateMemoryMaintenanceGraphVersion = 234;
 const nativeKnowledgeCognitionBuildsVersion = 235;
+const googlePersonalNativeActionsVersion = 236;
+const nativeConnectorControlsVersion = 237;
 const additiveReplayVersions = [
   companionPreferencesVersion,
   responsibilityDraftsVersion,
@@ -9626,12 +9651,16 @@ const additiveReplayVersions = [
   nativePrivateMemoryActionsVersion,
   nativePrivateMemoryMaintenanceGraphVersion,
   nativeKnowledgeCognitionBuildsVersion,
+  googlePersonalNativeActionsVersion,
+  nativeConnectorControlsVersion,
 ].filter((version) => databaseSchemaMigrations.some((migration) => migration.version === version));
 const meetingResolutionReplayTables: readonly string[] = [
   "omni_meeting_commitment_resolution_intents",
   "omni_meeting_commitment_resolution_progress",
 ];
 const additiveDraftReplayTables: readonly string[] = [
+  "omni_google_personal_native_actions",
+  "omni_native_connector_actions",
   "omni_knowledge_native_cognition_builds",
   "omni_knowledge_native_cognition_effects",
   "omni_native_private_memory_actions",
@@ -10004,6 +10033,12 @@ async function withMigrationsPendingFrom<T>(
   }
   await client.begin(async (transaction) => {
     if (replay) {
+      if (additiveReplayVersions.includes(nativeConnectorControlsVersion)) {
+        await removeEmptyNativeConnectorControlsForReplay(transaction);
+      }
+      if (additiveReplayVersions.includes(googlePersonalNativeActionsVersion)) {
+        await removeEmptyGooglePersonalNativeActionsForReplay(transaction);
+      }
       if (additiveReplayVersions.includes(nativeKnowledgeCognitionBuildsVersion)) {
         await removeEmptyNativeKnowledgeCognitionBuildsForReplay(transaction);
       }

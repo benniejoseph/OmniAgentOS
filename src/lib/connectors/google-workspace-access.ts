@@ -24,6 +24,7 @@ export async function getActiveGoogleWorkspaceAccess(input: {
   capability: GoogleWorkspaceCapability;
   expectedAuthorizationGeneration?: number;
   expectedAccountEmail?: string;
+  beforeProvider?: () => Promise<void>;
 }): Promise<Readonly<{ accessToken: string; grant: NormalizedOAuthGrant }>> {
   const secrets = await getOAuthGrantSecrets(
     input.tenantId,
@@ -56,6 +57,7 @@ export async function getActiveGoogleWorkspaceAccess(input: {
   }
   const accessToken = tokenString(secrets.tokens.access_token);
   if (secrets.credentialState === "active" && accessToken) {
+    await input.beforeProvider?.();
     return { accessToken, grant: secrets.grant };
   }
   const refreshToken = tokenString(secrets.tokens.refresh_token);
@@ -65,6 +67,7 @@ export async function getActiveGoogleWorkspaceAccess(input: {
       "credential_missing",
     );
   }
+  await input.beforeProvider?.();
   const refreshed = await refreshOAuthAccess("google", refreshToken);
   const grant = await saveOAuthGrant({
     tenantId: input.tenantId,
@@ -78,6 +81,7 @@ export async function getActiveGoogleWorkspaceAccess(input: {
     authorizationMode: "refresh",
     expectedAuthorizationGeneration: secrets.grant.authorizationGeneration,
   });
+  await input.beforeProvider?.();
   return { accessToken: String(refreshed.access_token), grant };
 }
 

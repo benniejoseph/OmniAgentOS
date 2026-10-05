@@ -30,6 +30,19 @@ function context(
 }
 
 describe("native mutation capability enrollment", () => {
+  it("requires v40 and fresh native authority for Google and connector management", () => {
+    for (const capability of ["google.personal.manage", "connectors.manage"] as const) {
+      for (const platform of ["android", "ios", "macos"] as const) {
+        expect(nativeMutationEnrollment(context(40, undefined, platform), capability, asOf))
+          .toEqual({ state: "active", minimumContractVersion: 40 });
+        for (const client of [context(39, undefined, platform), context(41, undefined, platform),
+          context(40, "2026-01-01T00:00:00.000Z", platform), { source: "session" as const }, { source: "mobile" as const }]) {
+          expect(nativeMutationEnrollment(client, capability, asOf))
+            .toMatchObject({ state: "held", minimumContractVersion: 40 });
+        }
+      }
+    }
+  });
   it("retains existing Companion, Responsibility and Meeting floors for both supported clients", () => {
     const capabilities = {
       "companion.preferences.update": 31,

@@ -1437,5 +1437,19 @@
     "checksum": "32970b0b3a66989751fc81f1a2ece1dbc357d8c569c3f3deed6b4df7d0851ae0",
     "file": "20261005173000_native_knowledge_cognition_builds.sql",
     "sha256": "32970b0b3a66989751fc81f1a2ece1dbc357d8c569c3f3deed6b4df7d0851ae0"
+  },
+  {
+    "version": 236,
+    "name": "google_personal_native_actions_v1",
+    "checksum": "0a9fbeb43fd292aa663791e2332bc5e10647213e77c3b4458b41565e1c293bba",
+    "file": "20261005180000_google_personal_native_actions.sql",
+    "sha256": "0a9fbeb43fd292aa663791e2332bc5e10647213e77c3b4458b41565e1c293bba"
+  },
+  {
+    "version": 237,
+    "name": "native_connector_controls_v1",
+    "checksum": "2684d9dd6c04bd62738e7d06e2a2615751d3aab1690a11f40d979029ca0a09df",
+    "file": "20261005183000_native_connector_controls.sql",
+    "sha256": "2684d9dd6c04bd62738e7d06e2a2615751d3aab1690a11f40d979029ca0a09df"
   }
 ]

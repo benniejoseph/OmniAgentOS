@@ -225,7 +225,7 @@ export async function embedTextsWithRuntime(
             ? { dimensions: EMBEDDING_DIMENSIONS }
             : {}),
         },
-        { signal: abortSignal },
+        { signal: abortSignal,...(beforeProvider ? { maxRetries: 0 } : {}) },
       ); }
     );
     if (meteredUsageScope) {
