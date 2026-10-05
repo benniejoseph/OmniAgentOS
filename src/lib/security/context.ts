@@ -1,6 +1,5 @@
 import { getSessionToken } from "@/lib/auth/session";
 import { getSessionIdentity, isAuthEnforced } from "@/lib/auth/store";
-import { getMobileIdentityFromRequest, hasBearerAuthorization } from "@/lib/auth/mobile";
 import {
   enterDatabaseActorContext,
   enterDatabaseTenantContext,
@@ -177,7 +176,8 @@ export async function resolveSecurityContext(request?: Request): Promise<Securit
   // An Authorization header is an explicit choice of native/API auth. Never
   // fall back to a browser cookie when a malformed, expired, or revoked bearer
   // credential was supplied.
-  if (hasBearerAuthorization(request)) {
+  if (request?.headers.has("authorization")) {
+    const { getMobileIdentityFromRequest } = await import("@/lib/auth/mobile");
     const mobileIdentity = await getMobileIdentityFromRequest(request);
     if (!mobileIdentity) {
       throw new SecurityPolicyError("Authentication required.", 401);

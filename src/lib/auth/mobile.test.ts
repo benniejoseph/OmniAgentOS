@@ -95,8 +95,21 @@ describe("native mobile authentication", () => {
   });
 
   it("revokes an access token and never falls back from an invalid bearer to browser/default auth", async () => {
+    const auth = await import("@/lib/auth/store");
     const mobile = await import("@/lib/auth/mobile");
     const security = await import("@/lib/security/context");
+    const { AUTH_SESSION_COOKIE } = await import("@/lib/auth/session");
+    const browserSession = await auth.authenticatePassword({
+      email: "mobile@example.com",
+      password: "a secure mobile password",
+    });
+    expect(browserSession).not.toBeNull();
+    const cookie = `${AUTH_SESSION_COOKIE}=${browserSession!.token}`;
+    const browserRequest = new Request("https://example.test/api/projects", { headers: { cookie } });
+    await expect(security.resolveSecurityContext(browserRequest)).resolves.toMatchObject({
+      tenantId: "mobile-tenant",
+      source: "session",
+    });
     const signedIn = await mobile.authenticateMobilePassword({
       email: "mobile@example.com",
       password: "a secure mobile password",
@@ -105,7 +118,9 @@ describe("native mobile authentication", () => {
     await mobile.revokeMobileSession(signedIn!.identity);
     const revoked = new Request("https://example.test/api/projects", { headers: { authorization: `Bearer ${signedIn!.tokens.accessToken}` } });
     await expect(security.resolveSecurityContext(revoked)).rejects.toMatchObject({ status: 401 });
-    const malformed = new Request("https://example.test/api/projects", { headers: { authorization: "Bearer malformed" } });
+    const malformed = new Request("https://example.test/api/projects", {
+      headers: { authorization: "Bearer malformed", cookie },
+    });
     await expect(security.resolveSecurityContext(malformed)).rejects.toMatchObject({ status: 401 });
   });
 
