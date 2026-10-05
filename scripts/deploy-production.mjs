@@ -287,7 +287,7 @@ if (dryRun) {
     PRODUCTION_BASE_URL,
     revision,
   );
-  printDryRunManifestVerification(PRODUCTION_BASE_URL);
+  printDryRunManifestVerification(PRODUCTION_BASE_URL, "<current-production-revision>");
   printDryRun("fly", workerCanonicalTargetArgs());
   printDryRunGatewayPairReadiness("canonical gateway", revision);
   printDryRunWorkerStartupWait("canonical worker");
@@ -444,7 +444,7 @@ try {
   });
   // A key the repository does not trust stops the release here, before
   // anything production runs on has changed.
-  await runManifestVerification(stagedBaseUrl);
+  await runManifestVerification(stagedBaseUrl, releaseManifest);
   workerMutationStarted = true;
   if (openAIGateway) {
     await stageFlyGatewayTokenOverlap(openAIGateway, {
@@ -476,7 +476,7 @@ try {
   await waitForDeploymentReadiness(productionBaseUrl, revision, {
     label: "Canonical web",
   });
-  await runManifestVerification(productionBaseUrl);
+  await runManifestVerification(productionBaseUrl, releaseManifest, previousHealthRevision);
   // Rebind the already-running worker in place. A second Fly deploy would
   // restart the co-hosted OpenAI gateway on the single production machine.
   await run("fly", workerCanonicalTargetArgs());
@@ -1264,6 +1264,7 @@ async function runForwardSchemaPriorCheck(pin, baseUrl, previousRevision, migrat
     prior = validateForwardSchemaPriorArtifact(priorEvidence, pin, {
       baseUrl,
       previousRevision,
+      errorBudgetException: process.env.OMNIAGENT_RELEASE_ERROR_BUDGET_EXCEPTION?.trim(),
       now: Date.now(),
     });
   } catch (error) {
@@ -1335,9 +1336,19 @@ async function runVerificationCommands(baseUrl) {
   }
 }
 
-async function runManifestVerification(baseUrl) {
+async function runManifestVerification(baseUrl, releaseManifest, previousRevision) {
   await run("npm", ["run", "smoke:manifest"], {
-    environment: { BASE_URL: baseUrl, SMOKE_EXPECTED_REVISION: revision },
+    environment: {
+      BASE_URL: baseUrl,
+      SMOKE_EXPECTED_REVISION: revision,
+      SMOKE_EXPECTED_MANIFEST_SHA256: createHash("sha256")
+        .update(releaseManifest)
+        .digest("hex"),
+      SMOKE_MANIFEST_PREVIOUS_REVISION: previousRevision || "",
+      SMOKE_MANIFEST_CONVERGENCE_TIMEOUT_MS: previousRevision
+        ? String(readinessTimeoutMs)
+        : "",
+    },
   });
 }
 
@@ -1933,10 +1944,15 @@ function printDryRunGatewayPairReadiness(label, expectedRevision) {
   );
 }
 
-function printDryRunManifestVerification(baseUrl) {
+function printDryRunManifestVerification(baseUrl, previousRevision) {
   printDryRun("npm", ["run", "smoke:manifest"], {
     BASE_URL: baseUrl,
     SMOKE_EXPECTED_REVISION: revision,
+    SMOKE_EXPECTED_MANIFEST_SHA256: "<signed-candidate-manifest-sha256>",
+    ...(previousRevision && {
+      SMOKE_MANIFEST_PREVIOUS_REVISION: previousRevision,
+      SMOKE_MANIFEST_CONVERGENCE_TIMEOUT_MS: String(readinessTimeoutMs),
+    }),
   });
 }
 
