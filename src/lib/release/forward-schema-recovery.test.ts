@@ -151,8 +151,8 @@ describe("explicit forward-schema recovery pin", () => {
     const c = candidate();
     writeFileSync(c.migrationFile, "different SQL bytes");
     expect(() => c.parse()).toThrow("migration bytes");
-    c.manifest[2].sha256 = "f".repeat(64);
-    writeFileSync(c.options.manifestPath, JSON.stringify(c.manifest));
+    writeFileSync(c.options.manifestPath, JSON.stringify(c.manifest.map((entry, index) =>
+      index === 2 ? { ...entry, sha256: "f".repeat(64) } : entry)));
     expect(() => c.parse()).toThrow("latest candidate migration");
     writeFileSync(c.options.manifestPath, JSON.stringify(c.manifest.slice(1)));
     expect(() => c.parse()).toThrow("ordered and contiguous");
