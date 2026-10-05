@@ -4,6 +4,7 @@ import {
   hasDatabaseUrl,
   runWithDatabaseSystemScope,
 } from "@/lib/db/client";
+import type { SqlClient } from "@/lib/db/sql-types";
 import type { NotificationCandidateV1 } from "@/lib/mobile/notification-decision";
 import { notificationDecisionExecutionScope } from "@/lib/mobile/notification-decision-events";
 import {
@@ -31,7 +32,10 @@ import {
   enqueueMobilePush,
   MobilePushStorageRequiredError,
 } from "@/lib/mobile/push-store";
-import { getTodayPreferences } from "@/lib/today/briefs";
+import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
+import { todayActorReadOrder } from "@/lib/today/actor-scope";
+import { findTodayNotificationPreferencesWithSql } from "@/lib/today/briefs";
+import type { TodayPreferences } from "@/lib/today/types";
 import { isQuietHoursActive } from "@/lib/today/notifications";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
@@ -83,10 +87,6 @@ export async function processDomainMobilePushProducers(options: {
   return runWithDatabaseSystemScope(
     `Produce actor-private domain notifications for tenant ${options.tenantId}.`,
     async () => {
-      const preferences = new Map<
-        string,
-        Awaited<ReturnType<typeof getTodayPreferences>>
-      >();
       const queuedByKind: Record<ProducerKind, number> = {
         approval: 0,
         meeting: 0,
@@ -132,62 +132,70 @@ export async function processDomainMobilePushProducers(options: {
         scanned += candidates.length;
         if (candidates.length) cursor = producerCursor(candidates.at(-1)!);
         for (const candidate of candidates) {
-          const preference = preferences.get(candidate.actorId) ||
-            await getTodayPreferences({
+          const evaluated = await getSql().transaction(async (sql: SqlClient) => {
+            const preference = await findCandidateNotificationPreferences(
+              sql,
+              options.tenantId,
+              candidate.actorId,
+            );
+            if (!preference?.notificationsEnabled) return;
+            const notificationCandidate = candidateForSource(
+              options.tenantId,
+              candidate,
+            );
+            const decision = decideServerNotification({
+              candidate: notificationCandidate,
+              policy: domainProducerPolicy(candidate, preference, now),
+            });
+            const coordinates = notificationDispositionCoordinates({
+              tenantId: options.tenantId,
+              ownerActorId: candidate.actorId,
+              sourceKind: candidate.sourceKind,
+              sourceId: candidate.sourceId,
+              occurrenceKey: candidate.occurrenceKey,
+              decision,
+            });
+            const executionScope = notificationDecisionExecutionScope({
               tenantId: options.tenantId,
               actorId: candidate.actorId,
+              sourceId: candidate.sourceId,
+              producerId: "proactive-notification-producer",
+              decision,
             });
-          preferences.set(candidate.actorId, preference);
-          if (!preference.notificationsEnabled) {
+            const result = await applyNotificationDispositionDecision({
+              coordinates,
+              decision,
+              executionScope,
+              now,
+              sql,
+              directDelivery: decision.outcome === "send"
+                ? async (sql) => {
+                    const deliveries = await enqueueMobilePush({
+                      tenantId: options.tenantId,
+                      actorId: candidate.actorId,
+                      target: candidate.target,
+                      occurrenceKey: candidate.occurrenceKey,
+                      executionScope,
+                      sql,
+                    });
+                    return {
+                      deliveryKind: "mobile_push_outbox" as const,
+                      deliveryIds: deliveries.map((delivery) => delivery.id),
+                      targetSha256: canonicalJsonSha256(candidate.target),
+                    };
+                  }
+                : undefined,
+            });
+            return { decision, result };
+          }) as {
+            decision: ReturnType<typeof decideServerNotification>;
+            result: Awaited<ReturnType<typeof applyNotificationDispositionDecision>>;
+          } | undefined;
+          if (!evaluated) {
             skippedByPreference += 1;
             continue;
           }
-          const notificationCandidate = candidateForSource(
-            options.tenantId,
-            candidate,
-          );
-          const decision = decideServerNotification({
-            candidate: notificationCandidate,
-            policy: domainProducerPolicy(candidate, preference, now),
-          });
-          const coordinates = notificationDispositionCoordinates({
-            tenantId: options.tenantId,
-            ownerActorId: candidate.actorId,
-            sourceKind: candidate.sourceKind,
-            sourceId: candidate.sourceId,
-            occurrenceKey: candidate.occurrenceKey,
-            decision,
-          });
-          const executionScope = notificationDecisionExecutionScope({
-            tenantId: options.tenantId,
-            actorId: candidate.actorId,
-            sourceId: candidate.sourceId,
-            producerId: "proactive-notification-producer",
-            decision,
-          });
-          const result = await applyNotificationDispositionDecision({
-            coordinates,
-            decision,
-            executionScope,
-            now,
-            directDelivery: decision.outcome === "send"
-              ? async (sql) => {
-                  const deliveries = await enqueueMobilePush({
-                    tenantId: options.tenantId,
-                    actorId: candidate.actorId,
-                    target: candidate.target,
-                    occurrenceKey: candidate.occurrenceKey,
-                    executionScope,
-                    sql,
-                  });
-                  return {
-                    deliveryKind: "mobile_push_outbox" as const,
-                    deliveryIds: deliveries.map((delivery) => delivery.id),
-                    targetSha256: canonicalJsonSha256(candidate.target),
-                  };
-                }
-              : undefined,
-          });
+          const { decision, result } = evaluated;
           if (!result.applied) continue;
           dispositionsApplied += 1;
           processedByKind[candidate.kind] += 1;
@@ -238,6 +246,60 @@ export async function processDomainMobilePushProducers(options: {
       };
     },
   );
+}
+
+/** Resolve only the current account's exact canonical/email pair. Keep these
+ * authority and preference locks until the candidate's disposition commits. */
+async function findCandidateNotificationPreferences(
+  sql: SqlClient,
+  tenantId: string,
+  candidateActorId: string,
+): Promise<TodayPreferences | undefined> {
+  if (!sql.transactionScoped) {
+    throw new Error("Notification owner resolution requires a managed transaction.");
+  }
+  const rows = await sql`
+    SELECT account.id, account.actor_id, account.email,
+      account.status AS user_status, membership.tenant_id,
+      membership.status AS membership_status
+    FROM omni_auth_users account
+    JOIN omni_auth_memberships membership ON membership.user_id = account.id
+    WHERE membership.tenant_id = ${tenantId}
+      AND (account.actor_id = ${candidateActorId} OR account.email = ${candidateActorId})
+      AND account.status = 'active'
+      AND membership.status = 'active'
+    LIMIT 2
+    FOR SHARE OF account, membership
+  `;
+  if (rows.length !== 1) return undefined;
+  const row = rows[0];
+  if (
+    typeof row.id !== "string" ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(row.id) ||
+    row.actor_id !== `actor:${row.id}` ||
+    typeof row.email !== "string" ||
+    row.tenant_id !== tenantId ||
+    row.user_status !== "active" ||
+    row.membership_status !== "active" ||
+    (candidateActorId !== row.actor_id && candidateActorId !== row.email)
+  ) return undefined;
+  const binding: CanonicalRequestActorBindingV1 = Object.freeze({
+    version: 1,
+    kind: "auth_user",
+    authUserId: row.id,
+    canonicalActorId: row.actor_id,
+    legacyOwnerActorIds: Object.freeze([row.email]),
+    readableOwnerActorIds: Object.freeze([row.actor_id, row.email]),
+  });
+  const [canonicalActorId, exactActorId] = todayActorReadOrder(row.email, binding);
+  if (canonicalActorId !== row.actor_id || exactActorId !== row.email) {
+    return undefined;
+  }
+  return findTodayNotificationPreferencesWithSql(sql, {
+    tenantId,
+    actorId: row.email,
+    requestActorBinding: binding,
+  });
 }
 
 async function readCandidatePage(
@@ -589,7 +651,7 @@ function producerCursor(candidate: ProducerCandidate): ProducerCursor {
 
 function domainProducerPolicy(
   candidate: ProducerCandidate,
-  preference: Awaited<ReturnType<typeof getTodayPreferences>>,
+  preference: TodayPreferences,
   now: Date,
 ): NotificationDecisionPolicyInput {
   return {

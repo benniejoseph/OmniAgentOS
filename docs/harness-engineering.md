@@ -287,6 +287,17 @@ complete progress traces, and zero duplicate effects, false successes,
 unfenced writes, or generic failure mutations. It invokes only the governed
 `runs.list` read and grants no mutation or external-effect authority.
 
+## Background notification preference reads
+
+Background notification producers must not create Today preference defaults.
+Resolve the candidate's current account and active membership in its exact tenant,
+then read the saved canonical/current-email preference pair in the same managed
+transaction as the disposition and outbox. Missing or ambiguous identity and
+missing preferences fail closed; duplicate physical preference rows remain an
+error. Keep the original candidate owner on decisions, receipts, and deliveries.
+Regression coverage must include a canonical candidate with only legacy email
+preferences and prove that evaluating it never creates another preference row.
+
 ## Native controller replacement gate
 
 An owner-scoped native controller must synchronously cancel reads, fence writes,
