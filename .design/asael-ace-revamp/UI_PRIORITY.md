@@ -6,9 +6,23 @@ The owner explicitly prioritized the UI revamp and ATLAS, asking to stabilize th
 
 Stabilize the already-built v43 candidate, then keep UI/ATLAS delivery first.
 Further connector registration/import, rediscovery and GitHub expansion are
-parked. The concrete next local ATLAS gap is automatic macOS Low Power Mode
-fallback; existing reduced-motion, visibility and lifecycle safeguards remain.
+parked. Automatic macOS Low Power Mode fallback is implemented in the active
+UI branch; existing reduced-motion, visibility and lifecycle safeguards remain.
 Production promotion follows its existing operator and paired-release gates.
+
+## ATLAS macOS power fallback — implementation checkpoint
+
+App `1.23.27+63` retains native v43 and every reviewed ATLAS asset. Primary and
+auxiliary windows now receive fresh OS power state. Enabled or unknown state
+uses the static portrait, stops an active ticker and fences pending artwork.
+Suppressed reactions remain consumed after mode exit, background/resume or
+scope replacement. The per-engine subscription is lazy and cancels when unused;
+host observers close after the final subscriber. Other platforms are unchanged.
+
+Full Flutter analysis passes. All twenty focused adapter/player cases and five
+standalone macOS policy cases pass; independent review has no unresolved finding.
+Private packaging and exact-head hosted acceptance remain. No production
+promotion, installation, physical power-toggle or energy measurement is claimed.
 
 ## Current release checkpoint
 

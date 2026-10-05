@@ -10,6 +10,7 @@ class AppDelegate: FlutterAppDelegate, UNUserNotificationCenterDelegate {
   private let localComputerController = LocalComputerController()
   private let credentialBrokerController = CredentialBrokerController()
   private let recoveryStorageBrokerController = RecoveryStorageBrokerController()
+  private let powerStateBridgeController = PowerStateBridgeController()
 
   override func applicationDidFinishLaunching(_ notification: Notification) {
     // FlutterAppDelegate inherits this optional AppKit delegate callback but
@@ -34,6 +35,7 @@ class AppDelegate: FlutterAppDelegate, UNUserNotificationCenterDelegate {
   }
 
   override func applicationWillTerminate(_ notification: Notification) {
+    powerStateBridgeController.stop()
     credentialBrokerController.stopForApplicationTermination()
     localComputerController.stopForApplicationTermination()
     desktopHostController.stop()
@@ -60,6 +62,14 @@ class AppDelegate: FlutterAppDelegate, UNUserNotificationCenterDelegate {
 
   func detachRecoveryStorageBridge(_ channel: FlutterMethodChannel) {
     recoveryStorageBrokerController.detach(channel)
+  }
+
+  func attachPowerStateBridge(to messenger: FlutterBinaryMessenger) -> FlutterEventChannel {
+    powerStateBridgeController.attach(to: messenger)
+  }
+
+  func detachPowerStateBridge(_ channel: FlutterEventChannel) {
+    powerStateBridgeController.detach(channel)
   }
 
   func attachLocalComputerBridge(channel: FlutterMethodChannel) {
@@ -3708,6 +3718,7 @@ private final class AsaelWorkspaceWindowController: NSWindowController, NSWindow
   private let localComputerChannel: FlutterMethodChannel
   private let secureStorageChannel: FlutterMethodChannel
   private var recoveryStorageChannel: FlutterMethodChannel?
+  private var powerStateChannel: FlutterEventChannel?
   private let onClose: (UUID) -> Void
   private var closed = false
 
@@ -3762,6 +3773,9 @@ private final class AsaelWorkspaceWindowController: NSWindowController, NSWindow
     recoveryStorageChannel = (NSApp.delegate as? AppDelegate)?.attachRecoveryStorageBridge(
       to: flutterViewController.engine.binaryMessenger
     )
+    powerStateChannel = (NSApp.delegate as? AppDelegate)?.attachPowerStateBridge(
+      to: flutterViewController.engine.binaryMessenger
+    )
   }
 
   @available(*, unavailable)
@@ -3777,6 +3791,10 @@ private final class AsaelWorkspaceWindowController: NSWindowController, NSWindow
     (NSApp.delegate as? AppDelegate)?.detachCredentialBrokerBridge(channel: secureStorageChannel)
     if let recoveryStorageChannel {
       (NSApp.delegate as? AppDelegate)?.detachRecoveryStorageBridge(recoveryStorageChannel)
+    }
+    if let powerStateChannel {
+      (NSApp.delegate as? AppDelegate)?.detachPowerStateBridge(powerStateChannel)
+      self.powerStateChannel = nil
     }
     flutterViewController.engine.shutDownEngine()
     onClose(id)

@@ -61,6 +61,13 @@ with limited memory. Set `ASAEL_MACOS_BUILD_JOBS` to an integer from 1 to 16 to
 increase that concurrency. Packaging stages the new app and leaves the installed
 application unchanged.
 
+ATLAS respects macOS Low Power Mode in the main app and auxiliary windows.
+It uses a static state portrait while power saving is enabled or the host state
+is unavailable. Leaving that mode does not replay a suppressed reaction. The
+bridge subscribes only while the player needs it and refreshes after foreground
+or wake; conversation, microphone and status controls remain independent.
+Other platforms retain their existing reduced-motion and lifecycle behavior.
+
 ## Compatibility identifiers
 
 The client writes the canonical `asael.session_token` secure-storage key and
