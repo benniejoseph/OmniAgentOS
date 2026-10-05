@@ -1,7 +1,7 @@
 .shell {
   --app-header-height: 3.5rem;
   --app-dock-min-height: calc(4.5rem + env(safe-area-inset-bottom, 0px));
-  --app-dock-height: var(--app-dock-size, var(--app-dock-min-height));
+  --app-dock-height: max(var(--app-dock-size, 0px), var(--app-dock-min-height));
   position: relative;
   isolation: isolate;
   min-height: 100svh;
