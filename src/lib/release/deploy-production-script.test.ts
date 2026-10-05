@@ -108,7 +108,7 @@ describe("paired production deployment", () => {
     );
     // The staged manifest is checked before anything production runs on.
     expect(commands[5]).toBe(
-      "DRY RUN BASE_URL=https://staged-deployment.example SMOKE_EXPECTED_REVISION=test-release npm run smoke:manifest",
+      "DRY RUN BASE_URL=https://staged-deployment.example SMOKE_EXPECTED_REVISION=test-release SMOKE_EXPECTED_MANIFEST_SHA256=<signed-candidate-manifest-sha256> npm run smoke:manifest",
     );
     expect(commands[6]).toContain(
       "stage candidate gateway overlap on Fly through secret stdin; values redacted",
@@ -151,8 +151,13 @@ describe("paired production deployment", () => {
       command.includes("https://asael.bennierichard.com/api/health") &&
       command.includes("revision=test-release"),
     );
-    const canonicalManifestIndex = commands.indexOf(
-      "DRY RUN BASE_URL=https://asael.bennierichard.com SMOKE_EXPECTED_REVISION=test-release npm run smoke:manifest",
+    const canonicalManifestIndex = commands.findIndex((command) =>
+      command.includes("BASE_URL=https://asael.bennierichard.com") &&
+      command.includes("SMOKE_EXPECTED_REVISION=test-release") &&
+      command.includes("SMOKE_EXPECTED_MANIFEST_SHA256=<signed-candidate-manifest-sha256>") &&
+      command.includes("SMOKE_MANIFEST_PREVIOUS_REVISION=<current-production-revision>") &&
+      command.includes("SMOKE_MANIFEST_CONVERGENCE_TIMEOUT_MS=180000") &&
+      command.includes("npm run smoke:manifest"),
     );
     const canonicalSmokeIndex = commands.findIndex((command) =>
       command.includes("BASE_URL=https://asael.bennierichard.com") &&
@@ -1165,6 +1170,7 @@ describe("paired production deployment", () => {
 
 describe("rolling back a failed production release", () => {
   const head = FAKE_RELEASE_HEAD;
+  const forwardBudgetReason = "Owner-authorized measured agent-run fix.";
   const canonical = "https://asael.bennierichard.com";
   const staged = "https://omniagent-candidate-benniejosephs-projects.vercel.app";
   const gateway = "https://omniagent-os-worker.fly.dev";
@@ -1251,19 +1257,25 @@ describe("rolling back a failed production release", () => {
           candidateRevision: head, priorExpectedTables: 265, unclassifiedTables: ["omni_native_openapi_import_preparations"],
           databaseVerification: { tenantTables: 266 } });
       });
-    });
+    }, forwardBudgetReason);
   });
 
-  it.each(["different table", "second prior failure"])("forward-schema recovery refuses %s before db verification or platform mutation", async (failure) => {
+  it.each(["different table", "second prior failure", "unread budget", "exhausted tool calls", "wrong tenant"])("forward-schema recovery refuses %s before db verification or platform mutation", async (failure) => {
     await withForwardSchemaFixture(async ({ overrides }) => {
       const artifact = JSON.parse(overrides.FAKE_FORWARD_SCHEMA_ARTIFACT);
       if (failure === "different table") {
         artifact.tenantIsolation.unclassifiedTables = ["omni_unexpected_table"];
-      } else {
+      } else if (failure === "second prior failure") {
         artifact.gates.find((gate: { id: string }) => gate.id === "agent_error_budget").status = "fail";
         artifact.releaseGate.reasons.push("agent_error_budget: Ready.");
         artifact.releaseGate.summary.failures++;
         artifact.releaseGate.summary.passed--;
+      } else if (failure === "unread budget") {
+        artifact.errorBudgetProof.measured = false;
+      } else if (failure === "wrong tenant") {
+        artifact.tenantId = "another_tenant";
+      } else {
+        artifact.errorBudgetProof.objectives[1].verdict = "exhausted";
       }
       await withFakeReleasePlatform(async ({ deploy }) => {
         const result = await deploy({ ...overrides, FAKE_FORWARD_SCHEMA_ARTIFACT: JSON.stringify(artifact) });
@@ -1272,7 +1284,22 @@ describe("rolling back a failed production release", () => {
         expect(result.log.some((line) => line.includes("npm run db:verify"))).toBe(false);
         expect(result.log.some((line) => /^(?:vercel (?:deploy|promote)|fly (?:deploy|secrets import|ssh console)) /.test(line))).toBe(false);
       });
-    });
+    }, forwardBudgetReason);
+  });
+
+  it("admits a recovered prior budget with the exact unapplied reason before mutation", async () => {
+    await withForwardSchemaFixture(async ({ overrides }) => {
+      const artifact = JSON.parse(overrides.FAKE_FORWARD_SCHEMA_ARTIFACT);
+      artifact.errorBudgetProof.exception.applied = false;
+      artifact.errorBudgetProof.objectives[0].verdict = "recovering";
+      artifact.errorBudgetProof.objectives[1].verdict = "within";
+      await withFakeReleasePlatform(async ({ deploy }) => {
+        const result = await deploy({ ...overrides, FAKE_FORWARD_SCHEMA_ARTIFACT: JSON.stringify(artifact) });
+        expect(result.code, result.stderr).toBe(0);
+        expect(result.log).toContain(`npm run db:verify against ${canonical}`);
+        expect(result.log).toContain(stagedDeploy);
+      });
+    }, forwardBudgetReason);
   });
 
   it("signs the manifest it deploys and checks it staged, then canonical", async () => {
@@ -1852,7 +1879,7 @@ const FAKE_RELEASE_HEAD = "a53a77aee2e1056f8989cc19b24b0a6a620cf084";
 
 async function withForwardSchemaFixture(callback: (fixture: {
   overrides: Record<string, string>; evidencePath: string; prior: string;
-}) => Promise<void>) {
+}) => Promise<void>, errorBudgetException?: string) {
   const directory = await mkdtemp(path.join(tmpdir(), "asael-release-forward-fixture-"));
   try {
     const evidencePath = path.join(directory, "asael-release-evidence-forward.json");
@@ -1870,13 +1897,24 @@ async function withForwardSchemaFixture(callback: (fixture: {
         summary: id === "tenant_isolation_database" ? "Tenant isolation schema evidence is incomplete." : "Ready.",
       }));
     const artifact = { httpStatus: 200, generatedAt: at, reportCheckedAt: at,
-      baseUrl: "https://asael.bennierichard.com", deployment: { commitSha: prior }, tenantIsolationStatus: "degraded", gates,
+      baseUrl: "https://asael.bennierichard.com", tenantId: "production_smoke",
+      deployment: { commitSha: prior }, tenantIsolationStatus: "degraded", gates,
+      ...(errorBudgetException ? { errorBudgetProof: {
+        measured: true, exception: { reason: errorBudgetException, applied: true },
+        objectives: [
+          { id: "agent_runs", objective: 0.95, verdict: "exhausted" },
+          { id: "tool_calls", objective: 0.9, verdict: "within" },
+        ],
+      } } : {}),
       releaseGate: { approved: false, status: "blocked", reasons: ["Database tenant isolation: Tenant isolation schema evidence is incomplete."],
         warnings: [], summary: { total: gates.length, passed: gates.length - 1, warnings: 0, failures: 1 } },
       tenantIsolation: { expectedTables: 265, protectedTables: 265, failingTables: 0, childTables: 0,
         unclassifiedTables: pin.unclassifiedTables, missingTables: [], missingTenantColumns: [], rlsDisabled: [], forceRlsDisabled: [], missingPolicies: [] } };
     await callback({ evidencePath, prior, overrides: {
       OMNIAGENT_RELEASE_FORWARD_SCHEMA_RECOVERY: JSON.stringify(pin),
+      ...(errorBudgetException
+        ? { OMNIAGENT_RELEASE_ERROR_BUDGET_EXCEPTION: errorBudgetException }
+        : {}),
       MIGRATION_DATABASE_URL: "postgresql://synthetic.invalid/not-a-real-database",
       RELEASE_EVIDENCE_OUTPUT: evidencePath, FAKE_PRIOR_REVISION: prior,
       FAKE_FORWARD_SCHEMA_ARTIFACT: JSON.stringify(artifact),
@@ -1903,6 +1941,14 @@ const FAKE_PLATFORM_SCRIPTS: Record<string, string> = {
 expected="\${SMOKE_EXPECTED_REVISION:-$EXPECTED_REVISION}"
 line="npm $*\${BASE_URL:+ against $BASE_URL}\${expected:+ expecting $expected}"
 log "$line"
+if [ "$1 $2" = "run smoke:manifest" ]; then
+  if [ "\${#SMOKE_EXPECTED_MANIFEST_SHA256}" -ne 64 ]; then exit 96; fi
+  if [ "$BASE_URL" = "https://asael.bennierichard.com" ]; then
+    if [ "$SMOKE_MANIFEST_PREVIOUS_REVISION" != "$FAKE_PRIOR_REVISION" ] || [ "$SMOKE_MANIFEST_CONVERGENCE_TIMEOUT_MS" != "$OMNIAGENT_DEPLOY_READINESS_TIMEOUT_MS" ]; then exit 94; fi
+  elif [ -n "$SMOKE_MANIFEST_PREVIOUS_REVISION" ] || [ -n "$SMOKE_MANIFEST_CONVERGENCE_TIMEOUT_MS" ]; then
+    exit 95
+  fi
+fi
 if [ -n "$FAKE_FORWARD_SCHEMA_ARTIFACT" ]; then
   if [ -n "$OMNIAGENT_RELEASE_FORWARD_SCHEMA_RECOVERY" ]; then exit 91; fi
   if [ "$1 $2" != "run db:verify" ] && [ -n "$MIGRATION_DATABASE_URL" ]; then exit 92; fi

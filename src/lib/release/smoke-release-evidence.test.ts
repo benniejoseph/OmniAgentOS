@@ -17,8 +17,24 @@ const requiredPreviousGates = [
   "eval_report_signing",
 ];
 
-function passingReport(budgetStatus?: string) {
+type Gate = { id: string; status: string; summary: string; name?: string; details?: unknown };
+const exceptionReason = "Owner-authorized measured agent-run fix.";
+
+function budgetDetails(runVerdict = "exhausted", toolVerdict = "within", measured = true) {
   return {
+    measured,
+    exception: { reason: exceptionReason, applied: true },
+    objectives: [
+      { id: "agent_runs", objective: 0.95, verdict: runVerdict, budgetSpent: 2 },
+      { id: "tool_calls", objective: 0.9, verdict: toolVerdict, budgetSpent: 0.1 },
+    ],
+    ignoredSensitiveData: "never copied to the local artifact",
+  };
+}
+
+function passingReport(budgetStatus?: string, budgetEvidence?: unknown) {
+  return {
+    tenantId: "production_smoke",
     releaseGate: { approved: true, status: "passed", reasons: [] as string[], warnings: [] as string[] },
     gates: [
       ...requiredPreviousGates.map((id) => ({ id, status: "pass", summary: "Ready." })),
@@ -26,8 +42,9 @@ function passingReport(budgetStatus?: string) {
         id: "agent_error_budget",
         status: budgetStatus,
         summary: "Budget observation.",
+        ...(budgetEvidence === undefined ? {} : { details: budgetEvidence }),
       }]),
-    ],
+    ] as Gate[],
   };
 }
 
@@ -49,7 +66,7 @@ globalThis.fetch = async (url) => {
     rmSync(directory, { recursive: true, force: true });
   });
 
-  function smoke(report: ReturnType<typeof passingReport>, previousRelease = false, status = 200) {
+  function smoke(report: ReturnType<typeof passingReport>, previousRelease = false, status = 200, reason?: string) {
     rmSync(requestsFile, { force: true });
     const result = spawnSync(process.execPath, [
       "--import", pathToFileURL(fetchStub).href,
@@ -67,6 +84,7 @@ globalThis.fetch = async (url) => {
         FAKE_REQUESTS: requestsFile,
         FAKE_STATUS: String(status),
         FAKE_EVIDENCE: JSON.stringify({ report }),
+        ...(reason ? { OMNIAGENT_RELEASE_ERROR_BUDGET_EXCEPTION: reason } : {}),
       },
     });
     return {
@@ -84,6 +102,13 @@ globalThis.fetch = async (url) => {
     expect(result.code).toBe(1);
     expect(result.stdout).toContain("FAIL agent error budget gate passes - missing gate");
     expect(result.artifact).not.toHaveProperty("previousReleaseCompatibility");
+  });
+
+  it("rejects a report from a different tenant than the synthetic request", () => {
+    const result = smoke({ ...passingReport("pass"), tenantId: "another_tenant" });
+    expect(result.code).toBe(1);
+    expect(result.stdout).toContain("FAIL release evidence tenant matches request scope");
+    expect(result.artifact.tenantId).toBe("another_tenant");
   });
 
   it("permits only the absent budget gate when explicitly checking the previous release", () => {
@@ -143,6 +168,70 @@ globalThis.fetch = async (url) => {
     expect(result.code).toBe(1);
     expect(result.stdout).toContain("FAIL agent error budget gate passes");
     expect(result.stdout).not.toContain("previous release predates");
+  });
+
+  it("records only bounded measured agent-run-only proof for an applied exception", () => {
+    const result = smoke(passingReport("pass", budgetDetails()), true, 200, exceptionReason);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("PASS agent error budget exception has measured agent-run-only scope");
+    expect(new URL(result.requested[0]).searchParams.get("errorBudgetException"))
+      .toBe(exceptionReason);
+    expect(result.artifact.errorBudgetProof).toEqual({
+      measured: true,
+      exception: { reason: exceptionReason, applied: true },
+      objectives: [
+        { id: "agent_runs", objective: 0.95, verdict: "exhausted" },
+        { id: "tool_calls", objective: 0.9, verdict: "within" },
+      ],
+    });
+    expect(JSON.stringify(result.artifact)).not.toContain("ignoredSensitiveData");
+  });
+
+  it("accepts the exact recorded reason after both measured objectives recover", () => {
+    const details = budgetDetails("recovering", "insufficient");
+    details.exception.applied = false;
+    const result = smoke(passingReport("pass", details), false, 200, exceptionReason);
+
+    expect(result.code).toBe(0);
+    expect(result.artifact.errorBudgetProof).toMatchObject({
+      measured: true,
+      exception: { reason: exceptionReason, applied: false },
+      objectives: [
+        { id: "agent_runs", verdict: "recovering" },
+        { id: "tool_calls", verdict: "insufficient" },
+      ],
+    });
+  });
+
+  it.each([
+    ["unread telemetry", budgetDetails("exhausted", "within", false)],
+    ["tool-call exhaustion", budgetDetails("exhausted", "exhausted")],
+    ["tool-call-only exhaustion", budgetDetails("within", "exhausted")],
+    ["wrong objective", { ...budgetDetails(), objectives: [
+      { id: "agent_runs", objective: 0.95, verdict: "exhausted" },
+      { id: "tool_calls", objective: 0.95, verdict: "within" },
+    ] }],
+    ["missing objective", { ...budgetDetails(), objectives: budgetDetails().objectives.slice(0, 1) }],
+    ["wrong reason", { ...budgetDetails(), exception: { reason: "Different reason.", applied: true } }],
+  ])("rejects an old server's applied exception with %s", (_label, details) => {
+    const result = smoke(passingReport("pass", details), true, 200, exceptionReason);
+    expect(result.code).toBe(1);
+    expect(result.stdout).toContain("FAIL agent error budget exception has measured agent-run-only scope");
+  });
+
+  it("refuses an applied exception without an operator reason on candidate smokes", () => {
+    const result = smoke(passingReport("pass", budgetDetails()));
+    expect(result.code).toBe(1);
+    expect(result.stdout).toContain("FAIL agent error budget exception has measured agent-run-only scope");
+  });
+
+  it("rejects a falsely recovered report while tool calls remain exhausted", () => {
+    const details = budgetDetails("within", "exhausted");
+    details.exception.applied = false;
+    const result = smoke(passingReport("pass", details), false, 200, exceptionReason);
+    expect(result.code).toBe(1);
+    expect(result.stdout).toContain("FAIL agent error budget exception has measured agent-run-only scope");
   });
 
   it.each(requiredPreviousGates)("still requires the previous release's %s gate", (id) => {

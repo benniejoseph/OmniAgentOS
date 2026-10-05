@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
+import { isSafeErrorBudgetProof } from "./release-error-budget-scope.mjs";
 
 const REVISION = /^[a-f0-9]{40}$/;
 const CHECKSUM = /^[a-f0-9]{64}$/;
@@ -101,15 +102,17 @@ export function parseForwardSchemaRecovery(raw, { candidateRevision, manifestPat
  * report stays blocked and is never rewritten into a passing release report.
  * @param {unknown} artifact
  * @param {ForwardSchemaRecoveryPin} pin
- * @param {{baseUrl:string, previousRevision:string, now?:Date|number}} options
+ * @param {{baseUrl:string, previousRevision:string, errorBudgetException?:string, now?:Date|number}} options
  * @returns {{priorExpectedTables:number}}
  */
-export function validateForwardSchemaPriorArtifact(artifact, pin, { baseUrl, previousRevision, now = Date.now() }) {
+export function validateForwardSchemaPriorArtifact(artifact, pin, { baseUrl, previousRevision, errorBudgetException, now = Date.now() }) {
   validatePin(pin);
   const time = currentTime(now);
   requireThat(record(artifact) && artifact.httpStatus === 200 && artifact.baseUrl === baseUrl &&
     typeof baseUrl === "string" && baseUrl.length > 0 && baseUrl.length <= 2048,
   "prior evidence must be a successful report from the pinned origin");
+  requireThat(artifact.tenantId === "production_smoke",
+    "prior evidence must belong to the production smoke tenant");
   requireThat(previousRevision === pin.previousRevision && record(artifact.deployment) &&
     artifact.deployment.commitSha === previousRevision,
   "prior evidence must identify the observed previous revision");
@@ -131,6 +134,11 @@ export function validateForwardSchemaPriorArtifact(artifact, pin, { baseUrl, pre
   requireThat(gates.has("agent_error_budget") ? absence === undefined
     : exactKeys(absence, ["missingAgentErrorBudget"]) && absence.missingAgentErrorBudget === true,
   "budget absence requires the existing previous-release compatibility evidence");
+  requireThat(errorBudgetException
+    ? gates.has("agent_error_budget") &&
+      isSafeErrorBudgetProof(artifact.errorBudgetProof, errorBudgetException)
+    : artifact.errorBudgetProof === undefined,
+  "prior budget exception must prove measured agent-run-only or recovered scope");
   const isolation = gates.get("tenant_isolation_database");
   requireThat(boundedText(isolation.name, 200) && boundedText(isolation.summary, 2000),
     "prior isolation gate must have bounded explanatory evidence");

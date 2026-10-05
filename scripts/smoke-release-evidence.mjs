@@ -5,6 +5,10 @@ import {
   releaseErrorBudgetException,
   smokeFetch,
 } from "./smoke-helpers.mjs";
+import {
+  isSafeReleaseErrorBudgetException,
+  selectedErrorBudgetProof,
+} from "./release-error-budget-scope.mjs";
 
 const baseUrl = getSmokeBaseUrl();
 const email = process.env.SMOKE_ADMIN_EMAIL || process.env.OMNIAGENT_BOOTSTRAP_EMAIL;
@@ -59,9 +63,18 @@ const json = await readJson(response);
 const report = json?.report;
 const gateById = new Map((report?.gates || []).map((gate) => [gate.id, gate]));
 const previousReleaseWithoutErrorBudget = previousRelease && !gateById.has("agent_error_budget");
+const expectedSyntheticTenant = internalSecret
+  ? process.env.SMOKE_TENANT_ID || "production_smoke"
+  : undefined;
 
 checks.push(assert(response.status === 200, "release evidence endpoint returns report", statusDetail(response.status, json)));
 checks.push(assert(Boolean(report), "release evidence report is present", "missing report"));
+checks.push(assert(
+  boundedIdentity(report?.tenantId) !== null &&
+    (!expectedSyntheticTenant || report.tenantId === expectedSyntheticTenant),
+  "release evidence tenant matches request scope",
+  "missing or mismatched tenant identifier",
+));
 checks.push(assert(report?.releaseGate?.approved === true, "release gate is approved", releaseGateDetail(report)));
 checks.push(assert(report?.releaseGate?.status === "passed", "release gate is fully passed", releaseGateDetail(report)));
 checks.push(assert(gateById.get("tenant_isolation_database")?.status === "pass", "database tenant isolation gate passes", gateDetail(gateById.get("tenant_isolation_database"))));
@@ -75,6 +88,11 @@ checks.push(assert(gateById.get("observability_slo")?.status === "pass", "observ
 checks.push(previousReleaseWithoutErrorBudget
   ? assert(true, "previous release predates the agent error budget gate")
   : assert(gateById.get("agent_error_budget")?.status === "pass", "agent error budget gate passes", gateDetail(gateById.get("agent_error_budget"))));
+checks.push(assert(
+  isSafeReleaseErrorBudgetException(gateById.get("agent_error_budget"), errorBudgetException),
+  "agent error budget exception has measured agent-run-only scope",
+  "missing or changed objective evidence",
+));
 checks.push(assert(gateById.get("eval_report_signing")?.status === "pass", "eval report signing gate passes", gateDetail(gateById.get("eval_report_signing"))));
 checks.push(report
   ? assert(await writeReleaseEvidenceArtifact(report, response.status), "release evidence artifact is present and bounded", "artifact validation failed")
@@ -163,9 +181,13 @@ async function writeReleaseEvidenceArtifact(report, httpStatus) {
     httpStatus,
     reportCheckedAt: report.checkedAt,
     baseUrl,
+    tenantId: boundedIdentity(report.tenantId),
     smokeRunId: process.env.SMOKE_RUN_ID,
     ...(previousReleaseWithoutErrorBudget
       ? { previousReleaseCompatibility: { missingAgentErrorBudget: true } }
+      : {}),
+    ...(errorBudgetException
+      ? { errorBudgetProof: selectedErrorBudgetProof(gateById.get("agent_error_budget")) }
       : {}),
     releaseGate: {
       ...report.releaseGate,
@@ -230,6 +252,11 @@ function limitStrings(values) {
 
 function limitText(value) {
   return String(value || "").slice(0, 2_000);
+}
+
+function boundedIdentity(value) {
+  return typeof value === "string" && value.length > 0 && value.length <= 128 &&
+    !/[\u0000-\u001f\u007f]/.test(value) ? value : null;
 }
 
 function createSyntheticHeaders(scope) {

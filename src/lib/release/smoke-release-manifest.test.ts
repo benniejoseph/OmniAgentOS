@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { generateKeyPairSync } from "node:crypto";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -10,7 +10,10 @@ import {
   signReleaseManifest,
 } from "../../../scripts/release-manifest.mjs";
 import { REQUIRED_RELEASE_CHECKS } from "../../../scripts/release-provenance.mjs";
-import { assessReleaseManifestHealth } from "../../../scripts/smoke-release-manifest.mjs";
+import {
+  assessReleaseManifestHealth,
+  waitForReleaseManifestConvergence,
+} from "../../../scripts/smoke-release-manifest.mjs";
 
 const revision = "a53a77aee2e1056f8989cc19b24b0a6a620cf084";
 const otherRevision = "0f1e2d3c4b5a69788796a5b4c3d2e1f0a1b2c3d4";
@@ -103,6 +106,94 @@ describe("assessReleaseManifestHealth", () => {
     ).toThrow(
       `the deployment's release manifest is signed by key ${key.keyId}, which this repository does not trust.`,
     );
+  });
+
+  it("can bind verification to the exact manifest signed by this runner", () => {
+    const encoded = manifestFor(revision);
+    const health = { revision, releaseManifest: encoded };
+    const expectedManifestSha256 = createHash("sha256").update(encoded).digest("hex");
+    expect(assessReleaseManifestHealth(health, revision, {
+      ...options,
+      expectedManifestSha256,
+    }).valid).toBe(true);
+    expect(() => assessReleaseManifestHealth(health, revision, {
+      ...options,
+      expectedManifestSha256: "0".repeat(64),
+    })).toThrow("the release manifest differs from the runner's signed candidate.");
+  });
+});
+
+describe("canonical release manifest convergence", () => {
+  const candidateManifest = manifestFor(revision);
+  const options = {
+    publicKeys: [key.publicKey],
+    expectedManifestSha256: createHash("sha256").update(candidateManifest).digest("hex"),
+  };
+  const candidate = { status: "healthy", revision, releaseManifest: candidateManifest };
+  const previous = { status: "healthy", revision: otherRevision, releaseManifest: manifestFor(otherRevision) };
+
+  function response(body: unknown, status = 200) {
+    return new Response(JSON.stringify(body), {
+      status,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  it("resets its stable count when a signed prior release follows the first candidate response", async () => {
+    const observations = [candidate, previous, candidate, candidate, candidate];
+    let requests = 0;
+    const result = await waitForReleaseManifestConvergence({
+      baseUrl: "https://asael.example",
+      expectedRevision: revision,
+      previousRevision: otherRevision,
+      timeoutMs: 1_000,
+      pollIntervalMs: 1,
+      ...options,
+      fetchHealth: async () => response(observations[requests++]),
+    });
+
+    expect(requests).toBe(5);
+    expect(result).toMatchObject({
+      attempts: 5,
+      consecutiveMatches: 3,
+      manifest: { revision },
+    });
+  });
+
+  it("times out while the signed previous release keeps appearing", async () => {
+    let requests = 0;
+    await expect(waitForReleaseManifestConvergence({
+      baseUrl: "https://asael.example",
+      expectedRevision: revision,
+      previousRevision: otherRevision,
+      timeoutMs: 35,
+      pollIntervalMs: 2,
+      ...options,
+      fetchHealth: async () => {
+        requests += 1;
+        return response(previous);
+      },
+    })).rejects.toThrow(
+      `the canonical release manifest did not converge on ${revision} within 35ms`,
+    );
+    expect(requests).toBeGreaterThan(1);
+  });
+
+  it("rejects an unsigned old response and a candidate signed for another revision", async () => {
+    for (const health of [
+      { status: "healthy", revision: otherRevision },
+      { status: "healthy", revision, releaseManifest: manifestFor(otherRevision) },
+    ]) {
+      await expect(waitForReleaseManifestConvergence({
+        baseUrl: "https://asael.example",
+        expectedRevision: revision,
+        previousRevision: otherRevision,
+        timeoutMs: 1_000,
+        pollIntervalMs: 1,
+        ...options,
+        fetchHealth: async () => response(health),
+      })).rejects.toThrow(/release manifest/);
+    }
   });
 });
 
