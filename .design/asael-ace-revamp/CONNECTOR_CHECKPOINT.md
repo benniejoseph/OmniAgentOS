@@ -28,8 +28,10 @@ syntax defect was corrected before that passing run. Private Mac64 packaging and
 hosted acceptance remain candidate gates. This statement is not a production or
 whole-program completion claim.
 
-OpenAPI registration/import, rediscovery and conditional GitHub upgrade follow
-separately. Delivery still requires the complete paired-release operator environment.
+After this stabilization checkpoint, the matching HELD01 production-player
+performance comparison and UI/ATLAS delivery take priority. OpenAPI registration/
+import, rediscovery and conditional GitHub upgrade remain parked. Delivery still
+requires the complete paired-release operator environment.
 Unchecked whole-task and physical-device boxes retain their original acceptance
 criteria and are not changed by this implementation checkpoint.
 

@@ -4,11 +4,12 @@ The owner explicitly prioritized the UI revamp and ATLAS, asking to stabilize th
 
 ## Current execution order
 
-The UI/ATLAS implementation and build checkpoint is accepted through PR69. Preserve
-that UI, artwork and power fallback while returning to the remaining connector
-implementation. Native MCP registration is the active bounded slice; OpenAPI
-import, rediscovery and GitHub expansion follow separately. Production promotion
-retains its existing operator and paired-release gates.
+The UI/ATLAS implementation and build checkpoint is accepted through PR69. Finish
+stabilizing the already implemented native MCP registration slice, then prioritize
+the matching HELD01 production-player performance comparison and UI/ATLAS delivery.
+OpenAPI import, rediscovery and GitHub expansion remain parked until that priority
+follow-up is complete. Production promotion retains its existing operator and
+paired-release gates; physical-device acceptance remains separate.
 
 ## Current release checkpoint
 
@@ -38,8 +39,10 @@ syntax defect was corrected before that passing run. Private Mac64 packaging and
 hosted acceptance remain candidate gates. This statement is not a production or
 whole-program completion claim.
 
-OpenAPI registration/import, rediscovery and conditional GitHub upgrade follow
-separately. Delivery still requires the complete paired-release operator environment.
+After this stabilization checkpoint, the matching HELD01 production-player
+performance comparison and UI/ATLAS delivery take priority. OpenAPI registration/
+import, rediscovery and conditional GitHub upgrade remain parked. Delivery still
+requires the complete paired-release operator environment.
 Unchecked whole-task and physical-device boxes retain their original acceptance
 criteria and are not changed by this implementation checkpoint.
 
