@@ -1,6 +1,7 @@
 .shell {
   --app-header-height: 3.5rem;
-  --app-dock-height: calc(4.5rem + env(safe-area-inset-bottom, 0px));
+  --app-dock-min-height: calc(4.5rem + env(safe-area-inset-bottom, 0px));
+  --app-dock-height: max(var(--app-dock-size, 0px), var(--app-dock-min-height));
   position: relative;
   isolation: isolate;
   min-height: 100svh;
@@ -191,7 +192,8 @@
 
 .mobileDock {
   --focus-surface: var(--background);
-  min-height: var(--app-dock-height);
+  /* The measured reservation must not prevent wrapped labels from shrinking. */
+  min-height: var(--app-dock-min-height);
   border-color: var(--line);
   padding: 0.25rem 0.5rem calc(0.25rem + env(safe-area-inset-bottom, 0px));
   background: var(--background);

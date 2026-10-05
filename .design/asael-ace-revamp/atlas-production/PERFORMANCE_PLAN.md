@@ -1,6 +1,6 @@
 # ATLAS delivery evidence plan
 
-**Current boundary, 5 October 2026 (IST):** HELD01 artwork, `sculpt-04-held-01-clearer-state-holds`, is accepted for bounded decorative raster delivery at 72px/256px. Exact 33-file web/native admission, Mac56 packaging and hosted acceptance are complete through PR63; accepted main `374805e1583b83fa45466a84334d074843ae9377` and verified private Mac61 retain the same bundle. The separate v43 candidate has a verified Mac62 package from `9148f045` and sixteen green hosted checkpoint checks at `38385dd8`, with final commit acceptance pending. UI/ATLAS delivery is the priority; further connector expansion is parked. Current-asset performance measurements, physical-device acceptance, production promotion and installation remain open.
+**Current boundary, 5 October 2026 (IST):** HELD01 artwork, `sculpt-04-held-01-clearer-state-holds`, is accepted for bounded decorative raster delivery at 72px/256px. Exact 33-file web/native admission is complete; accepted main `f7a3157291af0d0d6c2c9964cfc9c165e58940b3` and verified private Mac64 retain that bundle and PR69's macOS Low Power Mode fallback. The current production-component lab passed 180 cases at five CSS sizes, two themes and DPR1/2. The compact-dock code candidate `31a68aea` passes all 114 existing browser checks. Its separate same-source production compilation compares the actual player with a declared static-only counterfactual and passes all 42 unchanged route budgets. [MEASUREMENTS.md](MEASUREMENTS.md) binds the receipts and their limited timing meanings. Physical-device acceptance, production promotion and installation remain open. UI/ATLAS delivery is the priority; further connector expansion is parked.
 
 The unchanged export verifies nineteen sources, 104 artifacts, 33 raster files and 256 archive members; the GLB is 2,969,084 bytes. All 21 targeted model/lid checks pass. Source/GLB comparison covers 96 captures / 48 pairs: 32 exact pairs and 58 changed pixels. Fifty-seven pixels differ by at most one channel byte; one completed-held profile beak-outline pixel differs by 62. Root reviewed four parity sheets and independent review all twelve, including that enlarged exception. These are structural and bounded visual facts, with receipts and hashes in [MEASUREMENTS.md](MEASUREMENTS.md), not new performance measurements. The previous 80-frame/sixteen-poster review belongs to primary-color01. The approved static portrait/greeting and fallback remain supported; live 3D delivery is not certified.
 
@@ -16,14 +16,14 @@ The 36-case local comparison in [MEASUREMENTS.md](MEASUREMENTS.md) belongs to ar
 
 | Delivery | Current implementation/evidence | Remaining limit |
 | --- | --- | --- |
-| Approved static portrait | Existing web/native fallback; independent controls and status retained | Measure any changed production startup/asset costs against this baseline |
+| Approved static portrait | Existing web/native fallback; measured alongside HELD01 posters and finite working motion in the isolated production-component fixture | No field or physical/native startup result |
 | Approved static full-body greeting | PR55 accepted and merged after all 16 hosted checks passed; app 1.23.14+49 private package verified; full Flutter analysis, 21 focused cases, 39 browser checks and five native captures passed | No production or physical-device performance claim |
 | Rough-01 generated still / live GLB / nineteen-frame sequence | Archived 36-case headless loopback comparison at 36/256px and DPR1/2 | Old source only; no physical/mobile/native result |
 | HELD01 live GLB | Verified complete export: 2,969,084 bytes, 27,543 vertices, 49,844 triangles, 14 bones, 12 clips, 167 parts; one material, one embedded 1024 × 1024 RGBA8 map and zero external resources | Export fidelity checked; live 3D delivery and comparative runtime performance are not certified |
 | Primary-color01 checkpoint | Prior verified 2,969,096-byte GLB, 104 artifacts, 19 sources and 236 archive members; separate review of 80 sampled frames and sixteen posters | Historical export and sampled-state evidence; not current HELD01 all-state review |
 | Face-02 checkpoint | Prior verified export: 2,969,076-byte GLB, 104 artifacts, 17 sources and 169 archive members | Historical export; no performance result |
 | Feather-03 checkpoint | Prior verified export: 2,969,080-byte GLB, 104 artifacts, 17 sources and 166 archive members | Historical export; no performance result |
-| HELD01 state posters/sprites | Verified 32 transparent WebP images plus manifest: eight states, both theme slots, 256px, 20Hz, four columns; bounded 72px/256px delivery is admitted, accepted and packaged | Continuous-video viewing and device certification unclaimed; asset bytes/decode/frame/energy costs need a matching run |
+| HELD01 state posters/sprites | Verified 32 transparent WebP images plus manifest: eight states, both theme slots, 256px, 20Hz, four columns; bounded 72px/256px delivery is admitted, accepted and packaged | Matching asset bytes, observed readiness/DOM advances and control proxy recorded; isolated decode, presented frames, sustained motion and energy remain unmeasured |
 | Face-01 / feather-02 checkpoint | Prior verified export: 2,985,740-byte GLB, 104 artifacts, 17 sources and 163 archive members; one embedded 1024 × 1024 RGBA8 map | Historical export; no performance result |
 | Grain-02 checkpoint | Prior complete export: 104 artifacts, 2,494,008-byte GLB and 32 transparent WebP assets plus state manifest | Historical export; no performance result |
 | Finish-03 checkpoint | Matching source/output retained in `atlas-finish-03-review.tar.gz`; 2,321,804-byte GLB and one 512 × 512 texture | Historical export; no performance result |
@@ -38,11 +38,26 @@ The 36-case local comparison in [MEASUREMENTS.md](MEASUREMENTS.md) belongs to ar
 | Expanded web Voice shared player | PR57 accepted after all 14 applicable hosted checks; 48 focused unit checks, 114 maintained browser checks and ESLint passed; exact-head hosted full browser suite passed | Web-only; native API/version and Mac 1.23.15 (50) unchanged; no new artwork or physical-device performance evidence |
 | Eyelid-03 / throat-04 checkpoints | Matching source/output retained in `atlas-eyelid-03-review.tar.gz` and `atlas-throat-04-review.tar.gz`; each has 27,190 vertices and 49,748 triangles | Historical exports, not the current model or performance results |
 
-HELD01's candidate review covered eleven root-reviewed sheets and all twenty-eight sheets independently. The held expressions improve at actual 72px, subtly at 36px. Only fifteen configuration vectors and six tracks changed; the other 162 tracks, all geometry, skin, UV/color, atlas, rig, durations, earlier peaks and wing motion remain exact primary-color01. Historical FACE02 checks and primary-color01's 80-frame/sixteen-poster review retain their own scope in [MEASUREMENTS.md](MEASUREMENTS.md). No checkpoint establishes a performance budget. Cleanup and lifecycle observations do not measure reclamation, sustained frame pacing, energy or physical-device performance.
+HELD01's candidate review covered eleven root-reviewed sheets and all twenty-eight sheets independently. The held expressions improve at actual 72px, subtly at 36px. Only fifteen configuration vectors and six tracks changed; the other 162 tracks, all geometry, skin, UV/color, atlas, rig, durations, earlier peaks and wing motion remain exact primary-color01. Historical FACE02 checks and primary-color01's 80-frame/sixteen-poster review retain their own scope in [MEASUREMENTS.md](MEASUREMENTS.md). Art/export checkpoints do not establish runtime performance budgets. The separate paired production compilation passes the unchanged route JavaScript budgets. Cleanup and lifecycle observations do not measure reclamation, sustained frame pacing, energy or physical-device performance.
 
 The shared format admits at most 1200ms and 25 frames, with `ceil(durationMs / 50) + 1` samples including a clamped final endpoint. The retained authored clips require at most 1120ms/24 frames. These are implemented admission limits, **not measured performance budgets**. Keep existing app route budgets unchanged.
 
 ## Matching local comparison
+
+The current six-file harness under `scripts/atlas/` is documented in
+[PRODUCTION_MEASUREMENTS.md](../../../scripts/atlas/PRODUCTION_MEASUREMENTS.md).
+The component matrix covers neutral fallback, admitted poster and finite
+available-to-working motion at 36/64/72/108/256 CSS pixels, light/dark, DPR1/2 and
+three repetitions. The strict read-only loopback fixture imports the actual
+production player, preference hook and `next/image`; no application action occurs.
+The separate route helper archives exact code candidate `31a68aea`, materializes matching
+installed dependencies inside its disposable project and compiles both variants
+serially with the same environment/configuration. Only the player module is
+substituted. Command is 912,874 bytes actual versus 907,198 static-only, within its
+unchanged 920,000-byte budget; the other 41 routes are identical between variants.
+Capture is 799,931 bytes against 800,000, retaining 69 bytes of headroom. Compile mode
+skips typechecking/prerender and does not replace the full hosted release build.
+
 
 Any new comparison must bind its exact source and export hashes; do not run against a stale mixed-revision manifest. Archive prior evidence before replacing output. Record browser, OS, renderer/GPU when exposed, theme, CSS size, DPR, timestamps, tool versions, network/cache conditions and raw sample counts. A headless/software result must remain labeled as such.
 
@@ -74,7 +89,7 @@ The production player must preserve actual microphone/playback precedence and ex
 | Supported macOS native build and auxiliary windows | Packaged asset admission, quick-entry/voice/control independence, background/reopen/disposal, memory and energy | Analyzer and companion cases passed; signed private packages ready; physical measurements pending |
 | Supported iOS native build | Packaged static/pre-rendered path, startup, voice/control independence, failure fallback, lifecycle and energy | Pending; no live 3D renderer required or assumed |
 | Supported Android native build | Same evidence as iOS, including lifecycle loss/recreate | Pending; no live 3D renderer required or assumed |
-| Production web route | Same-revision static baseline, unchanged route-budget compliance and actual delivered asset costs | Separate from standalone lab; pending current-asset comparison |
+| Production web route | Candidate `31a68aea` paired production compilation: 42 budgets pass; Command +5,676 bytes versus declared static-only player; loopback asset costs recorded separately | Actual deployed transfer, field latency and full-release behavior remain separate |
 
 For battery/thermal work, record physical device, ambient conditions, display brightness, battery/charging state, network, workload duration, measurement tool/version and baseline. Compare static and candidate under the same conditions. Do not infer watts, GPU allocation or thermal suitability from browser frame timing.
 

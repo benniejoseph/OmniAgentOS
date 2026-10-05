@@ -1,7 +1,7 @@
 "use client";
 
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   ArrowLeftRight,
   ArrowRight,
@@ -57,6 +57,21 @@ export function AppShell({
   const [signOutError, setSignOutError] = useState<string>();
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const mobilePanelRef = useRef<HTMLDivElement>(null);
+  const mobileDockRef = useRef<HTMLElement>(null);
+
+  useLayoutEffect(() => {
+    const dock = mobileDockRef.current;
+    if (!dock) return;
+    const shell = dock.parentElement!;
+    const measure = () => shell.style.setProperty("--app-dock-size", `${Math.ceil(dock.getBoundingClientRect().height)}px`);
+    const observer = new ResizeObserver(measure);
+    observer.observe(dock, { box: "border-box" });
+    measure();
+    return () => {
+      observer.disconnect();
+      shell.style.removeProperty("--app-dock-size");
+    };
+  }, []);
 
   useEffect(() => {
     if (initialDesktopNavCollapsed !== undefined) return;
@@ -293,7 +308,7 @@ export function AppShell({
         </main>
       </div>
 
-      <nav className={clsx("fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t lg:hidden", styles.mobileDock)} aria-label="Everyday workspace navigation">
+      <nav ref={mobileDockRef} className={clsx("fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t lg:hidden", styles.mobileDock)} aria-label="Everyday workspace navigation">
         {primaryNavItems.map((item) => {
           const Icon = item.icon;
           const active = isActivePath(pathname, item.href);

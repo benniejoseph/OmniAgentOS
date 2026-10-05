@@ -2,43 +2,69 @@
 
 ## Current checkpoint
 
-The UI/ATLAS priority checkpoint is accepted through PR69. All sixteen hosted
-checks passed on `88950b469984c5357991677e0d8ebe0ef24bdf7b`, including 2,227
-Flutter cases, and merged main is `8b8e40b61d4a1e3773cab2bab570ee7918ce765f`.
-Accepted and merged full trees match. Fresh main CI, Native and Secret Scan plus
-the actual paired-runner provenance probe have passed.
+The release baseline for this follow-up is **PR71**, preserving UI/ATLAS work through
+PR69 and completing native MCP registration v44. All sixteen hosted checks passed
+on `7920391138389f235988626c949d66e6a6f4ed89`, including **2,272 Flutter cases**,
+and merged main is `f7a3157291af0d0d6c2c9964cfc9c165e58940b3`. Accepted and merged
+full trees match. Fresh main Native and Secret Scan have passed. Main CI passed quality, build,
+integration and the four browser-family jobs but failed the compact-dock
+reserved-space assertion at 320px/200% text. The follow-up measures the dock
+border box so wrapped labels reserve their actual height; final main provenance
+remains pending a passing release revision.
+The [acceptance receipt](</Volumes/Extreme Pro/Asael-release-records/2026-10-03-followups/ui-validation/pr71-acceptance.json>)
+records the exact release boundary.
 
-Private universal Mac `1.23.27+63` is built and independently verified, including
-strict nested signatures and all 33 reviewed ATLAS files. It retains native43 and
-adds macOS Low Power Mode static fallback. Package source `83dedb07` has identical
-native/public inputs at acceptance. Production promotion and installation have
-not occurred; the installed app remains build42. Real device/power/energy,
-VoiceOver/audio and broader pilot gates remain open.
+Private universal **Mac `1.23.28+64` / native44** is independently verified,
+including strict nested private signatures and all 33 reviewed ATLAS files.
+Package source `136ea7447824553b2052f638b43dbd220c0407d8` matches the accepted
+head's 561 production Flutter files and 64 public inputs; the only Flutter
+difference is the focused recovery-test scrolling correction. The
+[package receipt](</Volumes/Extreme Pro/Asael-release-records/2026-10-03-followups/ui-validation/macos-native-mcp-registration-release/verification.json>)
+does not claim Apple notarization, installation or application launch.
 
-Connector implementation has resumed from accepted main69. The isolated v44
-candidate reserves app `1.23.28+64` and migration241. It implements exact prepared
-MCP registration for all three existing auth modes, creating a disabled local
-connection with zero discovered tools and no provider call. Native intent and
-recovery remain private and scope-bound; later discovery/review uses the browser.
-Full Flutter analysis and all 75 focused native cases pass across targeted runs.
-All 131 focused TypeScript cases, changed-file lint and generated contract checks
-pass. The disposable PostgreSQL run passes all 160 cases, including 31 registration
-cases, and verifies 241 migrations and 265 tenant tables. A PL/pgSQL conditional
-syntax defect was corrected before that passing run. Private Mac64 packaging and
-hosted acceptance remain candidate gates. This statement is not a production or
-whole-program completion claim.
+MCP registration supports all three existing auth modes and creates a disabled
+local connection with zero discovered tools and no provider call. Private,
+scope-bound preparation and receipt recovery remain exact; later discovery/review
+uses the browser. Full Flutter analysis and 75 focused native cases pass, as do
+131 focused TypeScript cases, changed-file lint and generated contract checks.
+The disposable PostgreSQL run passes 160 cases, including 31 registration cases,
+and verifies **241 migrations and 265 tenant tables**.
 
-After this stabilization checkpoint, the matching HELD01 production-player
-performance comparison and UI/ATLAS delivery take priority. OpenAPI registration/
-import, rediscovery and conditional GitHub upgrade remain parked. Delivery still
-requires the complete paired-release operator environment.
-Unchecked whole-task and physical-device boxes retain their original acceptance
-criteria and are not changed by this implementation checkpoint.
+The final HELD01 component comparison passes **180 serial headless cases** across
+neutral, poster and motion variants, both themes, 36/64/72/108/256px, DPR1/2 and
+three repetitions. Its
+[measurement receipt](</Volumes/Extreme Pro/Asael-release-records/2026-10-03-followups/ui-validation/atlas-held01-production-component/measurements-main71-r4/measurement.json>)
+binds the main71 source plus the final lint-clean measurement harness. The
+earlier main69/r3 result and its source-equivalence proof remain preserved.
+These are observed load/DOM/control timings, not presented-frame, energy, physical
+device or field-interaction certification.
+
+The final code candidate `31a68aead25e5a310d6394f9140ce27224541dbb`
+[route comparison](</Volumes/Extreme Pro/Asael-release-records/2026-10-03-followups/ui-validation/atlas-production-route-comparison-r2/comparison.json>)
+passes all **42 unchanged route budgets** in both production-compiled variants.
+Command first-load JavaScript is **912,874 bytes**, versus **907,198 bytes** for
+the static-only player baseline: **5,676 additional uncompressed bytes**, within
+the existing **920,000-byte** budget. Compile-mode evidence does not claim a full
+release build, static generation, deployment or field performance. Capture is
+799,931 bytes, within its unchanged 800,000-byte limit by 69 bytes. The dock
+correction passes all 114 existing desktop/phone browser checks, including all
+five keyboard destinations at 320px/200% with dock/reserved height both 144px.
+
+UI/ATLAS delivery remains the priority. This follow-up adds the measurement harness, documentation and compact-dock
+spacing fix. Local evidence passes; hosted acceptance is recorded in the external
+release status. The web shell measures its actual dock
+height on mount and resize, supports shrinking, and retains desktop zero reserve.
+No native package/version or migration changes are introduced. Further connector expansion, including OpenAPI
+registration/import, rediscovery and conditional GitHub upgrade, is parked.
+Production promotion still requires the complete paired-release operator
+environment; installation, physical device/power/energy, VoiceOver/audio and
+broader pilot acceptance remain open. The installed app remains build42.
+Unchecked whole-task and physical-device boxes retain their original criteria.
 
 PR68 remains the accepted prior connector checkpoint: native43, migration240,
 264 tenant tables and verified Mac62. The 81 catalog replay, 30 prior connector
 and 18 credential-rotation serving-role cases passed at that checkpoint. The
-candidate migration241 adds one isolated MCP registration-preparation table;
+accepted migration241 adds one isolated MCP registration-preparation table;
 the fresh schema check verifies all 241 migrations and 265 tenant tables.
 
 The detailed sections below retain their original implementation checkpoints.
