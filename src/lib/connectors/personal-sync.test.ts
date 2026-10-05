@@ -139,7 +139,7 @@ describe("personal OAuth synchronization", () => {
     await expect(syncPersonalProvider({ tenantId: "personal",actorId: "owner",provider: "google",connectionId: "google-grant",
       expectedAuthorizationGeneration: 1,expectedAccountEmail: GOOGLE_PERSONAL_CONNECTION.accountEmail,sources: ["mail","calendar","drive"],
       native: { lease: { ownerId: "held-lease",generation: 7,expiresAt: "2026-10-05T00:00:00.000Z" },expectedSources: ["mail","calendar","drive"],
-        expectedScopeSha256: sourceContractSha256([...GOOGLE_SYNC_SCOPES].sort()),beforeProvider,commit: <T>(work: () => Promise<T>) => commit(work) as Promise<T> } })).rejects.toThrow("already bound to different content");
+        expectedScopeSha256: sourceContractSha256([...GOOGLE_SYNC_SCOPES].sort()),beforeProvider,commit } })).rejects.toThrow("already bound to different content");
     expect(mocks.ingest).toHaveBeenCalledTimes(1); expect(mocks.remove).not.toHaveBeenCalled();
     expect(mocks.ingest).toHaveBeenCalledWith(expect.objectContaining({ beforeEmbeddingProvider: beforeProvider,failOnEmbeddingError: true,
       commitSourceProjection: commit,prepareSourceProjection: expect.any(Function) }));
