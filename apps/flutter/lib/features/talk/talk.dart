@@ -4648,7 +4648,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
         companionPreferences: widget.companionController?.current?.preferences,
         microphoneActive: recording || realtimeVoice?.microphoneActive == true,
         playbackActive: realtimeVoice?.isSpeechPlaying == true,
-        workStatus: widget.controller.companionStatus.label,
+        work: widget.controller.companionStatus,
         replyReady:
             ambientSessionSent &&
             phase == AmbientVoicePhase.review &&

@@ -1,6 +1,8 @@
 # Connector checkpoint and UI/ATLAS delivery priority — 5 October 2026
 
-## Current checkpoint
+**Current execution status — 5 October 2026:** [UI and ATLAS delivery status](CURRENT_STATUS.md) records accepted PR72, the two bounded native UI corrections, the parked OpenAPI candidate, and release prerequisites. The dated sections below retain their original checkpoint evidence.
+
+## Earlier checkpoint
 
 The release baseline for this follow-up is **PR71**, preserving UI/ATLAS work through
 PR69 and completing native MCP registration v44. All sixteen hosted checks passed

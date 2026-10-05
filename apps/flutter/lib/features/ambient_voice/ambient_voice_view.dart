@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../companion/companion_models.dart';
 import '../companion/companion_presence.dart';
+import '../companion/companion_presentation.dart';
 import 'realtime_voice_controller.dart' show AmbientVoiceConfidenceBand;
 
 enum AmbientVoicePhase {
@@ -55,7 +56,7 @@ class AmbientVoiceSurface extends StatelessWidget {
     this.replyReady = false,
     this.microphoneActive = false,
     this.playbackActive = false,
-    this.workStatus,
+    this.work = availableCompanion,
   });
 
   final AmbientVoicePhase phase;
@@ -91,7 +92,26 @@ class AmbientVoiceSurface extends StatelessWidget {
   final bool replyReady;
   final bool microphoneActive;
   final bool playbackActive;
-  final String? workStatus;
+  final CompanionWork work;
+
+  String get _portraitState {
+    if (playbackActive) {
+      return 'responding';
+    }
+    if (microphoneActive) {
+      return 'listening';
+    }
+    return switch (phase) {
+      AmbientVoicePhase.offline || AmbientVoicePhase.error => 'blocked',
+      AmbientVoicePhase.transcribing || AmbientVoicePhase.speaking => 'working',
+      AmbientVoicePhase.approval => 'needs_you',
+      AmbientVoicePhase.review
+          when !replyReady && transcript.trim().isNotEmpty =>
+        'needs_you',
+      // Only the existing receipt-verified work projection supplies completed.
+      _ => work.state,
+    };
+  }
 
   bool get _capturing =>
       phase == AmbientVoicePhase.starting ||
@@ -170,11 +190,7 @@ class AmbientVoiceSurface extends StatelessWidget {
                       CompanionPortrait(
                         visible: companionPreferences?.visible == true,
                         preferences: companionPreferences,
-                        state: playbackActive
-                            ? 'responding'
-                            : microphoneActive
-                            ? 'listening'
-                            : 'available',
+                        state: _portraitState,
                       ),
                       const SizedBox(width: 13),
                       Expanded(
@@ -241,10 +257,9 @@ class AmbientVoiceSurface extends StatelessWidget {
                               ],
                             ),
                             const SizedBox(height: 4),
-                            if ((microphoneActive || playbackActive) &&
-                                workStatus != null)
+                            if (microphoneActive || playbackActive)
                               Text(
-                                'Work: $workStatus',
+                                'Work: ${work.label}',
                                 style: const TextStyle(fontSize: 13),
                               ),
                             AnimatedSwitcher(

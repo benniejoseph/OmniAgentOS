@@ -84,10 +84,46 @@ void main() {
       expect(find.text('Available'), findsOneWidget);
       await tester.tap(find.text('Available'));
       await tester.pumpAndSettle();
-      expect(find.text('ATLAS motion: reduced.'), findsOneWidget);
+      expect(
+        find.text(
+          'Motion preference: Full. System Reduce Motion keeps ATLAS still.',
+        ),
+        findsOneWidget,
+      );
       expect(tester.takeException(), isNull);
     },
   );
+  testWidgets('motion preference does not claim current animation playback', (
+    tester,
+  ) async {
+    for (final (motion, label, limit) in [
+      (
+        'full',
+        'Full',
+        'System motion and power settings may keep ATLAS still.',
+      ),
+      ('reduced', 'Reduced', 'ATLAS stays still.'),
+      ('off', 'Off', 'ATLAS stays still.'),
+    ]) {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: CompanionPresence(
+              key: ValueKey(motion),
+              preferences: CompanionPreferences(visible: false, motion: motion),
+              work: availableCompanion,
+              reactionScope: motion,
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('Available'));
+      await tester.pumpAndSettle();
+      expect(find.text('Motion preference: $label. $limit'), findsOneWidget);
+      expect(find.text('ATLAS motion is on.'), findsNothing);
+      expect(tester.takeException(), isNull);
+    }
+  });
   testWidgets(
     'settings unavailable stays read-only and editor exposes full owned picker identity',
     (tester) async {
@@ -106,6 +142,12 @@ void main() {
         ),
       );
       expect(find.textContaining('read-only preview'), findsOneWidget);
+      expect(
+        find.textContaining(
+          'Low Power Mode or unavailable power status keeps ATLAS still.',
+        ),
+        findsOneWidget,
+      );
       expect(
         tester
             .widget<FilledButton>(
