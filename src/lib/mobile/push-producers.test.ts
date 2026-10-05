@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => ({
   rows: [] as Record<string, unknown>[],
   ensureDatabaseSchema: vi.fn(async () => undefined),
   getTodayPreferences: vi.fn(),
+  findTodayNotificationPreferencesWithSql: vi.fn(),
   isQuietHoursActive: vi.fn(() => false),
   enqueueMobilePush: vi.fn(),
   applyNotificationDispositionDecision: vi.fn(),
@@ -15,9 +16,10 @@ type MockSql = ReturnType<typeof vi.fn> & {
   transaction: ReturnType<typeof vi.fn>;
 };
 const sql = vi.fn(async () => mocks.rows) as MockSql;
+const transactionSql = Object.assign(vi.fn(), { transactionScoped: true });
 sql.transaction = vi.fn(async (
-  operation: (client: typeof sql) => unknown,
-) => operation(sql));
+  operation: (client: typeof transactionSql) => unknown,
+) => operation(transactionSql));
 
 vi.mock("@/lib/db/client", () => ({
   ensureDatabaseSchema: mocks.ensureDatabaseSchema,
@@ -31,6 +33,8 @@ vi.mock("@/lib/db/client", () => ({
 
 vi.mock("@/lib/today/briefs", () => ({
   getTodayPreferences: mocks.getTodayPreferences,
+  findTodayNotificationPreferencesWithSql:
+    mocks.findTodayNotificationPreferencesWithSql,
 }));
 
 vi.mock("@/lib/today/notifications", () => ({
@@ -55,18 +59,28 @@ vi.mock("@/lib/mobile/notification-disposition-store", () => ({
 import { processDomainMobilePushProducers } from "@/lib/mobile/push-producers";
 
 const now = new Date("2026-09-18T12:00:00.000Z");
+const authUserId = "11111111-1111-4111-8111-111111111111";
 
 beforeEach(() => {
   mocks.rows.splice(0);
   sql.mockClear();
   mocks.ensureDatabaseSchema.mockClear();
-  mocks.getTodayPreferences.mockReset().mockResolvedValue(preferences());
+  mocks.getTodayPreferences.mockReset().mockImplementation(() => {
+    throw new Error("A notification producer must never create preferences.");
+  });
+  mocks.findTodayNotificationPreferencesWithSql.mockReset()
+    .mockResolvedValue(preferences());
+  transactionSql.mockReset().mockImplementation(async (
+    _strings: TemplateStringsArray,
+    _tenantId: string,
+    actorId: string,
+  ) => [account(actorId)]);
   mocks.isQuietHoursActive.mockReset().mockReturnValue(false);
   mocks.enqueueMobilePush.mockReset().mockResolvedValue([{ id: "delivery-one" }]);
   mocks.applyNotificationDispositionDecision.mockReset().mockImplementation(
     async (input) => {
       const delivery = input.decision.outcome === "send"
-        ? await input.directDelivery(sql)
+        ? await input.directDelivery(input.sql)
         : { deliveryIds: [] };
       return {
         applied: true,
@@ -113,7 +127,7 @@ describe("domain mobile push producers", () => {
   it("waits until a meeting enters the actor's configured lead window", async () => {
     const meetingAt = new Date(now.getTime() + 90 * 60_000);
     mocks.rows.push(candidate("meeting", "meeting-one", meetingAt));
-    mocks.getTodayPreferences.mockResolvedValueOnce(preferences({
+    mocks.findTodayNotificationPreferencesWithSql.mockResolvedValueOnce(preferences({
       reminderLeadMinutes: 30,
     }));
 
@@ -229,6 +243,167 @@ describe("domain mobile push producers", () => {
     );
   });
 
+  it.each([canonicalActorId(), "owner@example.test"])(
+    "reads the verified saved alias pair without changing candidate owner %s",
+    async (actorId) => {
+      mocks.rows.push(candidate("approval", "approval-alias", now, { actorId }));
+      const saved = [{
+        tenant_id: "tenant-one",
+        actor_id: actorId === canonicalActorId()
+          ? "owner@example.test"
+          : canonicalActorId(),
+        notifications_enabled: true,
+        quiet_hours_enabled: true,
+        quiet_hours_start: "22:00",
+        quiet_hours_end: "07:00",
+        timezone: "UTC",
+        reminder_lead_minutes: 30,
+      }];
+      const originalSaved = JSON.stringify(saved);
+      const actual = await vi.importActual<typeof import("@/lib/today/briefs")>(
+        "@/lib/today/briefs",
+      );
+      transactionSql.mockImplementation(async (
+        strings: TemplateStringsArray,
+        tenantId: string,
+        canonical: string,
+        email: string,
+      ) => {
+        const query = strings.join("?");
+        if (/INSERT|UPDATE|DELETE/.test(query)) {
+          throw new Error("Preference evaluation must not write rows.");
+        }
+        if (query.includes("FROM omni_today_preferences")) {
+          return saved.filter((row) => row.tenant_id === tenantId &&
+            (row.actor_id === canonical || row.actor_id === email));
+        }
+        return [account(actorId)];
+      });
+      mocks.findTodayNotificationPreferencesWithSql.mockImplementation(async (
+        client,
+        options,
+      ) => {
+        expect(client).toBe(transactionSql);
+        expect(options).toEqual({
+          tenantId: "tenant-one",
+          actorId: "owner@example.test",
+          requestActorBinding: {
+            version: 1,
+            kind: "auth_user",
+            authUserId,
+            canonicalActorId: canonicalActorId(),
+            legacyOwnerActorIds: ["owner@example.test"],
+            readableOwnerActorIds: [canonicalActorId(), "owner@example.test"],
+          },
+        });
+        return actual.findTodayNotificationPreferencesWithSql(client, options);
+      });
+
+      await expect(processDomainMobilePushProducers({
+        tenantId: "tenant-one",
+        now,
+      })).resolves.toMatchObject({ queued: 1, dispositionsApplied: 1 });
+
+      expect(JSON.stringify(saved)).toBe(originalSaved);
+      expect(saved).toHaveLength(1);
+      expect(transactionSql).toHaveBeenCalledTimes(2);
+      expect(transactionSql.mock.calls[1][0].join("?")).toContain("LIMIT 2 FOR SHARE");
+      expect(mocks.getTodayPreferences).not.toHaveBeenCalled();
+      expect(mocks.applyNotificationDispositionDecision).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sql: transactionSql,
+          coordinates: expect.objectContaining({ ownerActorId: actorId }),
+          executionScope: expect.objectContaining({ initiatingActorId: actorId }),
+        }),
+      );
+      expect(mocks.enqueueMobilePush).toHaveBeenCalledWith(
+        expect.objectContaining({ actorId, sql: transactionSql }),
+      );
+      const [queryParts, ...parameters] = transactionSql.mock.calls[0];
+      const query = queryParts.join("?");
+      expect(query).toContain("membership.tenant_id = ?");
+      expect(query).toContain("account.status = 'active'");
+      expect(query).toContain("membership.status = 'active'");
+      expect(query).toContain("FOR SHARE OF account, membership");
+      expect(query).not.toMatch(/INSERT|UPDATE|DELETE/);
+      expect(parameters).toEqual(["tenant-one", actorId, actorId]);
+    },
+  );
+
+  it.each([
+    ["missing account or membership", []],
+    ["inactive account", [{ ...account(), user_status: "disabled" }]],
+    ["inactive membership", [{ ...account(), membership_status: "inactive" }]],
+    ["another tenant", [{ ...account(), tenant_id: "tenant-other" }]],
+    ["ambiguous accounts", [account(), account()]],
+    ["mismatched canonical identity", [{ ...account(), actor_id: "actor:other" }]],
+    ["unrelated current email", [{ ...account(), email: "other@example.test" }]],
+    ["non-exact email", [{ ...account(), email: " owner@example.test" }]],
+  ])("fails closed for %s", async (_label, accounts) => {
+    mocks.rows.push(candidate("approval", "approval-unbound", now, {
+      actorId: "owner@example.test",
+    }));
+    transactionSql.mockResolvedValueOnce(accounts);
+
+    await expect(processDomainMobilePushProducers({
+      tenantId: "tenant-one",
+      now,
+    })).resolves.toMatchObject({ queued: 0, dispositionsApplied: 0, skippedByPreference: 1 });
+
+    expect(mocks.findTodayNotificationPreferencesWithSql).not.toHaveBeenCalled();
+    expect(mocks.getTodayPreferences).not.toHaveBeenCalled();
+    expect(mocks.applyNotificationDispositionDecision).not.toHaveBeenCalled();
+    expect(mocks.enqueueMobilePush).not.toHaveBeenCalled();
+  });
+
+  it("leaves missing saved preferences absent and does not record a delivery", async () => {
+    mocks.rows.push(candidate("approval", "approval-no-preference", now));
+    mocks.findTodayNotificationPreferencesWithSql.mockResolvedValueOnce(undefined);
+
+    await expect(processDomainMobilePushProducers({
+      tenantId: "tenant-one",
+      now,
+    })).resolves.toMatchObject({ queued: 0, dispositionsApplied: 0, skippedByPreference: 1 });
+
+    expect(mocks.getTodayPreferences).not.toHaveBeenCalled();
+    expect(mocks.applyNotificationDispositionDecision).not.toHaveBeenCalled();
+    expect(mocks.enqueueMobilePush).not.toHaveBeenCalled();
+  });
+
+  it("preserves the saved-reader failure for duplicate physical preference rows", async () => {
+    mocks.rows.push(candidate("approval", "approval-ambiguous", now));
+    mocks.findTodayNotificationPreferencesWithSql.mockRejectedValueOnce(
+      new Error("Today preferences resolved to multiple physical rows."),
+    );
+
+    await expect(processDomainMobilePushProducers({
+      tenantId: "tenant-one",
+      now,
+    })).rejects.toThrow("Today preferences resolved to multiple physical rows.");
+
+    expect(mocks.getTodayPreferences).not.toHaveBeenCalled();
+    expect(mocks.applyNotificationDispositionDecision).not.toHaveBeenCalled();
+    expect(mocks.enqueueMobilePush).not.toHaveBeenCalled();
+  });
+
+  it("rechecks the owner for each occurrence instead of caching active membership", async () => {
+    mocks.rows.push(
+      candidate("approval", "approval-before-revocation", now),
+      candidate("approval", "approval-after-revocation", now),
+    );
+    transactionSql.mockResolvedValueOnce([account("actor-one")])
+      .mockResolvedValueOnce([]);
+
+    await expect(processDomainMobilePushProducers({
+      tenantId: "tenant-one",
+      now,
+    })).resolves.toMatchObject({ queued: 1, dispositionsApplied: 1, skippedByPreference: 1 });
+
+    expect(sql.transaction).toHaveBeenCalledTimes(2);
+    expect(mocks.findTodayNotificationPreferencesWithSql).toHaveBeenCalledTimes(1);
+    expect(mocks.enqueueMobilePush).toHaveBeenCalledTimes(1);
+  });
+
   it("anti-joins terminal, pending digest, and not-due deferred dispositions", async () => {
     await processDomainMobilePushProducers({
       tenantId: "tenant-one",
@@ -264,7 +439,7 @@ describe("domain mobile push producers", () => {
       new Date(now.getTime() - 60_000),
     );
     sql.mockResolvedValueOnce(firstPage).mockResolvedValueOnce([older]);
-    mocks.getTodayPreferences.mockImplementation(async ({ actorId }) => ({
+    mocks.findTodayNotificationPreferencesWithSql.mockImplementation(async (_sql, { actorId }) => ({
       ...preferences(),
       actorId,
       notificationsEnabled: !String(actorId).startsWith("disabled-"),
@@ -288,6 +463,21 @@ describe("domain mobile push producers", () => {
     expect(secondQueryParameters).toContain(firstPage.at(-1)?.occurs_at);
   });
 });
+
+function canonicalActorId() {
+  return `actor:${authUserId}`;
+}
+
+function account(actorId = "owner@example.test") {
+  return {
+    id: authUserId,
+    actor_id: canonicalActorId(),
+    email: actorId === canonicalActorId() ? "owner@example.test" : actorId,
+    user_status: "active",
+    tenant_id: "tenant-one",
+    membership_status: "active",
+  };
+}
 
 function candidate(
   kind: "approval" | "meeting" | "customer" | "run",
