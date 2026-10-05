@@ -120,12 +120,14 @@ integration("native MCP discovery243 schema under serving-role RLS", () => {
     const migration = await readSqlMigrationFile({ file: "20261006100000_native_mcp_discoveries.sql", sha256: row.checksum, migrations: [row] });
     const githubUpgrade = databaseSchemaMigrations.find((entry) => entry.version === 244)!;
     const githubUpgradeMigration = await readSqlMigrationFile({ file: "20261006103000_native_github_upgrades.sql", sha256: githubUpgrade.checksum, migrations: [githubUpgrade] });
+    const aclRepair = databaseSchemaMigrations.find((entry) => entry.version === 245)!;
+    const aclRepairMigration = await readSqlMigrationFile({ file: "20261006110000_native_provider_function_acl_repair.sql", sha256: aclRepair.checksum, migrations: [aclRepair] });
     const snapshot = (sql: postgres.TransactionSql) => sql`SELECT conname,pg_get_constraintdef(oid) AS definition FROM pg_constraint
       WHERE conrelid IN ('omni_native_connector_actions'::regclass,'omni_native_openapi_import_preparations'::regclass) ORDER BY conrelid,conname`;
     await admin.begin(async (sql) => {
       const before = await snapshot(sql), legacy = await sql`SELECT * FROM omni_schema_version WHERE version IS NULL`;
       await removeNativeGithubUpgradesForReplay(sql);
-      await sql`DELETE FROM omni_schema_version WHERE version=244`;
+      await sql`DELETE FROM omni_schema_version WHERE version IN (244,245)`;
       await removeNativeMcpDiscoveriesForReplay(sql);
       await sql`DELETE FROM omni_schema_version WHERE version=243`;
       const adapter: Parameters<typeof applySqlMigrationFile>[0] = { unsafe: async (text, params) => {
@@ -134,6 +136,7 @@ integration("native MCP discovery243 schema under serving-role RLS", () => {
       } };
       await applySqlMigrationFile(adapter, migration, [row], []);
       await applySqlMigrationFile(adapter, githubUpgradeMigration, [githubUpgrade], []);
+      await applySqlMigrationFile(adapter, aclRepairMigration, [aclRepair], []);
       expect(await snapshot(sql)).toEqual(before);
       expect(await sql`SELECT * FROM omni_schema_version WHERE version IS NULL`).toEqual(legacy);
     });

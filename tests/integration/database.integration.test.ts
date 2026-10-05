@@ -9647,6 +9647,7 @@ const nativeMcpRegistrationsVersion = 241;
 const nativeOpenapiImportsVersion = 242;
 const nativeMcpDiscoveriesVersion = 243;
 const nativeGithubUpgradesVersion = 244;
+const nativeProviderFunctionAclRepairVersion = 245;
 const additiveReplayVersions = [
   companionPreferencesVersion,
   responsibilityDraftsVersion,
@@ -9678,6 +9679,7 @@ const additiveReplayVersions = [
   nativeOpenapiImportsVersion,
   nativeMcpDiscoveriesVersion,
   nativeGithubUpgradesVersion,
+  nativeProviderFunctionAclRepairVersion,
 ].filter((version) => databaseSchemaMigrations.some((migration) => migration.version === version));
 const meetingResolutionReplayTables: readonly string[] = [
   "omni_meeting_commitment_resolution_intents",

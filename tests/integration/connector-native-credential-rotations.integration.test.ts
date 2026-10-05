@@ -142,8 +142,10 @@ integration("prepared MCP credential rotation under serving-role RLS", () => {
     const discoveryMigration = await readSqlMigrationFile({ file: "20261006100000_native_mcp_discoveries.sql", sha256: discovery.checksum, migrations: [discovery] });
     const githubUpgrade = databaseSchemaMigrations.find((migration) => migration.version === 244)!;
     const githubUpgradeMigration = await readSqlMigrationFile({ file: "20261006103000_native_github_upgrades.sql", sha256: githubUpgrade.checksum, migrations: [githubUpgrade] });
+    const aclRepair = databaseSchemaMigrations.find((migration) => migration.version === 245)!;
+    const aclRepairMigration = await readSqlMigrationFile({ file: "20261006110000_native_provider_function_acl_repair.sql", sha256: aclRepair.checksum, migrations: [aclRepair] });
     await admin.begin(async (sql) => {
-      await removeNativeGithubUpgradesForReplay(sql); await sql`DELETE FROM omni_schema_version WHERE version=244`;
+      await removeNativeGithubUpgradesForReplay(sql); await sql`DELETE FROM omni_schema_version WHERE version IN (244,245)`;
       await removeNativeMcpDiscoveriesForReplay(sql); await sql`DELETE FROM omni_schema_version WHERE version=243`;
       await removeNativeOpenapiImportsForReplay(sql); await sql`DELETE FROM omni_schema_version WHERE version=242`;
       await removeNativeMcpRegistrationsForReplay(sql); await sql`DELETE FROM omni_schema_version WHERE version=241`;
@@ -157,6 +159,7 @@ integration("prepared MCP credential rotation under serving-role RLS", () => {
       await applySqlMigrationFile(migrationSql, openapiImportMigration, [openapiImport], []);
       await applySqlMigrationFile(migrationSql, discoveryMigration, [discovery], []);
       await applySqlMigrationFile(migrationSql, githubUpgradeMigration, [githubUpgrade], []);
+      await applySqlMigrationFile(migrationSql, aclRepairMigration, [aclRepair], []);
       expect(await sql`SELECT intent,acceptance,state,settlement FROM omni_native_connector_actions ORDER BY id`).toEqual(before);
     });
   });
