@@ -1,6 +1,54 @@
 # ATLAS export and measurement records — 5 October 2026 (IST)
 
-## Current HELD01 bounded raster acceptance and complete matching export
+## Current production-component and route measurements
+
+The final lint-clean fixture passes **180/180 cases** at main71
+`f7a3157291af0d0d6c2c9964cfc9c165e58940b3` in the
+[r4 measurement receipt](</Volumes/Extreme Pro/Asael-release-records/2026-10-03-followups/ui-validation/atlas-held01-production-component/measurements-main71-r4/measurement.json>).
+It repeats the complete matrix below after replacing fixture-only whole-object
+ref access with explicit hook destructuring. Production player code is unchanged.
+The separate [r4 summary](</Volumes/Extreme Pro/Asael-release-records/2026-10-03-followups/ui-validation/atlas-held01-production-measurement-main71-r4-summary.md>)
+records the raw receipt hashes, sample definitions and metrics. The following r3
+record remains earlier evidence and is not overwritten or relabelled.
+
+The unchanged HELD01 production player has a matching 180-case headless browser
+measurement at main69 `8b8e40b61d4a1e3773cab2bab570ee7918ce765f`. All cases pass:
+neutral fallback, admitted poster and finite available-to-working motion; both
+themes; 36/64/72/108/256 CSS pixels; DPR1/2; three repetitions. The
+[immutable r3 summary](</Volumes/Extreme Pro/Asael-release-records/2026-10-03-followups/ui-validation/atlas-held01-production-measurement-summary.md>)
+binds every raw case and screenshot, and proves all 49 tracked measured
+input/asset files are byte-identical at main71. Five uncommitted measurement files
+and 27 installed dependency inputs are separately identified. This is not a
+full-tree or main71 runtime equivalence claim.
+
+A separate actual-versus-static-only production compilation uses main71
+`f7a3157291af0d0d6c2c9964cfc9c165e58940b3`. All 42 unchanged route budgets pass in
+both variants. Command is 912,538 bytes actual versus 906,862 static-only, a
+5,676-byte difference and 7,462-byte headroom below its 920,000-byte budget.
+The other 41 routes are unchanged. Its
+[comparison receipt](</Volumes/Extreme Pro/Asael-release-records/2026-10-03-followups/ui-validation/atlas-production-route-comparison-r1/comparison.json>)
+binds the full source archive, installed dependencies, exact single-file
+counterfactual, route statistics and retained chunks. The counterfactual keeps
+real preferences and the public player interface while removing manifest/sprite
+mechanics; it is not a feature-equivalent replacement. Compile mode skips
+application typechecking/prerender and does not replace the full hosted build.
+
+The strict loopback component fixture uses actual production imports, including
+`next/image`, and refuses application writes and external requests. Fresh browser
+contexts and request interception disable HTTP cache; filesystem, decoded-image
+and GPU caches are not claimed cold. Observed image readiness and DOM advances
+are not isolated decode time or presented frames, and handler-to-second-rAF is a
+lab control-response proxy, not field INP. Three repetitions are not a sustained
+workload. Physical/native performance, energy, natural motion and live 3D remain
+unmeasured. The maintained commands and provenance rules are in
+[PRODUCTION_MEASUREMENTS.md](../../../scripts/atlas/PRODUCTION_MEASUREMENTS.md).
+
+The compact-dock correction after main71 changes the shared web shell. Its
+current route-budget result must be recorded separately; main71's byte totals
+are baseline evidence. All following art/export records retain their original
+checkpoint scope and hashes.
+
+## HELD01 bounded raster acceptance and complete matching export — historical checkpoint
 
 The verified checkpoint is `sculpt-04-held-01-clearer-state-holds`, subsequently accepted for **bounded decorative raster delivery at 72px/256px**. Root reviewed eleven candidate sheets and independent review all twenty-eight / 152 captures. Held questioning asymmetry/tilt and less sleepy, modestly satisfied completion improve at actual 72px; the 36px benefit is subtle. Only fifteen configuration vectors and six tracks change against primary-color01; the other 162 tracks, all geometry, skin, UV/color, atlas bytes, rig, durations, earlier peaks and wing motion remain exact. Each clip endpoint matches its static pose. All **21 targeted model/lid checks** passed. Exact bundle admission is authorized but not yet performed.
 
@@ -17,7 +65,7 @@ The later `held01-final-review/review-decision.json`, accepted at `2026-10-05T00
 
 Review used rendered stills and verified encoded timing. Continuous-video watching, subjective temporal smoothness, live 3D delivery, lip sync and physical-device/GPU/memory/energy certification remain unclaimed. Next are exact bundle admission on the accepted UI, a fresh Mac56 build and hosted checks; none is established by this art acceptance. Apple notarization and production deployment are also unclaimed. The earlier 80-frame/sixteen-poster all-state review below belongs to primary-color01.
 
-Receipts are under `/Volumes/Extreme Pro/Asael-release-records/2026-10-03-followups/ui-validation/`; its [ATLAS_RELEASE_STATUS.md](</Volumes/Extreme Pro/Asael-release-records/2026-10-03-followups/ui-validation/ATLAS_RELEASE_STATUS.md>) is authoritative for current release status. All sections below are historical and apply to their named checkpoints. No new performance run is recorded; `output/benchmark.json` remains rough-01 evidence only.
+Receipts are under `/Volumes/Extreme Pro/Asael-release-records/2026-10-03-followups/ui-validation/`; its [ATLAS_RELEASE_STATUS.md](</Volumes/Extreme Pro/Asael-release-records/2026-10-03-followups/ui-validation/ATLAS_RELEASE_STATUS.md>) is authoritative for current release status. All sections below are historical and apply to their named checkpoints. The later production measurements above are separate from this art/export record; `output/benchmark.json` remains rough-01 evidence only.
 
 ## Historical primary-color01 retained finish and complete matching export
 
