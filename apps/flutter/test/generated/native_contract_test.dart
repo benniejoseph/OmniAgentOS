@@ -47,11 +47,11 @@ void main() {
   });
 
   test('retains current and previous contract compatibility', () {
-    expect(NativeContract.currentVersion, 40);
-    expect(NativeContract.previousVersion, 39);
-    expect(NativeContract.supportedVersions, [40, 39]);
-    expect(NativeContract.supports(38), isFalse);
-    expect(NativeContract.supports(41), isFalse);
+    expect(NativeContract.currentVersion, 41);
+    expect(NativeContract.previousVersion, 40);
+    expect(NativeContract.supportedVersions, [41, 40]);
+    expect(NativeContract.supports(39), isFalse);
+    expect(NativeContract.supports(42), isFalse);
     expect(
       NativePaths.meetingsList(
         workspaceId: 'workspace:one',
@@ -399,6 +399,30 @@ void main() {
     expect(
       NativePaths.connectorsNativeActionsGet(key),
       '/api/connectors/native/actions/$key',
+    );
+  });
+
+  test('publishes separate exact saved credential removal recovery paths', () {
+    expect(
+      NativeContract.supportsOperation(
+        'connectors.native.credentialRemovals.submit',
+      ),
+      isTrue,
+    );
+    expect(
+      NativeContract.supportsOperation(
+        'connectors.native.credentialRemovals.read',
+      ),
+      isTrue,
+    );
+    expect(
+      NativePaths.connectorsNativeCredentialRemovalsSubmit,
+      '/api/connectors/native/credential-removals',
+    );
+    final key = List.filled(64, 'b').join();
+    expect(
+      NativePaths.connectorsNativeCredentialRemovalsRead(key),
+      '/api/connectors/native/credential-removals/$key',
     );
   });
 

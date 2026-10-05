@@ -2,6 +2,15 @@
 
 The owner explicitly prioritized the UI revamp and ATLAS, asking to stabilize the current release and return to connector expansion afterward. The full implementation plan remains in scope; this changes execution order.
 
+## Current execution order
+
+Stabilize the open v41 candidate, then finish UI/ATLAS release work. Fresh main
+checks and paired-runner provenance passed at `b322fd5d`. The remaining concrete
+UI stabilization identified by the current review is native Payments failure and
+partial-data presentation. Native Trash implementation is preserved separately;
+its generation, validation and publication are parked. Further connector
+expansion follows UI/ATLAS.
+
 ## Current release checkpoint
 
 The UI is accepted and merged through **PR62, native Settings archive v2**.
@@ -41,8 +50,13 @@ The candidate publishes native v40 while retaining frozen Search v39, completes
 Google review/sync/disconnect/recovery and stabilizes the MCP/OpenAPI controls.
 Full Flutter analysis, fifty focused native cases, fifty-two focused contract/
 authorization/isolation cases, changed-TypeScript lint and artifact checks pass.
-App `1.23.22+57` preserves every reviewed ATLAS asset. Private packaging and
-exact-head hosted acceptance are pending for this separate connector candidate.
+App `1.23.22+57` preserves every reviewed ATLAS asset and its private Mac57 package
+is built and verified. PR64 passed all sixteen hosted checks and merged as
+`b322fd5d`, with identical accepted/merged full trees. A separate
+app `1.23.23+58` / native v41 slice adds exact local MCP saved-credential removal
+and protected recovery. Its contract, transaction and focused native checks
+pass, including full Flutter analysis. Its private Mac58 package is built and
+verified; hosted acceptance remains.
 See [connector checkpoint](CONNECTOR_CHECKPOINT.md) for its boundaries, including
 later lifecycle prototypes that remain outside the seven enrolled operations.
 

@@ -56,6 +56,7 @@ import { nativePersonalContextConsentSchemas } from "@/lib/mobile/personal-conte
 import { nativeMeetingCalendarSchemas } from "@/lib/mobile/meeting-calendar-contracts";
 import { nativeGooglePersonalSchemas } from "@/lib/mobile/google-personal-native-contracts";
 import { nativeConnectorSchemas } from "@/lib/mobile/connector-native-contracts";
+import { nativeConnectorCredentialRemovalSchemas } from "@/lib/mobile/connector-credential-removal-contracts";
 
 import { pluginManifestSchema } from "@/lib/plugins/contracts";
 import {
@@ -65,10 +66,10 @@ import {
 import { voiceCommandInputSchema } from "@/lib/voice/command-input";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 40 as const;
-// v39's scoped content-search publication remains byte-frozen. v40 adds reviewed
-// connector controls and personal Google actions with exact acceptance recovery.
-export const NATIVE_API_PREVIOUS_VERSION = 39 as const;
+export const NATIVE_API_CURRENT_VERSION = 41 as const;
+// v40's connector controls and personal Google actions remain byte-frozen. v41
+// adds only exact saved MCP credential removal and its read-only recovery.
+export const NATIVE_API_PREVIOUS_VERSION = 40 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -2303,6 +2304,17 @@ const v40Operations: readonly NativeOperation[] = [
   }),
 ];
 
+const v41Operations: readonly NativeOperation[] = [
+  ...v40Operations,
+  operation("connectors.native.credentialRemovals.submit", "POST", "/api/connectors/native/credential-removals", "Remove an exact reviewed saved MCP credential once, disable its connector and clear discovered contracts without revoking the provider token.", "bearer", "NativeConnectorCredentialRemovalRequest", "NativeConnectorCredentialRemovalSubmitResponse", {
+    ...connectorNativeOptions, headerParameters: pluginMutationHeaders, requestBodyMaxBytes: 8192,
+    successStatuses: [200, 201], errorStatuses: [400, 401, 403, 404, 409, 413, 415, 500, 503],
+  }),
+  operation("connectors.native.credentialRemovals.read", "GET", "/api/connectors/native/credential-removals/{keySha256}", "Read an exact MCP credential removal acceptance and settlement without repeating the removal.", "bearer", undefined, "NativeConnectorCredentialRemovalReadResponse", {
+    ...connectorNativeOptions, pathParameters: nativeActionRecoveryPath,
+  }),
+];
+
 const nativeCompanionPreferencesResponseSchema = z.object({
   schemaVersion: z.literal(1), contract: z.literal(COMPANION_PREFERENCES_CONTRACT),
   snapshot: z.object({
@@ -2325,6 +2337,7 @@ const nativeCompanionPreferencesResponseSchema = z.object({
 export const nativeContractSchemas = Object.freeze({
   ...nativeGooglePersonalSchemas,
   ...nativeConnectorSchemas,
+  ...nativeConnectorCredentialRemovalSchemas,
   ...nativeResponsibilityContractSchemas,
   ...nativeMeetingContractSchemas,
   ...nativeCustomerContractSchemas,
@@ -2490,6 +2503,7 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 38) return v38Operations;
   if (version === 39) return v39Operations;
   if (version === 40) return v40Operations;
+  if (version === 41) return v41Operations;
   return undefined;
 }
 

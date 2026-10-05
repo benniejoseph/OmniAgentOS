@@ -98,10 +98,15 @@ async function current(sql: Sql, scope: ConnectorNativeScope, kind: ConnectorNat
   }
   return connectorNativeReviewSchema.parse({ connector: summary, contracts, pin, availableActions, unavailableReason: null });
 }
-async function accepted(sql: Sql, scope: ConnectorNativeScope, keySha256: string) {
-  const rows = await sql`SELECT intent,acceptance,state,settlement FROM omni_native_connector_actions
+async function accepted(sql: Sql, scope: ConnectorNativeScope, keySha256: string, conflictOnOtherAction = false) {
+  const rows = await sql`SELECT action,intent,acceptance,state,settlement FROM omni_native_connector_actions
     WHERE tenant_id=${scope.tenantId} AND owner_actor_id=${scope.ownerActorId} AND idempotency_key_sha256=${keySha256}`;
   if (!rows.length) return null;
+  // A lifecycle key is not a v40 state-action receipt. Never widen its parser.
+  if (rows[0].action === "remove_credential") {
+    if (conflictOnOtherAction) fail("This key already accepted another connector request.");
+    return null;
+  }
   const intent = connectorNativeIntentSchema.parse(rows[0].intent), action = connectorNativeActionSchema.parse({ acceptance: rows[0].acceptance, state: rows[0].state, settlement: rows[0].settlement });
   const a = action.acceptance;
   if (rows.length !== 1 || !same(intent.scope, scope) || !same(a.scope, scope) || intent.keySha256 !== keySha256 || a.keySha256 !== keySha256 ||
@@ -132,7 +137,7 @@ export async function submitNativeConnectorAction(input: { authority: ConnectorN
   const execution = mutationScope(authority, request.connectorId);
   return transaction(authority, true, async (sql) => {
     await sql`SELECT pg_advisory_xact_lock(hashtextextended(${`native-connector-key:${scope.tenantId}:${scope.ownerActorId}:${intent.keySha256}`},0))`;
-    const replay = await accepted(sql, scope, intent.keySha256);
+    const replay = await accepted(sql, scope, intent.keySha256, true);
     if (replay) { if (!same(replay.intent, intent)) fail("This key already accepted another connector request."); return { action: replay.action, replayed: true }; }
     const reviewed = await current(sql, scope, request.kind, request.connectorId, true);
     if (!reviewed?.pin || !same(reviewed.pin, request.review) || !reviewed.availableActions.includes(request.action)) fail("The reviewed connector changed or this action is unavailable.");

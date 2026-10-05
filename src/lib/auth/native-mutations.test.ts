@@ -33,13 +33,26 @@ describe("native mutation capability enrollment", () => {
   it("requires v40 and fresh native authority for Google and connector management", () => {
     for (const capability of ["google.personal.manage", "connectors.manage"] as const) {
       for (const platform of ["android", "ios", "macos"] as const) {
-        expect(nativeMutationEnrollment(context(40, undefined, platform), capability, asOf))
-          .toEqual({ state: "active", minimumContractVersion: 40 });
-        for (const client of [context(39, undefined, platform), context(41, undefined, platform),
+        for (const version of [NATIVE_API_PREVIOUS_VERSION, NATIVE_API_CURRENT_VERSION]) {
+          expect(nativeMutationEnrollment(context(version, undefined, platform), capability, asOf))
+            .toEqual({ state: "active", minimumContractVersion: 40 });
+        }
+        for (const client of [context(39, undefined, platform), context(NATIVE_API_CURRENT_VERSION + 1, undefined, platform),
           context(40, "2026-01-01T00:00:00.000Z", platform), { source: "session" as const }, { source: "mobile" as const }]) {
           expect(nativeMutationEnrollment(client, capability, asOf))
-            .toMatchObject({ state: "held", minimumContractVersion: 40 });
+            .toMatchObject({ state: "held", minimumContractVersion: "native" in client ? 40 : NATIVE_API_CURRENT_VERSION });
         }
+      }
+    }
+  });
+  it("enrolls saved MCP credential removal only from v41 with fresh native authority", () => {
+    for (const platform of ["android", "ios", "macos"] as const) {
+      expect(nativeMutationEnrollment(context(41, undefined, platform), "connectors.credentials.remove", asOf))
+        .toEqual({ state: "active", minimumContractVersion: 41 });
+      for (const client of [context(40, undefined, platform), context(42, undefined, platform),
+        context(41, "2026-01-01T00:00:00.000Z", platform), { source: "session" as const }, { source: "mobile" as const }]) {
+        expect(nativeMutationEnrollment(client, "connectors.credentials.remove", asOf))
+          .toMatchObject({ state: "held", minimumContractVersion: 41 });
       }
     }
   });

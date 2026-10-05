@@ -6,7 +6,59 @@ PR63 passed all sixteen hosted checks and merged as `561de1e30af3d2407a11fec9bbb
 
 `codex/native-connector-release` starts from that accepted main and replays only checkpoint `ba468e7f9cdeb18da84ba8dc78fd4c05dbe5074f`. The original `codex/native-connector-controls` branch remains preserved. Two earlier branch commits were already patch-equivalent to accepted main and were not replayed.
 
-The implementation reconciles the seven added operations into native v40 while freezing accepted Search v39, completes the native Google review/action/recovery flow and stabilizes the authored MCP/OpenAPI controls. Google controls review one exact account, authorization generation and permitted source set before sync/disconnect. Protected intent storage precedes dispatch; uncertain results recover by exact GET without repeating the provider action. Both controllers permanently close and clear private state on authority loss, fence replaced/hidden lifetimes and preserve a competing window’s pending intent during receipt save. OAuth changes remain an explicit browser handoff. App `1.23.22+57` preserves the greeting and all HELD01 asset registrations. Migrations 236–237 retain their existing identity; no migration 238 is introduced. The resumed source passes full Flutter analysis, fifty focused native cases, fifty-two contract/authorization/isolation cases, changed-TypeScript lint and native artifact generation/check. Three deferred-repaint assertions were corrected to pump the actual mounted panel while retaining notification and private-content-removal checks; the complete Google rerun passes. The original eight PostgreSQL cases remain historical checkpoint evidence, not a fresh candidate result. Private build and exact-head hosted release gates remain next.
+The implementation reconciles the seven added operations into native v40 while freezing accepted Search v39, completes the native Google review/action/recovery flow and stabilizes the authored MCP/OpenAPI controls. Google controls review one exact account, authorization generation and permitted source set before sync/disconnect. Protected intent storage precedes dispatch; uncertain results recover by exact GET without repeating the provider action. Both controllers permanently close and clear private state on authority loss, fence replaced/hidden lifetimes and preserve a competing window’s pending intent during receipt save. OAuth changes remain an explicit browser handoff. App `1.23.22+57` preserves the greeting and all HELD01 asset registrations. Migrations 236–237 retain their existing identity; no migration 238 is introduced. The resumed source passes full Flutter analysis, fifty focused native cases, fifty-two contract/authorization/isolation cases, changed-TypeScript lint and native artifact generation/check. Three deferred-repaint assertions were corrected to pump the actual mounted panel while retaining notification and private-content-removal checks; the complete Google rerun passes. The original eight PostgreSQL cases remain historical checkpoint evidence, not a fresh candidate result. Private Mac57 is built and verified, with all 33 ATLAS assets exact. PR64 passed all sixteen hosted checks at `5a363991c103a122eee086247430f97da5b6b937`, including 2,113 Flutter cases, and merged as `b322fd5da7b2586650972f15213beff5125918c2`; accepted and merged full trees are identical. Application/native inputs equal the built source. Test-only corrections pass all 42 personal-sync cases, all 81 database integration cases and fresh verification of 237 migrations/263 tenant tables. Fresh main-revision hosted checks and paired-runner provenance passed on the exact merged revision.
+
+## Exact native MCP credential removal — stabilization only
+
+The next isolated slice adds review and explicit confirmation for removing one
+configured app-managed MCP bearer credential. It reuses the existing exact
+connector review, publishes only a dedicated submit and exact-receipt GET, and
+keeps the v40 state-action schemas unchanged. Native v41 adds only the new
+`connectors.credentials.remove` floor; v40 and v39 publications remain frozen.
+App `1.23.23+58` retains the accepted UI and ATLAS assets.
+
+Removal is local and atomic: disable the connector, clear its saved credential
+and discovery metadata/tools, and record immutable acceptance, settlement and
+events. The provider token remains valid until revoked with its provider.
+Separate protected native intent storage and exact receipt recovery do not replay
+an uncertain POST. Existing management, owner, review-generation and visibility
+boundaries remain in force. Migration238 extends the existing receipt table;
+credential entry/rotation, registration/import, rediscovery, GitHub upgrade and
+Trash remain later work.
+
+Normal restart recovery reopens the retained disabled connector and its dedicated
+protected journal. The existing exact-connection ID entry also opens saved
+recovery for a target deleted externally. There is no automatic inventory or
+discovery of deleted target IDs in this slice; that recovery requires its known ID.
+
+Artifact generation, its consistency check, 60 focused contract/authorization/route
+cases and lint on all 19 changed TypeScript files pass. Fourteen disposable PostgreSQL
+cases cover removal and legacy controls, including both event rollback paths,
+exact-key retry, serving-role scope, cross-family identity and migration replay.
+All 238 migrations and 263 tenant tables verify. Independent native and backend
+source reviews found no actionable blocker. Full Flutter analysis and all 56
+focused native cases pass across the focused runs, including existing connector
+controls. The actual exact-ID entry exposed a shared PageStorage key collision;
+the field now owns a controller/owner/kind-scoped key. Authority and missing-target
+fixtures scroll lazy content into view while preserving their private-state and
+GET-only recovery assertions. Private Mac58 was built from clean `632b867bfc25b8ef78886bb087d9352454e374ca`
+and independently verified: universal executable, strict nested private signatures
+and 33 exact ATLAS assets. DMG SHA256:
+`975865e46db15c97a69edbc2046856d604f74499b725792d4dfd0c71e5c0c52a`.
+The candidate is based on accepted PR64. Stabilization corrects the test transaction
+adapter and identifies v208 constraint DDL by its own sentinel. All 81 database
+integration cases and all 14 connector cases pass across the focused reruns;
+the final 238-migration/263-table verification passes. The unpublished migration
+uses a parser-safe multiline public checksum stamp; its replay fixture and registry
+match. Exact public-fixture scanner exceptions preserve the existing scan rules.
+Fresh exact-head hosted gates remain.
+This is not production promotion.
+
+The owner has reaffirmed UI/ATLAS priority. This candidate is limited to stabilizing
+the already implemented release. Native Trash source is preserved separately and
+its generation, validation and publication are parked. Credential rotation,
+registration/import, rediscovery and GitHub upgrade remain deferred until the
+UI/ATLAS release work is resolved.
 
 ## Historical 4 October checkpoint
 

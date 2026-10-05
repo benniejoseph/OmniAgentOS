@@ -3,9 +3,9 @@
 
 abstract final class NativeContract {
   static const id = 'asael.native-api';
-  static const currentVersion = 40;
-  static const previousVersion = 39;
-  static const supportedVersions = <int>[40, 39];
+  static const currentVersion = 41;
+  static const previousVersion = 40;
+  static const supportedVersions = <int>[41, 40];
   static const discoveryPath = '/api/mobile/contracts';
   static const operationIds = <String>{
     'auth.login',
@@ -256,6 +256,8 @@ abstract final class NativeContract {
     'connectors.native.review',
     'connectors.native.act',
     'connectors.native.actions.get',
+    'connectors.native.credentialRemovals.submit',
+    'connectors.native.credentialRemovals.read',
   };
 
   static bool supports(int version) => supportedVersions.contains(version);
@@ -1163,6 +1165,8 @@ abstract final class NativePaths {
   static String connectorsNativeReview(String kind, String id) => '/api/connectors/native/${Uri.encodeComponent(kind)}/${Uri.encodeComponent(id)}/review';
   static const connectorsNativeAct = '/api/connectors/native/actions';
   static String connectorsNativeActionsGet(String keySha256) => '/api/connectors/native/actions/${Uri.encodeComponent(keySha256)}';
+  static const connectorsNativeCredentialRemovalsSubmit = '/api/connectors/native/credential-removals';
+  static String connectorsNativeCredentialRemovalsRead(String keySha256) => '/api/connectors/native/credential-removals/${Uri.encodeComponent(keySha256)}';
 }
 
 abstract final class NativeConversationEvents {
