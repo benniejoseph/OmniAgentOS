@@ -48,6 +48,8 @@ export const NATIVE_MUTATION_CAPABILITIES = [
   "push.delivery.receipt",
   "push.canary.run",
   "plugins.manage",
+  "google.personal.manage",
+  "connectors.manage",
   "agents.create",
   "agents.update",
   "agents.delete",
@@ -126,6 +128,7 @@ export function nativeMutationCapabilityPolicy(
 }
 
 function minimumVersion(capability: NativeMutationCapability) {
+  if (capability === "google.personal.manage" || capability === "connectors.manage") return 40;
   if (capability === "memory.maintenance.run" || capability === "memory.graph.rebuild") return 38;
   if (capability === "knowledge.sources.delete") return 38;
   if (capability === "knowledge.cognification.decide" || capability === "knowledge.cognification.build") return 38;

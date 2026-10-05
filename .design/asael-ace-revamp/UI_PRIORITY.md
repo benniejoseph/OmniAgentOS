@@ -24,19 +24,27 @@ The [package receipt](</Volumes/Extreme Pro/Asael-release-records/2026-10-03-fol
 binds the package to the PR63 source. It is privately signed and not Apple
 notarized; installation and application launch are not claimed.
 
-**PR63 remains pending.** Hosted build, Flutter and integration checks passed;
-the browser gate exposed its old 108px `atlas-neutral` fallback assumption after
-admission of the real 256px state posters. The corrected focused browser run
-passes all 120 assertions on desktop/phone, including exact light/dark posters
-and an explicit missing-manifest neutral fallback. Subsequent exact-head hosted
-acceptance remains next. PR63 is not yet merged or production-deployed.
-The operator release environment remains an external dependency for the paired
-production promotion; no new request is needed. Whole-program and physical-device
-acceptance remain open.
+**PR63 is accepted and merged.** All sixteen hosted checks passed on
+`caf5b7e10f5983ba595dae3d688c34c5845e7b7e`, including 2,073 Flutter cases and the
+complete browser job. The corrected focused desktop/phone browser run passed
+120 assertions, including real light/dark posters and explicit missing-manifest
+fallback. It merged as `561de1e30af3d2407a11fec9bbbe2cc93499c360`; accepted and
+merged full trees are identical. Mac56 was built at `6c7397b5`; its native inputs
+match the accepted head, while those two full trees differ only in the browser
+harness and two status documents. Fresh main-branch checks and the paired runner
+provenance probe also passed. Production promotion remains held by the existing
+operator environment; the installed app is unchanged.
 
-Connector expansion stays parked at `ba468e7f` on
-`codex/native-connector-controls` until this UI/ATLAS priority is completed. The
-next native build must use the next free number, **at least 57**.
+Connector implementation resumed on `codex/native-connector-release` from this
+accepted UI/ATLAS release. The original `ba468e7f` checkpoint remains preserved.
+The candidate publishes native v40 while retaining frozen Search v39, completes
+Google review/sync/disconnect/recovery and stabilizes the MCP/OpenAPI controls.
+Full Flutter analysis, fifty focused native cases, fifty-two focused contract/
+authorization/isolation cases, changed-TypeScript lint and artifact checks pass.
+App `1.23.22+57` preserves every reviewed ATLAS asset. Private packaging and
+exact-head hosted acceptance are pending for this separate connector candidate.
+See [connector checkpoint](CONNECTOR_CHECKPOINT.md) for its boundaries, including
+later lifecycle prototypes that remain outside the seven enrolled operations.
 
 The detailed checkpoint sections below are historical implementation records.
 Their references to a next slice, unpublished artwork, pending package or reserved

@@ -2,18 +2,27 @@ import 'package:asael/generated/native_contract.g.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  test('publishes exact private Memory promotion review and recovery paths', () {
-    expect(NativeContract.supportsOperation('memory.promotions.decide'), isTrue);
-    expect(NativePaths.memoryPromotionsDecide, '/api/memory/promotions');
-    expect(
-      NativePaths.memoryPromotionsList(status: 'pending', limit: 25),
-      '/api/memory/promotions?status=pending&limit=25',
-    );
-    expect(
-      NativePaths.memoryPromotionsRead('review:one', acceptanceKeySha256: 'a' * 64),
-      '/api/memory/promotions/review%3Aone?acceptanceKeySha256=${'a' * 64}',
-    );
-  });
+  test(
+    'publishes exact private Memory promotion review and recovery paths',
+    () {
+      expect(
+        NativeContract.supportsOperation('memory.promotions.decide'),
+        isTrue,
+      );
+      expect(NativePaths.memoryPromotionsDecide, '/api/memory/promotions');
+      expect(
+        NativePaths.memoryPromotionsList(status: 'pending', limit: 25),
+        '/api/memory/promotions?status=pending&limit=25',
+      );
+      expect(
+        NativePaths.memoryPromotionsRead(
+          'review:one',
+          acceptanceKeySha256: 'a' * 64,
+        ),
+        '/api/memory/promotions/review%3Aone?acceptanceKeySha256=${'a' * 64}',
+      );
+    },
+  );
   test('publishes exact Account health evaluation and recovery paths', () {
     expect(
       NativeContract.supportsOperation('customers.health.evaluate'),
@@ -38,11 +47,11 @@ void main() {
   });
 
   test('retains current and previous contract compatibility', () {
-    expect(NativeContract.currentVersion, 39);
-    expect(NativeContract.previousVersion, 38);
-    expect(NativeContract.supportedVersions, [39, 38]);
-    expect(NativeContract.supports(37), isFalse);
-    expect(NativeContract.supports(40), isFalse);
+    expect(NativeContract.currentVersion, 40);
+    expect(NativeContract.previousVersion, 39);
+    expect(NativeContract.supportedVersions, [40, 39]);
+    expect(NativeContract.supports(38), isFalse);
+    expect(NativeContract.supports(41), isFalse);
     expect(
       NativePaths.meetingsList(
         workspaceId: 'workspace:one',
@@ -325,6 +334,71 @@ void main() {
     expect(
       NativePaths.pluginsUninstall('installation/one'),
       '/api/plugins/installation%2Fone',
+    );
+  });
+
+  test('retains scoped search paths with exact result encoding', () {
+    for (final operation in [
+      'content.search',
+      'content.search.work.get',
+      'content.search.memory.get',
+    ]) {
+      expect(NativeContract.supportsOperation(operation), isTrue);
+    }
+    expect(
+      NativePaths.contentSearch(
+        q: 'budget',
+        provider: 'work',
+        cursor: 'cursor:one',
+      ),
+      '/api/content-search?q=budget&provider=work&cursor=cursor%3Aone',
+    );
+    expect(
+      NativePaths.contentSearchWorkGet('project:one', task: 'task:two'),
+      '/api/content-search/work/project%3Aone?task=task%3Atwo',
+    );
+    expect(
+      NativePaths.contentSearchMemoryGet('memory:one'),
+      '/api/content-search/memory/memory%3Aone',
+    );
+  });
+
+  test('publishes reviewed connector and Google action recovery paths', () {
+    for (final operation in [
+      'google.personal.actions.review',
+      'google.personal.actions.submit',
+      'google.personal.actions.read',
+      'connectors.native.list',
+      'connectors.native.review',
+      'connectors.native.act',
+      'connectors.native.actions.get',
+    ]) {
+      expect(NativeContract.supportsOperation(operation), isTrue);
+    }
+    final key = List.filled(64, 'a').join();
+    expect(
+      NativePaths.googlePersonalActionsReview,
+      '/api/oauth/google/actions',
+    );
+    expect(
+      NativePaths.googlePersonalActionsSubmit,
+      '/api/oauth/google/actions',
+    );
+    expect(
+      NativePaths.googlePersonalActionsRead(key),
+      '/api/oauth/google/actions/$key',
+    );
+    expect(NativePaths.connectorsNativeList, '/api/connectors/native');
+    for (final kind in ['mcp', 'openapi']) {
+      expect(
+        NativePaths.connectorsNativeReview(kind, 'connector:one'),
+        '/api/connectors/native/$kind/connector%3Aone/review',
+      );
+    }
+    expect(NativePaths.connectorsNativeAct, '/api/connectors/native/actions');
+    expect(
+      NativePaths.connectorsNativeActionsGet(key),
+      '/api/connectors/native/actions/$key',
     );
   });
 

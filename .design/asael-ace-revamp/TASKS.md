@@ -2,7 +2,7 @@
 
 ## Current checkpoint — 5 October 2026
 
-**UI implementation is accepted through PR62; ATLAS PR63 is in release validation.**
+**UI and ATLAS are accepted through PR63; the next connector candidate is implemented and in release validation.**
 Native Settings archive v2 passed all sixteen hosted gates and 2,073 Flutter cases
 at `9cfadda5941ecbc189c39b86025ada7ef27cf8c0`, then merged as
 `7cfeaf2e9c0268ab150e4c14637260add069b0c8`.
@@ -18,16 +18,23 @@ records private signing, no Apple notarization, and no installation or app launc
 Native API v39 and the nineteen-source art/export identity remain unchanged; this
 slice adds no migration.
 
-PR63 build, Flutter and integration checks passed. Its browser gate still assumes
-the old 108px neutral fallback instead of the newly admitted 256px state poster.
-The corrected desktop/phone browser run passes all 120 assertions, including
-the actual light/dark posters and explicit unavailable-manifest neutral fallback.
-Subsequent exact-head hosted acceptance remains pending. PR63 is
-not yet merged or deployed. Production promotion still depends on the operator
-release environment. Connector expansion remains parked at `ba468e7f` until the
-UI/ATLAS priority is completed; any subsequent native build must use the next free
-number, at least 57. See [UI priority](UI_PRIORITY.md) for the current release
-checkpoint and [implementation evidence](IMPLEMENTATION.md) for earlier slices.
+PR63 passed all sixteen hosted checks at `caf5b7e10f5983ba595dae3d688c34c5845e7b7e`
+and merged as `561de1e30af3d2407a11fec9bbbe2cc93499c360`; accepted and merged
+full trees are identical. Its focused browser run passed 120 assertions. Mac56’s
+built source and accepted head have equivalent native inputs; their full trees
+differ in the browser harness and two status documents. The new main revision
+also passed hosted provenance. Production promotion still depends on the existing
+operator release environment; no installation or production change is claimed.
+
+Connector work resumed from accepted UI/ATLAS main, preserving checkpoint
+`ba468e7f`. The separate candidate implements the existing seven-operation scope
+with native v40, frozen Search v39 and app `1.23.22+57`; Google review/action/
+recovery and MCP/OpenAPI control stabilization are authored. Flutter analysis,
+fifty focused native cases, fifty-two contract/authorization/isolation cases,
+changed-TypeScript lint and generated artifact checks pass. Packaging and
+exact-head hosted acceptance remain before its release. Later lifecycle,
+credential and registration prototypes remain explicitly unfinished; see
+[connector checkpoint](CONNECTOR_CHECKPOINT.md) and [UI priority](UI_PRIORITY.md).
 
 Unchecked tasks retain their whole-task, cross-platform and device acceptance
 criteria. They do not imply that every implementation is missing. Bounded raster

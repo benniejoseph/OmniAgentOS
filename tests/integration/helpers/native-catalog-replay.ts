@@ -1,6 +1,26 @@
 import type postgres from "postgres";
 import { expect } from "vitest";
 
+export async function removeEmptyNativeConnectorControlsForReplay(sql: postgres.TransactionSql) {
+  expect(await sql`SELECT count(*)::int AS acceptances FROM public.omni_native_connector_actions`).toEqual([{ acceptances: 0 }]);
+  await sql`DROP POLICY omni_native_connector_event_actor ON public.omni_events`;
+  await sql`DROP TABLE public.omni_native_connector_actions`;
+  await sql`DROP FUNCTION public.omni_protect_native_connector_action_v1()`;
+  await sql`DROP FUNCTION public.omni_native_connector_settlement_valid_v1(JSONB,JSONB)`;
+  await sql`DROP FUNCTION public.omni_native_connector_intent_valid_v1(JSONB,JSONB)`;
+  await sql`DROP FUNCTION public.omni_native_connector_actor_v1(TEXT,TEXT,TEXT,BOOLEAN)`;
+}
+
+export async function removeEmptyGooglePersonalNativeActionsForReplay(sql: postgres.TransactionSql) {
+  expect(await sql`SELECT count(*)::int AS acceptances FROM public.omni_google_personal_native_actions`).toEqual([{ acceptances: 0 }]);
+  await sql`DROP POLICY omni_google_personal_native_event_actor ON public.omni_events`;
+  await sql`DROP TABLE public.omni_google_personal_native_actions`;
+  await sql`DROP FUNCTION public.omni_protect_google_personal_native_action_v1()`;
+  await sql`DROP FUNCTION public.omni_google_personal_sync_allowed_v1(TEXT,TEXT)`;
+  await sql`DROP FUNCTION public.omni_google_personal_settlement_valid_v1(JSONB,JSONB)`;
+  await sql`DROP FUNCTION public.omni_google_personal_review_valid_v1(JSONB)`;
+}
+
 export async function removeEmptyNativeKnowledgeCognitionBuildsForReplay(sql: postgres.TransactionSql) {
   expect(await sql`SELECT (SELECT count(*)::int FROM public.omni_knowledge_native_cognition_builds) AS builds,
     (SELECT count(*)::int FROM public.omni_knowledge_native_cognition_effects) AS effects`).toEqual([{ builds: 0, effects: 0 }]);

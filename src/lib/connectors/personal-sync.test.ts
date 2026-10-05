@@ -36,6 +36,7 @@ import {
   syncPersonalProvider,
 } from "@/lib/connectors/personal-sync";
 import { getDatabaseActorContext } from "@/lib/db/client";
+import { sourceContractSha256 } from "@/lib/sources/contracts";
 
 const GOOGLE_SYNC_SCOPES = [
   "https://www.googleapis.com/auth/gmail.modify",
@@ -101,6 +102,49 @@ describe("personal OAuth synchronization", () => {
     mocks.observeDrive.mockResolvedValue({ status: "shadow_observed" });
     mocks.observeCanonicalDrive.mockResolvedValue({ status: "settled" });
     mocks.ingest.mockResolvedValue({}); mocks.remove.mockResolvedValue("removed"); mocks.getDocument.mockResolvedValue(undefined); mocks.projectCalendar.mockResolvedValue({}); mocks.cancelCalendar.mockResolvedValue({});
+  });
+
+  it("keeps a native accepted lease and checks authority before every provider request",async () => {
+    mocks.fetch.mockImplementation(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes("/messages?")) return json({ messages: [] });
+      if (url.endsWith("/profile")) return json({ historyId: "native-mail-position" });
+      if (url.includes("calendar")) return json({ nextSyncToken: "native-calendar-position",items: [] });
+      if (url.includes("/drive/v3/files")) return json({ files: [] });
+      throw new Error(`Unexpected URL ${url}`);
+    });
+    const beforeProvider = vi.fn(async () => undefined),commit = vi.fn(async <T>(work: () => Promise<T>) => work());
+    const lease = { ownerId: "native-accepted-lease",generation: 7,expiresAt: "2026-10-05T00:00:00.000Z" };
+    await syncPersonalProvider({ tenantId: "personal",actorId: "owner",provider: "google",connectionId: "google-grant",
+      expectedAuthorizationGeneration: 1,expectedAccountEmail: GOOGLE_PERSONAL_CONNECTION.accountEmail,sources: ["mail","calendar","drive"],
+      native: { lease,expectedSources: ["mail","calendar","drive"],expectedScopeSha256: sourceContractSha256([...GOOGLE_SYNC_SCOPES].sort()),beforeProvider,commit: <T>(work: () => Promise<T>) => commit(work) as Promise<T> } });
+    expect(mocks.claimLease).not.toHaveBeenCalled();
+    expect(beforeProvider.mock.calls.length).toBeGreaterThanOrEqual(mocks.fetch.mock.calls.length+mocks.driveFence.mock.calls.length);
+    expect(mocks.updateState).toHaveBeenLastCalledWith(expect.objectContaining({ lease,releaseLease: true }));
+    expect(commit).toHaveBeenCalled(); expect(mocks.observeDrive).not.toHaveBeenCalled(); expect(mocks.observeCanonicalDrive).not.toHaveBeenCalled();
+  });
+
+  it("holds a native uncertain embedding/projection without legacy replacement or retry",async () => {
+    mocks.fetch.mockImplementation(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes("/messages?")) return json({ messages: [] });
+      if (url.endsWith("/profile")) return json({ historyId: "native-held-mail" });
+      if (url.includes("calendar")) return json({ nextSyncToken: "native-held-calendar",items: [{ id: "held-event",etag: "v2",created: "2026-08-25T10:00:00Z",
+        updated: "2026-08-26T09:00:00Z",summary: "Updated meeting",status: "confirmed",start: { dateTime: "2026-08-26T10:00:00Z" },end: { dateTime: "2026-08-26T11:00:00Z" } }] });
+      if (url.includes("/drive/v3/files")) return json({ files: [] });
+      throw new Error(`Unexpected URL ${url}`);
+    });
+    mocks.ingest.mockRejectedValueOnce(new Error("Knowledge document idempotency key is already bound to different content."));
+    const beforeProvider = vi.fn(async () => undefined),commit = async <T>(work: () => Promise<T>) => work();
+    await expect(syncPersonalProvider({ tenantId: "personal",actorId: "owner",provider: "google",connectionId: "google-grant",
+      expectedAuthorizationGeneration: 1,expectedAccountEmail: GOOGLE_PERSONAL_CONNECTION.accountEmail,sources: ["mail","calendar","drive"],
+      native: { lease: { ownerId: "held-lease",generation: 7,expiresAt: "2026-10-05T00:00:00.000Z" },expectedSources: ["mail","calendar","drive"],
+        expectedScopeSha256: sourceContractSha256([...GOOGLE_SYNC_SCOPES].sort()),beforeProvider,commit: <T>(work: () => Promise<T>) => commit(work) as Promise<T> } })).rejects.toThrow("already bound to different content");
+    expect(mocks.ingest).toHaveBeenCalledTimes(1); expect(mocks.remove).not.toHaveBeenCalled();
+    expect(mocks.ingest).toHaveBeenCalledWith(expect.objectContaining({ beforeEmbeddingProvider: beforeProvider,failOnEmbeddingError: true,
+      commitSourceProjection: commit,prepareSourceProjection: expect.any(Function) }));
+    expect(mocks.updateState.mock.calls.some(([input]) => input.releaseLease === true)).toBe(false);
+    expect(mocks.observeDrive).not.toHaveBeenCalled(); expect(mocks.observeCanonicalDrive).not.toHaveBeenCalled();
   });
 
   it("imports Google mail, calendar, and Drive updates and persists sync health", async () => {

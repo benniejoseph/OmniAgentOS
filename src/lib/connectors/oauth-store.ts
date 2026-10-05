@@ -506,6 +506,27 @@ export async function revokeExactSalesforceOAuthGrantInTransaction(sql: ReturnTy
   return { providerToken };
 }
 
+/** Exact native personal disconnect. Only the already locked old token leaves
+ * this transaction; local revocation is durable before provider dispatch. */
+export async function revokeExactGoogleOAuthGrantInTransaction(sql: ReturnType<typeof getSql>,input: {
+  tenantId: string;actorId: string;grantId: string;accountEmail: string;expectedAuthorizationGeneration: number;
+}) {
+  const rows = await sql`SELECT * FROM omni_oauth_grants WHERE tenant_id=${input.tenantId} AND actor_id=${input.actorId}
+    AND id=${input.grantId} AND provider='google' AND connection_purpose='personal' AND account_email=${input.accountEmail}
+    AND status='active' AND authorization_generation=${input.expectedAuthorizationGeneration} FOR UPDATE`;
+  if (rows.length !== 1 || input.expectedAuthorizationGeneration>=2_147_483_647) throw new Error("Exact Google authorization changed.");
+  const grant = internalGrantFromRow(rows[0]); let providerToken: string | null = null;
+  try { const tokens = openOAuthGrantTokens(grant).tokens; providerToken = String(tokens.refresh_token || tokens.access_token || "") || null; }
+  catch { /* Local revocation is still authoritative if an old credential cannot open. */ }
+  const sealedTokens = sealOAuthTokens({},oauthGrantBinding(grant));
+  const changed = await sql`UPDATE omni_oauth_grants SET status='revoked',authorization_generation=authorization_generation+1,sealed_tokens=${sealedTokens}::JSONB,
+    sync_cursor=NULL,sync_lease_owner_id=NULL,sync_lease_expires_at=NULL,updated_at=clock_timestamp()
+    WHERE tenant_id=${input.tenantId} AND actor_id=${input.actorId} AND id=${input.grantId} AND status='active'
+      AND authorization_generation=${input.expectedAuthorizationGeneration} RETURNING id`;
+  if (changed.length !== 1) throw new Error("Exact Google local revocation did not commit.");
+  return { providerToken };
+}
+
 export async function getOAuthGrantSecrets(
   tenantId: string,
   actorId: string,
@@ -590,7 +611,7 @@ export async function claimOAuthSyncLease(input: {
   provider: OAuthProvider;
   connectionId?: string;
   expectedAuthorizationGeneration?: number;
-}): Promise<
+},options: { sql?: ReturnType<typeof getSql> } = {}): Promise<
   | { status: "claimed"; lease: OAuthSyncLease }
   | { status: "busy" }
 > {
@@ -599,7 +620,8 @@ export async function claimOAuthSyncLease(input: {
   const ownerId = randomUUID();
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = await getSql()`
+    const sql = options.sql ?? getSql();
+    const rows = await sql`
       UPDATE omni_oauth_grants
       SET sync_lease_owner_id = ${ownerId},
           sync_lease_expires_at = clock_timestamp() + INTERVAL '10 minutes',
@@ -612,6 +634,7 @@ export async function claimOAuthSyncLease(input: {
         AND provider = ${input.provider}
         AND id = ${connectionId}
         AND status = 'active'
+        AND (provider<>'google' OR public.omni_google_personal_sync_allowed_v1(tenant_id,actor_id))
         AND (${input.expectedAuthorizationGeneration ?? null}::BIGINT IS NULL
           OR authorization_generation = ${input.expectedAuthorizationGeneration ?? null})
         AND (

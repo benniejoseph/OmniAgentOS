@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import {
   OAuthProviderError,
   type OAuthProvider,
@@ -10,6 +11,7 @@ import {
   OAuthCredentialError,
   type NormalizedOAuthGrant,
   type OAuthSourceCoverageCheckpoint,
+  type OAuthSyncLease,
 } from "@/lib/connectors/oauth-store";
 import { getActiveGoogleWorkspaceAccess } from "@/lib/connectors/google-workspace-access";
 import { GOOGLE_SOURCE_ADAPTERS } from "@/lib/connectors/google-source-adapters";
@@ -243,14 +245,17 @@ export async function syncDuePersonalProviders(options: {
   return results;
 }
 
+export type GooglePersonalNativeExecution = Readonly<{ lease: OAuthSyncLease;expectedSources: readonly PersonalSourceId[];expectedScopeSha256: string;
+  beforeProvider: () => Promise<void>;commit: <T>(work: () => Promise<T>,releaseLease?: boolean) => Promise<T> }>;
+const nativePersonalExecution = new AsyncLocalStorage<GooglePersonalNativeExecution>();
 type PersonalSyncInput = { tenantId: string; actorId: string; provider: OAuthProvider; connectionId?: string; sources?: PersonalSourceId[]; abortSignal?: AbortSignal;
   /** An explicit native Calendar command never follows a renewed authorization. */
-  expectedAuthorizationGeneration?: number; expectedAccountEmail?: string };
+  expectedAuthorizationGeneration?: number; expectedAccountEmail?: string;native?: GooglePersonalNativeExecution };
 export function syncPersonalProvider(input: PersonalSyncInput) {
   return runWithDatabaseActorScope(
     input.tenantId,
     [input.actorId],
-    () => syncPersonalProviderWithActorScope(input),
+    () => input.native ? nativePersonalExecution.run(input.native,() => syncPersonalProviderWithActorScope(input)) : syncPersonalProviderWithActorScope(input),
   );
 }
 
@@ -258,6 +263,8 @@ async function syncPersonalProviderWithActorScope(input: PersonalSyncInput) {
   if (input.provider !== "google") {
     throw new Error("Personal synchronization supports Google connections only.");
   }
+  await input.native?.beforeProvider();
+  const local = <T>(work: () => Promise<T>,releaseLease = false) => input.native ? input.native.commit(work,releaseLease) : work();
   const secrets = await getOAuthGrantSecrets(
     input.tenantId,
     input.actorId,
@@ -266,15 +273,20 @@ async function syncPersonalProviderWithActorScope(input: PersonalSyncInput) {
   );
   if (!secrets) throw new Error("Connected source not found.");
   if (input.expectedAuthorizationGeneration !== undefined && (
-    !input.connectionId || input.sources?.length !== 1 || input.sources[0] !== "calendar" ||
+    !input.connectionId || (!input.native && (input.sources?.length !== 1 || input.sources[0] !== "calendar")) ||
     secrets.grant.id !== input.connectionId || secrets.grant.authorizationGeneration !== input.expectedAuthorizationGeneration ||
     secrets.grant.accountEmail !== input.expectedAccountEmail || secrets.grant.connectionPurpose !== "personal" ||
-    !googleSyncSourcesForScopes(secrets.grant.scopes).includes("calendar")
+    (!input.native && !googleSyncSourcesForScopes(secrets.grant.scopes).includes("calendar"))
   )) throw new Error("The reviewed Calendar connection authorization changed.");
+  if (input.native && (input.expectedAuthorizationGeneration === undefined || !input.expectedAccountEmail ||
+    sourceContractSha256(input.sources) !== sourceContractSha256(input.native.expectedSources) ||
+    sourceContractSha256(googleSyncSourcesForScopes(secrets.grant.scopes)) !== sourceContractSha256(input.native.expectedSources) ||
+    sourceContractSha256([...new Set(secrets.grant.scopes)].sort()) !== input.native.expectedScopeSha256))
+    throw new Error("The exact reviewed Google source permissions changed.");
   const grantedSources = googleSyncSourcesForScopes(secrets.grant.scopes).filter((source) =>
     !input.sources?.length || input.sources.includes(source)
   );
-  const claim = await claimOAuthSyncLease({
+  const claim = input.native ? { status: "claimed" as const,lease: input.native.lease } : await claimOAuthSyncLease({
     tenantId: input.tenantId,
     actorId: input.actorId,
     provider: input.provider,
@@ -328,6 +340,7 @@ async function syncPersonalProviderWithActorScope(input: PersonalSyncInput) {
         capability: GOOGLE_SOURCE_ADAPTERS[grantedSources[0]].capability,
         expectedAuthorizationGeneration: input.expectedAuthorizationGeneration,
         expectedAccountEmail: input.expectedAccountEmail,
+        ...(input.native ? { beforeProvider: input.native.beforeProvider } : {}),
       });
       if (grantedSources.includes("drive")) {
         driveSidecarAccessToken = accessToken;
@@ -365,6 +378,7 @@ async function syncPersonalProviderWithActorScope(input: PersonalSyncInput) {
     // Settles one provider item into knowledge: retires it when its source no
     // longer offers it, and otherwise ingests its current revision.
     const settleSourceItem = async (item: SyncItem): Promise<SourceItemOutcome> => {
+      await input.native?.beforeProvider();
       const idempotencyKey = `${sourceNamespace.idempotencyPrefix}:${item.kind}:${item.id}`;
       if (item.excluded) {
         // Retirement is a heavy transaction, and most excluded items were
@@ -373,10 +387,10 @@ async function syncPersonalProviderWithActorScope(input: PersonalSyncInput) {
         if (!await getKnowledgeDocumentByIdempotencyKey(idempotencyKey, {
           tenantId: input.tenantId,
         })) return "skipped";
-        await deleteKnowledgeDocumentByIdempotencyKey(idempotencyKey, {
+        await local(() => deleteKnowledgeDocumentByIdempotencyKey(idempotencyKey, {
           tenantId: input.tenantId,
           executionScope: sourceExecutionScope,
-        });
+        }));
         return "removed";
       }
       if (item.deleted) {
@@ -386,19 +400,20 @@ async function syncPersonalProviderWithActorScope(input: PersonalSyncInput) {
             { tenantId: input.tenantId },
           );
           if (existingDocument?.sourceItemId) {
-            await cancelGoogleCalendarMeeting({
+            const sourceItemId = existingDocument.sourceItemId;
+            await local(() => cancelGoogleCalendarMeeting({
               tenantId: input.tenantId,
               actorId: input.actorId,
-              sourceItemId: existingDocument.sourceItemId,
+              sourceItemId,
               sourceExecutionScope,
               providerRevisionId: item.providerRevisionId || item.id,
-            });
+            }));
           }
         }
-        await deleteKnowledgeDocumentByIdempotencyKey(idempotencyKey, {
+        await local(() => deleteKnowledgeDocumentByIdempotencyKey(idempotencyKey, {
           tenantId: input.tenantId,
           executionScope: sourceExecutionScope,
-        });
+        }));
         return "removed";
       }
       if (!item.content.trim()) return "skipped";
@@ -415,23 +430,25 @@ async function syncPersonalProviderWithActorScope(input: PersonalSyncInput) {
         : undefined;
       let projectedExistingCalendar = false;
       if (
+        !input.native &&
         item.calendarEvent &&
         existingCalendarDocument?.sourceItemId &&
         existingCalendarDocument.sourceRevisionId
       ) {
+        const event = item.calendarEvent,sourceItemId = existingCalendarDocument.sourceItemId,sourceRevisionId = existingCalendarDocument.sourceRevisionId;
         // Calendar-to-Meeting projection is deliberately independent of
         // the heavier embedding/canonicalization repair below. Existing
         // Calendar evidence can therefore make the Meetings page current
         // immediately, even while knowledge backfill continues.
-        await projectGoogleCalendarMeeting({
+        await local(() => projectGoogleCalendarMeeting({
           tenantId: input.tenantId,
           actorId: input.actorId,
-          event: item.calendarEvent,
-          sourceItemId: existingCalendarDocument.sourceItemId,
-          sourceRevisionId: existingCalendarDocument.sourceRevisionId,
+          event,
+          sourceItemId,
+          sourceRevisionId,
           sourceExecutionScope,
           providerRevisionId: item.providerRevisionId || item.id,
-        });
+        }));
         projectedExistingCalendar = true;
       }
       const ingest = () => ingestTextDocument({
@@ -452,6 +469,15 @@ async function syncPersonalProviderWithActorScope(input: PersonalSyncInput) {
         // meeting, entity, and graph projections without purchasing the
         // same exact revision's embeddings again.
         reuseExactCommittedRevision: true,
+        ...(input.native ? {
+          beforeEmbeddingProvider: input.native.beforeProvider,failOnEmbeddingError: true,commitSourceProjection: input.native.commit,
+          prepareSourceProjection: async () => {
+            // A changed revision replaces its old local projection in the same
+            // guarded commit, after one embedding attempt. Exact reuse skips it.
+            if (await getKnowledgeDocumentByIdempotencyKey(idempotencyKey,{ tenantId: input.tenantId }))
+              await deleteKnowledgeDocumentByIdempotencyKey(idempotencyKey,{ tenantId: input.tenantId,executionScope: sourceExecutionScope });
+          },
+        } : {}),
         usageScope: {
           tenantId: input.tenantId,
           actorId: input.actorId,
@@ -477,6 +503,7 @@ async function syncPersonalProviderWithActorScope(input: PersonalSyncInput) {
       try {
         knowledge = await ingest();
       } catch (error) {
+        if (input.native) throw error;
         if (!isReplaceableKnowledgeConflict(error)) throw error;
         // Knowledge ids are stable for a provider item. If the provider
         // publishes a new revision, retire the old derived document and
@@ -495,30 +522,32 @@ async function syncPersonalProviderWithActorScope(input: PersonalSyncInput) {
         knowledge?.document?.sourceItemId &&
         knowledge.document.sourceRevisionId
       ) {
-        await projectGoogleCalendarMeeting({
+        const event = item.calendarEvent,sourceItemId = knowledge.document.sourceItemId,sourceRevisionId = knowledge.document.sourceRevisionId;
+        await local(() => projectGoogleCalendarMeeting({
           tenantId: input.tenantId,
           actorId: input.actorId,
-          event: item.calendarEvent,
-          sourceItemId: knowledge.document.sourceItemId,
-          sourceRevisionId: knowledge.document.sourceRevisionId,
+          event,
+          sourceItemId,
+          sourceRevisionId,
           sourceExecutionScope,
           providerRevisionId: item.providerRevisionId || item.id,
-        });
+        }));
       }
       if (item.communication) {
-        await mapInboundCommunication({
-          ...item.communication,
+        const communication = item.communication;
+        await local(() => mapInboundCommunication({
+          ...communication,
           providerMessageId: sourceNamespace.externalPrefix
-            ? `${sourceNamespace.externalPrefix}:${item.communication.providerMessageId}`
-            : item.communication.providerMessageId,
+            ? `${sourceNamespace.externalPrefix}:${communication.providerMessageId}`
+            : communication.providerMessageId,
           externalThreadId: sourceNamespace.externalPrefix
-            ? `${sourceNamespace.externalPrefix}:${item.communication.externalThreadId}`
-            : item.communication.externalThreadId,
+            ? `${sourceNamespace.externalPrefix}:${communication.externalThreadId}`
+            : communication.externalThreadId,
         }, {
           tenantId: input.tenantId,
           actorId: input.actorId,
           executionScope: sourceExecutionScope,
-        });
+        }));
       }
       return "imported";
     };
@@ -655,6 +684,7 @@ async function syncPersonalProviderWithActorScope(input: PersonalSyncInput) {
     };
     for (const observation of observations) {
       if (observation.status === "rejected") {
+        if (input.native) throw observation.reason;
         if (isPersonalSyncInterruption(observation.reason, input.abortSignal)) {
           throw observation.reason;
         }
@@ -701,6 +731,7 @@ async function syncPersonalProviderWithActorScope(input: PersonalSyncInput) {
           try {
             count(await settleSourceItem(item));
           } catch (error) {
+            if (input.native) throw error;
             // Only a failure to process the item itself can set it aside.
             if (
               isPersonalSyncInterruption(error, input.abortSignal) ||
@@ -728,7 +759,7 @@ async function syncPersonalProviderWithActorScope(input: PersonalSyncInput) {
             ));
           }
         }
-        for (const due of dueSourceItems(quarantine, Date.now())) {
+        for (const due of input.native ? [] : dueSourceItems(quarantine, Date.now())) {
           let read: SyncItem | undefined;
           try {
             read = await googleSourceItem(
@@ -762,7 +793,7 @@ async function syncPersonalProviderWithActorScope(input: PersonalSyncInput) {
         }
         if (processingFailure) throw processingFailure.error;
         quarantine = settleSourceItems(quarantine);
-        if (sweep) sweep = await sweepSourceDocuments(source, sweep, count);
+        if (sweep && !input.native) sweep = await sweepSourceDocuments(source, sweep, count);
         const candidateCursor = withSourceDocumentSweep(
           withSourceItemQuarantine(
             { ...nextCursor, ...observation.value.cursor },
@@ -780,7 +811,7 @@ async function syncPersonalProviderWithActorScope(input: PersonalSyncInput) {
         const sourceStatus = backfillState === "complete"
           ? "healthy" as const
           : "syncing" as const;
-        const checkpoint = await updateOAuthSyncState({
+        const checkpoint = await local(() => updateOAuthSyncState({
           ...input,
           connectionId: secrets.grant.id,
           status: "syncing",
@@ -796,7 +827,7 @@ async function syncPersonalProviderWithActorScope(input: PersonalSyncInput) {
             lastSuccessfulAt,
             failureCode: "none",
           }],
-        });
+        }));
         if (!checkpoint) {
           // The connection was revoked, or this sync lost its lease, so no
           // later source may be ingested under it.
@@ -816,6 +847,7 @@ async function syncPersonalProviderWithActorScope(input: PersonalSyncInput) {
           removed: sourceRemoved,
         });
       } catch (error) {
+        if (input.native) throw error;
         if (fenceLost || isPersonalSyncInterruption(error, input.abortSignal)) {
           throw error;
         }
@@ -847,7 +879,7 @@ async function syncPersonalProviderWithActorScope(input: PersonalSyncInput) {
     const error = failed.length
       ? failed.map((source) => `${source.source}: ${source.error}`).join("; ")
       : undefined;
-    const grant = await updateOAuthSyncState({
+    const grant = await local(() => updateOAuthSyncState({
       ...input,
       connectionId: secrets.grant.id,
       status: failed.length ? "error" : advancing.length ? "syncing" : "healthy",
@@ -869,7 +901,7 @@ async function syncPersonalProviderWithActorScope(input: PersonalSyncInput) {
           : {}),
         ...(source.failureCode ? { failureCode: source.failureCode } : {}),
       })),
-    });
+    }),true);
     if (!grant) {
       throw new Error("Connected source synchronization lost its lease.");
     }
@@ -885,6 +917,7 @@ async function syncPersonalProviderWithActorScope(input: PersonalSyncInput) {
       grant,
     };
   } catch (error) {
+    if (input.native) throw error;
     const interrupted = isPersonalSyncInterruption(error, input.abortSignal);
     const lastAttemptedAt = new Date().toISOString();
     await updateOAuthSyncState({
@@ -912,7 +945,7 @@ async function syncPersonalProviderWithActorScope(input: PersonalSyncInput) {
     throw error;
   } finally {
     if (
-      driveSidecarAccessToken &&
+      !input.native && driveSidecarAccessToken &&
       driveSidecarsReady &&
       !input.abortSignal?.aborted
     ) {
@@ -1851,6 +1884,7 @@ async function withProviderDeadline<T>(
   signal: AbortSignal | undefined,
   request: (signal: AbortSignal) => Promise<T>,
 ) {
+  await nativePersonalExecution.getStore()?.beforeProvider();
   const deadline = AbortSignal.timeout(PROVIDER_REQUEST_TIMEOUT_MS);
   try {
     return await request(signal ? AbortSignal.any([signal, deadline]) : deadline);
