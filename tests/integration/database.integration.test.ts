@@ -7149,12 +7149,16 @@ databaseDescribe("Postgres schema integration", () => {
   });
 
   test("holds an OAuth connection back after syncs that reach no source, doubling the wait up to six hours", async () => {
+    // Migration replay resets the module cache. Use the same database module as
+    // the dynamically loaded store so its AsyncLocalStorage receives the scope.
+    const database = await import("@/lib/db/client");
+    const store = await import("@/lib/connectors/oauth-store");
     const tenantId = "oauth_backoff_tenant";
     const userId = crypto.randomUUID();
     const actorId = `actor:${userId}`;
     // Google lease claims validate current actor authority even when there is
     // no native action pending. Exercise backoff as a real active owner.
-    await ensureDatabaseSchema();
+    await database.ensureDatabaseSchema();
     await admin`
       INSERT INTO omni_auth_tenants (id, name, slug)
       VALUES (${tenantId}, 'OAuth backoff', 'oauth-backoff-tenant')
@@ -7168,9 +7172,8 @@ databaseDescribe("Postgres schema integration", () => {
       VALUES ('oauth-backoff-member', ${tenantId}, ${userId}, 'operator', 'active')
     `;
     const owner = { tenantId, actorId, provider: "google" as const };
-    const store = await import("@/lib/connectors/oauth-store");
     const asOwner = <T,>(operation: () => Promise<T>) =>
-      runWithDatabaseActorScope(tenantId, [actorId], operation);
+      database.runWithDatabaseActorScope(tenantId, [actorId], operation);
     const save = (
       refresh?: { connectionId: string; expectedAuthorizationGeneration: number },
     ) => {
