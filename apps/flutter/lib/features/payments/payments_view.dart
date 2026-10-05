@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../core/network/api_client.dart';
 import '../../core/network/native_workspace_access.dart';
 import '../../generated/native_contract.g.dart';
+import 'payment_read_state.dart';
 
 typedef Json = Map<String, dynamic>;
 
@@ -17,8 +18,14 @@ class PaymentsView extends StatefulWidget {
 
 class _PaymentsViewState extends State<PaymentsView> {
   Future<void>? _loadInFlight;
-  Json? readiness, reviews, authenticators, transactions;
-  Object? error;
+  final _readiness = PaymentReadState();
+  final _reviews = PaymentReadState(collectionKey: 'reviews');
+  final _authenticators = PaymentReadState(collectionKey: 'credentials');
+  final _transactions = PaymentReadState(collectionKey: 'transactions');
+  Json? get readiness => _readiness.value;
+  Json? get reviews => _reviews.value;
+  Json? get authenticators => _authenticators.value;
+  Json? get transactions => _transactions.value;
   bool loading = true;
 
   Future<Json> _read(String path) => widget.authority == null
@@ -41,35 +48,38 @@ class _PaymentsViewState extends State<PaymentsView> {
     });
   }
 
+  Future<void> _loadSource(String path, PaymentReadState source) async {
+    try {
+      final value = await _read(path);
+      if (!mounted) return;
+      setState(() => source.complete(value));
+    } catch (error) {
+      if (mounted) setState(() => source.fail(error));
+    }
+  }
+
   Future<void> _performLoad() async {
     setState(() {
       loading = true;
-      error = null;
+      for (final source in [
+        _readiness,
+        _reviews,
+        _authenticators,
+        _transactions,
+      ]) {
+        source.begin();
+      }
     });
-    try {
-      final primary = await Future.wait([
-        _read(NativePaths.paymentsReadiness),
-        _read(NativePaths.paymentsReviews),
-      ]);
-      if (!mounted) return;
-      setState(() {
-        readiness = primary[0];
-        reviews = primary[1];
-      });
-      final secondary = await Future.wait([
-        _read(NativePaths.paymentsAuthenticators),
-        _read(NativePaths.paymentsTransactions),
-      ]);
-      if (!mounted) return;
-      setState(() {
-        authenticators = secondary[0];
-        transactions = secondary[1];
-      });
-    } catch (value) {
-      if (mounted) setState(() => error = value);
-    } finally {
-      if (mounted) setState(() => loading = false);
-    }
+    await Future.wait([
+      _loadSource(NativePaths.paymentsReadiness, _readiness),
+      _loadSource(NativePaths.paymentsReviews, _reviews),
+    ]);
+    if (!mounted) return;
+    await Future.wait([
+      _loadSource(NativePaths.paymentsAuthenticators, _authenticators),
+      _loadSource(NativePaths.paymentsTransactions, _transactions),
+    ]);
+    if (mounted) setState(() => loading = false);
   }
 
   @override
@@ -129,53 +139,30 @@ class _PaymentsViewState extends State<PaymentsView> {
                         trustPolicy: trustPolicy,
                         readiness: readiness,
                       ),
-                      if (error != null) ...[
-                        const SizedBox(height: 10),
-                        _ErrorNotice(error: error!, retry: _load),
-                      ],
-                      if (loading && reviews == null)
-                        const Padding(
-                          padding: EdgeInsets.all(48),
-                          child: Center(child: CircularProgressIndicator()),
-                        )
-                      else ...[
-                        const SizedBox(height: 22),
-                        _SectionHeading(
-                          title: 'Mandates awaiting review',
-                          count: reviewItems.length,
-                        ),
-                        const SizedBox(height: 8),
-                        if (reviewItems.isEmpty)
-                          const _Empty(
-                            message:
-                                'No purchase mandate is awaiting your review.',
-                          )
-                        else
+                      if (_readiness.error != null)
+                        _sourceNotice('Payment readiness', _readiness),
+                      _section(
+                        'Mandates awaiting review',
+                        _reviews,
+                        reviewItems.length,
+                        empty: 'No purchase mandate is awaiting your review.',
+                        children: [
                           for (final value in reviewItems)
                             Padding(
                               padding: const EdgeInsets.only(bottom: 9),
                               child: _ReviewCard(review: Json.from(value)),
                             ),
-                        if (loading &&
-                            (authenticators == null || transactions == null))
-                          const Padding(
-                            padding: EdgeInsets.symmetric(vertical: 32),
-                            child: Center(child: CircularProgressIndicator()),
-                          )
-                        else ...[
-                          const SizedBox(height: 22),
-                          _SectionHeading(
-                            title: 'Hardware-backed signers',
-                            count: credentials
-                                .where((item) => item['state'] == 'active')
-                                .length,
-                          ),
-                          const SizedBox(height: 8),
-                          if (credentials.isEmpty)
-                            const _Empty(
-                              message: 'No payment signer is registered.',
-                            )
-                          else
+                        ],
+                      ),
+                      _section(
+                        'Hardware-backed signers',
+                        _authenticators,
+                        credentials
+                            .where((item) => item['state'] == 'active')
+                            .length,
+                        empty: 'No payment signer is registered.',
+                        children: [
+                          if (credentials.isNotEmpty)
                             _Surface(
                               child: Column(
                                 children: [
@@ -193,17 +180,16 @@ class _PaymentsViewState extends State<PaymentsView> {
                                 ],
                               ),
                             ),
-                          const SizedBox(height: 22),
-                          _SectionHeading(
-                            title: 'Payment evidence',
-                            count: transactionItems.length,
-                          ),
-                          const SizedBox(height: 8),
-                          if (transactionItems.isEmpty)
-                            const _Empty(
-                              message: 'No reconciled payment lifecycle is recorded.',
-                            )
-                          else
+                        ],
+                        isEmpty: credentials.isEmpty,
+                      ),
+                      _section(
+                        'Payment evidence',
+                        _transactions,
+                        transactionItems.length,
+                        empty: 'No reconciled payment lifecycle is recorded.',
+                        children: [
+                          if (transactionItems.isNotEmpty)
                             _Surface(
                               child: Column(
                                 children: [
@@ -222,7 +208,7 @@ class _PaymentsViewState extends State<PaymentsView> {
                               ),
                             ),
                         ],
-                      ],
+                      ),
                     ],
                   ),
                 ),
@@ -233,6 +219,43 @@ class _PaymentsViewState extends State<PaymentsView> {
       ),
     );
   }
+
+  Widget _sourceNotice(String title, PaymentReadState source) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 8),
+    child: _ErrorNotice(
+      message: source.value == null
+          ? '$title could not be loaded.'
+          : '$title could not refresh. Showing the last available result.',
+      retry: loading ? null : _load,
+    ),
+  );
+
+  Widget _section(
+    String title,
+    PaymentReadState source,
+    int count, {
+    required String empty,
+    required List<Widget> children,
+    bool? isEmpty,
+  }) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      const SizedBox(height: 22),
+      _SectionHeading(title: title, count: source.current ? count : null),
+      const SizedBox(height: 8),
+      if (source.error != null) _sourceNotice(title, source),
+      if (source.loading) const LinearProgressIndicator(),
+      if (source.value != null)
+        if (isEmpty ?? count == 0)
+          _Empty(
+            message: source.current
+                ? empty
+                : 'The last available result contained no entries.',
+          )
+        else
+          ...children,
+    ],
+  );
 }
 
 class _BoundaryNotice extends StatelessWidget {
@@ -398,7 +421,7 @@ class _TransactionRow extends StatelessWidget {
 class _SectionHeading extends StatelessWidget {
   const _SectionHeading({required this.title, required this.count});
   final String title;
-  final int count;
+  final int? count;
   @override
   Widget build(BuildContext context) => Row(
     children: [
@@ -406,7 +429,7 @@ class _SectionHeading extends StatelessWidget {
         child: Text(title, style: Theme.of(context).textTheme.titleLarge),
       ),
       Text(
-        '$count',
+        count?.toString() ?? '—',
         style: TextStyle(
           color: Theme.of(context).colorScheme.onSurfaceVariant,
           fontWeight: FontWeight.w700,
@@ -420,15 +443,17 @@ class _Surface extends StatelessWidget {
   const _Surface({required this.child});
   final Widget child;
   @override
-  Widget build(BuildContext context) => Container(
+  Widget build(BuildContext context) => SizedBox(
     width: double.infinity,
-    decoration: BoxDecoration(
+    child: Material(
       color: Theme.of(context).colorScheme.surfaceContainerLowest,
-      borderRadius: BorderRadius.circular(12),
-      border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: child,
     ),
-    clipBehavior: Clip.antiAlias,
-    child: child,
   );
 }
 
@@ -454,18 +479,18 @@ class _Empty extends StatelessWidget {
 }
 
 class _ErrorNotice extends StatelessWidget {
-  const _ErrorNotice({required this.error, required this.retry});
-  final Object error;
-  final VoidCallback retry;
+  const _ErrorNotice({required this.message, required this.retry});
+  final String message;
+  final VoidCallback? retry;
   @override
   Widget build(BuildContext context) => Material(
     color: Theme.of(context).colorScheme.errorContainer,
     borderRadius: BorderRadius.circular(10),
     child: ListTile(
       leading: const Icon(Icons.warning_amber_rounded),
-      title: const Text('Payment evidence could not refresh'),
-      subtitle: Text(error.toString(), maxLines: 2),
+      title: Text(message),
       trailing: IconButton(
+        tooltip: 'Retry payment reads',
         onPressed: retry,
         icon: const Icon(Icons.refresh_rounded),
       ),
