@@ -3,9 +3,9 @@
 
 abstract final class NativeContract {
   static const id = 'asael.native-api';
-  static const currentVersion = 44;
-  static const previousVersion = 43;
-  static const supportedVersions = <int>[44, 43];
+  static const currentVersion = 45;
+  static const previousVersion = 44;
+  static const supportedVersions = <int>[45, 44];
   static const discoveryPath = '/api/mobile/contracts';
   static const operationIds = <String>{
     'auth.login',
@@ -271,6 +271,11 @@ abstract final class NativeContract {
     'connectors.native.mcpRegistrationPreparations.abandon',
     'connectors.native.mcpRegistrations.submit',
     'connectors.native.mcpRegistrations.read',
+    'connectors.native.openapiImportPreparations.submit',
+    'connectors.native.openapiImportPreparations.read',
+    'connectors.native.openapiImportPreparations.abandon',
+    'connectors.native.openapiImports.submit',
+    'connectors.native.openapiImports.read',
   };
 
   static bool supports(int version) => supportedVersions.contains(version);
@@ -1193,6 +1198,11 @@ abstract final class NativePaths {
   static String connectorsNativeMcpRegistrationPreparationsAbandon(String keySha256) => '/api/connectors/native/mcp-registration-preparations/${Uri.encodeComponent(keySha256)}/abandon';
   static const connectorsNativeMcpRegistrationsSubmit = '/api/connectors/native/mcp-registrations';
   static String connectorsNativeMcpRegistrationsRead(String keySha256) => '/api/connectors/native/mcp-registrations/${Uri.encodeComponent(keySha256)}';
+  static const connectorsNativeOpenapiImportPreparationsSubmit = '/api/connectors/native/openapi-import-preparations';
+  static String connectorsNativeOpenapiImportPreparationsRead(String keySha256) => '/api/connectors/native/openapi-import-preparations/${Uri.encodeComponent(keySha256)}';
+  static String connectorsNativeOpenapiImportPreparationsAbandon(String keySha256) => '/api/connectors/native/openapi-import-preparations/${Uri.encodeComponent(keySha256)}/abandon';
+  static const connectorsNativeOpenapiImportsSubmit = '/api/connectors/native/openapi-imports';
+  static String connectorsNativeOpenapiImportsRead(String keySha256) => '/api/connectors/native/openapi-imports/${Uri.encodeComponent(keySha256)}';
 }
 
 abstract final class NativeConversationEvents {

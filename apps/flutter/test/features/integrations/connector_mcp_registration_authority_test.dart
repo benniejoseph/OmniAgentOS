@@ -71,6 +71,7 @@ class _Api extends ApiClient {
     required NativeRequestAuthority authority,
     ConnectorJson? data,
     ConnectorJson? headers,
+    Duration? receiveTimeout,
   }) async {
     authority.requireCurrent(apiBaseUrl);
     posts++;

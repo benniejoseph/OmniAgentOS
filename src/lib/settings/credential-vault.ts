@@ -123,6 +123,48 @@ export function credentialBinding(input: {
   ].join(":");
 }
 
+/** Native OpenAPI snapshots have a separate bounded envelope. Ordinary credential
+ * readers keep their existing 64,000-byte limit and AAD convention unchanged. */
+export const NATIVE_OPENAPI_SNAPSHOT_MAX_BYTES = 4_000_000;
+function nativeOpenapiSnapshotAad(binding: string) {
+  if (!/^asael:native-openapi-import-snapshot:v1:[a-f0-9]{64}$/.test(binding)) {
+    throw new Error("The OpenAPI snapshot binding is invalid.");
+  }
+  return Buffer.from(binding, "utf8");
+}
+
+export function sealNativeOpenapiImportSnapshot(snapshot: unknown, binding: string): SealedCredentialPayload {
+  const plaintext = Buffer.from(JSON.stringify(snapshot), "utf8");
+  if (!plaintext.length || plaintext.length > NATIVE_OPENAPI_SNAPSHOT_MAX_BYTES) {
+    throw new Error("The OpenAPI snapshot exceeds its protected staging bound.");
+  }
+  try {
+    const keyring = readCredentialKeyring(), key = keyring.keys.get(keyring.activeKeyId);
+    if (!key) throw new CredentialVaultUnavailableError();
+    const iv = randomBytes(12), cipher = createCipheriv(CREDENTIAL_ALGORITHM, key, iv);
+    cipher.setAAD(nativeOpenapiSnapshotAad(binding));
+    const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+    return { version: 1, algorithm: CREDENTIAL_ALGORITHM, keyId: keyring.activeKeyId,
+      iv: iv.toString("base64url"), ciphertext: ciphertext.toString("base64url"), tag: cipher.getAuthTag().toString("base64url") };
+  } finally { plaintext.fill(0); }
+}
+
+export function openNativeOpenapiImportSnapshot(value: unknown, binding: string): unknown {
+  const payload = parseSealedCredentialPayload(value, NATIVE_OPENAPI_SNAPSHOT_MAX_BYTES);
+  const key = readCredentialKeyring().keys.get(payload.keyId);
+  if (!key) throw new CredentialVaultUnavailableError();
+  let plaintext: Buffer | undefined;
+  try {
+    const decipher = createDecipheriv(CREDENTIAL_ALGORITHM, key, Buffer.from(payload.iv, "base64url"));
+    decipher.setAAD(nativeOpenapiSnapshotAad(binding));
+    decipher.setAuthTag(Buffer.from(payload.tag, "base64url"));
+    plaintext = Buffer.concat([decipher.update(Buffer.from(payload.ciphertext, "base64url")), decipher.final()]);
+    if (plaintext.length > NATIVE_OPENAPI_SNAPSHOT_MAX_BYTES) throw new Error("Snapshot overflow.");
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(plaintext));
+  } catch { throw new Error("The OpenAPI snapshot could not be authenticated."); }
+  finally { plaintext?.fill(0); }
+}
+
 function readCredentialKeyring() {
   const raw = process.env.OMNIAGENT_CREDENTIAL_KEYRING?.trim();
   if (!raw) throw new CredentialVaultUnavailableError();
@@ -165,7 +207,7 @@ function readCredentialKeyring() {
   return { activeKeyId, keys };
 }
 
-function parseSealedCredentialPayload(value: unknown): SealedCredentialPayload {
+function parseSealedCredentialPayload(value: unknown, maximumBytes = 64_000): SealedCredentialPayload {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("The tenant credential bundle is missing.");
   }
@@ -176,7 +218,7 @@ function parseSealedCredentialPayload(value: unknown): SealedCredentialPayload {
     typeof payload.keyId !== "string" ||
     !isBase64Url(payload.iv, 12, 12) ||
     !isBase64Url(payload.tag, 16, 16) ||
-    !isBase64Url(payload.ciphertext, 1, 64_000)
+    !isBase64Url(payload.ciphertext, 1, maximumBytes)
   ) {
     throw new Error("The tenant credential bundle is invalid.");
   }
@@ -188,7 +230,7 @@ function associatedData(binding: string) {
 }
 
 function isBase64Url(value: unknown, minBytes: number, maxBytes: number) {
-  if (typeof value !== "string" || !/^[A-Za-z0-9_-]+$/.test(value)) return false;
+  if (typeof value !== "string" || value.length > Math.ceil(maxBytes * 4 / 3) || !/^[A-Za-z0-9_-]+$/.test(value)) return false;
   const decoded = Buffer.from(value, "base64url");
   return decoded.length >= minBytes && decoded.length <= maxBytes &&
     decoded.toString("base64url") === value;

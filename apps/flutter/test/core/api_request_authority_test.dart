@@ -195,6 +195,7 @@ void main() {
           'payload': {'bearerToken': 'synthetic-one-shot'},
         },
         headers: {'Idempotency-Key': 'preparation-one'},
+        receiveTimeout: const Duration(seconds: 55),
       ),
       throwsA(isA<ApiException>()),
     );
@@ -202,7 +203,44 @@ void main() {
     expect(service.posts.single.key, 'preparation-one');
     expect(service.validatedTokens, ['Bearer access-one']);
     expect(service.refreshes, 0);
+    expect(service.receiveTimeouts, [const Duration(seconds: 55)]);
   });
+
+  test(
+    'one-shot receive timeout is bounded per call and preserves the default',
+    () async {
+      final store = await _store(), service = _Service();
+      final dio = _dio(service)
+        ..options.receiveTimeout = const Duration(seconds: 30);
+      final api = createApiClient(store, dio: dio, refreshDio: _dio(service));
+      for (final timeout in [Duration.zero, const Duration(seconds: 56)]) {
+        expect(
+          () => api.postJsonAuthorizedOnce(
+            '/api/connectors/native/openapi-import-preparations',
+            authority: _authority(),
+            receiveTimeout: timeout,
+          ),
+          throwsArgumentError,
+        );
+      }
+      expect(service.posts, isEmpty);
+      expect(service.validatedTokens, isEmpty);
+      await api.postJsonAuthorizedOnce(
+        '/api/connectors/native/openapi-import-preparations',
+        authority: _authority(),
+        receiveTimeout: const Duration(seconds: 55),
+      );
+      await api.postJsonAuthorizedOnce(
+        '/api/connectors/native/credential-preparations',
+        authority: _authority(),
+      );
+      expect(service.receiveTimeouts, [
+        const Duration(seconds: 55),
+        const Duration(seconds: 30),
+      ]);
+      expect(dio.options.receiveTimeout, const Duration(seconds: 30));
+    },
+  );
 
   test('401 replay validates the replacement token before resending original bytes with the same key', () async {
     final store = await _store(), service = _Service()..refuseFirstPost = true;
@@ -450,6 +488,7 @@ class _Service implements HttpClientAdapter {
   bool refuseFirstPost = false;
   String rotatedOwner = _ownerId;
   final validatedTokens = <Object?>[];
+  final receiveTimeouts = <Duration?>[];
   final posts = <({Object? token, Object? key, String body, String method})>[];
   @override
   Future<ResponseBody> fetch(
@@ -488,6 +527,7 @@ class _Service implements HttpClientAdapter {
     final body = options.data is FormData
         ? utf8.decode(await requestStream!.expand((chunk) => chunk).toList())
         : jsonEncode(options.data);
+    receiveTimeouts.add(options.receiveTimeout);
     posts.add((
       token: token,
       key: options.headers['idempotency-key'],

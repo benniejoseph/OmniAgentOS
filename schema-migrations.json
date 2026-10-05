@@ -1479,5 +1479,12 @@
     "checksum": "9d673841107a1136a18e3801e78a7bceb69b9dbfbfd0f00a4745746102a09645",
     "file": "20261005203000_native_mcp_registrations.sql",
     "sha256": "9d673841107a1136a18e3801e78a7bceb69b9dbfbfd0f00a4745746102a09645"
+  },
+  {
+    "version": 242,
+    "name": "native_openapi_imports_v1",
+    "checksum": "69c0b615c0d7f966954c4c664d7dd1cd3110027ffd918381af6d11db9d92b495",
+    "file": "20261005210000_native_openapi_imports.sql",
+    "sha256": "69c0b615c0d7f966954c4c664d7dd1cd3110027ffd918381af6d11db9d92b495"
   }
 ]

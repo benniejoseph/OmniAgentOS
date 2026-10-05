@@ -60,6 +60,7 @@ import { nativeConnectorCredentialRemovalSchemas } from "@/lib/mobile/connector-
 import { nativeConnectorTrashSchemas } from "@/lib/mobile/connector-trash-contracts";
 import { nativeConnectorCredentialRotationSchemas } from "@/lib/mobile/connector-credential-rotation-contracts";
 import { nativeConnectorMcpRegistrationSchemas } from "@/lib/mobile/connector-mcp-registration-contracts";
+import { nativeConnectorOpenapiImportSchemas } from "@/lib/mobile/connector-openapi-import-contracts";
 
 import { pluginManifestSchema } from "@/lib/plugins/contracts";
 import {
@@ -69,10 +70,10 @@ import {
 import { voiceCommandInputSchema } from "@/lib/voice/command-input";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 44 as const;
-// v42/v43 remain byte-frozen. v44 adds only prepared MCP registration,
-// exact recovery and terminal registration-staging abandonment.
-export const NATIVE_API_PREVIOUS_VERSION = 43 as const;
+export const NATIVE_API_CURRENT_VERSION = 45 as const;
+// v43/v44 remain byte-frozen. v45 adds only bounded new OpenAPI import,
+// exact preparation/action recovery and terminal staging abandonment.
+export const NATIVE_API_PREVIOUS_VERSION = 44 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -2376,6 +2377,28 @@ const v44Operations: readonly NativeOperation[] = [
   }),
 ];
 
+const v45Operations: readonly NativeOperation[] = [
+  ...v44Operations,
+  operation("connectors.native.openapiImportPreparations.submit", "POST", "/api/connectors/native/openapi-import-preparations", "Reserve one exact OpenAPI import attempt, fetch a public spec once or parse transient text, and return safe preparation evidence without creating a connector or executing API operations.", "bearer", "NativeConnectorOpenapiImportPrepareRequest", "NativeConnectorOpenapiImportPreparationSubmitResponse", {
+    ...connectorNativeOptions, headerParameters: pluginMutationHeaders, requestBodyMaxBytes: 4_100_000,
+    successStatuses: [200, 201, 202], errorStatuses: [400, 401, 403, 404, 409, 413, 415, 500, 503],
+  }),
+  operation("connectors.native.openapiImportPreparations.read", "GET", "/api/connectors/native/openapi-import-preparations/{keySha256}", "Read the original owner's exact OpenAPI attempt, complete ready summary or terminal preparation evidence without fetching or retrying private input.", "bearer", undefined, "NativeConnectorOpenapiImportPreparationReadResponse", {
+    ...connectorNativeOptions, pathParameters: nativeActionRecoveryPath,
+  }),
+  operation("connectors.native.openapiImportPreparations.abandon", "POST", "/api/connectors/native/openapi-import-preparations/{keySha256}/abandon", "Permanently abandon the original owner's exact OpenAPI import preparation, including an absent-key tombstone that fences delayed preparation.", "bearer", "NativeConnectorOpenapiImportPreparationAbandonRequest", "NativeConnectorOpenapiImportPreparationAbandonResponse", {
+    ...connectorNativeOptions, pathParameters: nativeActionRecoveryPath, headerParameters: pluginMutationHeaders, requestBodyMaxBytes: 16_384,
+    successStatuses: [200, 201], errorStatuses: [400, 401, 403, 409, 413, 415, 500, 503],
+  }),
+  operation("connectors.native.openapiImports.submit", "POST", "/api/connectors/native/openapi-imports", "Consume one exact captured OpenAPI snapshot to create its reserved connector disabled with every imported operation pending review, without refetching or executing an API operation.", "bearer", "NativeConnectorOpenapiImportRequest", "NativeConnectorOpenapiImportSubmitResponse", {
+    ...connectorNativeOptions, headerParameters: pluginMutationHeaders, requestBodyMaxBytes: 8192,
+    successStatuses: [200, 201], errorStatuses: [400, 401, 403, 404, 409, 413, 415, 500, 503],
+  }),
+  operation("connectors.native.openapiImports.read", "GET", "/api/connectors/native/openapi-imports/{keySha256}", "Read the original exact OpenAPI import receipt without repeating preparation or creation.", "bearer", undefined, "NativeConnectorOpenapiImportReadResponse", {
+    ...connectorNativeOptions, pathParameters: nativeActionRecoveryPath,
+  }),
+];
+
 const nativeCompanionPreferencesResponseSchema = z.object({
   schemaVersion: z.literal(1), contract: z.literal(COMPANION_PREFERENCES_CONTRACT),
   snapshot: z.object({
@@ -2402,6 +2425,7 @@ export const nativeContractSchemas = Object.freeze({
   ...nativeConnectorTrashSchemas,
   ...nativeConnectorCredentialRotationSchemas,
   ...nativeConnectorMcpRegistrationSchemas,
+  ...nativeConnectorOpenapiImportSchemas,
   ...nativeResponsibilityContractSchemas,
   ...nativeMeetingContractSchemas,
   ...nativeCustomerContractSchemas,
@@ -2571,6 +2595,7 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 42) return v42Operations;
   if (version === 43) return v43Operations;
   if (version === 44) return v44Operations;
+  if (version === 45) return v45Operations;
   return undefined;
 }
 

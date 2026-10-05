@@ -30,16 +30,27 @@ function context(
 }
 
 describe("native mutation capability enrollment", () => {
+  it("enrolls OpenAPI import and cleanup only from v45 with current native authority", () => {
+    for (const platform of ["android", "ios", "macos"] as const) {
+      expect(nativeMutationEnrollment(context(45, undefined, platform), "connectors.openapi.import", asOf))
+        .toEqual({ state: "active", minimumContractVersion: 45 });
+      for (const client of [context(44, undefined, platform), context(46, undefined, platform),
+        context(45, "2026-01-01T00:00:00.000Z", platform), { source: "session" as const }, { source: "mobile" as const }]) {
+        expect(nativeMutationEnrollment(client, "connectors.openapi.import", asOf))
+          .toMatchObject({ state: "held", minimumContractVersion: 45 });
+      }
+    }
+  });
   it("enrolls MCP registration and cleanup only from v44 without broadening old capabilities", () => {
     for (const platform of ["android", "ios", "macos"] as const) {
       expect(nativeMutationEnrollment(context(44, undefined, platform), "connectors.mcp.register", asOf))
         .toEqual({ state: "active", minimumContractVersion: 44 });
-      for (const client of [context(43, undefined, platform), context(45, undefined, platform),
+      for (const client of [context(43, undefined, platform), context(NATIVE_API_CURRENT_VERSION + 1, undefined, platform),
         context(44, "2026-01-01T00:00:00.000Z", platform), { source: "session" as const }, { source: "mobile" as const }]) {
         expect(nativeMutationEnrollment(client, "connectors.mcp.register", asOf))
-          .toMatchObject({ state: "held", minimumContractVersion: 44 });
+          .toMatchObject({ state: "held", minimumContractVersion: "native" in client ? 44 : NATIVE_API_CURRENT_VERSION });
       }
-      for (const version of [43, 44]) {
+      for (const version of [NATIVE_API_PREVIOUS_VERSION, NATIVE_API_CURRENT_VERSION]) {
         expect(nativeMutationEnrollment(context(version, undefined, platform), "connectors.credentials.rotate", asOf))
           .toEqual({ state: "active", minimumContractVersion: 43 });
       }
@@ -88,7 +99,7 @@ describe("native mutation capability enrollment", () => {
   });
   it("enrolls prepared MCP credential rotation and cleanup only from v43", () => {
     for (const platform of ["android", "ios", "macos"] as const) {
-      expect(nativeMutationEnrollment(context(43, undefined, platform), "connectors.credentials.rotate", asOf))
+      expect(nativeMutationEnrollment(context(NATIVE_API_PREVIOUS_VERSION, undefined, platform), "connectors.credentials.rotate", asOf))
         .toEqual({ state: "active", minimumContractVersion: 43 });
       for (const client of [context(42, undefined, platform), context(NATIVE_API_CURRENT_VERSION + 1, undefined, platform),
         context(43, "2026-01-01T00:00:00.000Z", platform), { source: "session" as const }, { source: "mobile" as const }]) {

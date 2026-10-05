@@ -595,7 +595,13 @@ class ApiClient {
     required NativeRequestAuthority authority,
     Map<String, dynamic>? data,
     Map<String, dynamic>? headers,
+    Duration? receiveTimeout,
   }) {
+    if (receiveTimeout != null &&
+        (receiveTimeout <= Duration.zero ||
+            receiveTimeout > const Duration(seconds: 55))) {
+      throw ArgumentError.value(receiveTimeout, 'receiveTimeout');
+    }
     _requireAuthorityTransport(authority);
     return _json(
       () => _dio.post<Object?>(
@@ -604,6 +610,7 @@ class ApiClient {
         options: Options(
           headers: headers,
           extra: {_requestAuthorityKey: authority, 'asaelNativeOneShot': true},
+          receiveTimeout: receiveTimeout,
         ),
       ),
     );

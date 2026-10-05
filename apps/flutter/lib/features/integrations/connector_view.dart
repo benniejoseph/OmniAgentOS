@@ -11,6 +11,7 @@ import 'connector_controller.dart';
 import 'connector_credential_removal_view.dart';
 import 'connector_credential_rotation_view.dart';
 import 'connector_mcp_registration_view.dart';
+import 'connector_openapi_import_view.dart';
 import 'connector_providers.dart';
 import 'connector_trash_view.dart';
 
@@ -146,6 +147,16 @@ class _ConnectorControlPanelState extends State<ConnectorControlPanel>
               OutlinedButton(
                 onPressed: c.busy ? null : _openMcpRegistration,
                 child: const Text('MCP registration recovery'),
+              ),
+              if (c.mayManage)
+                FilledButton.icon(
+                  onPressed: c.busy ? null : _openOpenApiImport,
+                  icon: const Icon(Icons.add),
+                  label: const Text('New OpenAPI import'),
+                ),
+              OutlinedButton(
+                onPressed: c.busy ? null : _openOpenApiImport,
+                child: const Text('OpenAPI import recovery'),
               ),
               OutlinedButton.icon(
                 onPressed: c.listing ? null : c.refresh,
@@ -480,6 +491,33 @@ class _ConnectorControlPanelState extends State<ConnectorControlPanel>
         identical(controller, c) &&
         _visible &&
         epoch == _viewEpoch) {
+      await controller.refresh();
+    }
+  }
+
+  Future<void> _openOpenApiImport() async {
+    if (!_visible || c.busy) {
+      return;
+    }
+    final controller = c, epoch = _viewEpoch;
+    final route = MaterialPageRoute<String>(
+      builder: (_) => const NativeConnectorOpenApiImportWorkspace(),
+    );
+    final id = await Navigator.of(context).push<String>(route);
+    // Pop returns before the outgoing transition restores the controls'
+    // TickerMode. Wait for visible presentation, then recheck its authority.
+    await route.completed;
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted ||
+        !identical(controller, c) ||
+        !_visible ||
+        epoch != _viewEpoch) {
+      return;
+    }
+    if (id != null) {
+      // A new target need not occur on the inventory's first page.
+      await controller.select('openapi', id);
+    } else {
       await controller.refresh();
     }
   }

@@ -125,13 +125,13 @@ Key properties:
 - Text deltas stream to the client immediately but persist to the run ledger in batches.
 
 P9.1 inserts a transport-neutral application-service boundary between product
-callers and domain stores. Later phases extend it to 269 active `app.*`
+callers and domain stores. Later phases extend it to 274 active `app.*`
 operations, listed in `APP_SERVICE_OPERATION_CONTRACTS` in
 `src/lib/app-services/registry.ts`, across the workspace, project, work-item,
 asset, memory, Agent, Skill, run, workflow, connector, settings, Today, and
 notification families, including native MCP Trash preview/submission/recovery
-and credential preparation, abandonment, rotation, prepared MCP registration
-and exact recovery. Their overlapping UI routes call
+and credential preparation, abandonment, rotation, prepared MCP registration,
+new OpenAPI import preparation/confirmation and exact recovery. Their overlapping UI routes call
 `src/lib/app-services/*`; the governed executor no longer imports domain stores
 or retrievers and never uses the product DOM. HTTP routes retain request
 authentication, origin/CSRF enforcement, and durable security audit, while the
