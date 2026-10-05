@@ -3,9 +3,9 @@
 
 abstract final class NativeContract {
   static const id = 'asael.native-api';
-  static const currentVersion = 46;
-  static const previousVersion = 45;
-  static const supportedVersions = <int>[46, 45];
+  static const currentVersion = 47;
+  static const previousVersion = 46;
+  static const supportedVersions = <int>[47, 46];
   static const discoveryPath = '/api/mobile/contracts';
   static const operationIds = <String>{
     'auth.login',
@@ -279,6 +279,10 @@ abstract final class NativeContract {
     'connectors.native.mcpDiscoveries.submit',
     'connectors.native.mcpDiscoveries.read',
     'connectors.native.mcpDiscoveries.close',
+    'connectors.native.githubUpgrades.review',
+    'connectors.native.githubUpgrades.submit',
+    'connectors.native.githubUpgrades.read',
+    'connectors.native.githubUpgrades.close',
   };
 
   static bool supports(int version) => supportedVersions.contains(version);
@@ -1209,6 +1213,10 @@ abstract final class NativePaths {
   static const connectorsNativeMcpDiscoveriesSubmit = '/api/connectors/native/mcp-discoveries';
   static String connectorsNativeMcpDiscoveriesRead(String keySha256) => '/api/connectors/native/mcp-discoveries/${Uri.encodeComponent(keySha256)}';
   static String connectorsNativeMcpDiscoveriesClose(String keySha256) => '/api/connectors/native/mcp-discoveries/${Uri.encodeComponent(keySha256)}/close';
+  static String connectorsNativeGithubUpgradesReview(String id) => '/api/connectors/native/mcp/${Uri.encodeComponent(id)}/github-upgrade-review';
+  static const connectorsNativeGithubUpgradesSubmit = '/api/connectors/native/github-upgrades';
+  static String connectorsNativeGithubUpgradesRead(String keySha256) => '/api/connectors/native/github-upgrades/${Uri.encodeComponent(keySha256)}';
+  static String connectorsNativeGithubUpgradesClose(String keySha256) => '/api/connectors/native/github-upgrades/${Uri.encodeComponent(keySha256)}/close';
 }
 
 abstract final class NativeConversationEvents {

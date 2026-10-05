@@ -58,6 +58,16 @@ atomic, disabled and policy-preserving, with exact current authority and a
 rollback and use a compatible server for admitted attempts. See the
 [rediscovery protocol](native-mcp-rediscovery.md) for its provider and recovery boundaries.
 
+The later **v47 candidate** adds migration 244 and an owner-private native
+GitHub upgrade ledger, taking the expected inventory to 268 tenant tables and
+89 restrictive actor policies. Do not merge or promote this v47 candidate until
+the v46 server is in production and Mac68 is installed and verified against
+it. The v47 migration and contract belong to that separate rollout; the v46
+release gate above stays at 267/88. Migration 244 requires a migration-function
+owner with `BYPASSRLS` or superuser rights; verify that ownership and the
+single-flight helper on the candidate database before serving v47. See [the
+native GitHub upgrade protocol](native-github-upgrade.md).
+
 V45 adds five new-OpenAPI import operations under `connectors.openapi.import`
 at floor 45. Both public specification URLs and pasted JSON/YAML are supported,
 with optional explicit base override and the existing `none`, `bearer_env` and

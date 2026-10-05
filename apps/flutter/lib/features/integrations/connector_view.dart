@@ -10,6 +10,9 @@ import 'connector_control_contracts.dart';
 import 'connector_controller.dart';
 import 'connector_credential_removal_view.dart';
 import 'connector_credential_rotation_view.dart';
+import 'connector_github_upgrade_contracts.dart';
+import 'connector_github_upgrade_repository.dart';
+import 'connector_github_upgrade_view.dart';
 import 'connector_mcp_registration_view.dart';
 import 'connector_mcp_discovery_view.dart';
 import 'connector_openapi_import_view.dart';
@@ -152,6 +155,10 @@ class _ConnectorControlPanelState extends State<ConnectorControlPanel>
               OutlinedButton(
                 onPressed: c.busy ? null : () => _openMcpDiscovery(),
                 child: const Text('MCP discovery recovery'),
+              ),
+              OutlinedButton(
+                onPressed: c.busy ? null : () => _openGithubUpgrade(),
+                child: const Text('GitHub upgrade recovery'),
               ),
               if (c.mayManage)
                 FilledButton.icon(
@@ -469,6 +476,15 @@ class _ConnectorControlPanelState extends State<ConnectorControlPanel>
               label: const Text('Review tool discovery'),
             ),
           if (row['kind'] == 'mcp' &&
+              row['endpointRedacted'] == false &&
+              legacyOfficialGithubMcpEndpoint(row['endpoint']) &&
+              c.mayManage)
+            _GithubUpgradeEntry(
+              review: review,
+              busy: c.busy,
+              onPressed: () => _openGithubUpgrade(row['id'] as String),
+            ),
+          if (row['kind'] == 'mcp' &&
               review.pin != null &&
               review.value!['unavailableReason'] == null &&
               c.mayManage)
@@ -576,6 +592,30 @@ class _ConnectorControlPanelState extends State<ConnectorControlPanel>
     final controller = c, epoch = _viewEpoch;
     final route = MaterialPageRoute<String>(
       builder: (_) => NativeConnectorMcpDiscoveryWorkspace(connectorId: id),
+    );
+    final target = await Navigator.of(context).push<String>(route);
+    await route.completed;
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted ||
+        !identical(controller, c) ||
+        !_visible ||
+        epoch != _viewEpoch) {
+      return;
+    }
+    if (target != null) {
+      await controller.select('mcp', target);
+    } else if (id != null) {
+      await controller.select('mcp', id);
+    } else {
+      await controller.refresh();
+    }
+  }
+
+  Future<void> _openGithubUpgrade([String? id]) async {
+    if (!_visible || c.busy) return;
+    final controller = c, epoch = _viewEpoch;
+    final route = MaterialPageRoute<String>(
+      builder: (_) => NativeConnectorGithubUpgradeWorkspace(connectorId: id),
     );
     final target = await Navigator.of(context).push<String>(route);
     await route.completed;
@@ -708,6 +748,95 @@ class _ConnectorControlPanelState extends State<ConnectorControlPanel>
           identical(controller, c) &&
           _visible &&
           epoch == _viewEpoch,
+    );
+  }
+}
+
+/// The public connector review normalizes its endpoint. Only the dedicated
+/// server proof can establish that the stored endpoint is an eligible legacy
+/// GitHub URL; its pin must still match the review rendered above this action.
+class _GithubUpgradeEntry extends ConsumerStatefulWidget {
+  const _GithubUpgradeEntry({
+    required this.review,
+    required this.busy,
+    required this.onPressed,
+  });
+
+  final ConnectorReview review;
+  final bool busy;
+  final VoidCallback onPressed;
+
+  @override
+  ConsumerState<_GithubUpgradeEntry> createState() =>
+      _GithubUpgradeEntryState();
+}
+
+class _GithubUpgradeEntryState extends ConsumerState<_GithubUpgradeEntry> {
+  NativeWorkspaceAccess? _access;
+  ApiConnectorGithubUpgradeRepository? _repository;
+  Future<ConnectorGithubUpgradeReview>? _proof;
+  String? _connectorId, _reviewSha256;
+
+  void _clear() {
+    _repository?.close();
+    _repository = null;
+    _proof = null;
+    _access = null;
+    _connectorId = null;
+    _reviewSha256 = null;
+  }
+
+  @override
+  void dispose() {
+    _clear();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final access = ref.watch(nativeWorkspaceAccessProvider);
+    final id = widget.review.connector?['id'];
+    final digest = widget.review.pin?['reviewSha256'];
+    if (access == null ||
+        !access.current ||
+        !const ['admin', 'system'].contains(access.authority.role) ||
+        id is! String ||
+        digest is! String) {
+      _clear();
+      return const SizedBox.shrink();
+    }
+    if (!identical(_access, access) ||
+        _connectorId != id ||
+        _reviewSha256 != digest) {
+      _clear();
+      _access = access;
+      _connectorId = id;
+      _reviewSha256 = digest;
+      final repository = ApiConnectorGithubUpgradeRepository(access);
+      _repository = repository;
+      _proof = repository.eligibility(id);
+    }
+    return FutureBuilder<ConnectorGithubUpgradeReview>(
+      future: _proof,
+      builder: (context, snapshot) {
+        if (!snapshot.hasData ||
+            !snapshot.data!.matches(widget.review) ||
+            !_repository!.current) {
+          return const SizedBox.shrink();
+        }
+        return OutlinedButton.icon(
+          onPressed: widget.busy
+              ? null
+              : () {
+                  if (_repository?.current == true &&
+                      snapshot.data!.matches(widget.review)) {
+                    widget.onPressed();
+                  }
+                },
+          icon: const Icon(Icons.upgrade),
+          label: const Text('Expand GitHub tools'),
+        );
+      },
     );
   }
 }

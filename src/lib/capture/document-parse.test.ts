@@ -232,14 +232,24 @@ describe("contained document parsing", () => {
   });
 
   it("stops a parse whose process memory grows past the watchdog limit", async () => {
-    // The watchdog measures the whole process, whose RSS falls while a worker
-    // stopped by an earlier test is still exiting.
+    // Let earlier workers exit, then make the watchdog sample deterministic
+    // instead of depending on allocator and GC timing on the test runner.
     await Promise.all([...liveWorkers].map((worker) => once(worker, "exit")));
-
-    await expectResourceLimit("rss", () => parseDocumentContained({
-      format: "html",
-      bytes: new TextEncoder().encode("<p>Hi</p>"),
-    }, { rssGrowthLimitBytes: 1, rssPollIntervalMs: 1 }));
+    const baselineRss = process.memoryUsage.rss();
+    let rssSamples = 0;
+    const rss = vi.spyOn(process.memoryUsage, "rss").mockImplementation(() => {
+      rssSamples += 1;
+      return baselineRss + (rssSamples > 1 ? 2 : 0);
+    });
+    try {
+      await expectResourceLimit("rss", () => parseDocumentContained({
+        format: "html",
+        bytes: new TextEncoder().encode("<p>Hi</p>"),
+      }, { rssGrowthLimitBytes: 1, rssPollIntervalMs: 1 }));
+      expect(rssSamples).toBeGreaterThan(1);
+    } finally {
+      rss.mockRestore();
+    }
   });
 
   it("runs at most two parses at once", async () => {

@@ -12,9 +12,13 @@ paths = [
 ]
 
 [[allowlists]]
-description = "Native MCP test fixture keySha256 fields are public digest identifiers, not API credentials."
+description = "Native connector test fixture keySha256 fields are public digest identifiers, not API credentials."
 targetRules = ["generic-api-key"]
 condition = "AND"
 regexTarget = "line"
-paths = ['''^apps/flutter/test/fixtures/native_mcp_discovery\.json$''']
+paths = [
+  '''^apps/flutter/test/fixtures/native_mcp_discovery\.json$''',
+  '''^apps/flutter/test/fixtures/native_github_upgrade\.json$''',
+  '''^tests/fixtures/native-github-upgrade\.json$''',
+]
 regexes = ['''^\s*"keySha256": "[a-f0-9]{64}",?\s*$''']

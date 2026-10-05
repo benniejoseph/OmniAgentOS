@@ -1,7 +1,7 @@
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { McpToolContractDriftError } from "@/lib/connectors/contract-review";
-import { createMcpToolId } from "@/lib/connectors/store";
+import { createMcpToolId, resetMcpToolPolicyForReview } from "@/lib/connectors/store";
 import type { McpConnectorRecord, McpToolRecord } from "@/lib/connectors/types";
 import { redactExactSecrets } from "@/lib/security/secret-redaction";
 
@@ -28,6 +28,20 @@ describe("MCP client", () => {
     credentialMocks.resolveMcpBearerCredential
       .mockReset()
       .mockResolvedValue("generic-mcp-test-key");
+  });
+
+  it("resets old reviewed policy when official GitHub expands its toolsets", () => {
+    const target = connector({ endpoint: "https://api.githubcopilot.com/mcp/x/all",
+      status: "disabled", defaultRiskLevel: 2, approvalRequired: false });
+    const old = { ...reviewedTool({ name: "get_file_contents", inputSchema: { type: "object" } }, target),
+      riskLevel: 3 as const, approvalRequired: true, status: "active" as const };
+    const discovered = { ...old, riskLevel: 0 as const, approvalRequired: false,
+      createdAt: "2026-10-05T00:00:00.000Z" };
+    const reset = resetMcpToolPolicyForReview({
+      discovered: [discovered], existing: [old], connector: target,
+    });
+    expect(reset).toEqual([{ ...discovered, status: "pending_review",
+      createdAt: old.createdAt }]);
   });
 
   it("fences delayed admission before any network request after an absolute native deadline", async () => {

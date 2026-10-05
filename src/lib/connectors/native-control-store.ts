@@ -32,6 +32,20 @@ async function identity(sql: Sql, scope: ConnectorNativeScope, management: boole
   const rows = await sql`SELECT public.omni_native_connector_actor_v1(${scope.tenantId},${scope.ownerActorId},${scope.canonicalActorId},${management}) AS allowed`;
   if (rows.length !== 1 || rows[0].allowed !== true) fail("Current connector access is unavailable.", "connector_authority", 403);
 }
+/** Boolean-only cross-family pending check. Its v244 SECURITY DEFINER function
+ * first verifies this exact current manager and can see another owner's
+ * forced-RLS row. Call only while holding the shared target advisory lock. */
+export async function nativeConnectorProviderAttemptPending(
+  sql: Sql, scope: ConnectorNativeScope, connectorId: string,
+) {
+  connectorNativeIdSchema.parse(connectorId);
+  const rows = await sql`SELECT public.omni_native_provider_pending_v1(
+    ${scope.tenantId},${scope.ownerActorId},${scope.canonicalActorId},${connectorId}) AS pending`;
+  if (rows.length !== 1 || typeof rows[0].pending !== "boolean") {
+    fail("Current native provider attempt state is unavailable.", "connector_database", 503);
+  }
+  return rows[0].pending;
+}
 async function transaction<T>(authority: ConnectorNativeAuthority, management: boolean, work: (sql: Sql) => Promise<T>): Promise<T> {
   connectorNativeScopeSchema.parse(authority.scope);
   if (!hasDatabaseUrl()) fail("Durable connector controls require the canonical database.", "connector_database", 503);

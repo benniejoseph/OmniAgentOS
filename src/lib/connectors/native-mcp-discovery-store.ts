@@ -6,7 +6,8 @@ import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import { connectorNativeKeySha256, connectorNativeShaSchema, NativeConnectorError, type ConnectorNativeScope } from "./native-control-contracts";
 import { connectorNativePrivateDigest } from "./native-control-private";
 import { nativeConnectorTransaction, projectNativeMcpReview, readNativeConnectorCurrentInTransaction,
-  requireNativeConnectorIdentity, type ConnectorNativeAuthority } from "./native-control-store";
+  requireNativeConnectorIdentity, nativeConnectorProviderAttemptPending,
+  type ConnectorNativeAuthority } from "./native-control-store";
 import { resolveMcpBearerCredential } from "./credential-store";
 import { discoverMcpTools } from "./mcp-client";
 import { isRemoteBrowserMcpTool } from "./mcp-trust";
@@ -130,6 +131,9 @@ Promise<{ discovery: C.ConnectorNativeMcpDiscoveryRead; replayed: boolean }> {
     }
     await targetLock(sql, scope, request.connectorId);
     await requireNativeConnectorIdentity(sql, scope, true);
+    if (await nativeConnectorProviderAttemptPending(sql, scope, request.connectorId)) {
+      conflict("The earlier provider attempt must settle or close before MCP discovery.");
+    }
     const review = await readNativeConnectorCurrentInTransaction(sql, scope, "mcp", request.connectorId, true);
     if (!review || !C.canDiscoverNativeMcpConnector(review) || !same(review.pin, request.review)) conflict("The disabled MCP review changed or discovery is unavailable.");
     const connector = await getMcpConnector(request.connectorId, { tenantId: scope.tenantId });

@@ -8,7 +8,7 @@ import { connectorNativeActionSchema, sealConnectorNativePin, type ConnectorNati
 import { readNativeConnectorCredentialRemoval, submitNativeConnectorCredentialRemoval } from "@/lib/connectors/native-credential-removal-store";
 import { buildConnectorNativeCredentialRemovalIntent, canRemoveNativeConnectorCredential, type ConnectorNativeCredentialRemovalRequest } from "@/lib/connectors/native-credential-removal-contracts";
 import { createExecutionScope } from "@/lib/security/execution-scope";
-import { removeNativeConnectorCredentialRemovalsForReplay, removeNativeConnectorTrashForReplay, removeNativeConnectorCredentialRotationsForReplay, removeNativeMcpRegistrationsForReplay, removeNativeOpenapiImportsForReplay, removeNativeMcpDiscoveriesForReplay } from "./helpers/native-catalog-replay";
+import { removeNativeConnectorCredentialRemovalsForReplay, removeNativeConnectorTrashForReplay, removeNativeConnectorCredentialRotationsForReplay, removeNativeMcpRegistrationsForReplay, removeNativeOpenapiImportsForReplay, removeNativeMcpDiscoveriesForReplay, removeNativeGithubUpgradesForReplay } from "./helpers/native-catalog-replay";
 
 const databaseUrl = process.env.DATABASE_URL;
 const integration = databaseUrl && process.env.OMNIAGENT_INTEGRATION_DATABASE_RESET === "true" ? describe : describe.skip;
@@ -94,7 +94,10 @@ integration("native credential removal under forced serving RLS", () => {
     const openapiImportMigration = await readSqlMigrationFile({ file: "20261005210000_native_openapi_imports.sql", sha256: openapiImport.checksum, migrations: [openapiImport] });
     const discovery = databaseSchemaMigrations.find((migration) => migration.version === 243)!;
     const discoveryMigration = await readSqlMigrationFile({ file: "20261006100000_native_mcp_discoveries.sql", sha256: discovery.checksum, migrations: [discovery] });
+    const githubUpgrade = databaseSchemaMigrations.find((migration) => migration.version === 244)!;
+    const githubUpgradeMigration = await readSqlMigrationFile({ file: "20261006103000_native_github_upgrades.sql", sha256: githubUpgrade.checksum, migrations: [githubUpgrade] });
     await admin.begin(async (sql) => {
+      await removeNativeGithubUpgradesForReplay(sql); await sql`DELETE FROM omni_schema_version WHERE version=244`;
       await removeNativeMcpDiscoveriesForReplay(sql); await sql`DELETE FROM omni_schema_version WHERE version=243`;
       await removeNativeOpenapiImportsForReplay(sql); await sql`DELETE FROM omni_schema_version WHERE version=242`;
       await removeNativeMcpRegistrationsForReplay(sql);
@@ -120,6 +123,7 @@ integration("native credential removal under forced serving RLS", () => {
       await applySqlMigrationFile(migrationSql, registrationMigration, [registration], []);
       await applySqlMigrationFile(migrationSql, openapiImportMigration, [openapiImport], []);
       await applySqlMigrationFile(migrationSql, discoveryMigration, [discovery], []);
+      await applySqlMigrationFile(migrationSql, githubUpgradeMigration, [githubUpgrade], []);
       expect((await sql`SELECT intent,acceptance,state,settlement FROM omni_native_connector_actions WHERE tenant_id=${f.scope.tenantId}`)[0]).toEqual(before);
     });
     expect(connectorNativeActionSchema.parse(await readNativeConnectorAction({ scope: f.scope }, legacy.action.acceptance.keySha256))).toEqual(legacy.action);
