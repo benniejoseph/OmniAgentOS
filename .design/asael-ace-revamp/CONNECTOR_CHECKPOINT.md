@@ -2,19 +2,42 @@
 
 ## Current checkpoint
 
-PR68 is accepted and merged. All sixteen hosted checks passed on
-`8397b1f09efde4bbe91f2bd966788ca63594e756`, including 2,214 Flutter cases;
-merged main is `8b9d23b4a8e37620b2fd8fc0acce13b08925f35e`, with an identical
-full tree. Native v43, migration240 and verified Mac62 are accepted for this
-implementation/build checkpoint. The 81 catalog replay, 30 previous connector
-and 18 new serving-role cases pass; all 240 migrations and 264 tenant tables
-verify. Package source `9148f045` has identical native/public inputs at acceptance.
+The UI/ATLAS priority checkpoint is accepted through PR69. All sixteen hosted
+checks passed on `88950b469984c5357991677e0d8ebe0ef24bdf7b`, including 2,227
+Flutter cases, and merged main is `8b8e40b61d4a1e3773cab2bab570ee7918ce765f`.
+Accepted and merged full trees match. Fresh main CI, Native and Secret Scan plus
+the actual paired-runner provenance probe have passed.
 
-Further connector expansion is parked for UI/ATLAS. The active Mac63 follow-up
-adds only macOS power-aware static ATLAS fallback and retains contract43 and the
-reviewed artwork. Registration/import, rediscovery and conditional GitHub upgrade
-remain unfinished. Production promotion, installation and physical-device
-acceptance are separate; the installed app is unchanged.
+Private universal Mac `1.23.27+63` is built and independently verified, including
+strict nested signatures and all 33 reviewed ATLAS files. It retains native43 and
+adds macOS Low Power Mode static fallback. Package source `83dedb07` has identical
+native/public inputs at acceptance. Production promotion and installation have
+not occurred; the installed app remains build42. Real device/power/energy,
+VoiceOver/audio and broader pilot gates remain open.
+
+Connector implementation has resumed from accepted main69. The isolated v44
+candidate reserves app `1.23.28+64` and migration241. It implements exact prepared
+MCP registration for all three existing auth modes, creating a disabled local
+connection with zero discovered tools and no provider call. Native intent and
+recovery remain private and scope-bound; later discovery/review uses the browser.
+Full Flutter analysis and all 75 focused native cases pass across targeted runs.
+All 131 focused TypeScript cases, changed-file lint and generated contract checks
+pass. The disposable PostgreSQL run passes all 160 cases, including 31 registration
+cases, and verifies 241 migrations and 265 tenant tables. A PL/pgSQL conditional
+syntax defect was corrected before that passing run. Private Mac64 packaging and
+hosted acceptance remain candidate gates. This statement is not a production or
+whole-program completion claim.
+
+OpenAPI registration/import, rediscovery and conditional GitHub upgrade follow
+separately. Delivery still requires the complete paired-release operator environment.
+Unchecked whole-task and physical-device boxes retain their original acceptance
+criteria and are not changed by this implementation checkpoint.
+
+PR68 remains the accepted prior connector checkpoint: native43, migration240,
+264 tenant tables and verified Mac62. The 81 catalog replay, 30 prior connector
+and 18 credential-rotation serving-role cases passed at that checkpoint. The
+candidate migration241 adds one isolated MCP registration-preparation table;
+the fresh schema check verifies all 241 migrations and 265 tenant tables.
 
 The detailed sections below retain their original implementation checkpoints.
 The external [release status](</Volumes/Extreme Pro/Asael-release-records/2026-10-03-followups/ui-validation/ATLAS_RELEASE_STATUS.md>)

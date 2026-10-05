@@ -1,0 +1,2627 @@
+{
+  "schemaVersion": 1,
+  "noneClean": {
+    "scope": {
+      "tenantId": "registration-fixture",
+      "ownerActorId": "owner@example.test",
+      "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+    },
+    "nonce": "33333333-3333-4333-8333-333333333331",
+    "connectorId": "native-mcp-90f792aac250016317e26347edd75a35d73d7e7ac7e8fb1fb9ab9724257891c4",
+    "preparationKey": "fixture-registration-preparation-1",
+    "registrationKey": "fixture-registration-action-1",
+    "prepareRequest": {
+      "contract": "asael-connector-prepare:1",
+      "nonce": "33333333-3333-4333-8333-333333333331",
+      "operation": "register_mcp",
+      "connectorId": "native-mcp-90f792aac250016317e26347edd75a35d73d7e7ac7e8fb1fb9ab9724257891c4",
+      "review": null,
+      "declaration": {
+        "name": "Fixture MCP",
+        "endpoint": "https://example.test/api/%2f/mcp",
+        "endpointRedacted": false,
+        "authType": "none",
+        "authTokenEnv": null,
+        "authHeaderName": null,
+        "defaultRiskLevel": 2,
+        "approvalRequired": true,
+        "specSource": "none",
+        "specUrl": null,
+        "specUrlRedacted": false
+      },
+      "payload": {
+        "endpoint": "https://example.test/api/%2f/mcp",
+        "specUrl": null,
+        "specText": null,
+        "bearerToken": null
+      }
+    },
+    "preparationIntent": {
+      "contract": "asael-connector-preparation-intent:1",
+      "scope": {
+        "tenantId": "registration-fixture",
+        "ownerActorId": "owner@example.test",
+        "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+      },
+      "keySha256": "d8377183fbc7d92a78085417d434d632165400a3c229592c21f9278b1ea2f4fa",
+      "nonce": "33333333-3333-4333-8333-333333333331",
+      "operation": "register_mcp",
+      "connectorId": "native-mcp-90f792aac250016317e26347edd75a35d73d7e7ac7e8fb1fb9ab9724257891c4",
+      "review": null,
+      "declaration": {
+        "name": "Fixture MCP",
+        "endpoint": "https://example.test/api/%2f/mcp",
+        "endpointRedacted": false,
+        "authType": "none",
+        "authTokenEnv": null,
+        "authHeaderName": null,
+        "defaultRiskLevel": 2,
+        "approvalRequired": true,
+        "specSource": "none",
+        "specUrl": null,
+        "specUrlRedacted": false
+      }
+    },
+    "preparation": {
+      "contract": "asael-connector-preparation:1",
+      "id": "connector-preparation:58da7958bff8a8dd5586c0d9b788132bea427cc664b9872734e94cce802eef22",
+      "scope": {
+        "tenantId": "registration-fixture",
+        "ownerActorId": "owner@example.test",
+        "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+      },
+      "keySha256": "d8377183fbc7d92a78085417d434d632165400a3c229592c21f9278b1ea2f4fa",
+      "intentSha256": "2960d00ad83715baefbc146af3e55fd2811b0162115a339decbc5040b97ded7d",
+      "nonce": "33333333-3333-4333-8333-333333333331",
+      "operation": "register_mcp",
+      "connectorId": "native-mcp-90f792aac250016317e26347edd75a35d73d7e7ac7e8fb1fb9ab9724257891c4",
+      "review": null,
+      "declaration": {
+        "name": "Fixture MCP",
+        "endpoint": "https://example.test/api/%2f/mcp",
+        "endpointRedacted": false,
+        "authType": "none",
+        "authTokenEnv": null,
+        "authHeaderName": null,
+        "defaultRiskLevel": 2,
+        "approvalRequired": true,
+        "specSource": "none",
+        "specUrl": null,
+        "specUrlRedacted": false
+      },
+      "configurationSha256": "d249c260b4f86feae50e4f93c2c6e675716edb57ce35d72c2a72bd8408764a60",
+      "preparedAt": "2026-10-05T00:01:00.000Z",
+      "expiresAt": "2026-10-05T00:16:00.000Z",
+      "preparationSha256": "172acf475f16cb23defa8d078e779a3153eaad94077433fb9883b3f3e5fbf264"
+    },
+    "preparedReady": {
+      "preparation": {
+        "contract": "asael-connector-preparation:1",
+        "id": "connector-preparation:58da7958bff8a8dd5586c0d9b788132bea427cc664b9872734e94cce802eef22",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "d8377183fbc7d92a78085417d434d632165400a3c229592c21f9278b1ea2f4fa",
+        "intentSha256": "2960d00ad83715baefbc146af3e55fd2811b0162115a339decbc5040b97ded7d",
+        "nonce": "33333333-3333-4333-8333-333333333331",
+        "operation": "register_mcp",
+        "connectorId": "native-mcp-90f792aac250016317e26347edd75a35d73d7e7ac7e8fb1fb9ab9724257891c4",
+        "review": null,
+        "declaration": {
+          "name": "Fixture MCP",
+          "endpoint": "https://example.test/api/%2f/mcp",
+          "endpointRedacted": false,
+          "authType": "none",
+          "authTokenEnv": null,
+          "authHeaderName": null,
+          "defaultRiskLevel": 2,
+          "approvalRequired": true,
+          "specSource": "none",
+          "specUrl": null,
+          "specUrlRedacted": false
+        },
+        "configurationSha256": "d249c260b4f86feae50e4f93c2c6e675716edb57ce35d72c2a72bd8408764a60",
+        "preparedAt": "2026-10-05T00:01:00.000Z",
+        "expiresAt": "2026-10-05T00:16:00.000Z",
+        "preparationSha256": "172acf475f16cb23defa8d078e779a3153eaad94077433fb9883b3f3e5fbf264"
+      },
+      "availability": "ready",
+      "consumedBy": null,
+      "consumedKeySha256": null
+    },
+    "preparedExpired": {
+      "preparation": {
+        "contract": "asael-connector-preparation:1",
+        "id": "connector-preparation:58da7958bff8a8dd5586c0d9b788132bea427cc664b9872734e94cce802eef22",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "d8377183fbc7d92a78085417d434d632165400a3c229592c21f9278b1ea2f4fa",
+        "intentSha256": "2960d00ad83715baefbc146af3e55fd2811b0162115a339decbc5040b97ded7d",
+        "nonce": "33333333-3333-4333-8333-333333333331",
+        "operation": "register_mcp",
+        "connectorId": "native-mcp-90f792aac250016317e26347edd75a35d73d7e7ac7e8fb1fb9ab9724257891c4",
+        "review": null,
+        "declaration": {
+          "name": "Fixture MCP",
+          "endpoint": "https://example.test/api/%2f/mcp",
+          "endpointRedacted": false,
+          "authType": "none",
+          "authTokenEnv": null,
+          "authHeaderName": null,
+          "defaultRiskLevel": 2,
+          "approvalRequired": true,
+          "specSource": "none",
+          "specUrl": null,
+          "specUrlRedacted": false
+        },
+        "configurationSha256": "d249c260b4f86feae50e4f93c2c6e675716edb57ce35d72c2a72bd8408764a60",
+        "preparedAt": "2026-10-05T00:01:00.000Z",
+        "expiresAt": "2026-10-05T00:16:00.000Z",
+        "preparationSha256": "172acf475f16cb23defa8d078e779a3153eaad94077433fb9883b3f3e5fbf264"
+      },
+      "availability": "expired",
+      "consumedBy": null,
+      "consumedKeySha256": null
+    },
+    "preparedConsumed": {
+      "preparation": {
+        "contract": "asael-connector-preparation:1",
+        "id": "connector-preparation:58da7958bff8a8dd5586c0d9b788132bea427cc664b9872734e94cce802eef22",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "d8377183fbc7d92a78085417d434d632165400a3c229592c21f9278b1ea2f4fa",
+        "intentSha256": "2960d00ad83715baefbc146af3e55fd2811b0162115a339decbc5040b97ded7d",
+        "nonce": "33333333-3333-4333-8333-333333333331",
+        "operation": "register_mcp",
+        "connectorId": "native-mcp-90f792aac250016317e26347edd75a35d73d7e7ac7e8fb1fb9ab9724257891c4",
+        "review": null,
+        "declaration": {
+          "name": "Fixture MCP",
+          "endpoint": "https://example.test/api/%2f/mcp",
+          "endpointRedacted": false,
+          "authType": "none",
+          "authTokenEnv": null,
+          "authHeaderName": null,
+          "defaultRiskLevel": 2,
+          "approvalRequired": true,
+          "specSource": "none",
+          "specUrl": null,
+          "specUrlRedacted": false
+        },
+        "configurationSha256": "d249c260b4f86feae50e4f93c2c6e675716edb57ce35d72c2a72bd8408764a60",
+        "preparedAt": "2026-10-05T00:01:00.000Z",
+        "expiresAt": "2026-10-05T00:16:00.000Z",
+        "preparationSha256": "172acf475f16cb23defa8d078e779a3153eaad94077433fb9883b3f3e5fbf264"
+      },
+      "availability": "consumed",
+      "consumedBy": "connector-acceptance:7d030683a6bdeec90fb27a2234f21293aa4636d441ff6e5b44a7d2d5674c3c0c",
+      "consumedKeySha256": "351a5e194d7b5eede1b7d933feb51b7f48f628f8961a04a67c0d7eec6194744a"
+    },
+    "abandonRequest": {
+      "contract": "asael-mcp-registration-preparation-abandon:1",
+      "intent": {
+        "contract": "asael-connector-preparation-intent:1",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "d8377183fbc7d92a78085417d434d632165400a3c229592c21f9278b1ea2f4fa",
+        "nonce": "33333333-3333-4333-8333-333333333331",
+        "operation": "register_mcp",
+        "connectorId": "native-mcp-90f792aac250016317e26347edd75a35d73d7e7ac7e8fb1fb9ab9724257891c4",
+        "review": null,
+        "declaration": {
+          "name": "Fixture MCP",
+          "endpoint": "https://example.test/api/%2f/mcp",
+          "endpointRedacted": false,
+          "authType": "none",
+          "authTokenEnv": null,
+          "authHeaderName": null,
+          "defaultRiskLevel": 2,
+          "approvalRequired": true,
+          "specSource": "none",
+          "specUrl": null,
+          "specUrlRedacted": false
+        }
+      }
+    },
+    "abandonedAbsent": {
+      "intent": {
+        "contract": "asael-connector-preparation-intent:1",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "d8377183fbc7d92a78085417d434d632165400a3c229592c21f9278b1ea2f4fa",
+        "nonce": "33333333-3333-4333-8333-333333333331",
+        "operation": "register_mcp",
+        "connectorId": "native-mcp-90f792aac250016317e26347edd75a35d73d7e7ac7e8fb1fb9ab9724257891c4",
+        "review": null,
+        "declaration": {
+          "name": "Fixture MCP",
+          "endpoint": "https://example.test/api/%2f/mcp",
+          "endpointRedacted": false,
+          "authType": "none",
+          "authTokenEnv": null,
+          "authHeaderName": null,
+          "defaultRiskLevel": 2,
+          "approvalRequired": true,
+          "specSource": "none",
+          "specUrl": null,
+          "specUrlRedacted": false
+        }
+      },
+      "preparation": null,
+      "availability": "abandoned",
+      "consumedBy": null,
+      "consumedKeySha256": null,
+      "abandonment": {
+        "contract": "asael-mcp-registration-preparation-abandonment:1",
+        "id": "connector-preparation-abandonment:58da7958bff8a8dd5586c0d9b788132bea427cc664b9872734e94cce802eef22",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "d8377183fbc7d92a78085417d434d632165400a3c229592c21f9278b1ea2f4fa",
+        "intentSha256": "2960d00ad83715baefbc146af3e55fd2811b0162115a339decbc5040b97ded7d",
+        "preparationSha256": null,
+        "abandonedAt": "2026-10-05T00:03:00.000Z",
+        "abandonmentSha256": "4202627a5a6c6b1ad5b9f4de5bdae85515fabb2fda753ab69cbd0d736846256a"
+      }
+    },
+    "abandonedPrepared": {
+      "intent": {
+        "contract": "asael-connector-preparation-intent:1",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "d8377183fbc7d92a78085417d434d632165400a3c229592c21f9278b1ea2f4fa",
+        "nonce": "33333333-3333-4333-8333-333333333331",
+        "operation": "register_mcp",
+        "connectorId": "native-mcp-90f792aac250016317e26347edd75a35d73d7e7ac7e8fb1fb9ab9724257891c4",
+        "review": null,
+        "declaration": {
+          "name": "Fixture MCP",
+          "endpoint": "https://example.test/api/%2f/mcp",
+          "endpointRedacted": false,
+          "authType": "none",
+          "authTokenEnv": null,
+          "authHeaderName": null,
+          "defaultRiskLevel": 2,
+          "approvalRequired": true,
+          "specSource": "none",
+          "specUrl": null,
+          "specUrlRedacted": false
+        }
+      },
+      "preparation": {
+        "contract": "asael-connector-preparation:1",
+        "id": "connector-preparation:58da7958bff8a8dd5586c0d9b788132bea427cc664b9872734e94cce802eef22",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "d8377183fbc7d92a78085417d434d632165400a3c229592c21f9278b1ea2f4fa",
+        "intentSha256": "2960d00ad83715baefbc146af3e55fd2811b0162115a339decbc5040b97ded7d",
+        "nonce": "33333333-3333-4333-8333-333333333331",
+        "operation": "register_mcp",
+        "connectorId": "native-mcp-90f792aac250016317e26347edd75a35d73d7e7ac7e8fb1fb9ab9724257891c4",
+        "review": null,
+        "declaration": {
+          "name": "Fixture MCP",
+          "endpoint": "https://example.test/api/%2f/mcp",
+          "endpointRedacted": false,
+          "authType": "none",
+          "authTokenEnv": null,
+          "authHeaderName": null,
+          "defaultRiskLevel": 2,
+          "approvalRequired": true,
+          "specSource": "none",
+          "specUrl": null,
+          "specUrlRedacted": false
+        },
+        "configurationSha256": "d249c260b4f86feae50e4f93c2c6e675716edb57ce35d72c2a72bd8408764a60",
+        "preparedAt": "2026-10-05T00:01:00.000Z",
+        "expiresAt": "2026-10-05T00:16:00.000Z",
+        "preparationSha256": "172acf475f16cb23defa8d078e779a3153eaad94077433fb9883b3f3e5fbf264"
+      },
+      "availability": "abandoned",
+      "consumedBy": null,
+      "consumedKeySha256": null,
+      "abandonment": {
+        "contract": "asael-mcp-registration-preparation-abandonment:1",
+        "id": "connector-preparation-abandonment:58da7958bff8a8dd5586c0d9b788132bea427cc664b9872734e94cce802eef22",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "d8377183fbc7d92a78085417d434d632165400a3c229592c21f9278b1ea2f4fa",
+        "intentSha256": "2960d00ad83715baefbc146af3e55fd2811b0162115a339decbc5040b97ded7d",
+        "preparationSha256": "172acf475f16cb23defa8d078e779a3153eaad94077433fb9883b3f3e5fbf264",
+        "abandonedAt": "2026-10-05T00:03:00.000Z",
+        "abandonmentSha256": "a48907c2b1a3a26952e65a63455f8d4ff91fe53a901c6b973e3c440e4287b06f"
+      }
+    },
+    "registrationRequest": {
+      "contract": "asael-connector-prepared-action:1",
+      "kind": "mcp",
+      "connectorId": "native-mcp-90f792aac250016317e26347edd75a35d73d7e7ac7e8fb1fb9ab9724257891c4",
+      "action": "register_mcp",
+      "preparationId": "connector-preparation:58da7958bff8a8dd5586c0d9b788132bea427cc664b9872734e94cce802eef22",
+      "preparationSha256": "172acf475f16cb23defa8d078e779a3153eaad94077433fb9883b3f3e5fbf264",
+      "review": null
+    },
+    "registrationIntent": {
+      "contract": "asael-connector-action-intent:1",
+      "scope": {
+        "tenantId": "registration-fixture",
+        "ownerActorId": "owner@example.test",
+        "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+      },
+      "keySha256": "351a5e194d7b5eede1b7d933feb51b7f48f628f8961a04a67c0d7eec6194744a",
+      "request": {
+        "contract": "asael-connector-prepared-action:1",
+        "kind": "mcp",
+        "connectorId": "native-mcp-90f792aac250016317e26347edd75a35d73d7e7ac7e8fb1fb9ab9724257891c4",
+        "action": "register_mcp",
+        "preparationId": "connector-preparation:58da7958bff8a8dd5586c0d9b788132bea427cc664b9872734e94cce802eef22",
+        "preparationSha256": "172acf475f16cb23defa8d078e779a3153eaad94077433fb9883b3f3e5fbf264",
+        "review": null
+      }
+    },
+    "registrationAction": {
+      "acceptance": {
+        "contract": "asael-connector-acceptance:1",
+        "id": "connector-acceptance:7d030683a6bdeec90fb27a2234f21293aa4636d441ff6e5b44a7d2d5674c3c0c",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "351a5e194d7b5eede1b7d933feb51b7f48f628f8961a04a67c0d7eec6194744a",
+        "requestSha256": "3bda47a9f5ae97470dacc1c41d8d26f44b721c7edd114ae07d83280d9ec5fafb",
+        "kind": "mcp",
+        "connectorId": "native-mcp-90f792aac250016317e26347edd75a35d73d7e7ac7e8fb1fb9ab9724257891c4",
+        "action": "register_mcp",
+        "reviewSha256": "172acf475f16cb23defa8d078e779a3153eaad94077433fb9883b3f3e5fbf264",
+        "acceptedAt": "2026-10-05T00:02:00.000Z",
+        "acceptanceSha256": "8f887576ffe9bccd887371c4262cd609017634df2c5010a9e54d26f82f4d8864"
+      },
+      "state": "settled",
+      "settlement": {
+        "contract": "asael-connector-settlement:2",
+        "acceptanceId": "connector-acceptance:7d030683a6bdeec90fb27a2234f21293aa4636d441ff6e5b44a7d2d5674c3c0c",
+        "settledAt": "2026-10-05T00:02:00.001Z",
+        "result": {
+          "kind": "mcp",
+          "connectorId": "native-mcp-90f792aac250016317e26347edd75a35d73d7e7ac7e8fb1fb9ab9724257891c4",
+          "operation": "register_mcp",
+          "status": "complete",
+          "connectorStatus": "disabled",
+          "contractCount": 0,
+          "credentialVersion": 0,
+          "connectorSha256": "6d4c73d94011bb73458ec17dcf55d3309ce3b8ce2f49c7b8817ad3ed6166bb24",
+          "contractsSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "configurationSha256": "6cb62d7d65e0ec5caaef44deb047eb1bf988623709cbb28123d2f961e7dd7cad",
+          "trash": null,
+          "failureCode": null
+        },
+        "settlementSha256": "dc142a0d05256b3cd60a581c9ab3c3da16823975d4fd472929718bf86d4930bb"
+      }
+    }
+  },
+  "nonePrivate": {
+    "scope": {
+      "tenantId": "registration-fixture",
+      "ownerActorId": "owner@example.test",
+      "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+    },
+    "nonce": "33333333-3333-4333-8333-333333333332",
+    "connectorId": "native-mcp-3d8077ef17536e1c99277eb707b2e6353fe5fda2c90933b20a31bbe52f51983e",
+    "preparationKey": "fixture-registration-preparation-2",
+    "registrationKey": "fixture-registration-action-2",
+    "prepareRequest": {
+      "contract": "asael-connector-prepare:1",
+      "nonce": "33333333-3333-4333-8333-333333333332",
+      "operation": "register_mcp",
+      "connectorId": "native-mcp-3d8077ef17536e1c99277eb707b2e6353fe5fda2c90933b20a31bbe52f51983e",
+      "review": null,
+      "declaration": {
+        "name": "Fixture MCP",
+        "endpoint": "https://example.test/api/%2f/mcp",
+        "endpointRedacted": true,
+        "authType": "none",
+        "authTokenEnv": null,
+        "authHeaderName": null,
+        "defaultRiskLevel": 2,
+        "approvalRequired": true,
+        "specSource": "none",
+        "specUrl": null,
+        "specUrlRedacted": false
+      },
+      "payload": {
+        "endpoint": "https://example.test/api/%2f/mcp?fixture=synthetic-private-query#synthetic-fragment",
+        "specUrl": null,
+        "specText": null,
+        "bearerToken": null
+      }
+    },
+    "preparationIntent": {
+      "contract": "asael-connector-preparation-intent:1",
+      "scope": {
+        "tenantId": "registration-fixture",
+        "ownerActorId": "owner@example.test",
+        "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+      },
+      "keySha256": "6adf79118c256c49df167c13f489109f8f7e5c9b027294879c6fc29c5d134eba",
+      "nonce": "33333333-3333-4333-8333-333333333332",
+      "operation": "register_mcp",
+      "connectorId": "native-mcp-3d8077ef17536e1c99277eb707b2e6353fe5fda2c90933b20a31bbe52f51983e",
+      "review": null,
+      "declaration": {
+        "name": "Fixture MCP",
+        "endpoint": "https://example.test/api/%2f/mcp",
+        "endpointRedacted": true,
+        "authType": "none",
+        "authTokenEnv": null,
+        "authHeaderName": null,
+        "defaultRiskLevel": 2,
+        "approvalRequired": true,
+        "specSource": "none",
+        "specUrl": null,
+        "specUrlRedacted": false
+      }
+    },
+    "preparation": {
+      "contract": "asael-connector-preparation:1",
+      "id": "connector-preparation:cddc3204dd9f0a7f7b73a3fc673f9d707f88fd6c346897337059a58e63616b58",
+      "scope": {
+        "tenantId": "registration-fixture",
+        "ownerActorId": "owner@example.test",
+        "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+      },
+      "keySha256": "6adf79118c256c49df167c13f489109f8f7e5c9b027294879c6fc29c5d134eba",
+      "intentSha256": "c416a2aecb35e05bd6ded3f9ac42bb6f15ad4be18c0b7146a62e5d4cab1ac401",
+      "nonce": "33333333-3333-4333-8333-333333333332",
+      "operation": "register_mcp",
+      "connectorId": "native-mcp-3d8077ef17536e1c99277eb707b2e6353fe5fda2c90933b20a31bbe52f51983e",
+      "review": null,
+      "declaration": {
+        "name": "Fixture MCP",
+        "endpoint": "https://example.test/api/%2f/mcp",
+        "endpointRedacted": true,
+        "authType": "none",
+        "authTokenEnv": null,
+        "authHeaderName": null,
+        "defaultRiskLevel": 2,
+        "approvalRequired": true,
+        "specSource": "none",
+        "specUrl": null,
+        "specUrlRedacted": false
+      },
+      "configurationSha256": "5369b81fc0729f0508a223ecff7237ebe6bdd1521e6c4fb0d885678c231eefbe",
+      "preparedAt": "2026-10-05T00:01:00.000Z",
+      "expiresAt": "2026-10-05T00:16:00.000Z",
+      "preparationSha256": "f782ab897d938436c7d16d19e5c3fffbc585ca206df9edd149995ac3acdc7bc9"
+    },
+    "preparedReady": {
+      "preparation": {
+        "contract": "asael-connector-preparation:1",
+        "id": "connector-preparation:cddc3204dd9f0a7f7b73a3fc673f9d707f88fd6c346897337059a58e63616b58",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "6adf79118c256c49df167c13f489109f8f7e5c9b027294879c6fc29c5d134eba",
+        "intentSha256": "c416a2aecb35e05bd6ded3f9ac42bb6f15ad4be18c0b7146a62e5d4cab1ac401",
+        "nonce": "33333333-3333-4333-8333-333333333332",
+        "operation": "register_mcp",
+        "connectorId": "native-mcp-3d8077ef17536e1c99277eb707b2e6353fe5fda2c90933b20a31bbe52f51983e",
+        "review": null,
+        "declaration": {
+          "name": "Fixture MCP",
+          "endpoint": "https://example.test/api/%2f/mcp",
+          "endpointRedacted": true,
+          "authType": "none",
+          "authTokenEnv": null,
+          "authHeaderName": null,
+          "defaultRiskLevel": 2,
+          "approvalRequired": true,
+          "specSource": "none",
+          "specUrl": null,
+          "specUrlRedacted": false
+        },
+        "configurationSha256": "5369b81fc0729f0508a223ecff7237ebe6bdd1521e6c4fb0d885678c231eefbe",
+        "preparedAt": "2026-10-05T00:01:00.000Z",
+        "expiresAt": "2026-10-05T00:16:00.000Z",
+        "preparationSha256": "f782ab897d938436c7d16d19e5c3fffbc585ca206df9edd149995ac3acdc7bc9"
+      },
+      "availability": "ready",
+      "consumedBy": null,
+      "consumedKeySha256": null
+    },
+    "preparedExpired": {
+      "preparation": {
+        "contract": "asael-connector-preparation:1",
+        "id": "connector-preparation:cddc3204dd9f0a7f7b73a3fc673f9d707f88fd6c346897337059a58e63616b58",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "6adf79118c256c49df167c13f489109f8f7e5c9b027294879c6fc29c5d134eba",
+        "intentSha256": "c416a2aecb35e05bd6ded3f9ac42bb6f15ad4be18c0b7146a62e5d4cab1ac401",
+        "nonce": "33333333-3333-4333-8333-333333333332",
+        "operation": "register_mcp",
+        "connectorId": "native-mcp-3d8077ef17536e1c99277eb707b2e6353fe5fda2c90933b20a31bbe52f51983e",
+        "review": null,
+        "declaration": {
+          "name": "Fixture MCP",
+          "endpoint": "https://example.test/api/%2f/mcp",
+          "endpointRedacted": true,
+          "authType": "none",
+          "authTokenEnv": null,
+          "authHeaderName": null,
+          "defaultRiskLevel": 2,
+          "approvalRequired": true,
+          "specSource": "none",
+          "specUrl": null,
+          "specUrlRedacted": false
+        },
+        "configurationSha256": "5369b81fc0729f0508a223ecff7237ebe6bdd1521e6c4fb0d885678c231eefbe",
+        "preparedAt": "2026-10-05T00:01:00.000Z",
+        "expiresAt": "2026-10-05T00:16:00.000Z",
+        "preparationSha256": "f782ab897d938436c7d16d19e5c3fffbc585ca206df9edd149995ac3acdc7bc9"
+      },
+      "availability": "expired",
+      "consumedBy": null,
+      "consumedKeySha256": null
+    },
+    "preparedConsumed": {
+      "preparation": {
+        "contract": "asael-connector-preparation:1",
+        "id": "connector-preparation:cddc3204dd9f0a7f7b73a3fc673f9d707f88fd6c346897337059a58e63616b58",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "6adf79118c256c49df167c13f489109f8f7e5c9b027294879c6fc29c5d134eba",
+        "intentSha256": "c416a2aecb35e05bd6ded3f9ac42bb6f15ad4be18c0b7146a62e5d4cab1ac401",
+        "nonce": "33333333-3333-4333-8333-333333333332",
+        "operation": "register_mcp",
+        "connectorId": "native-mcp-3d8077ef17536e1c99277eb707b2e6353fe5fda2c90933b20a31bbe52f51983e",
+        "review": null,
+        "declaration": {
+          "name": "Fixture MCP",
+          "endpoint": "https://example.test/api/%2f/mcp",
+          "endpointRedacted": true,
+          "authType": "none",
+          "authTokenEnv": null,
+          "authHeaderName": null,
+          "defaultRiskLevel": 2,
+          "approvalRequired": true,
+          "specSource": "none",
+          "specUrl": null,
+          "specUrlRedacted": false
+        },
+        "configurationSha256": "5369b81fc0729f0508a223ecff7237ebe6bdd1521e6c4fb0d885678c231eefbe",
+        "preparedAt": "2026-10-05T00:01:00.000Z",
+        "expiresAt": "2026-10-05T00:16:00.000Z",
+        "preparationSha256": "f782ab897d938436c7d16d19e5c3fffbc585ca206df9edd149995ac3acdc7bc9"
+      },
+      "availability": "consumed",
+      "consumedBy": "connector-acceptance:9d56ec0f2354988a671e6a1c8adaf16e24cd430cccc8f9dd8775bb2f0532bdb8",
+      "consumedKeySha256": "46a664f35a304d73d284f3a4409571673613408399e0e902420bc7c66f6b9fff"
+    },
+    "abandonRequest": {
+      "contract": "asael-mcp-registration-preparation-abandon:1",
+      "intent": {
+        "contract": "asael-connector-preparation-intent:1",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "6adf79118c256c49df167c13f489109f8f7e5c9b027294879c6fc29c5d134eba",
+        "nonce": "33333333-3333-4333-8333-333333333332",
+        "operation": "register_mcp",
+        "connectorId": "native-mcp-3d8077ef17536e1c99277eb707b2e6353fe5fda2c90933b20a31bbe52f51983e",
+        "review": null,
+        "declaration": {
+          "name": "Fixture MCP",
+          "endpoint": "https://example.test/api/%2f/mcp",
+          "endpointRedacted": true,
+          "authType": "none",
+          "authTokenEnv": null,
+          "authHeaderName": null,
+          "defaultRiskLevel": 2,
+          "approvalRequired": true,
+          "specSource": "none",
+          "specUrl": null,
+          "specUrlRedacted": false
+        }
+      }
+    },
+    "abandonedAbsent": {
+      "intent": {
+        "contract": "asael-connector-preparation-intent:1",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "6adf79118c256c49df167c13f489109f8f7e5c9b027294879c6fc29c5d134eba",
+        "nonce": "33333333-3333-4333-8333-333333333332",
+        "operation": "register_mcp",
+        "connectorId": "native-mcp-3d8077ef17536e1c99277eb707b2e6353fe5fda2c90933b20a31bbe52f51983e",
+        "review": null,
+        "declaration": {
+          "name": "Fixture MCP",
+          "endpoint": "https://example.test/api/%2f/mcp",
+          "endpointRedacted": true,
+          "authType": "none",
+          "authTokenEnv": null,
+          "authHeaderName": null,
+          "defaultRiskLevel": 2,
+          "approvalRequired": true,
+          "specSource": "none",
+          "specUrl": null,
+          "specUrlRedacted": false
+        }
+      },
+      "preparation": null,
+      "availability": "abandoned",
+      "consumedBy": null,
+      "consumedKeySha256": null,
+      "abandonment": {
+        "contract": "asael-mcp-registration-preparation-abandonment:1",
+        "id": "connector-preparation-abandonment:cddc3204dd9f0a7f7b73a3fc673f9d707f88fd6c346897337059a58e63616b58",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "6adf79118c256c49df167c13f489109f8f7e5c9b027294879c6fc29c5d134eba",
+        "intentSha256": "c416a2aecb35e05bd6ded3f9ac42bb6f15ad4be18c0b7146a62e5d4cab1ac401",
+        "preparationSha256": null,
+        "abandonedAt": "2026-10-05T00:03:00.000Z",
+        "abandonmentSha256": "c46d26dc5f4d7374b812c0e4c66e92c0f81b96fa512d966388d7cf01b8a996dd"
+      }
+    },
+    "abandonedPrepared": {
+      "intent": {
+        "contract": "asael-connector-preparation-intent:1",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "6adf79118c256c49df167c13f489109f8f7e5c9b027294879c6fc29c5d134eba",
+        "nonce": "33333333-3333-4333-8333-333333333332",
+        "operation": "register_mcp",
+        "connectorId": "native-mcp-3d8077ef17536e1c99277eb707b2e6353fe5fda2c90933b20a31bbe52f51983e",
+        "review": null,
+        "declaration": {
+          "name": "Fixture MCP",
+          "endpoint": "https://example.test/api/%2f/mcp",
+          "endpointRedacted": true,
+          "authType": "none",
+          "authTokenEnv": null,
+          "authHeaderName": null,
+          "defaultRiskLevel": 2,
+          "approvalRequired": true,
+          "specSource": "none",
+          "specUrl": null,
+          "specUrlRedacted": false
+        }
+      },
+      "preparation": {
+        "contract": "asael-connector-preparation:1",
+        "id": "connector-preparation:cddc3204dd9f0a7f7b73a3fc673f9d707f88fd6c346897337059a58e63616b58",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "6adf79118c256c49df167c13f489109f8f7e5c9b027294879c6fc29c5d134eba",
+        "intentSha256": "c416a2aecb35e05bd6ded3f9ac42bb6f15ad4be18c0b7146a62e5d4cab1ac401",
+        "nonce": "33333333-3333-4333-8333-333333333332",
+        "operation": "register_mcp",
+        "connectorId": "native-mcp-3d8077ef17536e1c99277eb707b2e6353fe5fda2c90933b20a31bbe52f51983e",
+        "review": null,
+        "declaration": {
+          "name": "Fixture MCP",
+          "endpoint": "https://example.test/api/%2f/mcp",
+          "endpointRedacted": true,
+          "authType": "none",
+          "authTokenEnv": null,
+          "authHeaderName": null,
+          "defaultRiskLevel": 2,
+          "approvalRequired": true,
+          "specSource": "none",
+          "specUrl": null,
+          "specUrlRedacted": false
+        },
+        "configurationSha256": "5369b81fc0729f0508a223ecff7237ebe6bdd1521e6c4fb0d885678c231eefbe",
+        "preparedAt": "2026-10-05T00:01:00.000Z",
+        "expiresAt": "2026-10-05T00:16:00.000Z",
+        "preparationSha256": "f782ab897d938436c7d16d19e5c3fffbc585ca206df9edd149995ac3acdc7bc9"
+      },
+      "availability": "abandoned",
+      "consumedBy": null,
+      "consumedKeySha256": null,
+      "abandonment": {
+        "contract": "asael-mcp-registration-preparation-abandonment:1",
+        "id": "connector-preparation-abandonment:cddc3204dd9f0a7f7b73a3fc673f9d707f88fd6c346897337059a58e63616b58",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "6adf79118c256c49df167c13f489109f8f7e5c9b027294879c6fc29c5d134eba",
+        "intentSha256": "c416a2aecb35e05bd6ded3f9ac42bb6f15ad4be18c0b7146a62e5d4cab1ac401",
+        "preparationSha256": "f782ab897d938436c7d16d19e5c3fffbc585ca206df9edd149995ac3acdc7bc9",
+        "abandonedAt": "2026-10-05T00:03:00.000Z",
+        "abandonmentSha256": "3216e8e10886e89da39cf8d20917aa40dc30676f1bbc180f9ab207aae98047d1"
+      }
+    },
+    "registrationRequest": {
+      "contract": "asael-connector-prepared-action:1",
+      "kind": "mcp",
+      "connectorId": "native-mcp-3d8077ef17536e1c99277eb707b2e6353fe5fda2c90933b20a31bbe52f51983e",
+      "action": "register_mcp",
+      "preparationId": "connector-preparation:cddc3204dd9f0a7f7b73a3fc673f9d707f88fd6c346897337059a58e63616b58",
+      "preparationSha256": "f782ab897d938436c7d16d19e5c3fffbc585ca206df9edd149995ac3acdc7bc9",
+      "review": null
+    },
+    "registrationIntent": {
+      "contract": "asael-connector-action-intent:1",
+      "scope": {
+        "tenantId": "registration-fixture",
+        "ownerActorId": "owner@example.test",
+        "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+      },
+      "keySha256": "46a664f35a304d73d284f3a4409571673613408399e0e902420bc7c66f6b9fff",
+      "request": {
+        "contract": "asael-connector-prepared-action:1",
+        "kind": "mcp",
+        "connectorId": "native-mcp-3d8077ef17536e1c99277eb707b2e6353fe5fda2c90933b20a31bbe52f51983e",
+        "action": "register_mcp",
+        "preparationId": "connector-preparation:cddc3204dd9f0a7f7b73a3fc673f9d707f88fd6c346897337059a58e63616b58",
+        "preparationSha256": "f782ab897d938436c7d16d19e5c3fffbc585ca206df9edd149995ac3acdc7bc9",
+        "review": null
+      }
+    },
+    "registrationAction": {
+      "acceptance": {
+        "contract": "asael-connector-acceptance:1",
+        "id": "connector-acceptance:9d56ec0f2354988a671e6a1c8adaf16e24cd430cccc8f9dd8775bb2f0532bdb8",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "46a664f35a304d73d284f3a4409571673613408399e0e902420bc7c66f6b9fff",
+        "requestSha256": "541661b8af332ba0d4f6df97d286416f64bf495a1abd5153d7fafdaa3db04615",
+        "kind": "mcp",
+        "connectorId": "native-mcp-3d8077ef17536e1c99277eb707b2e6353fe5fda2c90933b20a31bbe52f51983e",
+        "action": "register_mcp",
+        "reviewSha256": "f782ab897d938436c7d16d19e5c3fffbc585ca206df9edd149995ac3acdc7bc9",
+        "acceptedAt": "2026-10-05T00:02:00.000Z",
+        "acceptanceSha256": "8b0de759f914ad6f32cd20ad31962a0658dc76594a85445be26f06852fe50c05"
+      },
+      "state": "settled",
+      "settlement": {
+        "contract": "asael-connector-settlement:2",
+        "acceptanceId": "connector-acceptance:9d56ec0f2354988a671e6a1c8adaf16e24cd430cccc8f9dd8775bb2f0532bdb8",
+        "settledAt": "2026-10-05T00:02:00.001Z",
+        "result": {
+          "kind": "mcp",
+          "connectorId": "native-mcp-3d8077ef17536e1c99277eb707b2e6353fe5fda2c90933b20a31bbe52f51983e",
+          "operation": "register_mcp",
+          "status": "complete",
+          "connectorStatus": "disabled",
+          "contractCount": 0,
+          "credentialVersion": 0,
+          "connectorSha256": "9919980c63be239318726527364d89a24c65f24db656f633914255140dfb9b2b",
+          "contractsSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "configurationSha256": "e1d68de7f4934f775b050f209679b51b3277bfe6518d425369ba4f14a0a33340",
+          "trash": null,
+          "failureCode": null
+        },
+        "settlementSha256": "b425ce90bb9b10b05de582afe56ac08d8fd7fb565d2e7e2b766990a8ae080552"
+      }
+    }
+  },
+  "envClean": {
+    "scope": {
+      "tenantId": "registration-fixture",
+      "ownerActorId": "owner@example.test",
+      "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+    },
+    "nonce": "33333333-3333-4333-8333-333333333333",
+    "connectorId": "native-mcp-ea7df4e67f86680f98f1104d5341e060fa51a97c139d6a7ea3551151d0082fad",
+    "preparationKey": "fixture-registration-preparation-3",
+    "registrationKey": "fixture-registration-action-3",
+    "prepareRequest": {
+      "contract": "asael-connector-prepare:1",
+      "nonce": "33333333-3333-4333-8333-333333333333",
+      "operation": "register_mcp",
+      "connectorId": "native-mcp-ea7df4e67f86680f98f1104d5341e060fa51a97c139d6a7ea3551151d0082fad",
+      "review": null,
+      "declaration": {
+        "name": "Fixture MCP",
+        "endpoint": "https://example.test/api/%2f/mcp",
+        "endpointRedacted": false,
+        "authType": "bearer_env",
+        "authTokenEnv": "OMNIAGENT_CONNECTOR_FIXTURE_TOKEN",
+        "authHeaderName": null,
+        "defaultRiskLevel": 2,
+        "approvalRequired": true,
+        "specSource": "none",
+        "specUrl": null,
+        "specUrlRedacted": false
+      },
+      "payload": {
+        "endpoint": "https://example.test/api/%2f/mcp",
+        "specUrl": null,
+        "specText": null,
+        "bearerToken": null
+      }
+    },
+    "preparationIntent": {
+      "contract": "asael-connector-preparation-intent:1",
+      "scope": {
+        "tenantId": "registration-fixture",
+        "ownerActorId": "owner@example.test",
+        "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+      },
+      "keySha256": "2dd3f7291b7359a142e07745a5dc2036233bbd4d71084d86551acad24d82dc56",
+      "nonce": "33333333-3333-4333-8333-333333333333",
+      "operation": "register_mcp",
+      "connectorId": "native-mcp-ea7df4e67f86680f98f1104d5341e060fa51a97c139d6a7ea3551151d0082fad",
+      "review": null,
+      "declaration": {
+        "name": "Fixture MCP",
+        "endpoint": "https://example.test/api/%2f/mcp",
+        "endpointRedacted": false,
+        "authType": "bearer_env",
+        "authTokenEnv": "OMNIAGENT_CONNECTOR_FIXTURE_TOKEN",
+        "authHeaderName": null,
+        "defaultRiskLevel": 2,
+        "approvalRequired": true,
+        "specSource": "none",
+        "specUrl": null,
+        "specUrlRedacted": false
+      }
+    },
+    "preparation": {
+      "contract": "asael-connector-preparation:1",
+      "id": "connector-preparation:0dae7cf9594d3ed39481236e04019b294001484da13a478fd36934c1106a2484",
+      "scope": {
+        "tenantId": "registration-fixture",
+        "ownerActorId": "owner@example.test",
+        "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+      },
+      "keySha256": "2dd3f7291b7359a142e07745a5dc2036233bbd4d71084d86551acad24d82dc56",
+      "intentSha256": "d2ef262b2d565e3f4f4f560c405618862fae90bcb091c8b1e44fa0a4d6caaef3",
+      "nonce": "33333333-3333-4333-8333-333333333333",
+      "operation": "register_mcp",
+      "connectorId": "native-mcp-ea7df4e67f86680f98f1104d5341e060fa51a97c139d6a7ea3551151d0082fad",
+      "review": null,
+      "declaration": {
+        "name": "Fixture MCP",
+        "endpoint": "https://example.test/api/%2f/mcp",
+        "endpointRedacted": false,
+        "authType": "bearer_env",
+        "authTokenEnv": "OMNIAGENT_CONNECTOR_FIXTURE_TOKEN",
+        "authHeaderName": null,
+        "defaultRiskLevel": 2,
+        "approvalRequired": true,
+        "specSource": "none",
+        "specUrl": null,
+        "specUrlRedacted": false
+      },
+      "configurationSha256": "42e8d3980ce33d4d4c6a425dcecfb48c68cc3747c6c2e6ce252915096d3fa508",
+      "preparedAt": "2026-10-05T00:01:00.000Z",
+      "expiresAt": "2026-10-05T00:16:00.000Z",
+      "preparationSha256": "9b971cdcaf2a0721b97a5aba4dfa219622be37d858f16e6666e0a53d8e04506a"
+    },
+    "preparedReady": {
+      "preparation": {
+        "contract": "asael-connector-preparation:1",
+        "id": "connector-preparation:0dae7cf9594d3ed39481236e04019b294001484da13a478fd36934c1106a2484",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "2dd3f7291b7359a142e07745a5dc2036233bbd4d71084d86551acad24d82dc56",
+        "intentSha256": "d2ef262b2d565e3f4f4f560c405618862fae90bcb091c8b1e44fa0a4d6caaef3",
+        "nonce": "33333333-3333-4333-8333-333333333333",
+        "operation": "register_mcp",
+        "connectorId": "native-mcp-ea7df4e67f86680f98f1104d5341e060fa51a97c139d6a7ea3551151d0082fad",
+        "review": null,
+        "declaration": {
+          "name": "Fixture MCP",
+          "endpoint": "https://example.test/api/%2f/mcp",
+          "endpointRedacted": false,
+          "authType": "bearer_env",
+          "authTokenEnv": "OMNIAGENT_CONNECTOR_FIXTURE_TOKEN",
+          "authHeaderName": null,
+          "defaultRiskLevel": 2,
+          "approvalRequired": true,
+          "specSource": "none",
+          "specUrl": null,
+          "specUrlRedacted": false
+        },
+        "configurationSha256": "42e8d3980ce33d4d4c6a425dcecfb48c68cc3747c6c2e6ce252915096d3fa508",
+        "preparedAt": "2026-10-05T00:01:00.000Z",
+        "expiresAt": "2026-10-05T00:16:00.000Z",
+        "preparationSha256": "9b971cdcaf2a0721b97a5aba4dfa219622be37d858f16e6666e0a53d8e04506a"
+      },
+      "availability": "ready",
+      "consumedBy": null,
+      "consumedKeySha256": null
+    },
+    "preparedExpired": {
+      "preparation": {
+        "contract": "asael-connector-preparation:1",
+        "id": "connector-preparation:0dae7cf9594d3ed39481236e04019b294001484da13a478fd36934c1106a2484",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "2dd3f7291b7359a142e07745a5dc2036233bbd4d71084d86551acad24d82dc56",
+        "intentSha256": "d2ef262b2d565e3f4f4f560c405618862fae90bcb091c8b1e44fa0a4d6caaef3",
+        "nonce": "33333333-3333-4333-8333-333333333333",
+        "operation": "register_mcp",
+        "connectorId": "native-mcp-ea7df4e67f86680f98f1104d5341e060fa51a97c139d6a7ea3551151d0082fad",
+        "review": null,
+        "declaration": {
+          "name": "Fixture MCP",
+          "endpoint": "https://example.test/api/%2f/mcp",
+          "endpointRedacted": false,
+          "authType": "bearer_env",
+          "authTokenEnv": "OMNIAGENT_CONNECTOR_FIXTURE_TOKEN",
+          "authHeaderName": null,
+          "defaultRiskLevel": 2,
+          "approvalRequired": true,
+          "specSource": "none",
+          "specUrl": null,
+          "specUrlRedacted": false
+        },
+        "configurationSha256": "42e8d3980ce33d4d4c6a425dcecfb48c68cc3747c6c2e6ce252915096d3fa508",
+        "preparedAt": "2026-10-05T00:01:00.000Z",
+        "expiresAt": "2026-10-05T00:16:00.000Z",
+        "preparationSha256": "9b971cdcaf2a0721b97a5aba4dfa219622be37d858f16e6666e0a53d8e04506a"
+      },
+      "availability": "expired",
+      "consumedBy": null,
+      "consumedKeySha256": null
+    },
+    "preparedConsumed": {
+      "preparation": {
+        "contract": "asael-connector-preparation:1",
+        "id": "connector-preparation:0dae7cf9594d3ed39481236e04019b294001484da13a478fd36934c1106a2484",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "2dd3f7291b7359a142e07745a5dc2036233bbd4d71084d86551acad24d82dc56",
+        "intentSha256": "d2ef262b2d565e3f4f4f560c405618862fae90bcb091c8b1e44fa0a4d6caaef3",
+        "nonce": "33333333-3333-4333-8333-333333333333",
+        "operation": "register_mcp",
+        "connectorId": "native-mcp-ea7df4e67f86680f98f1104d5341e060fa51a97c139d6a7ea3551151d0082fad",
+        "review": null,
+        "declaration": {
+          "name": "Fixture MCP",
+          "endpoint": "https://example.test/api/%2f/mcp",
+          "endpointRedacted": false,
+          "authType": "bearer_env",
+          "authTokenEnv": "OMNIAGENT_CONNECTOR_FIXTURE_TOKEN",
+          "authHeaderName": null,
+          "defaultRiskLevel": 2,
+          "approvalRequired": true,
+          "specSource": "none",
+          "specUrl": null,
+          "specUrlRedacted": false
+        },
+        "configurationSha256": "42e8d3980ce33d4d4c6a425dcecfb48c68cc3747c6c2e6ce252915096d3fa508",
+        "preparedAt": "2026-10-05T00:01:00.000Z",
+        "expiresAt": "2026-10-05T00:16:00.000Z",
+        "preparationSha256": "9b971cdcaf2a0721b97a5aba4dfa219622be37d858f16e6666e0a53d8e04506a"
+      },
+      "availability": "consumed",
+      "consumedBy": "connector-acceptance:9b3132ccdeddd69cee2675d34b5d43d00f59e0ccf3cf7a40607cbbdb6ce914b1",
+      "consumedKeySha256": "85d62c2f652cc907bddde2fcf6bbbd6bf5a531f9e1d4d3d77a8c7ad8f5e4f798"
+    },
+    "abandonRequest": {
+      "contract": "asael-mcp-registration-preparation-abandon:1",
+      "intent": {
+        "contract": "asael-connector-preparation-intent:1",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "2dd3f7291b7359a142e07745a5dc2036233bbd4d71084d86551acad24d82dc56",
+        "nonce": "33333333-3333-4333-8333-333333333333",
+        "operation": "register_mcp",
+        "connectorId": "native-mcp-ea7df4e67f86680f98f1104d5341e060fa51a97c139d6a7ea3551151d0082fad",
+        "review": null,
+        "declaration": {
+          "name": "Fixture MCP",
+          "endpoint": "https://example.test/api/%2f/mcp",
+          "endpointRedacted": false,
+          "authType": "bearer_env",
+          "authTokenEnv": "OMNIAGENT_CONNECTOR_FIXTURE_TOKEN",
+          "authHeaderName": null,
+          "defaultRiskLevel": 2,
+          "approvalRequired": true,
+          "specSource": "none",
+          "specUrl": null,
+          "specUrlRedacted": false
+        }
+      }
+    },
+    "abandonedAbsent": {
+      "intent": {
+        "contract": "asael-connector-preparation-intent:1",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "2dd3f7291b7359a142e07745a5dc2036233bbd4d71084d86551acad24d82dc56",
+        "nonce": "33333333-3333-4333-8333-333333333333",
+        "operation": "register_mcp",
+        "connectorId": "native-mcp-ea7df4e67f86680f98f1104d5341e060fa51a97c139d6a7ea3551151d0082fad",
+        "review": null,
+        "declaration": {
+          "name": "Fixture MCP",
+          "endpoint": "https://example.test/api/%2f/mcp",
+          "endpointRedacted": false,
+          "authType": "bearer_env",
+          "authTokenEnv": "OMNIAGENT_CONNECTOR_FIXTURE_TOKEN",
+          "authHeaderName": null,
+          "defaultRiskLevel": 2,
+          "approvalRequired": true,
+          "specSource": "none",
+          "specUrl": null,
+          "specUrlRedacted": false
+        }
+      },
+      "preparation": null,
+      "availability": "abandoned",
+      "consumedBy": null,
+      "consumedKeySha256": null,
+      "abandonment": {
+        "contract": "asael-mcp-registration-preparation-abandonment:1",
+        "id": "connector-preparation-abandonment:0dae7cf9594d3ed39481236e04019b294001484da13a478fd36934c1106a2484",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "2dd3f7291b7359a142e07745a5dc2036233bbd4d71084d86551acad24d82dc56",
+        "intentSha256": "d2ef262b2d565e3f4f4f560c405618862fae90bcb091c8b1e44fa0a4d6caaef3",
+        "preparationSha256": null,
+        "abandonedAt": "2026-10-05T00:03:00.000Z",
+        "abandonmentSha256": "a1eadba6086c1c9caae971e75ceb1644edc0ba23b394123c1fcefc78ac8a1813"
+      }
+    },
+    "abandonedPrepared": {
+      "intent": {
+        "contract": "asael-connector-preparation-intent:1",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "2dd3f7291b7359a142e07745a5dc2036233bbd4d71084d86551acad24d82dc56",
+        "nonce": "33333333-3333-4333-8333-333333333333",
+        "operation": "register_mcp",
+        "connectorId": "native-mcp-ea7df4e67f86680f98f1104d5341e060fa51a97c139d6a7ea3551151d0082fad",
+        "review": null,
+        "declaration": {
+          "name": "Fixture MCP",
+          "endpoint": "https://example.test/api/%2f/mcp",
+          "endpointRedacted": false,
+          "authType": "bearer_env",
+          "authTokenEnv": "OMNIAGENT_CONNECTOR_FIXTURE_TOKEN",
+          "authHeaderName": null,
+          "defaultRiskLevel": 2,
+          "approvalRequired": true,
+          "specSource": "none",
+          "specUrl": null,
+          "specUrlRedacted": false
+        }
+      },
+      "preparation": {
+        "contract": "asael-connector-preparation:1",
+        "id": "connector-preparation:0dae7cf9594d3ed39481236e04019b294001484da13a478fd36934c1106a2484",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "2dd3f7291b7359a142e07745a5dc2036233bbd4d71084d86551acad24d82dc56",
+        "intentSha256": "d2ef262b2d565e3f4f4f560c405618862fae90bcb091c8b1e44fa0a4d6caaef3",
+        "nonce": "33333333-3333-4333-8333-333333333333",
+        "operation": "register_mcp",
+        "connectorId": "native-mcp-ea7df4e67f86680f98f1104d5341e060fa51a97c139d6a7ea3551151d0082fad",
+        "review": null,
+        "declaration": {
+          "name": "Fixture MCP",
+          "endpoint": "https://example.test/api/%2f/mcp",
+          "endpointRedacted": false,
+          "authType": "bearer_env",
+          "authTokenEnv": "OMNIAGENT_CONNECTOR_FIXTURE_TOKEN",
+          "authHeaderName": null,
+          "defaultRiskLevel": 2,
+          "approvalRequired": true,
+          "specSource": "none",
+          "specUrl": null,
+          "specUrlRedacted": false
+        },
+        "configurationSha256": "42e8d3980ce33d4d4c6a425dcecfb48c68cc3747c6c2e6ce252915096d3fa508",
+        "preparedAt": "2026-10-05T00:01:00.000Z",
+        "expiresAt": "2026-10-05T00:16:00.000Z",
+        "preparationSha256": "9b971cdcaf2a0721b97a5aba4dfa219622be37d858f16e6666e0a53d8e04506a"
+      },
+      "availability": "abandoned",
+      "consumedBy": null,
+      "consumedKeySha256": null,
+      "abandonment": {
+        "contract": "asael-mcp-registration-preparation-abandonment:1",
+        "id": "connector-preparation-abandonment:0dae7cf9594d3ed39481236e04019b294001484da13a478fd36934c1106a2484",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "2dd3f7291b7359a142e07745a5dc2036233bbd4d71084d86551acad24d82dc56",
+        "intentSha256": "d2ef262b2d565e3f4f4f560c405618862fae90bcb091c8b1e44fa0a4d6caaef3",
+        "preparationSha256": "9b971cdcaf2a0721b97a5aba4dfa219622be37d858f16e6666e0a53d8e04506a",
+        "abandonedAt": "2026-10-05T00:03:00.000Z",
+        "abandonmentSha256": "70a7ee98509053b2d880e0d0ad6cb4c3535492d1c9d6c22d26617f81f94c0172"
+      }
+    },
+    "registrationRequest": {
+      "contract": "asael-connector-prepared-action:1",
+      "kind": "mcp",
+      "connectorId": "native-mcp-ea7df4e67f86680f98f1104d5341e060fa51a97c139d6a7ea3551151d0082fad",
+      "action": "register_mcp",
+      "preparationId": "connector-preparation:0dae7cf9594d3ed39481236e04019b294001484da13a478fd36934c1106a2484",
+      "preparationSha256": "9b971cdcaf2a0721b97a5aba4dfa219622be37d858f16e6666e0a53d8e04506a",
+      "review": null
+    },
+    "registrationIntent": {
+      "contract": "asael-connector-action-intent:1",
+      "scope": {
+        "tenantId": "registration-fixture",
+        "ownerActorId": "owner@example.test",
+        "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+      },
+      "keySha256": "85d62c2f652cc907bddde2fcf6bbbd6bf5a531f9e1d4d3d77a8c7ad8f5e4f798",
+      "request": {
+        "contract": "asael-connector-prepared-action:1",
+        "kind": "mcp",
+        "connectorId": "native-mcp-ea7df4e67f86680f98f1104d5341e060fa51a97c139d6a7ea3551151d0082fad",
+        "action": "register_mcp",
+        "preparationId": "connector-preparation:0dae7cf9594d3ed39481236e04019b294001484da13a478fd36934c1106a2484",
+        "preparationSha256": "9b971cdcaf2a0721b97a5aba4dfa219622be37d858f16e6666e0a53d8e04506a",
+        "review": null
+      }
+    },
+    "registrationAction": {
+      "acceptance": {
+        "contract": "asael-connector-acceptance:1",
+        "id": "connector-acceptance:9b3132ccdeddd69cee2675d34b5d43d00f59e0ccf3cf7a40607cbbdb6ce914b1",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "85d62c2f652cc907bddde2fcf6bbbd6bf5a531f9e1d4d3d77a8c7ad8f5e4f798",
+        "requestSha256": "cc41027bb66ade8c5e71134561a5eaa75309f55382ab409ec5849bff5e98f59f",
+        "kind": "mcp",
+        "connectorId": "native-mcp-ea7df4e67f86680f98f1104d5341e060fa51a97c139d6a7ea3551151d0082fad",
+        "action": "register_mcp",
+        "reviewSha256": "9b971cdcaf2a0721b97a5aba4dfa219622be37d858f16e6666e0a53d8e04506a",
+        "acceptedAt": "2026-10-05T00:02:00.000Z",
+        "acceptanceSha256": "cae34f51021e4a5b7e4474c59598031a3c996d81bb2047bfcce2055b15dfdd28"
+      },
+      "state": "settled",
+      "settlement": {
+        "contract": "asael-connector-settlement:2",
+        "acceptanceId": "connector-acceptance:9b3132ccdeddd69cee2675d34b5d43d00f59e0ccf3cf7a40607cbbdb6ce914b1",
+        "settledAt": "2026-10-05T00:02:00.001Z",
+        "result": {
+          "kind": "mcp",
+          "connectorId": "native-mcp-ea7df4e67f86680f98f1104d5341e060fa51a97c139d6a7ea3551151d0082fad",
+          "operation": "register_mcp",
+          "status": "complete",
+          "connectorStatus": "disabled",
+          "contractCount": 0,
+          "credentialVersion": 0,
+          "connectorSha256": "8c8f09f7e7e89c0d1de5a99fe02ac3a4ec71b8e9cf93793016df06f8d8871cea",
+          "contractsSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "configurationSha256": "495fee346b3dc4c554993fdfafaddff6e0c377a0143aeebf46c8e7502c2f9f53",
+          "trash": null,
+          "failureCode": null
+        },
+        "settlementSha256": "cd93d755f9dd308d801367f2b9803f9c0af9404b8ccc6bd1cc04550cfa5550d2"
+      }
+    }
+  },
+  "envPrivate": {
+    "scope": {
+      "tenantId": "registration-fixture",
+      "ownerActorId": "owner@example.test",
+      "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+    },
+    "nonce": "33333333-3333-4333-8333-333333333334",
+    "connectorId": "native-mcp-aefd95b18950ce086d2b8d608c1d5637100c7b86927a37228c1ea1c10ea33cf1",
+    "preparationKey": "fixture-registration-preparation-4",
+    "registrationKey": "fixture-registration-action-4",
+    "prepareRequest": {
+      "contract": "asael-connector-prepare:1",
+      "nonce": "33333333-3333-4333-8333-333333333334",
+      "operation": "register_mcp",
+      "connectorId": "native-mcp-aefd95b18950ce086d2b8d608c1d5637100c7b86927a37228c1ea1c10ea33cf1",
+      "review": null,
+      "declaration": {
+        "name": "Fixture MCP",
+        "endpoint": "https://example.test/api/%2f/mcp",
+        "endpointRedacted": true,
+        "authType": "bearer_env",
+        "authTokenEnv": "OMNIAGENT_CONNECTOR_FIXTURE_TOKEN",
+        "authHeaderName": null,
+        "defaultRiskLevel": 2,
+        "approvalRequired": true,
+        "specSource": "none",
+        "specUrl": null,
+        "specUrlRedacted": false
+      },
+      "payload": {
+        "endpoint": "https://example.test/api/%2f/mcp?fixture=synthetic-private-query#synthetic-fragment",
+        "specUrl": null,
+        "specText": null,
+        "bearerToken": null
+      }
+    },
+    "preparationIntent": {
+      "contract": "asael-connector-preparation-intent:1",
+      "scope": {
+        "tenantId": "registration-fixture",
+        "ownerActorId": "owner@example.test",
+        "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+      },
+      "keySha256": "34a620443f3e0d023c00cc8f97144b8c20df6a416e63b09857c70c39a4dff3eb",
+      "nonce": "33333333-3333-4333-8333-333333333334",
+      "operation": "register_mcp",
+      "connectorId": "native-mcp-aefd95b18950ce086d2b8d608c1d5637100c7b86927a37228c1ea1c10ea33cf1",
+      "review": null,
+      "declaration": {
+        "name": "Fixture MCP",
+        "endpoint": "https://example.test/api/%2f/mcp",
+        "endpointRedacted": true,
+        "authType": "bearer_env",
+        "authTokenEnv": "OMNIAGENT_CONNECTOR_FIXTURE_TOKEN",
+        "authHeaderName": null,
+        "defaultRiskLevel": 2,
+        "approvalRequired": true,
+        "specSource": "none",
+        "specUrl": null,
+        "specUrlRedacted": false
+      }
+    },
+    "preparation": {
+      "contract": "asael-connector-preparation:1",
+      "id": "connector-preparation:92db125d8ef48508365110e0e3f2534e33909b3b4a905a95a7f443a21014310c",
+      "scope": {
+        "tenantId": "registration-fixture",
+        "ownerActorId": "owner@example.test",
+        "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+      },
+      "keySha256": "34a620443f3e0d023c00cc8f97144b8c20df6a416e63b09857c70c39a4dff3eb",
+      "intentSha256": "9b02a270912a9eff35147a6a257af19e0c915c67200468eb5d5a5ab609ba4421",
+      "nonce": "33333333-3333-4333-8333-333333333334",
+      "operation": "register_mcp",
+      "connectorId": "native-mcp-aefd95b18950ce086d2b8d608c1d5637100c7b86927a37228c1ea1c10ea33cf1",
+      "review": null,
+      "declaration": {
+        "name": "Fixture MCP",
+        "endpoint": "https://example.test/api/%2f/mcp",
+        "endpointRedacted": true,
+        "authType": "bearer_env",
+        "authTokenEnv": "OMNIAGENT_CONNECTOR_FIXTURE_TOKEN",
+        "authHeaderName": null,
+        "defaultRiskLevel": 2,
+        "approvalRequired": true,
+        "specSource": "none",
+        "specUrl": null,
+        "specUrlRedacted": false
+      },
+      "configurationSha256": "e77c652cba258e5ec9da1f903aa4a22e86635f498ebfa0e445d84e02800bf0e9",
+      "preparedAt": "2026-10-05T00:01:00.000Z",
+      "expiresAt": "2026-10-05T00:16:00.000Z",
+      "preparationSha256": "ab6b213bce6853315861e3bf7f81adc8363d2e5191332bb11b421a4aef563d6c"
+    },
+    "preparedReady": {
+      "preparation": {
+        "contract": "asael-connector-preparation:1",
+        "id": "connector-preparation:92db125d8ef48508365110e0e3f2534e33909b3b4a905a95a7f443a21014310c",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "34a620443f3e0d023c00cc8f97144b8c20df6a416e63b09857c70c39a4dff3eb",
+        "intentSha256": "9b02a270912a9eff35147a6a257af19e0c915c67200468eb5d5a5ab609ba4421",
+        "nonce": "33333333-3333-4333-8333-333333333334",
+        "operation": "register_mcp",
+        "connectorId": "native-mcp-aefd95b18950ce086d2b8d608c1d5637100c7b86927a37228c1ea1c10ea33cf1",
+        "review": null,
+        "declaration": {
+          "name": "Fixture MCP",
+          "endpoint": "https://example.test/api/%2f/mcp",
+          "endpointRedacted": true,
+          "authType": "bearer_env",
+          "authTokenEnv": "OMNIAGENT_CONNECTOR_FIXTURE_TOKEN",
+          "authHeaderName": null,
+          "defaultRiskLevel": 2,
+          "approvalRequired": true,
+          "specSource": "none",
+          "specUrl": null,
+          "specUrlRedacted": false
+        },
+        "configurationSha256": "e77c652cba258e5ec9da1f903aa4a22e86635f498ebfa0e445d84e02800bf0e9",
+        "preparedAt": "2026-10-05T00:01:00.000Z",
+        "expiresAt": "2026-10-05T00:16:00.000Z",
+        "preparationSha256": "ab6b213bce6853315861e3bf7f81adc8363d2e5191332bb11b421a4aef563d6c"
+      },
+      "availability": "ready",
+      "consumedBy": null,
+      "consumedKeySha256": null
+    },
+    "preparedExpired": {
+      "preparation": {
+        "contract": "asael-connector-preparation:1",
+        "id": "connector-preparation:92db125d8ef48508365110e0e3f2534e33909b3b4a905a95a7f443a21014310c",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "34a620443f3e0d023c00cc8f97144b8c20df6a416e63b09857c70c39a4dff3eb",
+        "intentSha256": "9b02a270912a9eff35147a6a257af19e0c915c67200468eb5d5a5ab609ba4421",
+        "nonce": "33333333-3333-4333-8333-333333333334",
+        "operation": "register_mcp",
+        "connectorId": "native-mcp-aefd95b18950ce086d2b8d608c1d5637100c7b86927a37228c1ea1c10ea33cf1",
+        "review": null,
+        "declaration": {
+          "name": "Fixture MCP",
+          "endpoint": "https://example.test/api/%2f/mcp",
+          "endpointRedacted": true,
+          "authType": "bearer_env",
+          "authTokenEnv": "OMNIAGENT_CONNECTOR_FIXTURE_TOKEN",
+          "authHeaderName": null,
+          "defaultRiskLevel": 2,
+          "approvalRequired": true,
+          "specSource": "none",
+          "specUrl": null,
+          "specUrlRedacted": false
+        },
+        "configurationSha256": "e77c652cba258e5ec9da1f903aa4a22e86635f498ebfa0e445d84e02800bf0e9",
+        "preparedAt": "2026-10-05T00:01:00.000Z",
+        "expiresAt": "2026-10-05T00:16:00.000Z",
+        "preparationSha256": "ab6b213bce6853315861e3bf7f81adc8363d2e5191332bb11b421a4aef563d6c"
+      },
+      "availability": "expired",
+      "consumedBy": null,
+      "consumedKeySha256": null
+    },
+    "preparedConsumed": {
+      "preparation": {
+        "contract": "asael-connector-preparation:1",
+        "id": "connector-preparation:92db125d8ef48508365110e0e3f2534e33909b3b4a905a95a7f443a21014310c",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "34a620443f3e0d023c00cc8f97144b8c20df6a416e63b09857c70c39a4dff3eb",
+        "intentSha256": "9b02a270912a9eff35147a6a257af19e0c915c67200468eb5d5a5ab609ba4421",
+        "nonce": "33333333-3333-4333-8333-333333333334",
+        "operation": "register_mcp",
+        "connectorId": "native-mcp-aefd95b18950ce086d2b8d608c1d5637100c7b86927a37228c1ea1c10ea33cf1",
+        "review": null,
+        "declaration": {
+          "name": "Fixture MCP",
+          "endpoint": "https://example.test/api/%2f/mcp",
+          "endpointRedacted": true,
+          "authType": "bearer_env",
+          "authTokenEnv": "OMNIAGENT_CONNECTOR_FIXTURE_TOKEN",
+          "authHeaderName": null,
+          "defaultRiskLevel": 2,
+          "approvalRequired": true,
+          "specSource": "none",
+          "specUrl": null,
+          "specUrlRedacted": false
+        },
+        "configurationSha256": "e77c652cba258e5ec9da1f903aa4a22e86635f498ebfa0e445d84e02800bf0e9",
+        "preparedAt": "2026-10-05T00:01:00.000Z",
+        "expiresAt": "2026-10-05T00:16:00.000Z",
+        "preparationSha256": "ab6b213bce6853315861e3bf7f81adc8363d2e5191332bb11b421a4aef563d6c"
+      },
+      "availability": "consumed",
+      "consumedBy": "connector-acceptance:61b58acfa313d4b308fd64ec8fb6b8b0e7468acc523de780e06158e7e69f9478",
+      "consumedKeySha256": "388886ffe4aeb108bab4ca29b0b494434c0b134d68e0d2371cc0f870202246c7"
+    },
+    "abandonRequest": {
+      "contract": "asael-mcp-registration-preparation-abandon:1",
+      "intent": {
+        "contract": "asael-connector-preparation-intent:1",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "34a620443f3e0d023c00cc8f97144b8c20df6a416e63b09857c70c39a4dff3eb",
+        "nonce": "33333333-3333-4333-8333-333333333334",
+        "operation": "register_mcp",
+        "connectorId": "native-mcp-aefd95b18950ce086d2b8d608c1d5637100c7b86927a37228c1ea1c10ea33cf1",
+        "review": null,
+        "declaration": {
+          "name": "Fixture MCP",
+          "endpoint": "https://example.test/api/%2f/mcp",
+          "endpointRedacted": true,
+          "authType": "bearer_env",
+          "authTokenEnv": "OMNIAGENT_CONNECTOR_FIXTURE_TOKEN",
+          "authHeaderName": null,
+          "defaultRiskLevel": 2,
+          "approvalRequired": true,
+          "specSource": "none",
+          "specUrl": null,
+          "specUrlRedacted": false
+        }
+      }
+    },
+    "abandonedAbsent": {
+      "intent": {
+        "contract": "asael-connector-preparation-intent:1",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "34a620443f3e0d023c00cc8f97144b8c20df6a416e63b09857c70c39a4dff3eb",
+        "nonce": "33333333-3333-4333-8333-333333333334",
+        "operation": "register_mcp",
+        "connectorId": "native-mcp-aefd95b18950ce086d2b8d608c1d5637100c7b86927a37228c1ea1c10ea33cf1",
+        "review": null,
+        "declaration": {
+          "name": "Fixture MCP",
+          "endpoint": "https://example.test/api/%2f/mcp",
+          "endpointRedacted": true,
+          "authType": "bearer_env",
+          "authTokenEnv": "OMNIAGENT_CONNECTOR_FIXTURE_TOKEN",
+          "authHeaderName": null,
+          "defaultRiskLevel": 2,
+          "approvalRequired": true,
+          "specSource": "none",
+          "specUrl": null,
+          "specUrlRedacted": false
+        }
+      },
+      "preparation": null,
+      "availability": "abandoned",
+      "consumedBy": null,
+      "consumedKeySha256": null,
+      "abandonment": {
+        "contract": "asael-mcp-registration-preparation-abandonment:1",
+        "id": "connector-preparation-abandonment:92db125d8ef48508365110e0e3f2534e33909b3b4a905a95a7f443a21014310c",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "34a620443f3e0d023c00cc8f97144b8c20df6a416e63b09857c70c39a4dff3eb",
+        "intentSha256": "9b02a270912a9eff35147a6a257af19e0c915c67200468eb5d5a5ab609ba4421",
+        "preparationSha256": null,
+        "abandonedAt": "2026-10-05T00:03:00.000Z",
+        "abandonmentSha256": "431e070d349eb114e38e947a05ff9540021e5f7b4db75c6764ad5332e4aeaa24"
+      }
+    },
+    "abandonedPrepared": {
+      "intent": {
+        "contract": "asael-connector-preparation-intent:1",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "34a620443f3e0d023c00cc8f97144b8c20df6a416e63b09857c70c39a4dff3eb",
+        "nonce": "33333333-3333-4333-8333-333333333334",
+        "operation": "register_mcp",
+        "connectorId": "native-mcp-aefd95b18950ce086d2b8d608c1d5637100c7b86927a37228c1ea1c10ea33cf1",
+        "review": null,
+        "declaration": {
+          "name": "Fixture MCP",
+          "endpoint": "https://example.test/api/%2f/mcp",
+          "endpointRedacted": true,
+          "authType": "bearer_env",
+          "authTokenEnv": "OMNIAGENT_CONNECTOR_FIXTURE_TOKEN",
+          "authHeaderName": null,
+          "defaultRiskLevel": 2,
+          "approvalRequired": true,
+          "specSource": "none",
+          "specUrl": null,
+          "specUrlRedacted": false
+        }
+      },
+      "preparation": {
+        "contract": "asael-connector-preparation:1",
+        "id": "connector-preparation:92db125d8ef48508365110e0e3f2534e33909b3b4a905a95a7f443a21014310c",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "34a620443f3e0d023c00cc8f97144b8c20df6a416e63b09857c70c39a4dff3eb",
+        "intentSha256": "9b02a270912a9eff35147a6a257af19e0c915c67200468eb5d5a5ab609ba4421",
+        "nonce": "33333333-3333-4333-8333-333333333334",
+        "operation": "register_mcp",
+        "connectorId": "native-mcp-aefd95b18950ce086d2b8d608c1d5637100c7b86927a37228c1ea1c10ea33cf1",
+        "review": null,
+        "declaration": {
+          "name": "Fixture MCP",
+          "endpoint": "https://example.test/api/%2f/mcp",
+          "endpointRedacted": true,
+          "authType": "bearer_env",
+          "authTokenEnv": "OMNIAGENT_CONNECTOR_FIXTURE_TOKEN",
+          "authHeaderName": null,
+          "defaultRiskLevel": 2,
+          "approvalRequired": true,
+          "specSource": "none",
+          "specUrl": null,
+          "specUrlRedacted": false
+        },
+        "configurationSha256": "e77c652cba258e5ec9da1f903aa4a22e86635f498ebfa0e445d84e02800bf0e9",
+        "preparedAt": "2026-10-05T00:01:00.000Z",
+        "expiresAt": "2026-10-05T00:16:00.000Z",
+        "preparationSha256": "ab6b213bce6853315861e3bf7f81adc8363d2e5191332bb11b421a4aef563d6c"
+      },
+      "availability": "abandoned",
+      "consumedBy": null,
+      "consumedKeySha256": null,
+      "abandonment": {
+        "contract": "asael-mcp-registration-preparation-abandonment:1",
+        "id": "connector-preparation-abandonment:92db125d8ef48508365110e0e3f2534e33909b3b4a905a95a7f443a21014310c",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "34a620443f3e0d023c00cc8f97144b8c20df6a416e63b09857c70c39a4dff3eb",
+        "intentSha256": "9b02a270912a9eff35147a6a257af19e0c915c67200468eb5d5a5ab609ba4421",
+        "preparationSha256": "ab6b213bce6853315861e3bf7f81adc8363d2e5191332bb11b421a4aef563d6c",
+        "abandonedAt": "2026-10-05T00:03:00.000Z",
+        "abandonmentSha256": "652f71e0cff649b3b22e8a9379b33243f21dd2af76ffa8b548020d3b50b4cbdb"
+      }
+    },
+    "registrationRequest": {
+      "contract": "asael-connector-prepared-action:1",
+      "kind": "mcp",
+      "connectorId": "native-mcp-aefd95b18950ce086d2b8d608c1d5637100c7b86927a37228c1ea1c10ea33cf1",
+      "action": "register_mcp",
+      "preparationId": "connector-preparation:92db125d8ef48508365110e0e3f2534e33909b3b4a905a95a7f443a21014310c",
+      "preparationSha256": "ab6b213bce6853315861e3bf7f81adc8363d2e5191332bb11b421a4aef563d6c",
+      "review": null
+    },
+    "registrationIntent": {
+      "contract": "asael-connector-action-intent:1",
+      "scope": {
+        "tenantId": "registration-fixture",
+        "ownerActorId": "owner@example.test",
+        "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+      },
+      "keySha256": "388886ffe4aeb108bab4ca29b0b494434c0b134d68e0d2371cc0f870202246c7",
+      "request": {
+        "contract": "asael-connector-prepared-action:1",
+        "kind": "mcp",
+        "connectorId": "native-mcp-aefd95b18950ce086d2b8d608c1d5637100c7b86927a37228c1ea1c10ea33cf1",
+        "action": "register_mcp",
+        "preparationId": "connector-preparation:92db125d8ef48508365110e0e3f2534e33909b3b4a905a95a7f443a21014310c",
+        "preparationSha256": "ab6b213bce6853315861e3bf7f81adc8363d2e5191332bb11b421a4aef563d6c",
+        "review": null
+      }
+    },
+    "registrationAction": {
+      "acceptance": {
+        "contract": "asael-connector-acceptance:1",
+        "id": "connector-acceptance:61b58acfa313d4b308fd64ec8fb6b8b0e7468acc523de780e06158e7e69f9478",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "388886ffe4aeb108bab4ca29b0b494434c0b134d68e0d2371cc0f870202246c7",
+        "requestSha256": "846266a1f53e55fa4d7faffd7ceb44f07764c640cf9bdd99924669c69a31aae2",
+        "kind": "mcp",
+        "connectorId": "native-mcp-aefd95b18950ce086d2b8d608c1d5637100c7b86927a37228c1ea1c10ea33cf1",
+        "action": "register_mcp",
+        "reviewSha256": "ab6b213bce6853315861e3bf7f81adc8363d2e5191332bb11b421a4aef563d6c",
+        "acceptedAt": "2026-10-05T00:02:00.000Z",
+        "acceptanceSha256": "eb838492f2e04aff9b9bb17ed2e811d00d5522b4790e8915c76a3c1b0553c3bd"
+      },
+      "state": "settled",
+      "settlement": {
+        "contract": "asael-connector-settlement:2",
+        "acceptanceId": "connector-acceptance:61b58acfa313d4b308fd64ec8fb6b8b0e7468acc523de780e06158e7e69f9478",
+        "settledAt": "2026-10-05T00:02:00.001Z",
+        "result": {
+          "kind": "mcp",
+          "connectorId": "native-mcp-aefd95b18950ce086d2b8d608c1d5637100c7b86927a37228c1ea1c10ea33cf1",
+          "operation": "register_mcp",
+          "status": "complete",
+          "connectorStatus": "disabled",
+          "contractCount": 0,
+          "credentialVersion": 0,
+          "connectorSha256": "c06e062f21b79605d26f8b86226c78be359021c465bb256781fcb80acf0bd73e",
+          "contractsSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "configurationSha256": "4610bafc6fc340602da278ec85f70a352ceb1dd124a87a21e9df43cde0b4c8ca",
+          "trash": null,
+          "failureCode": null
+        },
+        "settlementSha256": "a3bab19bcd7b1ed9e8634074bb7f806c12e1ad0962658fc735b84943f13e23d0"
+      }
+    }
+  },
+  "vaultClean": {
+    "scope": {
+      "tenantId": "registration-fixture",
+      "ownerActorId": "owner@example.test",
+      "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+    },
+    "nonce": "33333333-3333-4333-8333-333333333335",
+    "connectorId": "native-mcp-3f8dc23a9863c115e7962383c6ac6ed0eee10bc804bdca544fd7b73ae17dd099",
+    "preparationKey": "fixture-registration-preparation-5",
+    "registrationKey": "fixture-registration-action-5",
+    "prepareRequest": {
+      "contract": "asael-connector-prepare:1",
+      "nonce": "33333333-3333-4333-8333-333333333335",
+      "operation": "register_mcp",
+      "connectorId": "native-mcp-3f8dc23a9863c115e7962383c6ac6ed0eee10bc804bdca544fd7b73ae17dd099",
+      "review": null,
+      "declaration": {
+        "name": "Fixture MCP",
+        "endpoint": "https://example.test/api/%2f/mcp",
+        "endpointRedacted": false,
+        "authType": "bearer_vault",
+        "authTokenEnv": null,
+        "authHeaderName": null,
+        "defaultRiskLevel": 2,
+        "approvalRequired": true,
+        "specSource": "none",
+        "specUrl": null,
+        "specUrlRedacted": false
+      },
+      "payload": {
+        "endpoint": "https://example.test/api/%2f/mcp",
+        "specUrl": null,
+        "specText": null,
+        "bearerToken": "synthetic-fixture-only"
+      }
+    },
+    "preparationIntent": {
+      "contract": "asael-connector-preparation-intent:1",
+      "scope": {
+        "tenantId": "registration-fixture",
+        "ownerActorId": "owner@example.test",
+        "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+      },
+      "keySha256": "3ae09c14f1ee5c74c950d864d4e810883df7dc78c22bae3c0857adbe5b0f4350",
+      "nonce": "33333333-3333-4333-8333-333333333335",
+      "operation": "register_mcp",
+      "connectorId": "native-mcp-3f8dc23a9863c115e7962383c6ac6ed0eee10bc804bdca544fd7b73ae17dd099",
+      "review": null,
+      "declaration": {
+        "name": "Fixture MCP",
+        "endpoint": "https://example.test/api/%2f/mcp",
+        "endpointRedacted": false,
+        "authType": "bearer_vault",
+        "authTokenEnv": null,
+        "authHeaderName": null,
+        "defaultRiskLevel": 2,
+        "approvalRequired": true,
+        "specSource": "none",
+        "specUrl": null,
+        "specUrlRedacted": false
+      }
+    },
+    "preparation": {
+      "contract": "asael-connector-preparation:1",
+      "id": "connector-preparation:94bfa332b61c1c0d49616edb77d38b87b383cfcf724eb862191b7cafcd77e4bd",
+      "scope": {
+        "tenantId": "registration-fixture",
+        "ownerActorId": "owner@example.test",
+        "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+      },
+      "keySha256": "3ae09c14f1ee5c74c950d864d4e810883df7dc78c22bae3c0857adbe5b0f4350",
+      "intentSha256": "63d595d3a5ab9a5e1fdd574f80bb9dad1578be1a93d409ed93c2d223443d688a",
+      "nonce": "33333333-3333-4333-8333-333333333335",
+      "operation": "register_mcp",
+      "connectorId": "native-mcp-3f8dc23a9863c115e7962383c6ac6ed0eee10bc804bdca544fd7b73ae17dd099",
+      "review": null,
+      "declaration": {
+        "name": "Fixture MCP",
+        "endpoint": "https://example.test/api/%2f/mcp",
+        "endpointRedacted": false,
+        "authType": "bearer_vault",
+        "authTokenEnv": null,
+        "authHeaderName": null,
+        "defaultRiskLevel": 2,
+        "approvalRequired": true,
+        "specSource": "none",
+        "specUrl": null,
+        "specUrlRedacted": false
+      },
+      "configurationSha256": "d54dc5a8adc1f2e376e144e7ef4757d19f7485421702c91bb377926fa2a6e0d6",
+      "preparedAt": "2026-10-05T00:01:00.000Z",
+      "expiresAt": "2026-10-05T00:16:00.000Z",
+      "preparationSha256": "2cb261193af5b25b6c55444fffb92a571893e1bf8d7493bfc602dbebad90dde0"
+    },
+    "preparedReady": {
+      "preparation": {
+        "contract": "asael-connector-preparation:1",
+        "id": "connector-preparation:94bfa332b61c1c0d49616edb77d38b87b383cfcf724eb862191b7cafcd77e4bd",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "3ae09c14f1ee5c74c950d864d4e810883df7dc78c22bae3c0857adbe5b0f4350",
+        "intentSha256": "63d595d3a5ab9a5e1fdd574f80bb9dad1578be1a93d409ed93c2d223443d688a",
+        "nonce": "33333333-3333-4333-8333-333333333335",
+        "operation": "register_mcp",
+        "connectorId": "native-mcp-3f8dc23a9863c115e7962383c6ac6ed0eee10bc804bdca544fd7b73ae17dd099",
+        "review": null,
+        "declaration": {
+          "name": "Fixture MCP",
+          "endpoint": "https://example.test/api/%2f/mcp",
+          "endpointRedacted": false,
+          "authType": "bearer_vault",
+          "authTokenEnv": null,
+          "authHeaderName": null,
+          "defaultRiskLevel": 2,
+          "approvalRequired": true,
+          "specSource": "none",
+          "specUrl": null,
+          "specUrlRedacted": false
+        },
+        "configurationSha256": "d54dc5a8adc1f2e376e144e7ef4757d19f7485421702c91bb377926fa2a6e0d6",
+        "preparedAt": "2026-10-05T00:01:00.000Z",
+        "expiresAt": "2026-10-05T00:16:00.000Z",
+        "preparationSha256": "2cb261193af5b25b6c55444fffb92a571893e1bf8d7493bfc602dbebad90dde0"
+      },
+      "availability": "ready",
+      "consumedBy": null,
+      "consumedKeySha256": null
+    },
+    "preparedExpired": {
+      "preparation": {
+        "contract": "asael-connector-preparation:1",
+        "id": "connector-preparation:94bfa332b61c1c0d49616edb77d38b87b383cfcf724eb862191b7cafcd77e4bd",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "3ae09c14f1ee5c74c950d864d4e810883df7dc78c22bae3c0857adbe5b0f4350",
+        "intentSha256": "63d595d3a5ab9a5e1fdd574f80bb9dad1578be1a93d409ed93c2d223443d688a",
+        "nonce": "33333333-3333-4333-8333-333333333335",
+        "operation": "register_mcp",
+        "connectorId": "native-mcp-3f8dc23a9863c115e7962383c6ac6ed0eee10bc804bdca544fd7b73ae17dd099",
+        "review": null,
+        "declaration": {
+          "name": "Fixture MCP",
+          "endpoint": "https://example.test/api/%2f/mcp",
+          "endpointRedacted": false,
+          "authType": "bearer_vault",
+          "authTokenEnv": null,
+          "authHeaderName": null,
+          "defaultRiskLevel": 2,
+          "approvalRequired": true,
+          "specSource": "none",
+          "specUrl": null,
+          "specUrlRedacted": false
+        },
+        "configurationSha256": "d54dc5a8adc1f2e376e144e7ef4757d19f7485421702c91bb377926fa2a6e0d6",
+        "preparedAt": "2026-10-05T00:01:00.000Z",
+        "expiresAt": "2026-10-05T00:16:00.000Z",
+        "preparationSha256": "2cb261193af5b25b6c55444fffb92a571893e1bf8d7493bfc602dbebad90dde0"
+      },
+      "availability": "expired",
+      "consumedBy": null,
+      "consumedKeySha256": null
+    },
+    "preparedConsumed": {
+      "preparation": {
+        "contract": "asael-connector-preparation:1",
+        "id": "connector-preparation:94bfa332b61c1c0d49616edb77d38b87b383cfcf724eb862191b7cafcd77e4bd",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "3ae09c14f1ee5c74c950d864d4e810883df7dc78c22bae3c0857adbe5b0f4350",
+        "intentSha256": "63d595d3a5ab9a5e1fdd574f80bb9dad1578be1a93d409ed93c2d223443d688a",
+        "nonce": "33333333-3333-4333-8333-333333333335",
+        "operation": "register_mcp",
+        "connectorId": "native-mcp-3f8dc23a9863c115e7962383c6ac6ed0eee10bc804bdca544fd7b73ae17dd099",
+        "review": null,
+        "declaration": {
+          "name": "Fixture MCP",
+          "endpoint": "https://example.test/api/%2f/mcp",
+          "endpointRedacted": false,
+          "authType": "bearer_vault",
+          "authTokenEnv": null,
+          "authHeaderName": null,
+          "defaultRiskLevel": 2,
+          "approvalRequired": true,
+          "specSource": "none",
+          "specUrl": null,
+          "specUrlRedacted": false
+        },
+        "configurationSha256": "d54dc5a8adc1f2e376e144e7ef4757d19f7485421702c91bb377926fa2a6e0d6",
+        "preparedAt": "2026-10-05T00:01:00.000Z",
+        "expiresAt": "2026-10-05T00:16:00.000Z",
+        "preparationSha256": "2cb261193af5b25b6c55444fffb92a571893e1bf8d7493bfc602dbebad90dde0"
+      },
+      "availability": "consumed",
+      "consumedBy": "connector-acceptance:b1bd69e838238c5faa62d41d0c5436f20b6a7000040a41322b8dadf884370a94",
+      "consumedKeySha256": "213464e681578aa2e4e98db38a7f0ebd1cd79bc199dc4927ff4cec861337ae00"
+    },
+    "abandonRequest": {
+      "contract": "asael-mcp-registration-preparation-abandon:1",
+      "intent": {
+        "contract": "asael-connector-preparation-intent:1",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "3ae09c14f1ee5c74c950d864d4e810883df7dc78c22bae3c0857adbe5b0f4350",
+        "nonce": "33333333-3333-4333-8333-333333333335",
+        "operation": "register_mcp",
+        "connectorId": "native-mcp-3f8dc23a9863c115e7962383c6ac6ed0eee10bc804bdca544fd7b73ae17dd099",
+        "review": null,
+        "declaration": {
+          "name": "Fixture MCP",
+          "endpoint": "https://example.test/api/%2f/mcp",
+          "endpointRedacted": false,
+          "authType": "bearer_vault",
+          "authTokenEnv": null,
+          "authHeaderName": null,
+          "defaultRiskLevel": 2,
+          "approvalRequired": true,
+          "specSource": "none",
+          "specUrl": null,
+          "specUrlRedacted": false
+        }
+      }
+    },
+    "abandonedAbsent": {
+      "intent": {
+        "contract": "asael-connector-preparation-intent:1",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "3ae09c14f1ee5c74c950d864d4e810883df7dc78c22bae3c0857adbe5b0f4350",
+        "nonce": "33333333-3333-4333-8333-333333333335",
+        "operation": "register_mcp",
+        "connectorId": "native-mcp-3f8dc23a9863c115e7962383c6ac6ed0eee10bc804bdca544fd7b73ae17dd099",
+        "review": null,
+        "declaration": {
+          "name": "Fixture MCP",
+          "endpoint": "https://example.test/api/%2f/mcp",
+          "endpointRedacted": false,
+          "authType": "bearer_vault",
+          "authTokenEnv": null,
+          "authHeaderName": null,
+          "defaultRiskLevel": 2,
+          "approvalRequired": true,
+          "specSource": "none",
+          "specUrl": null,
+          "specUrlRedacted": false
+        }
+      },
+      "preparation": null,
+      "availability": "abandoned",
+      "consumedBy": null,
+      "consumedKeySha256": null,
+      "abandonment": {
+        "contract": "asael-mcp-registration-preparation-abandonment:1",
+        "id": "connector-preparation-abandonment:94bfa332b61c1c0d49616edb77d38b87b383cfcf724eb862191b7cafcd77e4bd",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "3ae09c14f1ee5c74c950d864d4e810883df7dc78c22bae3c0857adbe5b0f4350",
+        "intentSha256": "63d595d3a5ab9a5e1fdd574f80bb9dad1578be1a93d409ed93c2d223443d688a",
+        "preparationSha256": null,
+        "abandonedAt": "2026-10-05T00:03:00.000Z",
+        "abandonmentSha256": "554f62d05889629715452414ae18f73395c8dee9edd695e2afb07411fff15162"
+      }
+    },
+    "abandonedPrepared": {
+      "intent": {
+        "contract": "asael-connector-preparation-intent:1",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "3ae09c14f1ee5c74c950d864d4e810883df7dc78c22bae3c0857adbe5b0f4350",
+        "nonce": "33333333-3333-4333-8333-333333333335",
+        "operation": "register_mcp",
+        "connectorId": "native-mcp-3f8dc23a9863c115e7962383c6ac6ed0eee10bc804bdca544fd7b73ae17dd099",
+        "review": null,
+        "declaration": {
+          "name": "Fixture MCP",
+          "endpoint": "https://example.test/api/%2f/mcp",
+          "endpointRedacted": false,
+          "authType": "bearer_vault",
+          "authTokenEnv": null,
+          "authHeaderName": null,
+          "defaultRiskLevel": 2,
+          "approvalRequired": true,
+          "specSource": "none",
+          "specUrl": null,
+          "specUrlRedacted": false
+        }
+      },
+      "preparation": {
+        "contract": "asael-connector-preparation:1",
+        "id": "connector-preparation:94bfa332b61c1c0d49616edb77d38b87b383cfcf724eb862191b7cafcd77e4bd",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "3ae09c14f1ee5c74c950d864d4e810883df7dc78c22bae3c0857adbe5b0f4350",
+        "intentSha256": "63d595d3a5ab9a5e1fdd574f80bb9dad1578be1a93d409ed93c2d223443d688a",
+        "nonce": "33333333-3333-4333-8333-333333333335",
+        "operation": "register_mcp",
+        "connectorId": "native-mcp-3f8dc23a9863c115e7962383c6ac6ed0eee10bc804bdca544fd7b73ae17dd099",
+        "review": null,
+        "declaration": {
+          "name": "Fixture MCP",
+          "endpoint": "https://example.test/api/%2f/mcp",
+          "endpointRedacted": false,
+          "authType": "bearer_vault",
+          "authTokenEnv": null,
+          "authHeaderName": null,
+          "defaultRiskLevel": 2,
+          "approvalRequired": true,
+          "specSource": "none",
+          "specUrl": null,
+          "specUrlRedacted": false
+        },
+        "configurationSha256": "d54dc5a8adc1f2e376e144e7ef4757d19f7485421702c91bb377926fa2a6e0d6",
+        "preparedAt": "2026-10-05T00:01:00.000Z",
+        "expiresAt": "2026-10-05T00:16:00.000Z",
+        "preparationSha256": "2cb261193af5b25b6c55444fffb92a571893e1bf8d7493bfc602dbebad90dde0"
+      },
+      "availability": "abandoned",
+      "consumedBy": null,
+      "consumedKeySha256": null,
+      "abandonment": {
+        "contract": "asael-mcp-registration-preparation-abandonment:1",
+        "id": "connector-preparation-abandonment:94bfa332b61c1c0d49616edb77d38b87b383cfcf724eb862191b7cafcd77e4bd",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "3ae09c14f1ee5c74c950d864d4e810883df7dc78c22bae3c0857adbe5b0f4350",
+        "intentSha256": "63d595d3a5ab9a5e1fdd574f80bb9dad1578be1a93d409ed93c2d223443d688a",
+        "preparationSha256": "2cb261193af5b25b6c55444fffb92a571893e1bf8d7493bfc602dbebad90dde0",
+        "abandonedAt": "2026-10-05T00:03:00.000Z",
+        "abandonmentSha256": "1223641c1d1196d40a337c5bcdd6f52ba2e01542549bd5c6775687cbc9097697"
+      }
+    },
+    "registrationRequest": {
+      "contract": "asael-connector-prepared-action:1",
+      "kind": "mcp",
+      "connectorId": "native-mcp-3f8dc23a9863c115e7962383c6ac6ed0eee10bc804bdca544fd7b73ae17dd099",
+      "action": "register_mcp",
+      "preparationId": "connector-preparation:94bfa332b61c1c0d49616edb77d38b87b383cfcf724eb862191b7cafcd77e4bd",
+      "preparationSha256": "2cb261193af5b25b6c55444fffb92a571893e1bf8d7493bfc602dbebad90dde0",
+      "review": null
+    },
+    "registrationIntent": {
+      "contract": "asael-connector-action-intent:1",
+      "scope": {
+        "tenantId": "registration-fixture",
+        "ownerActorId": "owner@example.test",
+        "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+      },
+      "keySha256": "213464e681578aa2e4e98db38a7f0ebd1cd79bc199dc4927ff4cec861337ae00",
+      "request": {
+        "contract": "asael-connector-prepared-action:1",
+        "kind": "mcp",
+        "connectorId": "native-mcp-3f8dc23a9863c115e7962383c6ac6ed0eee10bc804bdca544fd7b73ae17dd099",
+        "action": "register_mcp",
+        "preparationId": "connector-preparation:94bfa332b61c1c0d49616edb77d38b87b383cfcf724eb862191b7cafcd77e4bd",
+        "preparationSha256": "2cb261193af5b25b6c55444fffb92a571893e1bf8d7493bfc602dbebad90dde0",
+        "review": null
+      }
+    },
+    "registrationAction": {
+      "acceptance": {
+        "contract": "asael-connector-acceptance:1",
+        "id": "connector-acceptance:b1bd69e838238c5faa62d41d0c5436f20b6a7000040a41322b8dadf884370a94",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "213464e681578aa2e4e98db38a7f0ebd1cd79bc199dc4927ff4cec861337ae00",
+        "requestSha256": "6d891075c741674a5747e6f09325c2c1af6e8f0e237b966707c74046b9f0fefd",
+        "kind": "mcp",
+        "connectorId": "native-mcp-3f8dc23a9863c115e7962383c6ac6ed0eee10bc804bdca544fd7b73ae17dd099",
+        "action": "register_mcp",
+        "reviewSha256": "2cb261193af5b25b6c55444fffb92a571893e1bf8d7493bfc602dbebad90dde0",
+        "acceptedAt": "2026-10-05T00:02:00.000Z",
+        "acceptanceSha256": "dbb10383fe632bf067e628c6597b7b5aef8f5eea76749c6d0044412ca4115a5a"
+      },
+      "state": "settled",
+      "settlement": {
+        "contract": "asael-connector-settlement:2",
+        "acceptanceId": "connector-acceptance:b1bd69e838238c5faa62d41d0c5436f20b6a7000040a41322b8dadf884370a94",
+        "settledAt": "2026-10-05T00:02:00.001Z",
+        "result": {
+          "kind": "mcp",
+          "connectorId": "native-mcp-3f8dc23a9863c115e7962383c6ac6ed0eee10bc804bdca544fd7b73ae17dd099",
+          "operation": "register_mcp",
+          "status": "complete",
+          "connectorStatus": "disabled",
+          "contractCount": 0,
+          "credentialVersion": 1,
+          "connectorSha256": "6a18244678a71f6f24eae1453b00f90b56b565a683edea6504885f2e11a7489b",
+          "contractsSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "configurationSha256": "842aa7c02ab09e65f1f95ff4318480bb6218cb8752a1b5b8aab1db1792f7d73b",
+          "trash": null,
+          "failureCode": null
+        },
+        "settlementSha256": "056d2f1421cdb1e02426d28f728ffccfae424975834898b8cfdb5af7c6446887"
+      }
+    }
+  },
+  "vaultPrivate": {
+    "scope": {
+      "tenantId": "registration-fixture",
+      "ownerActorId": "owner@example.test",
+      "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+    },
+    "nonce": "33333333-3333-4333-8333-333333333336",
+    "connectorId": "native-mcp-217b14fbe7a2f134f83f06cc667ccdb7e448342bc9f227287b3b9315bacb5d09",
+    "preparationKey": "fixture-registration-preparation-6",
+    "registrationKey": "fixture-registration-action-6",
+    "prepareRequest": {
+      "contract": "asael-connector-prepare:1",
+      "nonce": "33333333-3333-4333-8333-333333333336",
+      "operation": "register_mcp",
+      "connectorId": "native-mcp-217b14fbe7a2f134f83f06cc667ccdb7e448342bc9f227287b3b9315bacb5d09",
+      "review": null,
+      "declaration": {
+        "name": "Fixture MCP",
+        "endpoint": "https://example.test/api/%2f/mcp",
+        "endpointRedacted": true,
+        "authType": "bearer_vault",
+        "authTokenEnv": null,
+        "authHeaderName": null,
+        "defaultRiskLevel": 2,
+        "approvalRequired": true,
+        "specSource": "none",
+        "specUrl": null,
+        "specUrlRedacted": false
+      },
+      "payload": {
+        "endpoint": "https://example.test/api/%2f/mcp?fixture=synthetic-private-query#synthetic-fragment",
+        "specUrl": null,
+        "specText": null,
+        "bearerToken": "synthetic-fixture-only"
+      }
+    },
+    "preparationIntent": {
+      "contract": "asael-connector-preparation-intent:1",
+      "scope": {
+        "tenantId": "registration-fixture",
+        "ownerActorId": "owner@example.test",
+        "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+      },
+      "keySha256": "3c3dcadace6af5aa2152eeafb39b3d93ecf7b97dcf6663f7137fd68da57f7379",
+      "nonce": "33333333-3333-4333-8333-333333333336",
+      "operation": "register_mcp",
+      "connectorId": "native-mcp-217b14fbe7a2f134f83f06cc667ccdb7e448342bc9f227287b3b9315bacb5d09",
+      "review": null,
+      "declaration": {
+        "name": "Fixture MCP",
+        "endpoint": "https://example.test/api/%2f/mcp",
+        "endpointRedacted": true,
+        "authType": "bearer_vault",
+        "authTokenEnv": null,
+        "authHeaderName": null,
+        "defaultRiskLevel": 2,
+        "approvalRequired": true,
+        "specSource": "none",
+        "specUrl": null,
+        "specUrlRedacted": false
+      }
+    },
+    "preparation": {
+      "contract": "asael-connector-preparation:1",
+      "id": "connector-preparation:74407f45022897447d515fb56cd0b85668dcc6f65292f1587f31cb01ea8550af",
+      "scope": {
+        "tenantId": "registration-fixture",
+        "ownerActorId": "owner@example.test",
+        "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+      },
+      "keySha256": "3c3dcadace6af5aa2152eeafb39b3d93ecf7b97dcf6663f7137fd68da57f7379",
+      "intentSha256": "8f646475495650708a0febf9700f3a34d331dfbaeed4e793c237414b0498276b",
+      "nonce": "33333333-3333-4333-8333-333333333336",
+      "operation": "register_mcp",
+      "connectorId": "native-mcp-217b14fbe7a2f134f83f06cc667ccdb7e448342bc9f227287b3b9315bacb5d09",
+      "review": null,
+      "declaration": {
+        "name": "Fixture MCP",
+        "endpoint": "https://example.test/api/%2f/mcp",
+        "endpointRedacted": true,
+        "authType": "bearer_vault",
+        "authTokenEnv": null,
+        "authHeaderName": null,
+        "defaultRiskLevel": 2,
+        "approvalRequired": true,
+        "specSource": "none",
+        "specUrl": null,
+        "specUrlRedacted": false
+      },
+      "configurationSha256": "bd44606398b8e056b61211a7734d7be91d7ff51ff98b5f039a90f632084290f0",
+      "preparedAt": "2026-10-05T00:01:00.000Z",
+      "expiresAt": "2026-10-05T00:16:00.000Z",
+      "preparationSha256": "1f6c7b37f83534f2ce8fda2758f5cdf0d0016426b13e120a572693a2a74999b4"
+    },
+    "preparedReady": {
+      "preparation": {
+        "contract": "asael-connector-preparation:1",
+        "id": "connector-preparation:74407f45022897447d515fb56cd0b85668dcc6f65292f1587f31cb01ea8550af",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "3c3dcadace6af5aa2152eeafb39b3d93ecf7b97dcf6663f7137fd68da57f7379",
+        "intentSha256": "8f646475495650708a0febf9700f3a34d331dfbaeed4e793c237414b0498276b",
+        "nonce": "33333333-3333-4333-8333-333333333336",
+        "operation": "register_mcp",
+        "connectorId": "native-mcp-217b14fbe7a2f134f83f06cc667ccdb7e448342bc9f227287b3b9315bacb5d09",
+        "review": null,
+        "declaration": {
+          "name": "Fixture MCP",
+          "endpoint": "https://example.test/api/%2f/mcp",
+          "endpointRedacted": true,
+          "authType": "bearer_vault",
+          "authTokenEnv": null,
+          "authHeaderName": null,
+          "defaultRiskLevel": 2,
+          "approvalRequired": true,
+          "specSource": "none",
+          "specUrl": null,
+          "specUrlRedacted": false
+        },
+        "configurationSha256": "bd44606398b8e056b61211a7734d7be91d7ff51ff98b5f039a90f632084290f0",
+        "preparedAt": "2026-10-05T00:01:00.000Z",
+        "expiresAt": "2026-10-05T00:16:00.000Z",
+        "preparationSha256": "1f6c7b37f83534f2ce8fda2758f5cdf0d0016426b13e120a572693a2a74999b4"
+      },
+      "availability": "ready",
+      "consumedBy": null,
+      "consumedKeySha256": null
+    },
+    "preparedExpired": {
+      "preparation": {
+        "contract": "asael-connector-preparation:1",
+        "id": "connector-preparation:74407f45022897447d515fb56cd0b85668dcc6f65292f1587f31cb01ea8550af",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "3c3dcadace6af5aa2152eeafb39b3d93ecf7b97dcf6663f7137fd68da57f7379",
+        "intentSha256": "8f646475495650708a0febf9700f3a34d331dfbaeed4e793c237414b0498276b",
+        "nonce": "33333333-3333-4333-8333-333333333336",
+        "operation": "register_mcp",
+        "connectorId": "native-mcp-217b14fbe7a2f134f83f06cc667ccdb7e448342bc9f227287b3b9315bacb5d09",
+        "review": null,
+        "declaration": {
+          "name": "Fixture MCP",
+          "endpoint": "https://example.test/api/%2f/mcp",
+          "endpointRedacted": true,
+          "authType": "bearer_vault",
+          "authTokenEnv": null,
+          "authHeaderName": null,
+          "defaultRiskLevel": 2,
+          "approvalRequired": true,
+          "specSource": "none",
+          "specUrl": null,
+          "specUrlRedacted": false
+        },
+        "configurationSha256": "bd44606398b8e056b61211a7734d7be91d7ff51ff98b5f039a90f632084290f0",
+        "preparedAt": "2026-10-05T00:01:00.000Z",
+        "expiresAt": "2026-10-05T00:16:00.000Z",
+        "preparationSha256": "1f6c7b37f83534f2ce8fda2758f5cdf0d0016426b13e120a572693a2a74999b4"
+      },
+      "availability": "expired",
+      "consumedBy": null,
+      "consumedKeySha256": null
+    },
+    "preparedConsumed": {
+      "preparation": {
+        "contract": "asael-connector-preparation:1",
+        "id": "connector-preparation:74407f45022897447d515fb56cd0b85668dcc6f65292f1587f31cb01ea8550af",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "3c3dcadace6af5aa2152eeafb39b3d93ecf7b97dcf6663f7137fd68da57f7379",
+        "intentSha256": "8f646475495650708a0febf9700f3a34d331dfbaeed4e793c237414b0498276b",
+        "nonce": "33333333-3333-4333-8333-333333333336",
+        "operation": "register_mcp",
+        "connectorId": "native-mcp-217b14fbe7a2f134f83f06cc667ccdb7e448342bc9f227287b3b9315bacb5d09",
+        "review": null,
+        "declaration": {
+          "name": "Fixture MCP",
+          "endpoint": "https://example.test/api/%2f/mcp",
+          "endpointRedacted": true,
+          "authType": "bearer_vault",
+          "authTokenEnv": null,
+          "authHeaderName": null,
+          "defaultRiskLevel": 2,
+          "approvalRequired": true,
+          "specSource": "none",
+          "specUrl": null,
+          "specUrlRedacted": false
+        },
+        "configurationSha256": "bd44606398b8e056b61211a7734d7be91d7ff51ff98b5f039a90f632084290f0",
+        "preparedAt": "2026-10-05T00:01:00.000Z",
+        "expiresAt": "2026-10-05T00:16:00.000Z",
+        "preparationSha256": "1f6c7b37f83534f2ce8fda2758f5cdf0d0016426b13e120a572693a2a74999b4"
+      },
+      "availability": "consumed",
+      "consumedBy": "connector-acceptance:5ccbf7a130b18d059c53b21488b9276bc382219c581dce8f2f896f7f8b78f271",
+      "consumedKeySha256": "e1643f3568f4806c95dfb6f117b1f9763db55b8eb6b1474e8a664e2beb9dda84"
+    },
+    "abandonRequest": {
+      "contract": "asael-mcp-registration-preparation-abandon:1",
+      "intent": {
+        "contract": "asael-connector-preparation-intent:1",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "3c3dcadace6af5aa2152eeafb39b3d93ecf7b97dcf6663f7137fd68da57f7379",
+        "nonce": "33333333-3333-4333-8333-333333333336",
+        "operation": "register_mcp",
+        "connectorId": "native-mcp-217b14fbe7a2f134f83f06cc667ccdb7e448342bc9f227287b3b9315bacb5d09",
+        "review": null,
+        "declaration": {
+          "name": "Fixture MCP",
+          "endpoint": "https://example.test/api/%2f/mcp",
+          "endpointRedacted": true,
+          "authType": "bearer_vault",
+          "authTokenEnv": null,
+          "authHeaderName": null,
+          "defaultRiskLevel": 2,
+          "approvalRequired": true,
+          "specSource": "none",
+          "specUrl": null,
+          "specUrlRedacted": false
+        }
+      }
+    },
+    "abandonedAbsent": {
+      "intent": {
+        "contract": "asael-connector-preparation-intent:1",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "3c3dcadace6af5aa2152eeafb39b3d93ecf7b97dcf6663f7137fd68da57f7379",
+        "nonce": "33333333-3333-4333-8333-333333333336",
+        "operation": "register_mcp",
+        "connectorId": "native-mcp-217b14fbe7a2f134f83f06cc667ccdb7e448342bc9f227287b3b9315bacb5d09",
+        "review": null,
+        "declaration": {
+          "name": "Fixture MCP",
+          "endpoint": "https://example.test/api/%2f/mcp",
+          "endpointRedacted": true,
+          "authType": "bearer_vault",
+          "authTokenEnv": null,
+          "authHeaderName": null,
+          "defaultRiskLevel": 2,
+          "approvalRequired": true,
+          "specSource": "none",
+          "specUrl": null,
+          "specUrlRedacted": false
+        }
+      },
+      "preparation": null,
+      "availability": "abandoned",
+      "consumedBy": null,
+      "consumedKeySha256": null,
+      "abandonment": {
+        "contract": "asael-mcp-registration-preparation-abandonment:1",
+        "id": "connector-preparation-abandonment:74407f45022897447d515fb56cd0b85668dcc6f65292f1587f31cb01ea8550af",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "3c3dcadace6af5aa2152eeafb39b3d93ecf7b97dcf6663f7137fd68da57f7379",
+        "intentSha256": "8f646475495650708a0febf9700f3a34d331dfbaeed4e793c237414b0498276b",
+        "preparationSha256": null,
+        "abandonedAt": "2026-10-05T00:03:00.000Z",
+        "abandonmentSha256": "9fe9fa871c9148ddad96b506a3cb25088328e2e0bb99218077fc07646245b970"
+      }
+    },
+    "abandonedPrepared": {
+      "intent": {
+        "contract": "asael-connector-preparation-intent:1",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "3c3dcadace6af5aa2152eeafb39b3d93ecf7b97dcf6663f7137fd68da57f7379",
+        "nonce": "33333333-3333-4333-8333-333333333336",
+        "operation": "register_mcp",
+        "connectorId": "native-mcp-217b14fbe7a2f134f83f06cc667ccdb7e448342bc9f227287b3b9315bacb5d09",
+        "review": null,
+        "declaration": {
+          "name": "Fixture MCP",
+          "endpoint": "https://example.test/api/%2f/mcp",
+          "endpointRedacted": true,
+          "authType": "bearer_vault",
+          "authTokenEnv": null,
+          "authHeaderName": null,
+          "defaultRiskLevel": 2,
+          "approvalRequired": true,
+          "specSource": "none",
+          "specUrl": null,
+          "specUrlRedacted": false
+        }
+      },
+      "preparation": {
+        "contract": "asael-connector-preparation:1",
+        "id": "connector-preparation:74407f45022897447d515fb56cd0b85668dcc6f65292f1587f31cb01ea8550af",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "3c3dcadace6af5aa2152eeafb39b3d93ecf7b97dcf6663f7137fd68da57f7379",
+        "intentSha256": "8f646475495650708a0febf9700f3a34d331dfbaeed4e793c237414b0498276b",
+        "nonce": "33333333-3333-4333-8333-333333333336",
+        "operation": "register_mcp",
+        "connectorId": "native-mcp-217b14fbe7a2f134f83f06cc667ccdb7e448342bc9f227287b3b9315bacb5d09",
+        "review": null,
+        "declaration": {
+          "name": "Fixture MCP",
+          "endpoint": "https://example.test/api/%2f/mcp",
+          "endpointRedacted": true,
+          "authType": "bearer_vault",
+          "authTokenEnv": null,
+          "authHeaderName": null,
+          "defaultRiskLevel": 2,
+          "approvalRequired": true,
+          "specSource": "none",
+          "specUrl": null,
+          "specUrlRedacted": false
+        },
+        "configurationSha256": "bd44606398b8e056b61211a7734d7be91d7ff51ff98b5f039a90f632084290f0",
+        "preparedAt": "2026-10-05T00:01:00.000Z",
+        "expiresAt": "2026-10-05T00:16:00.000Z",
+        "preparationSha256": "1f6c7b37f83534f2ce8fda2758f5cdf0d0016426b13e120a572693a2a74999b4"
+      },
+      "availability": "abandoned",
+      "consumedBy": null,
+      "consumedKeySha256": null,
+      "abandonment": {
+        "contract": "asael-mcp-registration-preparation-abandonment:1",
+        "id": "connector-preparation-abandonment:74407f45022897447d515fb56cd0b85668dcc6f65292f1587f31cb01ea8550af",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "3c3dcadace6af5aa2152eeafb39b3d93ecf7b97dcf6663f7137fd68da57f7379",
+        "intentSha256": "8f646475495650708a0febf9700f3a34d331dfbaeed4e793c237414b0498276b",
+        "preparationSha256": "1f6c7b37f83534f2ce8fda2758f5cdf0d0016426b13e120a572693a2a74999b4",
+        "abandonedAt": "2026-10-05T00:03:00.000Z",
+        "abandonmentSha256": "abf124623aefb5327377f3de0860b410b8c8514b43438fab0b55f1d032c8704d"
+      }
+    },
+    "registrationRequest": {
+      "contract": "asael-connector-prepared-action:1",
+      "kind": "mcp",
+      "connectorId": "native-mcp-217b14fbe7a2f134f83f06cc667ccdb7e448342bc9f227287b3b9315bacb5d09",
+      "action": "register_mcp",
+      "preparationId": "connector-preparation:74407f45022897447d515fb56cd0b85668dcc6f65292f1587f31cb01ea8550af",
+      "preparationSha256": "1f6c7b37f83534f2ce8fda2758f5cdf0d0016426b13e120a572693a2a74999b4",
+      "review": null
+    },
+    "registrationIntent": {
+      "contract": "asael-connector-action-intent:1",
+      "scope": {
+        "tenantId": "registration-fixture",
+        "ownerActorId": "owner@example.test",
+        "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+      },
+      "keySha256": "e1643f3568f4806c95dfb6f117b1f9763db55b8eb6b1474e8a664e2beb9dda84",
+      "request": {
+        "contract": "asael-connector-prepared-action:1",
+        "kind": "mcp",
+        "connectorId": "native-mcp-217b14fbe7a2f134f83f06cc667ccdb7e448342bc9f227287b3b9315bacb5d09",
+        "action": "register_mcp",
+        "preparationId": "connector-preparation:74407f45022897447d515fb56cd0b85668dcc6f65292f1587f31cb01ea8550af",
+        "preparationSha256": "1f6c7b37f83534f2ce8fda2758f5cdf0d0016426b13e120a572693a2a74999b4",
+        "review": null
+      }
+    },
+    "registrationAction": {
+      "acceptance": {
+        "contract": "asael-connector-acceptance:1",
+        "id": "connector-acceptance:5ccbf7a130b18d059c53b21488b9276bc382219c581dce8f2f896f7f8b78f271",
+        "scope": {
+          "tenantId": "registration-fixture",
+          "ownerActorId": "owner@example.test",
+          "canonicalActorId": "actor:11111111-1111-4111-8111-111111111111"
+        },
+        "keySha256": "e1643f3568f4806c95dfb6f117b1f9763db55b8eb6b1474e8a664e2beb9dda84",
+        "requestSha256": "93cd231bf9b70666017e98f82977014ebac7e757cc89f830a9af7828515fec37",
+        "kind": "mcp",
+        "connectorId": "native-mcp-217b14fbe7a2f134f83f06cc667ccdb7e448342bc9f227287b3b9315bacb5d09",
+        "action": "register_mcp",
+        "reviewSha256": "1f6c7b37f83534f2ce8fda2758f5cdf0d0016426b13e120a572693a2a74999b4",
+        "acceptedAt": "2026-10-05T00:02:00.000Z",
+        "acceptanceSha256": "773b533be7b7db8a1cf921d66753731e908b4b5c00e59bf3679f5d66d00998e4"
+      },
+      "state": "settled",
+      "settlement": {
+        "contract": "asael-connector-settlement:2",
+        "acceptanceId": "connector-acceptance:5ccbf7a130b18d059c53b21488b9276bc382219c581dce8f2f896f7f8b78f271",
+        "settledAt": "2026-10-05T00:02:00.001Z",
+        "result": {
+          "kind": "mcp",
+          "connectorId": "native-mcp-217b14fbe7a2f134f83f06cc667ccdb7e448342bc9f227287b3b9315bacb5d09",
+          "operation": "register_mcp",
+          "status": "complete",
+          "connectorStatus": "disabled",
+          "contractCount": 0,
+          "credentialVersion": 1,
+          "connectorSha256": "d21d79e9bed87cb02766606b0dc0a08bb9afc2b3fd44d98db0ba6c2afe16fc7c",
+          "contractsSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "configurationSha256": "6801eebb8431a6aa9a93c4659e38bb45ce9fe2d9a1ec7f5ca55be18f39c35a61",
+          "trash": null,
+          "failureCode": null
+        },
+        "settlementSha256": "283a736dc472963d076af0893ee11561923e428fb480161b42e7ef1ef19ae9fb"
+      }
+    }
+  },
+  "normalization": [
+    {
+      "input": "https://EXAMPLE.test:443/mcp",
+      "normalized": "https://example.test/mcp",
+      "endpoint": "https://example.test/mcp",
+      "endpointRedacted": false
+    },
+    {
+      "input": "http://EXAMPLE.test:80/mcp",
+      "normalized": "http://example.test/mcp",
+      "endpoint": "http://example.test/mcp",
+      "endpointRedacted": false
+    },
+    {
+      "input": "https://example.test",
+      "normalized": "https://example.test/",
+      "endpoint": "https://example.test/",
+      "endpointRedacted": false
+    },
+    {
+      "input": "https://example.test/a/%2f/%7e/mcp",
+      "normalized": "https://example.test/a/%2f/%7e/mcp",
+      "endpoint": "https://example.test/a/%2f/%7e/mcp",
+      "endpointRedacted": false
+    },
+    {
+      "input": "https://example.test/a/%2e/mcp",
+      "normalized": "https://example.test/a/mcp",
+      "endpoint": "https://example.test/a/mcp",
+      "endpointRedacted": false
+    },
+    {
+      "input": "https://example.test/a/%2e%2e/mcp",
+      "normalized": "https://example.test/mcp",
+      "endpoint": "https://example.test/mcp",
+      "endpointRedacted": false
+    },
+    {
+      "input": "https://example.test/a/./b/../mcp",
+      "normalized": "https://example.test/a/mcp",
+      "endpoint": "https://example.test/a/mcp",
+      "endpointRedacted": false
+    },
+    {
+      "input": "https://example.test/mcp?",
+      "normalized": "https://example.test/mcp?",
+      "endpoint": "https://example.test/mcp",
+      "endpointRedacted": true
+    },
+    {
+      "input": "https://example.test/mcp#",
+      "normalized": "https://example.test/mcp#",
+      "endpoint": "https://example.test/mcp",
+      "endpointRedacted": true
+    },
+    {
+      "input": "https://example.test/mcp?#",
+      "normalized": "https://example.test/mcp?#",
+      "endpoint": "https://example.test/mcp",
+      "endpointRedacted": true
+    },
+    {
+      "input": "https://example.test/mcp?fixture=synthetic-private-query#synthetic-fragment",
+      "normalized": "https://example.test/mcp?fixture=synthetic-private-query#synthetic-fragment",
+      "endpoint": "https://example.test/mcp",
+      "endpointRedacted": true
+    },
+    {
+      "input": "https://example.test/mcp?fixture=synthetic%2fquery#synthetic%2ffragment",
+      "normalized": "https://example.test/mcp?fixture=synthetic%2fquery#synthetic%2ffragment",
+      "endpoint": "https://example.test/mcp",
+      "endpointRedacted": true
+    }
+  ]
+}

@@ -59,6 +59,7 @@ import { nativeConnectorSchemas } from "@/lib/mobile/connector-native-contracts"
 import { nativeConnectorCredentialRemovalSchemas } from "@/lib/mobile/connector-credential-removal-contracts";
 import { nativeConnectorTrashSchemas } from "@/lib/mobile/connector-trash-contracts";
 import { nativeConnectorCredentialRotationSchemas } from "@/lib/mobile/connector-credential-rotation-contracts";
+import { nativeConnectorMcpRegistrationSchemas } from "@/lib/mobile/connector-mcp-registration-contracts";
 
 import { pluginManifestSchema } from "@/lib/plugins/contracts";
 import {
@@ -68,10 +69,10 @@ import {
 import { voiceCommandInputSchema } from "@/lib/voice/command-input";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 43 as const;
-// v41/v42 remain byte-frozen. v43 adds only prepared existing-MCP bearer
-// credential save/rotation, exact recovery and terminal staging abandonment.
-export const NATIVE_API_PREVIOUS_VERSION = 42 as const;
+export const NATIVE_API_CURRENT_VERSION = 44 as const;
+// v42/v43 remain byte-frozen. v44 adds only prepared MCP registration,
+// exact recovery and terminal registration-staging abandonment.
+export const NATIVE_API_PREVIOUS_VERSION = 43 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -2353,6 +2354,28 @@ const v43Operations: readonly NativeOperation[] = [
   }),
 ];
 
+const v44Operations: readonly NativeOperation[] = [
+  ...v43Operations,
+  operation("connectors.native.mcpRegistrationPreparations.submit", "POST", "/api/connectors/native/mcp-registration-preparations", "Prepare an exact new MCP declaration and transient endpoint/credential without creating a connector or contacting a provider.", "bearer", "NativeConnectorMcpRegistrationPrepareRequest", "NativeConnectorMcpRegistrationPreparationSubmitResponse", {
+    ...connectorNativeOptions, headerParameters: pluginMutationHeaders, requestBodyMaxBytes: 65_536,
+    successStatuses: [200, 201], errorStatuses: [400, 401, 403, 404, 409, 413, 415, 500, 503],
+  }),
+  operation("connectors.native.mcpRegistrationPreparations.read", "GET", "/api/connectors/native/mcp-registration-preparations/{keySha256}", "Read the original owner's exact safe registration proof or terminal abandonment without exposing or resending private input.", "bearer", undefined, "NativeConnectorMcpRegistrationPreparationReadResponse", {
+    ...connectorNativeOptions, pathParameters: nativeActionRecoveryPath,
+  }),
+  operation("connectors.native.mcpRegistrationPreparations.abandon", "POST", "/api/connectors/native/mcp-registration-preparations/{keySha256}/abandon", "Permanently abandon the original owner's exact registration preparation, including an absent-key tombstone that fences delayed preparation.", "bearer", "NativeConnectorMcpRegistrationPreparationAbandonRequest", "NativeConnectorMcpRegistrationPreparationAbandonResponse", {
+    ...connectorNativeOptions, pathParameters: nativeActionRecoveryPath, headerParameters: pluginMutationHeaders, requestBodyMaxBytes: 16_384,
+    successStatuses: [200, 201], errorStatuses: [400, 401, 403, 409, 413, 415, 500, 503],
+  }),
+  operation("connectors.native.mcpRegistrations.submit", "POST", "/api/connectors/native/mcp-registrations", "Consume one exact prepared MCP declaration to create its reserved connector disabled with zero tools and no discovery or provider calls.", "bearer", "NativeConnectorMcpRegistrationRequest", "NativeConnectorMcpRegistrationSubmitResponse", {
+    ...connectorNativeOptions, headerParameters: pluginMutationHeaders, requestBodyMaxBytes: 8192,
+    successStatuses: [200, 201], errorStatuses: [400, 401, 403, 404, 409, 413, 415, 500, 503],
+  }),
+  operation("connectors.native.mcpRegistrations.read", "GET", "/api/connectors/native/mcp-registrations/{keySha256}", "Read the original exact MCP registration receipt without repeating preparation or creation.", "bearer", undefined, "NativeConnectorMcpRegistrationReadResponse", {
+    ...connectorNativeOptions, pathParameters: nativeActionRecoveryPath,
+  }),
+];
+
 const nativeCompanionPreferencesResponseSchema = z.object({
   schemaVersion: z.literal(1), contract: z.literal(COMPANION_PREFERENCES_CONTRACT),
   snapshot: z.object({
@@ -2378,6 +2401,7 @@ export const nativeContractSchemas = Object.freeze({
   ...nativeConnectorCredentialRemovalSchemas,
   ...nativeConnectorTrashSchemas,
   ...nativeConnectorCredentialRotationSchemas,
+  ...nativeConnectorMcpRegistrationSchemas,
   ...nativeResponsibilityContractSchemas,
   ...nativeMeetingContractSchemas,
   ...nativeCustomerContractSchemas,
@@ -2546,6 +2570,7 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 41) return v41Operations;
   if (version === 42) return v42Operations;
   if (version === 43) return v43Operations;
+  if (version === 44) return v44Operations;
   return undefined;
 }
 

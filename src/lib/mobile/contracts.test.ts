@@ -18,6 +18,27 @@ import {
 } from "@/lib/mobile/contracts";
 
 describe("native API contracts", () => {
+  it("adds only prepared MCP registration, exact recovery and abandonment in v44", () => {
+    const previous = nativeOperationsForVersion(43)!, current = nativeOperationsForVersion(44)!;
+    expect(current.slice(0, previous.length)).toEqual(previous);
+    const added = current.slice(previous.length);
+    expect(added.map(({ id, method, path, requestSchema, responseSchema }) => [id, method, path, requestSchema, responseSchema])).toEqual([
+      ["connectors.native.mcpRegistrationPreparations.submit", "POST", "/api/connectors/native/mcp-registration-preparations", "NativeConnectorMcpRegistrationPrepareRequest", "NativeConnectorMcpRegistrationPreparationSubmitResponse"],
+      ["connectors.native.mcpRegistrationPreparations.read", "GET", "/api/connectors/native/mcp-registration-preparations/{keySha256}", undefined, "NativeConnectorMcpRegistrationPreparationReadResponse"],
+      ["connectors.native.mcpRegistrationPreparations.abandon", "POST", "/api/connectors/native/mcp-registration-preparations/{keySha256}/abandon", "NativeConnectorMcpRegistrationPreparationAbandonRequest", "NativeConnectorMcpRegistrationPreparationAbandonResponse"],
+      ["connectors.native.mcpRegistrations.submit", "POST", "/api/connectors/native/mcp-registrations", "NativeConnectorMcpRegistrationRequest", "NativeConnectorMcpRegistrationSubmitResponse"],
+      ["connectors.native.mcpRegistrations.read", "GET", "/api/connectors/native/mcp-registrations/{keySha256}", undefined, "NativeConnectorMcpRegistrationReadResponse"],
+    ]);
+    for (const operation of added) {
+      expect(operation).toMatchObject({ auth: "bearer", queryPolicy: "exact", errorResponseSchema: "NativeConnectorError" });
+      expect(operation.responseHeaders).toContainEqual(expect.objectContaining({ name: "cache-control", constValue: "private, no-store" }));
+      if (operation.method === "POST") {
+        expect(operation.headerParameters).toContainEqual(expect.objectContaining({ name: "Idempotency-Key", required: true }));
+        expect(operation.successStatuses).toEqual([200, 201]);
+      } else expect(operation.headerParameters).toBeUndefined();
+    }
+    expect(added.map((operation) => operation.requestBodyMaxBytes)).toEqual([65_536, undefined, 16_384, 8192, undefined]);
+  });
   it("adds only prepared existing-MCP credential rotation, recovery and abandonment in v43", () => {
     const previous = nativeOperationsForVersion(42)!, current = nativeOperationsForVersion(43)!;
     expect(current.slice(0, previous.length)).toEqual(previous);
@@ -186,8 +207,8 @@ describe("native API contracts", () => {
   it("retains exactly the current and previous rollout versions", () => {
     // Tripwire: a native contract bump must be a deliberate, reviewed change.
     // The other tests follow these constants.
-    expect(NATIVE_API_CURRENT_VERSION).toBe(43);
-    expect(NATIVE_API_PREVIOUS_VERSION).toBe(42);
+    expect(NATIVE_API_CURRENT_VERSION).toBe(44);
+    expect(NATIVE_API_PREVIOUS_VERSION).toBe(43);
     expect(NATIVE_API_SUPPORTED_VERSIONS).toEqual([
       NATIVE_API_CURRENT_VERSION,
       NATIVE_API_PREVIOUS_VERSION,
@@ -438,6 +459,7 @@ describe("native API contracts", () => {
       41: added("connectors.native.credentialRemovals.submit", "connectors.native.credentialRemovals.read"),
       42: added("connectors.native.trash.preview", "connectors.native.trash.submit", "connectors.native.trash.read"),
       43: added("connectors.native.credentialPreparations.submit", "connectors.native.credentialPreparations.read", "connectors.native.credentialPreparations.abandon", "connectors.native.credentialRotations.submit", "connectors.native.credentialRotations.read"),
+      44: added("connectors.native.mcpRegistrationPreparations.submit", "connectors.native.mcpRegistrationPreparations.read", "connectors.native.mcpRegistrationPreparations.abandon", "connectors.native.mcpRegistrations.submit", "connectors.native.mcpRegistrations.read"),
     });
     // v20 and v23 changed only request and push schemas.
     expect(nativeOperationsForVersion(20)).toEqual(nativeOperationsForVersion(19));
@@ -676,19 +698,19 @@ describe("native API contracts", () => {
     });
   });
 
-  it("retains every published v41 and v42 document byte for byte", async () => {
+  it("retains every published v42 and v43 document byte for byte", async () => {
     const frozen = {
-      "41": {
-        "openapi.json": "a84efa4b839697a47641ea2b963c6f2b4ce8061d91be1d985115ced415b679e2", // gitleaks:allow -- public artifact integrity digest
-        "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
-        "fixtures.json": "b8c5cfd5eec9dcb3b85941d3daa9b848f069799fbcdb0ef83559da6df465b3fe", // gitleaks:allow -- public artifact integrity digest
-        "manifest.json": "f3114d89634d11fa57134542a09885fb1376e83d9f70372939c756d61d20f45b", // gitleaks:allow -- public artifact integrity digest
-      },
       "42": {
         "openapi.json": "92dd90a0dbc2cd7fc7c1f7b23310c9bb5fede04679f2eedf1b5c24c1fd5a3ce9", // gitleaks:allow -- public artifact integrity digest
         "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
         "fixtures.json": "23d38c832c5e777eadae72b33dcfc86d670ba6240222db133d9a312f22314068", // gitleaks:allow -- public artifact integrity digest
         "manifest.json": "0e64cd067e49326442f06ae4065d1dda460680061819fe422cb2cf9adbde6f27", // gitleaks:allow -- public artifact integrity digest
+      },
+      "43": {
+        "openapi.json": "5a5eb80eb5f08d822501caf1250ac3e096440cc7c3d15916e9d3abc1506ce65e", // gitleaks:allow -- public artifact integrity digest
+        "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
+        "fixtures.json": "6cacbdea2397aec62d56c6c09f9d5c93ed455d56fb47009a00b316672d153b00", // gitleaks:allow -- public artifact integrity digest
+        "manifest.json": "f85b921e0c022e5c9db416bf4b92b5ebb8ab4bdc125a9a091146633dce3cac8d", // gitleaks:allow -- public artifact integrity digest
       },
     };
     for (const [version, documents] of Object.entries(frozen)) {

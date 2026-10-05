@@ -8,7 +8,7 @@ import { connectorNativeActionSchema, sealConnectorNativePin, type ConnectorNati
 import { readNativeConnectorCredentialRemoval, submitNativeConnectorCredentialRemoval } from "@/lib/connectors/native-credential-removal-store";
 import { buildConnectorNativeCredentialRemovalIntent, canRemoveNativeConnectorCredential, type ConnectorNativeCredentialRemovalRequest } from "@/lib/connectors/native-credential-removal-contracts";
 import { createExecutionScope } from "@/lib/security/execution-scope";
-import { removeNativeConnectorCredentialRemovalsForReplay, removeNativeConnectorTrashForReplay, removeNativeConnectorCredentialRotationsForReplay } from "./helpers/native-catalog-replay";
+import { removeNativeConnectorCredentialRemovalsForReplay, removeNativeConnectorTrashForReplay, removeNativeConnectorCredentialRotationsForReplay, removeNativeMcpRegistrationsForReplay } from "./helpers/native-catalog-replay";
 
 const databaseUrl = process.env.DATABASE_URL;
 const integration = databaseUrl && process.env.OMNIAGENT_INTEGRATION_DATABASE_RESET === "true" ? describe : describe.skip;
@@ -88,7 +88,11 @@ integration("native credential removal under forced serving RLS", () => {
     const trashMigration = await readSqlMigrationFile({ file: "20261005193000_native_connector_trash.sql", sha256: next.checksum, migrations: [next] });
     const latest = databaseSchemaMigrations.find((migration) => migration.version === 240)!;
     const rotationMigration = await readSqlMigrationFile({ file: "20261005200000_native_connector_credential_rotations.sql", sha256: latest.checksum, migrations: [latest] });
+    const registration = databaseSchemaMigrations.find((migration) => migration.version === 241)!;
+    const registrationMigration = await readSqlMigrationFile({ file: "20261005203000_native_mcp_registrations.sql", sha256: registration.checksum, migrations: [registration] });
     await admin.begin(async (sql) => {
+      await removeNativeMcpRegistrationsForReplay(sql);
+      await sql`DELETE FROM omni_schema_version WHERE version=241`;
       await removeNativeConnectorCredentialRotationsForReplay(sql);
       await sql`DELETE FROM omni_schema_version WHERE version=240`;
       await removeNativeConnectorTrashForReplay(sql);
@@ -107,6 +111,7 @@ integration("native credential removal under forced serving RLS", () => {
       await applySqlMigrationFile(migrationSql, migration, [row], []);
       await applySqlMigrationFile(migrationSql, trashMigration, [next], []);
       await applySqlMigrationFile(migrationSql, rotationMigration, [latest], []);
+      await applySqlMigrationFile(migrationSql, registrationMigration, [registration], []);
       expect((await sql`SELECT intent,acceptance,state,settlement FROM omni_native_connector_actions WHERE tenant_id=${f.scope.tenantId}`)[0]).toEqual(before);
     });
     expect(connectorNativeActionSchema.parse(await readNativeConnectorAction({ scope: f.scope }, legacy.action.acceptance.keySha256))).toEqual(legacy.action);

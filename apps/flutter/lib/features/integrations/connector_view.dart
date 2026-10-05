@@ -10,6 +10,7 @@ import 'connector_control_contracts.dart';
 import 'connector_controller.dart';
 import 'connector_credential_removal_view.dart';
 import 'connector_credential_rotation_view.dart';
+import 'connector_mcp_registration_view.dart';
 import 'connector_providers.dart';
 import 'connector_trash_view.dart';
 
@@ -28,9 +29,12 @@ class NativeConnectorWorkspace extends StatelessWidget {
               child: Text('Unlock this workspace to read its connections.'),
             );
           }
-          return ConnectorControlPanel(
-            key: ObjectKey(controller),
-            controller: controller,
+          return Material(
+            color: Theme.of(context).scaffoldBackgroundColor,
+            child: ConnectorControlPanel(
+              key: ObjectKey(controller),
+              controller: controller,
+            ),
           );
         },
       ),
@@ -133,6 +137,16 @@ class _ConnectorControlPanelState extends State<ConnectorControlPanel>
             spacing: 12,
             runSpacing: 8,
             children: [
+              if (c.mayManage)
+                FilledButton.icon(
+                  onPressed: c.busy ? null : _openMcpRegistration,
+                  icon: const Icon(Icons.add),
+                  label: const Text('New MCP connection'),
+                ),
+              OutlinedButton(
+                onPressed: c.busy ? null : _openMcpRegistration,
+                child: const Text('MCP registration recovery'),
+              ),
               OutlinedButton.icon(
                 onPressed: c.listing ? null : c.refresh,
                 icon: const Icon(Icons.refresh),
@@ -450,6 +464,24 @@ class _ConnectorControlPanelState extends State<ConnectorControlPanel>
       if (review.actions.isEmpty && review.value!['unavailableReason'] == null)
         const Text('No current action is available with this account access.'),
     ];
+  }
+
+  Future<void> _openMcpRegistration() async {
+    if (!_visible || c.busy) {
+      return;
+    }
+    final controller = c, epoch = _viewEpoch;
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => const NativeConnectorMcpRegistrationWorkspace(),
+      ),
+    );
+    if (mounted &&
+        identical(controller, c) &&
+        _visible &&
+        epoch == _viewEpoch) {
+      await controller.refresh();
+    }
   }
 
   Future<void> _openCredentialRotation([String? id]) async {

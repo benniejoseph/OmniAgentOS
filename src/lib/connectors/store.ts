@@ -195,6 +195,36 @@ export async function saveMcpConnector(
   return saved;
 }
 
+export class McpConnectorInsertConflictError extends Error {
+  constructor() { super("The MCP connector identity is already reserved."); this.name = "McpConnectorInsertConflictError"; }
+}
+
+/** Atomic local creation only. A native reserved identity must never enter the
+ * browser's save/upsert seam, even when a competing insert wins after admission. */
+export async function insertDisabledMcpConnector(connector: McpConnectorRecord, options: McpConnectorMutationOptions) {
+  const tenantId = connector.tenantId;
+  if (!hasDatabaseUrl() || !tenantId || tenantId !== normalizeTenantId(tenantId) || connector.status !== "disabled" ||
+    connector.transport !== "streamable_http" || connector.toolCount !== 0 || Object.keys(connector.capabilities ?? {}).length ||
+    connector.instructions || connector.serverVersion || connector.lastDiscoveredAt || connector.lastError ||
+    connector.credentialConfigured || connector.credentialVersion || connector.credentialOriginMatch) {
+    throw new Error("Insert-only MCP creation requires a disabled empty configuration in the canonical database.");
+  }
+  const executionScope = requireMcpMutationScope(options.executionScope, tenantId);
+  await ensureDatabaseSchema();
+  return getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+    const rows = await sql`INSERT INTO omni_mcp_connectors(id,tenant_id,name,endpoint,transport,auth_type,auth_token_env,status,
+      default_risk_level,approval_required,tool_count,capabilities,instructions,server_version,last_discovered_at,last_error,created_at,updated_at)
+      VALUES(${connector.id},${tenantId},${connector.name},${connector.endpoint},'streamable_http',${connector.authType},${connector.authTokenEnv ?? null},
+        'disabled',${connector.defaultRiskLevel},${connector.approvalRequired},0,'{}'::JSONB,NULL,NULL,NULL,NULL,${connector.createdAt},${connector.updatedAt})
+      ON CONFLICT (id) DO NOTHING RETURNING id`;
+    if (rows.length !== 1) throw new McpConnectorInsertConflictError();
+    await appendMcpConnectorScopeBinding(connector.id, executionScope, { sql });
+    await appendMcpConnectorEvent({ connectorId: connector.id, type: "connector.mcp.created", executionScope,
+      payload: mcpConnectorEventMetadata(connector) }, { sql });
+    return connector;
+  }) as Promise<McpConnectorRecord>;
+}
+
 async function appendMcpConnectorScopeBinding(
   connectorId: string,
   executionScope: ExecutionScope,

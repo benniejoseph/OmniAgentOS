@@ -53,6 +53,7 @@ export const NATIVE_MUTATION_CAPABILITIES = [
   "connectors.credentials.remove",
   "connectors.trash",
   "connectors.credentials.rotate",
+  "connectors.mcp.register",
   "agents.create",
   "agents.update",
   "agents.delete",
@@ -131,6 +132,7 @@ export function nativeMutationCapabilityPolicy(
 }
 
 function minimumVersion(capability: NativeMutationCapability) {
+  if (capability === "connectors.mcp.register") return 44;
   if (capability === "connectors.credentials.rotate") return 43;
   if (capability === "connectors.trash") return 42;
   if (capability === "connectors.credentials.remove") return 41;

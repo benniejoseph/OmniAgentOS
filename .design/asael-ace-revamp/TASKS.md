@@ -2,24 +2,36 @@
 
 ## Current checkpoint — 5 October 2026
 
-The prior connector work is stabilized and accepted through PR68. All sixteen
-hosted checks passed on `8397b1f09efde4bbe91f2bd966788ca63594e756`, including
-2,214 Flutter cases, and it merged as `8b9d23b4a8e37620b2fd8fc0acce13b08925f35e`.
-Accepted and merged full trees match. Native v43, migration240 and the verified
-Mac `1.23.26+62` package are ready at that checkpoint; production promotion and
-installation have not occurred.
+The UI/ATLAS priority checkpoint is accepted through PR69. All sixteen hosted
+checks passed on `88950b469984c5357991677e0d8ebe0ef24bdf7b`, including 2,227
+Flutter cases, and merged main is `8b8e40b61d4a1e3773cab2bab570ee7918ce765f`.
+Accepted and merged full trees match. Fresh main CI, Native and Secret Scan plus
+the actual paired-runner provenance probe have passed.
 
-UI/ATLAS is the active workstream. Automatic macOS Low Power Mode fallback is
-implemented in app `1.23.27+63`; full Flutter analysis, twenty adapter/player
-cases and five native host policy cases pass. Independent review has no unresolved
-finding. Mac63 packaging and exact-head hosted acceptance remain. The native
-contract, backend, migrations and all 33 reviewed ATLAS assets are unchanged.
-Further connector registration/import, rediscovery and GitHub work is parked.
+Private universal Mac `1.23.27+63` is built and independently verified, including
+strict nested signatures and all 33 reviewed ATLAS files. It retains native43 and
+adds macOS Low Power Mode static fallback. Package source `83dedb07` has identical
+native/public inputs at acceptance. Production promotion and installation have
+not occurred; the installed app remains build42. Real device/power/energy,
+VoiceOver/audio and broader pilot gates remain open.
 
-Delivery still requires the complete paired-release operator environment.
-Device audio/VoiceOver, current-asset performance, physical power behavior and
-broader pilot acceptance retain their own gates. Unchecked whole-task boxes do
-not imply that every implementation is absent, and none is marked complete here.
+Connector implementation has resumed from accepted main69. The isolated v44
+candidate reserves app `1.23.28+64` and migration241. It implements exact prepared
+MCP registration for all three existing auth modes, creating a disabled local
+connection with zero discovered tools and no provider call. Native intent and
+recovery remain private and scope-bound; later discovery/review uses the browser.
+Full Flutter analysis and all 75 focused native cases pass across targeted runs.
+All 131 focused TypeScript cases, changed-file lint and generated contract checks
+pass. The disposable PostgreSQL run passes all 160 cases, including 31 registration
+cases, and verifies 241 migrations and 265 tenant tables. A PL/pgSQL conditional
+syntax defect was corrected before that passing run. Private Mac64 packaging and
+hosted acceptance remain candidate gates. This statement is not a production or
+whole-program completion claim.
+
+OpenAPI registration/import, rediscovery and conditional GitHub upgrade follow
+separately. Delivery still requires the complete paired-release operator environment.
+Unchecked whole-task and physical-device boxes retain their original acceptance
+criteria and are not changed by this implementation checkpoint.
 
 ## Earlier 5 October checkpoint — retained history
 

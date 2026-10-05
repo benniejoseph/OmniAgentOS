@@ -19,7 +19,7 @@ import { connectorNativePrivateDigest } from "@/lib/connectors/native-control-pr
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import { sealCredentialBundle, openCredentialBundle } from "@/lib/settings/credential-vault";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
-import { removeNativeConnectorCredentialRotationsForReplay } from "./helpers/native-catalog-replay";
+import { removeNativeConnectorCredentialRotationsForReplay, removeNativeMcpRegistrationsForReplay } from "./helpers/native-catalog-replay";
 
 const databaseUrl = process.env.DATABASE_URL;
 const integration = databaseUrl && process.env.OMNIAGENT_INTEGRATION_DATABASE_RESET === "true" ? describe : describe.skip;
@@ -134,12 +134,17 @@ integration("prepared MCP credential rotation under serving-role RLS", () => {
     const before = await admin`SELECT intent,acceptance,state,settlement FROM omni_native_connector_actions ORDER BY id`;
     const row = databaseSchemaMigrations.find((migration) => migration.version === 240)!;
     const migration = await readSqlMigrationFile({ file: "20261005200000_native_connector_credential_rotations.sql", sha256: row.checksum, migrations: [row] });
+    const registration = databaseSchemaMigrations.find((migration) => migration.version === 241)!;
+    const registrationMigration = await readSqlMigrationFile({ file: "20261005203000_native_mcp_registrations.sql", sha256: registration.checksum, migrations: [registration] });
     await admin.begin(async (sql) => {
+      await removeNativeMcpRegistrationsForReplay(sql); await sql`DELETE FROM omni_schema_version WHERE version=241`;
       await removeNativeConnectorCredentialRotationsForReplay(sql); await sql`DELETE FROM omni_schema_version WHERE version=240`;
-      await applySqlMigrationFile({ unsafe: async (text, params) => {
+      const migrationSql: Parameters<typeof applySqlMigrationFile>[0] = { unsafe: async (text, params) => {
         const values = (params ?? []).map((value) => { if (typeof value !== "string") throw new Error("Migration settings must be strings."); return value; });
         return await sql.unsafe<Record<string, unknown>[]>(text, values);
-      } }, migration, [row], []);
+      } };
+      await applySqlMigrationFile(migrationSql, migration, [row], []);
+      await applySqlMigrationFile(migrationSql, registrationMigration, [registration], []);
       expect(await sql`SELECT intent,acceptance,state,settlement FROM omni_native_connector_actions ORDER BY id`).toEqual(before);
     });
   });
