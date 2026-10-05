@@ -27,6 +27,7 @@ import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { processPendingMemoryGraphRebuilds } from "@/lib/security/retention";
 import { scrubExpiredLocalComputerObservations } from "@/lib/local-computer/store";
 import { scrubExpiredNativeConnectorCredentialPreparations, type NativeCredentialPreparationScrub } from "@/lib/connectors/native-credential-rotation-store";
+import { scrubExpiredNativeMcpRegistrationPreparations, type NativeMcpRegistrationPreparationScrub } from "@/lib/connectors/native-mcp-registration-store";
 import { processPendingTemporalRelationProjections } from "@/lib/entities/relation-projection-queue";
 import { processPendingMemoryDeletionScrubs } from "@/lib/memory/deletion-scrub";
 import { runTenantMemoryMaintenance } from "@/lib/memory/maintenance-store";
@@ -657,6 +658,9 @@ function summarizeScheduledOutcome(
     nativeCredentialPreparationsScrubbed: scheduled.maintenance.reduce((sum, item) => sum + item.credentialPreparationScrub.scrubbed, 0),
     nativeCredentialPreparationScrubFailures: scheduled.maintenance.filter((item) => item.credentialPreparationScrub.status === "failed").length,
     nativeCredentialPreparationScrubDeferred: scheduled.maintenance.filter((item) => item.credentialPreparationScrub.status === "deferred").length,
+    nativeMcpRegistrationPreparationsScrubbed: scheduled.maintenance.reduce((sum, item) => sum + item.mcpRegistrationPreparationScrub.scrubbed, 0),
+    nativeMcpRegistrationPreparationScrubFailures: scheduled.maintenance.filter((item) => item.mcpRegistrationPreparationScrub.status === "failed").length,
+    nativeMcpRegistrationPreparationScrubDeferred: scheduled.maintenance.filter((item) => item.mcpRegistrationPreparationScrub.status === "deferred").length,
     localComputerObservationsScrubbed:
       scheduled.localComputerObservationScrub?.scrubbed || 0,
     workflowLeased: scheduled.queue?.leased || 0,
@@ -980,6 +984,7 @@ async function runAllTenantScheduledWork({
   const maintenance: Array<{
     tenantId: string;
     credentialPreparationScrub: NativeCredentialPreparationScrub;
+    mcpRegistrationPreparationScrub: NativeMcpRegistrationPreparationScrub;
     agentRunsRepaired: number;
     missionProjectionsRepaired: number;
     toolClaimsRecovered: number;
@@ -1017,6 +1022,7 @@ async function runAllTenantScheduledWork({
       break;
     }
     let credentialPreparationScrub = emptyCredentialPreparationScrub();
+    let mcpRegistrationPreparationScrub = emptyMcpRegistrationPreparationScrub();
     try {
       maintenance.push(
         await runWithDatabaseTenantScope(tenantId, () =>
@@ -1031,6 +1037,7 @@ async function runAllTenantScheduledWork({
             alertDispatchLimit,
             deadlineAt,
             recordPreparationScrub: (report) => { credentialPreparationScrub = report; },
+            recordRegistrationPreparationScrub: (report) => { mcpRegistrationPreparationScrub = report; },
           }),
         ),
       );
@@ -1042,7 +1049,7 @@ async function runAllTenantScheduledWork({
         tenantId,
         error: maintenanceError,
       }));
-      maintenance.push(failedTenantMaintenance(tenantId, maintenanceError, credentialPreparationScrub));
+      maintenance.push(failedTenantMaintenance(tenantId, maintenanceError, credentialPreparationScrub, mcpRegistrationPreparationScrub));
     }
     maintenanceTenantIds.push(tenantId);
   }
@@ -1118,6 +1125,7 @@ async function runTenantMaintenance({
   alertDispatchLimit,
   deadlineAt,
   recordPreparationScrub,
+  recordRegistrationPreparationScrub,
 }: {
   tenantId: string;
   trigger: string;
@@ -1129,10 +1137,12 @@ async function runTenantMaintenance({
   alertDispatchLimit: number;
   deadlineAt: number;
   recordPreparationScrub: (report: NativeCredentialPreparationScrub) => void;
+  recordRegistrationPreparationScrub: (report: NativeMcpRegistrationPreparationScrub) => void;
 }) {
   const result: {
     tenantId: string;
     credentialPreparationScrub: NativeCredentialPreparationScrub;
+    mcpRegistrationPreparationScrub: NativeMcpRegistrationPreparationScrub;
     agentRunsRepaired: number;
     missionProjectionsRepaired: number;
     toolClaimsRecovered: number;
@@ -1166,6 +1176,7 @@ async function runTenantMaintenance({
   } = {
     tenantId,
     credentialPreparationScrub: emptyCredentialPreparationScrub(),
+    mcpRegistrationPreparationScrub: emptyMcpRegistrationPreparationScrub(),
     agentRunsRepaired: 0,
     missionProjectionsRepaired: 0,
     toolClaimsRecovered: 0,
@@ -1195,6 +1206,15 @@ async function runTenantMaintenance({
     }
     // Preserve this committed/failed scrub evidence if a later tenant stage throws.
     recordPreparationScrub(result.credentialPreparationScrub);
+  }
+  if (Date.now() < deadlineAt) {
+    try {
+      result.mcpRegistrationPreparationScrub = await scrubExpiredNativeMcpRegistrationPreparations({ tenantId, limit: 100, deadlineAt });
+    } catch {
+      result.mcpRegistrationPreparationScrub = { status: "failed", scrubbed: 0, moreAvailable: true, oldestExpiredAt: null };
+      console.error(JSON.stringify({ level: "error", msg: "native_mcp_registration_preparation_scrub_failed", tenantId }));
+    }
+    recordRegistrationPreparationScrub(result.mcpRegistrationPreparationScrub);
   }
   if (Date.now() < deadlineAt) {
     result.loopV2Recovery = await recoverInterruptedLoopV2Runs({
@@ -1376,10 +1396,12 @@ function failedTenantMaintenance(
   tenantId: string,
   maintenanceError: string,
   credentialPreparationScrub: NativeCredentialPreparationScrub,
+  mcpRegistrationPreparationScrub: NativeMcpRegistrationPreparationScrub,
 ) {
   return {
     tenantId,
     credentialPreparationScrub,
+    mcpRegistrationPreparationScrub,
     agentRunsRepaired: 0,
     missionProjectionsRepaired: 0,
     toolClaimsRecovered: 0,
@@ -1404,6 +1426,10 @@ function failedTenantMaintenance(
 }
 
 function emptyCredentialPreparationScrub(): NativeCredentialPreparationScrub {
+  return { status: "deferred", scrubbed: 0, moreAvailable: true, oldestExpiredAt: null };
+}
+
+function emptyMcpRegistrationPreparationScrub(): NativeMcpRegistrationPreparationScrub {
   return { status: "deferred", scrubbed: 0, moreAvailable: true, oldestExpiredAt: null };
 }
 

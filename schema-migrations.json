@@ -1472,5 +1472,12 @@
     "checksum": "a7d4cadf15b68e774a580a1cac9e1fbf226c6cd7fe1fcfadf83d49cb781e936b",
     "file": "20261005200000_native_connector_credential_rotations.sql",
     "sha256": "a7d4cadf15b68e774a580a1cac9e1fbf226c6cd7fe1fcfadf83d49cb781e936b"
+  },
+  {
+    "version": 241,
+    "name": "native_mcp_registrations_v1",
+    "checksum": "9d673841107a1136a18e3801e78a7bceb69b9dbfbfd0f00a4745746102a09645",
+    "file": "20261005203000_native_mcp_registrations.sql",
+    "sha256": "9d673841107a1136a18e3801e78a7bceb69b9dbfbfd0f00a4745746102a09645"
   }
 ]

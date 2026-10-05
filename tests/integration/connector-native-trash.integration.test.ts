@@ -14,7 +14,7 @@ import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import { createTrashEntry, createTrashLifecyclePreview } from "@/lib/trash/store";
 import { buildTrashActionPreviewV1 } from "@/lib/trash/contracts";
 import { captureRestorableResource, compensationForSnapshot, restoreTrashResource } from "@/lib/trash/resources";
-import { removeNativeConnectorTrashForReplay, removeNativeConnectorCredentialRotationsForReplay } from "./helpers/native-catalog-replay";
+import { removeNativeConnectorTrashForReplay, removeNativeConnectorCredentialRotationsForReplay, removeNativeMcpRegistrationsForReplay } from "./helpers/native-catalog-replay";
 
 const databaseUrl = process.env.DATABASE_URL;
 const integration = databaseUrl && process.env.OMNIAGENT_INTEGRATION_DATABASE_RESET === "true" ? describe : describe.skip;
@@ -100,7 +100,10 @@ integration("native MCP Trash under forced serving RLS", () => {
     const migration = await readSqlMigrationFile({ file: "20261005193000_native_connector_trash.sql", sha256: row.checksum, migrations: [row] });
     const next = databaseSchemaMigrations.find((migration) => migration.version === 240)!;
     const rotationMigration = await readSqlMigrationFile({ file: "20261005200000_native_connector_credential_rotations.sql", sha256: next.checksum, migrations: [next] });
+    const registration = databaseSchemaMigrations.find((migration) => migration.version === 241)!;
+    const registrationMigration = await readSqlMigrationFile({ file: "20261005203000_native_mcp_registrations.sql", sha256: registration.checksum, migrations: [registration] });
     await admin.begin(async (sql) => {
+      await removeNativeMcpRegistrationsForReplay(sql); await sql`DELETE FROM omni_schema_version WHERE version=241`;
       await removeNativeConnectorCredentialRotationsForReplay(sql); await sql`DELETE FROM omni_schema_version WHERE version=240`;
       await removeNativeConnectorTrashForReplay(sql); await sql`DELETE FROM omni_schema_version WHERE version=239`;
       const migrationSql: Parameters<typeof applySqlMigrationFile>[0] = {
@@ -114,6 +117,7 @@ integration("native MCP Trash under forced serving RLS", () => {
       };
       await applySqlMigrationFile(migrationSql, migration, [row], []);
       await applySqlMigrationFile(migrationSql, rotationMigration, [next], []);
+      await applySqlMigrationFile(migrationSql, registrationMigration, [registration], []);
       expect(await sql`SELECT intent,acceptance,state,settlement FROM omni_native_connector_actions ORDER BY id`).toEqual(before);
     });
     expect(connectorNativeActionSchema.parse(await readNativeConnectorAction({ scope: state.scope }, old.action.acceptance.keySha256))).toEqual(old.action);

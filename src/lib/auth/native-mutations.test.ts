@@ -30,6 +30,21 @@ function context(
 }
 
 describe("native mutation capability enrollment", () => {
+  it("enrolls MCP registration and cleanup only from v44 without broadening old capabilities", () => {
+    for (const platform of ["android", "ios", "macos"] as const) {
+      expect(nativeMutationEnrollment(context(44, undefined, platform), "connectors.mcp.register", asOf))
+        .toEqual({ state: "active", minimumContractVersion: 44 });
+      for (const client of [context(43, undefined, platform), context(45, undefined, platform),
+        context(44, "2026-01-01T00:00:00.000Z", platform), { source: "session" as const }, { source: "mobile" as const }]) {
+        expect(nativeMutationEnrollment(client, "connectors.mcp.register", asOf))
+          .toMatchObject({ state: "held", minimumContractVersion: 44 });
+      }
+      for (const version of [43, 44]) {
+        expect(nativeMutationEnrollment(context(version, undefined, platform), "connectors.credentials.rotate", asOf))
+          .toEqual({ state: "active", minimumContractVersion: 43 });
+      }
+    }
+  });
   it("requires v40 and fresh native authority for Google and connector management", () => {
     for (const capability of ["google.personal.manage", "connectors.manage"] as const) {
       for (const platform of ["android", "ios", "macos"] as const) {
@@ -78,7 +93,7 @@ describe("native mutation capability enrollment", () => {
       for (const client of [context(42, undefined, platform), context(NATIVE_API_CURRENT_VERSION + 1, undefined, platform),
         context(43, "2026-01-01T00:00:00.000Z", platform), { source: "session" as const }, { source: "mobile" as const }]) {
         expect(nativeMutationEnrollment(client, "connectors.credentials.rotate", asOf))
-          .toMatchObject({ state: "held", minimumContractVersion: 43 });
+          .toMatchObject({ state: "held", minimumContractVersion: "native" in client ? 43 : NATIVE_API_CURRENT_VERSION });
       }
     }
   });

@@ -37,13 +37,50 @@ Set these through the platform secret/configuration store, never in source contr
 - `OMNIAGENT_NATIVE_MIN_ANDROID_VERSION`, `OMNIAGENT_NATIVE_MIN_IOS_VERSION`, and `OMNIAGENT_NATIVE_MIN_MACOS_VERSION`: optional stable `major.minor.patch` minimums for native compatibility telemetry. An absent or empty value defaults to `1.0.0`; a malformed configured value invalidates the policy and holds adoption unavailable. These settings do not authorize Agent enrollment.
 
 Native contract artifacts are committed immutable release inputs. This release
-advertises v43 as current and retains v42 as the supported previous version.
-V41 remains a byte-frozen, unadvertised archive; v40 leaves the three-version
-window. Run `npm run check:native-contracts` to verify generated v43 documents
-and SDK against the frozen v41/v42 hashes. Archive availability does not make a
-v41 client compatible with the v43/v42 server window.
+advertises v44 as current and retains v43 as the supported previous version.
+V42 remains a byte-frozen, unadvertised archive; v41 leaves the three-version
+window. Run `npm run check:native-contracts` to verify generated v44 documents
+and SDK against the frozen v42/v43 hashes. Archive availability does not make a
+v42 client compatible with the v44/v43 server window.
 
-V43 adds existing-MCP bearer preparation, exact preparation recovery, explicit
+V44 adds five prepared MCP registration operations under `connectors.mcp.register`
+at floor 44. Preparation and final creation require current management; exact
+preparation/action GETs are original-owner reads. Explicit abandonment uses the
+original key and safe intent with active owner read authority, mutation access
+and the distinct `api.connectors.native.mcp_registration_preparation.abandon`
+purpose. Deploy and verify the v44 server and additive migration chain before
+distributing app `1.23.28+64`. Existing capability floors and UI/ATLAS assets stay
+unchanged; a current v43 client retains its earlier operation surface.
+
+Migration 241 adds `omni_native_mcp_registration_preparations`, taking the expected
+tenant inventory to 265, and extends the shared native action ledger only for
+`register_mcp`. Its target reservation, immutable proof, consumption link and
+terminal abandonment are separate from v43 credential staging. Apply and verify
+the checksum-linked chain after 240 through the existing backup/quiescence
+procedure. Creation is insert-only and atomic with scope-binding, connector,
+credential and native receipts/events; target collisions never overwrite an
+existing connector. The result is disabled with zero tools and no discovery.
+
+The fifteen-minute registration proof retains only a safe declaration and opaque
+configuration binding publicly. Vault authentication or an endpoint with private
+query/fragment material requires the independent credential keyring to seal the
+complete transient input. Clean `none` and deployer-bound `bearer_env` registration
+need no credential keyring; environment mode revalidates the current tenant/origin
+binding and configured handle without staging the resolved environment secret.
+Same-key comparison uses a private commitment over the full normalized endpoint
+and token. GETs remain read-only, and immutable intent/proof metadata survives
+expiry or explicit abandonment without exposing private input.
+
+Registration adds one bounded scrub batch after v43 preparation cleanup, using
+only the remaining tenant tick budget: at most 100 expired ciphertext rows with
+`FOR UPDATE SKIP LOCKED`, within the lesser of two seconds or remaining time.
+Actual maintenance-role authority, explicit tenant scope and observed failure
+reports remain required. Clean non-secret staging expires logically without a
+ciphertext scrub. Worker outages/backlog do not carry a wall-clock deletion
+guarantee, and cleanup does not change WAL or backup retention. No provider call,
+discovery, enablement, OpenAPI import or GitHub upgrade is enrolled by v44.
+
+The earlier v43 publication added existing-MCP bearer preparation, exact preparation recovery, explicit
 staging abandonment, confirmed credential rotation and exact action recovery.
 `connectors.credentials.rotate` starts at 43; prepare and final submit require
 management authority. Abandonment is an enrolled mutation under current active
