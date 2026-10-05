@@ -88,7 +88,7 @@ integration("native MCP Trash under forced serving RLS", () => {
   function retime(f: Fixture, issuedAt: string) {
     const { previewSha256: _digest, ...body } = f.request.preview;
     const preview = buildTrashActionPreviewV1({ ...body, issuedAt, expiresAt: new Date(Date.parse(issuedAt) + 600_000).toISOString() });
-    return { ...f.request, preview };
+    return connectorNativeTrashRequestSchema.parse({ ...f.request, preview });
   }
 
   test("239 replays over238 without changing v40 or v41 receipts or owner protections", async () => {
@@ -158,7 +158,7 @@ integration("native MCP Trash under forced serving RLS", () => {
     }
     const { previewSha256: _digest, ...body } = f.request.preview;
     const changed = buildTrashActionPreviewV1({ ...body, effectSummary: "No tool contracts change." });
-    await expect(submit(f, "one", { ...f.request, preview: changed })).rejects.toMatchObject({ status: 409 });
+    await expect(submit(f, "one", connectorNativeTrashRequestSchema.parse({ ...f.request, preview: changed }))).rejects.toMatchObject({ status: 409 });
     expect(await counts(f)).toEqual(beforeCounts);
     const executionScope = authority(f).executionScope;
     await inOwner(f, async () => {
