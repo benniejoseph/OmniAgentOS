@@ -1500,5 +1500,12 @@
     "checksum": "710fb954e502ad8c3620b992893cac50093854e47092f6ffd0c16859fc706926",
     "file": "20261006103000_native_github_upgrades.sql",
     "sha256": "710fb954e502ad8c3620b992893cac50093854e47092f6ffd0c16859fc706926"
+  },
+  {
+    "version": 245,
+    "name": "native_provider_function_acl_repair_v1",
+    "checksum": "3d1e2f480d424d4f6da66008744928f883ee06745e32b147a26953c73c7c09f0",
+    "file": "20261006110000_native_provider_function_acl_repair.sql",
+    "sha256": "3d1e2f480d424d4f6da66008744928f883ee06745e32b147a26953c73c7c09f0"
   }
 ]

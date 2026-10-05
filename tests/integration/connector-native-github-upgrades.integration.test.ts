@@ -16,6 +16,7 @@ import type { McpToolRecord } from "@/lib/connectors/types";
 import * as client from "@/lib/connectors/mcp-client";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
+import { removeNativeGithubUpgradesForReplay } from "./helpers/native-catalog-replay";
 
 const databaseUrl = process.env.DATABASE_URL;
 const integration = databaseUrl && process.env.OMNIAGENT_INTEGRATION_DATABASE_RESET === "true" ? describe : describe.skip;
@@ -217,7 +218,7 @@ integration("native GitHub upgrade244 serving-role and shared-provider proof", (
     const migration = await readSqlMigrationFile({ file: "20261006103000_native_github_upgrades.sql",
       sha256: v244.checksum, migrations: [v244] });
     await expect(admin.begin(async (sql) => {
-      await sql`DELETE FROM omni_schema_version WHERE version IN (243,244)`;
+      await sql`DELETE FROM omni_schema_version WHERE version IN (243,244,245)`;
       const adapter: Parameters<typeof applySqlMigrationFile>[0] = { unsafe: async (statement, params) => {
         const values = (params ?? []).map((value) => {
           if (typeof value !== "string") throw new Error("Migration settings must be strings.");
@@ -266,6 +267,64 @@ integration("native GitHub upgrade244 serving-role and shared-provider proof", (
         has_column_privilege(current_user,'public.omni_native_github_upgrades','intent','UPDATE') AS can_rewrite
         FROM pg_roles WHERE rolname=current_user`))
       .toEqual([{ role: runtimeRole, rolsuper: false, rolbypassrls: false, can_delete: false, can_rewrite: false }]);
+  });
+
+  test("245 removes direct grants inherited from production-style default function privileges", async () => {
+    const [v244, v245] = databaseSchemaMigrations.filter((row) => row.version === 244 || row.version === 245);
+    expect([v244?.version, v245?.version]).toEqual([244, 245]);
+    const upgrade = await readSqlMigrationFile({ file: "20261006103000_native_github_upgrades.sql",
+      sha256: v244.checksum, migrations: [v244] });
+    const repair = await readSqlMigrationFile({ file: "20261006110000_native_provider_function_acl_repair.sql",
+      sha256: v245.checksum, migrations: [v245] });
+    let verified = false;
+    await expect(admin.begin(async (sql) => {
+      await removeNativeGithubUpgradesForReplay(sql);
+      await sql`DELETE FROM omni_schema_version WHERE version IN (244,245)`;
+      for (const role of ["anon", "authenticated", "service_role"]) {
+        const [exists] = await sql`SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname=${role}) AS exists`;
+        if (!exists.exists) await sql.unsafe(`CREATE ROLE ${role} NOLOGIN NOSUPERUSER NOBYPASSRLS`);
+      }
+      await sql`ALTER DEFAULT PRIVILEGES IN SCHEMA public
+        GRANT EXECUTE ON FUNCTIONS TO anon,authenticated,service_role,omni_runtime,omni_maintenance`;
+      const adapter: Parameters<typeof applySqlMigrationFile>[0] = { unsafe: (statement, params) => {
+        const values = (params ?? []).map((value) => {
+          if (typeof value !== "string") throw new Error("Migration settings must be strings.");
+          return value;
+        });
+        return sql.unsafe<Record<string, unknown>[]>(statement, values);
+      } };
+      await applySqlMigrationFile(adapter, upgrade, [v244], []);
+      const executions = async () => sql`SELECT p.proname,pg_get_userbyid(p.proowner) AS owner,
+        ARRAY(SELECT CASE WHEN acl.grantee=0 THEN 'PUBLIC' ELSE r.rolname END
+          FROM aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) acl
+          LEFT JOIN pg_roles r ON r.oid=acl.grantee
+          WHERE acl.privilege_type='EXECUTE' ORDER BY 1) AS grantees,
+        has_function_privilege('omni_runtime',p.oid,'EXECUTE') AS runtime_execute
+        FROM pg_proc p WHERE p.oid IN
+        ('public.omni_native_provider_pending_v1(text,text,text,text)'::regprocedure,
+         'public.omni_native_provider_singleflight_v1()'::regprocedure)
+        ORDER BY p.proname`;
+      const before = await executions();
+      expect(before).toHaveLength(2);
+      for (const row of before) {
+        for (const role of ["anon", "authenticated", "service_role", "omni_runtime", "omni_maintenance"])
+          expect(row.grantees).toContain(role);
+      }
+      expect(before[1].runtime_execute).toBe(true);
+      await applySqlMigrationFile(adapter, repair, [v245], []);
+      const after = await executions();
+      expect(after).toEqual([
+        { proname: "omni_native_provider_pending_v1", owner: after[0].owner,
+          grantees: [after[0].owner, "omni_runtime"].sort(), runtime_execute: true },
+        { proname: "omni_native_provider_singleflight_v1", owner: after[1].owner,
+          grantees: [after[1].owner], runtime_execute: false },
+      ]);
+      verified = true;
+      throw new Error("Rollback production-default ACL fixture");
+    })).rejects.toThrow("Rollback production-default ACL fixture");
+    expect(verified).toBe(true);
+    expect(await admin`SELECT version FROM omni_schema_version WHERE version IN (244,245) ORDER BY version`)
+      .toEqual([{ version: 244 }, { version: 245 }]);
   });
 
   test("manager sees only a boolean across owner RLS; viewer and cross-tenant calls fail closed", async () => {
