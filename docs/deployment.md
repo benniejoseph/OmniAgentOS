@@ -37,11 +37,54 @@ Set these through the platform secret/configuration store, never in source contr
 - `OMNIAGENT_NATIVE_MIN_ANDROID_VERSION`, `OMNIAGENT_NATIVE_MIN_IOS_VERSION`, and `OMNIAGENT_NATIVE_MIN_MACOS_VERSION`: optional stable `major.minor.patch` minimums for native compatibility telemetry. An absent or empty value defaults to `1.0.0`; a malformed configured value invalidates the policy and holds adoption unavailable. These settings do not authorize Agent enrollment.
 
 Native contract artifacts are committed immutable release inputs. This release
-advertises v44 as current and retains v43 as the supported previous version.
-V42 remains a byte-frozen, unadvertised archive; v41 leaves the three-version
-window. Run `npm run check:native-contracts` to verify generated v44 documents
-and SDK against the frozen v42/v43 hashes. Archive availability does not make a
-v42 client compatible with the v44/v43 server window.
+advertises v45 as current and retains v44 as the supported previous version.
+V43 remains a byte-frozen, unadvertised archive; v42 leaves the three-version
+window. Run `npm run check:native-contracts` to verify generated v45 documents
+and SDK against the frozen v43/v44 hashes. Archive availability does not make a
+v43 client compatible with the v45/v44 server window.
+
+V45 adds five new-OpenAPI import operations under `connectors.openapi.import`
+at floor 45. Both public specification URLs and pasted JSON/YAML are supported,
+with optional explicit base override and the existing `none`, `bearer_env` and
+`api_key_header_env` modes. Environment authentication requires an exact current
+tenant/origin deployer binding; only the environment handle is staged. Source
+GETs carry no connector authentication. Imported operations remain subject to
+the later exact contract-review action; import confirmation creates a disabled
+connector with every operation pending review and makes no API connectivity claim.
+
+Apply migration 242 (`20261005210000_native_openapi_imports.sql`) after 241,
+using the existing backup, quiescence and verification procedure before serving
+v45 or distributing app `1.23.31+67`. It adds
+`omni_native_openapi_import_preparations`, taking the tenant inventory to 266,
+and admits only the distinct `import_openapi` family in the shared action ledger.
+Existing connector control and preparation records remain unchanged. Preserve the
+new immutable reservation and receipt records during rollback; use a compatible
+server for any client whose import has been admitted.
+
+All imports require the independent credential keyring, including no-auth imports,
+because complete normalized operation definitions are privately staged. The new
+family has its own 4,000,000-byte snapshot envelope; ordinary credential and MCP
+staging limits are unchanged. Raw source text is transient. Public evidence has
+only the safe original/resolved declaration, opaque private bindings and a complete
+bounded method/path import summary. The protected native journal excludes source
+text, full private source URLs and the visible operation summary.
+
+Preparation reserves one permanent attempt in a short transaction, fetches or
+parses outside database locks, then rechecks authority and the immutable deadline
+before issuing a fifteen-minute proof. The attempt lasts 45 seconds, the route
+sets `maxDuration = 60`, and only this native one-shot POST receives a 55-second
+receive timeout. These route settings use the existing hosting capability;
+[Vercel duration configuration](https://vercel.com/docs/functions/configuring-functions/duration)
+documents the named Next.js export. A failed, interrupted or repeated attempt is
+read back without refetching. Explicit abandonment fences delayed completion and
+permits a new draft; it does not undo an already dispatched specification GET.
+
+Final confirmation consumes the exact sealed snapshot without fetching or parsing
+again. Acceptance, insert-only connector/operations, scope binding, domain/native
+events, consumption and settlement commit together. One later maintenance stage
+scrubs at most 100 expired snapshots with ordered `SKIP LOCKED`, using only the
+remaining tenant tick budget and at most two seconds. Safe reservations and
+receipts remain; cleanup makes no WAL, backup or wall-clock deletion promise.
 
 V44 adds five prepared MCP registration operations under `connectors.mcp.register`
 at floor 44. Preparation and final creation require current management; exact

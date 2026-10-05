@@ -13,6 +13,7 @@ import { parsePersistedExecutionScope, type ExecutionScope } from "@/lib/securit
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import { connectorNativePrivateDigest, connectorNativePrivateFingerprint, connectorNativePublicEndpoint } from "@/lib/connectors/native-control-private";
 import { evaluateConnectorSecretBinding } from "@/lib/connectors/secret-binding";
+import type { OpenApiConnectorRecord, OpenApiOperationRecord } from "@/lib/connectors/openapi-types";
 
 type Sql = ReturnType<typeof getSql>;
 export type ConnectorNativeAuthority = { scope: ConnectorNativeScope; executionScope?: ExecutionScope };
@@ -73,10 +74,7 @@ async function current(sql: Sql, scope: ConnectorNativeScope, kind: ConnectorNat
   const rows = mcp ? tools.map((tool) => ({ id: tool.id, name: tool.name, description: tool.description ?? null, status: tool.status,
     riskLevel: tool.riskLevel, approvalRequired: tool.approvalRequired, fingerprint: connectorNativePrivateFingerprint(tenantId, mcpToolContractFingerprint(tool, mcp)),
     definition: { title: tool.title ?? null, inputSchema: tool.inputSchema, outputSchema: tool.outputSchema ?? null, annotations: tool.annotations ?? null } }))
-    : operations.map((operation) => ({ id: operation.id, name: operation.operationId, description: operation.description ?? null, status: operation.status,
-      riskLevel: operation.riskLevel, approvalRequired: operation.approvalRequired, fingerprint: connectorNativePrivateFingerprint(tenantId, openApiOperationContractFingerprint(operation, openapi!)),
-      definition: { summary: operation.summary ?? null, method: operation.method, path: operation.path, inputSchema: operation.inputSchema,
-        requestContentType: operation.requestContentType ?? null, responseContentTypes: operation.responseContentTypes } }));
+    : nativeOpenapiContractRows(tenantId, openapi!, operations);
   rows.sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
   if (Buffer.byteLength(JSON.stringify(rows), "utf8") > 1_048_576 || rows.some((row) => !connectorNativeContractSchema.safeParse(row).success)) {
     return connectorNativeReviewSchema.parse({ connector: summary, contracts: [], pin: null, availableActions: [], unavailableReason: "scope_too_large" });
@@ -103,7 +101,7 @@ async function accepted(sql: Sql, scope: ConnectorNativeScope, keySha256: string
     WHERE tenant_id=${scope.tenantId} AND owner_actor_id=${scope.ownerActorId} AND idempotency_key_sha256=${keySha256}`;
   if (!rows.length) return null;
   // A lifecycle key is not a v40 state-action receipt. Never widen its parser.
-  if (rows[0].action === "remove_credential" || rows[0].action === "trash" || rows[0].action === "rotate_mcp" || rows[0].action === "register_mcp") {
+  if (rows[0].action === "remove_credential" || rows[0].action === "trash" || rows[0].action === "rotate_mcp" || rows[0].action === "register_mcp" || rows[0].action === "import_openapi") {
     if (conflictOnOtherAction) fail("This key already accepted another connector request.");
     return null;
   }
@@ -113,6 +111,38 @@ async function accepted(sql: Sql, scope: ConnectorNativeScope, keySha256: string
     a.requestSha256 !== canonicalJsonSha256(intent) || a.reviewSha256 !== connectorNativeRequestReviewSha(intent.request) || a.kind !== intent.request.kind ||
     a.connectorId !== intent.request.connectorId || a.action !== intent.request.action) fail("The stored connector acceptance is inconsistent.");
   return { intent, action };
+}
+
+function nativeOpenapiContractRows(tenantId: string, connector: OpenApiConnectorRecord, operations: OpenApiOperationRecord[]) {
+  return operations.map((operation) => ({ id: operation.id, name: operation.operationId, description: operation.description ?? null, status: operation.status,
+    riskLevel: operation.riskLevel, approvalRequired: operation.approvalRequired,
+    fingerprint: connectorNativePrivateFingerprint(tenantId, openApiOperationContractFingerprint(operation, connector)),
+    definition: { summary: operation.summary ?? null, method: operation.method, path: operation.path, inputSchema: operation.inputSchema,
+      requestContentType: operation.requestContentType ?? null, responseContentTypes: operation.responseContentTypes } }));
+}
+
+/** Pure prospective projection for the native import's complete immutable
+ * snapshot. It shares contract rows with exact GET and does not create a row. */
+export function projectNativeOpenapiReview(scope: ConnectorNativeScope, connector: OpenApiConnectorRecord, operations: OpenApiOperationRecord[]) {
+  if (connector.tenantId !== scope.tenantId || operations.some((operation) => operation.tenantId !== scope.tenantId || operation.connectorId !== connector.id) ||
+    connector.operationCount !== operations.length || operations.length < 1 || operations.length > 200) fail("The complete OpenAPI review is unavailable.");
+  const summary = connectorNativeSummarySchema.parse({ kind: "openapi", id: connector.id, name: connector.name,
+    ...connectorNativePublicEndpoint(connector.baseUrl), status: connector.status, authType: connector.authType,
+    authTokenEnv: connector.authTokenEnv ?? null, authHeaderName: connector.authHeaderName ?? null,
+    credentialConfigured: false, credentialVersion: 0, credentialOriginMatch: false, defaultRiskLevel: connector.defaultRiskLevel,
+    approvalRequired: connector.approvalRequired, contractCount: operations.length, discoveredAt: connector.lastImportedAt ?? null, updatedAt: connector.updatedAt });
+  const contracts = nativeOpenapiContractRows(scope.tenantId, connector, operations)
+    .sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0).map((row) => connectorNativeContractSchema.parse(row));
+  const review = openApiContractReviewSummary(operations, connector);
+  const pin = sealConnectorNativePin({ kind: "openapi", connectorId: connector.id, connectorSha256: canonicalJsonSha256(summary),
+    contractsSha256: canonicalJsonSha256(contracts), configurationSha256: connectorNativePrivateDigest(scope.tenantId, ["connector-configuration:1", "openapi", connector]),
+    credentialVersion: 0, reviewFingerprint: review.fingerprint ? connectorNativePrivateFingerprint(scope.tenantId, review.fingerprint) : null });
+  const allowed = evaluateConnectorSecretBinding({ tenantId: scope.tenantId, targetUrl: connector.baseUrl,
+    envName: connector.authType === "none" ? undefined : connector.authTokenEnv }).allowed;
+  const result = connectorNativeReviewSchema.parse({ connector: summary, contracts, pin,
+    availableActions: review.pendingCount > 0 && allowed ? ["review_contracts"] : [], unavailableReason: null });
+  if (Buffer.byteLength(JSON.stringify(result), "utf8") > 1_048_576) fail("This complete import exceeds native review bounds. Use the browser.", "connector_bounds", 400);
+  return result;
 }
 export async function listNativeConnectors(authority: ConnectorNativeAuthority) {
   readOnly(authority);

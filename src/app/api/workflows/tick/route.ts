@@ -28,6 +28,7 @@ import { processPendingMemoryGraphRebuilds } from "@/lib/security/retention";
 import { scrubExpiredLocalComputerObservations } from "@/lib/local-computer/store";
 import { scrubExpiredNativeConnectorCredentialPreparations, type NativeCredentialPreparationScrub } from "@/lib/connectors/native-credential-rotation-store";
 import { scrubExpiredNativeMcpRegistrationPreparations, type NativeMcpRegistrationPreparationScrub } from "@/lib/connectors/native-mcp-registration-store";
+import { scrubExpiredNativeOpenapiImportPreparations, type NativeOpenapiImportPreparationScrub } from "@/lib/connectors/native-openapi-import-store";
 import { processPendingTemporalRelationProjections } from "@/lib/entities/relation-projection-queue";
 import { processPendingMemoryDeletionScrubs } from "@/lib/memory/deletion-scrub";
 import { runTenantMemoryMaintenance } from "@/lib/memory/maintenance-store";
@@ -659,8 +660,11 @@ function summarizeScheduledOutcome(
     nativeCredentialPreparationScrubFailures: scheduled.maintenance.filter((item) => item.credentialPreparationScrub.status === "failed").length,
     nativeCredentialPreparationScrubDeferred: scheduled.maintenance.filter((item) => item.credentialPreparationScrub.status === "deferred").length,
     nativeMcpRegistrationPreparationsScrubbed: scheduled.maintenance.reduce((sum, item) => sum + item.mcpRegistrationPreparationScrub.scrubbed, 0),
+    nativeOpenapiImportPreparationsScrubbed: scheduled.maintenance.reduce((sum, item) => sum + item.openapiImportPreparationScrub.scrubbed, 0),
     nativeMcpRegistrationPreparationScrubFailures: scheduled.maintenance.filter((item) => item.mcpRegistrationPreparationScrub.status === "failed").length,
+    nativeOpenapiImportPreparationScrubFailures: scheduled.maintenance.filter((item) => item.openapiImportPreparationScrub.status === "failed").length,
     nativeMcpRegistrationPreparationScrubDeferred: scheduled.maintenance.filter((item) => item.mcpRegistrationPreparationScrub.status === "deferred").length,
+    nativeOpenapiImportPreparationScrubDeferred: scheduled.maintenance.filter((item) => item.openapiImportPreparationScrub.status === "deferred").length,
     localComputerObservationsScrubbed:
       scheduled.localComputerObservationScrub?.scrubbed || 0,
     workflowLeased: scheduled.queue?.leased || 0,
@@ -985,6 +989,7 @@ async function runAllTenantScheduledWork({
     tenantId: string;
     credentialPreparationScrub: NativeCredentialPreparationScrub;
     mcpRegistrationPreparationScrub: NativeMcpRegistrationPreparationScrub;
+    openapiImportPreparationScrub: NativeOpenapiImportPreparationScrub;
     agentRunsRepaired: number;
     missionProjectionsRepaired: number;
     toolClaimsRecovered: number;
@@ -1023,6 +1028,7 @@ async function runAllTenantScheduledWork({
     }
     let credentialPreparationScrub = emptyCredentialPreparationScrub();
     let mcpRegistrationPreparationScrub = emptyMcpRegistrationPreparationScrub();
+    let openapiImportPreparationScrub = emptyOpenapiImportPreparationScrub();
     try {
       maintenance.push(
         await runWithDatabaseTenantScope(tenantId, () =>
@@ -1038,6 +1044,7 @@ async function runAllTenantScheduledWork({
             deadlineAt,
             recordPreparationScrub: (report) => { credentialPreparationScrub = report; },
             recordRegistrationPreparationScrub: (report) => { mcpRegistrationPreparationScrub = report; },
+            recordOpenapiImportPreparationScrub: (report) => { openapiImportPreparationScrub = report; },
           }),
         ),
       );
@@ -1049,7 +1056,7 @@ async function runAllTenantScheduledWork({
         tenantId,
         error: maintenanceError,
       }));
-      maintenance.push(failedTenantMaintenance(tenantId, maintenanceError, credentialPreparationScrub, mcpRegistrationPreparationScrub));
+      maintenance.push(failedTenantMaintenance(tenantId, maintenanceError, credentialPreparationScrub, mcpRegistrationPreparationScrub, openapiImportPreparationScrub));
     }
     maintenanceTenantIds.push(tenantId);
   }
@@ -1126,6 +1133,7 @@ async function runTenantMaintenance({
   deadlineAt,
   recordPreparationScrub,
   recordRegistrationPreparationScrub,
+  recordOpenapiImportPreparationScrub,
 }: {
   tenantId: string;
   trigger: string;
@@ -1138,11 +1146,13 @@ async function runTenantMaintenance({
   deadlineAt: number;
   recordPreparationScrub: (report: NativeCredentialPreparationScrub) => void;
   recordRegistrationPreparationScrub: (report: NativeMcpRegistrationPreparationScrub) => void;
+  recordOpenapiImportPreparationScrub: (report: NativeOpenapiImportPreparationScrub) => void;
 }) {
   const result: {
     tenantId: string;
     credentialPreparationScrub: NativeCredentialPreparationScrub;
     mcpRegistrationPreparationScrub: NativeMcpRegistrationPreparationScrub;
+    openapiImportPreparationScrub: NativeOpenapiImportPreparationScrub;
     agentRunsRepaired: number;
     missionProjectionsRepaired: number;
     toolClaimsRecovered: number;
@@ -1177,6 +1187,7 @@ async function runTenantMaintenance({
     tenantId,
     credentialPreparationScrub: emptyCredentialPreparationScrub(),
     mcpRegistrationPreparationScrub: emptyMcpRegistrationPreparationScrub(),
+    openapiImportPreparationScrub: emptyOpenapiImportPreparationScrub(),
     agentRunsRepaired: 0,
     missionProjectionsRepaired: 0,
     toolClaimsRecovered: 0,
@@ -1215,6 +1226,15 @@ async function runTenantMaintenance({
       console.error(JSON.stringify({ level: "error", msg: "native_mcp_registration_preparation_scrub_failed", tenantId }));
     }
     recordRegistrationPreparationScrub(result.mcpRegistrationPreparationScrub);
+  }
+  if (Date.now() < deadlineAt) {
+    try {
+      result.openapiImportPreparationScrub = await scrubExpiredNativeOpenapiImportPreparations({ tenantId, limit: 100, deadlineAt });
+    } catch {
+      result.openapiImportPreparationScrub = { status: "failed", scrubbed: 0, moreAvailable: true, oldestExpiredAt: null };
+      console.error(JSON.stringify({ level: "error", msg: "native_openapi_import_preparation_scrub_failed", tenantId }));
+    }
+    recordOpenapiImportPreparationScrub(result.openapiImportPreparationScrub);
   }
   if (Date.now() < deadlineAt) {
     result.loopV2Recovery = await recoverInterruptedLoopV2Runs({
@@ -1397,11 +1417,13 @@ function failedTenantMaintenance(
   maintenanceError: string,
   credentialPreparationScrub: NativeCredentialPreparationScrub,
   mcpRegistrationPreparationScrub: NativeMcpRegistrationPreparationScrub,
+  openapiImportPreparationScrub: NativeOpenapiImportPreparationScrub,
 ) {
   return {
     tenantId,
     credentialPreparationScrub,
     mcpRegistrationPreparationScrub,
+    openapiImportPreparationScrub,
     agentRunsRepaired: 0,
     missionProjectionsRepaired: 0,
     toolClaimsRecovered: 0,
@@ -1430,6 +1452,10 @@ function emptyCredentialPreparationScrub(): NativeCredentialPreparationScrub {
 }
 
 function emptyMcpRegistrationPreparationScrub(): NativeMcpRegistrationPreparationScrub {
+  return { status: "deferred", scrubbed: 0, moreAvailable: true, oldestExpiredAt: null };
+}
+
+function emptyOpenapiImportPreparationScrub(): NativeOpenapiImportPreparationScrub {
   return { status: "deferred", scrubbed: 0, moreAvailable: true, oldestExpiredAt: null };
 }
 

@@ -144,6 +144,53 @@ export function hashOpenApiSpec(specText: string) {
   return createHash("sha256").update(specText).digest("hex");
 }
 
+export class OpenapiImportInsertConflictError extends Error {
+  constructor() { super("The OpenAPI import identity is already reserved."); this.name = "OpenapiImportInsertConflictError"; }
+}
+
+/** Native first import only. The managed caller joins all rows and events to
+ * its acceptance transaction. Browser save/reimport upserts remain unchanged. */
+export async function insertDisabledOpenapiImport(
+  input: { connector: OpenApiConnectorRecord; operations: OpenApiOperationRecord[] },
+  options: OpenApiConnectorMutationOptions,
+) {
+  const { connector, operations } = input, tenantId = connector.tenantId;
+  if (!hasDatabaseUrl() || !tenantId || tenantId !== normalizeTenantId(tenantId) || connector.status !== "disabled" ||
+    operations.length < 1 || operations.length > 200 || connector.operationCount !== operations.length || !connector.specHash ||
+    !connector.lastImportedAt || connector.lastError || new Set(operations.map((operation) => operation.id)).size !== operations.length ||
+    operations.some((operation) => operation.tenantId !== tenantId || operation.connectorId !== connector.id ||
+      operation.connectorName !== connector.name || operation.status !== "pending_review" ||
+      operation.id !== createOpenApiToolId(connector.id, operation.operationId))) {
+    throw new Error("Insert-only OpenAPI import requires one disabled complete pending snapshot in the canonical database.");
+  }
+  const executionScope = requireOpenApiMutationScope(options.executionScope, tenantId);
+  await ensureDatabaseSchema();
+  return getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+    const rows = await sql`INSERT INTO omni_openapi_connectors(id,tenant_id,name,spec_url,spec_hash,base_url,auth_type,auth_token_env,
+      auth_header_name,status,default_risk_level,approval_required,operation_count,info,last_imported_at,last_error,created_at,updated_at)
+      VALUES(${connector.id},${tenantId},${connector.name},${connector.specUrl ?? null},${connector.specHash},${connector.baseUrl},
+        ${connector.authType},${connector.authTokenEnv ?? null},${connector.authHeaderName ?? null},'disabled',${connector.defaultRiskLevel},
+        ${connector.approvalRequired},${operations.length},${connector.info ?? {}}::JSONB,${connector.lastImportedAt},NULL,${connector.createdAt},${connector.updatedAt})
+      ON CONFLICT DO NOTHING RETURNING id`;
+    if (rows.length !== 1) throw new OpenapiImportInsertConflictError();
+    for (const operation of operations) {
+      const inserted = await sql`INSERT INTO omni_openapi_operations(id,tenant_id,connector_id,connector_name,operation_id,method,path,summary,
+        description,input_schema,request_content_type,response_content_types,risk_level,approval_required,status,created_at,updated_at)
+        VALUES(${operation.id},${tenantId},${connector.id},${connector.name},${operation.operationId},${operation.method},${operation.path},
+          ${operation.summary ?? null},${operation.description ?? null},${operation.inputSchema}::JSONB,${operation.requestContentType ?? null},
+          ${operation.responseContentTypes},${operation.riskLevel},${operation.approvalRequired},'pending_review',${operation.createdAt},${operation.updatedAt})
+        ON CONFLICT DO NOTHING RETURNING id`;
+      if (inserted.length !== 1) throw new OpenapiImportInsertConflictError();
+    }
+    await appendOpenApiConnectorScopeBinding(connector.id, executionScope, { sql });
+    await appendOpenApiConnectorEvent({ connectorId: connector.id, type: "connector.openapi.created", executionScope,
+      payload: openApiConnectorEventMetadata(connector) }, { sql });
+    await appendOpenApiConnectorEvent({ connectorId: connector.id, type: "connector.openapi.import_saved", executionScope,
+      payload: { ...openApiConnectorEventMetadata(connector), importedOperationCount: operations.length } }, { sql });
+    return input;
+  }) as Promise<typeof input>;
+}
+
 export async function saveOpenApiConnector(
   connector: OpenApiConnectorRecord,
   options: OpenApiConnectorMutationOptions,

@@ -61,6 +61,11 @@ describe("P9.1 Main Agent application-service coverage", () => {
       "src/app/api/connectors/native/mcp-registration-preparations/[keySha256]/abandon/route.ts",
       "src/app/api/connectors/native/mcp-registrations/route.ts",
       "src/app/api/connectors/native/mcp-registrations/[keySha256]/route.ts",
+      "src/app/api/connectors/native/openapi-import-preparations/route.ts",
+      "src/app/api/connectors/native/openapi-import-preparations/[keySha256]/route.ts",
+      "src/app/api/connectors/native/openapi-import-preparations/[keySha256]/abandon/route.ts",
+      "src/app/api/connectors/native/openapi-imports/route.ts",
+      "src/app/api/connectors/native/openapi-imports/[keySha256]/route.ts",
     ].map(async (file) => ({
       file,
       source: await readFile(resolve(process.cwd(), file), "utf8"),

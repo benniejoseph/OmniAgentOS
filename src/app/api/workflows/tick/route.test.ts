@@ -15,6 +15,7 @@ const routeMocks = vi.hoisted(() => ({
   scrubExpiredLocalComputerObservations: vi.fn(),
   scrubExpiredNativeConnectorCredentialPreparations: vi.fn(),
   scrubExpiredNativeMcpRegistrationPreparations: vi.fn(),
+  scrubExpiredNativeOpenapiImportPreparations: vi.fn(),
   runTenantMemoryMaintenance: vi.fn(),
   listMaintenanceTenantIds: vi.fn(),
   recoverInterruptedLoopV2Runs: vi.fn(),
@@ -126,6 +127,9 @@ vi.mock("@/lib/connectors/native-credential-rotation-store", () => ({
 }));
 vi.mock("@/lib/connectors/native-mcp-registration-store", () => ({
   scrubExpiredNativeMcpRegistrationPreparations: routeMocks.scrubExpiredNativeMcpRegistrationPreparations,
+}));
+vi.mock("@/lib/connectors/native-openapi-import-store", () => ({
+  scrubExpiredNativeOpenapiImportPreparations: routeMocks.scrubExpiredNativeOpenapiImportPreparations,
 }));
 
 vi.mock("@/lib/memory/deletion-scrub", async (importOriginal) => ({
@@ -286,6 +290,9 @@ const emptySpecialistQueue = {
 
 beforeEach(() => {
   routeMocks.scrubExpiredNativeMcpRegistrationPreparations.mockReset().mockResolvedValue({
+    status: "complete", scrubbed: 0, moreAvailable: false, oldestExpiredAt: null,
+  });
+  routeMocks.scrubExpiredNativeOpenapiImportPreparations.mockReset().mockResolvedValue({
     status: "complete", scrubbed: 0, moreAvailable: false, oldestExpiredAt: null,
   });
   routeMocks.processDueResponsibilities.mockReset().mockResolvedValue({ inspected: 0, enqueued: 0, reconciled: 0, blocked: 0, failed: 0 });
@@ -1226,6 +1233,7 @@ describe("dedicated worker heartbeat timing", () => {
       expect(response.status).toBe(200);
       expect(routeMocks.scrubExpiredNativeConnectorCredentialPreparations).not.toHaveBeenCalled();
       expect(routeMocks.scrubExpiredNativeMcpRegistrationPreparations).not.toHaveBeenCalled();
+      expect(routeMocks.scrubExpiredNativeOpenapiImportPreparations).not.toHaveBeenCalled();
     } finally { clock.mockRestore(); }
   });
 
@@ -1265,8 +1273,52 @@ describe("dedicated worker heartbeat timing", () => {
       const response = await POST(workerRequest({ startup: false, lane: "maintenance" })), body = await response.json();
       expect(response.status).toBe(200);
       expect(routeMocks.scrubExpiredNativeMcpRegistrationPreparations).not.toHaveBeenCalled();
+      expect(routeMocks.scrubExpiredNativeOpenapiImportPreparations).not.toHaveBeenCalled();
       expect(body.maintenance[0].credentialPreparationScrub.scrubbed).toBe(1);
       expect(body.maintenance[0].mcpRegistrationPreparationScrub.status).toBe("deferred");
+    } finally { clock.mockRestore(); }
+  });
+
+  it.each([false, true])("retains OpenAPI snapshot cleanup evidence through a later tenant failure (scrub failure=%s)", async (failed) => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined), order: string[] = [];
+    try {
+      routeMocks.listMaintenanceTenantIds.mockResolvedValue(["import-first", "import-later"]);
+      routeMocks.scrubExpiredNativeMcpRegistrationPreparations.mockImplementationOnce(async () => {
+        order.push("registration"); return { status: "complete", scrubbed: 2, moreAvailable: false, oldestExpiredAt: null };
+      });
+      routeMocks.scrubExpiredNativeOpenapiImportPreparations.mockImplementationOnce(async (input) => {
+        order.push("import"); expect(input).toMatchObject({ tenantId: "import-first", limit: 100 });
+        expect(input.deadlineAt).toBeGreaterThan(Date.now());
+        if (failed) throw new Error("private imported document detail");
+        return { status: "complete", scrubbed: 4, moreAvailable: true, oldestExpiredAt: "2026-10-05T00:00:00.000Z" };
+      });
+      routeMocks.recoverInterruptedLoopV2Runs.mockImplementationOnce(async () => { order.push("recovery"); throw new Error("later recovery failed"); });
+      const response = await POST(workerRequest({ startup: false, lane: "maintenance" })), body = await response.json();
+      expect(response.status).toBe(200); expect(order).toEqual(["registration", "import", "recovery"]);
+      expect(body.maintenance[0].mcpRegistrationPreparationScrub).toMatchObject({ status: "complete", scrubbed: 2 });
+      expect(body.maintenance[0].openapiImportPreparationScrub).toEqual(failed
+        ? { status: "failed", scrubbed: 0, moreAvailable: true, oldestExpiredAt: null }
+        : { status: "complete", scrubbed: 4, moreAvailable: true, oldestExpiredAt: "2026-10-05T00:00:00.000Z" });
+      expect(body.maintenance[0].maintenanceError).toBe("later recovery failed");
+      expect(body.maintenanceTenantIds).toEqual(["import-first", "import-later"]);
+      expect(routeMocks.scrubExpiredNativeOpenapiImportPreparations).toHaveBeenCalledTimes(2);
+      expect(log.mock.calls.flat().join(" ")).not.toContain("private imported document detail");
+    } finally { log.mockRestore(); }
+  });
+
+  it("defers OpenAPI snapshot cleanup when earlier cleanup exhausts the remaining tick budget", async () => {
+    const now = Date.now(), clock = vi.spyOn(Date, "now").mockReturnValue(now);
+    try {
+      routeMocks.listMaintenanceTenantIds.mockResolvedValue(["import-budget"]);
+      routeMocks.scrubExpiredNativeMcpRegistrationPreparations.mockImplementationOnce(async () => {
+        clock.mockReturnValue(now + 300_000); return { status: "complete", scrubbed: 1, moreAvailable: false, oldestExpiredAt: null };
+      });
+      const response = await POST(workerRequest({ startup: false, lane: "maintenance" })), body = await response.json();
+      expect(response.status).toBe(200);
+      expect(routeMocks.scrubExpiredNativeOpenapiImportPreparations).not.toHaveBeenCalled();
+      expect(body.maintenance[0].mcpRegistrationPreparationScrub.scrubbed).toBe(1);
+      expect(body.maintenance[0].openapiImportPreparationScrub.status).toBe("deferred");
+      expect(routeMocks.recoverInterruptedLoopV2Runs).not.toHaveBeenCalled();
     } finally { clock.mockRestore(); }
   });
 
