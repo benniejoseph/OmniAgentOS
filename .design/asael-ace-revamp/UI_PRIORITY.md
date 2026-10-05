@@ -2,17 +2,47 @@
 
 The owner explicitly prioritized the UI revamp and ATLAS, asking to stabilize the current release and return to connector expansion afterward. The full implementation plan remains in scope; this changes execution order.
 
-Software releases through PR61 are accepted and merged. Security passed all sixteen
-hosted checks at `2278462b14a09d5d40b122cacf1266fe43e53549`, including 1,360
-Flutter cases, and merged as `27570a30ef84fe81ec0f954033293117ef1ac831`.
-Accepted, built and merged full Git trees are identical. Universal private Mac
-1.23.19+54 is verified with SHA256
-`38d34712ba33515f8737920a455d5a703c5c46053b9d8ae8d808fda1855967e0`.
-Production remains unchanged; private signing is not Apple notarization.
-Connector work is preserved in
-`codex/native-connector-controls` and is deferred until after this UI/ATLAS priority.
+## Current release checkpoint
 
-## Native Settings archive v2 — implementation checkpoint
+The UI is accepted and merged through **PR62, native Settings archive v2**.
+Accepted source `9cfadda5941ecbc189c39b86025ada7ef27cf8c0` passed all sixteen
+hosted gates, including 2,073 Flutter cases, and merged as
+`7cfeaf2e9c0268ab150e4c14637260add069b0c8`.
+
+**ATLAS HELD01 is accepted for bounded decorative raster delivery at 72px/256px.**
+PR63 source `6c7397b5b28bbac2a38f055d117f01f2106bb2de` admits the exact reviewed
+33-file bundle to each web/native destination and registers the native asset
+directory in `1.23.21+56`. Existing governed state, labels, preferences, static
+fallback/greeting and finite playback remain unchanged. This slice adds no
+migration and retains native API v39. The nineteen-source art/export identity
+remains frozen; this release status does not rewrite that evidence.
+
+Universal private **Mac56 is built and verified**, including all 33 packaged ATLAS
+files. Installer SHA256:
+`0583bcd3be365a0bfff88955a2a8788d95c425f5827fbe45cb5940eb70a17aca`.
+The [package receipt](</Volumes/Extreme Pro/Asael-release-records/2026-10-03-followups/ui-validation/macos-atlas-raster-release/verification.json>)
+binds the package to the PR63 source. It is privately signed and not Apple
+notarized; installation and application launch are not claimed.
+
+**PR63 remains pending.** Hosted build, Flutter and integration checks passed;
+the browser gate exposed its old 108px `atlas-neutral` fallback assumption after
+admission of the real 256px state posters. The corrected focused browser run
+passes all 120 assertions on desktop/phone, including exact light/dark posters
+and an explicit missing-manifest neutral fallback. Subsequent exact-head hosted
+acceptance remains next. PR63 is not yet merged or production-deployed.
+The operator release environment remains an external dependency for the paired
+production promotion; no new request is needed. Whole-program and physical-device
+acceptance remain open.
+
+Connector expansion stays parked at `ba468e7f` on
+`codex/native-connector-controls` until this UI/ATLAS priority is completed. The
+next native build must use the next free number, **at least 57**.
+
+The detailed checkpoint sections below are historical implementation records.
+Their references to a next slice, unpublished artwork, pending package or reserved
+build describe that checkpoint; the current release state is the section above.
+
+## Native Settings archive v2 — historical implementation checkpoint
 
 The next slice adds an explicit desktop destination-before-download archive action,
 with strict asset-free v2 schema, exact owner/tenant binding, local content/section/

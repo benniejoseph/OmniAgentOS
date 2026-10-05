@@ -153,8 +153,16 @@ def set_conversation_options(page, expanded):
         summary.click()
 
 
+def expect_voice_poster(page, path, size):
+    page.wait_for_function("""expected => {const image=document.querySelector('[data-voice-portrait] img');
+      return image?.complete && image.naturalWidth===expected.size && image.naturalHeight===expected.size &&
+        new URL(image.currentSrc||image.src,location.href).href===new URL(expected.path,location.href).href;}""",
+      arg={"path": path, "size": size})
+
+
 def exercise(browser, origin, credentials, checks, coarse):
     fixtures = Fixtures(origin)
+    atlas_manifest = json.loads((REPO / "public" / ATLAS_ROOT.lstrip("/") / "manifest.json").read_text())
     errors = []
     page = None
     context = browser.new_context(viewport={"width": 390 if coarse else 1440, "height": 844 if coarse else 900},
@@ -196,9 +204,9 @@ def exercise(browser, origin, credentials, checks, coarse):
         dialog = page.get_by_role("dialog", name="Realtime voice to Asael")
         expect(dialog).to_be_visible()
         checks.check("Voice consent does not open microphone", page.evaluate("window.__micAttempts") == 0)
-        page.wait_for_function("""() => {const image=document.querySelector('[data-voice-portrait] img');
-          return image?.naturalWidth===108 && new URL(image.currentSrc||image.src,location.href).pathname==='/companion/atlas-neutral.png';} """)
-        checks.check("Voice ATLAS: unpublished manifest keeps the approved neutral portrait",
+        light_poster = atlas_manifest["states"]["available"]["light"]
+        expect_voice_poster(page, ATLAS_ROOT + light_poster["poster"] + "?v=" + light_poster["posterSha256"], 256)
+        checks.check("Voice ATLAS: reviewed light poster preserves still consent",
                      not dialog.locator("[data-atlas-sprite]").is_visible())
         for _ in range(12):
             page.keyboard.press("Tab")
@@ -211,6 +219,10 @@ def exercise(browser, origin, credentials, checks, coarse):
         select_theme(page, "dark", coarse)
         trigger.click()
         expect(dialog).to_be_visible()
+        dark_poster = atlas_manifest["states"]["available"]["dark"]
+        expect_voice_poster(page, ATLAS_ROOT + dark_poster["poster"] + "?v=" + dark_poster["posterSha256"], 256)
+        checks.check("Voice ATLAS: reviewed dark poster preserves still consent",
+                     not dialog.locator("[data-atlas-sprite]").is_visible())
         checks.snapshot(page, f"voice-{label}-dark", coarse)
         page.keyboard.press("Escape")
         expect(dialog).to_have_count(0)
@@ -252,6 +264,33 @@ def exercise(browser, origin, credentials, checks, coarse):
         checks.check("No unexpected write, external request, popup or download", not fixtures.unexpected, fixtures.unexpected)
         checks.check("No uncaught browser errors", not errors, errors)
         checks.check("No microphone capture", page.evaluate("window.__micAttempts") == 0)
+
+        # A fresh document starts with the unavailable manifest fixture already
+        # installed; fallback coverage must not depend on published art or cache.
+        page.close()
+        page = context.new_page()
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        page.on("popup", lambda popup: (fixtures.unexpected.append({"kind": "popup"}), popup.close()))
+        page.on("download", lambda download: (fixtures.unexpected.append({"kind": "download"}), download.cancel()))
+        manifest_url = origin + ATLAS_ROOT + "manifest.json"
+        page.route(manifest_url, lambda route: route.fulfill(status=404, content_type="text/plain",
+                   body="Synthetic reviewed artwork unavailable", headers={"cache-control": "no-store"}))
+        navigate(page, origin, f"/app/command?thread={THREAD_ID}")
+        trigger = page.get_by_role("button", name="Start voice mode with Asael")
+        with page.expect_response(manifest_url) as missing_manifest:
+            trigger.click()
+        dialog = page.get_by_role("dialog", name="Realtime voice to Asael")
+        expect(dialog).to_be_visible()
+        expect_voice_poster(page, "/companion/atlas-neutral.png", 108)
+        expect(dialog.get_by_role("button", name="Agree & start", exact=True)).to_be_enabled()
+        checks.check("Voice ATLAS: unavailable manifest keeps neutral consent without microphone or motion",
+                     missing_manifest.value.status == 404 and page.evaluate("window.__micAttempts") == 0
+                     and not dialog.locator("[data-atlas-sprite]").is_visible())
+        page.keyboard.press("Escape")
+        expect(dialog).to_have_count(0)
+        expect(trigger).to_be_focused()
+        checks.check("Voice fallback: no unplanned request or browser error", not fixtures.unexpected and not errors,
+                     {"unexpected": fixtures.unexpected, "errors": errors})
         return {"viewport": label, "writes": fixtures.writes, "readPaths": sorted(fixtures.reads),
                 "unexpected": fixtures.unexpected, "browserErrors": errors}
     except Exception:
