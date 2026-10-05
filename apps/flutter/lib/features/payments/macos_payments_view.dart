@@ -6,6 +6,7 @@ import '../../app/theme/macos_app_theme.dart';
 import '../../core/network/api_client.dart';
 import '../../core/network/native_workspace_access.dart';
 import '../../generated/native_contract.g.dart';
+import 'payment_read_state.dart';
 
 typedef _Json = Map<String, dynamic>;
 
@@ -28,11 +29,14 @@ class _MacosPaymentsViewState extends State<MacosPaymentsView> {
   final _searchController = TextEditingController();
   final _searchFocus = FocusNode(debugLabel: 'Search payment evidence');
   Future<void>? _loadInFlight;
-  _Json? _readiness;
-  _Json? _reviews;
-  _Json? _authenticators;
-  _Json? _transactions;
-  Object? _error;
+  final _readinessSource = PaymentReadState();
+  final _reviewsSource = PaymentReadState(collectionKey: 'reviews');
+  final _authenticatorsSource = PaymentReadState(collectionKey: 'credentials');
+  final _transactionsSource = PaymentReadState(collectionKey: 'transactions');
+  _Json? get _readiness => _readinessSource.value;
+  _Json? get _reviews => _reviewsSource.value;
+  _Json? get _authenticators => _authenticatorsSource.value;
+  _Json? get _transactions => _transactionsSource.value;
   bool _loading = true;
   _PaymentSection _section = _PaymentSection.mandates;
   final Map<_PaymentSection, String?> _selectedIds = {
@@ -66,37 +70,38 @@ class _MacosPaymentsViewState extends State<MacosPaymentsView> {
     });
   }
 
-  Future<void> _performLoad() async {
-    if (mounted) {
-      setState(() {
-        _loading = true;
-        _error = null;
-      });
-    }
+  Future<void> _loadSource(String path, PaymentReadState source) async {
     try {
-      final primary = await Future.wait([
-        _read(NativePaths.paymentsReadiness),
-        _read(NativePaths.paymentsReviews),
-      ]);
+      final value = await _read(path);
       if (!mounted) return;
-      setState(() {
-        _readiness = primary[0];
-        _reviews = primary[1];
-      });
-      final secondary = await Future.wait([
-        _read(NativePaths.paymentsAuthenticators),
-        _read(NativePaths.paymentsTransactions),
-      ]);
-      if (!mounted) return;
-      setState(() {
-        _authenticators = secondary[0];
-        _transactions = secondary[1];
-      });
+      setState(() => source.complete(value));
     } catch (error) {
-      if (mounted) setState(() => _error = error);
-    } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) setState(() => source.fail(error));
     }
+  }
+
+  Future<void> _performLoad() async {
+    setState(() {
+      _loading = true;
+      for (final source in [
+        _readinessSource,
+        _reviewsSource,
+        _authenticatorsSource,
+        _transactionsSource,
+      ]) {
+        source.begin();
+      }
+    });
+    await Future.wait([
+      _loadSource(NativePaths.paymentsReadiness, _readinessSource),
+      _loadSource(NativePaths.paymentsReviews, _reviewsSource),
+    ]);
+    if (!mounted) return;
+    await Future.wait([
+      _loadSource(NativePaths.paymentsAuthenticators, _authenticatorsSource),
+      _loadSource(NativePaths.paymentsTransactions, _transactionsSource),
+    ]);
+    if (mounted) setState(() => _loading = false);
   }
 
   List<_Json> get _mandates => (_reviews?['reviews'] as List? ?? const [])
@@ -127,6 +132,11 @@ class _MacosPaymentsViewState extends State<MacosPaymentsView> {
       _PaymentSection.evidence => evidence,
     });
     final selected = _selectedItem(visible);
+    final source = switch (_section) {
+      _PaymentSection.mandates => _reviewsSource,
+      _PaymentSection.signers => _authenticatorsSource,
+      _PaymentSection.evidence => _transactionsSource,
+    };
 
     return CallbackShortcuts(
       bindings: {
@@ -167,9 +177,9 @@ class _MacosPaymentsViewState extends State<MacosPaymentsView> {
           ],
           toolbar: _PaymentsToolbar(
             section: _section,
-            mandates: mandates.length,
-            signers: signers.length,
-            evidence: evidence.length,
+            mandates: _reviewsSource.current ? '${mandates.length}' : '—',
+            signers: _authenticatorsSource.current ? '${signers.length}' : '—',
+            evidence: _transactionsSource.current ? '${evidence.length}' : '—',
             searchController: _searchController,
             searchFocus: _searchFocus,
             onSearch: (_) => setState(() {}),
@@ -191,8 +201,12 @@ class _MacosPaymentsViewState extends State<MacosPaymentsView> {
               section: _section,
               values: visible,
               selectedId: selected == null ? null : _itemId(_section, selected),
-              loading: _loading,
-              error: _error,
+              loading: source.loading,
+              refreshing: _loading,
+              error: source.error,
+              readinessError: _readinessSource.error,
+              readinessCached: _readiness != null,
+              filtered: _searchController.text.trim().isNotEmpty,
               hasCachedData: switch (_section) {
                 _PaymentSection.mandates => _reviews != null,
                 _PaymentSection.signers => _authenticators != null,
@@ -280,7 +294,7 @@ class _PaymentsToolbar extends StatelessWidget {
   });
 
   final _PaymentSection section;
-  final int mandates, signers, evidence;
+  final String mandates, signers, evidence;
   final TextEditingController searchController;
   final FocusNode searchFocus;
   final ValueChanged<String> onSearch;
@@ -362,7 +376,7 @@ class _CompactPaymentSectionMenu extends StatelessWidget {
   });
 
   final _PaymentSection section;
-  final int mandates, signers, evidence;
+  final String mandates, signers, evidence;
   final ValueChanged<_PaymentSection> onChanged;
 
   @override
@@ -414,7 +428,7 @@ class _CompactPaymentSectionMenu extends StatelessWidget {
     ),
   );
 
-  int _count(_PaymentSection value) => switch (value) {
+  String _count(_PaymentSection value) => switch (value) {
     _PaymentSection.mandates => mandates,
     _PaymentSection.signers => signers,
     _PaymentSection.evidence => evidence,
@@ -429,6 +443,10 @@ class _PaymentsBrowser extends StatelessWidget {
     required this.loading,
     required this.error,
     required this.hasCachedData,
+    required this.refreshing,
+    required this.readinessError,
+    required this.readinessCached,
+    required this.filtered,
     required this.readiness,
     required this.trustPolicyLoaded,
     required this.onRetry,
@@ -438,8 +456,13 @@ class _PaymentsBrowser extends StatelessWidget {
   final _PaymentSection section;
   final List<_Json> values;
   final String? selectedId;
-  final bool loading, hasCachedData, trustPolicyLoaded;
-  final Object? error;
+  final bool loading,
+      refreshing,
+      hasCachedData,
+      trustPolicyLoaded,
+      readinessCached,
+      filtered;
+  final Object? error, readinessError;
   final _Json? readiness;
   final VoidCallback onRetry;
   final ValueChanged<_Json> onSelect;
@@ -453,11 +476,17 @@ class _PaymentsBrowser extends StatelessWidget {
           readiness: readiness,
           trustPolicyLoaded: trustPolicyLoaded,
         ),
+        if (readinessError != null)
+          _PaymentRefreshNotice(
+            hasCachedData: readinessCached,
+            label: 'Payment readiness',
+            retry: refreshing ? null : onRetry,
+          ),
         if (error != null)
           _PaymentRefreshNotice(
             hasCachedData: hasCachedData,
-            error: error!,
-            retry: onRetry,
+            label: _sectionLabel(section),
+            retry: refreshing ? null : onRetry,
           ),
         Expanded(
           child: Container(
@@ -470,8 +499,29 @@ class _PaymentsBrowser extends StatelessWidget {
             clipBehavior: Clip.antiAlias,
             child: loading && !hasCachedData
                 ? const MacosLoadingList(rows: 8)
+                : !hasCachedData
+                ? MacosEmptyState(
+                    icon: Icons.cloud_off_outlined,
+                    title: '${_sectionLabel(section)} unavailable',
+                    message:
+                        'We could not load this collection. Try refreshing.',
+                  )
                 : values.isEmpty
-                ? _PaymentEmptyState(section: section)
+                ? filtered
+                      ? MacosEmptyState(
+                          icon: Icons.search_off,
+                          title: 'No matching payment records',
+                          message: loading || error != null
+                              ? 'Clear the search to view the last available collection.'
+                              : 'Clear the search to view the full loaded collection.',
+                        )
+                      : (loading || error != null)
+                      ? const MacosEmptyState(
+                          icon: Icons.history,
+                          title: 'No entries in the last available result',
+                          message: 'Refresh this view before treating it as current.',
+                        )
+                      : _PaymentEmptyState(section: section)
                 : Column(
                     children: [
                       _PaymentTableHeader(section: section),
@@ -1274,13 +1324,13 @@ class _InspectorBoundary extends StatelessWidget {
 class _PaymentRefreshNotice extends StatelessWidget {
   const _PaymentRefreshNotice({
     required this.hasCachedData,
-    required this.error,
+    required this.label,
     required this.retry,
   });
 
   final bool hasCachedData;
-  final Object error;
-  final VoidCallback retry;
+  final String label;
+  final VoidCallback? retry;
 
   @override
   Widget build(BuildContext context) {
@@ -1296,8 +1346,8 @@ class _PaymentRefreshNotice extends StatelessWidget {
           Expanded(
             child: Text(
               hasCachedData
-                  ? 'Showing the last available payment evidence. The latest refresh did not complete.'
-                  : 'Payment evidence is unavailable. ${error.toString()}',
+                  ? '$label could not refresh. Showing the last available result.'
+                  : '$label could not be loaded.',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: Theme.of(context).textTheme.bodySmall
