@@ -61,7 +61,8 @@
     "release:signing-key": "node scripts/release-signing-key.mjs",
     "verify": "npm run audit:production && npm run typecheck && npm run lint && npm run check:native-contracts && npm run test:coverage && npm run test:integration && npm run check:worker && npm run check:operations && NEXT_PUBLIC_APP_URL=http://127.0.0.1:3100 npm run build && npm run check:route-js && npm run check:server-traces",
     "eval:agents": "node scripts/run-evals.mjs",
-    "worker": "node scripts/worker.mjs"
+    "worker": "node scripts/worker.mjs",
+    "smoke:web-research": "node scripts/smoke-web-research.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

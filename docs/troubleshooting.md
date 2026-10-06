@@ -355,7 +355,7 @@ alone does not trigger a paid search for an otherwise offline request.
 
 For a bounded authenticated check, provide `BASE_URL`, `EXPECTED_REVISION`,
 `SMOKE_PAID_AGENT_EMAIL`, and `SMOKE_PAID_AGENT_PASSWORD` through the operator
-environment, then run `node scripts/smoke-web-research.mjs`. Optional
+environment, then run `npm run smoke:web-research`. Optional
 `SMOKE_INTERNAL_AUTH_SECRET` labels synthetic telemetry, and
 `VERCEL_AUTOMATION_BYPASS_SECRET` admits a protected staged deployment. The
 script never uses those headers as execution identity. It verifies a direct
