@@ -65,7 +65,7 @@
     "smoke:web-research": "node scripts/smoke-web-research.mjs"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@modelcontextprotocol/sdk": "^1.31.0",
     "@napi-rs/canvas": "0.1.80",
     "@simplewebauthn/browser": "^14.0.0",
     "@simplewebauthn/server": "^14.0.1",
