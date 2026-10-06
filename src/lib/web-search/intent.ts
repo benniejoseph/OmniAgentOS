@@ -15,4 +15,3 @@ export function shouldUseLiveWebSearch(query: string) {
 
   return freshnessPattern.test(normalized);
 }
-
