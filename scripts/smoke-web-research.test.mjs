@@ -7,6 +7,7 @@ import {
   RESEARCH_REPORT_PROMPT,
   runSmokeWebResearch,
   smokeConfig,
+  verifyResearchEvents,
   verifyResearchReportEvents,
 } from "./smoke-web-research.mjs";
 
@@ -355,6 +356,59 @@ test("report mode tolerates unavailable pages only after enough successful reads
   events.splice(-1, 0, { type: "tool", toolId: "web.read", status: "failed", dryRun: false,
     riskLevel: 0, executionId: "00000000-0000-4000-8000-000000000099" });
   assert.equal(verifyResearchReportEvents(events).webReadExecutions, 2);
+  assert.equal(verifyResearchReportEvents(events).failedWebReadAttempts, 1);
+});
+
+test("report mode accepts recovered recorded search failures and reports their counts while quick smoke stays strict", () => {
+  const events = reportEvents();
+  for (let index = 1; index <= 3; index += 1) {
+    events.splice(1, 0, { type: "tool", toolId: "web.search", status: "failed", dryRun: false,
+      riskLevel: 0, executionId: `00000000-0000-4000-8000-${String(100 + index).padStart(12, "0")}`,
+      summary: "Request was aborted." });
+  }
+  const receipt = verifyResearchReportEvents(events);
+  assert.equal(receipt.webToolExecutions, 3);
+  assert.equal(receipt.webReadExecutions, 2);
+  assert.equal(receipt.failedWebSearchAttempts, 3);
+  assert.equal(receipt.failedWebReadAttempts, 0);
+  assert.throws(() => verifyResearchEvents(events), /did not remain an approved live read/);
+  const insufficient = events.filter((event) => event.executionId !== "00000000-0000-4000-8000-000000000001");
+  assert.throws(() => verifyResearchReportEvents(insufficient), /three executed web.search/);
+});
+
+test("recovered report still rejects missing, malformed, or unsafe failed search and read receipts", () => {
+  for (const toolId of ["web.search", "web.read"]) {
+    for (const patch of [
+      { executionId: undefined }, { executionId: "malformed" }, { dryRun: undefined },
+      { dryRun: true }, { riskLevel: undefined }, { riskLevel: 2 },
+      { status: "blocked" }, { status: "approval_required" }, { status: "dry_run" },
+      { status: "rejected" }, { status: undefined }, { toolId: "http.request" },
+    ]) {
+      const events = reportEvents();
+      events.splice(1, 0, { type: "tool", toolId, status: "failed", dryRun: false,
+        riskLevel: 0, executionId: "00000000-0000-4000-8000-000000000101", ...patch });
+      assert.throws(() => verifyResearchReportEvents(events), /malformed or unexecuted|did not remain an approved live read|outside its public read-only allowlist/);
+    }
+  }
+});
+
+test("report receipts accept exact canonical idempotent IDs while rejecting malformed digest identities", () => {
+  const canonical = reportEvents();
+  for (const event of canonical.filter((item) => item.type === "tool")) {
+    event.executionId = `idem_${createHash("sha256").update(`tenant-fixture\u0000${event.executionId}`).digest("hex")}`;
+  }
+  assert.equal(verifyResearchReportEvents(canonical).webToolExecutions, 3);
+  for (const malformed of [
+    `idem_${"a".repeat(63)}`, `idem_${"a".repeat(65)}`, `idem_${"g".repeat(64)}`,
+    `idem_${"A".repeat(64)}`, `IDEM_${"a".repeat(64)}`, `tool_${"a".repeat(64)}`,
+    ` ${canonical[1].executionId}`, `${canonical[1].executionId}\n`,
+  ]) {
+    const events = reportEvents();
+    events[1].executionId = malformed;
+    assert.throws(() => verifyResearchReportEvents(events), /malformed or unexecuted/);
+  }
+  canonical[2].executionId = canonical[1].executionId;
+  assert.throws(() => verifyResearchReportEvents(canonical), /repeated a tool execution/);
 });
 
 test("report acceptance requires sections and does not count a code dump as report prose", () => {
