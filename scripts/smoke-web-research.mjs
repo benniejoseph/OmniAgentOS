@@ -57,7 +57,8 @@ const RESEARCH_BUDGET = Object.freeze({
 });
 export const RESEARCH_REPORT_BUDGET = Object.freeze({
   modelTurns: 10,
-  tokens: 200_000,
+  // The Agent API checks both direct and workflow ceilings before routing.
+  tokens: 120_000,
   costMicrousd: 1_000_000,
   wallTimeMs: 240_000,
   toolCalls: 12,
