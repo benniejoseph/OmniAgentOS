@@ -57,6 +57,8 @@ const OPENAI_GATEWAY_URL = "https://omniagent-os-worker.fly.dev/v1";
 const OPENAI_GATEWAY_TOKEN_ENV = "OMNIAGENT_OPENAI_GATEWAY_TOKEN";
 const OPENAI_GATEWAY_PREVIOUS_TOKEN_ENV =
   "OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN";
+const OPENAI_GATEWAY_RECOVERY_TOKEN_ENV = "OMNIAGENT_OPENAI_GATEWAY_RECOVERY_TOKEN";
+const OPENAI_GATEWAY_RECOVERY_SELECTOR_ENV = "OMNIAGENT_OPENAI_GATEWAY_USE_RECOVERY_TOKEN";
 const OPENAI_GATEWAY_INITIAL_CUTOVER_ENV =
   "OMNIAGENT_OPENAI_GATEWAY_INITIAL_CUTOVER";
 const RELEASE_SPLIT_RECOVERY_ENV = "OMNIAGENT_RELEASE_SPLIT_RECOVERY";
@@ -72,6 +74,9 @@ const WORKER_RELEASE_ACTIVATION_FILE =
   "/tmp/asael-worker-release-activated";
 const dryRun = process.argv.includes("--dry-run");
 const useHostedVerification = process.argv.includes("--use-hosted-verification");
+// A lost-token recovery keeps the unknown, managed Fly primary untouched.
+// The locally supplied token is a fresh secondary, never the prior secret.
+const preserveGatewayPrimary = process.argv.includes("--preserve-gateway-primary");
 const configurationProbe = process.argv.includes("--configuration-probe");
 const provenanceProbe = process.argv.includes("--provenance-probe");
 const readinessProbeIndex = process.argv.indexOf("--readiness-probe");
@@ -226,6 +231,10 @@ if (provenanceProbe) {
 
 if (dryRun) {
   printDryRunReleaseProvenance();
+  if (preserveGatewayPrimary) {
+    console.log("DRY RUN verify deployed Fly secret metadata, immutable compatible rollback image, production-only sensitive Vercel primary, absent recovery alias/selector, and fresh old-deployment provider proof");
+    console.log("DRY RUN create owned sensitive recovery alias through stdin; candidate uses only the non-secret recovery selector");
+  }
   if (useHostedVerification) {
     console.log("DRY RUN use green exact-commit hosted verification; defer the repeated local suite");
   } else {
@@ -262,6 +271,7 @@ if (dryRun) {
       `OMNIAGENT_RELEASE_SHA=${revision}`,
       "--env",
       `${RELEASE_MANIFEST_ENV}=<release manifest signed with ${RELEASE_SIGNING_KEY_FILE_ENV}>`,
+      ...(preserveGatewayPrimary ? ["--env", `${OPENAI_GATEWAY_RECOVERY_SELECTOR_ENV}=true`] : []),
     ],
     vercelEnvironment,
   );
@@ -299,12 +309,16 @@ if (dryRun) {
     PRODUCTION_BASE_URL,
     "<activation-started-at>",
   );
+  if (preserveGatewayPrimary) {
+    console.log("DRY RUN retain Fly primary and secondary through rollback; after every release gate passes, update the sensitive Vercel primary through stdin and remove only the owned recovery alias");
+  }
   process.exit(0);
 }
 
 const releaseConfiguration = validateReleaseConfiguration();
 const productionBaseUrl = releaseConfiguration.baseUrl;
 const openAIGateway = releaseConfiguration.openAIGateway;
+if (preserveGatewayPrimary) delete process.env[OPENAI_GATEWAY_TOKEN_ENV];
 const initialOpenAIGatewayCutover =
   releaseConfiguration.initialOpenAIGatewayCutover;
 const splitRecovery = releaseConfiguration.splitRecovery;
@@ -330,14 +344,14 @@ if (useHostedVerification) {
     fail(`Production verification failed: ${errorMessage(error)}`),
   );
 }
-const previousWorkerImage = await getCurrentWorkerImage();
+let previousWorkerImage = await getCurrentWorkerImage();
 const previousVercelDeployment = await getCurrentVercelDeployment(
   productionBaseUrl,
 );
 const previousHealthRevision = await getCurrentHealthRevision(
   productionBaseUrl,
 );
-const rollbackOpenAIGateway = openAIGateway && !initialOpenAIGatewayCutover
+const rollbackOpenAIGateway = openAIGateway && !initialOpenAIGatewayCutover && !preserveGatewayPrimary
   ? createRollbackGatewayConfiguration(openAIGateway)
   : undefined;
 // A rollback restores the gateway to the revision it serves now. That is the
@@ -371,8 +385,19 @@ if (rollbackOpenAIGateway) {
   ).catch((error) => fail(errorMessage(error)));
 }
 
+const primaryRecovery = preserveGatewayPrimary
+  ? await prepareManagedPrimaryRecovery({
+      gateway: openAIGateway,
+      previousWorkerImage,
+      previousVercelDeployment,
+      previousHealthRevision,
+    }).catch((error) => fail(errorMessage(error)))
+  : undefined;
+if (primaryRecovery) previousWorkerImage = primaryRecovery.workerImage;
+
 let workerMutationStarted = false;
 let vercelPromoted = false;
+let releaseVerified = false;
 try {
   if (splitRecovery) {
     // Release evidence fails a split production on its worker and gateway
@@ -422,6 +447,7 @@ try {
   console.log(
     `Signed the release manifest for ${provenance.revision} with key ${signingKey.keyId}.`,
   );
+  if (primaryRecovery) await createRecoveryAlias(primaryRecovery, openAIGateway.token);
   const deploymentOutput = await capture(
     "vercel",
     [
@@ -435,8 +461,9 @@ try {
       `OMNIAGENT_RELEASE_SHA=${revision}`,
       "--env",
       `${RELEASE_MANIFEST_ENV}=${releaseManifest}`,
+      ...(primaryRecovery ? ["--env", `${OPENAI_GATEWAY_RECOVERY_SELECTOR_ENV}=true`] : []),
     ],
-    { environment: vercelEnvironment, echo: true },
+    { environment: vercelEnvironment, echo: !primaryRecovery, sensitive: Boolean(primaryRecovery) },
   );
   const stagedBaseUrl = deploymentUrlFromOutput(deploymentOutput);
   await waitForDeploymentReadiness(stagedBaseUrl, revision, {
@@ -446,7 +473,9 @@ try {
   // anything production runs on has changed.
   await runManifestVerification(stagedBaseUrl, releaseManifest);
   workerMutationStarted = true;
-  if (openAIGateway) {
+  if (primaryRecovery) {
+    await stageManagedPrimaryRecovery(primaryRecovery, openAIGateway.token);
+  } else if (openAIGateway) {
     await stageFlyGatewayTokenOverlap(openAIGateway, {
       label: "Candidate gateway overlap",
     });
@@ -461,6 +490,7 @@ try {
       },
     );
   }
+  if (primaryRecovery) await verifyManagedPrimaryPair(primaryRecovery, revision, "Staged recovery overlap");
   await waitForWorkerStartupWindow("Staged worker");
   await runPaidAgentVerification(stagedBaseUrl);
   await runVerificationCommands(stagedBaseUrl);
@@ -489,6 +519,7 @@ try {
       },
     );
   }
+  if (primaryRecovery) await verifyManagedPrimaryPair(primaryRecovery, revision, "Canonical recovery overlap");
   await waitForWorkerStartupWindow("Canonical worker");
   await runPaidAgentVerification(productionBaseUrl);
   await runVerificationCommands(productionBaseUrl);
@@ -499,12 +530,32 @@ try {
     productionBaseUrl,
     workerActivationStartedAt,
   );
+  releaseVerified = true;
+  if (primaryRecovery) {
+    // The old project secret is write-only. Change it only after the new
+    // deployment has passed every gate; an ambiguous final write must not
+    // roll back a verified deployment or claim to reconstruct that secret.
+    await synchronizeRecoveryPrimary(primaryRecovery, openAIGateway.token);
+    await removeOwnedRecoveryAlias(primaryRecovery);
+    console.log("Gateway recovery completed; Fly still retains both tokens through the rollback window.");
+  }
 } catch (error) {
+  if (primaryRecovery && releaseVerified) {
+    fail(`Verified production release retained with both Fly tokens. Vercel secret synchronization or alias cleanup needs operator reconciliation; do not rerun recovery blindly. ${errorMessage(error)}`);
+  }
   const rollbackErrors = [];
+  if (primaryRecovery?.aliasCreationAttempted && !primaryRecovery.aliasId) {
+    rollbackErrors.push("Recovery alias creation was not confirmed; reconcile its metadata before retrying. No unowned alias was removed.");
+  }
   let workerRollbackSucceeded = !workerMutationStarted;
   if (workerMutationStarted) {
     let gatewaySecretsRestored = true;
-    if (rollbackOpenAIGateway) {
+    if (primaryRecovery) {
+      await verifyRecoverySecretInventory(primaryRecovery, { allowPending: true }).catch((rollbackError) => {
+        gatewaySecretsRestored = false;
+        rollbackErrors.push(`Retained gateway secret verification failed: ${errorMessage(rollbackError)}`);
+      });
+    } else if (rollbackOpenAIGateway) {
       await stageFlyGatewayTokenOverlap(rollbackOpenAIGateway, {
         label: "Rollback gateway overlap",
       }).catch((rollbackError) => {
@@ -522,7 +573,8 @@ try {
           productionBaseUrl,
           initialOpenAIGatewayCutover,
         ),
-      ).then(() => {
+      ).then(async () => {
+        if (primaryRecovery) await verifyManagedPrimaryPair(primaryRecovery, previousHealthRevision, "Rollback recovery overlap");
         workerRollbackSucceeded = true;
       }).catch((rollbackError) => {
         rollbackErrors.push(`Fly rollback failed: ${errorMessage(rollbackError)}`);
@@ -558,6 +610,11 @@ try {
       rollbackErrors.push(
         `Rollback verification failed: ${errorMessage(rollbackError)}`,
       );
+    });
+  }
+  if (primaryRecovery?.aliasId && !rollbackErrors.length) {
+    await removeOwnedRecoveryAlias(primaryRecovery).catch((cleanupError) => {
+      rollbackErrors.push(`Owned recovery alias cleanup failed: ${errorMessage(cleanupError)}`);
     });
   }
   fail(
@@ -684,6 +741,12 @@ function validateReleaseConfiguration() {
     previousToken,
     initialOpenAIGatewayCutover,
   });
+  if (preserveGatewayPrimary && (
+    !openAIGateway || previousToken || initialOpenAIGatewayCutover || splitRecovery ||
+    flyApp !== "omniagent-os-worker"
+  )) {
+    fail("--preserve-gateway-primary requires the production gateway, a fresh local token, no previous token, and no initial-cutover or split-recovery mode.");
+  }
   let forwardSchemaRecovery;
   try {
     forwardSchemaRecovery = parseForwardSchemaRecovery(
@@ -1106,6 +1169,247 @@ async function flySecretExists(secretName) {
   return secrets.some((secret) =>
     [secret?.name, secret?.Name].some((name) => name === secretName),
   );
+}
+
+// These inventories contain metadata only. Never ask either platform to
+// decrypt a secret, and never echo the raw API response or a CLI diagnostic.
+async function recoveryFlySecrets() {
+  const raw = await capture("fly", ["secrets", "list", "--app", flyApp, "--json"], { sensitive: true });
+  let records;
+  try { records = JSON.parse(raw); } catch { throw new Error("Invalid Fly secret metadata."); }
+  if (!Array.isArray(records) || !records.length || records.some((entry) =>
+    !entry || !/^[A-Z0-9_]+$/.test(entry.name || "") ||
+    !/^[a-f0-9]{16,128}$/i.test(entry.digest || "") || typeof entry.status !== "string"
+  ) || new Set(records.map((entry) => entry.name)).size !== records.length) {
+    throw new Error("Ambiguous Fly secret metadata.");
+  }
+  return records.map(({ name, digest, status }) => ({ name, digest, status }));
+}
+
+async function recoveryVercelEnvironment() {
+  const raw = await capture("vercel", [
+    "api", `/v10/projects/${VERCEL_PROJECT_ID}/env?decrypt=false`,
+    "--method", "GET", "--scope", VERCEL_SCOPE, "--raw",
+  ], { environment: vercelEnvironment, sensitive: true });
+  let records;
+  try { records = raw.length <= 1_048_576 && JSON.parse(raw).envs; } catch { throw new Error("Invalid Vercel environment metadata."); }
+  if (!Array.isArray(records) || records.some((entry) => !entry || typeof entry.key !== "string" || typeof entry.id !== "string")) {
+    throw new Error("Ambiguous Vercel environment metadata.");
+  }
+  return records.map(({ id, key, type, visibility, target, gitBranch, customEnvironmentIds, updatedAt, createdAt }) =>
+    ({ id, key, type, visibility, target, gitBranch, customEnvironmentIds, updatedAt: updatedAt ?? createdAt }));
+}
+
+function exactSensitiveProductionVariable(records, key) {
+  const matches = records.filter((entry) => entry.key === key && (
+    Array.isArray(entry.target) ? entry.target.includes("production") : true
+  ));
+  const record = matches[0];
+  if (matches.length !== 1 || !record.id || !Number.isSafeInteger(record.updatedAt) || record.updatedAt <= 0 ||
+    !(record.type === "sensitive" || record.visibility === "secret") ||
+    !Array.isArray(record.target) || record.target.length !== 1 || record.target[0] !== "production" ||
+    record.gitBranch || (record.customEnvironmentIds != null &&
+      (!Array.isArray(record.customEnvironmentIds) || record.customEnvironmentIds.length))) {
+    throw new Error(`${key} must have exactly one unbranched, production-only sensitive Vercel record.`);
+  }
+  return record;
+}
+
+async function prepareManagedPrimaryRecovery({ gateway, previousWorkerImage, previousVercelDeployment, previousHealthRevision }) {
+  if (!/^[a-f0-9]{40}$/.test(previousHealthRevision)) {
+    throw new Error("Managed-primary recovery requires an exact prior commit SHA.");
+  }
+  await run("git", ["diff", "--quiet", previousHealthRevision, "--",
+    "Dockerfile.worker", "scripts/worker.mjs", "scripts/openai-egress-gateway.mjs",
+    "scripts/internal-identity-token.mjs", "scripts/worker-release-activation.mjs",
+  ]).catch(() => { throw new Error("The rollback worker sources differ from the audited two-token worker; recovery compatibility is unproven."); });
+  const secrets = await recoveryFlySecrets();
+  if (secrets.some((entry) => entry.status !== "Deployed") ||
+    !secrets.some((entry) => entry.name === OPENAI_GATEWAY_TOKEN_ENV) ||
+    secrets.some((entry) => entry.name === OPENAI_GATEWAY_PREVIOUS_TOKEN_ENV)) {
+    throw new Error("Recovery requires a deployed Fly primary, an empty secondary slot, and no staged secrets.");
+  }
+  const statusRaw = await capture("fly", ["status", "--app", flyApp, "--json"], { sensitive: true });
+  let machines;
+  try { machines = JSON.parse(statusRaw).Machines; } catch { throw new Error("Invalid rollback machine metadata."); }
+  const firstImage = machines?.[0]?.image_ref;
+  if (!Array.isArray(machines) || !machines.length ||
+    firstImage?.registry !== "registry.fly.io" || firstImage?.repository !== flyApp ||
+    !/^sha256:[a-f0-9]{64}$/.test(firstImage?.digest || "") ||
+    machines.some((machine) => machine.state !== "started" || machine.region !== OPENAI_GATEWAY_REGION ||
+      !machine.id || machine.config?.image !== previousWorkerImage ||
+      machine.image_ref?.registry !== firstImage.registry || machine.image_ref?.repository !== firstImage.repository ||
+      machine.image_ref?.digest !== firstImage.digest)) {
+    throw new Error("Recovery requires started, release-matched Fly machines with one immutable rollback image.");
+  }
+  const environment = await recoveryVercelEnvironment();
+  const primary = exactSensitiveProductionVariable(environment, OPENAI_GATEWAY_TOKEN_ENV);
+  if (environment.some((entry) => [OPENAI_GATEWAY_RECOVERY_TOKEN_ENV, OPENAI_GATEWAY_RECOVERY_SELECTOR_ENV].includes(entry.key))) {
+    throw new Error("Recovery alias and selector must be absent from the Vercel project before recovery.");
+  }
+  const recovery = {
+    gateway, secrets, primaryId: primary.id, primaryUpdatedAt: primary.updatedAt, aliasId: undefined, aliasUpdatedAt: undefined,
+    previousVercelDeployment, previousHealthRevision,
+    workerImage: `${firstImage.registry}/${firstImage.repository}@${firstImage.digest}`,
+    secondaryDigest: undefined,
+  };
+  const health = await readOpenAIGatewayHealth(gateway, previousHealthRevision, gatewayReadinessRequestTimeoutMs);
+  if (!gatewayHealthObservationReady(health)) throw new Error("Recovery requires the current web and gateway to be paired and healthy.");
+  if (await probeOpenAIGatewayToken(gateway, gatewayReadinessRequestTimeoutMs) !== 401) {
+    throw new Error("Recovery requires a fresh candidate token rejected by the current gateway.");
+  }
+  await waitForPreservedPrimaryProof(recovery, Date.now(), "Prior recovery web");
+  console.log("Managed-primary recovery preflight passed with a pinned compatible rollback image and fresh prior-provider proof.");
+  return recovery;
+}
+
+async function assertRecoveryVercelMetadata(recovery, { aliasRequired = true, primaryWriteCompleted = false } = {}) {
+  const records = await recoveryVercelEnvironment();
+  const primary = exactSensitiveProductionVariable(records, OPENAI_GATEWAY_TOKEN_ENV);
+  if (primary.id !== recovery.primaryId ||
+    (!primaryWriteCompleted && primary.updatedAt !== recovery.primaryUpdatedAt) ||
+    (primaryWriteCompleted && primary.updatedAt < recovery.primaryUpdatedAt) ||
+    records.some((entry) => entry.key === OPENAI_GATEWAY_RECOVERY_SELECTOR_ENV)) {
+    throw new Error("Vercel recovery metadata changed; refusing an ambiguous secret mutation.");
+  }
+  const aliases = records.filter((entry) => entry.key === OPENAI_GATEWAY_RECOVERY_TOKEN_ENV);
+  if (!aliasRequired) {
+    if (aliases.length) throw new Error("The recovery alias appeared concurrently; it is not owned by this release.");
+    return;
+  }
+  const alias = exactSensitiveProductionVariable(records, OPENAI_GATEWAY_RECOVERY_TOKEN_ENV);
+  if (aliases.length !== 1 || (recovery.aliasId && (
+    alias.id !== recovery.aliasId || alias.updatedAt !== recovery.aliasUpdatedAt))) {
+    throw new Error("Recovery alias ownership changed; refusing to update or remove it.");
+  }
+  if (primaryWriteCompleted) recovery.primaryUpdatedAt = primary.updatedAt;
+  return alias;
+}
+
+async function createRecoveryAlias(recovery, token) {
+  await assertRecoveryVercelMetadata(recovery, { aliasRequired: false });
+  recovery.aliasCreationAttempted = true;
+  await runWithSensitiveStdin("vercel", ["env", "add", OPENAI_GATEWAY_RECOVERY_TOKEN_ENV,
+    "production", "--sensitive", "--yes", "--scope", VERCEL_SCOPE], token, { environment: vercelEnvironment });
+  const alias = await assertRecoveryVercelMetadata(recovery);
+  recovery.aliasId = alias.id;
+  recovery.aliasUpdatedAt = alias.updatedAt;
+  console.log("Created the release-owned sensitive recovery alias; the Vercel primary remains unchanged.");
+}
+
+async function removeOwnedRecoveryAlias(recovery) {
+  if (!recovery.aliasId) return;
+  await assertRecoveryVercelMetadata(recovery);
+  await runWithSensitiveStdin("vercel", ["env", "rm", OPENAI_GATEWAY_RECOVERY_TOKEN_ENV,
+    "production", "--yes", "--scope", VERCEL_SCOPE], "", { environment: vercelEnvironment });
+  await assertRecoveryVercelMetadata(recovery, { aliasRequired: false });
+  recovery.aliasId = undefined;
+}
+
+async function synchronizeRecoveryPrimary(recovery, token) {
+  await assertRecoveryVercelMetadata(recovery);
+  await runWithSensitiveStdin("vercel", ["env", "update", OPENAI_GATEWAY_TOKEN_ENV,
+    "production", "--sensitive", "--yes", "--scope", VERCEL_SCOPE], token, { environment: vercelEnvironment });
+  await assertRecoveryVercelMetadata(recovery, { primaryWriteCompleted: true });
+}
+
+async function readOpenAIGatewayHealth(gateway, expectedRevision, timeoutMs) {
+  const response = await fetch(new URL("/healthz", gateway.baseUrl.origin), {
+    cache: "no-store", redirect: "manual", headers: { accept: "application/json" },
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  return readGatewayHealthObservation(response, expectedRevision);
+}
+
+async function verifyRecoverySecretInventory(recovery, { beforeStage = false, allowPending = false } = {}) {
+  const records = await recoveryFlySecrets();
+  const retained = records.filter((entry) => entry.name !== OPENAI_GATEWAY_PREVIOUS_TOKEN_ENV);
+  if (retained.length !== recovery.secrets.length || recovery.secrets.some((expected) =>
+    !retained.some((entry) => entry.name === expected.name && entry.digest === expected.digest)) ||
+    (!allowPending && records.some((entry) => entry.status !== "Deployed"))) {
+    throw new Error("Managed Fly secrets changed or remain staged; the original primary cannot be safely assumed.");
+  }
+  const secondary = records.find((entry) => entry.name === OPENAI_GATEWAY_PREVIOUS_TOKEN_ENV);
+  if ((beforeStage && secondary) || (recovery.secondaryDigest && secondary?.digest !== recovery.secondaryDigest)) {
+    throw new Error("The recovery secondary slot changed concurrently.");
+  }
+  return secondary;
+}
+
+async function stageManagedPrimaryRecovery(recovery, token) {
+  await verifyRecoverySecretInventory(recovery, { beforeStage: true });
+  await assertRecoveryVercelMetadata(recovery);
+  await runWithSensitiveStdin("fly", ["secrets", "import", "--app", flyApp, "--stage"],
+    `${OPENAI_GATEWAY_PREVIOUS_TOKEN_ENV}=${token}\n`);
+  const secondary = await verifyRecoverySecretInventory(recovery, { allowPending: true });
+  if (!secondary) throw new Error("The recovery secondary was not staged.");
+  recovery.secondaryDigest = secondary.digest;
+  console.log("Staged only the recovery secondary on Fly; the managed primary was preserved.");
+}
+
+async function verifyManagedPrimaryPair(recovery, expectedRevision, label) {
+  const notBefore = Date.now();
+  const secondary = await verifyRecoverySecretInventory(recovery);
+  if (secondary) {
+    await waitForOpenAIGatewayReadiness(recovery.gateway, expectedRevision, { label });
+  } else {
+    const health = await readOpenAIGatewayHealth(recovery.gateway, expectedRevision, gatewayReadinessRequestTimeoutMs);
+    if (!gatewayHealthObservationReady(health)) throw new Error(`${label} gateway revision is not ready.`);
+  }
+  await waitForPreservedPrimaryProof(recovery, notBefore, label);
+}
+
+async function waitForPreservedPrimaryProof(recovery, notBefore, label) {
+  const deadline = Date.now() + readinessTimeoutMs;
+  const internalSecret = process.env.SMOKE_INTERNAL_AUTH_SECRET || process.env.OMNIAGENT_INTERNAL_AUTH_SECRET;
+  const tenantId = process.env.SMOKE_TENANT_ID || "production_smoke";
+  // The original immutable deployment supplies A internally. This route's
+  // provider check calls the deployment OpenAI client, never a tenant key.
+  // Its inner 60s cache survives refresh=true, so require its own timestamp.
+  while (Date.now() < deadline) {
+    const response = await fetch(`${recovery.previousVercelDeployment}/api/release/evidence?refresh=true`, {
+      cache: "no-store", redirect: "manual",
+      headers: {
+        ...readinessHeaders(true),
+        "x-omni-internal-auth": internalSecret,
+        "x-omni-tenant-id": tenantId,
+        "x-omni-user-id": process.env.SMOKE_ACTOR_ID || "production-smoke",
+        "x-omni-user-role": "admin",
+        "x-omni-synthetic-auth": internalSecret,
+        "x-omni-synthetic-source": "production-smoke",
+        "x-omni-slo-excluded": "true",
+      },
+      signal: AbortSignal.timeout(Math.min(60_000, deadline - Date.now())),
+    });
+    const body = await readResponseTextLimited(response, 262_144);
+    let report;
+    try { report = !body.exceeded && JSON.parse(body.text).report; } catch { /* fail closed below */ }
+    const providers = Array.isArray(report?.gates) ? report.gates.filter((gate) => gate.id === "openai_provider") : [];
+    const gateways = Array.isArray(report?.gates) ? report.gates.filter((gate) => gate.id === "openai_us_egress_gateway") : [];
+    const provider = providers[0];
+    const gateway = gateways[0]?.details;
+    const checkedAt = Date.parse(provider?.details?.checkedAt);
+    if (response.status !== 200 || report?.tenantId !== tenantId ||
+      report?.deployment?.commitSha !== recovery.previousHealthRevision ||
+      report?.deployment?.environment !== "production" || report?.deployment?.region !== "sin1" ||
+      providers.length !== 1 || gateways.length !== 1 || provider?.status !== "pass" ||
+      provider?.details?.configured !== true || provider?.details?.reachable !== true ||
+      gateway?.configured !== true || gateway?.safeConfiguration !== true || gateway?.serviceMatches !== true ||
+      gateway?.regionMatches !== true || gateway?.protocolMatches !== true || gateway?.reachable !== true || gateway?.serving !== true ||
+      typeof provider?.details?.checkedAt !== "string" ||
+      !Number.isFinite(checkedAt) || checkedAt > Date.now() + 5_000) {
+      throw new Error(`${label} did not prove the preserved primary through the exact original deployment.`);
+    }
+    if (checkedAt >= notBefore) {
+      console.log(`${label} has fresh original-deployment provider proof; no gateway token was exported.`);
+      return;
+    }
+    // Refreshing the expensive report cannot refresh the provider's inner
+    // cache. Wait for that entry to expire before collecting another report.
+    const cacheExpiryDelay = Math.max(1_000, checkedAt + 61_000 - Date.now());
+    await new Promise((resolve) => setTimeout(resolve, Math.min(60_000, cacheExpiryDelay, Math.max(0, deadline - Date.now()))));
+  }
+  throw new Error(`${label} provider proof stayed stale; the inner provider cache was not accepted as fresh evidence.`);
 }
 
 async function getCurrentWorkerImage() {
@@ -1940,7 +2244,7 @@ function printDryRunReadinessWait(label, baseUrl, expectedRevision) {
 
 function printDryRunGatewayPairReadiness(label, expectedRevision) {
   console.log(
-    `DRY RUN wait for ${label} active+optional-previous token readiness at /healthz revision=${expectedRevision} region=${OPENAI_GATEWAY_REGION} protocol=${OPENAI_GATEWAY_PROTOCOL} timeout=${gatewayReadinessTimeoutMs}ms`,
+    `DRY RUN wait for ${label} ${preserveGatewayPrimary ? "candidate token and fresh original-deployment provider proof" : "active+optional-previous token"} readiness at /healthz revision=${expectedRevision} region=${OPENAI_GATEWAY_REGION} protocol=${OPENAI_GATEWAY_PROTOCOL} timeout=${gatewayReadinessTimeoutMs}ms`,
   );
 }
 
@@ -1977,7 +2281,7 @@ function printPostActivationVerification(baseUrl, activatedAt) {
 
 function printDryRunGatewayTokenStage(label) {
   console.log(
-    `DRY RUN stage ${label} on Fly through secret stdin; values redacted`,
+    `DRY RUN stage ${label}${preserveGatewayPrimary ? " secondary only; retain managed primary" : ""} on Fly through secret stdin; values redacted`,
   );
 }
 
@@ -2127,7 +2431,7 @@ function run(command, args, options = {}) {
         ...process.env,
         ...options.environment,
       },
-      stdio: options.stdout ? ["ignore", "pipe", "inherit"] : "inherit",
+      stdio: options.stdout ? ["ignore", "pipe", options.sensitive ? "ignore" : "inherit"] : "inherit",
     });
     if (options.stdout && child.stdout) {
       child.stdout.setEncoding("utf8");
@@ -2157,11 +2461,11 @@ function describeCommand(command, args) {
   ].join(" ");
 }
 
-function runWithSensitiveStdin(command, args, input) {
+function runWithSensitiveStdin(command, args, input, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: process.cwd(),
-      env: process.env,
+      env: { ...process.env, ...options.environment },
       // Suppress command output as a defense in depth: secret values are sent
       // only over stdin and cannot be echoed by a verbose CLI or error path.
       stdio: ["pipe", "ignore", "ignore"],

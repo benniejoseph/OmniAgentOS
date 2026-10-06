@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AGENT_MAX_MODEL_TURNS,
   AGENT_MAX_TOOL_STEPS,
@@ -123,6 +123,11 @@ describe("getAppBaseUrl", () => {
 });
 
 describe("getOpenAIGatewayConfig", () => {
+  beforeEach(() => {
+    vi.stubEnv("OMNIAGENT_OPENAI_GATEWAY_USE_RECOVERY_TOKEN", "");
+    vi.stubEnv("OMNIAGENT_OPENAI_GATEWAY_RECOVERY_TOKEN", "");
+  });
+
   afterEach(() => {
     vi.unstubAllEnvs();
   });
@@ -150,6 +155,51 @@ describe("getOpenAIGatewayConfig", () => {
     expect(getOpenAIGatewayConfig()?.baseURL).toBe(
       "https://gateway.asael.example/openai/v1",
     );
+  });
+
+  it.each(["", "false"])("ignores the recovery alias when the selector is %j", (selector) => {
+    vi.stubEnv("VERCEL_ENV", "production");
+    vi.stubEnv("OMNIAGENT_OPENAI_GATEWAY_URL", OPENAI_GATEWAY_PRODUCTION_BASE_URL);
+    vi.stubEnv("OMNIAGENT_OPENAI_GATEWAY_TOKEN", gatewayToken);
+    vi.stubEnv("OMNIAGENT_OPENAI_GATEWAY_RECOVERY_TOKEN", "b".repeat(64));
+    vi.stubEnv("OMNIAGENT_OPENAI_GATEWAY_USE_RECOVERY_TOKEN", selector);
+
+    expect(getOpenAIGatewayConfig()?.token).toBe(gatewayToken);
+  });
+
+  it("uses the selected recovery alias independently of the primary token", () => {
+    const recoveryToken = "b".repeat(64);
+    vi.stubEnv("VERCEL_ENV", "production");
+    vi.stubEnv("OMNIAGENT_OPENAI_GATEWAY_URL", OPENAI_GATEWAY_PRODUCTION_BASE_URL);
+    vi.stubEnv("OMNIAGENT_OPENAI_GATEWAY_TOKEN", "");
+    vi.stubEnv("OMNIAGENT_OPENAI_GATEWAY_RECOVERY_TOKEN", ` ${recoveryToken} `);
+    vi.stubEnv("OMNIAGENT_OPENAI_GATEWAY_USE_RECOVERY_TOKEN", "true");
+
+    expect(getOpenAIGatewayConfig()).toEqual({
+      baseURL: OPENAI_GATEWAY_PRODUCTION_BASE_URL,
+      token: recoveryToken,
+    });
+  });
+
+  it.each(["production", "preview"])("never falls back from an invalid selected recovery token in %s", (environment) => {
+    vi.stubEnv("VERCEL_ENV", environment);
+    vi.stubEnv("OMNIAGENT_OPENAI_GATEWAY_URL", OPENAI_GATEWAY_PRODUCTION_BASE_URL);
+    vi.stubEnv("OMNIAGENT_OPENAI_GATEWAY_TOKEN", gatewayToken);
+    vi.stubEnv("OMNIAGENT_OPENAI_GATEWAY_USE_RECOVERY_TOKEN", "true");
+
+    for (const invalidToken of [undefined, "", "short-token", `${"b".repeat(32)}\n${"b".repeat(32)}`]) {
+      vi.stubEnv("OMNIAGENT_OPENAI_GATEWAY_RECOVERY_TOKEN", invalidToken);
+      expect(() => getOpenAIGatewayConfig()).toThrow("OpenAI gateway configuration is invalid.");
+    }
+  });
+
+  it("rejects an unrecognized recovery selector instead of using the primary token", () => {
+    vi.stubEnv("VERCEL_ENV", "production");
+    vi.stubEnv("OMNIAGENT_OPENAI_GATEWAY_URL", OPENAI_GATEWAY_PRODUCTION_BASE_URL);
+    vi.stubEnv("OMNIAGENT_OPENAI_GATEWAY_TOKEN", gatewayToken);
+    vi.stubEnv("OMNIAGENT_OPENAI_GATEWAY_USE_RECOVERY_TOKEN", "enabled");
+
+    expect(() => getOpenAIGatewayConfig()).toThrow("OpenAI gateway configuration is invalid.");
   });
 
   it.each([

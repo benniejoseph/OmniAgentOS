@@ -1936,6 +1936,54 @@ npm run deploy:production
 unset OMNIAGENT_OPENAI_GATEWAY_TOKEN OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN OMNIAGENT_OPENAI_GATEWAY_URL gateway_token
 ```
 
+### Recovering a gateway token whose operator copy is lost
+
+Use `--preserve-gateway-primary` only when the existing token still works on
+the deployed web/Fly pair but its operator copy cannot be recovered. Generate
+a new token and save it in the owner's password manager or login Keychain
+before starting. Load that new value as `OMNIAGENT_OPENAI_GATEWAY_TOKEN` using
+the silent-prompt procedure above, leave
+`OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN` unset, and run:
+
+```bash
+npm run deploy:production -- --use-hosted-verification --preserve-gateway-primary
+```
+
+This mode preserves the unknown Fly primary throughout release and rollback.
+It requires a deployed primary, an empty secondary slot, no staged secrets,
+an exact compatible rollback image, and the usual clean main commit, hosted
+checks, signed manifest, and release gates. Initial-cutover and split-recovery
+flags cannot be combined with it. The old deployed app proves that its original
+token still authenticates through a fresh `openai_provider` readiness result;
+public gateway health alone is insufficient.
+
+The candidate uses a separate production-sensitive variable,
+`OMNIAGENT_OPENAI_GATEWAY_RECOVERY_TOKEN`. The non-secret deployment override
+`OMNIAGENT_OPENAI_GATEWAY_USE_RECOVERY_TOKEN=true` selects it, with no fallback
+to the original token if the recovery value is missing. Do not store that
+selector in project settings or supply a token with a deployment `--env`
+argument. The original sensitive project token remains unchanged while the
+candidate is verified, and Fly accepts the new token only in its secondary
+slot. Rollback restores the captured worker and web artifacts while preserving
+the token overlap.
+
+After the candidate and canonical checks pass, the runner synchronizes the
+normal sensitive production token to the saved replacement. An ambiguous final
+configuration write must leave the verified deployment and token overlap in
+place and report the required configuration repair; it must not claim that an
+unreadable old project value was restored. Retain the replacement in the
+password manager and preserve the overlap through the rollback window. Unset
+the local token variables when the command finishes.
+
+After recovery, the running deployment retains its sensitive alias snapshot,
+the normal Vercel project token is the saved replacement, and Fly still has the
+original primary plus the replacement secondary. Once the rollback window ends,
+the next normal paired release can use the saved replacement with no previous
+token; it stages the replacement as Fly primary and removes the overlap before
+deploying. Its rollback target already uses the replacement. Do not manually
+rebuild the recovery artifact with its selector enabled after alias cleanup;
+start a normal paired release from a verified main commit.
+
 For the first gateway rollout only, also export
 `OMNIAGENT_OPENAI_GATEWAY_INITIAL_CUTOVER=CONFIRMED`. This explicit flag skips
 the impossible prior-gateway check because the currently promoted release still
