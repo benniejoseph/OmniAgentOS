@@ -132,9 +132,27 @@ const OPENAI_GATEWAY_CONFIGURATION_ERROR =
 const OPENAI_GATEWAY_PRODUCTION_URL_PATTERN =
   /^https:\/\/omniagent-os-worker\.fly\.dev(?::443)?\/v1\/?$/i;
 
+/** Select the sensitive recovery alias only for an explicitly marked deployment. */
+export function getOpenAIGatewayToken(): string | undefined {
+  const recoverySelector =
+    process.env.OMNIAGENT_OPENAI_GATEWAY_USE_RECOVERY_TOKEN?.trim();
+  if (recoverySelector && recoverySelector !== "true" && recoverySelector !== "false") {
+    throw new Error(OPENAI_GATEWAY_CONFIGURATION_ERROR);
+  }
+  if (recoverySelector === "true") {
+    const token = process.env.OMNIAGENT_OPENAI_GATEWAY_RECOVERY_TOKEN?.trim();
+    if (!token || !/^[A-Za-z0-9._~-]{32,256}$/.test(token)) {
+      // A selected recovery deployment must never fall back to the unknown token.
+      throw new Error(OPENAI_GATEWAY_CONFIGURATION_ERROR);
+    }
+    return token;
+  }
+  return process.env.OMNIAGENT_OPENAI_GATEWAY_TOKEN?.trim();
+}
+
 export function getOpenAIGatewayConfig(): OpenAIGatewayConfig | undefined {
   const configuredUrl = process.env.OMNIAGENT_OPENAI_GATEWAY_URL?.trim();
-  const token = process.env.OMNIAGENT_OPENAI_GATEWAY_TOKEN?.trim();
+  const token = getOpenAIGatewayToken();
   if (!configuredUrl && !token) {
     return undefined;
   }

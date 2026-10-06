@@ -247,7 +247,12 @@ import { findActorTimezone } from "@/lib/today/briefs";
 import { resolveDirectConversationLanguageStyle } from "@/lib/companion/language-style-resolver";
 import { loadTenantAiUsageSince } from "@/lib/usage/allowance";
 import { recordAiUsageSafely } from "@/lib/usage/ledger";
-import { formatLiveWebSearchContext, runLiveWebSearch, shouldUseLiveWebSearch } from "@/lib/web-search/search";
+import {
+  formatLiveWebSearchContext,
+  isLiveWebSearchExplicitlyDisabled,
+  shouldUseLiveWebSearch,
+  type LiveWebSearchResult,
+} from "@/lib/web-search/search";
 
 /** The Settings assignment and credential a usage record attributes a call to. */
 type ModelUsageReceipt = RuntimeModelResolution["usageReceipt"];
@@ -1132,7 +1137,7 @@ async function* runAgentUntilStopped(
           "Project memory is not loaded until a canonical project authority is bound; this run remains session-only.",
       });
     }
-    const useLiveWeb = request.liveWebPolicy !== "disabled" &&
+    const liveWebRequested = request.liveWebPolicy !== "disabled" &&
       !personalPromptMemoryAccessScope &&
       shouldUseLiveWebSearch(query);
     if (durableMemoryEnabled) {
@@ -1140,10 +1145,6 @@ async function* runAgentUntilStopped(
         tokens: AGENT_CONTEXT_TASK_TOKEN_LIMIT,
         costMicrousd: 1_000,
       });
-    }
-    if (useLiveWeb) {
-      reserveModelTurnWithoutRetry();
-      reserveBudget({ toolCalls: 1 });
     }
     const retrievalQuery = request.contextSelection?.query || automaticRetrievalQuery;
     const retrievalPromise = durableMemoryEnabled
@@ -1304,29 +1305,6 @@ async function* runAgentUntilStopped(
           definitionVersion: resolvedAgentIdentity.definition.definitionVersion,
         })
       : Promise.resolve([]);
-    const liveWebPromise = useLiveWeb
-      ? runLiveWebSearch({
-          query,
-          contextSize: "low",
-          maxSources: 4,
-          abortSignal: runAbortSignal,
-          ...(request.actorId ? {
-            usageScope: {
-              tenantId: runTenantId,
-              actorId: request.actorId,
-              sourceStreamId: `run:${run.id}`,
-              operation: "web_search" as const,
-              purpose: "agent.web.prefetch",
-              correlationId: executionScope.correlationId,
-              causationId: executionScope.causationId || undefined,
-              executionScope,
-              credentialSource: "deployment_environment" as const,
-            },
-          } : {}),
-        })
-          .then((result) => ({ result }))
-          .catch((error: unknown) => ({ error }))
-      : undefined;
     const retrieval = await retrievalPromise;
     if (retrieval.compilerV2Shadow) {
       await appendContextCompilerV2ShadowEventSafely(
@@ -1374,46 +1352,12 @@ async function* runAgentUntilStopped(
       });
     }
 
-    let liveWebContext = "";
-    let citationSources = buildCitationSources(retrieval.results);
-    if (useLiveWeb && liveWebPromise) {
-      yield await emit({
-        type: "status",
-        label: "live web search",
-        detail: "The request appears to need current information, so Asael is searching the web before answering.",
-      });
-      const liveWebOutcome = await liveWebPromise;
-      if ("result" in liveWebOutcome && liveWebOutcome.result) {
-        const liveWeb = liveWebOutcome.result;
-        citationSources = mergeCitationSources(
-          citationSources,
-          buildWebCitationSources(liveWeb.sources, liveWeb.searchedAt),
-        );
-        liveWebContext = String(
-          redactSensitive(formatLiveWebSearchContext(liveWeb)),
-        );
-        yield await emit({
-          type: "memory",
-          title: "live web sources ready",
-          count: liveWeb.sourceCount,
-        });
-      } else if ("error" in liveWebOutcome) {
-        const webSearchError = liveWebOutcome.error;
-        yield await emit({
-          type: "status",
-          label: "live web unavailable",
-          detail: webSearchError instanceof Error ? webSearchError.message : "Live web search failed.",
-        });
-      }
-    }
-
-    // Skip web.search when we already fetched live web context — avoids redundant
-    // tool-call loops that blow the 60s Vercel budget. Excluding it from the toolbox
-    // filters the OpenAI tool list, the instructions, and the dispatch map together.
+    // Resolve authority before automatic reads. A freshness hint cannot grant
+    // web access to a custom Agent, a private-context run, or This Mac.
     let toolbox = filterAgentToolbox(
       await resolvedToolboxPromise,
       [
-        ...(liveWebContext ? ["web.search"] : []),
+        ...(isLiveWebSearchExplicitlyDisabled(query) ? ["web.search"] : []),
         ...(!localComputerUseRequested
           ? localComputerToolIds
           : []),
@@ -1450,6 +1394,90 @@ async function* runAgentUntilStopped(
         readOnly: true,
         forceApproval: true,
       };
+    }
+
+    let liveWebContext = "";
+    let citationSources = buildCitationSources(retrieval.results);
+    const webSearchTool = toolbox.tools.find(
+      ({ definition }) => definition.id === "web.search",
+    )?.definition;
+    // A prefetch has no model approval continuation. Only the currently
+    // authorized, approval-free read may run here; all other tools stay in
+    // the normal governed model loop.
+    const useLiveWeb = Boolean(liveWebRequested &&
+      !localComputerUseRequested &&
+      webSearchTool &&
+      webSearchTool.riskLevel === 0 &&
+      !webSearchTool.approvalRequired &&
+      !forceApprovalForTool(agentToolPolicy, webSearchTool.riskLevel) &&
+      governedToolOperationClass(webSearchTool, { query }) === "read_only");
+    if (useLiveWeb && webSearchTool) {
+      reserveModelTurnWithoutRetry();
+      reserveToolBudget([webSearchTool]);
+      yield await emit({
+        type: "status",
+        label: "live web search",
+        detail: "The request appears to need current information, so Asael is searching the web before answering.",
+      });
+      yield await emit({
+        type: "tool",
+        toolId: webSearchTool.id,
+        toolName: webSearchTool.name,
+        status: "running",
+        riskLevel: webSearchTool.riskLevel,
+      });
+      const prefetchScope = agentToolExecutionScope(executionScope, "web-prefetch");
+      const execution = await executeGovernedTool({
+        toolId: webSearchTool.id,
+        input: { query, limit: 4, searchContextSize: "low" },
+        dryRun: false,
+        approved: false,
+        requireReadOnly: true,
+        context: agentToolSecurityContext(request),
+        requestActorBinding: request.requestActorBinding,
+        moltbookAutonomy: request.moltbookAutonomy,
+        abortSignal: runAbortSignal,
+        idempotencyKey: `${run.id}:web-prefetch`,
+        executionScope: prefetchScope,
+        agentRunId: run.id,
+        checkpointBeforeEffect: checkpointBeforeGovernedTool,
+      });
+      runAbortSignal.throwIfAborted();
+      await checkpointAfterGovernedTool({
+        record: execution.record,
+        tool: webSearchTool,
+        operationClass: "read_only",
+        executionScope: prefetchScope,
+      });
+      yield await emit(toolEventForExecution(webSearchTool, execution.record));
+      const liveWeb = execution.record.status === "executed"
+        ? liveWebPrefetchResult(execution.result)
+        : undefined;
+      if (liveWeb) {
+        citationSources = mergeCitationSources(
+          citationSources,
+          buildWebCitationSources(liveWeb.sources, liveWeb.searchedAt),
+        );
+        liveWebContext = String(
+          redactSensitive(formatLiveWebSearchContext(liveWeb)),
+        );
+        yield await emit({
+          type: "memory",
+          title: "live web sources ready",
+          count: liveWeb.sourceCount,
+        });
+      } else {
+        yield await emit({
+          type: "status",
+          label: "live web unavailable",
+          detail: execution.record.reason || "Live web search returned no verified source evidence.",
+        });
+      }
+    }
+    // Ordinary quick answers can reuse their initial evidence. Research keeps
+    // the authorized tool so it can compare sources or refine the question.
+    if (liveWebContext && mode !== "research") {
+      toolbox = filterAgentToolbox(toolbox, ["web.search"]);
     }
     const workspaceAccess = await workspaceAccessPromise;
     const workspaceCapabilityContext = workspaceAccess
@@ -6362,6 +6390,31 @@ function executionPayload(
     result: execution.result,
     admissibleEvidenceIds,
   };
+}
+
+function liveWebPrefetchResult(result: unknown): LiveWebSearchResult | undefined {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return;
+  const value = result as Record<string, unknown>;
+  if (
+    value.provider !== "openai.responses.web_search" ||
+    typeof value.query !== "string" ||
+    typeof value.searchedAt !== "string" ||
+    !Number.isFinite(Date.parse(value.searchedAt)) ||
+    typeof value.model !== "string" ||
+    typeof value.summary !== "string" ||
+    !Array.isArray(value.sources) ||
+    value.sources.length === 0 ||
+    value.sourceCount !== value.sources.length ||
+    !value.sources.every((source: unknown) => {
+      if (!source || typeof source !== "object" || Array.isArray(source)) return false;
+      const item = source as Record<string, unknown>;
+      return typeof item.citationId === "string" &&
+        typeof item.title === "string" &&
+        typeof item.url === "string" &&
+        (item.snippet === undefined || typeof item.snippet === "string");
+    })
+  ) return;
+  return value as unknown as LiveWebSearchResult;
 }
 
 function citationSourcesFromToolResult(toolId: string, result: unknown) {

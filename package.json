@@ -46,7 +46,7 @@
     "check:semantic-memory-shadow": "tsx --tsconfig tsconfig.scripts.json scripts/check-semantic-memory-shadow.ts",
     "audit:production": "node scripts/npm-audit-production.mjs",
     "check:worker": "node --check scripts/worker.mjs && node --check scripts/openai-egress-gateway.mjs",
-    "check:operations": "node --check scripts/db-backup.mjs && node --check scripts/db-backup-dump.mjs && node --check scripts/db-backup-security.mjs && node --check scripts/db-restore-drill.mjs && node --check scripts/benchmark-preview.mjs && node --check scripts/benchmark-dashboard.mjs && node --check scripts/check-route-js-budget.mjs && node --check scripts/check-server-traces.mjs && node --check scripts/resolve-production-smoke-revision.mjs && node --check scripts/release-provenance.mjs && node --check scripts/smoke-preflight.mjs && node --check scripts/smoke-security.mjs && node --check scripts/smoke-eval-case.mjs && node --check scripts/smoke-paid-agent.mjs",
+    "check:operations": "node --check scripts/db-backup.mjs && node --check scripts/db-backup-dump.mjs && node --check scripts/db-backup-security.mjs && node --check scripts/db-restore-drill.mjs && node --check scripts/benchmark-preview.mjs && node --check scripts/benchmark-dashboard.mjs && node --check scripts/check-route-js-budget.mjs && node --check scripts/check-server-traces.mjs && node --check scripts/resolve-production-smoke-revision.mjs && node --check scripts/release-provenance.mjs && node --check scripts/smoke-preflight.mjs && node --check scripts/smoke-security.mjs && node --check scripts/smoke-eval-case.mjs && node --check scripts/smoke-paid-agent.mjs && node --check scripts/smoke-web-research.mjs && node --test scripts/smoke-web-research.test.mjs",
     "generate:native-contracts": "tsx scripts/generate-native-contracts.ts",
     "check:native-contracts": "tsx scripts/generate-native-contracts.ts --check",
     "generate:command-program-policy": "node scripts/generate-command-program-policy.mjs",
@@ -61,7 +61,8 @@
     "release:signing-key": "node scripts/release-signing-key.mjs",
     "verify": "npm run audit:production && npm run typecheck && npm run lint && npm run check:native-contracts && npm run test:coverage && npm run test:integration && npm run check:worker && npm run check:operations && NEXT_PUBLIC_APP_URL=http://127.0.0.1:3100 npm run build && npm run check:route-js && npm run check:server-traces",
     "eval:agents": "node scripts/run-evals.mjs",
-    "worker": "node scripts/worker.mjs"
+    "worker": "node scripts/worker.mjs",
+    "smoke:web-research": "node scripts/smoke-web-research.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

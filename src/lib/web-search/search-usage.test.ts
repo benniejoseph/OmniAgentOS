@@ -43,7 +43,15 @@ describe("live web search usage", () => {
     mocks.create.mockResolvedValue({
       id: "resp_search",
       output_text: "Short answer",
-      output: [],
+      output: [{
+        id: "ws_search",
+        type: "web_search_call",
+        status: "completed",
+        action: {
+          type: "search",
+          sources: [{ type: "url", url: "https://example.com/prices" }],
+        },
+      }],
       usage: {
         input_tokens: 1_000,
         input_tokens_details: { cached_tokens: 200 },
