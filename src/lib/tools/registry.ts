@@ -483,6 +483,24 @@ export const governedTools: ToolDefinition[] = [
     }),
   },
   {
+    id: "web.read",
+    name: "Read Web Source",
+    description: "Read the public HTML or plain-text content of a source URL for deeper research. Returns bounded untrusted text and a citation; does not run scripts, sign in, or read PDFs.",
+    category: "web",
+    status: "active",
+    riskLevel: 0,
+    dryRunSupported: true,
+    approvalRequired: false,
+    operationClass: "read_only",
+    reversible: true,
+    inputSchema: {
+      ...objectSchema({
+        url: { type: "string", description: "Public HTTP or HTTPS source URL to read.", minLength: 1, maxLength: 4_000 },
+      }),
+      required: ["url"],
+    },
+  },
+  {
     id: "media.image.generate",
     name: "Generate Image",
     description: "Create a new private image asset from a natural-language prompt using the image model assigned in Settings.",

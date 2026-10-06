@@ -95,6 +95,7 @@ import {
 } from "@/lib/command/client-projection";
 import { startProgressiveThreadLoad } from "@/lib/command/progressive-thread-load";
 import { runStreamAnnouncement } from "@/lib/command/run-announcement";
+import { parseMarkdownTable } from "@/lib/command/markdown-table";
 import {
   approvalInboxHref,
   commandConversationHref,
@@ -4828,6 +4829,41 @@ export const ConversationMessageContent = memo(function ConversationMessageConte
       continue;
     }
 
+    const table = parseMarkdownTable(lines, index);
+    if (table) {
+      blocks.push(
+        <div
+          key={`table-${index}`}
+          role="region"
+          aria-label="Report comparison table"
+          tabIndex={0}
+          className="my-4 max-w-full overflow-x-auto rounded-xl border border-line focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+        >
+          <table className="min-w-full border-collapse text-sm leading-6">
+            <caption className="sr-only">Report comparison</caption>
+            <thead className="bg-surface-raised">
+              <tr>{table.headers.map((header, columnIndex) => (
+                <th key={columnIndex} scope="col" style={{ textAlign: table.alignments[columnIndex] }} className="min-w-36 max-w-sm px-4 py-3 align-top font-semibold text-foreground [overflow-wrap:anywhere]">
+                  <MessageInline text={header} citations={citations} />
+                </th>
+              ))}</tr>
+            </thead>
+            <tbody>{table.rows.map((row, rowIndex) => (
+              <tr key={rowIndex} className="border-t border-line">
+                {row.map((cell, columnIndex) => (
+                  <td key={columnIndex} style={{ textAlign: table.alignments[columnIndex] }} className="min-w-36 max-w-sm px-4 py-3 align-top text-foreground [overflow-wrap:anywhere]">
+                    <MessageInline text={cell} citations={citations} />
+                  </td>
+                ))}
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>,
+      );
+      index = table.nextIndex;
+      continue;
+    }
+
     const paragraph: string[] = [line.trim()];
     index += 1;
     while (index < lines.length && lines[index].trim() && !messageBlockStarts(lines, index)) {
@@ -5129,15 +5165,24 @@ function MessageInline({
   text: string;
   citations?: Map<string, { source: GroundingReport["sources"][number]; index: number }>;
 }) {
-  const tokens = text.split(/(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\(https?:\/\/[^)\s]+\)|\[(?:memory|knowledge|graph|web):[^\]\s]+\])/g);
+  const pattern = /\*\*[^*]+\*\*|(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)|\[[^\]]+\]\(https?:\/\/[^)\s]+\)|\[(?:memory|knowledge|graph|web):[^\]\s]+\]/g;
+  const tokens: string[] = [];
+  let cursor = 0;
+  for (const match of text.matchAll(pattern)) {
+    if (match.index > cursor) tokens.push(text.slice(cursor, match.index));
+    tokens.push(match[0]);
+    cursor = match.index + match[0].length;
+  }
+  if (cursor < text.length) tokens.push(text.slice(cursor));
   return (
     <>
       {tokens.map((token, index) => {
         if (token.startsWith("**") && token.endsWith("**")) {
           return <strong key={`${token}-${index}`} className="font-semibold text-foreground"><MessageInline text={token.slice(2, -2)} citations={citations} /></strong>;
         }
-        if (token.startsWith("`") && token.endsWith("`")) {
-          return <code key={`${token}-${index}`} className="rounded bg-surface-raised px-1.5 py-0.5 font-mono text-[0.88em] text-foreground">{token.slice(1, -1)}</code>;
+        const code = /^(`+)(?!`)([\s\S]*?)(?<!`)\1(?!`)$/.exec(token);
+        if (code) {
+          return <code key={`${token}-${index}`} className="rounded bg-surface-raised px-1.5 py-0.5 font-mono text-[0.88em] text-foreground">{code[2]}</code>;
         }
         const link = /^\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)$/.exec(token);
         if (link) {
@@ -5186,7 +5231,8 @@ function messageBlockStarts(lines: string[], index: number) {
     /^[-*]\s+/.test(line) ||
     /^\d+[.)]\s+/.test(line) ||
     line.startsWith(">") ||
-    /^---+$/.test(line)
+    /^---+$/.test(line) ||
+    Boolean(parseMarkdownTable(lines, index))
   );
 }
 
@@ -6151,6 +6197,7 @@ function GoalStage({
               <label className="sr-only" htmlFor="command-mode">Approach</label>
               <select
                 id="command-mode"
+                aria-describedby={mode === "research" ? "command-research-description" : undefined}
                 value={mode}
                 disabled={draftLocked}
                 onChange={(event) => onModeChange(event.currentTarget.value as AgentMode)}
@@ -6271,6 +6318,7 @@ function GoalStage({
             </details>
           </div>
         </div>
+        {mode === "research" ? <p id="command-research-description" className="mt-1.5 px-2 text-center text-xs leading-5 text-muted">Research reviews multiple sources and builds a detailed report with citations, findings, and gaps in the evidence.</p> : null}
         {workflowInProgress ? <p className="mt-1.5 px-2 text-center text-xs leading-4 text-muted">This conversation is locked while active work finishes. New messages can be added to the persistent queue.</p> : null}
       </div>
     </section>

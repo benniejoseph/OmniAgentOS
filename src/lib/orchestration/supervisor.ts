@@ -67,7 +67,7 @@ export function routeAgentRequest(
   const text = message.trim();
   const reasons: string[] = [];
   let score = 0;
-  const durableIntent = hasDurableExecutionIntent(text);
+  const durableIntent = hasDurableExecutionIntent(text, mode !== "research");
   const boundedCapabilityAction = hasBoundedCapabilityAction(text);
   const actionIntent = /\b(create|update|send|publish|deploy|migrate|execute|implement|investigate|research|compare|coordinate|prepare|run|trigger|dispatch|start)\b/gi;
   const actions = text.match(actionIntent)?.length || 0;
@@ -127,13 +127,23 @@ export function routeAgentRequest(
   if (durableIntent) { score += 4; reasons.push("Explicit durable or recurring work requested."); }
   if (boundedCapabilityAction && !durableIntent) reasons.push("A bounded workspace action can run directly through governed tools.");
   if (actions >= 2) { score += 2; reasons.push("Multiple distinct actions detected."); }
-  if (text.length > 700) { score += 1; reasons.push("Large task description benefits from persisted execution state."); }
+  if (text.length > 700) {
+    score += 1;
+    reasons.push(mode === "research" && !durableIntent
+      ? "A detailed research question can be synthesized by the bounded report runtime."
+      : "Large task description benefits from persisted execution state.");
+  }
   if (/\b(verify|acceptance criteria|report back|with evidence|retries|approval)\b/i.test(text)) { score += 1; reasons.push("Verification or recovery requirements detected."); }
+  if (mode === "research" && !durableIntent) {
+    reasons.push("Research mode uses the direct report runtime unless durable work is explicitly requested.");
+  }
   if (preferredAgentId) reasons.push(`${agentName(preferredAgentId)} was explicitly selected as the primary agent.`);
   if (!reasons.length) reasons.push("A fast conversational response is sufficient.");
 
   return {
-    route: durableIntent || (!boundedCapabilityAction && score >= 4)
+    // Report complexity does not imply a background procedure. Explicit
+    // durable intent and saved procedures retain their existing routing.
+    route: durableIntent || (mode !== "research" && !boundedCapabilityAction && score >= 4)
       ? "durable_workflow"
       : "direct",
     score,
@@ -278,8 +288,9 @@ function hasExplicitTargetReference(message: string) {
     /\B#[1-9][0-9]*\b/.test(target);
 }
 
-function hasDurableExecutionIntent(message: string) {
-  return /\b(in the background|keep working|long[- ]running|monitor|watch for|recurring|every (day|week|month|morning|evening)|until (done|complete)|multiple steps|run later|keep checking|check back)\b/i.test(message) ||
+function hasDurableExecutionIntent(message: string, includeStepComplexity: boolean) {
+  return /\b(in the background|keep working|long[- ]running|monitor|watch for|recurring|every (day|week|month|morning|evening)|until (done|complete)|run later|keep checking|check back)\b/i.test(message) ||
+    (includeStepComplexity && /\bmultiple steps\b/i.test(message)) ||
     /\b(schedule|run)\b[^.\n]{0,80}\b(task|job|workflow|automation|report)\b[^.\n]{0,80}\b(later|every|daily|weekly|monthly|recurring)\b/i.test(message);
 }
 

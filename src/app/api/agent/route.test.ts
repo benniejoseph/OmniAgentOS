@@ -1062,6 +1062,48 @@ describe("agent run transport", () => {
 });
 
 describe("agent semantic intent routing", () => {
+  it("sends a detailed Research question from the ordinary composer to the report runtime", async () => {
+    const message = [
+      "Research and compare current evidence about public transit funding approaches across medium-sized cities.",
+      "Investigate fare revenue, public subsidies, service reliability, ridership patterns, and the distribution of benefits across neighborhoods.",
+      "Compare the quality of the available evidence, the periods covered by each dataset, and whether conclusions depend on a city's population or density.",
+      "Prepare a detailed analysis with evidence and references beside the relevant claims, with an executive summary and a discussion of unresolved questions.",
+      "Distinguish original studies from commentary, explain disagreements between authors, and describe limitations in published measurements.",
+      "Consider the relevance of geography, governance, funding stability, and service frequency without assuming that one approach suits every city.",
+      "Include practical implications where the evidence supports them, clearly labeled inferences, and a reference list for the material actually consulted.",
+    ].join("\n");
+    expect(message.length).toBeGreaterThan(700);
+    routeMocks.runAgent.mockImplementation(async function* () {
+      yield { type: "run", runId: "run-research-composer", threadId: "thread-a" };
+      yield { type: "done", response: "Detailed findings from the report runtime." };
+    });
+
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        message,
+        requestId: "research-composer-report-a",
+        mode: "research",
+        strategy: "auto",
+        contextScope: "session",
+      }),
+    }));
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("Detailed findings from the report runtime.");
+    expect(routeMocks.resolveSemanticIntent).toHaveBeenCalledWith(expect.objectContaining({
+      mode: "research",
+      message,
+      baseline: expect.objectContaining({ route: "direct", score: 4 }),
+    }));
+    expect(routeMocks.runAgent).toHaveBeenCalledWith(expect.objectContaining({
+      mode: "research", contextScope: "session",
+    }), expect.any(AbortSignal));
+    expect(createWorkflowRun).not.toHaveBeenCalled();
+    expect(routeMocks.createMission).not.toHaveBeenCalled();
+  });
+
   it("keeps durable native supervisor routing inside the authenticated conversation mutation capability", async () => {
     const mobileContext = {
       ...context,

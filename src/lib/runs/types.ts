@@ -83,6 +83,8 @@ export type AgentRunContinuation = {
   toolSteps: number;
   /** Exact server-selected cap retained across governed approval pauses. */
   maxToolSteps?: number;
+  /** Server-selected synthesis allowance; legacy continuations retain chat's cap. */
+  maxOutputTokens?: number;
   outputsBeforeApproval: Array<{ type: "function_call_output"; call_id: string; output: string }>;
   pendingToolCall: {
     callId: string;

@@ -94,7 +94,7 @@ const menuThemeVariables = [
 ] as const;
 
 const slashActions: readonly SlashItem[] = [
-  { type: "action", id: "research", label: "Research", description: "Investigate with current sources and citations." },
+  { type: "action", id: "research", label: "Research", description: "Review multiple sources and build a detailed, cited report." },
   { type: "action", id: "act", label: "Act", description: "Let Asael use connected services and governed actions." },
   { type: "action", id: "learn", label: "Learn", description: "Explain, organize, and add useful knowledge." },
   { type: "action", id: "plan", label: "Plan this", description: "Preview a durable multi-step plan before it runs." },

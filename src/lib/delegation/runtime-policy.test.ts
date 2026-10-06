@@ -116,6 +116,7 @@ describe("dynamic delegation runtime policy", () => {
       "memory.search",
       "knowledge.search",
       "web.search",
+      "web.read",
       "runs.list",
     ]);
     expect(DYNAMIC_DELEGATION_READ_TOOL_IDS.every((toolId) =>
@@ -124,6 +125,7 @@ describe("dynamic delegation runtime policy", () => {
   });
 
   it("extracts only explicitly named safe child read tools", () => {
+    expect(extractExplicitDynamicDelegationReadToolIds("Use Read Web Source with web.search.")).toEqual(["web.read", "web.search"]);
     const request = [
       "Delegate Scout with Search Knowledge and List Runs, then Mnemosyne",
       "with memory.search. Do not use Web Search or app.memory.write.",

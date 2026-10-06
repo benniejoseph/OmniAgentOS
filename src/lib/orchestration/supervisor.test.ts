@@ -11,7 +11,57 @@ import {
 import { buildThreadConversationSummaries } from "@/lib/threads/summaries";
 import type { ThreadTurnRecord } from "@/lib/threads/types";
 
+const detailedResearchRequest = [
+  "Research and compare current evidence about public transit funding approaches across medium-sized cities.",
+  "Investigate fare revenue, public subsidies, service reliability, ridership patterns, and the distribution of benefits across neighborhoods.",
+  "Compare the quality of the available evidence, the periods covered by each dataset, and whether conclusions depend on a city's population or density.",
+  "Prepare a detailed analysis with evidence and references beside the relevant claims, with an executive summary and a discussion of unresolved questions.",
+  "Distinguish original studies from commentary, explain disagreements between authors, and describe limitations in published measurements.",
+  "Consider the relevance of geography, governance, funding stability, and service frequency without assuming that one approach suits every city.",
+  "Include practical implications where the evidence supports them, clearly labeled inferences, and a reference list for the material actually consulted.",
+].join("\n");
+
 describe("supervisor routing", () => {
+  it("keeps a long multi-action Research request on the report runtime with automatic routing", () => {
+    expect(detailedResearchRequest.length).toBeGreaterThan(700);
+    const decision = routeAgentRequest(detailedResearchRequest, "research");
+    expect(decision.score).toBeGreaterThanOrEqual(4);
+    expect(applySupervisorStrategy(decision, "auto").route).toBe("direct");
+    expect(decision.reasons).toContain("Research mode uses the direct report runtime unless durable work is explicitly requested.");
+    expect(decision.requiresApproval).toBe(false);
+  });
+
+  it("retains ordinary conversation and non-Research complexity routing", () => {
+    expect(routeAgentRequest("What did we decide about the launch date?", "orchestrate").route).toBe("direct");
+    expect(routeAgentRequest(detailedResearchRequest, "orchestrate").route).toBe("durable_workflow");
+  });
+
+  it("does not mistake multiple research steps for a request to run in the background", () => {
+    const request = "Research in multiple steps: investigate primary evidence, compare the findings, and prepare a cited report.";
+    expect(routeAgentRequest(request, "research").route).toBe("direct");
+    expect(routeAgentRequest(request, "orchestrate").route).toBe("durable_workflow");
+  });
+
+  it.each([
+    "In the background, research the current options and prepare a report with evidence.",
+    "Research the current options every week and prepare a report with evidence.",
+    "Schedule a research report to run later.",
+  ])("keeps explicitly durable Research on the workflow path: %s", (request) => {
+    expect(applySupervisorStrategy(routeAgentRequest(request, "research"), "auto").route).toBe("durable_workflow");
+  });
+
+  it("honors an explicit workflow strategy and saved procedure while Research is selected", () => {
+    expect(applySupervisorStrategy(routeAgentRequest(detailedResearchRequest, "research"), "durable").route).toBe("durable_workflow");
+    const procedure = routeAgentRequest("Run my evidence review.", "research", undefined, [{
+      id: "workflow:evidence-review", aliases: ["evidence review"], requiredToolIds: ["web.search"],
+    }]);
+    expect(applySupervisorStrategy(procedure, "auto")).toMatchObject({
+      route: "durable_workflow",
+      procedure: { workflowId: "workflow:evidence-review", requiredToolIds: ["web.search"] },
+    });
+    expect(routeAgentRequest("Delete the old project", "research").route).toBe("clarify");
+  });
+
   it("keeps ordinary questions on the direct path", () => {
     expect(routeAgentRequest("What did we decide about the launch date?", "research").route).toBe("direct");
   });

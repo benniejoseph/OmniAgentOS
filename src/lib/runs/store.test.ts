@@ -36,6 +36,47 @@ function continuationFor(executionId: string): AgentRunContinuation {
 }
 
 describe("agent run approval continuations (file mode)", () => {
+  it.each([1, 6_000, 65_536])("retains the validated report output cap %s", async (maxOutputTokens) => {
+    const store = await import("@/lib/runs/store");
+    expect(store.parseAgentRunContinuation({
+      ...continuationFor(`exec-report-cap-${maxOutputTokens}`),
+      maxOutputTokens,
+    })?.maxOutputTokens).toBe(maxOutputTokens);
+  });
+
+  it.each([0, -1, 1.5, 65_537, "6000", null, Number.NaN, Number.POSITIVE_INFINITY, {}, []])("rejects a malformed report output cap %s", async (maxOutputTokens) => {
+    const store = await import("@/lib/runs/store");
+    expect(store.parseAgentRunContinuation({
+      ...continuationFor("exec-invalid-report-cap"),
+      maxOutputTokens,
+    })).toBeUndefined();
+  });
+
+  it.each([
+    { name: "report", maxOutputTokens: 6_000 },
+    { name: "legacy", maxOutputTokens: undefined },
+  ])("preserves the $name output-cap decision when parking and reading Research", async ({ name, maxOutputTokens }) => {
+    const store = await import("@/lib/runs/store");
+    const executionId = `exec-research-output-cap-${name}`;
+    const run = await store.createAgentRun({
+      mode: "research",
+      prompt: "preserve the report output budget",
+      messages: [{ role: "user", content: "preserve the report output budget" }],
+    });
+    await store.markAgentRunWaitingForApproval(run.id, {
+      response: "Collected the first source.",
+      continuation: {
+        ...continuationFor(executionId),
+        ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
+      },
+    });
+
+    const found = await store.findAgentRunWaitingForToolApproval(executionId);
+    expect(found?.mode).toBe("research");
+    expect(found?.continuation).toBeDefined();
+    expect(found?.continuation?.maxOutputTokens).toBe(maxOutputTokens);
+  });
+
   it("parses the persisted tool-step cap and accepts legacy continuations without it", async () => {
     const store = await import("@/lib/runs/store");
     const capped = store.parseAgentRunContinuation({

@@ -89,6 +89,37 @@ function dependencies(generateResult = modelResult()) {
 }
 
 describe("semantic intent resolver", () => {
+  it.each([
+    { message: "Build a detailed research report comparing public transit funding.", route: "direct" },
+    { message: "In the background, build a research report comparing public transit funding.", route: "durable_workflow" },
+  ])("retains Research's $route route after both semantic catalog passes", async ({ message, route }) => {
+    const deps = dependencies(modelResult({
+      text: JSON.stringify({
+        intent: "create",
+        executionShape: "multi_step",
+        workKinds: ["build", "research", "verify"],
+        consequential: false,
+        needsClarification: false,
+        entities: [],
+        capabilityQueries: ["public transit funding research"],
+        candidateCapabilityIds: [],
+        confidence: 0.95,
+      }),
+    }));
+    deps.searchCapabilities.mockResolvedValue({
+      capabilities: [], query: "public transit funding research", total: 0, limit: 48, hasMore: false,
+    });
+    const resolution = await createSemanticIntentResolver(deps)({
+      ...input(message), mode: "research", baseline: routeAgentRequest(message, "research"),
+    });
+
+    expect(deps.generateModelText).toHaveBeenCalledOnce();
+    expect(resolution.decision).toMatchObject({ route, requiresApproval: false });
+    expect(resolution.receipt).toMatchObject({
+      source: "model", route, executionShape: "multi_step", model: { usageReceiptRecorded: true },
+    });
+  });
+
   it("resolves a bounded candidate and records model attribution", async () => {
     const deps = dependencies();
     const resolution = await createSemanticIntentResolver(deps)(input());

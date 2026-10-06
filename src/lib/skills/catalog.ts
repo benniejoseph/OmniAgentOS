@@ -33,9 +33,9 @@ export const builtInSkills: AgentSkill[] = [
     slug: "evidence-research",
     name: "Evidence research",
     description: "Find, compare, and synthesize source-backed information while separating fact from inference.",
-    instructions: "Decompose the question, retrieve current and durable evidence, compare sources, cite every material claim, and state unresolved uncertainty.",
+    instructions: "Investigate complementary aspects of the question, read relevant source pages, compare evidence and disagreements, and synthesize a detailed report with citations near material claims. Distinguish fetched excerpts from search summaries and disclose gaps. Respect explicit brevity, source restrictions, and no-web instructions.",
     category: "research",
-    toolIds: ["web.search", "knowledge.search", "memory.search"],
+    toolIds: ["web.search", "web.read", "knowledge.search", "memory.search"],
     tags: ["research", "citations"],
   }),
   builtInSkill({

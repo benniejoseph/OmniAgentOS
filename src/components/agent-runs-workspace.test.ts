@@ -208,3 +208,76 @@ describe("rendering past turns", () => {
     expect(onOpenActivity.mock.calls).toEqual([["run-7"]]);
   });
 });
+
+describe("Research report presentation", () => {
+  it("renders comparison tables with linked sources and keyboard-accessible horizontal scrolling", () => {
+    const html = renderToStaticMarkup(createElement(ConversationMessageContent, {
+      content: [
+        "## Findings",
+        "A comparison of the evidence.",
+        "| Option | Finding |",
+        "| :--- | ---: |",
+        "| **First** | Supported [web:one] |",
+        "| Second | [Read the source](https://example.test/report) |",
+        "",
+        "## Gaps",
+        "Further verification is needed.",
+      ].join("\n"),
+      grounding: {
+        status: "verified",
+        citedIds: ["web:one"],
+        invalidIds: [],
+        sources: [{ citationId: "web:one", kind: "web", title: "Evidence report", url: "https://example.test/evidence" }],
+      },
+    }));
+    expect(html).toContain('role="region" aria-label="Report comparison table" tabindex="0"');
+    expect(html).toContain("max-w-full overflow-x-auto");
+    expect(html).toContain('<caption class="sr-only">Report comparison</caption>');
+    expect(html.match(/scope="col"/g)).toHaveLength(2);
+    expect(html).toContain('style="text-align:right"');
+    expect(html).toContain('aria-label="Source 1: Evidence report"');
+    expect(html).toContain('href="https://example.test/report"');
+    expect(html).toContain('rel="noreferrer noopener"');
+    expect(html).toMatch(/<strong[^>]*>First<\/strong>/);
+    expect(html).toMatch(/<h3[^>]*>Gaps<\/h3>/);
+    expect(html).toContain("Further verification is needed.");
+  });
+
+  it("keeps inline code and escaped pipes intact without interpreting raw HTML", () => {
+    const html = renderToStaticMarkup(createElement(ConversationMessageContent, {
+      content: [
+        "| Syntax | Detail |",
+        "| --- | --- |",
+        "| `a|b` | one\\|two |",
+        "| ``a`|b`` | <script>alert('x')</script> |",
+      ].join("\n"),
+    }));
+    expect(html.match(/<td /g)).toHaveLength(4);
+    expect(html).toMatch(/<code[^>]*>a\|b<\/code>/);
+    expect(html).toMatch(/<code[^>]*>a`\|b<\/code>/);
+    expect(html).toContain("one|two");
+    expect(html).toContain("&lt;script&gt;");
+    expect(html).not.toContain("<script>");
+  });
+
+  it("preserves malformed tables as text and never consumes the following list or code block", () => {
+    const html = renderToStaticMarkup(createElement(ConversationMessageContent, {
+      content: [
+        "| A | B |",
+        "| --- | --- |",
+        "| one | two | extra |",
+        "",
+        "- Keep this list item",
+        "```md",
+        "| A | B |",
+        "| --- | --- |",
+        "| one | two |",
+        "```",
+      ].join("\n"),
+    }));
+    expect(html).not.toContain("<table");
+    expect(html).toContain("| one | two | extra |");
+    expect(html).toMatch(/<li[^>]*>Keep this list item<\/li>/);
+    expect(html).toMatch(/<pre[^>]*><code>\| A \| B \|\n\| --- \| --- \|\n\| one \| two \|<\/code><\/pre>/);
+  });
+});
