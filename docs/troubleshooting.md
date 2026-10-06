@@ -333,3 +333,36 @@ Run the focused component or contract test for the changed surface, followed by
 `npm run build`. For installed-Mac Computer Use, use the signed native canary and
 verify the governed command receipt rather than adding a browser-automation test
 runtime back to the repository.
+
+## Live web search and Research
+
+General Research uses the normal bounded Agent loop, with Scout and the
+Evidence research Skill exposing `web.search`, knowledge retrieval, and memory
+retrieval where authorized. Markets/Meridian is a separate market-data workspace.
+A configured provider key is configuration evidence only; it does not prove a
+live search succeeded.
+
+`web.search` requires a completed hosted search, a nonempty answer, and usable
+source URLs. Requests preserve `allowedDomains`; a model that rejects domain
+filters returns an actionable error instead of widening the search. The
+provider request has a 25-second deadline, no hidden SDK retries, and bounded
+hosted calls and output. Returned hosted calls determine search usage.
+
+Automatic search resolves the Agent's permitted tools before using the governed
+executor. Research keeps that authorized search tool for follow-up questions.
+Explicit no-web instructions disable search for the run; selecting Research
+alone does not trigger a paid search for an otherwise offline request.
+
+For a bounded authenticated check, provide `BASE_URL`, `EXPECTED_REVISION`,
+`SMOKE_PAID_AGENT_EMAIL`, and `SMOKE_PAID_AGENT_PASSWORD` through the operator
+environment, then run `node scripts/smoke-web-research.mjs`. Optional
+`SMOKE_INTERNAL_AUTH_SECRET` labels synthetic telemetry, and
+`VERCEL_AUTOMATION_BYPASS_SECRET` admits a protected staged deployment. The
+script never uses those headers as execution identity. It verifies a direct
+governed search and a session-only, read-only Research Agent, checks citations,
+purges its temporary Agent through exact previews, and signs out. It never
+retries a paid POST. `SMOKE_WEB_SEARCH_ONLY=1` limits the check to direct search.
+
+The receipt and stream diagnostics omit answer text and credentials. A passing
+receipt applies only to the pinned deployment and queries tested; it is not a
+guarantee that every source is correct or every provider request will succeed.
