@@ -4,7 +4,7 @@ import {
   deterministicSemanticFallback,
   type SemanticIntentCandidate,
 } from "@/lib/orchestration/semantic-intent";
-import { routeAgentRequest } from "@/lib/orchestration/supervisor";
+import { applySupervisorStrategy, routeAgentRequest } from "@/lib/orchestration/supervisor";
 import type { CapabilityDescriptor } from "@/lib/capabilities/types";
 import { listInternalAgentCardsV1 } from "@/lib/agents/discovery-card";
 
@@ -86,6 +86,105 @@ function candidate(
 }
 
 describe("semantic intent policy", () => {
+  it.each(["research", "verify", "coordinate"] as const)("keeps Research reports direct when the model classifies them as build plus %s", (workKind) => {
+    const message = "Build a detailed evidence report comparing public transit funding approaches.";
+    const baseline = routeAgentRequest(message, "research");
+    const resolution = applySemanticIntentPolicy({
+      message,
+      baseline,
+      mode: "research",
+      capabilityCandidates: [readCapability],
+      candidate: candidate({
+        intent: "create",
+        executionShape: "multi_step",
+        workKinds: ["build", workKind],
+        candidateCapabilityIds: [readCapability.id],
+      }),
+    });
+
+    expect(baseline.route).toBe("direct");
+    expect(resolution.decision).toMatchObject({ route: "direct", requiresApproval: false });
+    expect(resolution.receipt).toMatchObject({ source: "model", route: "direct", executionShape: "multi_step" });
+    expect(resolution.receipt.matchedCapabilityIds).toEqual([readCapability.id]);
+    expect(applySupervisorStrategy(resolution.decision, "auto").route).toBe("direct");
+    expect(applySupervisorStrategy(resolution.decision, "durable").route).toBe("durable_workflow");
+  });
+
+  it.each(["orchestrate", "execute"] as const)("retains semantic build-and-research workflow routing in %s", (mode) => {
+    const message = "Build a comparative evidence report.";
+    const baseline = routeAgentRequest(message, mode);
+    const resolution = applySemanticIntentPolicy({
+      message,
+      baseline,
+      mode,
+      capabilityCandidates: [],
+      candidate: candidate({
+        intent: "create", executionShape: "multi_step", workKinds: ["build", "research"],
+      }),
+    });
+    expect(baseline.route).toBe("direct");
+    expect(resolution.decision.route).toBe("durable_workflow");
+  });
+
+  it.each([
+    "In the background, research the evidence and prepare a report.",
+    "Research the current evidence every week.",
+    "Schedule a research report to run later.",
+  ])("preserves explicitly durable Research even when the classifier disagrees: %s", (message) => {
+    const resolution = applySemanticIntentPolicy({
+      message,
+      baseline: routeAgentRequest(message, "research"),
+      mode: "research",
+      capabilityCandidates: [],
+      candidate: candidate({ intent: "question", executionShape: "conversational" }),
+    });
+    expect(resolution.decision.route).toBe("durable_workflow");
+    expect(resolution.receipt.route).toBe("durable_workflow");
+  });
+
+  it("keeps saved procedure and clarification invariants while Research is selected", () => {
+    const message = "Run my evidence review.";
+    const procedure = applySemanticIntentPolicy({
+      message,
+      baseline: routeAgentRequest(message, "research", undefined, [{
+        id: "workflow:evidence-review", aliases: ["evidence review"], requiredToolIds: ["web.search"],
+      }]),
+      mode: "research",
+      capabilityCandidates: [],
+      candidate: candidate(),
+    });
+    expect(procedure.decision).toMatchObject({
+      route: "durable_workflow", procedure: { workflowId: "workflow:evidence-review" },
+    });
+    expect(procedure.receipt.source).toBe("deterministic_invariant");
+
+    const clarification = applySemanticIntentPolicy({
+      message: "Delete the old project",
+      baseline: routeAgentRequest("Delete the old project", "research"),
+      mode: "research",
+      capabilityCandidates: [],
+      candidate: candidate({ intent: "research", executionShape: "multi_step", workKinds: ["build", "research"] }),
+    });
+    expect(clarification.decision).toMatchObject({ route: "clarify", requiresApproval: true });
+    expect(clarification.receipt.source).toBe("deterministic_invariant");
+  });
+
+  it("retains approval requirements when Research remains on the report runtime", () => {
+    const message = "Research event options and add a review to my calendar.";
+    const resolution = applySemanticIntentPolicy({
+      message,
+      baseline: routeAgentRequest(message, "research"),
+      mode: "research",
+      capabilityCandidates: [writeCapability],
+      candidate: candidate({
+        intent: "create", executionShape: "multi_step", workKinds: ["build", "research"],
+        consequential: true, candidateCapabilityIds: [writeCapability.id],
+      }),
+    });
+    expect(resolution.decision).toMatchObject({ route: "direct", requiresApproval: true });
+    expect(resolution.receipt).toMatchObject({ route: "direct", requiresApproval: true });
+  });
+
   it("routes semantic background coordination durably and selects its team", () => {
     const baseline = routeAgentRequest(
       "In the background, investigate this and prepare a verified report.",

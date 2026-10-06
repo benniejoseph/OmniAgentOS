@@ -195,6 +195,7 @@ import { getGovernedTool } from "@/lib/tools/registry";
 import { RISK3_QUORUM, type ToolDefinition, type ToolExecutionRecord } from "@/lib/tools/types";
 import { actionClassFor, recordActionOutcome } from "@/lib/trust/ledger";
 import { runLiveWebSearch } from "@/lib/web-search/search";
+import { readPublicWebSource } from "@/lib/web-search/read";
 import type { AiUsageOperation, AiUsageScope } from "@/lib/usage/types";
 
 const LOCAL_COMPUTER_TOOL_RESULT = Symbol("local-computer-tool-result");
@@ -239,6 +240,10 @@ const webSearchSchema = z.object({
   limit: z.number().int().min(1).max(20).optional(),
   searchContextSize: z.enum(["low", "medium", "high"]).optional(),
   allowedDomains: z.array(z.string().min(1).max(253)).max(20).optional(),
+}).strict();
+
+const webReadSchema = z.object({
+  url: z.string().trim().min(1).max(4_000).url(),
 }).strict();
 
 const localMacObserveSchema = z.object({
@@ -4487,6 +4492,11 @@ async function runTool(
     });
   }
 
+  if (tool.id === "web.read") {
+    const { url } = webReadSchema.parse(parsed);
+    return readPublicWebSource({ url, abortSignal });
+  }
+
   if (tool.id === "media.image.generate") {
     const value = mediaImageGenerateSchema.parse(parsed);
     return mediaToolResult(await createImageMediaAsset({
@@ -5788,6 +5798,10 @@ function parseInput(tool: ToolDefinition, input: Record<string, unknown>) {
     return webSearchSchema.parse(input);
   }
 
+  if (tool.id === "web.read") {
+    return webReadSchema.parse(input);
+  }
+
   if (tool.id === "media.image.generate") return mediaImageGenerateSchema.parse(input);
   if (tool.id === "media.image.edit") return mediaImageEditSchema.parse(input);
   if (tool.id === "media.video.generate") return mediaVideoGenerateSchema.parse(input);
@@ -5978,6 +5992,10 @@ function describeSideEffects(toolId: string) {
 
   if (toolId === "web.search") {
     return ["read-only live web search", "uses OpenAI Responses web_search hosted tool", "stores source metadata in the tool audit ledger"];
+  }
+
+  if (toolId === "web.read") {
+    return ["read-only public source reading", "SSRF-guarded public URLs and redirects; no authentication or script execution", "returns bounded untrusted source text and citation metadata"];
   }
 
   if (toolId === "http.request") {

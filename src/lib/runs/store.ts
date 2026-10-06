@@ -2778,6 +2778,11 @@ export function parseAgentRunContinuation(
     ? undefined
     : parsePersistedRunBudgetStateV1(candidate.budgetState);
   if (candidate.budgetState !== undefined && !budgetState) return undefined;
+  if (candidate.maxOutputTokens !== undefined && (
+    !Number.isSafeInteger(candidate.maxOutputTokens) ||
+    Number(candidate.maxOutputTokens) < 1 ||
+    Number(candidate.maxOutputTokens) > 65_536
+  )) return undefined;
   if (
     candidate.maxToolSteps !== undefined &&
     (
@@ -2832,6 +2837,9 @@ export function parseAgentRunContinuation(
     instructions: candidate.instructions,
     response: typeof candidate.response === "string" ? candidate.response : "",
     toolSteps: Number.isInteger(candidate.toolSteps) ? (candidate.toolSteps as number) : 0,
+    maxOutputTokens: candidate.maxOutputTokens === undefined
+      ? undefined
+      : Number(candidate.maxOutputTokens),
     maxToolSteps: candidate.maxToolSteps === undefined
       ? undefined
       : Number(candidate.maxToolSteps),

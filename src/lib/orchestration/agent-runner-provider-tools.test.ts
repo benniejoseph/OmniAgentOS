@@ -7,7 +7,7 @@ import {
   dynamicDelegationMaxToolSteps,
 } from "@/lib/delegation/runtime-policy";
 import type { AgentEvent } from "@/lib/orchestration/types";
-import { AGENT_REASONING_EFFORT } from "@/lib/config";
+import { AGENT_MAX_OUTPUT_TOKENS, AGENT_REASONING_EFFORT } from "@/lib/config";
 import { estimateModelInputTokens } from "@/lib/runs/budgets";
 import { AgentRunTerminatedError } from "@/lib/runs/cancellation";
 import type {
@@ -18,6 +18,52 @@ import type {
 import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
 
 describe("non-OpenAI governed provider tool loop", () => {
+  it.each([
+    { name: "Research report", maxOutputTokens: 6_000, expected: 6_000, resumed: false },
+    { name: "ordinary run", maxOutputTokens: undefined, expected: AGENT_MAX_OUTPUT_TOKENS, resumed: false },
+    { name: "legacy continuation", maxOutputTokens: undefined, expected: AGENT_MAX_OUTPUT_TOKENS, resumed: true },
+  ])("keeps the $name output cap through source reading and final synthesis", async ({ maxOutputTokens, expected, resumed }) => {
+    const requests: ModelToolTurnRequest[] = [];
+    const generateTurn = vi.fn(async (request: ModelToolTurnRequest) => {
+      requests.push(request);
+      return requests.length === 1
+        ? turn({ toolCalls: [{ callId: "call-report-source", name: "web_read", argumentsJson: "{}" }] })
+        : turn({ text: "Report based on the source evidence." });
+    });
+    const executeTool = vi.fn(async () => ({
+      record: executionRecord("web.read", "executed"),
+      result: { content: "Source evidence for the report." },
+    }));
+
+    const collected = await collect(runNonOpenAIProviderToolLoop({
+      provider: "google",
+      tier: "reasoning",
+      instructions: "Research the evidence and write a detailed report.",
+      prompt: "Compare the supplied source findings.",
+      tools: [modelTool("web_read")],
+      toolbox: {
+        byFunctionName: new Map([["web_read", {
+          definition: toolDefinition("web.read"),
+          functionName: "web_read",
+        }]]),
+      },
+      securityContext: { tenantId: "tenant-research", actorId: "owner", role: "operator", source: "default" },
+      runId: `run-report-cap-${resumed ? "resumed" : expected}`,
+      ...(resumed ? { continuation: turn({}).continuation } : {}),
+      maxOutputTokens,
+      maxToolSteps: 1,
+      requireReadOnly: true,
+      generateTurn,
+      executeTool: executeTool as never,
+    }));
+
+    expect(collected.result).toMatchObject({ text: "Report based on the source evidence.", turns: 2, toolSteps: 1 });
+    expect(requests.map((request) => request.maxOutputTokens)).toEqual([expected, expected]);
+    expect(requests.map((request) => request.toolChoice)).toEqual([undefined, "none"]);
+    expect(executeTool).toHaveBeenCalledOnce();
+    expect(executeTool).toHaveBeenCalledWith(expect.objectContaining({ toolId: "web.read", requireReadOnly: true }));
+  });
+
   it("keeps a third bounded turn for synthesis after two sequential read rounds", async () => {
     let turnIndex = 0;
     const generateTurn = vi.fn(async () => {

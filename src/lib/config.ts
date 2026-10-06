@@ -299,6 +299,12 @@ export const AGENT_MAX_OUTPUT_TOKENS = normalizePositiveInteger(
   process.env.OMNIAGENT_AGENT_MAX_OUTPUT_TOKENS,
   2_000,
 );
+// Research reserves room for a report without increasing ordinary chat limits
+// or the caller's total token, cost, and wall-clock authority.
+export const RESEARCH_MAX_OUTPUT_TOKENS = Math.min(16_000, normalizePositiveInteger(
+  process.env.OMNIAGENT_RESEARCH_MAX_OUTPUT_TOKENS,
+  6_000,
+));
 // Every turn is charged the tokens it used, and each turn sends the whole
 // conversation again, so a run's total grows with each tool round.
 export const AGENT_MAX_TOTAL_TOKENS = normalizePositiveInteger(

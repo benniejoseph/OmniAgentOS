@@ -5,6 +5,16 @@ import { getGovernedTool, getGovernedTools } from "@/lib/tools/registry";
 import { MAIN_AGENT_EXCLUDED_APP_OPERATIONS } from "@/lib/app-services/registry";
 
 describe("governed native tool schemas", () => {
+  it("registers bounded public source reading as an explicit read-only tool", () => {
+    const tool = getGovernedTool("web.read");
+    expect(tool).toMatchObject({
+      status: "active", riskLevel: 0, approvalRequired: false, operationClass: "read_only",
+      inputSchema: { additionalProperties: false, required: ["url"], properties: { url: { maxLength: 4_000 } } },
+    });
+    expect(Object.keys(tool!.inputSchema.properties as object)).toEqual(["url"]);
+    expect(evaluateToolPolicy({ tool: tool! }).allowed).toBe(true);
+  });
+
   it("keeps memory.correct compatible with OpenAI function schemas", () => {
     const tool = getGovernedTool("memory.correct");
 

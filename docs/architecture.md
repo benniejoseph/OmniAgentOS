@@ -78,6 +78,44 @@ JSON fallback locally)]
   CRON --> QUEUE
 ```
 
+## Research reports
+
+An ordinary Research request uses the direct agent runtime, including long or
+multi-step questions. Explicit background, recurring, saved-procedure, and durable
+workflow requests keep their existing workflow routing. Research skips the optional
+short-context automatic Council rewrite so that its evidence and report survive
+through synthesis.
+
+For substantive questions, the runtime performs up to three complementary
+high-context `web.search` calls, deduplicates and diversifies discovered URLs, then
+reads up to six pages through governed `web.read`. Both tools retain tenant/actor
+scope, current toolbox policy, checkpoints, idempotency, cancellation, and run
+budgets. An explicit no-web or provided-sources-only instruction removes both tools.
+Collection stops early to preserve time and tokens for the report; smaller custom
+budgets or restricted Agent toolboxes can reduce coverage.
+
+`web.read` fetches public HTTP(S) text with DNS and connection-time SSRF checks on
+every redirect. It allows three redirects, one MiB of response bytes, 12,000 extract
+characters and a 15-second deadline. HTML is parsed without executing scripts or
+sending credentials. PDFs, protected pages and JavaScript-only pages may be
+unreadable. Search discovery and fetched extracts are separate untrusted evidence;
+reports disclose missing or truncated material and do not claim citation presence
+proves factual accuracy.
+
+The synthesis context retains up to 48,000 characters of evidence, with URL-bound
+citation IDs and coverage metadata. Research defaults to a 6,000-token output cap
+(`OMNIAGENT_RESEARCH_MAX_OUTPUT_TOKENS`, maximum 16,000), preserved across provider
+calls and approval continuations. Ordinary chat limits stay unchanged. The report
+prompt asks for context, detailed findings, source comparison, uncertainty and
+references; substantive supported topics aim for 1,200–2,000 words while honoring
+explicit brevity. The UI renders cited Markdown comparison tables.
+
+Run `SMOKE_RESEARCH_REPORT=1 npm run smoke:web-research` with the existing secure
+operator environment and exact `EXPECTED_REVISION` for bounded live acceptance.
+It checks three search receipts, two page reads, at least two cited source URLs,
+four sections and 400 prose words. These minimum structural checks do not certify
+individual claims. This feature adds no database migration.
+
 ## The agent tool loop (`src/lib/orchestration/agent-runner.ts`)
 
 ```mermaid

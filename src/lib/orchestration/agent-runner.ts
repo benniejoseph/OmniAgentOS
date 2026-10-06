@@ -1,3 +1,4 @@
+import { researchReportInstructions, formatResearchEvidence, researchSearchQueries, selectResearchSources, shouldInvestigateResearchQuery, isResearchWebExplicitlyDisabled, type ResearchSourceRead } from "@/lib/orchestration/research";
 import { createHash, randomUUID } from "node:crypto";
 import {
   buildAgentRunIdentityPinV1,
@@ -8,6 +9,7 @@ import {
 } from "@/lib/agents/identity-contracts";
 import {
   AGENT_MAX_OUTPUT_TOKENS,
+  RESEARCH_MAX_OUTPUT_TOKENS,
   AGENT_MAX_TOOL_STEPS,
   AGENT_REASONING_EFFORT,
   COMPUTER_USE_MODEL,
@@ -426,6 +428,9 @@ async function* runAgentUntilStopped(
     );
   }
   const mode = request.mode || "orchestrate";
+  const maxOutputTokens = mode === "research"
+    ? RESEARCH_MAX_OUTPUT_TOKENS
+    : AGENT_MAX_OUTPUT_TOKENS;
   const localComputerUseRequested = request.computerUseTarget === "local_macos";
   const toolStepAuthority = localComputerUseRequested
     ? LOCAL_COMPUTER_MAX_TOOL_STEPS
@@ -1139,7 +1144,9 @@ async function* runAgentUntilStopped(
     }
     const liveWebRequested = request.liveWebPolicy !== "disabled" &&
       !personalPromptMemoryAccessScope &&
-      shouldUseLiveWebSearch(query);
+      (mode === "research"
+        ? shouldInvestigateResearchQuery(query)
+        : shouldUseLiveWebSearch(query));
     if (durableMemoryEnabled) {
       reserveBudget({
         tokens: AGENT_CONTEXT_TASK_TOKEN_LIMIT,
@@ -1265,7 +1272,10 @@ async function* runAgentUntilStopped(
       : groundToolDiscoveryInMemory
         ? undefined
         : buildAgentToolbox(request.tenantId, {
-            query: baseCapabilitySearchQuery || query,
+            query: composeCapabilitySearchQuery(
+              mode === "research" && liveWebRequested ? "web.search web.read" : undefined,
+              baseCapabilitySearchQuery || query,
+            ),
             preferredToolIds: configuredToolIds,
           });
     const workspaceAccessPromise = providerConfigured
@@ -1340,7 +1350,10 @@ async function* runAgentUntilStopped(
         )
       : baseCapabilitySearchQuery;
     const resolvedToolboxPromise = toolboxPromise || buildAgentToolbox(request.tenantId, {
-      query: capabilitySearchQuery || query,
+      query: composeCapabilitySearchQuery(
+        mode === "research" && liveWebRequested ? "web.search web.read" : undefined,
+        capabilitySearchQuery || query,
+      ),
       preferredToolIds: configuredToolIds,
     });
     if (durableMemoryEnabled) {
@@ -1357,7 +1370,9 @@ async function* runAgentUntilStopped(
     let toolbox = filterAgentToolbox(
       await resolvedToolboxPromise,
       [
-        ...(isLiveWebSearchExplicitlyDisabled(query) ? ["web.search"] : []),
+        ...((isLiveWebSearchExplicitlyDisabled(query) ||
+          (mode === "research" && isResearchWebExplicitlyDisabled(query)))
+          ? ["web.search", "web.read"] : []),
         ...(!localComputerUseRequested
           ? localComputerToolIds
           : []),
@@ -1396,6 +1411,83 @@ async function* runAgentUntilStopped(
       };
     }
 
+    const workspaceAccess = await workspaceAccessPromise;
+    const workspaceCapabilityContext = workspaceAccess
+      ? formatWorkspaceAccessContext(workspaceAccess, {
+          selectedGovernedTools: toolbox.tools.map(({ definition }) => ({
+            id: definition.id,
+            name: definition.name,
+            source: definition.category === "mcp" || definition.category === "openapi"
+              ? definition.category
+              : "native",
+            riskLevel: definition.riskLevel,
+            approvalRequired: definition.approvalRequired,
+          })),
+        })
+      : "";
+    if (workspaceAccess) {
+      const selectedExternalToolCount = toolbox.tools.filter(
+        ({ definition }) => definition.category === "mcp" || definition.category === "openapi",
+      ).length;
+      yield await emit({
+        type: "status",
+        label: "workspace capabilities ready",
+        detail: `${workspaceAccess.connected.length} connected service${workspaceAccess.connected.length === 1 ? "" : "s"}; ${selectedExternalToolCount} governed external tool${selectedExternalToolCount === 1 ? "" : "s"} selected for this task.`,
+      });
+    }
+    const activeAdaptations = await adaptationGuidancePromise;
+    if (
+      durableMemoryEnabled &&
+      (activeAdaptations.length || request.adaptationEvidence?.sampleSize)
+    ) {
+      yield await emit({
+        type: "status",
+        label: activeAdaptations.length
+          ? "activated adaptation ready"
+          : "adaptation evidence observed",
+        detail: activeAdaptations.length
+          ? `${activeAdaptations.length} owner-activated adaptation${activeAdaptations.length === 1 ? "" : "s"} match this exact Agent definition.`
+          : `${request.adaptationEvidence?.sampleSize || 0} prior outcome${request.adaptationEvidence?.sampleSize === 1 ? "" : "s"} are evidence only and changed no behavior.`,
+      });
+    }
+    const adaptationGuidance = activeAdaptations.map((adaptation) =>
+      `Activation v${adaptation.activationVersion}: ${adaptation.guidance}`
+    );
+    const actorTimeZone = await actorTimeZonePromise;
+    const companionLanguageStyle = await companionLanguageStylePromise;
+    const baseInstructions = buildAgentInstructions({
+      mode,
+      runtimeClock: { timeZone: actorTimeZone },
+      agentId: request.agentId,
+      specialistIds: request.specialistIds,
+      adaptationGuidance,
+      companionLanguageStyle,
+      profile: request.agentProfile
+        ? { ...request.agentProfile, skills: runtimeAgentSkills }
+        : runtimeAgentSkills.length
+          ? {
+              name: resolvedAgentIdentity.definition.name,
+              role: resolvedAgentIdentity.definition.role,
+              description: resolvedAgentIdentity.definition.description,
+              instructions: resolvedAgentIdentity.definition.instructions,
+              persona: resolvedAgentIdentity.definition.persona,
+              autonomy: resolvedAgentIdentity.principal.autonomy,
+              approvalPolicy: resolvedAgentIdentity.principal.approvalPolicy,
+              memoryScope: resolvedAgentIdentity.principal.memoryScope,
+              skills: runtimeAgentSkills,
+            }
+          : undefined,
+      computerUse: computerUseTarget,
+      localComputerWorkspaces: request.localComputerWorkspaces,
+    });
+
+    // Research is a run mode, not a new immutable Agent or Skill identity.
+    // Persist the compiled instructions on approval pauses and hash them in the
+    // harness receipt, while leaving older definition and prompt pins intact.
+    const instructions = mode === "research"
+      ? `${baseInstructions}\n\n${researchReportInstructions}`
+      : baseInstructions;
+
     let liveWebContext = "";
     let citationSources = buildCitationSources(retrieval.results);
     const webSearchTool = toolbox.tools.find(
@@ -1411,7 +1503,125 @@ async function* runAgentUntilStopped(
       !webSearchTool.approvalRequired &&
       !forceApprovalForTool(agentToolPolicy, webSearchTool.riskLevel) &&
       governedToolOperationClass(webSearchTool, { query }) === "read_only");
-    if (useLiveWeb && webSearchTool) {
+    if (useLiveWeb && webSearchTool && mode === "research") {
+      const searches: LiveWebSearchResult[] = [];
+      const reads: ResearchSourceRead[] = [];
+      const limitations: string[] = [];
+      // Collection shares the run's original authority and leaves at least
+      // 90 seconds for synthesis/teardown. Individual tools keep their own
+      // smaller deadlines; no parallel checkpoint/effect admission is needed.
+      const collectionDeadline = Date.now() + Math.max(0, Math.min(
+        110_000,
+        remainingRunBudget(runBudgetState).wallTimeMs - 90_000,
+      ));
+      // Protect the complete bounded evidence envelope plus the actual prompt,
+      // transcript and toolbox before admitting another paid discovery turn.
+      const synthesisEstimate = agentTurnBudgetEstimate({
+        provider: modelRoute.provider,
+        model: modelRoute.model,
+        maxOutputTokens,
+        inputTokens: estimateModelInputTokens([
+          instructions,
+          buildAgentInput({ messages: safeMessages,
+            commandContext: request.commandContext?.content,
+            memoryContext: request.agentProfile?.memoryScope === "session" ? "" : retrieval.contextBlock,
+            injectionCanary: renderInjectionCanary(normalizeTenantId(request.tenantId)),
+            liveWebContext: "", councilContext: "", workspaceCapabilityContext }),
+          toolbox.openAITools,
+        ]) + 12_000,
+      });
+      const canCollect = (search: boolean) => {
+        runAbortSignal.throwIfAborted();
+        const remaining = remainingRunBudget(runBudgetState);
+        const searchTokens = search ? budgetPerRemainingModelTurn(runBudgetState, "tokens") : 0;
+        const searchCost = search ? budgetPerRemainingModelTurn(runBudgetState, "costMicrousd") : 0;
+        return Date.now() < collectionDeadline &&
+          remaining.wallTimeMs > (search ? 115_000 : 105_000) &&
+          remaining.toolCalls > 0 &&
+          remaining.modelTurns > (search ? 1 : 0) &&
+          remaining.tokens - searchTokens >= synthesisEstimate.tokens &&
+          remaining.costMicrousd - searchCost >= synthesisEstimate.costMicrousd &&
+          remaining.costMicrousd > searchCost;
+      };
+      async function* gather(
+        tool: ToolDefinition,
+        input: Record<string, unknown>,
+        step: string,
+      ): AsyncGenerator<AgentEvent, Awaited<ReturnType<typeof executeGovernedTool>>> {
+        if (tool.id === "web.search") reserveModelTurnWithoutRetry();
+        reserveToolBudget([tool]);
+        yield await emit({ type: "tool", toolId: tool.id, toolName: tool.name,
+          status: "running", riskLevel: tool.riskLevel });
+        const scope = agentToolExecutionScope(executionScope, step);
+        const execution = await executeGovernedTool({
+          toolId: tool.id, input, dryRun: false, approved: false,
+          requireReadOnly: true, context: agentToolSecurityContext(request),
+          requestActorBinding: request.requestActorBinding,
+          moltbookAutonomy: request.moltbookAutonomy,
+          abortSignal: runAbortSignal, idempotencyKey: `${run.id}:${step}`,
+          executionScope: scope, agentRunId: run.id,
+          checkpointBeforeEffect: checkpointBeforeGovernedTool,
+        });
+        runAbortSignal.throwIfAborted();
+        await checkpointAfterGovernedTool({ record: execution.record, tool,
+          operationClass: "read_only", executionScope: scope });
+        yield await emit(toolEventForExecution(tool, execution.record));
+        if (execution.record.status === "executed") {
+          citationSources = mergeCitationSources(citationSources,
+            citationSourcesFromToolResult(tool.id, execution.result));
+        }
+        return execution;
+      }
+      yield await emit({ type: "status", label: "planning research",
+        detail: "Investigating the question, primary evidence, and limitations before writing the report." });
+      const queries = researchSearchQueries(query);
+      for (const [index, searchQuery] of queries.entries()) {
+        if (!canCollect(true)) {
+          limitations.push("Further searches were skipped to preserve the report's time and run budget.");
+          break;
+        }
+        yield await emit({ type: "status", label: "gathering research evidence",
+          detail: `Searching complementary evidence (${index + 1} of ${queries.length}).` });
+        const execution = yield* gather(webSearchTool,
+          { query: searchQuery, limit: 8, searchContextSize: "high" },
+          `research-search-${index + 1}`);
+        const result = execution.record.status === "executed"
+          ? liveWebPrefetchResult(execution.result) : undefined;
+        if (result) searches.push(result);
+        else limitations.push(`Search ${index + 1} did not return usable evidence.`);
+      }
+      const webReadTool = toolbox.tools.find(({ definition }) =>
+        definition.id === "web.read")?.definition;
+      const canRead = webReadTool && webReadTool.riskLevel === 0 &&
+        !webReadTool.approvalRequired &&
+        !forceApprovalForTool(agentToolPolicy, webReadTool.riskLevel) &&
+        governedToolOperationClass(webReadTool, {}) === "read_only";
+      const selectedSources = selectResearchSources(searches);
+      if (!canRead) limitations.push("Public-page reading is not authorized for this Agent; only search evidence is available.");
+      if (canRead && webReadTool) {
+        for (const [index, source] of selectedSources.entries()) {
+          if (!canCollect(false)) {
+            limitations.push("Remaining pages were not read because collection reached its bounded time or run allowance.");
+            break;
+          }
+          yield await emit({ type: "status", label: "reading research sources",
+            detail: `Reading public source ${index + 1} of ${selectedSources.length}; ${reads.length} page excerpts collected.` });
+          const execution = yield* gather(webReadTool, { url: source.url },
+            `research-read-${index + 1}`);
+          const page = execution.record.status === "executed"
+            ? researchSourceReadResult(execution.result) : undefined;
+          if (page) reads.push(page);
+          else limitations.push(`Page unavailable: ${source.url}. No page content was read for this source.`);
+        }
+      }
+      liveWebContext = String(redactSensitive(formatResearchEvidence({ searches, reads, limitations })));
+      if (!searches.length) {
+        yield await emit({ type: "status", label: "live web unavailable",
+          detail: "Research could not collect live sources; the report must disclose the evidence gap." });
+      }
+      yield await emit({ type: "status", label: "writing research report",
+        detail: `Synthesizing ${searches.length} completed searches and ${reads.length} fetched page excerpts; reporting coverage and limitations.` });
+    } else if (useLiveWeb && webSearchTool) {
       reserveModelTurnWithoutRetry();
       reserveToolBudget([webSearchTool]);
       yield await emit({
@@ -1479,75 +1689,6 @@ async function* runAgentUntilStopped(
     if (liveWebContext && mode !== "research") {
       toolbox = filterAgentToolbox(toolbox, ["web.search"]);
     }
-    const workspaceAccess = await workspaceAccessPromise;
-    const workspaceCapabilityContext = workspaceAccess
-      ? formatWorkspaceAccessContext(workspaceAccess, {
-          selectedGovernedTools: toolbox.tools.map(({ definition }) => ({
-            id: definition.id,
-            name: definition.name,
-            source: definition.category === "mcp" || definition.category === "openapi"
-              ? definition.category
-              : "native",
-            riskLevel: definition.riskLevel,
-            approvalRequired: definition.approvalRequired,
-          })),
-        })
-      : "";
-    if (workspaceAccess) {
-      const selectedExternalToolCount = toolbox.tools.filter(
-        ({ definition }) => definition.category === "mcp" || definition.category === "openapi",
-      ).length;
-      yield await emit({
-        type: "status",
-        label: "workspace capabilities ready",
-        detail: `${workspaceAccess.connected.length} connected service${workspaceAccess.connected.length === 1 ? "" : "s"}; ${selectedExternalToolCount} governed external tool${selectedExternalToolCount === 1 ? "" : "s"} selected for this task.`,
-      });
-    }
-    const activeAdaptations = await adaptationGuidancePromise;
-    if (
-      durableMemoryEnabled &&
-      (activeAdaptations.length || request.adaptationEvidence?.sampleSize)
-    ) {
-      yield await emit({
-        type: "status",
-        label: activeAdaptations.length
-          ? "activated adaptation ready"
-          : "adaptation evidence observed",
-        detail: activeAdaptations.length
-          ? `${activeAdaptations.length} owner-activated adaptation${activeAdaptations.length === 1 ? "" : "s"} match this exact Agent definition.`
-          : `${request.adaptationEvidence?.sampleSize || 0} prior outcome${request.adaptationEvidence?.sampleSize === 1 ? "" : "s"} are evidence only and changed no behavior.`,
-      });
-    }
-    const adaptationGuidance = activeAdaptations.map((adaptation) =>
-      `Activation v${adaptation.activationVersion}: ${adaptation.guidance}`
-    );
-    const actorTimeZone = await actorTimeZonePromise;
-    const companionLanguageStyle = await companionLanguageStylePromise;
-    const instructions = buildAgentInstructions({
-      mode,
-      runtimeClock: { timeZone: actorTimeZone },
-      agentId: request.agentId,
-      specialistIds: request.specialistIds,
-      adaptationGuidance,
-      companionLanguageStyle,
-      profile: request.agentProfile
-        ? { ...request.agentProfile, skills: runtimeAgentSkills }
-        : runtimeAgentSkills.length
-          ? {
-              name: resolvedAgentIdentity.definition.name,
-              role: resolvedAgentIdentity.definition.role,
-              description: resolvedAgentIdentity.definition.description,
-              instructions: resolvedAgentIdentity.definition.instructions,
-              persona: resolvedAgentIdentity.definition.persona,
-              autonomy: resolvedAgentIdentity.principal.autonomy,
-              approvalPolicy: resolvedAgentIdentity.principal.approvalPolicy,
-              memoryScope: resolvedAgentIdentity.principal.memoryScope,
-              skills: runtimeAgentSkills,
-            }
-          : undefined,
-      computerUse: computerUseTarget,
-      localComputerWorkspaces: request.localComputerWorkspaces,
-    });
     const toolIds = toolbox.tools
       .map((entry) => entry.definition.id)
       .sort((left, right) => left.localeCompare(right));
@@ -1694,7 +1835,7 @@ async function* runAgentUntilStopped(
       maxToolSteps,
       maxToolCallsPerTurn,
       maxToolResultChars: MAX_TOOL_RESULT_CHARS,
-      maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
+      maxOutputTokens,
       budgetLimits,
       budgetLimitsSha256: canonicalJsonSha256(budgetLimits),
       approvalPolicy: request.agentProfile?.approvalPolicy || "risk_based",
@@ -1732,7 +1873,9 @@ async function* runAgentUntilStopped(
     // A sibling critic therefore cannot independently inspect the evidence and
     // must not rewrite a completed Computer Use result as "unverified" after
     // the native commands have succeeded.
-    const councilActive = councilRequested &&
+    // Research synthesizes the full collected pack once. The optional sibling
+    // review/rewrite path has smaller context/output caps and would discard it.
+    const councilActive = mode !== "research" && councilRequested &&
       !isolatedMemoryContext &&
       !localComputerUseRequested &&
       !explicitDynamicDelegationAvailable;
@@ -2017,6 +2160,7 @@ async function* runAgentUntilStopped(
       if (modelRoute.provider !== "openai" || runtimeModel.allowCrossProviderFallback) {
         const securityContext = agentToolSecurityContext(request);
         const providerLoop = runNonOpenAIProviderToolLoop({
+          maxOutputTokens,
           requireReadOnly: agentToolPolicy.readOnly,
           provider: modelRoute.provider,
           tier: modelRoute.tier,
@@ -2056,6 +2200,7 @@ async function* runAgentUntilStopped(
               tier,
               budget: {
                 estimate: agentTurnBudgetEstimate({
+              maxOutputTokens,
                   provider,
                   model: modelRoute.model,
                   inputTokens: estimatedInputTokens,
@@ -2179,6 +2324,7 @@ async function* runAgentUntilStopped(
             response,
             toolSteps: result.toolSteps,
             maxToolSteps,
+            maxOutputTokens,
             outputsBeforeApproval: [],
             pendingToolCall: {
               callId: waiting.providerState.pendingCall.callId,
@@ -2257,6 +2403,7 @@ async function* runAgentUntilStopped(
           tier: modelRoute.tier,
           budget: {
             estimate: agentTurnBudgetEstimate({
+              maxOutputTokens,
               provider: "openai",
               model: modelRoute.model,
               inputTokens: estimateModelInputTokens([
@@ -2287,7 +2434,7 @@ async function* runAgentUntilStopped(
             abortSignal: runAbortSignal,
             reasoningEffort:
               runtimeModel.reasoningEffort || AGENT_REASONING_EFFORT,
-            maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
+            maxOutputTokens,
             keepTruncatedAnswer: true,
             model: modelRoute.model,
             fallbackModel: modelBudget.maxAttempts > 1
@@ -2667,6 +2814,7 @@ async function* runAgentUntilStopped(
               response,
               toolSteps,
               maxToolSteps,
+              maxOutputTokens,
               outputsBeforeApproval: outputs,
               pendingToolCall: {
                 callId: call.callId,
@@ -3044,6 +3192,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   ephemeralLocalObservation?: EphemeralLocalObservationState;
   toolSteps?: number;
   maxToolSteps?: number;
+  maxOutputTokens?: number;
   modelAttemptOffset?: number;
   generateTurn?: (request: ModelToolTurnRequest) => Promise<ModelToolTurnResult>;
   bindModelRequest?: (request: ModelToolTurnRequest) => ModelToolTurnRequest;
@@ -3079,6 +3228,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   ) => DynamicDelegationReservation | undefined;
   executeTool?: typeof executeGovernedTool;
 }): AsyncGenerator<NonOpenAIProviderLoopEvent, NonOpenAIProviderLoopResult> {
+  const maxOutputTokens = input.maxOutputTokens ?? AGENT_MAX_OUTPUT_TOKENS;
   const generateTurn = input.generateTurn || generateModelToolTurn;
   const executeTool = input.executeTool || executeGovernedTool;
   const maxToolSteps = resolveMaxToolSteps(
@@ -3179,7 +3329,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
       preferredProvider: activeProvider,
       allowedProviders: [activeProvider],
       allowCrossProviderFallback: false,
-      maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
+      maxOutputTokens,
       reasoningEffort: AGENT_REASONING_EFFORT,
       maxAttempts: modelBudget?.maxAttempts,
       abortSignal: input.abortSignal,
@@ -3741,6 +3891,7 @@ function agentTurnBudgetEstimate(input: {
   provider: "openai" | "google" | "anthropic" | "aws_bedrock";
   model: string;
   inputTokens: number;
+  maxOutputTokens: number;
   computerUseTarget?: ComputerUseTarget;
 }): ModelTurnBudgetEstimate {
   const toolRoundTokens = Math.ceil(
@@ -3752,22 +3903,22 @@ function agentTurnBudgetEstimate(input: {
       : 0
   );
   const followUpInputTokens =
-    input.inputTokens + AGENT_MAX_OUTPUT_TOKENS + toolRoundTokens;
+    input.inputTokens + input.maxOutputTokens + toolRoundTokens;
   const cost = (inputTokens: number) => {
     const priced = estimateProviderCost(input.provider, input.model, {
       inputTokens,
-      outputTokens: AGENT_MAX_OUTPUT_TOKENS,
+      outputTokens: input.maxOutputTokens,
       cachedInputTokens: 0,
-      totalTokens: inputTokens + AGENT_MAX_OUTPUT_TOKENS,
+      totalTokens: inputTokens + input.maxOutputTokens,
     });
     return priced.costKnown
       ? Math.ceil(priced.estimatedCostUsd * 1_000_000)
       : 0;
   };
   return {
-    tokens: input.inputTokens + AGENT_MAX_OUTPUT_TOKENS,
+    tokens: input.inputTokens + input.maxOutputTokens,
     costMicrousd: cost(input.inputTokens),
-    followUpTokens: followUpInputTokens + AGENT_MAX_OUTPUT_TOKENS,
+    followUpTokens: followUpInputTokens + input.maxOutputTokens,
     followUpCostMicrousd: cost(followUpInputTokens),
   };
 }
@@ -4118,6 +4269,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
   const abortSignal = externalAbortSignal
     ? AbortSignal.any([externalAbortSignal, cancellation.signal])
     : cancellation.signal;
+  const maxOutputTokens = continuation.maxOutputTokens ?? AGENT_MAX_OUTPUT_TOKENS;
   const maxToolSteps = resolveMaxToolSteps(
     continuation.maxToolSteps,
     Math.max(AGENT_MAX_TOOL_STEPS, LOCAL_COMPUTER_MAX_TOOL_STEPS),
@@ -4643,6 +4795,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
             response,
             toolSteps,
             maxToolSteps,
+            maxOutputTokens,
             outputsBeforeApproval: carriedOutputs,
             pendingToolCall: {
               callId: call.callId,
@@ -4718,6 +4871,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
         allowRetry: false,
         budget: {
           estimate: agentTurnBudgetEstimate({
+              maxOutputTokens,
             provider: "openai",
             model: resumeModel,
             inputTokens: estimateModelInputTokens([
@@ -4751,7 +4905,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
             abortSignal: resumeAbortSignal,
             reasoningEffort:
               resumeRuntimeModel.reasoningEffort || AGENT_REASONING_EFFORT,
-            maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
+            maxOutputTokens,
             keepTruncatedAnswer: true,
             model: resumeModel,
             apiKey: workspaceOpenAIAvailable ? apiKey : undefined,
@@ -5009,6 +5163,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
               response,
               toolSteps,
               maxToolSteps,
+              maxOutputTokens,
               outputsBeforeApproval: outputs,
               pendingToolCall: {
                 callId: call.callId,
@@ -5202,6 +5357,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
   resumeActorBinding?: CanonicalRequestActorBindingV1;
 }) {
   const providerState = continuation.providerToolState;
+  const maxOutputTokens = continuation.maxOutputTokens ?? AGENT_MAX_OUTPUT_TOKENS;
   const maxToolSteps = resolveMaxToolSteps(
     continuation.maxToolSteps,
     Math.max(AGENT_MAX_TOOL_STEPS, LOCAL_COMPUTER_MAX_TOOL_STEPS),
@@ -5583,6 +5739,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
       response,
       toolSteps,
       maxToolSteps,
+      maxOutputTokens,
       outputsBeforeApproval: [],
       pendingToolCall: {
         callId: waiting.providerState.pendingCall.callId,
@@ -5762,6 +5919,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
     }
 
     const providerLoop = runNonOpenAIProviderToolLoop({
+      maxOutputTokens,
       requireReadOnly: continuation.toolPolicy?.readOnly,
       provider: providerState.provider,
       tier: providerState.tier,
@@ -5810,6 +5968,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
           tier,
           budget: {
             estimate: agentTurnBudgetEstimate({
+              maxOutputTokens,
               provider,
               model: resumeModel,
               inputTokens: estimatedInputTokens,
@@ -6359,11 +6518,25 @@ function durableModelToolResults(results: readonly ModelToolResult[]) {
 }
 
 function serializeToolResult(payload: unknown) {
-  let output = JSON.stringify({
-    provenance: "tool_result",
-    trust: "untrusted_data",
-    data: payload ?? null,
+  const envelope = (data: unknown) => JSON.stringify({
+    provenance: "tool_result", trust: "untrusted_data", data: data ?? null,
   });
+  // Keep follow-up page reads valid JSON and preserve citation/coverage metadata
+  // even when their extracts exceed the model's per-tool context allowance.
+  if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+    const record = payload as Record<string, unknown>;
+    const page = researchSourceReadResult(record.result);
+    if (page) {
+      let content = page.content;
+      let output = envelope({ ...record, result: { ...page, content } });
+      while (output.length > MAX_TOOL_RESULT_CHARS && content.length) {
+        content = content.slice(0, Math.floor(content.length * 0.75));
+        output = envelope({ ...record, result: { ...page, content, truncated: true } });
+      }
+      if (output.length <= MAX_TOOL_RESULT_CHARS) return output;
+    }
+  }
+  let output = envelope(payload);
   if (output.length > MAX_TOOL_RESULT_CHARS) {
     output = `${output.slice(0, MAX_TOOL_RESULT_CHARS)}… [truncated]`;
   }
@@ -6390,6 +6563,19 @@ function executionPayload(
     result: execution.result,
     admissibleEvidenceIds,
   };
+}
+
+function researchSourceReadResult(result: unknown): ResearchSourceRead | undefined {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return;
+  const page = result as Record<string, unknown>;
+  if (typeof page.url !== "string" || typeof page.title !== "string" ||
+    typeof page.content !== "string" || !page.content.trim() ||
+    typeof page.contentType !== "string" || typeof page.fetchedAt !== "string" ||
+    !Number.isFinite(Date.parse(page.fetchedAt)) || typeof page.citationId !== "string" ||
+    typeof page.truncated !== "boolean" || page.contentTrust !== "untrusted") return;
+  const source = buildWebCitationSources([{ url: page.url }], page.fetchedAt)[0];
+  if (!source || source.citationId !== page.citationId) return;
+  return page as unknown as ResearchSourceRead;
 }
 
 function liveWebPrefetchResult(result: unknown): LiveWebSearchResult | undefined {
@@ -6454,6 +6640,11 @@ function citationSourcesFromToolResult(toolId: string, result: unknown) {
           }];
         })
       : [];
+  }
+  if (toolId === "web.read") {
+    const page = researchSourceReadResult(result);
+    return page ? buildWebCitationSources([{ url: page.url, title: page.title,
+      snippet: page.content.slice(0, 500) }], page.fetchedAt) : [];
   }
   if (toolId !== "web.search") return [];
   const items = Array.isArray(record.sources)
