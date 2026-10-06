@@ -221,6 +221,10 @@ export function researchEventDiagnostics(events) {
 }
 
 export function verifyResearchEvents(events) {
+  return verifyResearchOutcome(events, false);
+}
+
+function verifyResearchOutcome(events, allowFailedSearchAttempts) {
   assert(Array.isArray(events), "Agent events are invalid.");
   const terminalFailures = new Set([
     "error", "canceled", "waiting_approval", "clarification", "delegated",
@@ -234,8 +238,11 @@ export function verifyResearchEvents(events) {
     event.status === "executed" && event.dryRun !== true);
   assert(webExecuted.length > 0,
     "Research stream recorded no executed web.search tool.");
+  const disallowedSearchStatuses = allowFailedSearchAttempts
+    ? ["blocked", "approval_required", "dry_run"]
+    : ["failed", "blocked", "approval_required", "dry_run"];
   assert(!webToolEvents.some((event) =>
-    ["failed", "blocked", "approval_required", "dry_run"].includes(event.status)),
+    disallowedSearchStatuses.includes(event.status)),
   "Research web.search did not remain an approved live read.");
   const done = events.filter((event) => event.type === "done");
   assert(done.length === 1 && typeof done[0].response === "string" &&
@@ -266,22 +273,31 @@ export function verifyResearchEvents(events) {
 
 /** Verify observable report structure and governed read receipts, not factual truth. */
 export function verifyResearchReportEvents(events) {
-  verifyResearchEvents(events);
+  // A report may recover from unavailable sources within its existing budget.
+  // Keep quick smoke strict; here every terminal receipt is validated below,
+  // and failures never count toward the required successful searches or reads.
+  verifyResearchOutcome(events, true);
   const executionIds = new Set();
   const executedCounts = { "web.search": 0, "web.read": 0 };
+  const failedCounts = { "web.search": 0, "web.read": 0 };
   const receiptId = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  // src/lib/tools/execution-id.ts uses this canonical digest identity for
+  // idempotent executions; standalone records use UUIDs from audit-store.ts.
+  const idempotentReceiptId = /^idem_[0-9a-f]{64}$/;
   for (const event of events.filter((event) => event.type === "tool")) {
     assert(Object.hasOwn(executedCounts, event.toolId),
       "Research report used a tool outside its public read-only allowlist.");
     if (event.status === "running") continue;
     assert(["executed", "failed"].includes(event.status) &&
       event.dryRun === false && event.riskLevel === 0 &&
-      typeof event.executionId === "string" && receiptId.test(event.executionId),
+      typeof event.executionId === "string" &&
+      (receiptId.test(event.executionId) || idempotentReceiptId.test(event.executionId)),
     "Research report contained a malformed or unexecuted read receipt.");
     assert(!executionIds.has(event.executionId),
       "Research report repeated a tool execution receipt.");
     executionIds.add(event.executionId);
     if (event.status === "executed") executedCounts[event.toolId] += 1;
+    else failedCounts[event.toolId] += 1;
   }
   assert(executedCounts["web.search"] >= 3,
     "Research report requires at least three executed web.search receipts.");
@@ -326,6 +342,8 @@ export function verifyResearchReportEvents(events) {
   return {
     webToolExecutions: executedCounts["web.search"],
     webReadExecutions: executedCounts["web.read"],
+    failedWebSearchAttempts: failedCounts["web.search"],
+    failedWebReadAttempts: failedCounts["web.read"],
     webCitationCount: matchedCitations.size,
     citedSourceCount: citedUrls.size,
     reportWordCount: wordCount,
