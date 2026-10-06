@@ -1,5 +1,5 @@
 import { isPublicBrowserHost } from "@/lib/local-computer/contracts";
-import { isLiveWebSearchExplicitlyDisabled } from "@/lib/web-search/search";
+import { isLiveWebSearchExplicitlyDisabled } from "@/lib/web-search/intent";
 import type { LiveWebSearchResult, LiveWebSearchSource } from "@/lib/web-search/search";
 
 const MAX_QUERY_CHARS = 4_000;

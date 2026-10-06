@@ -493,6 +493,10 @@ describe("agent memory scope", () => {
       });
       const events = await collectRequest(value);
       const executions = mocks.executeGovernedTool.mock.calls.map(([input]) => input);
+      expect(mocks.loadProgressiveAgentTools).toHaveBeenCalledWith(expect.objectContaining({
+        query: expect.stringMatching(/^web\.search web\.read /),
+        preferredToolIds: ["web.search", "web.read"],
+      }));
       expect(executions.filter((input) => input.toolId === "web.search")).toHaveLength(3);
       expect(executions.filter((input) => input.toolId === "web.read")).toHaveLength(4);
       for (const execution of executions) {
@@ -503,6 +507,8 @@ describe("agent memory scope", () => {
       }
       const model = mocks.streamResponseTurn.mock.calls[0][0];
       expect(model.maxOutputTokens).toBe(6_000);
+      expect(model.instructions).toContain("Research mode should produce a substantial evidence-led report");
+      expect(model.instructions).toContain("honor an explicit request for a brief answer");
       expect(JSON.stringify(model.input)).toContain("FETCHED_PAGE_CONTEXT");
       expect(JSON.stringify(model.input)).toContain("EVIDENCE_3");
       expect(events.filter((event) => event.type === "tool" && event.toolId === "web.read" && event.status === "executed")).toHaveLength(4);
@@ -668,6 +674,8 @@ describe("agent memory scope", () => {
   it("keeps a session-only paid turn out of durable retrieval and memory events", async () => {
     const events = await collectRun("session");
 
+    expect(mocks.streamResponseTurn.mock.calls[0][0].instructions)
+      .not.toContain("Research mode should produce a substantial evidence-led report");
     expect(mocks.buildContextPack).not.toHaveBeenCalled();
     expect(mocks.updateRunContextCount).not.toHaveBeenCalled();
     expect(mocks.getActiveAgentAdaptationGuidance).not.toHaveBeenCalled();

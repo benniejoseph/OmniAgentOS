@@ -1,5 +1,4 @@
 import type { ModelConversationSeedItem } from "@/lib/models/conversation";
-import { researchReportInstructions } from "@/lib/orchestration/research";
 import { arsenalAgents } from "@/lib/agents/arsenal";
 import type {
   AgentMode,
@@ -13,7 +12,7 @@ import {
 } from "@/lib/companion/language-style";
 
 export const AGENT_PROMPT_CONTRACT_VERSION_ID =
-  "agent-instructions:2" as const;
+  "agent-instructions:1" as const;
 
 export type BuiltInAgentId =
   | "atlas"
@@ -141,8 +140,6 @@ Autonomous execution contract:
 - Treat the workspace access inventory as connection status only. A connected source is executable only when its governed tool contract is actually provided in this turn.
 - If a required connection, credential, permission, or capability is missing, complete any safe discovery or setup step that is available. Then ask only for the specific user action that remains, direct credential setup to Connectors at /app/connectors, and explain where the credential will be stored and used. Never ask the user to paste a secret into chat.
 - Never bypass tenant or actor scope, tool policy, approvals, idempotency, or the governed executor in the name of autonomy.
-
-${mode === "research" ? researchReportInstructions : ""}
 
 Core behavior:
 - Convert ambiguous goals into concrete steps, then execute them with the tools provided.

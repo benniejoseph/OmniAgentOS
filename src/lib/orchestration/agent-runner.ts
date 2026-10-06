@@ -1,4 +1,4 @@
-import { formatResearchEvidence, researchSearchQueries, selectResearchSources, shouldInvestigateResearchQuery, isResearchWebExplicitlyDisabled, type ResearchSourceRead } from "@/lib/orchestration/research";
+import { researchReportInstructions, formatResearchEvidence, researchSearchQueries, selectResearchSources, shouldInvestigateResearchQuery, isResearchWebExplicitlyDisabled, type ResearchSourceRead } from "@/lib/orchestration/research";
 import { createHash, randomUUID } from "node:crypto";
 import {
   buildAgentRunIdentityPinV1,
@@ -1272,7 +1272,10 @@ async function* runAgentUntilStopped(
       : groundToolDiscoveryInMemory
         ? undefined
         : buildAgentToolbox(request.tenantId, {
-            query: baseCapabilitySearchQuery || query,
+            query: composeCapabilitySearchQuery(
+              mode === "research" && liveWebRequested ? "web.search web.read" : undefined,
+              baseCapabilitySearchQuery || query,
+            ),
             preferredToolIds: configuredToolIds,
           });
     const workspaceAccessPromise = providerConfigured
@@ -1347,7 +1350,10 @@ async function* runAgentUntilStopped(
         )
       : baseCapabilitySearchQuery;
     const resolvedToolboxPromise = toolboxPromise || buildAgentToolbox(request.tenantId, {
-      query: capabilitySearchQuery || query,
+      query: composeCapabilitySearchQuery(
+        mode === "research" && liveWebRequested ? "web.search web.read" : undefined,
+        capabilitySearchQuery || query,
+      ),
       preferredToolIds: configuredToolIds,
     });
     if (durableMemoryEnabled) {
@@ -1449,7 +1455,7 @@ async function* runAgentUntilStopped(
     );
     const actorTimeZone = await actorTimeZonePromise;
     const companionLanguageStyle = await companionLanguageStylePromise;
-    const instructions = buildAgentInstructions({
+    const baseInstructions = buildAgentInstructions({
       mode,
       runtimeClock: { timeZone: actorTimeZone },
       agentId: request.agentId,
@@ -1474,6 +1480,13 @@ async function* runAgentUntilStopped(
       computerUse: computerUseTarget,
       localComputerWorkspaces: request.localComputerWorkspaces,
     });
+
+    // Research is a run mode, not a new immutable Agent or Skill identity.
+    // Persist the compiled instructions on approval pauses and hash them in the
+    // harness receipt, while leaving older definition and prompt pins intact.
+    const instructions = mode === "research"
+      ? `${baseInstructions}\n\n${researchReportInstructions}`
+      : baseInstructions;
 
     let liveWebContext = "";
     let citationSources = buildCitationSources(retrieval.results);
