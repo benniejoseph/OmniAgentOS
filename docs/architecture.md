@@ -58,7 +58,7 @@ flowchart TD
   end
 
   subgraph Infra
-    PG[(Neon Postgres + pgvector,
+    PG[(Supabase Postgres + pgvector,
 JSON fallback locally)]
     QUEUE[(omni_operation_jobs queue)]
     CRON[Vercel cron + after drains]

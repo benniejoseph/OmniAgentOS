@@ -1,6 +1,9 @@
 # Asael
 
-[Asael](https://asael.bennierichard.com) is an enterprise AI agent platform: a governed tool-calling agent with durable workflows, long-term memory and RAG, MCP/OpenAPI connectors, approvals, observability, and signed release evidence — built on Next.js, OpenAI, and Neon Postgres.
+[Asael](https://asael.bennierichard.com) is an enterprise AI agent platform: a governed tool-calling agent with durable workflows, long-term memory and RAG, MCP/OpenAPI connectors, approvals, observability, and signed release evidence — built on Next.js, configurable model providers, and Supabase Postgres.
+
+Start project work from the [current task queue](docs/project-management/README.md).
+Codex and Claude Code use [separate worktrees and explicit file ownership](docs/project-management/parallel-agent-workflow.md).
 
 ## Quickstart
 
@@ -46,7 +49,8 @@ Longer work runs as durable workflows: LLM-planned DAGs executed through a Postg
 | Doc | Covers |
 |---|---|
 | [docs/getting-started.md](docs/getting-started.md) | Local setup, identity, first task |
-| [docs/deployment.md](docs/deployment.md) | Vercel + Neon, full env-var table, cron cadence, release gates |
+| [docs/project-management/README.md](docs/project-management/README.md) | Current priorities, owners, completion evidence, and estimates |
+| [docs/deployment.md](docs/deployment.md) | Vercel + Supabase + Fly, environment, worker cadence, release gates |
 | [docs/architecture.md](docs/architecture.md) | System map, agent loop, workflows, storage, security model |
 | [docs/production-rollout.md](docs/production-rollout.md) | Concise rollout, rollback, and evidence checklist |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Auth, database, worker, connector, and smoke diagnosis |

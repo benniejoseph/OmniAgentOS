@@ -2,6 +2,18 @@
 
 Production uses Node.js 24.x and npm 11.x across local metadata, CI, and the worker image. Vercel Functions run in Singapore (`sin1`) beside the existing Supabase Singapore Postgres project; the sole remaining Asael Fly application is `omniagent-os-worker` in US Ashburn (`iad`), providing the durable worker and bounded OpenAI US egress gateway. The former remote Playwright product runtime and its separate Fly application were decommissioned on 2026-09-17 after the native-only release gate passed. Static assets remain globally cached, and the daily Vercel cron remains only a backstop.
 
+## Verified release snapshot — 6 October 2026 (IST)
+
+Production web and Fly gateway were checked healthy on revision
+`70b1522a886383775636377864e378cab08c78a8`. The completed release has schema 245,
+native contract 47 with 46 supported, and installed Mac build 69
+(`1.23.33+69`). Contract 45 remains a retained archive. This is a dated snapshot,
+not an automatic assertion about a later deployment. The earlier v45/v46/v47
+candidate notes below document release-specific prerequisites and rollback
+constraints; their forward-looking wording is historical. See the
+[current task queue](project-management/README.md) and
+[provider audit](project-management/provider-usage-audit.md) for new work.
+
 ## Required production configuration
 
 Set these through the platform secret/configuration store, never in source control:

@@ -1,5 +1,10 @@
 # OmniAgent OS Implementation Plan
 
+> Historical implementation and release ledger. The dated entries below retain
+> their original scope and evidence. For current work, ownership, and estimates,
+> use the [project task queue](project-management/README.md); do not interpret an
+> older candidate milestone as the currently deployed version.
+
 > Plan status after item 222: Phases 0, 1, 2, and 6 are production-proven and complete.
 > The Phase 0 aggregate gate now verifies all ten execution-scope boundaries,
 > the six versioned run contracts, a current tenant rollout pin, all nine
