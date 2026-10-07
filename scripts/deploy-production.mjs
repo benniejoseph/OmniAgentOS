@@ -24,6 +24,7 @@ import {
   validateForwardSchemaDatabaseVerification,
   validateForwardSchemaPriorArtifact,
 } from "./forward-schema-recovery.mjs";
+import { readOwnerBudgetOverride } from "./release-owner-budget-override.mjs";
 
 class ReadinessAccessError extends Error {
   constructor(status) {
@@ -661,6 +662,12 @@ async function verifyRunnerProvenance() {
 }
 
 function validateReleaseConfiguration() {
+  let ownerBudgetPin;
+  try { ownerBudgetPin = readOwnerBudgetOverride(); }
+  catch (error) { fail(errorMessage(error)); }
+  if (ownerBudgetPin && ownerBudgetPin.candidateRevision !== revision) {
+    fail("Owner reliability exception candidate must match the exact release revision.");
+  }
   const singaporeTopology = configuredVercelRegions().includes("sin1");
   const required = [
     ["BASE_URL", process.env.BASE_URL],

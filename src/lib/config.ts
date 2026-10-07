@@ -5,7 +5,7 @@ export const AGENT_MODEL = deploymentModel("agent");
 export const WEB_SEARCH_MODEL = deploymentModel("webSearch");
 export const WEB_SEARCH_TIMEOUT_MS = normalizePositiveInteger(
   process.env.OMNIAGENT_WEB_SEARCH_TIMEOUT_MS,
-  25_000,
+  60_000,
 );
 export const EMBEDDING_MODEL = deploymentModel("embedding");
 export const TRANSCRIPTION_PROVIDER = normalizeTranscriptionProvider(

@@ -55,6 +55,16 @@ describe("agent execution limits", () => {
       toolCalls: 30,
     });
   });
+
+  it("allows a bounded minute for web search unless explicitly configured otherwise", async () => {
+    vi.resetModules();
+    vi.stubEnv("OMNIAGENT_WEB_SEARCH_TIMEOUT_MS", "");
+    expect((await import("@/lib/config")).WEB_SEARCH_TIMEOUT_MS).toBe(60_000);
+
+    vi.resetModules();
+    vi.stubEnv("OMNIAGENT_WEB_SEARCH_TIMEOUT_MS", "45000");
+    expect((await import("@/lib/config")).WEB_SEARCH_TIMEOUT_MS).toBe(45_000);
+  });
 });
 
 describe("deployment models", () => {

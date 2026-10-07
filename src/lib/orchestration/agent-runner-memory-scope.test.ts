@@ -83,6 +83,7 @@ const mocks = vi.hoisted(() => ({
   shouldUseLiveWebSearch: vi.fn(),
   syncMissionExecutorSafely: vi.fn(),
   updateRunContextCount: vi.fn(),
+  webSearchTimeoutMs: 60_000,
 }));
 
 vi.mock("@/lib/config", async (importOriginal) => {
@@ -92,6 +93,7 @@ vi.mock("@/lib/config", async (importOriginal) => {
     AGENT_MAX_OUTPUT_TOKENS: 128,
     AGENT_MAX_TOOL_STEPS: 1,
     AGENT_REASONING_EFFORT: "minimal",
+    get WEB_SEARCH_TIMEOUT_MS() { return mocks.webSearchTimeoutMs; },
     hasAnthropicKey: () => false,
     hasGeminiKey: () => false,
     hasOpenAIKey: () => true,
@@ -264,6 +266,7 @@ vi.mock("@/lib/today/briefs", () => ({
 describe("agent memory scope", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.webSearchTimeoutMs = 60_000;
     mocks.resolveDirectConversationLanguageStyle.mockReset().mockResolvedValue(undefined);
     mocks.createAgentRun.mockResolvedValue({
       id: "run-memory-scope",
@@ -538,6 +541,24 @@ describe("agent memory scope", () => {
       expect(mocks.executeGovernedTool).not.toHaveBeenCalled();
       expect(JSON.stringify(mocks.streamResponseTurn.mock.calls[0][0].input)).toContain("preserve the report's time and run budget");
       expect(mocks.completeAgentRun).toHaveBeenCalledOnce();
+    });
+
+    it.each([
+      { timeoutMs: 60_000, wallTimeMs: 140_000, searches: 0 },
+      { timeoutMs: 45_000, wallTimeMs: 140_000, searches: 3 },
+      { timeoutMs: 90_000, wallTimeMs: 170_000, searches: 0 },
+    ])("reserves synthesis after a configured $timeoutMs ms search within $wallTimeMs ms", async ({ timeoutMs, wallTimeMs, searches }) => {
+      mocks.webSearchTimeoutMs = timeoutMs;
+      const value = researchRequest();
+      value.budgetLimits = { ...DEFAULT_AGENT_RUN_BUDGET_LIMITS, wallTimeMs };
+      mocks.executeGovernedTool.mockResolvedValue(searchExecution());
+      await collectRequest(value);
+      expect(mocks.executeGovernedTool).toHaveBeenCalledTimes(searches);
+      expect(mocks.streamResponseTurn).toHaveBeenCalledOnce();
+      expect(mocks.completeAgentRun).toHaveBeenCalledOnce();
+      if (!searches) {
+        expect(JSON.stringify(mocks.streamResponseTurn.mock.calls[0][0].input)).toContain("preserve the report's time and run budget");
+      }
     });
 
     it("does not pay for discovery that would consume a tight report budget", async () => {
