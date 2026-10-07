@@ -183,7 +183,7 @@ import {
 import { getGovernedTool } from "@/lib/tools/registry";
 import { RISK3_QUORUM, type ToolDefinition, type ToolExecutionRecord } from "@/lib/tools/types";
 import { actionClassFor, recordActionOutcome } from "@/lib/trust/ledger";
-import { runLiveWebSearch } from "@/lib/web-search/search";
+import { getWebSearchFailureDiagnostics, runLiveWebSearch } from "@/lib/web-search/search";
 import { readPublicWebSource } from "@/lib/web-search/read";
 import type { AiUsageOperation, AiUsageScope } from "@/lib/usage/types";
 
@@ -2173,7 +2173,11 @@ export async function executeGovernedTool({
       output: {
         error: message,
         ...(tool.id === "web.search" && error instanceof ModelProviderError
-          ? { failureKind: error.kind, retryable: error.retryable }
+          ? {
+              failureKind: error.kind,
+              retryable: error.retryable,
+              providerDiagnostics: getWebSearchFailureDiagnostics(error),
+            }
           : {}),
       },
       reason: message,
