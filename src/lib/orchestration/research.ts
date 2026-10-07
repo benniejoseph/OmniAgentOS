@@ -123,6 +123,8 @@ export function formatResearchEvidence(input: {
   const publishers = new Set(sources.map((source) => new URL(source.url).hostname.replace(/^www\./, "")));
   const notices = [
     ...(input.limitations ?? []).slice(0, 8).map((value) => value.slice(0, 400)),
+    ...new Set(input.searches.slice(0, MAX_SEARCHES).flatMap((search) =>
+      (search.limitations ?? []).slice(0, 3).map((value) => value.slice(0, 400)))),
     ...(reads.length ? [] : ["No source-page text was successfully read; this report can use search summaries only and must say so."]),
     ...(publishers.size < 3 ? ["Limited source coverage: fewer than three distinct source hostnames were discovered."] : []),
     ...(reads.some((read) => read.truncated) ? ["One or more source extracts were truncated by the reader; do not describe them as complete pages."] : []),

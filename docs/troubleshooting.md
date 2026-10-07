@@ -434,6 +434,21 @@ answer, source URLs, credentials, and private reasoning. Inspect them before
 changing the completed-search gate or retrying a paid request; the provider may
 return optional actions or statuses newer than the installed SDK declares.
 
+The pinned `82bb32d6` diagnostic resolved that failure: the provider's parent
+response was `completed`, its first `search` completed with 19 source/results,
+and a later `open_page` remained `searching` with no evidence. The answer also
+referenced URLs outside those search results. Recovery is limited to that exact
+shape under the one-call request bound. It returns only URLs, titles, and
+snippets from the completed search; provider answer prose and annotations are
+excluded. The result marks partial evidence, retains the provider diagnostics,
+and carries a plain-language unfinished-page-read limitation into both quick
+answers and Research. Separate governed `web.read` calls still fetch pages.
+Failed or unfinished searches, other unfinished action/status combinations,
+nonempty unfinished evidence, refused responses, and non-completed parent
+responses retain their failure gates. Observed hosted calls and actual token
+usage remain recorded; the unfinished wrapper is not asserted to be unbilled
+or ignored by the provider.
+
 A completed report may have valid citation IDs while grounding says `missing`.
 The served grounding status comes from material-claim evidence coverage, not
 just matching references. Do not force that status to `verified` to make a
