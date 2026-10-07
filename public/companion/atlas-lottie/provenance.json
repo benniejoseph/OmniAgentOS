@@ -1,0 +1,19 @@
+{
+  "creativeRevision": "atlas-orbit-20261007",
+  "creator": "Original Asael ATLAS vector artwork",
+  "source": ".design/asael-ace-revamp/atlas-lottie/source/generate.mjs",
+  "format": "Lottie JSON; vector shape layers only",
+  "frameRate": 30,
+  "externalAssets": false,
+  "paletteSource": "src/app/globals.css and apps/flutter/lib/app/theme/app_theme.dart",
+  "states": [
+    "available",
+    "listening",
+    "working",
+    "responding",
+    "needs_you",
+    "blocked",
+    "completed",
+    "paused"
+  ]
+}

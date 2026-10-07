@@ -2,7 +2,7 @@ import { createElement, createRef } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { COMPANION_PREFERENCES_CONTRACT, DEFAULT_COMPANION_PREFERENCES } from "@/lib/companion/model";
-import { ATLAS_NEUTRAL_POSTER } from "@/lib/companion/atlas-assets";
+import { atlasLottieAsset } from "@/lib/companion/atlas-lottie";
 import type { CompanionState } from "@/lib/companion/presentation";
 import type { useCompanionAtlasPlayer } from "@/components/companion-atlas-player";
 
@@ -29,10 +29,14 @@ beforeEach(() => {
         destination: { href: "/app/command", state: "configured" },
       },
     },
-    motion: "full", intensity: "expressive", assetFailed: false, showPortrait: true, fullBody: false, poster: ATLAS_NEUTRAL_POSTER,
-    observationRef: createRef<HTMLElement>(), posterRef: createRef<HTMLSpanElement>(), spriteRef: createRef<HTMLSpanElement>(), onPosterError: vi.fn(),
+    motion: "full", intensity: "expressive", assetFailed: false, showPortrait: true,
+    observationRef: createRef<HTMLElement>(),
+    portrait: { state: "available", theme: "light", playbackKey: undefined, motionAllowed: false, showPortrait: true, onUnavailable: vi.fn() },
   };
-  usePlayer.mockImplementation(() => player);
+  usePlayer.mockImplementation(({ presentation }) => ({
+    ...player,
+    portrait: { ...player.portrait, state: presentation.state, showPortrait: player.showPortrait },
+  }));
 });
 
 function stage(props: Partial<StageProps> = {}) {
@@ -63,7 +67,8 @@ describe("expanded Voice ATLAS uses the shared decorative player", () => {
     // A resolved phase is not a terminal receipt, and cannot authorize a reaction.
     expect(usePlayer.mock.calls[0]?.[0].presentation.work.completionIdentity).toBeUndefined();
     expect(html).toContain(`data-companion-state="${expected}"`);
-    expect(html).toContain("data-atlas-sprite");
+    expect(html).toContain("data-atlas-lottie");
+    expect(html).toContain(`data-atlas-state="${expected}"`);
   });
 
   it("keeps the shared gate and observation host mounted for hidden and unavailable preferences", () => {
@@ -83,11 +88,11 @@ describe("expanded Voice ATLAS uses the shared decorative player", () => {
     }
   });
 
-  it("renders the shared neutral fallback as decoration and exposes its effective policy", () => {
+  it("renders the shared vector still as decoration and exposes its effective policy", () => {
     player.motion = "reduced";
     player.intensity = "balanced";
     const html = stage();
-    expect(html).toContain(`src="${ATLAS_NEUTRAL_POSTER}"`);
+    expect(html).toContain(`src="${atlasLottieAsset("available", "light", "svg")}"`);
     expect(html).toContain('alt=""');
     expect(html).toContain('aria-hidden="true"');
     expect(html).toContain('data-companion-motion="reduced"');
@@ -95,7 +100,7 @@ describe("expanded Voice ATLAS uses the shared decorative player", () => {
     expect(html).not.toContain('role="status"');
   });
 
-  it("retains the actual state text if even the neutral portrait is unavailable", () => {
+  it("retains the actual state text if the vector portrait is unavailable", () => {
     player.assetFailed = true;
     player.showPortrait = false;
     const html = stage({ phase: "approval" });

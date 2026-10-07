@@ -1161,7 +1161,7 @@ export function VoiceAtlasStage({ scope, conversationId, phase, microphoneOpen, 
       : phase === "review" ? "review" : phase === "reconnecting" ? "reconnecting"
       : phase === "error" ? "failed" : ["sending", "waiting", "deciding"].includes(phase) ? "running" : undefined }),
   });
-  const { read, observationRef, posterRef, spriteRef, showPortrait, assetFailed, motion, intensity, poster, fullBody, onPosterError } = useCompanionAtlasPlayer({ scope, conversationId, presentation });
+  const { read, observationRef, showPortrait, assetFailed, motion, intensity, portrait } = useCompanionAtlasPlayer({ scope, conversationId, presentation });
   const visible = read.state === "ready" && read.response?.snapshot.preferences.visible;
   // Keep both the gate and its observation element mounted while hidden, so a
   // preference/visibility change cannot replay a transition already observed.
@@ -1170,8 +1170,8 @@ export function VoiceAtlasStage({ scope, conversationId, phase, microphoneOpen, 
       data-companion-state={presentation.state} data-companion-motion={motion} data-companion-intensity={intensity}
       data-companion-preferences={read.state}
       data-voice-portrait={showPortrait ? "visible" : assetFailed ? "unavailable" : "hidden"}>
-      <CompanionAtlasPortrait posterRef={posterRef} spriteRef={spriteRef} showPortrait={showPortrait} poster={poster} fullBody={fullBody} onPosterError={onPosterError}
-        className={styles.portrait} imageClassName={styles.portraitImage} size="var(--atlas-portrait-size)" />
+      <CompanionAtlasPortrait {...portrait}
+        className={styles.portrait} size="var(--atlas-portrait-size)" />
       <p className={styles.companionName}>ATLAS</p>
       <p className={styles.companionState}>{presentation.label}</p>
       {assetFailed ? <p className={styles.portraitFallback}>Portrait unavailable</p> : null}

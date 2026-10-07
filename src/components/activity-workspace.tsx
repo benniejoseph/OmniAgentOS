@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ArrowUpRight, Bell, CheckCircle2, CircleAlert, Clock3, Loader2, MessageSquare, RefreshCw } from "lucide-react";
 import { permissionMessage, useWorkspaceSession } from "@/components/app-shell/session-context";
 import { ACTIVITY_PAGE_LIMIT as PAGE_LIMIT, validActivityResponse } from "@/components/activity-response";
 import {
@@ -20,7 +21,7 @@ const labels: Record<ActivityFilter, string> = {
   all: "All activity", working: "Working", needs_you: "Needs you", updates: "Updates", history: "History",
 };
 const sourceLabels: Record<ActivitySource, string> = {
-  runs: "Your runs", approvals: "Authorized approvals", notifications: "Your reminders",
+  runs: "Assistant tasks", approvals: "Approvals", notifications: "Reminders and updates",
 };
 type Snapshot = { response: ActivityResponse; cursors: (string | null)[]; index: number };
 type ReadRequest = {
@@ -58,6 +59,7 @@ function ScopedActivityWorkspace() {
   const [pending, setPending] = useState<ReadRequest>();
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
+  const [selectedItemId, setSelectedItemId] = useState<string>();
   const activeRead = useRef<AbortController | null>(null);
   const readVersion = useRef(0);
   const mounted = useRef(false);
@@ -152,7 +154,7 @@ function ScopedActivityWorkspace() {
     ? `Checking ${labels[pending.group].toLowerCase()}.${data ? ` Last loaded ${labels[shownGroup].toLowerCase()} remains below.` : ""}`
     : error ? `Activity could not be ${known ? "refreshed" : "loaded"}.${known ? " Last loaded rows and counts are shown." : " Counts are unavailable."}`
     : data?.state === "unavailable" ? "Activity sources are unavailable. Counts could not be checked."
-    : data ? `${data.items.length} ${data.items.length === 1 ? "record" : "records"} shown. ${data.state === "partial" ? "Some source coverage is incomplete." : "Current window loaded."}`
+    : data ? `${data.items.length} recent updates shown.${data.state === "partial" ? " Some activity could not be loaded." : ""}`
     : "Checking activity.";
 
   const refresh = () => void load({ group: shownGroup, cursors: [null], index: 0, kind: "refresh" });
@@ -160,57 +162,55 @@ function ScopedActivityWorkspace() {
     <header className={styles.header}>
       <div className={styles.introduction}>
         <h1 id="activity-title">Activity</h1>
-        <p>Work in progress, decisions and updates from your workspace.</p>
+        <p>Recent work and anything that needs your attention.</p>
         <p className={styles.timestamp}>{data
-          ? <>{stale ? "Last loaded" : "Window checked"} <time dateTime={data.generatedAt}>{formatTime(data.generatedAt)}</time></>
-          : "No activity window has been loaded."}</p>
+          ? <>{stale ? "Last checked" : "Updated"} <time dateTime={data.generatedAt}>{formatTime(data.generatedAt)}</time></>
+          : "Checking your activity…"}</p>
       </div>
       <button className={styles.button} type="button" onClick={refresh} disabled={Boolean(pending)}>
-        {pending?.kind === "refresh" ? "Refreshing activity…" : "Refresh activity"}
+        <RefreshCw size={15} aria-hidden="true" />{pending?.kind === "refresh" ? "Refreshing…" : "Refresh"}
       </button>
     </header>
 
-    <p id="activity-boundary" className={styles.boundary}>
-      This view checks up to {ACTIVITY_SOURCE_LIMIT} recent records per source. Counts describe this readable window; older or inaccessible records may be absent. Open a source to inspect its details or take action.
-    </p>
-    <div className={styles.filters} role="group" aria-label="Activity views" aria-describedby="activity-boundary">
-      {(["all", ...ACTIVITY_GROUPS] as ActivityFilter[]).map((group) => <button type="button" key={group}
+    <div className={styles.filters} role="group" aria-label="Activity views">
+      {(["all", "needs_you", "working", "updates", "history"] as ActivityFilter[]).filter((group) =>
+        group === "all" || group === selectedGroup || !known || (data?.counts[group] ?? 0) > 0,
+      ).map((group) => <button type="button" key={group}
         className={styles.filter} aria-pressed={selectedGroup === group}
         onClick={() => void load({ group, cursors: [null], index: 0, kind: "filter" })}>
         <span>{labels[group]}</span><span className={styles.count}>{known && data
-          ? `${(group === "all" ? sumCounts(data) : data.counts[group]).toLocaleString()} in window`
-          : "Count unavailable"}</span>
+          ? (group === "all" ? sumCounts(data) : data.counts[group]).toLocaleString()
+          : "—"}</span>
       </button>)}
     </div>
 
-    <p className={styles.readStatus} role="status" aria-live="polite" aria-atomic="true">{statusText}</p>
+    <p className={pending || error || data?.state === "partial" ? styles.readStatus : "sr-only"} role="status" aria-live="polite" aria-atomic="true">{statusText}</p>
     {error ? <div className={styles.error}>
       <p>{error}</p>
       {known ? <p>The retained records describe the previous window and may have changed.</p> : null}
       <button className={styles.button} type="button" onClick={refresh} disabled={Boolean(pending)}>Retry activity</button>
     </div> : null}
     {notice ? <p className={styles.notice}>{notice}</p> : null}
-    {data ? <SourceCoverage response={data} stale={stale} /> : null}
-
     <section className={styles.results} aria-labelledby="activity-results-title" aria-busy={Boolean(pending)}>
       <div className={styles.resultsHeader}>
         <h2 id="activity-results-title" tabIndex={-1} ref={resultsHeading}>{labels[shownGroup]}</h2>
-        <p>{known ? `${stale ? "Last loaded: " : ""}${start}–${end} of ${total.toLocaleString()} in this window` : "Count unavailable"}</p>
+        {known && total > 0 ? <p>{stale ? "Last loaded · " : ""}{start}–{end} of {total.toLocaleString()} recent updates</p> : null}
       </div>
       {!data && !error ? <div className={styles.empty}><h3>Checking activity</h3><p>Loading the records you can access.</p></div>
-        : !known ? <div className={styles.empty}><h3>Activity is unavailable</h3><p>The source reads have not established whether any activity is available.</p></div>
-        : !data?.items.length ? <div className={styles.empty}><h3>No {shownGroup === "all" ? "activity" : labels[shownGroup].toLowerCase()} in this window</h3>
-          <p>{data?.state === "partial" ? "No matching records were returned by the readable sources. Incomplete sources may contain other activity." : "The checked sources returned no matching records within this bounded window."}</p></div>
-        : ACTIVITY_GROUPS.filter((group) => data.items.some((item) => item.group === group)).map((group) => <section
+        : !known ? <div className={styles.empty}><h3>Activity is unavailable</h3><p>Refresh to check your recent work again.</p></div>
+        : !data?.items.length ? <div className={styles.empty}><h3>No recent {shownGroup === "all" ? "activity" : labels[shownGroup].toLowerCase()}</h3>
+          <p>{data?.state === "partial" ? "Some activity could not be checked. Refresh to try again." : "New tasks, decisions, and updates will appear here."}</p></div>
+        : (["needs_you", "working", "updates", "history"] as const).filter((group) => data.items.some((item) => item.group === group)).map((group) => <section
           key={group} className={styles.group} aria-labelledby={`activity-group-${group}`}>
-          <h3 id={`activity-group-${group}`}>{labels[group]}</h3>
+          <h3 id={`activity-group-${group}`} className={shownGroup === group ? "sr-only" : undefined}>{labels[group]}</h3>
           <ol className={styles.list}>
-            {data.items.filter((item) => item.group === group).map((item) => <li key={item.id}><ActivityRow item={item} /></li>)}
+            {data.items.filter((item) => item.group === group).map((item) => <li key={item.id}><ActivityRow item={item}
+              selected={selectedItemId === item.id} onSelect={() => setSelectedItemId((current) => current === item.id ? undefined : item.id)} /></li>)}
           </ol>
         </section>)}
     </section>
-    {known && snapshot && data ? <nav className={styles.pager} aria-label="Activity pages">
-      <p>Page {snapshot.index + 1} of the {stale ? "last loaded " : ""}window</p>
+    {known && snapshot && data && (data.page.hasMore || snapshot.index > 0) ? <nav className={styles.pager} aria-label="Activity pages">
+      <p>Page {snapshot.index + 1}</p>
       <div className={styles.actions}>
         <button type="button" className={styles.button} disabled={Boolean(pending) || snapshot.index === 0}
           onClick={(event) => void load({ group: shownGroup, cursors: snapshot.cursors, index: snapshot.index - 1, kind: "page", trigger: event.currentTarget })}>Previous</button>
@@ -218,36 +218,42 @@ function ScopedActivityWorkspace() {
           onClick={(event) => void load({ group: shownGroup, cursors: [...snapshot.cursors.slice(0, snapshot.index + 1), data.page.nextCursor], index: snapshot.index + 1, kind: "page", trigger: event.currentTarget })}>Next</button>
       </div>
     </nav> : null}
+    {data ? <SourceCoverage response={data} stale={stale} /> : null}
   </section>;
 }
 
 function SourceCoverage({ response, stale }: { response: ActivityResponse; stale: boolean }) {
   return <details className={styles.coverage}>
-    <summary>Source coverage · {stale ? "last loaded" : response.state === "ready" ? "checked" : response.state === "partial" ? "incomplete" : "unavailable"}</summary>
-    <dl>{sources.map((source) => {
+    <summary>{response.state === "partial" ? "Some activity is unavailable" : response.state === "unavailable" ? "Activity could not be checked" : "About this activity list"}{stale ? " · last checked" : ""}</summary>
+    <dl>{sources.filter((source) => response.coverage[source].visibleCount !== 0 || response.coverage[source].state !== "ready").map((source) => {
       const coverage = response.coverage[source];
       return <div key={source}><dt>{sourceLabels[source]}</dt><dd>
         <strong>{coverageLabel(coverage)}</strong>
         <span>{coverage.visibleCount === null ? "Count unavailable." : `${coverage.visibleCount.toLocaleString()} readable records within the ${coverage.limit}-record source limit.`}</span>
       </dd></div>;
     })}</dl>
-    <p>Only authorized metadata is shown. Coverage and counts are checked when you refresh; this page does not continuously monitor the sources.</p>
+    <p>Includes up to {ACTIVITY_SOURCE_LIMIT} recent records per source that you can access. Older activity may not appear. Refresh to check for changes.</p>
   </details>;
 }
 
-function ActivityRow({ item }: { item: ActivityItem }) {
-  const destination = item.source === "approvals" ? "Open approval" : item.source === "runs" ? "Open in Assistant" : "Open in Today";
-  return <article className={styles.row} aria-label={`${item.title}: ${item.sourceRef.id}`}>
+function ActivityRow({ item, selected, onSelect }: { item: ActivityItem; selected: boolean; onSelect: () => void }) {
+  const destination = item.source === "approvals" ? "Review action" : item.source === "runs" ? "Open conversation" : item.href.startsWith("/app/responsibilities/") ? "View update" : "Open reminder";
+  const state = activityState(item);
+  const Icon = state.tone === "danger" || state.tone === "warning" ? CircleAlert : state.tone === "success" ? CheckCircle2
+    : item.source === "notifications" ? Bell : item.group === "working" ? Clock3 : MessageSquare;
+  return <article className={styles.row} aria-label={`${activityTitle(item)}: ${state.label}`}>
+    <Icon size={18} className={styles.rowIcon} data-tone={state.tone} aria-hidden="true" />
     <div className={styles.rowContent}>
-      <div className={styles.rowHeading}><h4>{item.title}</h4><span className={styles.status}>
-        {startCase(item.status)}{item.canonicalStatus?.status === "unverified" ? " · Unverified outcome" : item.canonicalStatus?.status === "partial" ? " · Partial outcome" : item.canonicalStatus?.status === "succeeded" ? " · Verified outcome" : ""}
-      </span></div>
-      <p>{item.summary}</p>
-      <dl className={styles.identity}>
-        <div><dt>{startCase(item.sourceRef.kind)} ID</dt><dd><code>{item.sourceRef.id}</code></dd></div>
-        <div><dt>{startCase(item.timestamp.basis)}</dt><dd><time dateTime={item.timestamp.at}>{formatTime(item.timestamp.at)}</time></dd></div>
-      </dl>
-      <details className={styles.references}><summary>Record references</summary><dl>
+      <div className={styles.rowHeading}><h4>{activityTitle(item)}</h4><span className={styles.status} data-tone={state.tone}>{state.label}</span></div>
+      {item.summary.trim() ? <p>{activitySummary(item)}</p> : null}
+      <div className={styles.rowMeta}>
+        <time dateTime={item.timestamp.at} title={formatTime(item.timestamp.at)}>{item.timestamp.basis === "completed" ? "Finished" : startCase(item.timestamp.basis)} {shortTime(item.timestamp.at)}</time>
+        {item.source === "runs" ? <button type="button" onClick={onSelect} aria-expanded={selected} className={styles.detailButton}>{selected ? "Hide details" : state.tone === "danger" ? "View failure" : "View task"}</button> : null}
+        <Link className={styles.originLink} href={item.href} prefetch={false}>{destination}<ArrowUpRight size={13} aria-hidden="true" /></Link>
+        {item.origin && item.origin.href !== item.href ? <Link className={styles.originLink} href={item.origin.href} prefetch={false}>Open conversation</Link> : null}
+      </div>
+      {selected && item.source === "runs" ? <ActivityRunPreview key={`${item.sourceRef.id}:${item.timestamp.at}`} runId={item.sourceRef.id} /> : null}
+      <details className={styles.references}><summary>Technical details</summary><dl>
         <div><dt>Activity ID</dt><dd><code>{item.id}</code></dd></div>
         <div><dt>Work identity</dt><dd><code>{item.workKey}</code></dd></div>
         <div><dt>Source state</dt><dd><code>{item.status}</code></dd></div>
@@ -258,12 +264,117 @@ function ActivityRow({ item }: { item: ActivityItem }) {
         </div>)}
       </dl></details>
     </div>
-    <div className={styles.rowActions}>
-      <Link className={styles.button} href={item.href} prefetch={false} aria-label={`${destination}: ${item.sourceRef.id}`}>{destination}</Link>
-      {item.origin && item.origin.href !== item.href ? <Link className={styles.originLink} href={item.origin.href} prefetch={false}
-        aria-label={`Return to originating run: ${item.origin.runId}`}>Return to originating run</Link> : null}
-    </div>
   </article>;
+}
+
+type RunPreview = { prompt: string; response: string; error: string; duration?: string };
+
+/** Only the explicitly selected task is read; closing it discards its content. */
+function ActivityRunPreview({ runId }: { runId: string }) {
+  const [preview, setPreview] = useState<RunPreview>();
+  const [error, setError] = useState<string>();
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    const controller = new AbortController();
+    setPreview(undefined);
+    setError(undefined);
+    void (async () => {
+      try {
+        const response = await fetch(`/api/runs/${encodeURIComponent(runId)}`, {
+          headers: { accept: "application/json" }, cache: "no-store", signal: controller.signal,
+        });
+        const body: unknown = await response.json();
+        if (!response.ok) throw new Error(response.status === 403 || response.status === 401
+          ? "You no longer have access to this task."
+          : response.status === 404 ? "This task is no longer available." : "Task details could not be loaded. Try again.");
+        if (!isRecord(body) || !isRecord(body.run) || body.run.id !== runId) throw new Error("The task details could not be confirmed. Try again.");
+        const run = body.run;
+        const started = typeof run.startedAt === "string" ? Date.parse(run.startedAt) : Number.NaN;
+        const completed = typeof run.completedAt === "string" ? Date.parse(run.completedAt) : Number.NaN;
+        if (!controller.signal.aborted) setPreview({
+          prompt: previewText(run.prompt, 1_200), response: previewText(run.response, 3_000), error: previewText(run.error, 1_500),
+          ...(Number.isFinite(started) && Number.isFinite(completed) && completed >= started
+            ? { duration: elapsedTime(completed - started) } : {}),
+        });
+      } catch (failure) {
+        if (!controller.signal.aborted) setError(failure instanceof Error ? failure.message : "Task details could not be loaded.");
+      }
+    })();
+    return () => controller.abort();
+  }, [runId, attempt]);
+  return <section className={styles.preview} aria-label="Task details" aria-busy={!preview && !error}>
+    {!preview && !error ? <p className={styles.previewLoading}><Loader2 size={14} aria-hidden="true" />Loading task details…</p> : null}
+    {error ? <div role="status"><p>{error}</p><button type="button" className={styles.detailButton} onClick={() => setAttempt((value) => value + 1)}>Try again</button></div> : null}
+    {preview?.prompt ? <div><h5>Your task</h5><p>{preview.prompt}</p></div> : null}
+    {preview?.error ? <div className={styles.failure}><h5>What went wrong</h5><p>{preview.error}</p></div> : null}
+    {preview?.response ? <div><h5>{preview.error ? "Partial response" : "Response"}</h5><p>{preview.response}</p></div> : null}
+    {preview?.duration ? <p className={styles.duration}>Time taken: {preview.duration}</p> : null}
+    {preview && !preview.prompt && !preview.response && !preview.error ? <p>No task text is available here. Open the conversation for its current status.</p> : null}
+  </section>;
+}
+
+function activityTitle(item: ActivityItem) {
+  if (item.title === "Tool approval") return "Review a proposed action";
+  if (item.title === "Workflow approval") return "Review a proposed plan";
+  if (item.title !== "Agent run") return item.title;
+  if (item.status === "completed") return "Assistant response completed";
+  if (item.status === "failed") return "Assistant task failed";
+  if (item.status === "canceled") return "Assistant task stopped";
+  if (item.status === "waiting_approval") return "Assistant needs your approval";
+  if (item.status === "waiting_clarification") return "Assistant has a question";
+  return item.status === "queued" ? "Assistant task queued" : "Assistant is working";
+}
+
+function activityState(item: ActivityItem): { label: string; tone: "neutral" | "success" | "warning" | "danger" } {
+  const canonical = item.canonicalStatus?.status;
+  if (canonical === "failed" || item.status === "failed") return { label: "Failed", tone: "danger" };
+  if (item.status === "reconciliation_required") return { label: "Action outcome needs review", tone: "warning" };
+  if (canonical === "unverified") return { label: "Needs verification", tone: "warning" };
+  if (canonical === "partial") return { label: "Partly complete", tone: "warning" };
+  if (canonical === "succeeded") return { label: "Verified complete", tone: "success" };
+  if (canonical === "blocked") return { label: "Blocked", tone: "warning" };
+  if (canonical === "preview") return { label: "Preview only", tone: "neutral" };
+  const friendly: Record<string, string> = {
+    queued: "Queued", running: "In progress", resuming: "Continuing", completed: "Completed",
+    canceled: "Stopped", waiting_approval: "Approval needed", approval_required: "Approval needed",
+    pending: "Decision needed", waiting_clarification: "Reply needed", unread: "New", read: "Read",
+    snoozed: "Snoozed", dismissed: "Dismissed", acted: "Action recorded",
+  };
+  return { label: friendly[item.status] || "Status available", tone: item.group === "needs_you" ? "warning" : "neutral" };
+}
+
+function activitySummary(item: ActivityItem) {
+  const copy: Record<string, string> = {
+    "The run is in progress.": "Working on your request.",
+    "The run is resuming.": "Continuing your task.",
+    "The run failed. Open its source to inspect the result.": "Open the task to see what went wrong.",
+    "The terminal receipt reports a failed outcome.": "The task ended with a failed outcome. Review the details before retrying.",
+    "The run completed; its outcome has not been verified.": "The response is ready; its outcome still needs verification.",
+    "The run ended; its outcome has not been verified.": "The task ended; its outcome still needs verification.",
+    "The run ended with a partial outcome. Open its source to inspect what remains.": "Part of the task finished. Review what remains.",
+    "An approved action needs reconciliation. Open the approval to inspect its receipt.": "The result of an approved action is uncertain. Review it before trying again.",
+  };
+  return copy[item.summary] || item.summary;
+}
+
+function previewText(value: unknown, limit: number) {
+  if (typeof value !== "string") return "";
+  const text = value.trim().replace(/\[(?:(?:knowledge|memory|web|graph):[^\]\s]+|(?:csm|evidence_unit)_[a-zA-Z0-9_-]+)\]/g, "[source reference]");
+  return text.length > limit ? `${text.slice(0, limit)}…` : text;
+}
+function elapsedTime(milliseconds: number) {
+  const seconds = Math.max(1, Math.round(milliseconds / 1_000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  return minutes < 60 ? `${minutes}m ${seconds % 60}s` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+function shortTime(value: string) {
+  const date = new Date(value);
+  const today = new Date();
+  const yesterday = new Date();
+  yesterday.setDate(today.getDate() - 1);
+  const day = date.toDateString() === today.toDateString() ? "today" : date.toDateString() === yesterday.toDateString() ? "yesterday" : date.toLocaleDateString(undefined, { month: "short", day: "numeric", ...(date.getFullYear() !== today.getFullYear() ? { year: "numeric" as const } : {}) });
+  return `${day} at ${date.toLocaleTimeString(undefined, { timeStyle: "short" })}`;
 }
 
 function coverageLabel(coverage: ActivityCoverage) {

@@ -2,14 +2,16 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { ArrowLeft, ArrowUpRight, Bot, BriefcaseBusiness, CalendarDays, Check, CheckCircle2, Circle, FileText, FolderOpen, Info, Link2, Loader2, Plus, RefreshCw, Search, Upload, UserRound, UsersRound, X } from "lucide-react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { ArrowLeft, ArrowUpRight, BookOpen, Bot, BriefcaseBusiness, CalendarDays, Check, CheckCircle2, Circle, FileText, FolderOpen, Link2, Loader2, Plus, RefreshCw, Search, Upload, UserRound, UsersRound, X } from "lucide-react";
 import { clsx } from "clsx";
 import { canPerform, useWorkspaceSession } from "@/components/app-shell/session-context";
 import { workspaceOwnerScope } from "@/components/app-shell/workspace-owner-scope";
 import type { WorkspaceLibraryItem } from "@/lib/library/contracts";
 import type { ClientProfile } from "@/lib/csm/contracts";
 import { CSM_AGENT_NAME, CSM_AGENT_TEMPLATE } from "@/lib/csm/template";
+import { CsmRoleContext } from "./csm-role-context";
+import { readJson, jsonWrite, dateLabel, errorText, LibraryPicker, Modal, Notice, FILE_TYPE_LABELS, FILE_STATUS_LABELS } from "./csm-workspace-shared";
 import styles from "./csm-workspace.module.css";
 
 type ClientTask = { id: string; title: string; detail?: string; status: "open" | "doing" | "done"; dueAt?: string; workflowRunId?: string; priority: "low" | "medium" | "high" };
@@ -25,14 +27,6 @@ type ClientDetail = {
 };
 const EMPTY_PROFILE: ClientProfile = { role: "secondary", successPlan: "unknown", leadCsm: "", customerGoals: "", successPath: "", stakeholders: "" };
 const PLAN_LABELS = { unknown: "Plan not confirmed", standard: "Standard", premier: "Premier", signature: "Signature" };
-const FILE_TYPE_LABELS: Record<WorkspaceLibraryItem["kind"], string> = {
-  document: "Document", spreadsheet: "Spreadsheet", presentation: "Slide deck", file: "File", image: "Image",
-  audio: "Audio", video: "Video", recording: "Recording", transcript: "Transcript", email: "Email",
-  meeting: "Meeting", message: "Message", webpage: "Web page", record: "Saved item", generated_artifact: "Created file",
-};
-const FILE_STATUS_LABELS: Record<WorkspaceLibraryItem["status"], string> = {
-  ready: "Ready to use", processing: "Preparing to read", failed: "Could not prepare this file", unsupported: "File type not supported",
-};
 const STARTER_TASKS = [
   "Confirm my responsibilities and the Lead CSM handoff",
   "Capture the client's top business outcomes",
@@ -49,61 +43,15 @@ const ASSISTANT_ACTIONS = [
   { label: "Specialist handoff", prompt: "Prepare a Salesforce specialist handoff for this client's most important unresolved need. Include business impact, evidence timeline, what has been tried, the exact decision or help needed, suggested role and missing information. Explain why that role fits. Draft only; do not claim a request was sent or a service entitlement confirmed." },
 ] as const;
 
-async function readJson<T>(href: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(href, { cache: "no-store", ...init });
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(requestErrorMessage(body.error, response.status));
-  return body as T;
-}
-function jsonWrite(method: string, body: unknown, key: string): RequestInit {
-  return { method, headers: { "content-type": "application/json", "idempotency-key": key }, body: JSON.stringify(body) };
-}
-function dateLabel(value?: string) {
-  if (!value) return "Not scheduled";
-  const parsed = new Date(value.length === 10 ? `${value}T12:00:00` : value);
-  return Number.isNaN(parsed.getTime()) ? "Date unavailable" : parsed.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
-}
-function requestErrorMessage(message: unknown, status: number) {
-  const friendly: Record<string, string> = {
-    "Invalid client context request.": "Some client details could not be saved. Check the fields and try again.",
-    "Client context access is unavailable.": "We couldn't open this client's details. Refresh the page and check that you still have access.",
-    "Client context is temporarily unavailable. Your accepted edits can be retried with the same edit key.": "We couldn't confirm whether your changes were saved. Try this action again to check or finish saving it.",
-    "Client context changed. Reload it before saving your edit.": "This client brief was updated while you were editing. Load the saved brief before making further changes.",
-    "Client context has conflicting active revisions.": "There are conflicting saved copies of this client brief. We can't safely choose one. Contact support for help.",
-    "The saved client context could not be verified.": "We couldn't verify the saved client brief. Refresh the page; if it still won't open, contact support.",
-    "Client context write access is required.": "You can view this client, but you don't have permission to change their brief or files.",
-    "An exact client edit intent is required.": "We couldn't safely save this change. Refresh the saved brief before trying again.",
-    "This edit key was already used for another change.": "The details of this change no longer match the earlier attempt. Refresh the saved brief before trying again.",
-    "Client context belongs to another project.": "These details don't belong to the selected client. Reopen the client before saving.",
-    "Client context was not found.": "This client's brief could not be found. Reopen the client to check whether it is still available.",
-    "The selected source is no longer available.": "This file is no longer available. Choose another file from Library.",
-    "The source changed. Select its current Library version again.": "This file was updated. Refresh Library and choose it again.",
-    "A client can have up to 50 linked sources.": "You can add up to 50 files or notes to a client. Remove one from this client before adding another.",
-    "Archived client work is read-only.": "This client is archived. Reopen their project in Other projects before making changes.",
-    "Project not found.": "This client is no longer available, or you don't have access to it.",
-    "Invalid project task": "Check the action's title, note and due date before trying again.",
-    "Invalid task update": "This action could not be updated. Refresh the saved actions before trying again.",
-    "Invalid project": "Check the client name and goals before trying again.",
-  };
-  if (typeof message === "string" && friendly[message]) return friendly[message];
-  if (typeof message === "string" && message.startsWith("Idempotency-Key")) return "We couldn't safely repeat this action because its details changed. Refresh the saved work before trying again.";
-  if (status === 401) return "Please sign in again to continue with this client.";
-  if (status === 403) return "You don't have permission to make this request. Check your access before trying again.";
-  return typeof message === "string" ? message : "We couldn't complete this request. Refresh the saved work before trying again.";
-}
-function errorText(error: unknown) {
-  if (error instanceof TypeError && /fetch|network/i.test(error.message)) return "The connection was interrupted. Refresh the saved work before retrying; your changes may have been saved.";
-  return error instanceof Error ? error.message : "This action could not be completed.";
-}
-
-export function CsmWorkspace({ deployment = "local", initialProjectId }: { deployment?: string; initialProjectId?: string }) {
+export function CsmWorkspace({ deployment = "local", initialProjectId, initialView = "clients" }: { deployment?: string; initialProjectId?: string; initialView?: "clients" | "role" }) {
   const { session, role, status } = useWorkspaceSession();
   if (status !== "ready" || !session || (session.authEnabled && !session.authenticated)) return <main className={styles.shell}><p role="status">Loading your client workspace…</p></main>;
-  return <CsmWorkspaceBody key={workspaceOwnerScope(session, role, deployment)} initialProjectId={initialProjectId} />;
+  return <CsmWorkspaceBody key={workspaceOwnerScope(session, role, deployment)} initialProjectId={initialProjectId} initialView={initialView} />;
 }
 
-function CsmWorkspaceBody({ initialProjectId }: { initialProjectId?: string }) {
+function CsmWorkspaceBody({ initialProjectId, initialView }: { initialProjectId?: string; initialView: "clients" | "role" }) {
   const { role } = useWorkspaceSession();
+  const [view, setView] = useState<"clients" | "role">(initialView);
   const [clients, setClients] = useState<ClientSummary[]>([]);
   const [selectedId, setSelectedId] = useState(initialProjectId || "");
   const [showDetail, setShowDetail] = useState(Boolean(initialProjectId));
@@ -125,12 +73,24 @@ function CsmWorkspaceBody({ initialProjectId }: { initialProjectId?: string }) {
     finally { if (!signal?.aborted && mounted.current) setLoading(false); }
   }, []);
   useEffect(() => { mounted.current = true; const controller = new AbortController(); void load(controller.signal); return () => { mounted.current = false; controller.abort(); }; }, [load]);
+  function selectView(next: "clients" | "role") {
+    setView(next);
+    const url = new URL(window.location.href);
+    if (next === "role") url.searchParams.set("view", "role"); else url.searchParams.delete("view");
+    window.history.replaceState(null, "", url.pathname + url.search);
+  }
   const filtered = clients.filter((client) => client.project.title.toLocaleLowerCase().includes(query.toLocaleLowerCase()));
   return <main className={styles.shell}>
     <header className={styles.header}>
       <div><h1>Work</h1><p>Your clients, their priorities, and what needs to happen next.</p></div>
       <div className={styles.actions}><Link href="/app/projects?view=projects" className={styles.textButton}>Other projects <ArrowUpRight size={15} /></Link><button className={styles.primary} onClick={() => setCreateOpen(true)} disabled={!canWrite}><Plus size={17} />Add client</button></div>
     </header>
+    <nav className={styles.workspaceTabs} aria-label="Work views">
+      <button type="button" aria-current={view === "clients" ? "page" : undefined} onClick={() => selectView("clients")}><BriefcaseBusiness size={17} />Clients</button>
+      <button type="button" aria-current={view === "role" ? "page" : undefined} onClick={() => selectView("role")}><BookOpen size={17} />My CSM role</button>
+    </nav>
+    <div hidden={view !== "role"}><CsmRoleContext active={view === "role"} /></div>
+    <div hidden={view !== "clients"}>
     {error ? <Notice error>{error} <button className={styles.textButton} onClick={() => void load()}>Reload</button></Notice> : null}
     {loading ? <p className={styles.muted} role="status">Loading clients…</p> : !clients.length && !selectedId && !error ?
       <div className={styles.empty}><BriefcaseBusiness size={34} /><h2>Start with one client</h2><p>Add your role and their priorities. Add meeting recordings, transcripts, decks, and documents to prepare for your next conversation.</p><button className={styles.primary} disabled={!canWrite} onClick={() => setCreateOpen(true)}><Plus size={17} />Add your first client</button></div> :
@@ -147,6 +107,7 @@ function CsmWorkspaceBody({ initialProjectId }: { initialProjectId?: string }) {
           {selectedId ? <ClientWorkspace key={selectedId} projectId={selectedId} onChange={() => void load()} /> : <p className={styles.muted}>Choose a client to open their workspace.</p>}
         </div>
       </div>}
+    </div>
     <ClientForm open={createOpen} onClose={() => setCreateOpen(false)} onSaved={(id) => { setCreateOpen(false); setSelectedId(id); setShowDetail(true); void load(); }} />
   </main>;
 }
@@ -354,37 +315,4 @@ function ClientForm({ open, detail, onClose, onSaved }: { open: boolean; detail?
       <div className={styles.dialogFooter}><button type="button" className={styles.button} disabled={busy} onClick={onClose}>Cancel</button><button className={styles.primary} disabled={busy || !title.trim()}>{busy ? <Loader2 size={16} className={styles.busy} /> : <Check size={16} />}{detail ? "Save brief" : pendingProject.current ? "Finish client setup" : "Create client"}</button></div>
     </form>
   </Modal>;
-}
-
-function LibraryPicker({ open, onClose, linkedIds, onSelect }: { open: boolean; onClose: () => void; linkedIds: string[]; onSelect: (item: WorkspaceLibraryItem) => Promise<void> }) {
-  const [items, setItems] = useState<WorkspaceLibraryItem[]>([]);
-  const [query, setQuery] = useState("");
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [busy, setBusy] = useState("");
-  useEffect(() => {
-    if (!open) return;
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => { setLoading(true); void readJson<{ items: WorkspaceLibraryItem[] }>(`/api/library?limit=40&q=${encodeURIComponent(query)}`, { signal: controller.signal }).then((data) => { if (!controller.signal.aborted) { setItems(data.items); setError(""); } }).catch((caught) => { if (!controller.signal.aborted) setError(errorText(caught)); }).finally(() => { if (!controller.signal.aborted) setLoading(false); }); }, 180);
-    return () => { controller.abort(); window.clearTimeout(timer); };
-  }, [open, query]);
-  return <Modal open={open} title="Add documents & notes" onClose={onClose} preventClose={Boolean(busy)}>
-    <p className={styles.hint}>Choose documents, notes or recordings for this client. The originals stay in Library, and their sharing settings stay the same.</p>
-    <label className={styles.search}><Search size={16} /><input aria-label="Search documents and notes" placeholder="Find a transcript, deck, or recording" value={query} onChange={(event) => setQuery(event.target.value)} /></label>
-    {error ? <Notice error>{error}</Notice> : null}
-    {loading ? <p role="status" className={styles.muted}>Finding documents and notes…</p> : null}
-    <ul className={styles.sourceList}>{items.map((item) => <li className={styles.sourceRow} key={item.id}><FileText className={styles.sourceIcon} size={19} /><div className={styles.sourceBody}><p className={styles.sourceTitle}>{item.title}</p><p className={styles.sourceMeta}>{FILE_TYPE_LABELS[item.kind]} · {FILE_STATUS_LABELS[item.status]} · {dateLabel(item.updatedAt)}</p></div><button className={styles.button} disabled={Boolean(busy) || linkedIds.includes(item.id) || item.status === "failed" || item.status === "unsupported"} onClick={() => { setBusy(item.id); setError(""); void onSelect(item).catch((caught) => setError(errorText(caught))).finally(() => setBusy("")); }}>{linkedIds.includes(item.id) ? <><Check size={15} />Added</> : busy === item.id ? "Adding…" : "Add"}</button></li>)}</ul>
-    {!loading && !items.length ? <p className={styles.hint}>No matching documents or notes. Upload a file from the client page or add it through Capture first.</p> : null}
-    <div className={styles.dialogFooter}><button className={styles.button} onClick={onClose} disabled={Boolean(busy)}>Done</button></div>
-  </Modal>;
-}
-
-function Modal({ open, title, children, onClose, preventClose = false }: { open: boolean; title: string; children: ReactNode; onClose: () => void; preventClose?: boolean }) {
-  const ref = useRef<HTMLDialogElement>(null);
-  const headingId = useId();
-  useEffect(() => { const dialog = ref.current; if (!dialog) return; if (open && !dialog.open) dialog.showModal(); else if (!open && dialog.open) dialog.close(); }, [open]);
-  return <dialog ref={ref} className={styles.dialog} aria-labelledby={headingId} onCancel={(event) => { event.preventDefault(); if (!preventClose) onClose(); }} onClose={() => { if (!preventClose && open) onClose(); }}><header className={styles.dialogHeader}><h2 id={headingId}>{title}</h2><button type="button" className={styles.iconButton} aria-label="Close dialog" disabled={preventClose} onClick={onClose}><X size={18} /></button></header>{children}</dialog>;
-}
-function Notice({ children, error = false }: { children: ReactNode; error?: boolean }) {
-  return <div className={clsx(styles.notice, error && styles.error)} role={error ? "alert" : "status"}><Info size={17} /><div>{children}</div></div>;
 }

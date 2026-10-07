@@ -355,6 +355,41 @@ abstract interface class ActivityRepository {
   });
 }
 
+/// Optional detail capability; the list itself remains content-free.
+abstract interface class ActivityDetailRepository {
+  Future<ActivityTaskDetail> loadTaskDetail({
+    required String runId,
+    required CancelToken cancelToken,
+  });
+}
+
+class ActivityTaskDetail {
+  ActivityTaskDetail.fromJson(Map<String, dynamic> json, String expectedRunId) {
+    final run = _record(json['run']);
+    _require(run['id'] == expectedRunId);
+    prompt = _previewText(run['prompt'], 1200);
+    response = _previewText(run['response'], 3000);
+    error = _previewText(run['error'], 1500);
+    final started = run['startedAt'] is String
+        ? DateTime.tryParse(run['startedAt'] as String) : null;
+    final completed = run['completedAt'] is String
+        ? DateTime.tryParse(run['completedAt'] as String) : null;
+    duration = started != null && completed != null && !completed.isBefore(started)
+        ? completed.difference(started) : null;
+  }
+  late final String prompt, response, error;
+  late final Duration? duration;
+}
+
+String _previewText(Object? value, int limit) {
+  if (value is! String) return '';
+  final text = value.trim().replaceAll(
+    RegExp(r'\[(?:(?:knowledge|memory|web|graph):[^\]\s]+|(?:csm|evidence_unit)_[a-zA-Z0-9_-]+)\]'),
+    '[source reference]',
+  );
+  return text.length > limit ? '${text.substring(0, limit)}…' : text;
+}
+
 /// Each controller belongs to one authenticated owner; it never stores a cache.
 class ActivityController extends ChangeNotifier {
   ActivityController(this.repository);
@@ -367,10 +402,31 @@ class ActivityController extends ChangeNotifier {
   CancelToken? _request;
   int _generation = 0;
   bool _disposed = false;
+  final Set<CancelToken> _detailRequests = {};
   bool get loading => pendingGroup != null;
   bool get stale => snapshot != null && (loading || error != null);
   bool get canPrevious => !loading && pageIndex > 0;
   bool get canNext => !loading && (snapshot?.hasMore ?? false);
+
+  Future<ActivityTaskDetail> readTaskDetails(String runId, CancelToken cancel) async {
+    bool available() => !_disposed && !cancel.isCancelled &&
+        (snapshot?.items.any((item) => item.source == 'runs' && item.sourceRef.id == runId) ?? false);
+    final reader = repository;
+    if (!available() || reader is! ActivityDetailRepository) {
+      throw const ApiException('Open the conversation to view this task.');
+    }
+    _detailRequests.add(cancel);
+    try {
+      final detail = await (reader as ActivityDetailRepository).loadTaskDetail(
+        runId: runId,
+        cancelToken: cancel,
+      );
+      if (!available()) throw const ApiException('This task is no longer selected.');
+      return detail;
+    } finally {
+      _detailRequests.remove(cancel);
+    }
+  }
 
   Future<void> refresh() =>
       _load(snapshot?.group ?? ActivityGroup.all, 0, [null]);
@@ -468,6 +524,10 @@ class ActivityController extends ChangeNotifier {
     _disposed = true;
     _generation += 1;
     _request?.cancel('Activity closed');
+    for (final request in _detailRequests.toList()) {
+      request.cancel('Activity access changed');
+    }
+    _detailRequests.clear();
     super.dispose();
   }
 }

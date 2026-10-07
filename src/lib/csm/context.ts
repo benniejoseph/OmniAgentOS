@@ -34,7 +34,7 @@ export async function resolveCsmProjectPromptContext(input: {
     citationSources: [] as CitationSource[],
   };
   const fieldLimit = Math.min(900, Math.max(100, Math.floor(maxCharacters / 8)));
-  const sources = rankSources(await resolveCsmSources(caller, stored.snapshot.sourceLinks), input.query);
+  const sources = rankCsmSources(await resolveCsmSources(caller, stored.snapshot.sourceLinks), input.query);
   const excerpts: Array<Record<string, unknown>> = [];
   const sourcePins: Array<Record<string, unknown>> = [];
   const citationSources: CitationSource[] = [];
@@ -83,7 +83,7 @@ export async function resolveCsmProjectPromptContext(input: {
   };
 }
 
-function rankSources(sources: readonly ResolvedCsmSource[], query: string) {
+export function rankCsmSources(sources: readonly ResolvedCsmSource[], query: string) {
   const ignored = new Set(["the", "and", "for", "with", "from", "this", "that", "client", "please", "what"]);
   const terms = [...new Set(query.toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) || [])]
     .filter((term) => !ignored.has(term)).slice(0, 32);
