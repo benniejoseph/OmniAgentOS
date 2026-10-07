@@ -243,6 +243,11 @@ authorization, unset the pin afterward, and investigate the recorded failures.
 - A retry streams `canceled` with `This request stopped before it finished, so it was not run again.`: the first attempt was canceled. Send the message again; the workspace uses a new ID after a cancellation.
 - A retry streams a `Replayed` status and the earlier answer: the first attempt finished, so its recorded outcome was returned instead of running the work again. To run it again on purpose, send it with a new ID.
 
+## Private graph search fails while the map opens
+
+- If `/api/memory/graph` returns `500` with `Memory access binding digest does not match` at `accessScopeSha256`, inspect timestamp decoding before changing authorization. SQL JSON projections return timestamp strings, while direct graph reads return `Date` objects.
+- `graphAccessBindingFromRow` must canonicalize a valid `access_bound_at` to UTC ISO milliseconds before validating the original binding digest. Reject invalid timestamps; never skip digest validation or recompute the stored digest to admit a mismatched record.
+
 ## Memory forget or the deletion scrub fails
 
 - `Database schema is behind (pending versions: 207)`: run migration v207 before serving the release. See [deployment.md](deployment.md#memory-forget-lineage-closure-v207).
