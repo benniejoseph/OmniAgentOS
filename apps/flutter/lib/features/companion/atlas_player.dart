@@ -282,47 +282,79 @@ class _AtlasPortraitState extends State<AtlasPortrait>
   }
 }
 
-/// Loading/failure pose uses the current theme and never starts a timer.
+/// Original Scout still. Loading and failure never start an animation clock.
 class _AtlasStillPainter extends CustomPainter {
   const _AtlasStillPainter(this.colors);
   final ColorScheme colors;
 
   @override
   void paint(Canvas canvas, Size size) {
+    final dark = colors.brightness == Brightness.dark;
+    final shell = dark ? colors.onSurface : colors.surfaceContainerLowest;
+    final face = dark ? colors.surfaceContainerLowest : colors.onSurface;
+    final edge = dark ? const Color(0xFFD9D4CB) : colors.outlineVariant;
+    const eye = Color(0xFFFAF9F6);
+    Paint fill(Color color) => Paint()..color = color;
+    Paint line(Color color, double width) => Paint()
+      ..color = color..style = PaintingStyle.stroke..strokeWidth = width
+      ..strokeCap = StrokeCap.round..strokeJoin = StrokeJoin.round;
+    void box(double x, double y, double w, double h, double radius, Color color,
+        {bool outlined = false}) {
+      final shape = RRect.fromRectAndRadius(
+        Rect.fromCenter(center: Offset(x, y), width: w, height: h),
+        Radius.circular(radius),
+      );
+      canvas.drawRRect(shape, fill(color));
+      if (outlined) canvas.drawRRect(shape, line(colors.outline, 2));
+    }
     canvas.save();
     canvas.scale(size.width / 256, size.height / 256);
-    canvas.translate(128, 128);
-    canvas.drawCircle(Offset.zero, 91, Paint()..color = colors.secondaryContainer.withValues(alpha: .42));
-    canvas.save();
-    canvas.rotate(-26 * 3.141592653589793 / 180);
-    canvas.drawOval(Rect.fromCenter(center: Offset.zero, width: 210, height: 138),
-      Paint()..color = colors.outlineVariant..style = PaintingStyle.stroke..strokeWidth = 2);
-    canvas.restore();
-    canvas.drawCircle(Offset.zero, 66, Paint()..color = colors.surface);
-    canvas.drawCircle(Offset.zero, 66, Paint()..color = colors.outlineVariant..style = PaintingStyle.stroke..strokeWidth = 1.5);
-    canvas.drawCircle(Offset.zero, 56, Paint()..color = colors.secondary.withValues(alpha: .23)..style = PaintingStyle.stroke..strokeWidth = .7);
-    final star = Path()..moveTo(0, -40)
-      ..cubicTo(3, -40, 7, -18, 13, -13)
-      ..cubicTo(18, -7, 40, -3, 40, 0)
-      ..cubicTo(40, 3, 18, 7, 13, 13)
-      ..cubicTo(7, 18, 3, 40, 0, 40)
-      ..cubicTo(-3, 40, -7, 18, -13, 13)
-      ..cubicTo(-18, 7, -40, 3, -40, 0)
-      ..cubicTo(-40, -3, -18, -7, -13, -13)
-      ..cubicTo(-7, -18, -3, -40, 0, -40)..close();
-    canvas.save();
-    canvas.rotate(-12 * 3.141592653589793 / 180);
-    canvas.drawPath(star, Paint()..color = colors.secondary);
-    canvas.restore();
-    canvas.drawCircle(Offset.zero, 4.5, Paint()..color = colors.surface);
-    canvas.save();
-    canvas.rotate(-26 * 3.141592653589793 / 180);
-    canvas.drawArc(Rect.fromCenter(center: Offset.zero, width: 210, height: 138),
-      15 * 3.141592653589793 / 180, 132 * 3.141592653589793 / 180, false,
-      Paint()..color = colors.secondary..style = PaintingStyle.stroke..strokeWidth = 2.6..strokeCap = StrokeCap.round);
-    canvas.restore();
-    canvas.drawCircle(const Offset(55.75, -74.45), 11, Paint()..color = colors.surface);
-    canvas.drawCircle(const Offset(55.75, -74.45), 6.5, Paint()..color = colors.secondary);
+    canvas.drawOval(const Rect.fromLTWH(80, 224.5, 96, 13),
+      fill((dark ? Colors.black : face).withValues(alpha: .10)));
+    canvas.translate(128, 132);
+    box(-22, 84, 28, 15, 7, colors.secondary);
+    box(22, 84, 28, 15, 7, colors.secondary);
+    for (final side in [-1, 1]) {
+      canvas.save();
+      canvas.translate(side * 52.0, 26);
+      canvas.rotate(-side * 14 * 3.141592653589793 / 180);
+      box(0, 16, 21, 42, 10, edge, outlined: true);
+      canvas.drawOval(const Rect.fromLTWH(-13, 23.5, 26, 23), fill(shell));
+      canvas.drawOval(const Rect.fromLTWH(-13, 23.5, 26, 23), line(colors.outline, 1.8));
+      box(0, 26, 20, 6, 3, colors.secondary);
+      canvas.restore();
+    }
+    box(0, 53, 75, 67, 28, shell, outlined: true);
+    box(0, 18, 59, 15, 7, face);
+    box(0, 52, 14, 14, 5, colors.secondary);
+    box(0, 51, 4, 6, 2, shell);
+    canvas.translate(0, -39);
+    final crest = Path()..moveTo(-28, -48)
+      ..cubicTo(-27, -55, -30, -72, -24, -70)
+      ..cubicTo(-19, -69, -17, -68, -11, -65)
+      ..cubicTo(-5, -63, -1, -68, 4, -66)
+      ..cubicTo(3, -60, 2, -56, 0, -50)
+      ..cubicTo(-7, -50, -29, -43, -28, -48)..close();
+    canvas.drawPath(crest, fill(colors.secondary));
+    final helmet = Path()..moveTo(-79, -5)
+      ..cubicTo(-79, 9, -75, -37, -61, -47)
+      ..cubicTo(-47, -57, -21, -59, 3, -58)
+      ..cubicTo(27, -57, 45, -56, 62, -44)
+      ..cubicTo(74, -35, 79, -22, 80, -4)
+      ..cubicTo(81, 13, 79, 23, 74, 32)
+      ..cubicTo(66, 48, 67, 53, 48, 54)
+      ..cubicTo(24, 56, -29, 57, -51, 51)
+      ..cubicTo(-70, 45, -70, 40, -77, 27)
+      ..cubicTo(-83, 16, -79, -23, -79, -5)..close();
+    canvas.drawPath(helmet, fill(shell));
+    canvas.drawPath(helmet, line(colors.outline, 2));
+    box(0, 2, 129, 76, 29, face);
+    box(-26, -2, 14, 23, 7, eye);
+    box(26, -2, 14, 23, 7, eye);
+    final smile = Path()..moveTo(-11, 15)
+      ..cubicTo(-9, 19, -5, 21, 0, 21)
+      ..cubicTo(5, 21, 9, 19, 11, 15);
+    canvas.drawPath(smile, line(eye, 3.5));
     canvas.restore();
   }
 

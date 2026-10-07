@@ -73,6 +73,7 @@ type ConsentStatus = {
   notice: { text: string; sha256: string };
 };
 type ForgetPreview = {
+  memory: { id: string; title: string };
   expectedReceiptManifestSha256: string;
   guarantee: "rollback_proof_barrier" | "best_effort";
   impact: {
@@ -191,6 +192,9 @@ function MemoryWorkspace({ searchAvailable }: { searchAvailable: boolean }) {
   const [createIntent, setCreateIntent] = useState<CreateIntent>("memory");
   const [universeRevision, setUniverseRevision] = useState(0);
   const [forgetPreview, setForgetPreview] = useState<ForgetPreview>();
+  const selectedMemoryIdRef = useRef(selectedMemoryId);
+  selectedMemoryIdRef.current = selectedMemoryId;
+  const forgetIntentRef = useRef<{ id: string; digest: string; key: string } | null>(null);
   const [consent, setConsent] = useState<ConsentStatus>();
   const overviewRequestRef = useRef<AbortController | null>(null);
   const indexRequestRef = useRef<AbortController | null>(null);
@@ -848,7 +852,8 @@ function MemoryWorkspace({ searchAvailable }: { searchAvailable: boolean }) {
   }
 
   async function previewForget() {
-    if (!selectedMemory) return;
+    if (!selectedMemory || selectedMemory.id !== selectedMemoryIdRef.current) return;
+    const targetId = selectedMemory.id;
     setBusy("forget-preview");
     try {
       const response = await fetch(
@@ -857,7 +862,13 @@ function MemoryWorkspace({ searchAvailable }: { searchAvailable: boolean }) {
       );
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || "Deletion impact could not be loaded.");
-      setForgetPreview(body.preview as ForgetPreview);
+      if (selectedMemoryIdRef.current !== targetId) return;
+      if (body.preview?.memory?.id !== targetId) throw new Error("The deletion preview changed. Open this memory again before deleting it.");
+      const preview = body.preview as ForgetPreview;
+      if (forgetIntentRef.current?.id !== targetId || forgetIntentRef.current.digest !== preview.expectedReceiptManifestSha256) {
+        forgetIntentRef.current = { id: targetId, digest: preview.expectedReceiptManifestSha256, key: crypto.randomUUID() };
+      }
+      setForgetPreview(preview);
     } catch (actionError) {
       setError(message(actionError));
     } finally {
@@ -866,13 +877,13 @@ function MemoryWorkspace({ searchAvailable }: { searchAvailable: boolean }) {
   }
 
   async function forgetMemory() {
-    if (!selectedMemory || !forgetPreview) return;
+    if (!selectedMemory || !forgetPreview || selectedMemory.id !== selectedMemoryIdRef.current || forgetPreview.memory.id !== selectedMemory.id || !forgetIntentRef.current || forgetIntentRef.current.id !== selectedMemory.id || forgetIntentRef.current.digest !== forgetPreview.expectedReceiptManifestSha256) return;
     setBusy("forget");
     try {
       const response = await fetch(`/api/memory/${encodeURIComponent(selectedMemory.id)}`, {
         method: "DELETE",
         headers: {
-          "idempotency-key": crypto.randomUUID(),
+          "idempotency-key": forgetIntentRef.current.key,
           "x-asael-deletion-preview": forgetPreview.expectedReceiptManifestSha256,
         },
       });
@@ -880,7 +891,7 @@ function MemoryWorkspace({ searchAvailable }: { searchAvailable: boolean }) {
       if (!response.ok) throw new Error(body.error || "Memory could not be forgotten.");
       setSelectedMemoryId(undefined);
       setForgetPreview(undefined);
-      setAnnouncement("Memory and its derived recall paths were forgotten with a deletion receipt.");
+      setAnnouncement("Memory deleted. Related recall paths were removed and a deletion receipt was saved.");
       await Promise.all([loadOverview(), loadIndex("memory", undefined, true)]);
     } catch (actionError) {
       setError(message(actionError));
@@ -911,16 +922,16 @@ function MemoryWorkspace({ searchAvailable }: { searchAvailable: boolean }) {
           <span>Inspect what Asael remembers and the sources behind it.</span>
         </div>
         <div className={styles.heroActions}>
-          <div className={styles.search}>
+          {view !== "universe" ? <div className={styles.search}>
             <Search size={17} aria-hidden="true" />
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search this index"
+              placeholder="Search memories and sources"
               aria-label="Search memory and knowledge"
             />
             {query ? <button type="button" onClick={() => setQuery("")} aria-label="Clear search"><X size={15} /></button> : null}
-          </div>
+          </div> : null}
           <button type="button" className={styles.secondaryAction} onClick={() => void loadOverview()} disabled={loading}>
             <RefreshCw size={16} className={loading ? styles.spin : undefined} /> Refresh
           </button>
@@ -946,7 +957,7 @@ function MemoryWorkspace({ searchAvailable }: { searchAvailable: boolean }) {
           label="Reviews"
           count={overview ? overview.summary.pendingReviews + pendingCognitionReviewCount : undefined}
         />
-        <Tab active={view === "universe"} onClick={() => selectView("universe")} icon={<Layers3 size={17} />} label="Universe" />
+        <Tab active={view === "universe"} onClick={() => selectView("universe")} icon={<Layers3 size={17} />} label="Map" />
       </nav>
 
       <details className={styles.overviewDetails}>
@@ -1033,6 +1044,8 @@ function MemoryWorkspace({ searchAvailable }: { searchAvailable: boolean }) {
             )}
           </section>
 
+          <details className={styles.toolsDetails}>
+            <summary>Memory settings and maintenance{overview?.steward.state === "attention" ? " · Needs attention" : ""}</summary>
           <MnemosynePanel
             overview={overview}
             loading={loading}
@@ -1045,6 +1058,7 @@ function MemoryWorkspace({ searchAvailable }: { searchAvailable: boolean }) {
             onCognify={() => void queueCognification()}
             onRecommendation={handleRecommendation}
           />
+          </details>
         </div>
       ) : null}
 
@@ -1143,23 +1157,22 @@ function MemoryIndex(props: {
 }) {
   return <>
     <IndexHeading
-      eyebrow="Durable memory"
+      eyebrow=""
       title="Memories"
-      detail={props.loaded ? `${props.page.total.toLocaleString()} memories in the last loaded view. Select one to inspect its exact content and scope.` : "Select a memory to inspect its exact content and scope."}
+      detail={props.loaded ? `${props.page.total.toLocaleString()} memories. Open one to read, pin, archive or delete it.` : "Open a memory to read, pin, archive or delete it."}
     />
     <CategoryRail active={props.category} onSelect={props.onCategory} items={props.overview?.memoryCategories} />
     <div className={styles.filters}>
-      <label>Tier <select value={props.tier} onChange={(event) => props.onTier(event.target.value as MemoryTier | "all")}>{memoryTiers.map((item) => <option key={item} value={item}>{startCase(item)}</option>)}</select></label>
-      <label>State <select value={props.state} onChange={(event) => props.onState(event.target.value as MemoryIndexItem["state"] | "all")}><option value="all">All states</option><option value="active">Active</option><option value="candidate">Candidate</option><option value="contradicted">Contradicted</option><option value="superseded">Superseded</option><option value="archived">Archived</option></select></label>
+      <label>Kind <select value={props.tier} onChange={(event) => props.onTier(event.target.value as MemoryTier | "all")}>{memoryTiers.map((item) => <option key={item} value={item}>{memoryLabel(item)}</option>)}</select></label>
+      <label>Status <select value={props.state} onChange={(event) => props.onState(event.target.value as MemoryIndexItem["state"] | "all")}><option value="all">All statuses</option><option value="active">Active</option><option value="candidate">Needs review</option><option value="contradicted">Conflicting</option><option value="superseded">Replaced</option><option value="archived">Archived</option></select></label>
     </div>
     {props.error ? <IndexUnavailable hasRecords={Boolean(props.page.items.length)} onRetry={props.onRetry} /> : null}
     <ul className={styles.indexList} aria-label="Memory index" aria-busy={props.loading}>
       {props.page.items.map((item) => <li key={item.id}>
         <button type="button" className={`${styles.memoryRow} ${props.selectedId === item.id ? styles.selectedRow : ""}`} onClick={() => props.onSelect(item.id)} aria-pressed={props.selectedId === item.id}>
-          <span className={styles.rowTitle}><strong>{item.title}</strong><small>{startCase(item.category)} · {startCase(item.scope)}{item.pinned ? " · Pinned" : ""}</small></span>
+          <span className={styles.rowTitle}><strong>{item.title}</strong><small>{memoryLabel(item.tier)} · {memoryLabel(item.scope)}{item.pinned ? " · Pinned" : ""}</small></span>
           <span className={styles.rowFacts}>
-            <span><span className={styles.factLabel}>Tier</span>{startCase(item.tier)}</span>
-            <span><span className={styles.factLabel}>State</span><em className={`${styles.state} ${styles[`state${startCase(item.state)}`] || ""}`}>{startCase(item.state)}</em></span>
+            <span><span className={styles.factLabel}>Status</span><em className={`${styles.state} ${styles[`state${startCase(item.state)}`] || ""}`}>{memoryLabel(item.state)}</em></span>
             <span><span className={styles.factLabel}>Evidence</span>{item.evidenceCount}</span>
             <span><span className={styles.factLabel}>Updated</span>{relativeDate(item.updatedAt)}</span>
           </span>
@@ -1167,7 +1180,7 @@ function MemoryIndex(props: {
         </button>
       </li>)}
     </ul>
-    {!props.loading && props.loaded && !props.error && !props.page.items.length ? <EmptyState icon={<Brain />} title="No memories match this view" detail="Try another category, tier, state or search phrase." /> : null}
+    {!props.loading && props.loaded && !props.error && !props.page.items.length ? <EmptyState icon={<Brain />} title="No memories match this view" detail="Try another kind, status or search phrase." /> : null}
     {props.loading || (!props.loaded && !props.error) ? <LoadingRow /> : null}
     {props.page.nextCursor ? <button className={styles.loadMore} type="button" onClick={props.onMore} disabled={props.loading}>Load more memories</button> : null}
   </>;
@@ -1516,7 +1529,7 @@ function graphLagLabel(value: number | null | undefined) {
 }
 
 function IndexHeading(props: { eyebrow: string; title: string; detail: string }) {
-  return <header className={styles.indexHeading}><p>{props.eyebrow}</p><h2>{props.title}</h2><span>{props.detail}</span></header>;
+  return <header className={styles.indexHeading}>{props.eyebrow ? <p>{props.eyebrow}</p> : null}<h2>{props.title}</h2><span>{props.detail}</span></header>;
 }
 
 function CategoryRail<T extends string>(props: { active: T | "all"; onSelect: (value: T | "all") => void; items?: readonly { id: T; label: string; count: number }[] }) {
@@ -1542,7 +1555,7 @@ function MnemosynePanel(props: {
   const steward = props.overview?.steward;
   return <aside className={styles.steward} aria-labelledby="memory-steward-title">
     <header>
-      <div><p>Memory steward</p><h2 id="memory-steward-title">Mnemosyne</h2></div>
+      <div><h2 id="memory-steward-title">Memory care</h2></div>
       <span className={steward?.state === "attention" ? styles.attention : steward?.state === "healthy" ? styles.healthy : undefined}>{steward ? startCase(steward.state) : props.loading ? "Loading…" : "Unavailable"}</span>
     </header>
     <p className={styles.autonomy}>{steward?.autonomy || (props.loading ? "Loading memory health and recommendations…" : "Memory health and recommendations are unavailable.")}</p>
@@ -1579,8 +1592,8 @@ function MnemosynePanel(props: {
         <span><strong>{item.title}</strong><small>{startCase(item.priority)} priority · {item.detail}</small></span>{item.action !== "none" ? <ArrowRight size={15} aria-hidden="true" /> : null}
       </button>) : <p className={steward ? styles.allClear : styles.unavailable}>{steward ? <><Check size={16} aria-hidden="true" /> No action needed right now.</> : props.loading ? "Loading recommendations…" : "Recommendations are unavailable."}</p>}
     </section>
-    <button type="button" className={styles.scanButton} onClick={props.onScan} disabled={props.busy === "maintenance"}>{props.busy === "maintenance" ? <LoaderCircle size={16} className={styles.spin} /> : <Sparkles size={16} />} Run lifecycle scan</button>
-    <p className={styles.governance}><ShieldCheck size={16} aria-hidden="true" /> Mnemosyne may classify, link and recommend. It cannot silently promote, rewrite or forget truth.</p>
+    <button type="button" className={styles.scanButton} onClick={props.onScan} disabled={props.busy === "maintenance"}>{props.busy === "maintenance" ? <LoaderCircle size={16} className={styles.spin} /> : <Sparkles size={16} />} Check memory health</button>
+    <p className={styles.governance}><ShieldCheck size={16} aria-hidden="true" /> Suggestions need your review before they change what Asael remembers.</p>
   </aside>;
 }
 
@@ -1611,14 +1624,13 @@ function MemoryInspector(props: { memory?: MemoryRecord; loading: boolean; busy?
       <header><p id="memory-details-title">Memory details</p><button type="button" onClick={props.onClose} aria-label="Close memory details"><X size={18} /></button></header>
       {props.error ? <p className={styles.modalError} role="alert"><CircleAlert size={17} aria-hidden="true" />{props.error}</p> : null}
       {props.loading ? <div className={styles.inspectorLoading} role="status">Loading selected memory…</div> : props.memory ? <>
-        <div className={styles.inspectorTitle}><span>{startCase(props.memory.tier || props.memory.type)} · {props.memory.scope === "user" ? "Personal" : startCase(props.memory.scope)}</span><h2>{props.memory.title}</h2><p>{props.memory.content}</p></div>
+        <div className={styles.inspectorTitle}><span>{memoryLabel(props.memory.tier || props.memory.type)} · {props.memory.scope === "user" ? "Personal" : startCase(props.memory.scope)}</span><h2>{props.memory.title}</h2><p>{props.memory.content}</p></div>
         <dl className={styles.memoryMetadata}>
           <div><dt>Confidence</dt><dd>{props.memory.confidence !== undefined ? `${Math.round(props.memory.confidence * 100)}%` : "Not recorded"}</dd></div>
           <div><dt>Importance</dt><dd>{Math.round(props.memory.importance * 100)}%</dd></div>
           <div><dt>Used</dt><dd>{props.memory.useCount !== undefined ? `${props.memory.useCount} times` : "Not recorded"}</dd></div>
           <div><dt>Updated</dt><dd>{relativeDate(props.memory.updatedAt)}</dd></div>
-          <div><dt>Source</dt><dd>{props.memory.source}</dd></div>
-          <div><dt>Asserted by</dt><dd>{props.memory.assertedBy ? startCase(props.memory.assertedBy) : "Not recorded"}</dd></div>
+          <div><dt>Asserted by</dt><dd>{props.memory.assertedBy === "user" ? "You" : props.memory.assertedBy === "agent" ? "Assistant" : props.memory.assertedBy ? "Imported source" : "Not recorded"}</dd></div>
         </dl>
         {props.memory.tags.length ? <div className={styles.memoryTags} aria-label="Memory tags">{props.memory.tags.map((tag) => <span key={tag}>{tag}</span>)}</div> : null}
         <div className={styles.lifecycle}>
@@ -1626,12 +1638,14 @@ function MemoryInspector(props: { memory?: MemoryRecord; loading: boolean; busy?
           <button type="button" disabled={Boolean(props.busy) || Boolean(props.memory.pinnedAt)} aria-describedby={lifecycleHelp ? "memory-lifecycle-help" : undefined} onClick={() => props.onLifecycle(props.memory?.archivedAt ? "restore" : "archive")}>{props.memory.archivedAt ? <RotateCcw size={15} /> : <Archive size={15} />}{props.memory.archivedAt ? "Restore" : "Archive"}</button>
         </div>
         {lifecycleHelp ? <p id="memory-lifecycle-help" className={styles.lifecycleHelp}>{lifecycleHelp}</p> : null}
+        <details className={styles.technicalDetails}><summary>Source and technical details</summary><p>Source: {props.memory.source || "Not recorded"}</p><p>Reference: {props.memory.id}</p></details>
         {props.preview ? <section className={styles.forgetPreview} aria-labelledby="forget-impact-title">
-          <h3 id="forget-impact-title"><CircleAlert size={16} aria-hidden="true" /> Permanent forgetting</h3>
-          <p>This removes the memory plus {props.preview.impact.descendantMemoryCount} derived memories, {props.preview.impact.graphNodeCount} graph points and {props.preview.impact.graphEdgeCount} links. A deletion receipt will be stored.</p>
-          <p>{props.preview.impact.retrievalTraceCount} retrieval traces are included. Deletion guarantee: {startCase(props.preview.guarantee)}.</p>
-          <div><button type="button" onClick={props.onCancelForget}>Cancel</button><button type="button" onClick={props.onForget} disabled={props.busy === "forget"}>{props.busy === "forget" ? <LoaderCircle size={15} className={styles.spin} /> : <Trash2 size={15} />} Forget permanently</button></div>
-        </section> : <button type="button" className={styles.forgetButton} onClick={props.onPreviewForget} disabled={Boolean(props.busy)}><Trash2 size={15} />{props.busy === "forget-preview" ? "Loading forgetting impact…" : "Review forgetting impact"}</button>}
+          <h3 id="forget-impact-title"><CircleAlert size={16} aria-hidden="true" /> Delete this memory?</h3>
+          <p>This permanently removes “{props.memory.title}” and {props.preview.impact.descendantMemoryCount} memories created from it. It also removes their map connections and recall history. This cannot be undone.</p>
+          <p>{props.preview.guarantee === "rollback_proof_barrier" ? "A saved deletion record prevents these memories from returning after a restore." : "Deletion is best effort: older backups may still contain this memory."} Original files and messages are not deleted.</p>
+          <details><summary>View deletion details</summary><p>{props.preview.impact.graphNodeCount} map items, {props.preview.impact.graphEdgeCount} connections and {props.preview.impact.retrievalTraceCount} recall records will be removed. A deletion receipt is retained.</p></details>
+          <div><button type="button" onClick={props.onCancelForget}>Cancel</button><button type="button" onClick={props.onForget} disabled={props.busy === "forget"}>{props.busy === "forget" ? <LoaderCircle size={15} className={styles.spin} /> : <Trash2 size={15} />} Delete permanently</button></div>
+        </section> : <button type="button" className={styles.forgetButton} onClick={props.onPreviewForget} disabled={Boolean(props.busy)}><Trash2 size={15} />{props.busy === "forget-preview" ? "Checking deletion…" : "Delete memory"}</button>}
       </> : <div className={styles.inspectorLoading}>{props.error ? "This memory could not be loaded." : "Loading selected memory…"}</div>}
     </div>
   </dialog>;
@@ -1673,13 +1687,14 @@ function CreateMemoryDialog(props: { busy: boolean; error?: string; intent: Crea
       <label>Short title<input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={240} required placeholder="e.g. Prefer meetings after 10 AM" /></label>
       <label>Details<textarea value={content} onChange={(event) => setContent(event.target.value)} maxLength={200000} required rows={7} placeholder={props.intent === "connected_fact" ? 'relation: assigned_to | work item: "…" -> person: "…"' : "Add the precise context that should be recalled…"} /></label>
       <label>Confidence <span>{Math.round(confidence * 100)}%</span><input type="range" min="0.5" max="1" step="0.05" value={confidence} onChange={(event) => setConfidence(Number(event.target.value))} /></label>
-      <footer><p><ShieldCheck size={16} aria-hidden="true" /> You can inspect, archive or forget this later.</p><button type="submit" disabled={props.busy || !title.trim() || !content.trim()}>{props.busy ? <LoaderCircle size={16} className={styles.spin} /> : <Plus size={16} />}{props.busy ? "Saving memory…" : "Save memory"}</button></footer>
+      <footer><p><ShieldCheck size={16} aria-hidden="true" /> You can read, archive or delete this later.</p><button type="submit" disabled={props.busy || !title.trim() || !content.trim()}>{props.busy ? <LoaderCircle size={16} className={styles.spin} /> : <Plus size={16} />}{props.busy ? "Saving memory…" : "Save memory"}</button></footer>
     </form>
   </dialog>;
 }
 
 function EmptyState(props: { icon: React.ReactNode; title: string; detail: string }) { return <div className={styles.empty}>{props.icon}<strong>{props.title}</strong><span>{props.detail}</span></div>; }
 function LoadingRow() { return <div className={styles.loadingRow} role="status"><span aria-hidden="true" /> Updating index…</div>; }
+function memoryLabel(value: string) { const labels: Record<string, string> = { all: "All kinds", semantic: "Facts", episodic: "Experiences", procedural: "How-to", preference: "Preferences", commitment: "Commitments", decision: "Decisions", summary: "Summaries", working: "Recent context", user: "Personal", candidate: "Needs review", contradicted: "Conflicting", superseded: "Replaced" }; return labels[value] || startCase(value); }
 function startCase(value: string) { return value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()); }
 function relativeDate(value: string) { const milliseconds = Date.now() - new Date(value).getTime(); const days = Math.floor(milliseconds / 86_400_000); if (days < 1) return "Today"; if (days === 1) return "Yesterday"; if (days < 30) return `${days}d ago`; return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(new Date(value)); }
 function formatBytes(characters: number) { const bytes = characters * 2; if (bytes < 1024) return `${bytes} B`; if (bytes < 1_048_576) return `${(bytes / 1024).toFixed(1)} KB`; return `${(bytes / 1_048_576).toFixed(1)} MB`; }
