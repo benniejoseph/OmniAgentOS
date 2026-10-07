@@ -1155,22 +1155,24 @@ function MemoryIndex(props: {
   onRetry: () => void;
   onMore: () => void;
 }) {
+  const visibleItems = props.state === "all" ? props.page.items.filter((item) => !retiredMemoryPlaceholder(item.title)) : props.page.items;
+  const hiddenCount = props.page.items.length - visibleItems.length;
   return <>
     <IndexHeading
       eyebrow=""
       title="Memories"
-      detail={props.loaded ? `${props.page.total.toLocaleString()} memories. Open one to read, pin, archive or delete it.` : "Open a memory to read, pin, archive or delete it."}
+      detail={props.loaded ? `${visibleItems.length.toLocaleString()} shown from ${props.page.items.length.toLocaleString()} loaded memories.${hiddenCount ? ` ${hiddenCount} retired placeholders hidden; choose Archived or Replaced to view them.` : " Open one to read, pin, archive or delete it."}` : "Open a memory to read, pin, archive or delete it."}
     />
     <CategoryRail active={props.category} onSelect={props.onCategory} items={props.overview?.memoryCategories} />
     <div className={styles.filters}>
       <label>Kind <select value={props.tier} onChange={(event) => props.onTier(event.target.value as MemoryTier | "all")}>{memoryTiers.map((item) => <option key={item} value={item}>{memoryLabel(item)}</option>)}</select></label>
-      <label>Status <select value={props.state} onChange={(event) => props.onState(event.target.value as MemoryIndexItem["state"] | "all")}><option value="all">All statuses</option><option value="active">Active</option><option value="candidate">Needs review</option><option value="contradicted">Conflicting</option><option value="superseded">Replaced</option><option value="archived">Archived</option></select></label>
+      <label>Status <select value={props.state} onChange={(event) => props.onState(event.target.value as MemoryIndexItem["state"] | "all")}><option value="all">All except retired</option><option value="active">Active</option><option value="candidate">Needs review</option><option value="contradicted">Conflicting</option><option value="superseded">Replaced</option><option value="archived">Archived</option></select></label>
     </div>
     {props.error ? <IndexUnavailable hasRecords={Boolean(props.page.items.length)} onRetry={props.onRetry} /> : null}
     <ul className={styles.indexList} aria-label="Memory index" aria-busy={props.loading}>
-      {props.page.items.map((item) => <li key={item.id}>
+      {visibleItems.map((item) => <li key={item.id}>
         <button type="button" className={`${styles.memoryRow} ${props.selectedId === item.id ? styles.selectedRow : ""}`} onClick={() => props.onSelect(item.id)} aria-pressed={props.selectedId === item.id}>
-          <span className={styles.rowTitle}><strong>{item.title}</strong><small>{memoryLabel(item.tier)} · {memoryLabel(item.scope)}{item.pinned ? " · Pinned" : ""}</small></span>
+          <span className={styles.rowTitle}><strong>{displayMemoryTitle(item.title, item.updatedAt)}</strong><small>{memoryLabel(item.tier)} · {memoryLabel(item.scope)}{item.pinned ? " · Pinned" : ""}</small></span>
           <span className={styles.rowFacts}>
             <span><span className={styles.factLabel}>Status</span><em className={`${styles.state} ${styles[`state${startCase(item.state)}`] || ""}`}>{memoryLabel(item.state)}</em></span>
             <span><span className={styles.factLabel}>Evidence</span>{item.evidenceCount}</span>
@@ -1180,7 +1182,7 @@ function MemoryIndex(props: {
         </button>
       </li>)}
     </ul>
-    {!props.loading && props.loaded && !props.error && !props.page.items.length ? <EmptyState icon={<Brain />} title="No memories match this view" detail="Try another kind, status or search phrase." /> : null}
+    {!props.loading && props.loaded && !props.error && !visibleItems.length ? <EmptyState icon={<Brain />} title={hiddenCount ? "No current memories in this page" : "No memories match this view"} detail={hiddenCount ? "Load more memories, or choose Archived or Replaced to view retained records." : "Try another kind, status or search phrase."} /> : null}
     {props.loading || (!props.loaded && !props.error) ? <LoadingRow /> : null}
     {props.page.nextCursor ? <button className={styles.loadMore} type="button" onClick={props.onMore} disabled={props.loading}>Load more memories</button> : null}
   </>;
@@ -1624,7 +1626,7 @@ function MemoryInspector(props: { memory?: MemoryRecord; loading: boolean; busy?
       <header><p id="memory-details-title">Memory details</p><button type="button" onClick={props.onClose} aria-label="Close memory details"><X size={18} /></button></header>
       {props.error ? <p className={styles.modalError} role="alert"><CircleAlert size={17} aria-hidden="true" />{props.error}</p> : null}
       {props.loading ? <div className={styles.inspectorLoading} role="status">Loading selected memory…</div> : props.memory ? <>
-        <div className={styles.inspectorTitle}><span>{memoryLabel(props.memory.tier || props.memory.type)} · {props.memory.scope === "user" ? "Personal" : startCase(props.memory.scope)}</span><h2>{props.memory.title}</h2><p>{props.memory.content}</p></div>
+        <div className={styles.inspectorTitle}><span>{memoryLabel(props.memory.tier || props.memory.type)} · {props.memory.scope === "user" ? "Personal" : startCase(props.memory.scope)}</span><h2>{displayMemoryTitle(props.memory.title, props.memory.updatedAt)}</h2><p>{props.memory.content}</p></div>
         <dl className={styles.memoryMetadata}>
           <div><dt>Confidence</dt><dd>{props.memory.confidence !== undefined ? `${Math.round(props.memory.confidence * 100)}%` : "Not recorded"}</dd></div>
           <div><dt>Importance</dt><dd>{Math.round(props.memory.importance * 100)}%</dd></div>
@@ -1638,10 +1640,10 @@ function MemoryInspector(props: { memory?: MemoryRecord; loading: boolean; busy?
           <button type="button" disabled={Boolean(props.busy) || Boolean(props.memory.pinnedAt)} aria-describedby={lifecycleHelp ? "memory-lifecycle-help" : undefined} onClick={() => props.onLifecycle(props.memory?.archivedAt ? "restore" : "archive")}>{props.memory.archivedAt ? <RotateCcw size={15} /> : <Archive size={15} />}{props.memory.archivedAt ? "Restore" : "Archive"}</button>
         </div>
         {lifecycleHelp ? <p id="memory-lifecycle-help" className={styles.lifecycleHelp}>{lifecycleHelp}</p> : null}
-        <details className={styles.technicalDetails}><summary>Source and technical details</summary><p>Source: {props.memory.source || "Not recorded"}</p><p>Reference: {props.memory.id}</p></details>
+        <details className={styles.technicalDetails}><summary>Source and technical details</summary><p>Original title: {props.memory.title}</p><p>Source: {props.memory.source || "Not recorded"}</p><p>Reference: {props.memory.id}</p></details>
         {props.preview ? <section className={styles.forgetPreview} aria-labelledby="forget-impact-title">
           <h3 id="forget-impact-title"><CircleAlert size={16} aria-hidden="true" /> Delete this memory?</h3>
-          <p>This permanently removes “{props.memory.title}” and {props.preview.impact.descendantMemoryCount} memories created from it. It also removes their map connections and recall history. This cannot be undone.</p>
+          <p>This permanently removes “{displayMemoryTitle(props.memory.title, props.memory.updatedAt)}” and {props.preview.impact.descendantMemoryCount} memories created from it. It also removes their map connections and recall history. This cannot be undone.</p>
           <p>{props.preview.guarantee === "rollback_proof_barrier" ? "A saved deletion record prevents these memories from returning after a restore." : "Deletion is best effort: older backups may still contain this memory."} Original files and messages are not deleted.</p>
           <details><summary>View deletion details</summary><p>{props.preview.impact.graphNodeCount} map items, {props.preview.impact.graphEdgeCount} connections and {props.preview.impact.retrievalTraceCount} recall records will be removed. A deletion receipt is retained.</p></details>
           <div><button type="button" onClick={props.onCancelForget}>Cancel</button><button type="button" onClick={props.onForget} disabled={props.busy === "forget"}>{props.busy === "forget" ? <LoaderCircle size={15} className={styles.spin} /> : <Trash2 size={15} />} Delete permanently</button></div>
@@ -1694,6 +1696,14 @@ function CreateMemoryDialog(props: { busy: boolean; error?: string; intent: Crea
 
 function EmptyState(props: { icon: React.ReactNode; title: string; detail: string }) { return <div className={styles.empty}>{props.icon}<strong>{props.title}</strong><span>{props.detail}</span></div>; }
 function LoadingRow() { return <div className={styles.loadingRow} role="status"><span aria-hidden="true" /> Updating index…</div>; }
+function retiredMemoryPlaceholder(title: string) { return /^\s*\[retired\]/i.test(title); }
+function displayMemoryTitle(title: string, updatedAt?: string) {
+  const generated = /^Assistant inference from run\s+[a-f0-9]{8}(?:-[a-f0-9]{1,12}){0,4}(?:…|\.{3})?$/i.test(title.trim());
+  if (!generated && !retiredMemoryPlaceholder(title)) return title;
+  const date = updatedAt ? new Date(updatedAt) : undefined;
+  const suffix = date && !Number.isNaN(date.getTime()) ? ` · ${new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(date)}` : "";
+  return `${generated ? "Assistant note" : "Retired memory"}${suffix}`;
+}
 function memoryLabel(value: string) { const labels: Record<string, string> = { all: "All kinds", semantic: "Facts", episodic: "Experiences", procedural: "How-to", preference: "Preferences", commitment: "Commitments", decision: "Decisions", summary: "Summaries", working: "Recent context", user: "Personal", candidate: "Needs review", contradicted: "Conflicting", superseded: "Replaced" }; return labels[value] || startCase(value); }
 function startCase(value: string) { return value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()); }
 function relativeDate(value: string) { const milliseconds = Date.now() - new Date(value).getTime(); const days = Math.floor(milliseconds / 86_400_000); if (days < 1) return "Today"; if (days === 1) return "Yesterday"; if (days < 30) return `${days}d ago`; return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(new Date(value)); }

@@ -203,7 +203,12 @@ class _KnowledgeViewState extends State<KnowledgeView>
       ..sort();
     final selectedType = types.contains(_memoryType) ? _memoryType : 'all';
     final values = state.memories
-        .where((item) => selectedType == 'all' || item.type == selectedType)
+        .where(
+          (item) =>
+              (selectedType == 'all' || item.type == selectedType) &&
+              (widget.controller.claimState != 'all' ||
+                  !memoryRetiredPlaceholder(item.title)),
+        )
         .toList();
     return ListView(
       children: [
@@ -244,7 +249,7 @@ class _KnowledgeViewState extends State<KnowledgeView>
                 horizontal: 12,
                 vertical: 4,
               ),
-              title: Text(memory.title),
+              title: Text(memoryDisplayTitle(memory.title, memory.updatedAt)),
               trailing: const Icon(Icons.chevron_right),
               subtitle: Text(
                 '${memoryFriendlyLabel(memory.tier)} · ${memoryFriendlyLabel(memory.claimStatus)} · ${memory.evidenceCount} sources',

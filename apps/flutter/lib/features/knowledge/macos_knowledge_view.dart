@@ -393,6 +393,9 @@ class _MacosKnowledgeViewState extends State<MacosKnowledgeView> {
   List<MemoryRecord> _visibleMemories(List<MemoryRecord> source) {
     final query = _searchController.text.trim().toLowerCase();
     return source.where((item) {
+      if (widget.controller.claimState == 'all' &&
+          memoryRetiredPlaceholder(item.title))
+        return false;
       final matchesCategory = _category == 'all' || item.category == _category;
       final matchesQuery =
           query.isEmpty ||
@@ -691,7 +694,8 @@ class _MemoryRow extends StatelessWidget {
     return Semantics(
       button: true,
       selected: selected,
-      label: '${memory.title}, ${memory.category} memory',
+      label:
+          '${memoryDisplayTitle(memory.title, memory.updatedAt)}, ${memoryFriendlyLabel(memory.category)} memory',
       child: Material(
         color: selected ? mac.selection : Colors.transparent,
         child: InkWell(
@@ -721,7 +725,7 @@ class _MemoryRow extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        memory.title,
+                        memoryDisplayTitle(memory.title, memory.updatedAt),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: Theme.of(context).textTheme.titleSmall,

@@ -5,7 +5,9 @@
 .shell button:hover { background: var(--surface-raised); }
 .shell button:disabled { color: var(--muted); cursor: not-allowed; }
 .shell :is(button,input,select,svg,summary):focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
-.header { display: flex; justify-content: space-between; align-items: start; gap: 1rem; margin-block: 1rem; }
+.header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: start; gap: 1rem; margin-block: 1rem; }
+.header > div { flex: 1 1 20rem; min-width: 0; }
+.header > button { flex: 0 0 auto; white-space: nowrap; }
 .header h2 { font-size: 1.2rem; font-weight: 600; }
 .header p { max-width: 70ch; color: var(--muted); margin-top: .35rem; }
 .toolbar { display: flex; align-items: center; gap: .65rem; flex-wrap: wrap; }

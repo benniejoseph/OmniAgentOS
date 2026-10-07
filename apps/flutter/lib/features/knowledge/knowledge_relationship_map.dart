@@ -155,9 +155,13 @@ class _KnowledgeRelationshipMapState extends State<KnowledgeRelationshipMap>
   }
 
   String _name(Map<String, dynamic> node, Map<String, int> order) =>
-      _names[node['id']] ??
-      '${memoryFriendlyLabel(node['kind'] as String)} ${order[node['id']] ?? ''}'
-          .trim();
+      _names[node['id']] != null
+      ? memoryGraphName(
+          _names[node['id']]!,
+          fallback: 'Assistant task ${order[node['id']] ?? ''}'.trim(),
+        )
+      : '${memoryFriendlyLabel(node['kind'] as String)} ${order[node['id']] ?? ''}'
+            .trim();
   Future<void> _open(String id) async {
     if (!_current) return;
     final epoch = _epoch,
@@ -343,6 +347,9 @@ class _KnowledgeRelationshipMapState extends State<KnowledgeRelationshipMap>
       final kinds = nodes.map((node) => node['kind'] as String).toSet().toList()
         ..sort();
       final selected = byId[_selected];
+      final visibleSummary = memoryGraphSummary(
+        _detail?['summary'] as String? ?? '',
+      );
       final connected = (neighbors[_selected] ?? <String>{})
           .map((id) => byId[id]!)
           .toList();
@@ -615,7 +622,7 @@ class _KnowledgeRelationshipMapState extends State<KnowledgeRelationshipMap>
               children: [
                 Expanded(
                   child: Text(
-                    _detail?['label'] as String? ?? _name(selected, order),
+                    _name(selected, order),
                     style: Theme.of(context).textTheme.titleMedium,
                   ),
                 ),
@@ -635,8 +642,7 @@ class _KnowledgeRelationshipMapState extends State<KnowledgeRelationshipMap>
             if (_opening) const LinearProgressIndicator(),
             if (_detailError != null)
               Text(_detailError!, style: TextStyle(color: scheme.error)),
-            if ((_detail?['summary'] as String? ?? '').isNotEmpty)
-              SelectableText(_detail!['summary'] as String),
+            if (visibleSummary.isNotEmpty) SelectableText(visibleSummary),
             Text(
               '${selected['sourceCount']} sources · ${connected.length} connections',
               style: Theme.of(context).textTheme.bodySmall,
@@ -658,7 +664,17 @@ class _KnowledgeRelationshipMapState extends State<KnowledgeRelationshipMap>
             ],
             ExpansionTile(
               title: const Text('Technical reference'),
-              children: [SelectableText(_selected!)],
+              children: [
+                SelectableText(_selected!),
+                if (_detail != null &&
+                    _detail!['label'] != _name(selected, order))
+                  SelectableText('Original name: ${_detail!['label']}'),
+                if (_detail?['summary'] != null &&
+                    visibleSummary != _detail!['summary']) ...[
+                  const Text('Original source summary'),
+                  SelectableText(_detail!['summary'] as String),
+                ],
+              ],
             ),
             const Divider(),
           ] else ...[

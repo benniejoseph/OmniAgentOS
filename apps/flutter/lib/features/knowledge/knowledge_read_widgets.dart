@@ -55,6 +55,12 @@ class KnowledgePageControls extends StatelessWidget {
   Widget build(BuildContext context) {
     final state = controller.state;
     final count = memory ? state?.memories.length : state?.knowledge.length;
+    final hiddenCount = memory && controller.claimState == 'all'
+        ? state?.memories
+                  .where((item) => memoryRetiredPlaceholder(item.title))
+                  .length ??
+              0
+        : 0;
     final total = memory
         ? state?.memoryCatalogTotal
         : state?.knowledgeCatalogTotal;
@@ -75,7 +81,9 @@ class KnowledgePageControls extends StatelessWidget {
         runSpacing: 8,
         crossAxisAlignment: WrapCrossAlignment.center,
         children: [
-          Text('${count ?? 0} shown${total != null ? ' of $total' : ''}'),
+          Text(
+            '${count ?? 0} loaded${total != null ? ' of $total' : ''}${hiddenCount > 0 ? ' · $hiddenCount retired placeholders hidden' : ''}',
+          ),
           if (error != null)
             const Text(
               'This page could not be read. Loaded items are retained.',
@@ -163,7 +171,11 @@ class KnowledgeMemoryFilters extends StatelessWidget {
               ])
                 DropdownMenuItem(
                   value: value,
-                  child: Text(memoryFriendlyLabel(value)),
+                  child: Text(
+                    value == 'all'
+                        ? 'All except retired'
+                        : memoryFriendlyLabel(value),
+                  ),
                 ),
             ],
             onChanged: controller.loading
@@ -328,7 +340,10 @@ class _KnowledgeMemoryInspectorState extends State<KnowledgeMemoryInspector> {
             ),
           if (memory != null) ...[
             const SizedBox(height: 16),
-            Text(memory.title, style: Theme.of(context).textTheme.titleLarge),
+            Text(
+              memoryDisplayTitle(memory.title, memory.updatedAt),
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
             const SizedBox(height: 16),
             SelectableText(memory.content),
             const SizedBox(height: 16),
@@ -463,6 +478,7 @@ class MemoryEvidenceDetails extends StatelessWidget {
   Widget build(BuildContext context) {
     final metadata = memory.metadata;
     final entries = <String, String>{
+      'Original title': memory.title,
       'Type / tier / claim':
           '${memory.type} / ${memory.tier} / ${memory.claimStatus}',
       'Scope': memory.scope,
