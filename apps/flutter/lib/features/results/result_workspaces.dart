@@ -100,7 +100,7 @@ class _ResultsWorkspaceState extends State<ResultsWorkspace> {
                     ),
                     const SizedBox(height: 8),
                     const Text(
-                      'Bounded returned windows: up to 12 Agent runs, 12 workflows, 12 approvals, 8 evaluations and 50 created files. Search and pages cover these windows. An exact result link can open a record outside them.',
+                      'Read answers, open created files, and review the evidence behind your work.',
                     ),
                     const SizedBox(height: 12),
                     Semantics(
@@ -184,10 +184,14 @@ class _ResultsWorkspaceState extends State<ResultsWorkspace> {
                             ? AnimationStyle.noAnimation
                             : null,
                         tilePadding: EdgeInsets.zero,
-                        title: const Text(
-                          'Source availability and read boundaries',
-                        ),
+                        title: const Text('Sources and coverage'),
                         children: [
+                          const Padding(
+                            padding: EdgeInsets.only(bottom: 16),
+                            child: Text(
+                              'Search covers the recently loaded window: up to 12 assistant tasks, 12 workflows, 12 decisions, 8 quality checks and 50 created files. A saved result link can open older work.',
+                            ),
+                          ),
                           for (final source in ResultsSource.values)
                             Padding(
                               padding: const EdgeInsets.only(bottom: 16),

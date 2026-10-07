@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-enum AppDestinationGroup { workspace, automation, review, system }
+enum AppDestinationGroup { workspace, automation, review, system, advanced }
 
 class AppDestination {
   const AppDestination({
@@ -37,6 +37,7 @@ const appDestinations = <AppDestination>[
     eyebrow: 'YOUR DAY',
     description: 'Your work, decisions, and recent results.',
     group: AppDestinationGroup.workspace,
+    primary: true,
   ),
   AppDestination(
     label: 'Assistant',
@@ -68,22 +69,22 @@ const appDestinations = <AppDestination>[
     primary: true,
   ),
   AppDestination(
-    label: 'Activity',
+    label: 'History',
     path: '/activity',
-    icon: Icons.receipt_long_outlined,
-    selectedIcon: Icons.receipt_long,
-    eyebrow: 'WORK AND UPDATES',
-    description: 'Authorized work, decisions, updates and history.',
-    group: AppDestinationGroup.workspace,
-    primary: true,
+    icon: Icons.history_outlined,
+    selectedIcon: Icons.history_rounded,
+    eyebrow: 'RESULTS AND TIMELINE',
+    description: 'Results, decisions, and a timeline of your work.',
+    group: AppDestinationGroup.review,
   ),
   AppDestination(
-    label: 'Responsibilities',
+    label: 'Follow-ups',
     path: '/responsibilities',
     icon: Icons.event_repeat_outlined,
     selectedIcon: Icons.event_repeat,
     eyebrow: 'BOUNDED CHECKS',
-    description: 'Review finite checks, evidence, limits and inbox delivery.',
+    description:
+        'Give Asael an outcome to check, with sources, limits, and reminders.',
     group: AppDestinationGroup.workspace,
   ),
   AppDestination(
@@ -144,6 +145,7 @@ const appDestinations = <AppDestination>[
     description: 'Repeatable work, schedules, event triggers, and run history.',
     group: AppDestinationGroup.automation,
     macosVisible: false,
+    adaptiveVisible: false,
   ),
   AppDestination(
     label: 'Connections',
@@ -155,6 +157,7 @@ const appDestinations = <AppDestination>[
         'Accounts, data sources, MCP servers, and REST APIs Asael may use.',
     group: AppDestinationGroup.automation,
     macosVisible: false,
+    adaptiveVisible: false,
   ),
   AppDestination(
     label: 'Inbox',
@@ -175,13 +178,15 @@ const appDestinations = <AppDestination>[
     group: AppDestinationGroup.review,
   ),
   AppDestination(
-    label: 'Results',
+    label: 'History',
     path: '/results',
     icon: Icons.fact_check_outlined,
     selectedIcon: Icons.fact_check_rounded,
     eyebrow: 'EVIDENCE LEDGER',
     description: 'Review completed work with evidence and verification.',
     group: AppDestinationGroup.review,
+    macosVisible: false,
+    adaptiveVisible: false,
   ),
   AppDestination(
     label: 'Quality Checks',
@@ -190,7 +195,7 @@ const appDestinations = <AppDestination>[
     selectedIcon: Icons.rule_rounded,
     eyebrow: 'EVALUATIONS',
     description: 'Automated checks that verify agent behavior.',
-    group: AppDestinationGroup.review,
+    group: AppDestinationGroup.advanced,
   ),
   AppDestination(
     label: 'Monitoring',
@@ -199,7 +204,7 @@ const appDestinations = <AppDestination>[
     selectedIcon: Icons.monitor_heart_rounded,
     eyebrow: 'SYSTEM HEALTH',
     description: 'Events, service health, alerts, and incidents.',
-    group: AppDestinationGroup.system,
+    group: AppDestinationGroup.advanced,
   ),
   AppDestination(
     label: 'Security',
@@ -248,3 +253,9 @@ List<int> destinationIndices({
             appDestinations[index].adaptiveVisible == adaptiveVisible))
       index,
 ];
+
+/// Result detail routes share the visible History destination.
+int navigationDisplayIndex(int index) =>
+    appDestinations[index].path == '/results'
+    ? destinationIndex('/activity')
+    : index;

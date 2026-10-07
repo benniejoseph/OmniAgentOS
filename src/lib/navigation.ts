@@ -1,5 +1,6 @@
 import {
-  Activity,
+  History,
+  House,
   Blocks,
   Inbox,
   Brain,
@@ -82,7 +83,7 @@ export const appNav: AppNavItem[] = [
   {
     href: "/app/command",
     label: "Assistant",
-    shortLabel: "Ask",
+    shortLabel: "Assistant",
     description: "Ask Asael a question or hand off a task.",
     icon: TerminalSquare,
   },
@@ -91,14 +92,14 @@ export const appNav: AppNavItem[] = [
     label: "Today",
     shortLabel: "Today",
     description: "Your work, decisions, and recent results.",
-    icon: Activity,
+    icon: House,
   },
   {
-    href: "/app/activity",
-    label: "Activity",
-    shortLabel: "Activity",
-    description: "Work in progress, decisions and updates from the records you can access.",
-    icon: Activity,
+    href: "/app/history",
+    label: "History",
+    shortLabel: "History",
+    description: "Your results and a timeline of work, decisions, and updates.",
+    icon: History,
   },
   {
     href: "/app/projects",
@@ -142,8 +143,8 @@ export const appNav: AppNavItem[] = [
   },
   {
     href: "/app/responsibilities",
-    label: "Responsibilities",
-    description: "Review bounded follow-through, exact evidence, limits, and lifecycle.",
+    label: "Follow-ups",
+    description: "Give Asael a bounded outcome to check, with sources, limits, and optional reminders.",
     icon: CalendarDays,
   },
   {
@@ -188,7 +189,7 @@ export const appNav: AppNavItem[] = [
 
 // The five everyday destinations stay reachable on mobile. More retains every
 // existing specialist, review and settings destination without changing URLs.
-export const primaryNavHrefs = ["/app/command", "/app/projects", "/app/activity", "/app/memory", "/app/automation"];
+export const primaryNavHrefs = ["/app", "/app/command", "/app/projects", "/app/memory", "/app/automation"];
 export const primaryNavItems = primaryNavHrefs.map((href) => {
   const item = appNav.find((entry) => entry.href === href);
   if (!item) throw new Error(`Missing primary navigation item for ${href}`);
@@ -196,17 +197,27 @@ export const primaryNavItems = primaryNavHrefs.map((href) => {
 });
 
 export const appNavGroups: AppNavGroup[] = [
-  {
-    label: "Workspace",
-    items: primaryNavItems,
-  },
+  { label: "Workspace", items: primaryNavItems },
+  { label: "Review", items: ["/app/history", "/app/approvals"].map(appNavItem) },
   {
     label: "More",
     collapsible: true,
-    items: ["/app", "/app/capture"].map((href) => appNav.find((item) => item.href === href)!)
-      .concat(appNav.filter((item) => !primaryNavHrefs.includes(item.href) && item.href !== "/app" && item.href !== "/app/capture")),
+    items: ["/app/capture", "/app/meetings", "/app/responsibilities", "/app/agents", "/app/markets", "/app/payments"].map(appNavItem),
+  },
+  {
+    label: "Settings",
+    items: ["/app/security", "/app/settings"].map(appNavItem),
+  },
+  {
+    label: "Advanced",
+    collapsible: true,
+    items: ["/app/evaluations", "/app/observability"].map(appNavItem),
   },
 ];
+
+// Route metadata remains available for old deep links. Navigation itself uses
+// only the canonical destinations above, including the shared History page.
+export const navigationItems = appNavGroups.flatMap((group) => group.items);
 
 function appNavItem(href: string) {
   const item = appNav.find((entry) => entry.href === href);

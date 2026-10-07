@@ -8,7 +8,10 @@ import {
   attachModelProviderResponseReceipt,
   getModelProviderResponseReceipt,
   ModelProviderError,
+  preserveModelProviderResponseReceipt,
 } from "@/lib/models/types";
+import { classifyProviderError } from "@/lib/models/provider-errors";
+import { openAIMaxOutputTokens, resolveModelReasoningEffort } from "@/lib/models/reasoning-effort";
 import { estimateWebSearchCostUsd } from "@/lib/models/pricing";
 import { openAIResponseUsage } from "@/lib/openai/usage";
 import { citationIdForWebUrl } from "@/lib/rag/citations";
@@ -70,7 +73,12 @@ export async function runLiveWebSearch({
     deploymentConfigured: hasOpenAIKey(),
   });
   if (!runtimeModel.configured || runtimeModel.provider !== "openai") {
-    throw new Error("Live web search does not have an active model route.");
+    throw new ModelProviderError(
+      runtimeModel.warning || "Web search is not connected. Choose a Web search model and connect its provider in Settings.",
+      "openai",
+      runtimeModel.unavailableReason === "settings_unavailable" ? "unavailable" : "invalid_request",
+      runtimeModel.unavailableReason === "settings_unavailable",
+    );
   }
   const meteredUsageScope = usageScope
     ? { ...usageScope, ...runtimeModel.usageReceipt }
@@ -87,6 +95,11 @@ export async function runLiveWebSearch({
   const startedAt = Date.now();
   try {
     const searchedAt = new Date().toISOString();
+    // Hosted discovery has its own model route. Reuse the same compatibility
+    // and output allowance as other model calls instead of leaving reasoning
+    // at the provider default inside a 2,000-token answer-only budget. Web
+    // search does not support GPT-5's otherwise-lowest "minimal" effort.
+    const reasoningEffort = resolveModelReasoningEffort("openai", runtimeModel.model, "low");
     const response = await runtimeModel.withApiKey((apiKey) => {
       combinedSignal.throwIfAborted();
       const client = getOpenAIClient({ apiKey, correlationId: usageScope?.correlationId });
@@ -121,7 +134,8 @@ export async function runLiveWebSearch({
           // This is the only declared tool, so required forces a real search.
           tool_choice: "required",
           max_tool_calls: 3,
-          max_output_tokens: 2_000,
+          max_output_tokens: openAIMaxOutputTokens(2_000, reasoningEffort),
+          ...(reasoningEffort ? { reasoning: { effort: reasoningEffort } } : {}),
           include: ["web_search_call.results", "web_search_call.action.sources"],
       };
       dispatched = true;
@@ -196,7 +210,19 @@ export async function runLiveWebSearch({
           false,
           400,
         )
-      : caught;
+      : timeoutController.signal.aborted
+        ? preserveModelProviderResponseReceipt(caught, new ModelProviderError(
+            `Web search took longer than ${Math.ceil(WEB_SEARCH_TIMEOUT_MS / 1_000)} seconds. Try a more specific question or try again in a moment.`,
+            "openai", "timeout", false,
+          ))
+        : abortSignal?.aborted
+          ? preserveModelProviderResponseReceipt(caught, new ModelProviderError(
+              abortSignal.reason instanceof Error
+                ? abortSignal.reason.message
+                : "Web search stopped because the request was cancelled or reached its time limit.",
+              "openai", "abort", false,
+            ))
+          : classifyProviderError("openai", caught);
     const responseReceipt = getModelProviderResponseReceipt(error);
     const providerFailure = error instanceof ModelProviderError ? error : undefined;
     if (meteredUsageScope) {

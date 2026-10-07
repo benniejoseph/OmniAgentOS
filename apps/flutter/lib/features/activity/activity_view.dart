@@ -123,7 +123,7 @@ class _ActivityViewState extends State<ActivityView> {
                   children: [
                     Row(children: [
                       Expanded(child: Semantics(header: true,
-                        child: Text('Activity', style: theme.textTheme.headlineMedium))),
+                        child: Text('Timeline', style: theme.textTheme.headlineSmall))),
                       OutlinedButton.icon(
                         onPressed: controller.loading ? null : controller.refresh,
                         icon: const Icon(Icons.refresh, size: 18),
@@ -131,13 +131,13 @@ class _ActivityViewState extends State<ActivityView> {
                       ),
                     ]),
                     const SizedBox(height: 4),
-                    const Text('Recent work and anything that needs your attention.'),
+                    const Text('Tasks, decisions, and reminders, in the order they happened.'),
                     if (snapshot != null) ...[
                       const SizedBox(height: 4),
                       Text('${controller.stale ? 'Last checked' : 'Updated'} ${_time(context, snapshot.generatedAt)}', style: support),
                     ],
                     const SizedBox(height: 12),
-                    Semantics(container: true, label: 'Activity views',
+                    Semantics(container: true, label: 'Filter timeline',
                       child: Wrap(spacing: 8, runSpacing: 8, children: [
                         for (final option in order)
                           if (option == ActivityGroup.all || option == (pending ?? group) ||

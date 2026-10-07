@@ -59,7 +59,7 @@ const MemoryUniverse = dynamic(
     loading: () => (
       <div className={styles.universeLoading} role="status">
         <LoaderCircle size={18} className={styles.spin} />
-        Preparing the relationship map…
+        Preparing your knowledge map…
       </div>
     ),
   },
@@ -977,6 +977,8 @@ function MemoryWorkspace({ searchAvailable }: { searchAvailable: boolean }) {
           <MemoryUniverse
             key={`memory-universe:${universeRevision}`}
             active={view === "universe"}
+            onOpenMemory={(id) => { setSelectedMemoryId(id); selectView("memory"); }}
+            onOpenSource={(title) => { setQuery(title); selectView("knowledge"); }}
             onAddConnectedFact={() => {
               setCreateIntent("connected_fact");
               setCreateOpen(true);
@@ -1129,7 +1131,7 @@ function MemoryGuide() {
       <article><BookOpen size={18} /><span><strong>Knowledge</strong><small>Your documents and transcripts. Evidence to search—not automatically treated as personal truth.</small></span></article>
       <article><Brain size={18} /><span><strong>Memory</strong><small>Durable facts, preferences, decisions and experiences Asael may carry into future work.</small></span></article>
       <article><ShieldCheck size={18} /><span><strong>Reviews</strong><small>The safety gate. Evidence-bound source maps and conflicting claims stay outside recall until you confirm them.</small></span></article>
-      <article><GitBranch size={18} /><span><strong>Universe</strong><small>A map of concepts and evidence links. Points are ideas; lines show observed relationships.</small></span></article>
+      <article><GitBranch size={18} /><span><strong>Knowledge map</strong><small>Browse named memories and sources by collection, or focus on one item’s recorded connections.</small></span></article>
     </div>
   </section>;
 }

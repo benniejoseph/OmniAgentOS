@@ -70,3 +70,8 @@
 @media (pointer: coarse) { .shell button, .shell select { min-height: 2.75rem; } }
 @media (prefers-contrast: more) { .shell { --muted: var(--foreground); --line: var(--line-strong); } }
 @media (forced-colors: active) { .node { fill: CanvasText; } .selectedNode { fill: Highlight; } .link { stroke: CanvasText; } .activeLink { stroke: Highlight; } .nodeLabel { fill: CanvasText; stroke: Canvas; } }
+
+.viewSwitch { display: flex; gap: .4rem; flex-wrap: wrap; padding-block: .3rem; }
+.viewSwitch button { min-height: 2.5rem; border-color: transparent; color: var(--muted); background: transparent; }
+.viewSwitch button[aria-pressed="true"] { color: var(--foreground); border-color: var(--line); background: var(--surface); }
+@media (prefers-reduced-motion: reduce) { .shell *, .shell *::before, .shell *::after { animation: none !important; transition: none !important; } }

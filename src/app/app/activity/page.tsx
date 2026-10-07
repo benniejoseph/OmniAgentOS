@@ -1,8 +1,2 @@
-import type { Metadata } from "next";
-import { ActivityWorkspace } from "@/components/activity-workspace";
-
-export const metadata: Metadata = { title: "Activity" };
-
-export default function ActivityPage() {
-  return <ActivityWorkspace />;
-}
+// Keep existing Activity links, query parameters and browser history intact.
+export { metadata, default } from "../history/page";

@@ -476,10 +476,10 @@ export const governedTools: ToolDefinition[] = [
     approvalRequired: false,
     reversible: true,
     inputSchema: objectSchema({
-      query: { type: "string", description: "Live web search query." },
-      limit: { type: "number", description: "Maximum number of source URLs to return.", default: 8 },
+      query: { type: "string", description: "Focused live web search query. For a long request, preserve its key constraints in a concise query.", minLength: 1, maxLength: 4_000 },
+      limit: { type: "integer", description: "Maximum number of source URLs to return.", minimum: 1, maximum: 20, default: 8 },
       searchContextSize: { type: "string", enum: ["low", "medium", "high"], default: "medium" },
-      allowedDomains: { type: "array", items: { type: "string" } },
+      allowedDomains: { type: "array", description: "Optional source restriction: bare domain names without a URL scheme or path, for example salesforce.com.", maxItems: 20, items: { type: "string", minLength: 1, maxLength: 253 } },
     }),
   },
   {

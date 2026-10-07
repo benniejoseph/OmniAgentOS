@@ -18,7 +18,7 @@ import styles from "./activity-workspace.module.css";
 
 const sources: ActivitySource[] = ["runs", "approvals", "notifications"];
 const labels: Record<ActivityFilter, string> = {
-  all: "All activity", working: "Working", needs_you: "Needs you", updates: "Updates", history: "History",
+  all: "All updates", working: "Working", needs_you: "Needs you", updates: "Reminders", history: "Finished",
 };
 const sourceLabels: Record<ActivitySource, string> = {
   runs: "Assistant tasks", approvals: "Approvals", notifications: "Reminders and updates",
@@ -32,7 +32,7 @@ type ReadRequest = {
   trigger?: HTMLElement;
 };
 
-export function ActivityWorkspace() {
+export function ActivityWorkspace({ embedded = false }: { embedded?: boolean }) {
   const { session, status, refresh } = useWorkspaceSession();
   const disabledReason = permissionMessage(session, status, "read");
   const scope = JSON.stringify([
@@ -42,8 +42,8 @@ export function ActivityWorkspace() {
   ]);
 
   if (disabledReason) {
-    return <section className={styles.shell} aria-labelledby="activity-title">
-      <header className={styles.header}><div><h1 id="activity-title">Activity</h1>
+    return <section className={`${styles.shell} ${embedded ? styles.embedded : ""}`} aria-labelledby="activity-title">
+      <header className={styles.header}><div><h2 id="activity-title">Timeline</h2>
         <p>Work in progress, decisions and updates from your workspace.</p></div></header>
       <div className={styles.empty} role="status"><h2>Activity is unavailable</h2><p>{disabledReason}</p></div>
       <button className={styles.button} type="button" disabled={status === "loading"} onClick={() => void refresh()}>
@@ -51,10 +51,10 @@ export function ActivityWorkspace() {
       </button>
     </section>;
   }
-  return <ScopedActivityWorkspace key={scope} />;
+  return <ScopedActivityWorkspace key={scope} embedded={embedded} />;
 }
 
-function ScopedActivityWorkspace() {
+function ScopedActivityWorkspace({ embedded }: { embedded: boolean }) {
   const [snapshot, setSnapshot] = useState<Snapshot>();
   const [pending, setPending] = useState<ReadRequest>();
   const [error, setError] = useState<string>();
@@ -159,11 +159,11 @@ function ScopedActivityWorkspace() {
     : "Checking activity.";
 
   const refresh = () => void load({ group: shownGroup, cursors: [null], index: 0, kind: "refresh" });
-  return <section className={styles.shell} aria-labelledby="activity-title" data-testid="activity-workspace">
+  return <section className={`${styles.shell} ${embedded ? styles.embedded : ""}`} aria-labelledby="activity-title" data-testid="activity-workspace">
     <header className={styles.header}>
       <div className={styles.introduction}>
-        <h1 id="activity-title">Activity</h1>
-        <p>Recent work and anything that needs your attention.</p>
+        <h2 id="activity-title">Timeline</h2>
+        <p>Tasks, decisions, and reminders, in the order they happened.</p>
         <p className={styles.timestamp}>{data
           ? <>{stale ? "Last checked" : "Updated"} <time dateTime={data.generatedAt}>{formatTime(data.generatedAt)}</time></>
           : "Checking your activity…"}</p>
@@ -173,7 +173,7 @@ function ScopedActivityWorkspace() {
       </button>
     </header>
 
-    {!known || shownGroup !== "all" || populatedGroups.length > 1 ? <div className={styles.filters} role="group" aria-label="Activity views">
+    {!known || shownGroup !== "all" || populatedGroups.length > 1 ? <div className={styles.filters} role="group" aria-label="Filter timeline">
       {(["all", "needs_you", "working", "updates", "history"] as ActivityFilter[]).filter((group) =>
         group === "all" || group === selectedGroup || !known || (data?.counts[group] ?? 0) > 0,
       ).map((group) => <button type="button" key={group}

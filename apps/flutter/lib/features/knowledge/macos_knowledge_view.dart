@@ -257,7 +257,17 @@ class _MacosKnowledgeViewState extends State<MacosKnowledgeView> {
     final controller = widget.controller;
     if (_workspace == _KnowledgeWorkspace.relationships &&
         controller.advancedGraphAvailable)
-      return KnowledgeRelationshipMap(controller: controller);
+      return KnowledgeRelationshipMap(
+        controller: controller,
+        onOpenMemory: (memory) => setState(() {
+          _workspace = _KnowledgeWorkspace.memories;
+          _selectedMemoryId = memory.id;
+        }),
+        onOpenSource: (source) => setState(() {
+          _workspace = _KnowledgeWorkspace.sources;
+          _selectedSourceId = source.id;
+        }),
+      );
     if (_workspace == _KnowledgeWorkspace.recall) {
       return KnowledgePersonalRecall(controller: controller);
     }

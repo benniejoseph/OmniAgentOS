@@ -1592,7 +1592,14 @@ async function* runAgentUntilStopped(
         const result = execution.record.status === "executed"
           ? liveWebPrefetchResult(execution.result) : undefined;
         if (result) searches.push(result);
-        else limitations.push(`Search ${index + 1} did not return usable evidence.`);
+        else {
+          limitations.push(`Search ${index + 1} did not return usable evidence.`);
+          if (webSearchFailureStopsCollection(execution.record)) {
+            limitations.push(execution.record.reason || "Further searches were stopped because the provider requires attention.");
+            toolbox = filterAgentToolbox(toolbox, ["web.search"]);
+            break;
+          }
+        }
       }
       const webReadTool = toolbox.tools.find(({ definition }) =>
         definition.id === "web.read")?.definition;
@@ -1643,7 +1650,10 @@ async function* runAgentUntilStopped(
       const prefetchScope = agentToolExecutionScope(executionScope, "web-prefetch");
       const execution = await executeGovernedTool({
         toolId: webSearchTool.id,
-        input: { query, limit: 4, searchContextSize: "low" },
+        // User messages may exceed the search tool's 4,000-character limit.
+        // Keep the same explicit, bounded start/end query used by Research;
+        // the synthesis turn still receives the complete original request.
+        input: { query: researchSearchQueries(query)[0], limit: 4, searchContextSize: "low" },
         dryRun: false,
         approved: false,
         requireReadOnly: true,
@@ -1681,6 +1691,9 @@ async function* runAgentUntilStopped(
           count: liveWeb.sourceCount,
         });
       } else {
+        if (webSearchFailureStopsCollection(execution.record)) {
+          toolbox = filterAgentToolbox(toolbox, ["web.search"]);
+        }
         yield await emit({
           type: "status",
           label: "live web unavailable",
@@ -6605,6 +6618,16 @@ function liveWebPrefetchResult(result: unknown): LiveWebSearchResult | undefined
     })
   ) return;
   return value as unknown as LiveWebSearchResult;
+}
+
+function webSearchFailureStopsCollection(record: ToolExecutionRecord): boolean {
+  if (record.toolId !== "web.search" || record.status !== "failed" ||
+      !record.output || typeof record.output !== "object" || Array.isArray(record.output)) return false;
+  // A new discovery query cannot repair a disabled route, invalid credential,
+  // unsupported request, exhausted output, or elapsed search deadline. Keep
+  // any evidence already gathered and disclose the gap instead of asking the
+  // same provider to fail again in the synthesis loop.
+  return (record.output as Record<string, unknown>).retryable === false;
 }
 
 function citationSourcesFromToolResult(toolId: string, result: unknown) {

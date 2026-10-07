@@ -14,6 +14,7 @@ import '../../features/ambient_voice/ambient_voice_consent.dart';
 import '../../features/ambient_voice/realtime_voice_controller.dart';
 import '../../features/activity/activity_providers.dart';
 import '../../features/activity/activity_view.dart';
+import '../../features/history/history_workspace.dart';
 import '../../features/agents/native_agents_workspace.dart';
 import '../../features/automation/native_automation_workspace.dart';
 import '../../features/auth/application/biometric_session_lock_controller.dart';
@@ -73,9 +74,7 @@ Widget _nativeAdminWorkspace(String moduleId) => NativePrivateWorkspace(
       : AdminWorkspaceView(moduleId: moduleId),
 );
 
-String appHomePath() => !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS
-    ? '/talk'
-    : '/today';
+String appHomePath() => '/today';
 
 @visibleForTesting
 bool nativeRouteQueryDecodes(Uri uri) {
@@ -168,9 +167,14 @@ class _EntryIntent {
 class ProviderBoundActivityRoute extends ConsumerWidget {
   const ProviderBoundActivityRoute({super.key});
   @override
-  Widget build(BuildContext context, WidgetRef ref) => ActivityView(
-    controller: ref.watch(activityControllerProvider.select((value) => value)),
-    onOpen: (location) => context.push(location),
+  Widget build(BuildContext context, WidgetRef ref) => HistoryWorkspace(
+    timeline: true,
+    child: ActivityView(
+      controller: ref.watch(
+        activityControllerProvider.select((value) => value),
+      ),
+      onOpen: (location) => context.push(location),
+    ),
   );
 }
 
@@ -297,15 +301,18 @@ class ProviderBoundResultsRoute extends ConsumerWidget {
       context.push('/results/${Uri.encodeComponent(key)}$query');
     }
 
-    return usesMacosPresentation()
-        ? MacosResultsView(
-            controller: controller,
-            onOpen: (result) => open(result.key, result.approvalKind),
-          )
-        : ResultsView(
-            controller: controller,
-            onOpen: (result) => open(result.key, result.approvalKind),
-          );
+    return HistoryWorkspace(
+      timeline: false,
+      child: usesMacosPresentation()
+          ? MacosResultsView(
+              controller: controller,
+              onOpen: (result) => open(result.key, result.approvalKind),
+            )
+          : ResultsView(
+              controller: controller,
+              onOpen: (result) => open(result.key, result.approvalKind),
+            ),
+    );
   }
 }
 

@@ -25,11 +25,6 @@ class AdaptiveShell extends StatelessWidget {
     primary: false,
     adaptiveVisible: true,
   );
-  static final _automationBranches = destinationIndices(
-    group: AppDestinationGroup.automation,
-    primary: false,
-    adaptiveVisible: true,
-  );
   static final _reviewBranches = destinationIndices(
     group: AppDestinationGroup.review,
     adaptiveVisible: true,
@@ -38,9 +33,15 @@ class AdaptiveShell extends StatelessWidget {
     group: AppDestinationGroup.system,
     adaptiveVisible: true,
   );
+  static final _advancedBranches = destinationIndices(
+    group: AppDestinationGroup.advanced,
+    adaptiveVisible: true,
+  );
   static final _adaptiveBranches = [
     ..._everydayBranches,
-    ...destinationIndices(primary: false, adaptiveVisible: true),
+    ...destinationIndices(primary: false, adaptiveVisible: true).where(
+      (index) => appDestinations[index].group != AppDestinationGroup.advanced,
+    ),
   ];
 
   void _select(int index) => navigationShell.goBranch(
@@ -77,7 +78,7 @@ class AdaptiveShell extends StatelessWidget {
     return Scaffold(
       drawerEdgeDragWidth: 32,
       drawer: _WorkspaceDrawer(
-        currentIndex: navigationShell.currentIndex,
+        currentIndex: navigationDisplayIndex(navigationShell.currentIndex),
         onSelect: _select,
       ),
       appBar: AppBar(
@@ -143,9 +144,8 @@ class AdaptiveShell extends StatelessWidget {
       body: DaybookBackdrop(child: navigationShell),
       bottomNavigationBar: Builder(
         builder: (context) => _EverydayDock(
-          currentIndex: navigationShell.currentIndex,
+          currentIndex: navigationDisplayIndex(navigationShell.currentIndex),
           onSelect: _select,
-          onMore: Scaffold.of(context).openDrawer,
         ),
       ),
     );
@@ -158,7 +158,7 @@ class AdaptiveShell extends StatelessWidget {
         children: [
           _DesktopSidebar(
             extended: extended,
-            currentIndex: navigationShell.currentIndex,
+            currentIndex: navigationDisplayIndex(navigationShell.currentIndex),
             onSelect: _select,
           ),
           Expanded(child: DaybookBackdrop(child: navigationShell)),
@@ -219,13 +219,7 @@ class _DesktopSidebar extends StatelessWidget {
                           onSelect: onSelect,
                         ),
                         const SizedBox(height: 16),
-                        _DrawerGroup(
-                          label: 'Extend & automate',
-                          indices: AdaptiveShell._automationBranches,
-                          currentIndex: currentIndex,
-                          onSelect: onSelect,
-                        ),
-                        const SizedBox(height: 16),
+
                         _DrawerGroup(
                           label: 'Review',
                           indices: AdaptiveShell._reviewBranches,
@@ -239,12 +233,23 @@ class _DesktopSidebar extends StatelessWidget {
                           currentIndex: currentIndex,
                           onSelect: onSelect,
                         ),
+                        const SizedBox(height: 12),
+                        _DrawerGroup(
+                          label: 'Advanced',
+                          indices: AdaptiveShell._advancedBranches,
+                          currentIndex: currentIndex,
+                          onSelect: onSelect,
+                          collapsible: true,
+                        ),
                       ],
                     )
                   : ListView.builder(
                       padding: const EdgeInsets.symmetric(vertical: 10),
-                      itemCount: AdaptiveShell._adaptiveBranches.length,
+                      itemCount: AdaptiveShell._adaptiveBranches.length + 1,
                       itemBuilder: (context, index) {
+                        if (index == AdaptiveShell._adaptiveBranches.length) {
+                          return _AdvancedMenu(onSelect: onSelect);
+                        }
                         final branchIndex =
                             AdaptiveShell._adaptiveBranches[index];
                         final destination = appDestinations[branchIndex];
@@ -292,14 +297,9 @@ class _DesktopSidebar extends StatelessWidget {
 }
 
 class _EverydayDock extends StatelessWidget {
-  const _EverydayDock({
-    required this.currentIndex,
-    required this.onSelect,
-    required this.onMore,
-  });
+  const _EverydayDock({required this.currentIndex, required this.onSelect});
   final int currentIndex;
   final ValueChanged<int> onSelect;
-  final VoidCallback onMore;
 
   @override
   Widget build(BuildContext context) => DecoratedBox(
@@ -311,41 +311,23 @@ class _EverydayDock extends StatelessWidget {
     ),
     child: SafeArea(
       top: false,
-      minimum: const EdgeInsets.all(8),
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          final columns = constraints.maxWidth < 600 ? 3 : 6;
-          final width = (constraints.maxWidth - (columns - 1) * 8) / columns;
-          return Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              for (final index in AdaptiveShell._everydayBranches)
-                SizedBox(
-                  width: width,
-                  child: _DockDestination(
-                    label: appDestinations[index].label,
-                    icon: currentIndex == index
-                        ? appDestinations[index].selectedIcon
-                        : appDestinations[index].icon,
-                    selected: currentIndex == index,
-                    onTap: () => onSelect(index),
-                  ),
-                ),
-              SizedBox(
-                width: width,
-                child: _DockDestination(
-                  label: 'More',
-                  icon: Icons.more_horiz,
-                  selected: !AdaptiveShell._everydayBranches.contains(
-                    currentIndex,
-                  ),
-                  onTap: onMore,
-                ),
+      minimum: const EdgeInsets.fromLTRB(4, 6, 4, 6),
+      child: Row(
+        children: [
+          for (final index in AdaptiveShell._everydayBranches)
+            Expanded(
+              child: _DockDestination(
+                label: appDestinations[index].path == '/automation'
+                    ? 'Tools'
+                    : appDestinations[index].label,
+                icon: currentIndex == index
+                    ? appDestinations[index].selectedIcon
+                    : appDestinations[index].icon,
+                selected: currentIndex == index,
+                onTap: () => onSelect(index),
               ),
-            ],
-          );
-        },
+            ),
+        ],
       ),
     ),
   );
@@ -371,19 +353,26 @@ class _DockDestination extends StatelessWidget {
       child: TextButton(
         onPressed: onTap,
         style: TextButton.styleFrom(
-          minimumSize: const Size(48, 64),
-          padding: const EdgeInsets.all(8),
+          minimumSize: const Size(48, 60),
+          padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 8),
           backgroundColor: selected
               ? theme.colorScheme.secondaryContainer
               : theme.colorScheme.surface,
-          side: selected
-              ? BorderSide(color: theme.colorScheme.secondary, width: 3)
-              : BorderSide.none,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+          ),
         ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: 20),
+            AnimatedScale(
+              scale: selected ? 1.08 : 1,
+              duration: MediaQuery.disableAnimationsOf(context)
+                  ? Duration.zero
+                  : const Duration(milliseconds: 180),
+              curve: Curves.easeOutCubic,
+              child: Icon(icon, size: 20),
+            ),
             const SizedBox(height: 4),
             Text(
               label,
@@ -464,13 +453,7 @@ class _WorkspaceDrawer extends StatelessWidget {
                     onSelect: (index) => _select(context, index),
                   ),
                   const SizedBox(height: 16),
-                  _DrawerGroup(
-                    label: 'Extend & automate',
-                    indices: AdaptiveShell._automationBranches,
-                    currentIndex: currentIndex,
-                    onSelect: (index) => _select(context, index),
-                  ),
-                  const SizedBox(height: 16),
+
                   _DrawerGroup(
                     label: 'Review',
                     indices: AdaptiveShell._reviewBranches,
@@ -483,6 +466,14 @@ class _WorkspaceDrawer extends StatelessWidget {
                     indices: AdaptiveShell._systemBranches,
                     currentIndex: currentIndex,
                     onSelect: (index) => _select(context, index),
+                  ),
+                  const SizedBox(height: 12),
+                  _DrawerGroup(
+                    label: 'Advanced',
+                    indices: AdaptiveShell._advancedBranches,
+                    currentIndex: currentIndex,
+                    onSelect: (index) => _select(context, index),
+                    collapsible: true,
                   ),
                   const SizedBox(height: 14),
                   const Divider(height: 1),
@@ -540,34 +531,73 @@ class _DrawerGroup extends StatelessWidget {
     required this.indices,
     required this.currentIndex,
     required this.onSelect,
+    this.collapsible = false,
   });
-
   final String label;
   final List<int> indices;
   final int currentIndex;
   final ValueChanged<int> onSelect;
+  final bool collapsible;
 
   @override
-  Widget build(BuildContext context) => Column(
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: [
-      Padding(
-        padding: const EdgeInsets.fromLTRB(10, 0, 10, 6),
-        child: Text(
-          label,
-          style: TextStyle(
-            color: Theme.of(context).colorScheme.onSurfaceVariant,
-            fontSize: 13,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-      ),
+  Widget build(BuildContext context) {
+    if (indices.isEmpty) return const SizedBox.shrink();
+    final tiles = [
       for (final index in indices)
         _WorkspaceTile(
           destination: appDestinations[index],
           selected: currentIndex == index,
           onTap: () => onSelect(index),
         ),
+    ];
+    if (collapsible)
+      return ExpansionTile(
+        key: PageStorageKey('navigation-$label'),
+        initiallyExpanded: indices.contains(currentIndex),
+        expansionAnimationStyle: MediaQuery.disableAnimationsOf(context)
+            ? AnimationStyle.noAnimation
+            : null,
+        tilePadding: const EdgeInsets.symmetric(horizontal: 10),
+        shape: const Border(),
+        collapsedShape: const Border(),
+        leading: const Icon(Icons.build_outlined, size: 18),
+        title: Text(
+          label,
+          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+        ),
+        children: tiles,
+      );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(10, 0, 10, 6),
+          child: Text(
+            label,
+            style: TextStyle(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+        ...tiles,
+      ],
+    );
+  }
+}
+
+class _AdvancedMenu extends StatelessWidget {
+  const _AdvancedMenu({required this.onSelect});
+  final ValueChanged<int> onSelect;
+  @override
+  Widget build(BuildContext context) => PopupMenuButton<int>(
+    tooltip: 'Advanced tools',
+    icon: const Icon(Icons.build_outlined, size: 20),
+    onSelected: onSelect,
+    itemBuilder: (_) => [
+      for (final index in AdaptiveShell._advancedBranches)
+        PopupMenuItem(value: index, child: Text(appDestinations[index].label)),
     ],
   );
 }

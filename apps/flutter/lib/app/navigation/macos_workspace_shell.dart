@@ -106,7 +106,9 @@ class _MacosWorkspaceShellState extends ConsumerState<MacosWorkspaceShell> {
               _MacosSidebar(
                 collapsed: collapsed,
                 compactWindow: compactWindow,
-                currentIndex: widget.navigationShell.currentIndex,
+                currentIndex: navigationDisplayIndex(
+                  widget.navigationShell.currentIndex,
+                ),
                 query: _searchController.text,
                 searchController: _searchController,
                 searchFocus: _searchFocus,
@@ -194,7 +196,8 @@ class _MacosSidebar extends StatelessWidget {
       ('More', AppDestinationGroup.workspace),
       ('Extend & automate', AppDestinationGroup.automation),
       ('Review', AppDestinationGroup.review),
-      ('System', AppDestinationGroup.system),
+      ('Settings', AppDestinationGroup.system),
+      ('Advanced', AppDestinationGroup.advanced),
     ];
 
     return AnimatedContainer(
@@ -370,6 +373,46 @@ class _MacosDestinationGroup extends StatelessWidget {
             })
             .toList(growable: false);
     if (indices.isEmpty) return const SizedBox.shrink();
+
+    if (group == AppDestinationGroup.advanced) {
+      if (collapsed)
+        return PopupMenuButton<int>(
+          tooltip: 'Advanced tools',
+          icon: const Icon(Icons.build_outlined, size: 18),
+          onSelected: onSelect,
+          itemBuilder: (_) => [
+            for (final index in indices)
+              PopupMenuItem(
+                value: index,
+                child: Text(appDestinations[index].label),
+              ),
+          ],
+        );
+      return ExpansionTile(
+        key: PageStorageKey(
+          'macos-navigation-advanced-${normalized.isNotEmpty}',
+        ),
+        initiallyExpanded:
+            indices.contains(currentIndex) || normalized.isNotEmpty,
+        expansionAnimationStyle: MediaQuery.disableAnimationsOf(context)
+            ? AnimationStyle.noAnimation
+            : null,
+        tilePadding: const EdgeInsets.symmetric(horizontal: 8),
+        shape: const Border(),
+        collapsedShape: const Border(),
+        title: Text('Advanced', style: Theme.of(context).textTheme.labelMedium),
+        children: [
+          for (final index in indices)
+            _MacosDestinationTile(
+              destination: appDestinations[index],
+              collapsed: false,
+              selected: currentIndex == index,
+              shortcut: null,
+              onTap: () => onSelect(index),
+            ),
+        ],
+      );
+    }
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
