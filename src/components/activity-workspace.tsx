@@ -147,6 +147,7 @@ function ScopedActivityWorkspace() {
   const stale = Boolean(data && (pending || error));
   const selectedGroup = pending?.group ?? data?.group ?? "all";
   const shownGroup = data?.group ?? "all";
+  const populatedGroups = ACTIVITY_GROUPS.filter((group) => (data?.counts[group] ?? 0) > 0);
   const total = data ? (shownGroup === "all" ? sumCounts(data) : data.counts[shownGroup]) : 0;
   const start = data?.items.length && snapshot ? snapshot.index * PAGE_LIMIT + 1 : 0;
   const end = start && data ? start + data.items.length - 1 : 0;
@@ -172,7 +173,7 @@ function ScopedActivityWorkspace() {
       </button>
     </header>
 
-    <div className={styles.filters} role="group" aria-label="Activity views">
+    {!known || shownGroup !== "all" || populatedGroups.length > 1 ? <div className={styles.filters} role="group" aria-label="Activity views">
       {(["all", "needs_you", "working", "updates", "history"] as ActivityFilter[]).filter((group) =>
         group === "all" || group === selectedGroup || !known || (data?.counts[group] ?? 0) > 0,
       ).map((group) => <button type="button" key={group}
@@ -182,7 +183,7 @@ function ScopedActivityWorkspace() {
           ? (group === "all" ? sumCounts(data) : data.counts[group]).toLocaleString()
           : "—"}</span>
       </button>)}
-    </div>
+    </div> : null}
 
     <p className={pending || error || data?.state === "partial" ? styles.readStatus : "sr-only"} role="status" aria-live="polite" aria-atomic="true">{statusText}</p>
     {error ? <div className={styles.error}>
@@ -200,9 +201,9 @@ function ScopedActivityWorkspace() {
         : !known ? <div className={styles.empty}><h3>Activity is unavailable</h3><p>Refresh to check your recent work again.</p></div>
         : !data?.items.length ? <div className={styles.empty}><h3>No recent {shownGroup === "all" ? "activity" : labels[shownGroup].toLowerCase()}</h3>
           <p>{data?.state === "partial" ? "Some activity could not be checked. Refresh to try again." : "New tasks, decisions, and updates will appear here."}</p></div>
-        : (["needs_you", "working", "updates", "history"] as const).filter((group) => data.items.some((item) => item.group === group)).map((group) => <section
+        : (["needs_you", "working", "updates", "history"] as const).filter((group) => data.items.some((item) => item.group === group)).map((group, _index, visibleGroups) => <section
           key={group} className={styles.group} aria-labelledby={`activity-group-${group}`}>
-          <h3 id={`activity-group-${group}`} className={shownGroup === group ? "sr-only" : undefined}>{labels[group]}</h3>
+          <h3 id={`activity-group-${group}`} className={shownGroup === group || visibleGroups.length === 1 ? "sr-only" : undefined}>{labels[group]}</h3>
           <ol className={styles.list}>
             {data.items.filter((item) => item.group === group).map((item) => <li key={item.id}><ActivityRow item={item}
               selected={selectedItemId === item.id} onSelect={() => setSelectedItemId((current) => current === item.id ? undefined : item.id)} /></li>)}
@@ -239,13 +240,16 @@ function SourceCoverage({ response, stale }: { response: ActivityResponse; stale
 function ActivityRow({ item, selected, onSelect }: { item: ActivityItem; selected: boolean; onSelect: () => void }) {
   const destination = item.source === "approvals" ? "Review action" : item.source === "runs" ? "Open conversation" : item.href.startsWith("/app/responsibilities/") ? "View update" : "Open reminder";
   const state = activityState(item);
+  const summary = activitySummary(item);
+  const showReferences = item.source === "runs" ? selected
+    : Boolean(item.sourceRef.approvalKind || item.origin || item.references.length > 1);
   const Icon = state.tone === "danger" || state.tone === "warning" ? CircleAlert : state.tone === "success" ? CheckCircle2
     : item.source === "notifications" ? Bell : item.group === "working" ? Clock3 : MessageSquare;
   return <article className={styles.row} aria-label={`${activityTitle(item)}: ${state.label}`}>
     <Icon size={18} className={styles.rowIcon} data-tone={state.tone} aria-hidden="true" />
     <div className={styles.rowContent}>
       <div className={styles.rowHeading}><h4>{activityTitle(item)}</h4><span className={styles.status} data-tone={state.tone}>{state.label}</span></div>
-      {item.summary.trim() ? <p>{activitySummary(item)}</p> : null}
+      {summary.trim() ? <p>{summary}</p> : null}
       <div className={styles.rowMeta}>
         <time dateTime={item.timestamp.at} title={formatTime(item.timestamp.at)}>{item.timestamp.basis === "completed" ? "Finished" : startCase(item.timestamp.basis)} {shortTime(item.timestamp.at)}</time>
         {item.source === "runs" ? <button type="button" onClick={onSelect} aria-expanded={selected} className={styles.detailButton}>{selected ? "Hide details" : state.tone === "danger" ? "View failure" : "View task"}</button> : null}
@@ -253,7 +257,7 @@ function ActivityRow({ item, selected, onSelect }: { item: ActivityItem; selecte
         {item.origin && item.origin.href !== item.href ? <Link className={styles.originLink} href={item.origin.href} prefetch={false}>Open conversation</Link> : null}
       </div>
       {selected && item.source === "runs" ? <ActivityRunPreview key={`${item.sourceRef.id}:${item.timestamp.at}`} runId={item.sourceRef.id} /> : null}
-      <details className={styles.references}><summary>Technical details</summary><dl>
+      {showReferences ? <details className={styles.references}><summary>Technical details</summary><dl>
         <div><dt>Activity ID</dt><dd><code>{item.id}</code></dd></div>
         <div><dt>Work identity</dt><dd><code>{item.workKey}</code></dd></div>
         <div><dt>Source state</dt><dd><code>{item.status}</code></dd></div>
@@ -262,7 +266,7 @@ function ActivityRow({ item, selected, onSelect }: { item: ActivityItem; selecte
         {item.references.map((reference) => <div key={`${reference.kind}:${reference.approvalKind ?? ""}:${reference.id}`}>
           <dt>{startCase(reference.kind)} reference</dt><dd><code>{reference.id}</code></dd>
         </div>)}
-      </dl></details>
+      </dl></details> : null}
     </div>
   </article>;
 }
@@ -345,16 +349,25 @@ function activityState(item: ActivityItem): { label: string; tone: "neutral" | "
 
 function activitySummary(item: ActivityItem) {
   const copy: Record<string, string> = {
-    "The run is in progress.": "Working on your request.",
-    "The run is resuming.": "Continuing your task.",
-    "The run failed. Open its source to inspect the result.": "Open the task to see what went wrong.",
-    "The terminal receipt reports a failed outcome.": "The task ended with a failed outcome. Review the details before retrying.",
-    "The run completed; its outcome has not been verified.": "The response is ready; its outcome still needs verification.",
-    "The run ended; its outcome has not been verified.": "The task ended; its outcome still needs verification.",
-    "The run ended with a partial outcome. Open its source to inspect what remains.": "Part of the task finished. Review what remains.",
+    // These fixed summaries repeat the visible action and outcome labels.
+    // Specific failure text and unfamiliar summaries remain visible.
+    "Queued to start.": "",
+    "The run is in progress.": "",
+    "The run is resuming.": "",
+    "Waiting for an approval decision.": "",
+    "Waiting for clarification in the conversation.": "",
+    "The run failed. Open its source to inspect the result.": "",
+    "The terminal receipt reports a failed outcome.": "",
+    "The run completed; its outcome has not been verified.": "",
+    "The run ended; its outcome has not been verified.": "",
+    "The run completed with a verified outcome.": "",
+    "The run ended with a partial outcome. Open its source to inspect what remains.": "",
+    "The run was canceled.": "",
+    "The terminal receipt reports a canceled outcome.": "",
+    "A decision is waiting in the approvals inbox.": "",
     "An approved action needs reconciliation. Open the approval to inspect its receipt.": "The result of an approved action is uncertain. Review it before trying again.",
   };
-  return copy[item.summary] || item.summary;
+  return copy[item.summary] ?? item.summary;
 }
 
 function previewText(value: unknown, limit: number) {
