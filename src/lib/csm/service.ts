@@ -6,7 +6,7 @@ import { listProjectsService, showProjectService } from "@/lib/app-services/proj
 import type { WorkspaceLibraryItem } from "@/lib/library/contracts";
 import { redactSensitive } from "@/lib/security/context";
 import { CsmError, clientProfileSchema, csmProfileWriteSchema, csmSourceDeleteSchema, csmSourceWriteSchema, type CsmSnapshot, type CsmSourceLink } from "./contracts";
-import { csmProjectAccess, readCsmContext, writeCsmContext, type CsmStoredContext } from "./store";
+import { csmProjectAccess, hasCsmContextHistory, readCsmContext, writeCsmContext, type CsmStoredContext } from "./store";
 
 const readContract = { operation: "app.csm.context.show", action: "read", resourceType: "project", accessMode: "read" as const, eventContract: "app_service.read" };
 const writeContract = { operation: "app.csm.context.write", action: "write.memory", resourceType: "shared_memory", accessMode: "mutation" as const, eventContract: "csm.context.saved" };
@@ -14,9 +14,13 @@ const writeContract = { operation: "app.csm.context.write", action: "write.memor
 export async function listCsmClients(caller: AppServiceCaller) {
   const authorized = authorizeAppServiceCall(caller, readContract);
   const result = await listProjectsService(caller, { limit: 100 });
+  const activeProjects = result.data.projects.filter((project) => project.status !== "archived");
   const clients = [];
-  for (let offset = 0; offset < result.data.projects.length; offset += 5) {
-    const batch = await Promise.all(result.data.projects.slice(offset, offset + 5).map(async (project) => {
+  for (let offset = 0; offset < activeProjects.length; offset += 5) {
+    const batch = await Promise.all(activeProjects.slice(offset, offset + 5).map(async (project) => {
+      // Legacy Projects without an accepted client brief need no new shared
+      // context authority. Existing active client failures still fail closed.
+      if (!await hasCsmContextHistory(caller.context.tenantId, project.id)) return null;
       const access = await csmProjectAccess(caller, project.id);
       const stored = await readCsmContext(access);
       return stored ? { project, profile: stored.snapshot.profile, sourceCount: stored.snapshot.sourceLinks.length, revision: stored.revision } : null;
