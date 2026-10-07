@@ -27,10 +27,6 @@ void main() {
       '/meetings/meeting%2Fone',
     );
     expect(
-      MobilePushEnvelope.fromData(_data('customer', 'account/one')).deepLink,
-      '/customers/account%2Fone',
-    );
-    expect(
       MobilePushEnvelope.fromData(_data('run', 'run/one')).deepLink,
       '/results/agent%3Arun%2Fone',
     );
@@ -44,11 +40,24 @@ void main() {
     );
   });
 
+  test('rejects retired workspace notifications', () {
+    expect(
+      () => MobilePushEnvelope.fromData({
+        'schemaVersion': '1',
+        'deliveryId': 'delivery-one',
+        'causeKind': 'customer',
+        'causeId': 'account-one',
+        'deepLink': '/customers/account-one',
+      }),
+      throwsFormatException,
+    );
+  });
+
   test('rejects a forged or cross-kind deep link', () {
     expect(
       () => MobilePushEnvelope.fromData({
-        ..._data('customer', 'account-one'),
-        'deepLink': '/meetings/account-one',
+        ..._data('run', 'run-one'),
+        'deepLink': '/meetings/run-one',
       }),
       throwsFormatException,
     );

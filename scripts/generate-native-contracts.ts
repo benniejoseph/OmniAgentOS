@@ -16,8 +16,8 @@ import {
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const checkOnly = process.argv.includes("--check");
-// The previous contract and the one archive before it, byte for byte. When a
-// new contract ships, the oldest entry goes, and its directory with it.
+// Product retirement keeps these prior public artifacts byte-frozen. The v47
+// compatibility publication is withdrawn narrowly from its archived original.
 const frozenDocumentSha256ByVersion = Object.freeze({
   45: Object.freeze({
     "openapi.json": "0550a5cd1cc7df01168164ec8e68710e90743c2145d2a6db2162127f7ab22123", // gitleaks:allow -- public artifact integrity digest
@@ -31,6 +31,13 @@ const frozenDocumentSha256ByVersion = Object.freeze({
     "fixtures.json": "7dbf329ac4ad5f51c78fb00012421d4c6e9832e204b4744d7eb06bbf542f79f7", // gitleaks:allow -- public artifact integrity digest
     "manifest.json": "80df210e108bcaa7f281504f154b50c7e53cdc3c13cd0b65553c486ce1f2657c", // gitleaks:allow -- public artifact integrity digest
   }),
+});
+
+const originalV47DocumentSha256 = Object.freeze({
+  "openapi.json": "cc783eff3bf60b6a198607c4fce70c8d87b12bbbccec5b1909106e67084f6b24", // gitleaks:allow -- public artifact integrity digest
+  "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
+  "fixtures.json": "738bc72f1a1ff8d175549b00903437bb265f28adce74d92500970a65889f9eba", // gitleaks:allow -- public artifact integrity digest
+  "manifest.json": "7213892e4b6e4143e8f87dec58fffac88fef3a1cc7b610ea24dd99687be30dae", // gitleaks:allow -- public artifact integrity digest
 });
 
 const fixtures = Object.freeze({
@@ -140,6 +147,7 @@ async function generate() {
       documents,
     );
   }
+  await retainRetiredV47Compatibility(expected);
   for (const version of NATIVE_API_SUPPORTED_VERSIONS) {
     const directory = path.join(repositoryRoot, "public", "native-contracts", `v${version}`);
     if (version === NATIVE_API_PREVIOUS_VERSION) {
@@ -197,6 +205,67 @@ async function generate() {
     await writeFile(filename, content, "utf8");
   }
   process.stdout.write(`Generated native contracts v${NATIVE_API_CURRENT_VERSION} and v${NATIVE_API_PREVIOUS_VERSION}.\n`);
+}
+
+async function retainRetiredV47Compatibility(expected: Map<string, string>) {
+  const archived = path.join(repositoryRoot, "docs", "archive", "native-contracts", "v47");
+  await retainFrozenContract(expected, archived, originalV47DocumentSha256);
+  const document = JSON.parse(expected.get(path.join(archived, "openapi.json"))!) as {
+    paths: Record<string, Record<string, { operationId: string }>>;
+    components: { schemas: Record<string, unknown> };
+  };
+  for (const [route, methods] of Object.entries(document.paths)) {
+    for (const [method, operation] of Object.entries(methods)) {
+      if (operation.operationId.startsWith("customers.")) delete methods[method];
+    }
+    if (Object.keys(methods).length === 0) delete document.paths[route];
+  }
+  for (const [name, schema] of Object.entries(document.components.schemas)) {
+    if (/^Native(?:Customer|Salesforce)/.test(name)) {
+      delete document.components.schemas[name];
+    } else if (name.startsWith("NativePush")) {
+      document.components.schemas[name] = withoutRetiredPushTarget(schema);
+    }
+  }
+  const directory = path.join(repositoryRoot, "public", "native-contracts", "v47");
+  const openapiText = stableJson(document);
+  const eventsText = expected.get(path.join(archived, "events.schema.json"))!;
+  const fixturesText = expected.get(path.join(archived, "fixtures.json"))!;
+  const manifest = {
+    schemaVersion: 1,
+    contractId: NATIVE_API_CONTRACT_ID,
+    version: 47,
+    state: "previous",
+    compatibility: {
+      currentVersion: NATIVE_API_CURRENT_VERSION,
+      previousVersion: NATIVE_API_PREVIOUS_VERSION,
+      supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS],
+    },
+    retirement: {
+      reason: "crm_workspace_retired",
+      originalManifestSha256: originalV47DocumentSha256["manifest.json"],
+    },
+    documents: {
+      openapi: { path: "openapi.json", sha256: sha256(openapiText) },
+      events: { path: "events.schema.json", sha256: sha256(eventsText) },
+      fixtures: { path: "fixtures.json", sha256: sha256(fixturesText) },
+    },
+  };
+  expected.set(path.join(directory, "openapi.json"), openapiText);
+  expected.set(path.join(directory, "events.schema.json"), eventsText);
+  expected.set(path.join(directory, "fixtures.json"), fixturesText);
+  expected.set(path.join(directory, "manifest.json"), stableJson(manifest));
+}
+
+function withoutRetiredPushTarget(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withoutRetiredPushTarget);
+  if (value === null || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [
+    key,
+    key === "enum" && Array.isArray(item)
+      ? item.filter((entry) => entry !== "customer")
+      : withoutRetiredPushTarget(item),
+  ]));
 }
 
 async function retainFrozenContract(

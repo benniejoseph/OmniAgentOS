@@ -366,7 +366,6 @@ function managementHref(integration: InstalledIntegration) {
 function systemDescription(integration: InstalledIntegration) {
   if (integration.kind === "mcp") return "A reviewed MCP server whose discovered operations run through Asael's tool controls.";
   if (integration.kind === "openapi") return "A REST API imported as reviewed operations with explicit risk and approval rules.";
-  if (integration.kind === "salesforce") return "Customer records and activity synchronized from the connected Salesforce organization.";
   return "An owner-connected source available to Asael.";
 }
 
@@ -427,7 +426,7 @@ function suggestionLabel(suggestionState: TruthfulIntegrationsOverview["suggesti
 }
 
 function inventoryLabel(value: string) {
-  return ({ oauth: "Personal connections", mcp: "MCP servers", openapi: "REST APIs", salesforce: "Salesforce", usage: "Usage records" } as Record<string, string>)[value] || value;
+  return ({ oauth: "Personal connections", mcp: "MCP servers", openapi: "REST APIs", usage: "Usage records" } as Record<string, string>)[value] || value;
 }
 
 async function fetchIntegrationOverview(signal: AbortSignal) {

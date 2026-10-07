@@ -1,15 +1,6 @@
 import 'package:asael/app/theme/macos_app_theme.dart';
 import 'package:asael/core/network/api_client.dart';
 import 'package:asael/core/storage/secure_session_store.dart';
-import 'package:asael/features/customers/macos_customer_detail_view.dart';
-import 'package:asael/features/customers/accounts_contracts.dart';
-import 'package:asael/features/customers/accounts_providers.dart';
-import 'package:asael/features/customers/accounts_workspace.dart';
-import 'package:asael/features/auth/application/session_controller.dart';
-import 'package:asael/features/auth/application/biometric_session_lock_controller.dart';
-import 'package:asael/features/auth/data/session_repository.dart';
-import 'package:asael/features/auth/domain/app_session.dart';
-import 'package:asael/generated/native_contract.g.dart';
 import 'package:asael/features/meetings/macos_meeting_detail_view.dart';
 import 'package:asael/features/meetings/meetings.dart' hide Json;
 import 'package:asael/features/projects/macos_project_detail_view.dart';
@@ -20,9 +11,6 @@ import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-
-import 'customers/accounts_test_support.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -105,93 +93,6 @@ void main() {
     await tester.pumpAndSettle();
     expect(repository.canceledRun, 'run-1');
     expect(tester.takeException(), isNull);
-  });
-
-  testWidgets('Customer 360 workspace searches and inspects governed facts', (
-    tester,
-  ) async {
-    final projection = await _customerProjection();
-    final api = AccountsTestApi()
-      ..read = (path, _, _) async {
-        if (path == NativePaths.customersGet(customerId)) {
-          return projection;
-        }
-        if (path == NativePaths.customersPortfolio()) {
-          return accountPortfolioResponse();
-        }
-        throw StateError('Unexpected customer read $path');
-      };
-    await _pumpMac(
-      tester,
-      ProviderScope(
-        overrides: [
-          apiClientProvider.overrideWithValue(api),
-          sessionControllerProvider.overrideWith(_CustomerSessions.new),
-          biometricSessionLockControllerProvider.overrideWith(
-            (ref) =>
-                BiometricSessionLockController(_CustomerSessionRepository()),
-          ),
-        ],
-        child: MacosCustomerDetailView(id: customerId, api: api),
-      ),
-    );
-
-    expect(find.text('Acme Private Office'), findsWidgets);
-    final native = tester.element(find.byType(NativeAccountsView));
-    final controller = ProviderScope.containerOf(native)
-        .read(accountsControllerProvider(customerId));
-    final scrollable = find
-        .descendant(
-          of: find.byKey(accountsStorageKey(controller, 'scroll')),
-          matching: find.byType(Scrollable),
-        )
-        .first;
-    await tester.scrollUntilVisible(
-      find.text('Renewal Status'),
-      250,
-      scrollable: scrollable,
-    );
-    expect(find.text('Renewal Status'), findsWidgets);
-    await tester.scrollUntilVisible(
-      find.text('Workspace Region'),
-      250,
-      scrollable: scrollable,
-    );
-    expect(find.text('Workspace Region'), findsOneWidget);
-    await tester.scrollUntilVisible(
-      find.byKey(const Key('customer-record-search')),
-      -300,
-      scrollable: scrollable,
-    );
-    await tester.enterText(
-      find.byKey(const Key('customer-record-search')),
-      'renewal',
-    );
-    await tester.pump();
-    await tester.scrollUntilVisible(
-      find.text('Inspect exact fact'),
-      250,
-      scrollable: scrollable,
-    );
-    expect(find.text('Renewal Status'), findsWidgets);
-    expect(find.text('Workspace Region'), findsNothing);
-    await tester.tap(find.text('Inspect exact fact'));
-    await tester.pump();
-    await tester.scrollUntilVisible(
-      find.text('Exact fact evidence'),
-      -250,
-      scrollable: scrollable,
-    );
-    await tester.scrollUntilVisible(
-      find.text('salesforce · opportunity-7'),
-      250,
-      scrollable: scrollable,
-    );
-    expect(find.text('salesforce · opportunity-7'), findsOneWidget);
-    expect(api.paths, contains(NativePaths.bootstrapGet));
-    expect(tester.takeException(), isNull);
-    await tester.pumpWidget(const SizedBox.shrink());
-    await tester.pump();
   });
 }
 
@@ -426,60 +327,5 @@ class _ResultRepository implements ResultsRepository {
     items: [item],
     evaluations: const [],
     sourceErrors: const [],
-  );
-}
-
-class _CustomerSessions extends SessionController {
-  @override
-  Future<AppSession?> build() async => accountSession();
-}
-
-class _CustomerSessionRepository extends Fake implements SessionRepository {}
-
-Future<AccountJson> _customerProjection() async {
-  final data = await accountDetailResponse(conflicts: true);
-  final projection = Map<String, dynamic>.from(data['account'] as Map);
-  projection['account'] = await accountRevision(name: 'Acme Private Office');
-  final views = <AccountJson>[];
-  for (final entry in [
-    ('d', 'Renewal Status', 'renewal.status'),
-    ('e', 'Workspace Region', 'workspace.region'),
-  ]) {
-    final fact = await accountFact(suffix: entry.$1, title: entry.$2);
-    fact['factKey'] = entry.$3;
-    if (entry.$1 == 'd') {
-      fact['source'] = {
-        ...Map<String, dynamic>.from(fact['source'] as Map),
-        'sourceKind': 'crm',
-        'sourceId': 'opportunity-7',
-        'sourceRevisionId': 'opportunity-7:v1',
-        'sourceLabel': 'salesforce · opportunity-7',
-        'providerId': 'salesforce',
-        'providerObjectType': 'Opportunity',
-        'providerObjectIdSha256': 'c' * 64,
-        'permissionBasis': 'connector_grant',
-      };
-    }
-    views.add({
-      'fact': await sealAccount(fact, 'factSha256'),
-      'freshness': {
-        'status': 'unknown',
-        'observedAt': accountStamp,
-        'staleAfter': null,
-        'evaluatedAt': accountStamp,
-      },
-      'conflict': {'state': 'none', 'conflictingFactIds': <String>[]},
-    });
-  }
-  projection['facts'] = views;
-  projection['factsByKind'] = {
-    for (final kind in accountKinds)
-      kind: kind == 'risk' ? views : <AccountJson>[],
-  };
-  projection['conflictCount'] = 0;
-  return accountEnvelope(
-    {'context': accountContext(), 'account': projection},
-    'app.customer_accounts.show',
-    1,
   );
 }

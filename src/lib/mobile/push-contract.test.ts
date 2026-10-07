@@ -5,6 +5,7 @@ import {
   mobilePushEnvelopeSchema,
   mobilePushPreview,
   mobilePushReceiptRequestSchema,
+  mobilePushTargetSchema,
 } from "@/lib/mobile/push-contract";
 
 describe("mobile push causal contract", () => {
@@ -13,12 +14,17 @@ describe("mobile push causal contract", () => {
     [{ kind: "work_item", id: "task/one", parentId: "project one" }, "/projects/project%20one?workItemId=task%2Fone"],
     [{ kind: "work_item", id: "today/one" }, "/today?workItemId=today%2Fone"],
     [{ kind: "meeting", id: "meeting/one" }, "/meetings/meeting%2Fone"],
-    [{ kind: "customer", id: "account/one" }, "/customers/account%2Fone"],
     [{ kind: "run", id: "run/one" }, "/results/agent%3Arun%2Fone"],
     [{ kind: "notification", id: "digest/one" }, "/inbox?notificationId=digest%2Fone"],
     [{ kind: "canary", id: "canary/one" }, "/settings?pushCanary=canary%2Fone"],
   ] as const)("builds an exact allowlisted deep link", (target, expected) => {
     expect(mobilePushDeepLink(target)).toBe(expected);
+  });
+
+  it("rejects retired Accounts targets in requests and received envelopes", () => {
+    expect(mobilePushTargetSchema.safeParse({ kind: "customer", id: "old-account" }).success).toBe(false);
+    expect(mobilePushEnvelopeSchema.safeParse({ schemaVersion: "1", deliveryId: "old-delivery",
+      causeKind: "customer", causeId: "old-account", deepLink: "/customers/old-account" }).success).toBe(false);
   });
 
   it("keeps sensitive titles out of hidden and generic previews", () => {
@@ -41,7 +47,6 @@ describe("mobile push causal contract", () => {
     "approval",
     "work_item",
     "meeting",
-    "customer",
     "run",
     "notification",
     "canary",

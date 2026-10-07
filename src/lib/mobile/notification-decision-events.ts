@@ -27,7 +27,7 @@ export const notificationDispositionEventPayloadSchema = z.object({
   disposition: z.object({
     id: z.string().regex(/^notification_disposition_[a-f0-9]{48}$/),
     sourceKind: z.enum([
-      "tool_approval", "meeting", "customer_risk", "agent_run",
+      "tool_approval", "meeting", "agent_run",
       "today_reminder", "delegated_task", "scheduled_routine",
       "security_incident", "responsibility_change",
     ]),

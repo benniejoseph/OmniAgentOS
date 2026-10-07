@@ -33,22 +33,10 @@ import {
 } from "@/lib/app-services/missions";
 import { listRunsService } from "@/lib/app-services/runs";
 import { executeFirstPartyAppTool } from "@/lib/app-services/tool-dispatcher";
-import { reconcileSalesforceRecordWriteService } from "@/lib/app-services/salesforce-writes";
 import {
   sanitizeModelComputerObservation,
   type ModelComputerObservation,
 } from "@/lib/models/computer-observation";
-import {
-  isSalesforceRecordWriteToolId,
-  parseSalesforceRecordWriteInput,
-  providerRecordIdSha256,
-  salesforceWriteCommitSchema,
-  salesforceWriteConfigurationInputSchema,
-  salesforceWriteExpectedTargetStateSha256,
-  salesforceWriteExternalKey,
-  salesforceWriteOperationId,
-  salesforceWriteToolMetadata,
-} from "@/lib/customer-success/salesforce-write-contracts";
 import {
   createGoogleCalendarEvent,
   googleCalendarCreateSchema,
@@ -841,46 +829,6 @@ export async function executeGovernedTool({
         : null,
     };
   }
-  if (
-    !dryRun &&
-    isSalesforceRecordWriteToolId(tool.id) &&
-    existingRecord?.status === "executing" &&
-    executionClaimToken &&
-    executionClaimTokenFromRecord(existingRecord) === executionClaimToken &&
-    Boolean(getToolExecutionEffectIntentV2(existingRecord))
-  ) {
-    let parsedSalesforceInput: Record<string, unknown>;
-    try {
-      parsedSalesforceInput = parseSalesforceRecordWriteInput(tool.id, input);
-    } catch (error) {
-      return completeClaimedInputValidationFailure(
-        existingRecord,
-        executionClaimToken,
-        error,
-        executionScope,
-        idempotencyKey,
-      );
-    }
-    const scopedSalesforceRequest = await resolveToolExecutionScopeRequest({
-      record: existingRecord,
-      toolInput: parsedSalesforceInput,
-      requestedScope: executionScope,
-      context,
-      executionClaimToken,
-      mcpSessionScope,
-    });
-    const reconciled = await reconcileExistingSalesforceEffect({
-      record: existingRecord,
-      tool,
-      preparedInput: parsedSalesforceInput,
-      effectBinding,
-      executionScope: scopedSalesforceRequest.executionScope,
-      context,
-    });
-    if (reconciled) {
-      return { record: reconciled, result: reconciled.output };
-    }
-  }
   let preparedInput: Record<string, unknown>;
   try {
     preparedInput = parseInput(tool, input);
@@ -1174,13 +1122,6 @@ export async function executeGovernedTool({
         executionScope: scopedRequest.executionScope,
         context,
         agentRunId,
-      })) ?? (await reconcileExistingSalesforceEffect({
-        record: existing,
-        tool,
-        preparedInput,
-        effectBinding,
-        executionScope: scopedRequest.executionScope,
-        context,
       }));
       if (
         !reconciled &&
@@ -1872,13 +1813,6 @@ export async function executeGovernedTool({
         executionScope: scopedRequest.executionScope,
         context,
         agentRunId,
-      })) ?? (await reconcileExistingSalesforceEffect({
-        record: claim.record,
-        tool,
-        preparedInput,
-        effectBinding,
-        executionScope: scopedRequest.executionScope,
-        context,
       }));
       const recovered =
         !intendedEffectContext &&
@@ -3105,96 +3039,6 @@ async function resumeClaimedGoogleWorkspaceCreationEffect(input: {
   }
 }
 
-async function reconcileExistingSalesforceEffect(input: {
-  record: ToolExecutionRecord;
-  tool: ToolDefinition;
-  preparedInput: Record<string, unknown>;
-  effectBinding?: GovernedToolEffectBinding;
-  executionScope?: ExecutionScope;
-  context?: SecurityContext;
-}): Promise<ToolExecutionRecord | undefined> {
-  if (
-    input.record.status !== "executing" ||
-    !isSalesforceRecordWriteToolId(input.tool.id) ||
-    !input.executionScope?.initiatingActorId ||
-    !input.context
-  ) return undefined;
-  const claimToken = executionClaimTokenFromRecord(input.record);
-  if (!claimToken) return undefined;
-  let intent: EffectIntentV2;
-  try {
-    intent = getToolExecutionEffectIntentV2(input.record) as EffectIntentV2;
-    const material = prepareProviderEffectMaterial(
-      input.tool,
-      input.preparedInput,
-      input.record.id,
-    );
-    if (!material) return undefined;
-    const expected = buildProviderEffectIntent({
-      record: input.record,
-      tool: input.tool,
-      material,
-      executionScope: input.executionScope,
-      effectBinding: input.effectBinding,
-    });
-    if (intent.effectIntentSha256 !== expected.effectIntentSha256) {
-      throw new Error(
-        "Salesforce reconciliation does not match the persisted effect intent.",
-      );
-    }
-  } catch (error) {
-    throw new EffectReceiptFinalizationError({ cause: error });
-  }
-  let service;
-  try {
-    service = await reconcileSalesforceRecordWriteService(
-      toolAppServiceCaller(
-        input.context,
-        input.executionScope,
-        input.record.id,
-      ),
-      input.tool.id,
-      input.preparedInput,
-    );
-  } catch (error) {
-    throw new EffectReceiptFinalizationError({ cause: error });
-  }
-  if (!service) return undefined;
-  const result = {
-    ...service.data,
-    serviceReceipt: service.receipt,
-  };
-  let effectReceipt: ToolExecutionRecord["effectReceipt"];
-  try {
-    effectReceipt = finalizeProviderEffectIntent(input.tool, intent, result);
-  } catch (error) {
-    throw new EffectReceiptFinalizationError({ cause: error });
-  }
-  const terminalRecord: ToolExecutionRecord = {
-    ...input.record,
-    status: "executed",
-    output: redactSensitive(result),
-    effectReceipt,
-    completedAt: new Date().toISOString(),
-  };
-  try {
-    const saved = await completeClaimedToolExecution(
-      terminalRecord,
-      claimToken,
-      { executionScope: input.executionScope },
-    );
-    if (saved) return saved;
-    const current = await getToolExecution(input.record.id, {
-      tenantId: input.executionScope.tenantId,
-    });
-    return current?.status === "executed" && current.effectReceipt
-      ? current
-      : undefined;
-  } catch (error) {
-    throw new EffectReceiptFinalizationError({ cause: error });
-  }
-}
-
 async function reconcileExistingMemoryForgetEffect(input: {
   record: ToolExecutionRecord;
   tool: ToolDefinition;
@@ -4010,7 +3854,6 @@ function prepareMemoryWriteEffectContext(input: {
     if (
       input.tool.id === "calendar.create" ||
       isGoogleWorkspaceMutationToolId(input.tool.id) ||
-      isSalesforceRecordWriteToolId(input.tool.id) ||
       input.tool.id === "http.request" ||
       input.tool.category === "mcp" ||
       input.tool.category === "openapi"
@@ -5091,7 +4934,6 @@ type ProviderEffectMaterial = Readonly<{
     | "google_calendar_event"
     | "google_workspace_resource"
     | "moltbook_action"
-    | "salesforce_record"
     | "mcp_operation"
     | "openapi_operation";
   targetId: string;
@@ -5168,37 +5010,6 @@ function prepareProviderEffectMaterial(
   input: Record<string, unknown>,
   executionId?: string,
 ): ProviderEffectMaterial | undefined {
-  if (isSalesforceRecordWriteToolId(tool.id)) {
-    if (!executionId) return undefined;
-    const parsed = parseSalesforceRecordWriteInput(tool.id, input);
-    const metadata = salesforceWriteToolMetadata(tool.id);
-    const inputSha256 = toolInputSha256(parsed);
-    const recordIdentity = metadata.action === "create"
-      ? { externalKey: salesforceWriteExternalKey(executionId) }
-      : { providerRecordIdSha256: providerRecordIdSha256(parsed.recordId || "") };
-    const targetSha256 = canonicalJsonSha256({
-      targetType: "salesforce_record",
-      objectType: metadata.objectType,
-      action: metadata.action,
-      accountId: parsed.accountId,
-      recordIdentity,
-    });
-    return Object.freeze({
-      inputSha256,
-      approvalBindingSha256: approvalMaterialBindingSha256({
-        targetSha256,
-        inputSha256,
-      }),
-      targetType: "salesforce_record",
-      targetId: `salesforce_record:${metadata.objectType}:${targetSha256.slice(0, 52)}`,
-      targetSha256,
-      expectedTargetStateSha256: salesforceWriteExpectedTargetStateSha256({
-        toolId: tool.id,
-        value: parsed,
-        executionId,
-      }),
-    });
-  }
   if (tool.id === "calendar.create") {
     if (!executionId) return undefined;
     const parsed = googleCalendarCreateSchema.parse(input);
@@ -5437,26 +5248,6 @@ function finalizeProviderEffectIntent(
   intent: EffectIntentV2,
   resultValue: unknown,
 ) {
-  if (isSalesforceRecordWriteToolId(tool.id)) {
-    const result = asObjectRecord(resultValue);
-    const commit = salesforceWriteCommitSchema.parse(result.commit);
-    if (commit.toolId !== tool.id ||
-        commit.operationId !== salesforceWriteOperationId(intent.executionId) ||
-        commit.expectedTargetStateSha256 !== intent.expectedTargetStateSha256) {
-      throw new Error(
-        "Salesforce write receipt does not match its persisted effect intent.",
-      );
-    }
-    return finalizeEffectIntentV2(intent, {
-      providerAcknowledgement: commit.providerAcknowledgement,
-      providerAcknowledgementId: commit.providerAcknowledgementId,
-      providerAcknowledgementSha256: commit.providerAcknowledgementSha256,
-      verificationMethod: "read_after_write",
-      verificationState: commit.verificationState,
-      verificationReasonCode: commit.verificationReasonCode,
-      observedTargetStateSha256: commit.observedTargetStateSha256,
-    });
-  }
   if (tool.id === "calendar.create") {
     const result = z.object({
       connectionId: z.string().uuid(),
@@ -5875,14 +5666,6 @@ function parseInput(tool: ToolDefinition, input: Record<string, unknown>) {
     return parseMoltbookToolInput(tool.id, input);
   }
 
-  if (isSalesforceRecordWriteToolId(tool.id)) {
-    return parseSalesforceRecordWriteInput(tool.id, input);
-  }
-
-  if (tool.id === "app.customer_accounts.salesforce.writes.configure") {
-    return salesforceWriteConfigurationInputSchema.parse(input);
-  }
-
   if (tool.category === "mcp" || tool.category === "openapi") {
     validateConnectorInput(tool.inputSchema, input);
     return input;
@@ -5892,14 +5675,6 @@ function parseInput(tool: ToolDefinition, input: Record<string, unknown>) {
 }
 
 function describeSideEffects(toolId: string) {
-  if (isSalesforceRecordWriteToolId(toolId)) {
-    return [
-      "creates or updates one allowlisted Salesforce record under the exact linked Account 360",
-      "requires an explicit account-owner activation and a persisted human approval",
-      "uses deterministic upsert or exact revision fencing so retries cannot duplicate writes",
-      "requires read-after-write verification and retains only hashed provider evidence",
-    ];
-  }
   if (toolId.startsWith("app.")) {
     return ["tenant-and-actor-scoped first-party application operation through the shared service boundary"];
   }

@@ -5,7 +5,6 @@ import {
   completeAppServiceCall,
   type AppServiceCaller,
 } from "@/lib/app-services/contracts";
-import { showCustomerSuccessPortfolioService } from "@/lib/app-services/customer-success-intelligence";
 import { listMeetingsService } from "@/lib/app-services/meetings";
 import { getAppServiceOperationContract } from "@/lib/app-services/registry";
 import { runWithDatabaseActorScope } from "@/lib/db/client";
@@ -24,14 +23,12 @@ export const cohesiveTodayServiceInputSchema = z.object({
   workLimit: z.number().int().min(1).max(50).default(16),
   approvalLimit: z.number().int().min(1).max(25).default(12),
   meetingLimit: z.number().int().min(1).max(200).default(50),
-  accountLimit: z.number().int().min(1).max(200).default(50),
 }).strict();
 
 type CohesiveTodayDependencies = Readonly<{
   loadToday: typeof loadTodaySnapshot;
   loadWorkspace: typeof loadWorkspaceSummary;
   listMeetings: typeof listMeetingsService;
-  loadCustomerPortfolio: typeof showCustomerSuccessPortfolioService;
   loadUsage: typeof loadUsageSummary;
 }>;
 
@@ -39,7 +36,6 @@ const defaultDependencies: CohesiveTodayDependencies = Object.freeze({
   loadToday: loadTodaySnapshot,
   loadWorkspace: loadWorkspaceSummary,
   listMeetings: listMeetingsService,
-  loadCustomerPortfolio: showCustomerSuccessPortfolioService,
   loadUsage: loadUsageSummary,
 });
 
@@ -64,7 +60,7 @@ export async function showCohesiveTodayService(
         requestActorBinding: actorBinding,
       });
       const visible = new Set(normalizeTodaySections(today.preferences.visibleSections));
-      const [workspaceSummary, meetings, customerPortfolio, usage] = await Promise.all([
+      const [workspaceSummary, meetings, usage] = await Promise.all([
         visible.has("approvals") || visible.has("active_agents") || visible.has("work")
           ? optionalSource(
               "workspace",
@@ -87,16 +83,6 @@ export async function showCohesiveTodayService(
               "Meetings and commitments are temporarily unavailable.",
             )
           : hiddenSource("Meetings and commitments are hidden in Today preferences."),
-        visible.has("customers")
-          ? optionalSource(
-              "customer_risks",
-              async () => (await dependencies.loadCustomerPortfolio(caller, {
-                workspaceId: value.workspaceId,
-                limit: value.accountLimit,
-              })).data.portfolio,
-              "Customer risks are temporarily unavailable.",
-            )
-          : hiddenSource("Customer risks are hidden in Today preferences."),
         visible.has("consumption")
           ? optionalSource(
               "consumption",
@@ -109,7 +95,6 @@ export async function showCohesiveTodayService(
         today,
         workspaceSummary,
         meetings,
-        customerPortfolio,
         usage,
       });
       return completeAppServiceCall(authorized, { projection }, {
@@ -119,7 +104,7 @@ export async function showCohesiveTodayService(
   );
 }
 
-type OptionalSourceName = "workspace" | "meetings" | "customer_risks" | "consumption";
+type OptionalSourceName = "workspace" | "meetings" | "consumption";
 
 async function optionalSource<T>(
   source: OptionalSourceName,

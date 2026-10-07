@@ -4,6 +4,11 @@ Production uses Node.js 24.x and npm 11.x across local metadata, CI, and the wor
 
 ## Required production configuration
 
+Accounts, Customer Account 360, and the Salesforce integration were retired on
+2026-10-07. Their product routes, governed tools, background sync, and web/native
+UI are withdrawn. Historical migrations and protected records are retained.
+
+
 Set these through the platform secret/configuration store, never in source control:
 
 - `DATABASE_URL`: durable TLS Postgres. Production without it is blocked unless `OMNIAGENT_ALLOW_DEMO_STORAGE=true`; that override is only for disposable demos.
@@ -30,9 +35,6 @@ Set these through the platform secret/configuration store, never in source contr
 - `OMNIAGENT_PRIVATE_ACCOUNT_ALLOWLIST_JSON`, `GOOGLE_OAUTH_CLIENT_ID`, and `GOOGLE_OAUTH_CLIENT_SECRET`: the server-owned private account admission policy and Google OAuth web client. Each allowlisted email maps to one distinct immutable tenant and must set `tenantMode` to `existing` only when intentionally adopting a known legacy tenant, or `new` when the tenant must not already exist at first provisioning. Register both `${NEXT_PUBLIC_APP_URL}/api/auth/google/callback` for Asael sign-in and `${NEXT_PUBLIC_APP_URL}/api/oauth/google/callback` for the signed-in account's Workspace connection. `OMNIAGENT_OWNER_EMAIL` remains a single-account compatibility fallback only when the JSON allowlist is unset.
 - `OMNIAGENT_REPORT_SIGNING_SECRET`: production signing key for evaluation evidence. Set `OMNIAGENT_REPORT_SIGNING_KEY_ID`; use `OMNIAGENT_REPORT_SIGNING_KEYS` JSON during rotation.
 - `OMNIAGENT_ACCESS_REQUEST_FILE`: optional durable fallback path for local/non-database deployments. With `DATABASE_URL`, access requests are tenant-scoped in Postgres and appear in the admin Inbox for review.
-- `SALESFORCE_OAUTH_CLIENT_ID` and `SALESFORCE_OAUTH_CLIENT_SECRET`: server-only credentials for the read-only Salesforce Connected App. Register `${NEXT_PUBLIC_APP_URL}/api/oauth/salesforce/callback` and grant only `api` plus `refresh_token`; leaving either value unset keeps the Account 360 Salesforce health state at `configuration_required`.
-- `SALESFORCE_WEBHOOK_SECRET`: independent server-only HMAC key for the optional Salesforce CDC relay. The relay signs `${unixSeconds}.${rawBody}` with SHA-256, sends `x-asael-salesforce-signature: sha256=<hex>` and `x-asael-salesforce-timestamp`, and must arrive within five minutes. Do not reuse the Connected App secret.
-- `SALESFORCE_WRITE_ENABLED` and `SALESFORCE_WRITE_EXTERNAL_ID_FIELD`: independent fail-closed gate for P10.11 provider mutations. Leave the gate `false` until migration 139 is installed and the named `__c` field exists as a unique, createable, updateable External ID on Contact, Task, Case, and Opportunity. The application rechecks provider describe metadata before every create; setting these variables does not activate any Account 360 or bypass its separate owner approval.
 - `NEXT_PUBLIC_APP_URL`: canonical HTTPS origin. Set it to exactly `https://asael.bennierichard.com`. It is public and build-inlined, not a secret.
 - `OMNIAGENT_NATIVE_MIN_ANDROID_VERSION`, `OMNIAGENT_NATIVE_MIN_IOS_VERSION`, and `OMNIAGENT_NATIVE_MIN_MACOS_VERSION`: optional stable `major.minor.patch` minimums for native compatibility telemetry. An absent or empty value defaults to `1.0.0`; a malformed configured value invalidates the policy and holds adoption unavailable. These settings do not authorize Agent enrollment.
 
@@ -236,14 +238,13 @@ exact Work/Memory opening. It adds no mutation capability or migration; provider
 availability and exact current authorization remain authoritative. Native search
 uses cancellable owner-bound reads and the existing detail/mutation controllers.
 
-V38 adds reviewed private Memory promotion, Account workflow setup/outcomes and
-manual facts, custom Agent deletion and Skill mutations, already-linked Meeting
-recording processing, Salesforce sync/reconciliation/disconnect, source-map
+V38 added reviewed private Memory promotion, custom Agent deletion and Skill
+mutations, already-linked Meeting recording processing, source-map
 decisions/local source deletion, private graph inspection, deterministic
 maintenance/rebuild and explicit single-document cognition builds. Each new
 mutation has its own v38 capability floor and requires current domain authority.
 Existing floors remain: Companion 31, Responsibilities 32, Meetings 33,
-Account/Memory records 34, reconciliation 35, consent/Calendar 36 and health 37.
+Memory records 34, reconciliation 35 and consent/Calendar 36.
 Source-audio access and binary recording upload remain outside this publication.
 
 The earlier v39 rollout required a supporting server before distributing builds 1.23.17+52,
@@ -283,28 +284,17 @@ are checked around provider work. Media processing and Knowledge ingestion are
 reported separately; an accepted queue item is not evidence of a completed
 transcript or index. Exact acceptance reads and matching replay do not requeue.
 
-The Account journal preserves record and health recovery while adding workflow
-and manual fact actions under the same single pending-action boundary. Existing
-encrypted owner/role binding is unchanged. Unknown writes retain their original
-key and reviewed request, with GET-only recovery; navigation or a new review
-cannot reset uncertain admission. Agent/Skill controls use the existing encrypted
-Specialist recovery store with the same rule. These changes add no agent-tool
-authority: agent effects continue through the governed executor.
+Agent/Skill controls use the existing encrypted Specialist recovery store.
+Unknown writes retain their original key and reviewed request, with GET-only
+recovery; navigation or a new review cannot reset uncertain admission. Agent
+effects continue through the governed executor.
 
-Migration 226 adds nullable exact request intent/digest columns to immutable
-health score revisions, preserving legacy NULL/NULL writers. Its bounded CHECK
-binds owner, Workspace, reviewed Account and empty model suggestions to the score.
-No table, grant or RLS policy is added. Apply and verify before serving v37;
-rollback retains the columns and accepted evidence. Health admission uses the
-existing Account/health locks and transaction, and proves evaluation absence
-alongside current owner/membership authority. Exact GET recovery remains read-only.
-
-The native Account journal adds a version 2 health section while retaining its
-existing create/revise fields, encrypted address and strict role/actor binding.
-Only one pending Account action is admitted. Uncertain responses or storage
-acknowledgements hold the original request; recovery reads its exact receipt.
-Changing roles does not automatically adopt a journal encrypted under another
-role. Full score evidence stays outside this compact recovery record.
+Historical migration 226 adds nullable exact request intent/digest columns to
+immutable health score revisions, preserving legacy NULL/NULL writers. Its
+bounded CHECK binds owner, Workspace, reviewed Account and empty model
+suggestions to the score. No table, grant or RLS policy is added. Keep the
+checksum-linked migration and accepted evidence during rollout and rollback;
+the former health admission and native journal paths are retired.
 
 Personal recall uses the existing immutable consent history and owner lock;
 migration 225 repairs the missing execution grant on its existing immutable row
@@ -1488,7 +1478,7 @@ Keep `OPENAI_API_KEY` only on Vercel; the normal release shell does not need it,
 - Identity and native delivery: `OMNIAGENT_DEFAULT_TENANT`, `OMNIAGENT_DEFAULT_ACTOR`, `OMNIAGENT_DEFAULT_ROLE`, `OMNIAGENT_SESSION_DAYS`, bounded mobile token lifetimes, native platform minimum versions, bootstrap name/tenant, auth mode, `OMNIAGENT_FCM_SERVICE_ACCOUNT_JSON`, and the direct APNs configuration group.
 - Trust: `OMNIAGENT_GRADUATED_AUTONOMY` and `OMNIAGENT_AUTONOMY_GRADUATION_THRESHOLD`.
 - Alerts: queue/dispatch limits, signed webhook URL/secret, Slack webhook, Resend key, and email addresses.
-- Connectors: app-managed MCP bearer credentials use `OMNIAGENT_CREDENTIAL_KEYRING` and require no per-connector environment binding. Remote-browser MCP endpoints are retired and denied; do not restore a Playwright or Browser Use credential. Salesforce read synchronization uses `SALESFORCE_OAUTH_CLIENT_ID`, `SALESFORCE_OAUTH_CLIENT_SECRET`, and the independent optional `SALESFORCE_WEBHOOK_SECRET`; provider tokens remain sealed in the actor-owned OAuth grant. Guarded writes additionally require `SALESFORCE_WRITE_ENABLED=true` and the reviewed `SALESFORCE_WRITE_EXTERNAL_ID_FIELD`, while each Account 360 remains disabled until a separate owner activation. The legacy advanced `bearer_env` path uses `OMNIAGENT_CONNECTOR_SECRET_ALLOWLIST`, JSON `OMNIAGENT_CONNECTOR_SECRET_BINDINGS`, and referenced `OMNIAGENT_CONNECTOR_*` values; every such credential requires an exact tenant-and-origin deployer binding. Keep `OMNIAGENT_CONNECTOR_ALLOW_LEGACY_SYSTEM_SECRETS=false`.
+- Connectors: app-managed MCP bearer credentials use `OMNIAGENT_CREDENTIAL_KEYRING` and require no per-connector environment binding. Remote-browser MCP endpoints are retired and denied; do not restore a Playwright or Browser Use credential. The legacy advanced `bearer_env` path uses `OMNIAGENT_CONNECTOR_SECRET_ALLOWLIST`, JSON `OMNIAGENT_CONNECTOR_SECRET_BINDINGS`, and referenced `OMNIAGENT_CONNECTOR_*` values; every such credential requires an exact tenant-and-origin deployer binding. Keep `OMNIAGENT_CONNECTOR_ALLOW_LEGACY_SYSTEM_SECRETS=false`.
 - Model credentials and inbound MCP: `OMNIAGENT_CREDENTIAL_KEYRING`, `OMNIAGENT_MCP_ALLOWED_HOSTS`, and `OMNIAGENT_MCP_ALLOWED_ORIGINS`. MCP remains disabled per actor until enabled in Settings and requires a scoped, hash-only service key.
 - Model routing: a workspace model assignment that cannot be used as saved (Settings unreadable, provider disconnected, credential unopenable) stops the run with a `model_route_degraded` event and calls no model. Set `OMNIAGENT_MODEL_ROUTE_ALLOW_DEPLOYMENT_FALLBACK=true` only to let those runs use the deployment's own provider keys instead; each such run still records the event.
 - Workflow triggers: use dedicated `OMNIAGENT_TRIGGER_*` HMAC keys. Put legacy server-only names in `OMNIAGENT_TRIGGER_SECRET_ALLOWLIST`; platform credentials are always rejected, and unauthenticated triggers remain disabled at dispatch time in production.
@@ -2276,9 +2266,8 @@ deletion controls.
 
 P11.7 truthful Integrations is a web-only projection and UI release with no
 migration, backfill, environment change, or Fly release. It reads the current
-OAuth grants, MCP/OpenAPI contracts, Salesforce sync health, and usage receipts;
-Salesforce still requires its existing external OAuth and relay configuration
-before it can report working. Deploy it as one complete Vercel feature. Verify
+OAuth grants, MCP/OpenAPI contracts, and usage receipts. Deploy it as one
+complete Vercel feature. Verify
 anonymous access returns 401, an authenticated response validates as
 `p11.7-truthful-integrations:1`, failed inventories remain unavailable, catalog
 suggestions remain visibly not installed, and no raw cursor or credential value
@@ -2726,30 +2715,19 @@ release and v33 contracts before distributing a client that uses these writes.
 A rollback to the retained v32 client is a client-compatibility option, not
 permission to run a pre-v220 server against admitted decision records.
 
-### Customer Account mutation intent schema v221
+### Historical Customer Account mutation intent schema v221
 
-`customer_account_mutation_intents_v1` follows the exact v220 predecessor.
-It adds paired nullable request intent and digest columns to immutable Account
-revisions. Apply it through the dedicated migration job before serving the new
-create/revise application path, then retain schema verification and serving-role
-transaction evidence. No table, RLS policy or privilege expansion is introduced.
+`customer_account_mutation_intents_v1` follows the exact v220 predecessor and
+adds paired nullable request intent and digest columns to immutable Account
+revisions. Keep it in the dedicated checksum-linked migration chain and retain
+schema verification and serving-role transaction evidence. It introduces no
+new table, RLS policy, or privilege expansion.
 
-The new path rechecks current canonical account ownership and Workspace write
-authority after acquiring the account admission lock. It atomically stores the
-normalized request, immutable revision, current projection and typed event. An
-identical accepted request returns its original account revision before a fresh
-CAS check; changed input and ambiguous legacy evidence are conflicts. The
-acceptance describes the original write, while the service receipt describes
-current request authority. The membership read does not serialize an independent
-authority-table revocation with the account transaction.
-
-Existing revisions and legacy internal Salesforce writers retain NULL/NULL
-intent fields and remain readable. They do not acquire exact-request replay
-guarantees. An application rollback preserves those rows but removes the new
-recovery behavior; use a compatible application for clients relying on it. Do
-not drop intent columns or rewrite immutable revisions during rollback. Native
-Account writes remain unavailable until a separate typed contract publication.
-
+The product feature was retired on 2026-10-07. Existing revisions, including
+legacy NULL/NULL intent fields, and their access protections remain retained.
+Do not drop intent columns, rewrite immutable revisions, or remove historical
+migrations during rollout or rollback. Their presence does not restore routes,
+tools, sync, or native mutation authority.
 
 ### Memory lifecycle acceptance schema v222
 
@@ -2776,9 +2754,9 @@ rollback procedure. New native controls require the paired v34 API publication.
 
 ### Native personal-data and Markets publication v34
 
-v34 publishes typed bounded Account, Library/current/history, entity-selector,
-Memory lifecycle and stored Markets projections. New Account record mutations
-and private Memory record/lifecycle controls require fresh v34 attestation plus
+v34 published typed bounded Library/current/history, entity-selector, Memory
+lifecycle and stored Markets projections. Private Memory record/lifecycle
+controls require fresh v34 attestation plus
 their existing application permission and exact current target authority. v33
 remains supported with its byte-frozen documents; v32 remains an unadvertised
 archive, and v31 public documents are retired. Existing capability floors stay

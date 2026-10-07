@@ -146,7 +146,6 @@ describe("OAuth connection metadata route", () => {
     };
     expect(body.grants.map(({ id }) => id)).toEqual([
       "google-personal",
-      "salesforce",
     ]);
     expect(body.grants.every(({ manageable }) => manageable)).toBe(true);
   });

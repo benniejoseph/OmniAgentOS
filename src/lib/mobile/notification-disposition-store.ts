@@ -19,6 +19,7 @@ import {
   notificationDispositionId,
   notificationDispositionPublicProjection,
   notificationDispositionRecordV1Schema,
+  notificationDispositionSourceKindSchema,
   type NotificationDigestDeliveryV1,
   type NotificationDispositionCoordinates,
   type NotificationDispositionDeliveryKind,
@@ -80,6 +81,7 @@ export async function listNotificationDispositions(input: {
           SELECT * FROM omni_notification_dispositions
           WHERE tenant_id = ${tenantId}
             AND owner_actor_id = ${ownerActorId}
+            AND source_kind = ANY(${notificationDispositionSourceKindSchema.options}::TEXT[])
             AND (${includeResponsibilityChanges} OR source_kind <> 'responsibility_change')
             AND updated_at < ${before}
           ORDER BY updated_at DESC, id COLLATE "C" DESC
@@ -89,6 +91,7 @@ export async function listNotificationDispositions(input: {
           SELECT * FROM omni_notification_dispositions
           WHERE tenant_id = ${tenantId}
             AND owner_actor_id = ${ownerActorId}
+            AND source_kind = ANY(${notificationDispositionSourceKindSchema.options}::TEXT[])
             AND (${includeResponsibilityChanges} OR source_kind <> 'responsibility_change')
           ORDER BY updated_at DESC, id COLLATE "C" DESC
           LIMIT ${limit}
@@ -144,6 +147,7 @@ export async function listDueNotificationDigestActors(input: {
     SELECT owner_actor_id, MIN(evaluated_at) AS first_evaluated_at
     FROM omni_notification_dispositions
     WHERE tenant_id = ${tenantId}
+      AND source_kind = ANY(${notificationDispositionSourceKindSchema.options}::TEXT[])
       AND outcome = 'digest'
       AND state = 'pending'
       AND evaluated_at <= ${cutoff}
@@ -291,6 +295,7 @@ async function flushDigestInTransaction(input: {
     FROM omni_notification_dispositions
     WHERE tenant_id = ${tenantId}
       AND owner_actor_id = ${ownerActorId}
+      AND source_kind = ANY(${notificationDispositionSourceKindSchema.options}::TEXT[])
       AND outcome = 'digest'
       AND state = 'pending'
       AND evaluated_at <= ${cutoff}

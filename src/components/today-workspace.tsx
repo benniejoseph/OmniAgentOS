@@ -7,7 +7,6 @@ import {
   AlertTriangle,
   Bell,
   BrainCircuit,
-  Building2,
   CalendarDays,
   Check,
   Circle,
@@ -37,7 +36,6 @@ import {
   formatTodayTime,
 } from "@/lib/today/presentation";
 import type { TodaySnapshot } from "@/lib/today/snapshot";
-import type { CustomerSuccessPortfolio } from "@/lib/customer-success/intelligence-contracts";
 import type {
   CohesiveTodayProjection,
   TodayAgendaItem,
@@ -99,7 +97,6 @@ export function TodayWorkspace({
   const [usagePeriod, setUsagePeriod] = useState<UsagePeriodKey>("day");
   const [usageLoading, setUsageLoading] = useState(!initialProjection?.usage);
   const [todayError, setTodayError] = useState<string>();
-  const [customerPortfolio, setCustomerPortfolio] = useState<CustomerSuccessPortfolio | undefined>(initialProjection?.customerPortfolio || undefined);
   const [agenda, setAgenda] = useState<readonly TodayAgendaItem[]>(initialProjection?.agenda || []);
   const [sourceStates, setSourceStates] = useState<readonly TodayProjectionSourceState[]>(initialProjection?.sources || []);
   const [loading, setLoading] = useState(!hasInitialWorkspace);
@@ -178,7 +175,6 @@ export function TodayWorkspace({
             : "Agenda unavailable";
   const approvalsCurrent = sourceIsCurrent("approvals");
   const workCurrent = sourceIsCurrent("active_agents") && sourceIsCurrent("work");
-  const customerCurrent = sourceIsCurrent("customer_risks");
   const sourceIssueCount = sourceStates.filter((source) => source.status === "error" || source.status === "restricted").length;
 
   function maybeGenerateBrief(nextToday: TodaySnapshot) {
@@ -214,7 +210,7 @@ export function TodayWorkspace({
     setUsageLoading(true);
     try {
       const payload = await readJson(
-        "/api/today/agenda?workLimit=16&approvalLimit=12&meetingLimit=50&accountLimit=50",
+        "/api/today/agenda?workLimit=16&approvalLimit=12&meetingLimit=50",
       );
       const projection = payload.projection as CohesiveTodayProjection;
       if (!projection?.today || !Array.isArray(projection.sources)) {
@@ -222,7 +218,6 @@ export function TodayWorkspace({
       }
       setToday(projection.today);
       setSummary(record(projection.workspaceSummary));
-      setCustomerPortfolio(projection.customerPortfolio || undefined);
       setUsage(projection.usage || undefined);
       setAgenda(projection.agenda || []);
       setSourceStates(projection.sources);
@@ -564,15 +559,6 @@ export function TodayWorkspace({
             href="/app/projects"
             tone="projects"
           /> : null}
-          {visibleSections.has("customers") ? <TodayOverviewLink
-            icon={Building2}
-            label="Customer attention"
-            value={customerCurrent ? (customerPortfolio?.counts.urgent || 0) + (customerPortfolio?.counts.attention || 0) : "—"}
-            detail={customerCurrent ? `${customerPortfolio?.counts.pendingApprovals || 0} approvals · ${customerPortfolio?.counts.overdueCommitments || 0} overdue` : "Status unavailable"}
-            href="/app/accounts"
-            attention={Boolean(customerPortfolio?.counts.urgent || customerPortfolio?.counts.attention)}
-            tone="customers"
-          /> : null}
           {visibleSections.has("memory") ? <TodayOverviewLink
             icon={BrainCircuit}
             label="Memory"
@@ -672,26 +658,13 @@ export function TodayWorkspace({
         </aside> : null}
       </section> : null}
 
-      {["approvals", "customers", "active_agents", "work", "memory", "conversations"].some((section) => visibleSections.has(section as TodaySectionKey)) ? <section className={styles["today-context-grid"]}>
+      {["approvals", "active_agents", "work", "memory", "conversations"].some((section) => visibleSections.has(section as TodaySectionKey)) ? <section className={styles["today-context-grid"]}>
         {visibleSections.has("approvals") ? <TodayContextSection icon={Bell} title="Needs your approval" description="Consequential actions remain paused until you review them." href="/app/approvals">
           {approvals.length ? approvals.slice(0, 5).map((approval, index) => (
             <Link key={text(approval.id) || index} href={approvalInboxHref({ id: text(approval.id), kind: parseApprovalKind(approval.kind), returnTo: "/app" })} className={styles["today-context-row"]}>
               <span className={clsx(styles["today-live-dot"], styles["is-active"])} /><div><strong>{text(approval.title, "Approval required")}</strong><small>Risk {text(approval.riskLevel, "unknown")} · {text(approval.status, "waiting").replaceAll("_", " ")}</small></div><ArrowRight size={14} aria-hidden="true" />
             </Link>
           )) : <ContextEmpty>{approvalsCurrent ? "No governed action is waiting for your approval." : "The approval queue could not be checked."}</ContextEmpty>}
-        </TodayContextSection> : null}
-
-        {visibleSections.has("customers") ? <TodayContextSection icon={Building2} title="Customer attention" description="Evidence-bound next actions across your customer portfolio." href="/app/accounts">
-          {customerPortfolio?.accounts.length ? customerPortfolio.accounts.slice(0, 5).map((account) => (
-            <Link key={account.accountId} href={`/app/accounts/${encodeURIComponent(account.accountId)}`} className={styles["today-context-row"]}>
-              <span className={clsx(styles["today-live-dot"], ["urgent", "attention"].includes(account.attention) && styles["is-active"])} />
-              <div>
-                <strong>{account.name}</strong>
-                <small>{account.nextBestAction.title} · {account.nextBestAction.confidenceBasisPoints / 100}% confidence · suggested</small>
-              </div>
-              <ArrowRight size={14} aria-hidden="true" />
-            </Link>
-          )) : <ContextEmpty>{customerCurrent ? "No customer account currently needs attention." : "Customer attention could not be checked."}</ContextEmpty>}
         </TodayContextSection> : null}
 
         {visibleSections.has("active_agents") ? <TodayContextSection icon={Cpu} title="Active agents" description="Real agent-run identities and their current state." href="/app/command">
@@ -1116,7 +1089,7 @@ function TodayOverviewLink({
   detail: string;
   href: string;
   attention?: boolean;
-  tone: "focus" | "agenda" | "work" | "approvals" | "projects" | "customers" | "memory" | "conversations";
+  tone: "focus" | "agenda" | "work" | "approvals" | "projects" | "memory" | "conversations";
 }) {
   return (
     <Link
@@ -1270,7 +1243,6 @@ function sourceLabel(source: TodayProjectionSourceState["source"]) {
     personal_reminders: "Personal reminders",
     meetings: "Meetings",
     commitments: "Commitments",
-    customer_risks: "Customer risks",
     approvals: "Approvals",
     active_agents: "Active agents",
     work: "Canonical work",
@@ -1294,7 +1266,6 @@ function sectionLabel(section: TodaySectionKey) {
     focus: "Tasks and reminders",
     agenda: "Meetings and commitments",
     approvals: "Approvals",
-    customers: "Customer attention",
     active_agents: "Active agents",
     work: "Canonical work",
     memory: "Memory",

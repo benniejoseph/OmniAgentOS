@@ -16,11 +16,14 @@ export const mobilePushTargetSchema = z.discriminatedUnion("kind", [
     parentId: opaqueId.optional(),
   }).strict(),
   z.object({ kind: z.literal("meeting"), id: opaqueId }).strict(),
-  z.object({ kind: z.literal("customer"), id: opaqueId }).strict(),
   z.object({ kind: z.literal("run"), id: opaqueId }).strict(),
   z.object({ kind: z.literal("notification"), id: opaqueId }).strict(),
   z.object({ kind: z.literal("canary"), id: opaqueId }).strict(),
 ]);
+
+export const MOBILE_PUSH_TARGET_KINDS = mobilePushTargetSchema.options.map(
+  (option) => option.shape.kind.value,
+);
 
 export type MobilePushTarget = z.infer<typeof mobilePushTargetSchema>;
 export type MobilePushPreviewPolicy = "hidden" | "generic" | "title";
@@ -52,7 +55,6 @@ export const mobilePushEnvelopeSchema = z.object({
     "approval",
     "work_item",
     "meeting",
-    "customer",
     "run",
     "notification",
     "canary",
@@ -83,8 +85,6 @@ export function mobilePushDeepLink(input: MobilePushTarget) {
         : `/today?workItemId=${id}`;
     case "meeting":
       return `/meetings/${id}`;
-    case "customer":
-      return `/customers/${id}`;
     case "run":
       return `/results/${encodeURIComponent(`agent:${target.id}`)}`;
     case "notification":
@@ -140,9 +140,7 @@ export function mobilePushPreview(
       ? "A work item needs your attention."
       : target.kind === "meeting"
         ? "A meeting update is ready."
-        : target.kind === "customer"
-          ? "A customer update needs your attention."
-          : target.kind === "run"
+        : target.kind === "run"
             ? "A run update is ready."
             : target.kind === "notification"
               ? "A notification summary needs your attention."

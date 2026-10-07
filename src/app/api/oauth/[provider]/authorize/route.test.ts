@@ -23,6 +23,8 @@ vi.mock("@/lib/connectors/oauth-store", async (importOriginal) => ({
 }));
 
 import { GET } from "@/app/api/oauth/[provider]/authorize/route";
+import { GET as callback } from "@/app/api/oauth/[provider]/callback/route";
+import { DELETE as disconnect } from "@/app/api/oauth/[provider]/route";
 
 const sessionContext = {
   tenantId: "tenant-a",
@@ -59,6 +61,21 @@ afterEach(() => {
 });
 
 describe("Google OAuth authorization route", () => {
+  it.each([
+    ["authorize", GET],
+    ["callback", callback],
+    ["disconnect", disconnect],
+  ] as const)("rejects the retired provider's %s before any authorization or provider work", async (operation, handler) => {
+    const response = await handler(
+      new Request(`https://asael.example/api/oauth/salesforce/${operation}`),
+      { params: Promise.resolve({ provider: "salesforce" }) },
+    );
+    expect(response.status).toBe(404);
+    expect(mocks.authorizeRequest).not.toHaveBeenCalled();
+    expect(mocks.createOAuthAuthorization).not.toHaveBeenCalled();
+    expect(mocks.getOAuthGrantSecrets).not.toHaveBeenCalled();
+  });
+
   it("passes repair intent only for an explicit reconnect", async () => {
     const repair = await GET(
       new Request("https://asael.example/api/oauth/google/authorize?intent=repair"),

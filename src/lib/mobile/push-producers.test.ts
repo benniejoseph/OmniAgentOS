@@ -480,11 +480,11 @@ function account(actorId = "owner@example.test") {
 }
 
 function candidate(
-  kind: "approval" | "meeting" | "customer" | "run",
+  kind: "approval" | "meeting" | "run",
   sourceId: string,
   occursAt: Date,
   options: {
-    state?: "approval_required" | "scheduled" | "at_risk" |
+    state?: "approval_required" | "scheduled" |
       "completed" | "failed" | "canceled";
     cooldownActive?: boolean;
     actorId?: string;
@@ -492,9 +492,7 @@ function candidate(
 ) {
   const sourceKind = kind === "approval"
     ? "tool_approval"
-    : kind === "customer"
-      ? "customer_risk"
-      : kind === "run"
+    : kind === "run"
         ? "agent_run"
         : "meeting";
   return {
@@ -509,9 +507,7 @@ function candidate(
         ? "approval_required"
         : kind === "meeting"
           ? "scheduled"
-          : kind === "customer"
-            ? "at_risk"
-            : "completed"
+          : "completed"
     ),
     target_kind: kind,
     target_id: sourceId,

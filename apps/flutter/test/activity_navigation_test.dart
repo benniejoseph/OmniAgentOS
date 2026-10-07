@@ -42,7 +42,6 @@ void main() {
         '/knowledge',
         '/agents',
         '/meetings',
-        '/accounts',
         '/markets',
         '/automation',
         '/workflows',

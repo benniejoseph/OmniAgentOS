@@ -45,7 +45,6 @@ type ProactiveProducerKind = ProducerKind | "delegation" | "routine" | "security
 type CandidateState =
   | "approval_required"
   | "scheduled"
-  | "at_risk"
   | "completed"
   | "failed"
   | "canceled"
@@ -90,7 +89,6 @@ export async function processDomainMobilePushProducers(options: {
       const queuedByKind: Record<ProducerKind, number> = {
         approval: 0,
         meeting: 0,
-        customer: 0,
         run: 0,
       };
       const queuedProactiveByKind = {
@@ -101,7 +99,6 @@ export async function processDomainMobilePushProducers(options: {
       const processedByKind: Record<ProactiveProducerKind, number> = {
         approval: 0,
         meeting: 0,
-        customer: 0,
         run: 0,
         delegation: 0,
         routine: 0,
@@ -357,21 +354,6 @@ async function readCandidatePage(
           AND meeting.status = 'scheduled'
           AND meeting.scheduled_start_at >= ${nowIso}
           AND meeting.scheduled_start_at <= ${meetingHorizon}
-      ) UNION ALL (
-        SELECT 'customer', 'customer_risk', health.owner_actor_id,
-          health.account_id, health.current_revision_id, health.evaluated_at,
-          'at_risk', 'customer', health.account_id,
-          EXISTS (
-            SELECT 1 FROM omni_mobile_push_deliveries delivery
-            WHERE delivery.tenant_id = ${tenantId}
-              AND delivery.owner_actor_id = health.owner_actor_id
-              AND delivery.status IN ('queued', 'running', 'delivered', 'acknowledged')
-              AND delivery.created_at >= ${cooldownFloor}
-          )
-        FROM omni_customer_health_scores health
-        WHERE health.tenant_id = ${tenantId}
-          AND health.health_status = 'at_risk'
-          AND health.evaluated_at >= ${recentThirtyDays}
       ) UNION ALL (
         SELECT 'run', 'agent_run', run.owner_actor_id, run.id,
           run.status || ':' || run.completed_at::TEXT, run.completed_at,
@@ -669,14 +651,14 @@ function isLegacyProducerKind(
   value: ProactiveProducerKind,
 ): value is ProducerKind {
   return value === "approval" || value === "meeting" ||
-    value === "customer" || value === "run";
+    value === "run";
 }
 
 function proactiveProducerKind(
   value: unknown,
 ): ProactiveProducerKind | undefined {
   const kind = String(value || "");
-  return kind === "approval" || kind === "meeting" || kind === "customer" ||
+  return kind === "approval" || kind === "meeting" ||
       kind === "run" || kind === "delegation" || kind === "routine" ||
       kind === "security"
     ? kind
@@ -688,7 +670,7 @@ function dispositionSourceKind(
 ): NotificationDispositionSourceKind | undefined {
   const kind = String(value || "");
   return kind === "tool_approval" || kind === "meeting" ||
-      kind === "customer_risk" || kind === "agent_run" ||
+      kind === "agent_run" ||
       kind === "delegated_task" || kind === "scheduled_routine" ||
       kind === "security_incident"
     ? kind
@@ -702,7 +684,6 @@ function candidateState(
   const state = String(value || "") as CandidateState;
   if (kind === "approval" && state === "approval_required") return state;
   if (kind === "meeting" && state === "scheduled") return state;
-  if (kind === "customer" && state === "at_risk") return state;
   if (kind === "run" && ["completed", "failed", "canceled"].includes(state)) {
     return state;
   }
@@ -730,11 +711,10 @@ function candidateState(
 function isLegacyState(
   kind: ProducerKind,
   state: CandidateState,
-): state is "approval_required" | "scheduled" | "at_risk" |
+): state is "approval_required" | "scheduled" |
   "completed" | "failed" | "canceled" {
   return (kind === "approval" && state === "approval_required") ||
     (kind === "meeting" && state === "scheduled") ||
-    (kind === "customer" && state === "at_risk") ||
     (kind === "run" && ["completed", "failed", "canceled"].includes(state));
 }
 

@@ -18,7 +18,7 @@ describe("everyday workspace navigation", () => {
     expect(more.collapsible).toBe(true);
     expect(more.items.map(({ href }) => href)).toEqual(expect.arrayContaining([
       "/app", "/app/capture", "/app/approvals", "/app/results", "/app/workflows", "/app/responsibilities",
-      "/app/connectors", "/app/meetings", "/app/accounts", "/app/markets",
+      "/app/connectors", "/app/meetings", "/app/markets",
       "/app/agents", "/app/payments", "/app/evaluations", "/app/observability",
       "/app/security", "/app/settings",
     ]));

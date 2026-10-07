@@ -73,7 +73,7 @@ const cost = object({
   knownEstimatedCostMicrousd: nullable(count), knownCalls: count, unknownCalls: count, detail,
 });
 const installed = object({
-  id: string(1, 240), name: string(1, 160), kind: enumeration("google_service", "mcp", "openapi", "salesforce"),
+  id: string(1, 240), name: string(1, 160), kind: enumeration("google_service", "mcp", "openapi"),
   adapter, category, installation: enumeration("installed", "retained_read_only"),
   state: enumeration("working", "degraded", "action_required", "unavailable"), configured: nullable(boolean), connected: boolean, manageable: boolean,
   account: optional(object({ connectionId: uuid, email: nullable(email), label: string(1, 80, true), purpose: enumeration("personal", "work") })),
@@ -95,7 +95,7 @@ const overview = object({
   disclosure: object({ catalogSuggestions: literal("separate_from_installed"), credentialValuesIncluded: literal(false),
     rawCursorValuesIncluded: literal(false), providerContentIncluded: literal(false), costBasis: literal("recorded_attributable_usage_only") }),
   summary: object({ installed: count, working: count, degraded: count, actionRequired: count, unavailable: count, suggestions: count }),
-  inventory: object({ oauth: inventory, mcp: inventory, openapi: inventory, salesforce: inventory, usage: inventory }),
+  inventory: object({ oauth: inventory, mcp: inventory, openapi: inventory, usage: inventory }),
   installed: array(installed, 200), suggestions: array(suggestion, 100),
 });
 

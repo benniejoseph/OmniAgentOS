@@ -18,6 +18,55 @@ import {
 } from "@/lib/mobile/contracts";
 
 describe("native API contracts", () => {
+  it("withdraws the retired workspace from both supported surfaces while preserving every surviving v47 contract", async () => {
+    const original = JSON.parse(await readFile(new URL("../../../docs/archive/native-contracts/v47/openapi.json", import.meta.url), "utf8"));
+    const expected = structuredClone(original);
+    for (const [path, methods] of Object.entries(expected.paths)) {
+      for (const [method, operation] of Object.entries(methods as Record<string, { operationId: string }>)) {
+        if (operation.operationId.startsWith("customers.")) delete expected.paths[path][method];
+      }
+      if (Object.keys(expected.paths[path]).length === 0) delete expected.paths[path];
+    }
+    for (const name of Object.keys(expected.components.schemas)) {
+      if (/^Native(?:Customer|Salesforce)/.test(name)) delete expected.components.schemas[name];
+    }
+    for (const causeKind of [
+      expected.components.schemas.NativePushAcknowledgementResponse.properties.causeKind,
+      expected.components.schemas.NativePushReceiptResponse.properties.delivery.properties.causeKind,
+      expected.components.schemas.NativePushCanaryResponse.properties.state.properties.causeKind,
+    ]) causeKind.enum = causeKind.enum.filter((kind: string) => kind !== "customer");
+    const previous = JSON.parse(await readFile(new URL("../../../public/native-contracts/v47/openapi.json", import.meta.url), "utf8"));
+    expect(previous).toEqual(expected);
+    for (const version of NATIVE_API_SUPPORTED_VERSIONS) {
+      const document = JSON.parse(await readFile(new URL(`../../../public/native-contracts/v${version}/openapi.json`, import.meta.url), "utf8"));
+      expect(document.paths).toEqual(expected.paths);
+      expect(Object.keys(document.components.schemas).filter((name) => /Customer|Salesforce/.test(name))).toEqual([]);
+      const schemas = structuredClone(expected.components.schemas);
+      if (version === 48) {
+        for (const compatibility of [
+          schemas.NativeCompatibility,
+          schemas.NativeLoginResponse.properties.client,
+          schemas.NativeRefreshResponse.properties.client,
+          schemas.NativeBootstrapResponse.properties.client,
+        ]) compatibility.properties.supportedContractVersions.prefixItems = [
+          { type: "number", const: 48 }, { type: "number", const: 47 },
+        ];
+        for (const contract of [
+          schemas.NativeBootstrapResponse.properties.api.properties.nativeContract,
+          schemas.NativeContractDiscovery,
+        ]) {
+          contract.properties.currentVersion.const = 48;
+          contract.properties.previousVersion.const = 47;
+          contract.properties.supportedVersions.prefixItems = [
+            { type: "number", const: 48 }, { type: "number", const: 47 },
+          ];
+        }
+      }
+      expect(document.components.schemas).toEqual(schemas);
+      expect(nativeOperationsForVersion(version)?.some(({ id }) => id.startsWith("customers."))).toBe(false);
+    }
+    expect(nativeOperationsForVersion(48)).toEqual(nativeOperationsForVersion(47));
+  });
   it("adds only reviewed official GitHub upgrade, exact recovery and closure in v47", () => {
     const previous = nativeOperationsForVersion(46)!, current = nativeOperationsForVersion(47)!;
     expect(current.slice(0, previous.length)).toEqual(previous);
@@ -259,8 +308,8 @@ describe("native API contracts", () => {
   it("retains exactly the current and previous rollout versions", () => {
     // Tripwire: a native contract bump must be a deliberate, reviewed change.
     // The other tests follow these constants.
-    expect(NATIVE_API_CURRENT_VERSION).toBe(47);
-    expect(NATIVE_API_PREVIOUS_VERSION).toBe(46);
+    expect(NATIVE_API_CURRENT_VERSION).toBe(48);
+    expect(NATIVE_API_PREVIOUS_VERSION).toBe(47);
     expect(NATIVE_API_SUPPORTED_VERSIONS).toEqual([
       NATIVE_API_CURRENT_VERSION,
       NATIVE_API_PREVIOUS_VERSION,
@@ -501,11 +550,11 @@ describe("native API contracts", () => {
         "responsibilities.references", "responsibilities.lifecycle.get", "responsibilities.lifecycle.change",
         "responsibilities.observations.list", "responsibilities.notifications.get", "responsibilities.notifications.change"),
       33: added("meetings.create", "meetings.update", "meetings.commitments.list", "meetings.commitments.propose", "meetings.commitments.resolve"),
-      34: { ...added("customers.health", "customers.intelligence", "customers.workflows", "customers.salesforce.status", "customers.create", "customers.update", "library.list", "library.get", "library.versions.list", "library.versions.get", "entities.options", "market.snapshots.list", "market.snapshots.get", "market.analysis.metadata", "market.jobs.get", "market.calendar", "memory.create", "memory.update", "memory.delete", "memory.lifecycle.get", "memory.lifecycle.change"), removed: ["market.analysis"] },
+      34: { ...added("library.list", "library.get", "library.versions.list", "library.versions.get", "entities.options", "market.snapshots.list", "market.snapshots.get", "market.analysis.metadata", "market.jobs.get", "market.calendar", "memory.create", "memory.update", "memory.delete", "memory.lifecycle.get", "memory.lifecycle.change"), removed: ["market.analysis"] },
       35: added("memory.reconciliation.list", "memory.reconciliation.read", "memory.reconciliation.resolve"),
       36: added("memory.personal-context-consent.get", "memory.personal-context-consent.decide", "memory.personal-context-consent.decision.get", "meetings.calendar.get", "meetings.calendar.sync", "meetings.calendar.sync.get"),
-      37: added("customers.health.evaluate", "customers.health.evaluations.get"),
-      38: added("agents.delete.review", "agents.delete", "agents.mutations.get", "skills.mutation.review", "skills.create", "skills.update", "skills.delete", "skills.mutations.get", "memory.promotions.list", "memory.promotions.read", "memory.promotions.decide", "customers.workflows.start", "customers.workflows.outcome", "customers.workflows.get", "customers.workflows.mutations.get", "meetings.recordings.review", "meetings.recordings.process", "meetings.recordings.processing.get", "customers.facts.record", "customers.facts.acceptance.get", "customers.salesforce.actions.review", "customers.salesforce.actions.submit", "customers.salesforce.actions.get", "knowledge.cognification.list", "knowledge.cognification.read", "knowledge.cognification.decide", "knowledge.cognification.decisions.get", "knowledge.sources.deletion.review", "knowledge.sources.delete", "knowledge.sources.deletions.get", "memory.graph.universe", "memory.graph.node", "memory.graph.entity", "memory.graph.temporalRelations", "memory.graph.relationshipPaths", "memory.maintenance.review", "memory.maintenance.run", "memory.maintenance.runs.get", "memory.graph.rebuild.review", "memory.graph.rebuild", "memory.graph.rebuilds.get", "knowledge.cognification.build.review", "knowledge.cognification.build", "knowledge.cognification.builds.get"),
+      37: added(),
+      38: added("agents.delete.review", "agents.delete", "agents.mutations.get", "skills.mutation.review", "skills.create", "skills.update", "skills.delete", "skills.mutations.get", "memory.promotions.list", "memory.promotions.read", "memory.promotions.decide", "meetings.recordings.review", "meetings.recordings.process", "meetings.recordings.processing.get", "knowledge.cognification.list", "knowledge.cognification.read", "knowledge.cognification.decide", "knowledge.cognification.decisions.get", "knowledge.sources.deletion.review", "knowledge.sources.delete", "knowledge.sources.deletions.get", "memory.graph.universe", "memory.graph.node", "memory.graph.entity", "memory.graph.temporalRelations", "memory.graph.relationshipPaths", "memory.maintenance.review", "memory.maintenance.run", "memory.maintenance.runs.get", "memory.graph.rebuild.review", "memory.graph.rebuild", "memory.graph.rebuilds.get", "knowledge.cognification.build.review", "knowledge.cognification.build", "knowledge.cognification.builds.get"),
       39: added("content.search", "content.search.work.get", "content.search.memory.get"),
       40: added("google.personal.actions.review", "google.personal.actions.submit", "google.personal.actions.read", "connectors.native.list", "connectors.native.review", "connectors.native.act", "connectors.native.actions.get"),
       41: added("connectors.native.credentialRemovals.submit", "connectors.native.credentialRemovals.read"),
@@ -515,6 +564,7 @@ describe("native API contracts", () => {
       46: added("connectors.native.mcpDiscoveries.submit", "connectors.native.mcpDiscoveries.read", "connectors.native.mcpDiscoveries.close"),
       45: added("connectors.native.openapiImportPreparations.submit", "connectors.native.openapiImportPreparations.read", "connectors.native.openapiImportPreparations.abandon", "connectors.native.openapiImports.submit", "connectors.native.openapiImports.read"),
       47: added("connectors.native.githubUpgrades.review", "connectors.native.githubUpgrades.submit", "connectors.native.githubUpgrades.read", "connectors.native.githubUpgrades.close"),
+      48: added(),
     });
     // v20 and v23 changed only request and push schemas.
     expect(nativeOperationsForVersion(20)).toEqual(nativeOperationsForVersion(19));
@@ -541,13 +591,14 @@ describe("native API contracts", () => {
     }
   });
 
-  it("publishes the current and previous contracts plus one unadvertised archive", async () => {
+  it("publishes the supported contracts and retains both immutable pre-retirement archives", async () => {
     const published = (await readdir(
       new URL("../../../public/native-contracts/", import.meta.url),
     )).filter((name) => !name.startsWith(".")).sort();
 
-    // Shipping a new contract deletes the oldest of these directories.
+    // This product retirement preserves the prior archive identities.
     expect(published).toEqual([
+      "v45",
       `v${NATIVE_API_PREVIOUS_VERSION - 1}`,
       `v${NATIVE_API_PREVIOUS_VERSION}`,
       `v${NATIVE_API_CURRENT_VERSION}`,
@@ -703,9 +754,9 @@ describe("native API contracts", () => {
       delivery: {
         id: "delivery-one",
         notificationId: "n".repeat(240),
-        causeKind: "customer",
+        causeKind: "meeting",
         causeId: "c".repeat(240),
-        deepLink: "/customers/customer-one",
+        deepLink: "/meetings/meeting-one",
         providerState: "accepted",
         providerAcceptedAt: timestamp,
         appState: "received",
@@ -774,6 +825,20 @@ describe("native API contracts", () => {
         expect(sha256(document), `v${version}/${name}`).toBe(digest);
       }
     }
+  });
+
+  it("preserves the original v47 manifest identity outside the public serving path", async () => {
+    const frozen = {
+      "openapi.json": "cc783eff3bf60b6a198607c4fce70c8d87b12bbbccec5b1909106e67084f6b24", // gitleaks:allow -- public artifact integrity digest
+      "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
+      "fixtures.json": "738bc72f1a1ff8d175549b00903437bb265f28adce74d92500970a65889f9eba", // gitleaks:allow -- public artifact integrity digest
+      "manifest.json": "7213892e4b6e4143e8f87dec58fffac88fef3a1cc7b610ea24dd99687be30dae", // gitleaks:allow -- public artifact integrity digest
+    };
+    for (const [name, digest] of Object.entries(frozen)) {
+      expect(sha256(await readFile(new URL(`../../../docs/archive/native-contracts/v47/${name}`, import.meta.url), "utf8"))).toBe(digest);
+    }
+    const manifest = JSON.parse(await readFile(new URL("../../../public/native-contracts/v47/manifest.json", import.meta.url), "utf8"));
+    expect(manifest.retirement).toEqual({ reason: "crm_workspace_retired", originalManifestSha256: frozen["manifest.json"] });
   });
 
   it("keeps the v29 to v30 operation surface unchanged while task authority remains version-gated", () => {
