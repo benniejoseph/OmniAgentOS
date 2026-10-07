@@ -73,6 +73,14 @@ describe("live web search usage", () => {
       },
     });
 
+    // The same low reasoning/answer allowance used by other model calls also
+    // applies to the independently assigned hosted-search model. Minimal
+    // reasoning is not supported by GPT-5's web search tool.
+    expect(mocks.create).toHaveBeenCalledWith(expect.objectContaining({
+      reasoning: { effort: "low" },
+      max_output_tokens: 6_000,
+    }), expect.anything());
+
     // The deployment's client tells its gateway which work the call is for.
     expect(mocks.client).toHaveBeenCalledWith({
       apiKey: undefined,

@@ -310,6 +310,14 @@ class _KnowledgeViewState extends State<KnowledgeView>
       return KnowledgeRelationshipMap(
         controller: widget.controller,
         active: _tabs.index == 3,
+        onOpenMemory: (memory) {
+          setState(() => _selectedMemoryId = memory.id);
+          _tabs.animateTo(0);
+        },
+        onOpenSource: (source) {
+          _tabs.animateTo(1);
+          widget.controller.search(source.title);
+        },
       );
     GraphNode? selected;
     for (final node in state.nodes) {

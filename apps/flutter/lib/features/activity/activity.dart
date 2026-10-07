@@ -8,11 +8,11 @@ const activitySourceLimit = 100;
 const activitySources = ['runs', 'approvals', 'notifications'];
 
 enum ActivityGroup {
-  all('all', 'All activity'),
+  all('all', 'All updates'),
   working('working', 'Working'),
   needsYou('needs_you', 'Needs you'),
-  updates('updates', 'Updates'),
-  history('history', 'History');
+  updates('updates', 'Reminders'),
+  history('history', 'Finished');
 
   const ActivityGroup(this.wire, this.label);
   final String wire;

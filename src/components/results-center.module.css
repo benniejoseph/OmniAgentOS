@@ -48,7 +48,7 @@
   flex: 1 1 22rem;
 }
 
-.introduction h1 {
+.introduction h1, .introduction h2 {
   font-size: 1.75rem;
   font-weight: 600;
   line-height: 2.25rem;
@@ -650,7 +650,7 @@ a.resultRow .rowTitle {
 }
 
 @media (max-width: 47.999rem) {
-  .introduction h1 {
+  .introduction h1, .introduction h2 {
     font-size: 1.5rem;
     line-height: 2rem;
   }
@@ -723,3 +723,6 @@ a.resultRow .rowTitle {
     box-shadow: none;
   }
 }
+
+.embedded { padding: 0; max-width: none; }
+.embedded .introduction h2 { font-size: 1.125rem; line-height: 1.75rem; }

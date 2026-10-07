@@ -24,6 +24,7 @@ import type {
 } from "@/lib/memory/types";
 import { createUniverseSelectionGuard, universeDetailForSelection } from "@/components/memory-universe-selection";
 import styles from "@/components/memory-universe.module.css";
+import { MemoryLandscape } from "@/components/memory-landscape";
 
 type GraphMode = "evidence" | "verified";
 
@@ -187,7 +188,18 @@ const entityLabels: Record<EntityTypeId, string> = {
   opportunity: "Opportunities",
 };
 
-export function MemoryUniverse(props: { active: boolean; onAddConnectedFact?: () => void }) {
+export function MemoryUniverse(props: { active: boolean; onAddConnectedFact?: () => void; onOpenMemory?: (id: string) => void; onOpenSource?: (title: string) => void }) {
+  const [view, setView] = useState<"library" | "connections">("library");
+  return <div className={styles.shell}>
+    <div className={styles.viewSwitch} aria-label="Knowledge map view">
+      <button type="button" aria-pressed={view === "library"} onClick={() => setView("library")}><Layers3 size={16} />Knowledge map</button>
+      <button type="button" aria-pressed={view === "connections"} onClick={() => setView("connections")}><GitBranch size={16} />Explore connections</button>
+    </div>
+    {view === "library" ? <MemoryLandscape active={props.active} onOpenMemory={props.onOpenMemory} onOpenSource={props.onOpenSource} /> : <MemoryConnections active={props.active} onAddConnectedFact={props.onAddConnectedFact} />}
+  </div>;
+}
+
+function MemoryConnections(props: { active: boolean; onAddConnectedFact?: () => void }) {
   const [payload, setPayload] = useState<UniversePayload>();
   const [mode, setMode] = useState<GraphMode>("evidence");
   const [query, setQuery] = useState("");
@@ -195,8 +207,8 @@ export function MemoryUniverse(props: { active: boolean; onAddConnectedFact?: ()
   const [selectedId, setSelectedId] = useState<string>();
   const [detail, setDetail] = useState<SelectedDetail>();
   const [names, setNames] = useState<Record<string, string>>({});
-  const [local, setLocal] = useState(true);
-  const [depth, setDepth] = useState(1);
+  const local = true;
+  const depth = 1;
   const [camera, setCamera] = useState({ x: 0, y: 0, zoom: 1 });
   const [hoveredId, setHoveredId] = useState<string>();
   const [loading, setLoading] = useState(true);
@@ -288,12 +300,12 @@ export function MemoryUniverse(props: { active: boolean; onAddConnectedFact?: ()
     const normalized = query.trim().toLocaleLowerCase();
     return candidates.filter((node) => (kind === "all" || node.kind === kind) && (!normalized || `${names[node.id] || ""} ${labelForKind(node.kind, mode)}`.toLocaleLowerCase().includes(normalized)));
   }, [ordered, local, selectedId, depth, neighbors, nodeById, kind, query, names, mode]);
-  const mapNodes = useMemo(() => visible.slice(0, local ? selectedId ? 48 : 24 : 80), [visible, local, selectedId]);
+  const mapNodes = useMemo(() => visible.slice(0, selectedId ? 13 : 12), [visible, local, selectedId]);
   const mapIds = useMemo(() => new Set(mapNodes.map((node) => node.id)), [mapNodes]);
-  const mapEdges = useMemo(() => graph.edges.filter((edge) => mapIds.has(edge.sourceNodeId) && mapIds.has(edge.targetNodeId)).sort((a, b) => b.weight - a.weight).slice(0, 160), [graph.edges, mapIds]);
+  const mapEdges = useMemo(() => graph.edges.filter((edge) => (edge.sourceNodeId === selectedId || edge.targetNodeId === selectedId) && mapIds.has(edge.sourceNodeId) && mapIds.has(edge.targetNodeId)).sort((a, b) => b.weight - a.weight).slice(0, 160), [graph.edges, mapIds, selectedId]);
   // Names and pointer movement never participate in layout. Coordinates remain stable while inspecting.
   const layoutKey = mapNodes.map((node) => node.id).join("|");
-  const positions = useMemo(() => layoutRelationshipMap(mapNodes, mapEdges), [layoutKey, graph.edges]); // eslint-disable-line react-hooks/exhaustive-deps
+  const positions = useMemo(() => layoutRelationshipMap(mapNodes, selectedId), [layoutKey, selectedId]); // eslint-disable-line react-hooks/exhaustive-deps
   const kinds = [...new Set(ordered.map((node) => node.kind))];
   const selected = selectedId ? nodeById.get(selectedId) : undefined;
   const visibleSummary = readableGraphSummary(detail?.summary || "");
@@ -307,7 +319,7 @@ export function MemoryUniverse(props: { active: boolean; onAddConnectedFact?: ()
   async function selectNode(id: string) {
     if (!nodeById.has(id)) return;
     const request = selectionGuard.begin(mode, id);
-    setSelectedId(id); setDetail(undefined); setDetailError(undefined); setDetailLoading(true);
+    setKind("all"); setQuery(""); setSelectedId(id); setDetail(undefined); setDetailError(undefined); setDetailLoading(true);
     try {
       const result = await readDetail(mode, id, request.controller.signal);
       if (!selectionGuard.isCurrent(request)) return;
@@ -331,7 +343,7 @@ export function MemoryUniverse(props: { active: boolean; onAddConnectedFact?: ()
     }
     if (!controller.signal.aborted) {
       setNaming(false);
-      setNotice(`${loaded} ${loaded === 1 ? "name" : "names"} loaded.${failed ? ` ${failed} could not be opened with your current access.` : ""} ${mapNodes.filter((node) => !names[node.id]).length > pending.length ? "Select Show names again for more." : ""}`.trim());
+      setNotice(`${loaded} ${loaded === 1 ? "name" : "names"} loaded.${failed ? ` ${failed} could not be opened with your current access.` : ""} ${mapNodes.filter((node) => !names[node.id]).length > pending.length ? "Open another item to follow its connections." : ""}`.trim());
     }
   }
   function refresh() {
@@ -352,7 +364,7 @@ export function MemoryUniverse(props: { active: boolean; onAddConnectedFact?: ()
 
   return <section className={styles.shell} aria-labelledby="memory-universe-title">
     <header className={styles.header}>
-      <div><h2 id="memory-universe-title">Relationship map</h2><p>Choose an item to explore its connections. Show names to open up to 24 visible items at a time.</p></div>
+      <div><h2 id="memory-universe-title">One connection at a time</h2><p>Choose a starting point, then follow up to 12 direct connections. Each line has a recorded source relationship.</p></div>
       <button type="button" onClick={refresh} disabled={loading}><RefreshCw size={16} /> Refresh</button>
     </header>
     {error ? <p className={styles.error} role="alert"><CircleAlert size={16} />{error}{payload ? " The previous map is still shown." : ""}</p> : null}
@@ -366,7 +378,7 @@ export function MemoryUniverse(props: { active: boolean; onAddConnectedFact?: ()
     </div>
     <div className={styles.mapBar}>
       <p>{mode === "evidence" ? "Lines show shared context, not proven facts." : "Lines show claims stated in sources; claims may still need review."}</p>
-      <button type="button" onClick={() => void showNames()} disabled={naming || !mapNodes.some((node) => !names[node.id])}>{naming ? "Opening names…" : "Show names"}</button>
+      <button type="button" onClick={() => void showNames()} disabled={naming || !mapNodes.some((node) => !names[node.id])}>{naming ? "Opening names…" : "Open visible names"}</button>
     </div>
     {notice || loading ? <p className={styles.notice} role="status">{loading ? payload ? "Refreshing map…" : "Loading relationships…" : notice}</p> : null}
     <div className={styles.explorer}>
@@ -389,15 +401,14 @@ export function MemoryUniverse(props: { active: boolean; onAddConnectedFact?: ()
               {mapNodes.map((node) => { const point = positions.get(node.id)!; const active = node.id === selectedId; const showLabel = active || node.id === hoveredId || mapNodes.length <= 24 || (Boolean(names[node.id]) && camera.zoom > 1.25); return <g key={node.id} transform={`translate(${point.x} ${point.y})`} onPointerEnter={() => setHoveredId(node.id)} onPointerLeave={() => setHoveredId(undefined)}><title>{label(node)} · {node.sourceCount} sources</title><circle r={active ? 10 : 5 + Math.min(4, Math.sqrt(neighbors.get(node.id)?.size || 0))} className={active ? styles.selectedNode : styles.node} fill={colorForKind(node.kind, mode)} />{showLabel ? <text y={24} textAnchor="middle" className={styles.nodeLabel}>{shortLabel(label(node))}</text> : null}</g>; })}
             </g>
           </svg>
-          {!loading && !mapNodes.length ? <div className={styles.empty}><strong>{query || kind !== "all" ? "No items match these filters" : "No relationships to show yet"}</strong><p>{query ? "Names can be searched after you open an item or choose Show names." : "Saved memories and processed sources will appear here when connected."}</p></div> : null}
+          {!loading && !mapNodes.length ? <div className={styles.empty}><strong>{query || kind !== "all" ? "No items match these filters" : "No relationships to show yet"}</strong><p>{query ? "Names can be searched after you open an item or choose Open visible names." : "Saved memories and processed sources will appear here when connected."}</p></div> : null}
         </div>
         <div className={styles.cameraBar}>
           <span>Drag to pan · Scroll or +/− to zoom</span>
           <div><button type="button" onClick={() => zoom(1.2)} aria-label="Zoom in"><ZoomIn size={16} /></button><button type="button" onClick={() => zoom(1 / 1.2)} aria-label="Zoom out"><ZoomOut size={16} /></button><button type="button" onClick={() => setCamera({ x: 0, y: 0, zoom: 1 })}><Focus size={16} />Fit</button></div>
         </div>
         <div className={styles.focusBar}>
-          <label><input type="checkbox" checked={local} onChange={(event) => setLocal(event.target.checked)} />Focus on selected item</label>
-          {local && selected ? <label>Connections <select value={depth} onChange={(event) => setDepth(Number(event.target.value))}><option value="1">Direct</option><option value="2">Two steps</option></select></label> : null}
+          <span>{selected ? "Direct connections only" : "Choose a starting point to draw its connections"}</span>
           <span>{mapNodes.length} items · {mapEdges.length} links{visible.length > mapNodes.length ? ` · ${visible.length - mapNodes.length} more match` : ""}</span>
         </div>
         <div className={styles.legend} aria-label="Map legend"><span><i />Item</span><span><i className={styles.legendSelected} />Selected</span><span><b />Connection in sources</span></div>
@@ -416,11 +427,11 @@ export function MemoryUniverse(props: { active: boolean; onAddConnectedFact?: ()
             {detail.label !== label(selected) ? <p>Original name: {detail.label}</p> : null}
             {detail.summary && visibleSummary !== detail.summary ? <><p>Original source summary</p><p className={styles.summary}>{detail.summary}</p></> : null}
           </> : null}</details>
-        </section> : <section className={styles.entry}><h3>Start with an item</h3><p>Select a dot or a row below. Its direct connections will become the focus.</p></section>}
+        </section> : <section className={styles.entry}><h3>Start with an item</h3><p>Open visible names, then select an item. Only its direct connections will appear, with room to read them.</p></section>}
         <section className={styles.selector}><h3>{selected && local ? "In this neighborhood" : "Most connected items"}</h3><p className={styles.meta}>Open an item to read its name and source summary.</p><ul className={styles.pointList}>{mapNodes.map((node) => <li key={node.id}><button type="button" aria-pressed={selectedId === node.id} onClick={() => void selectNode(node.id)}><strong>{label(node)}</strong><span>{node.sourceCount} sources</span></button></li>)}</ul></section>
       </aside>
     </div>
-    <details className={styles.mapDetails}><summary>Map coverage and maintenance</summary><p>This is a limited view of your available relationships. The map shows up to 80 items, or 48 in a neighborhood, and 160 links. Names load only when opened; searching filters loaded names and types.</p>{payload ? <p>Snapshot: {formatDate(payload.generatedAt)} · {graph.nodes.length.toLocaleString()} available items · {graph.edges.length.toLocaleString()} available links.</p> : null}{payload?.verified.stats.relationLimitSaturated && mode === "verified" ? <p>More stated relationships may exist outside this sample.</p> : null}{payload?.evidence.stats.latestBuild?.status === "failed" ? <p className={styles.error}>The latest map update failed. You can retry below.</p> : null}<button type="button" onClick={() => void rebuild()} disabled={rebuilding}><GitBranch size={16} />{rebuilding ? "Updating connections…" : "Update connections"}</button>{props.onAddConnectedFact ? <button type="button" onClick={props.onAddConnectedFact}><Plus size={16} />Add connected fact</button> : null}</details>
+    <details className={styles.mapDetails}><summary>Map coverage and maintenance</summary><p>This is a limited view of your available relationships. It shows one selected item and up to 12 direct connections. Names open only on request; searching filters loaded names and types. Start in Knowledge map to browse real memory and source titles without opening graph details.</p>{payload ? <p>Snapshot: {formatDate(payload.generatedAt)} · {graph.nodes.length.toLocaleString()} available items · {graph.edges.length.toLocaleString()} available links.</p> : null}{payload?.verified.stats.relationLimitSaturated && mode === "verified" ? <p>More stated relationships may exist outside this sample.</p> : null}{payload?.evidence.stats.latestBuild?.status === "failed" ? <p className={styles.error}>The latest map update failed. You can retry below.</p> : null}<button type="button" onClick={() => void rebuild()} disabled={rebuilding}><GitBranch size={16} />{rebuilding ? "Updating connections…" : "Update connections"}</button>{props.onAddConnectedFact ? <button type="button" onClick={props.onAddConnectedFact}><Plus size={16} />Add connected fact</button> : null}</details>
   </section>;
 }
 
@@ -432,27 +443,18 @@ async function readDetail(mode: GraphMode, id: string, signal: AbortSignal) {
   return universeDetailForSelection(body, { mode, id }) as SelectedDetail;
 }
 
-function layoutRelationshipMap(nodes: SceneNode[], edges: SceneEdge[]) {
-  const points = new Map(nodes.map((node, index) => { const angle = index * 2.399963; const radius = 40 + Math.sqrt((index + 1) / Math.max(1, nodes.length)) * 230; return [node.id, { x: 500 + Math.cos(angle) * radius * 1.5, y: 310 + Math.sin(angle) * radius }]; }));
-  for (let iteration = 0; iteration < 90; iteration++) {
-    const movement = new Map(nodes.map((node) => [node.id, { x: 0, y: 0 }]));
-    for (let a = 0; a < nodes.length; a++) for (let b = a + 1; b < nodes.length; b++) {
-      const p = points.get(nodes[a].id)!, q = points.get(nodes[b].id)!;
-      const dx = p.x - q.x, dy = p.y - q.y, distance = Math.max(16, Math.hypot(dx, dy));
-      const force = Math.min(6, 1700 / (distance * distance));
-      const m = movement.get(nodes[a].id)!, n = movement.get(nodes[b].id)!;
-      m.x += dx / distance * force; m.y += dy / distance * force; n.x -= dx / distance * force; n.y -= dy / distance * force;
-    }
-    for (const edge of edges) {
-      const p = points.get(edge.sourceNodeId), q = points.get(edge.targetNodeId);
-      if (!p || !q) continue;
-      const dx = q.x - p.x, dy = q.y - p.y, distance = Math.max(1, Math.hypot(dx, dy)), force = (distance - 110) * .012;
-      const m = movement.get(edge.sourceNodeId)!, n = movement.get(edge.targetNodeId)!;
-      m.x += dx / distance * force; m.y += dy / distance * force; n.x -= dx / distance * force; n.y -= dy / distance * force;
-    }
-    for (const node of nodes) { const p = points.get(node.id)!, m = movement.get(node.id)!; p.x = Math.max(55, Math.min(945, p.x + m.x + (500 - p.x) * .001)); p.y = Math.max(45, Math.min(570, p.y + m.y + (310 - p.y) * .001)); }
+function layoutRelationshipMap(nodes: SceneNode[], selectedId?: string) {
+  // A fixed, tidy focus layout has no collisions or unrelated crossing links.
+  // The positions depend only on membership, never on loaded labels or the pointer.
+  const related = nodes.filter((node) => node.id !== selectedId);
+  const result = new Map<string, { x: number; y: number }>();
+  if (selectedId && nodes.some((node) => node.id === selectedId)) {
+    result.set(selectedId, { x: 240, y: 300 });
+    related.forEach((node, index) => result.set(node.id, { x: 700, y: 50 + index * Math.min(46, 500 / Math.max(1, related.length - 1)) }));
+  } else {
+    nodes.forEach((node, index) => result.set(node.id, { x: 190 + (index % 3) * 310, y: 90 + Math.floor(index / 3) * 130 }));
   }
-  return points;
+  return result;
 }
 function colorForKind(kind: string, mode: GraphMode) { return `var(${mode === "evidence" ? evidenceColors[kind as MemoryGraphNodeKind] || "--foreground" : entityColors[kind as EntityTypeId] || "--foreground"})`; }
 function labelForKind(kind: string, mode: GraphMode) { return (mode === "evidence" ? evidenceLabels[kind as MemoryGraphNodeKind] : entityLabels[kind as EntityTypeId]) || startCase(kind); }

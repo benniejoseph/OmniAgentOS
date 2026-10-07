@@ -17,8 +17,8 @@ export function ResponsibilityWorkspace({ id, deployment }: { id?: string; deplo
   // Role, deployment or owner changes replace all private state. A temporary
   // same-owner session refresh hides the view while retaining unsaved fields.
   const scope = JSON.stringify([deployment, owner?.tenantId, owner?.actorId, session?.context?.actorId, role]);
-  if (!owner) return <div className={styles.workspace}><h1>Responsibilities</h1><p role="status">Sign in with a verified workspace account to view responsibilities.</p></div>;
-  if (id && !responsibilityId(id)) return <div className={styles.workspace}><h1>Responsibility unavailable</h1><p>The full responsibility identity is invalid.</p><Link href="/app/responsibilities">All responsibilities</Link></div>;
+  if (!owner) return <div className={styles.workspace}><h1>Follow-ups</h1><p role="status">Sign in with a verified workspace account to view responsibilities.</p></div>;
+  if (id && !responsibilityId(id)) return <div className={styles.workspace}><h1>Responsibility unavailable</h1><p>The full responsibility identity is invalid.</p><Link href="/app/responsibilities">All follow-ups</Link></div>;
   return <ScopedWorkspace key={`${scope}:${id ?? "list"}`} scope={scope} owner={owner} id={id}
     active={status === "ready"} sessionStatus={status} canManage={canPerform(role, "manage.workflow")} />;
 }
@@ -47,13 +47,13 @@ function ScopedWorkspace({ scope, owner, id, active, sessionStatus, canManage }:
   // Keeping it mounted preserves a dirty same-owner draft during session reads.
   const detail = state.detail.value; const frozen = Boolean(state.pending) || state.submitting;
   const created = !id && state.accepted?.kind === "draft" && state.accepted.result.receipt.action === "created";
-  return <>{!active && <div className={styles.workspace}><h1>Responsibilities</h1><p role="status">{sessionStatus === "loading" ? "Checking workspace permissions…" : "Workspace permissions are unavailable. Refresh your session to continue."} Same-account drafts remain in this page.</p></div>}
+  return <>{!active && <div className={styles.workspace}><h1>Follow-ups</h1><p role="status">{sessionStatus === "loading" ? "Checking workspace permissions…" : "Workspace permissions are unavailable. Refresh your session to continue."} Same-account drafts remain in this page.</p></div>}
     <div className={styles.workspace} hidden={!active} inert={!active} aria-hidden={!active || undefined} data-testid="responsibilities-workspace">
-    <header className={styles.header}><div><p className={styles.eyebrow}>Bounded, evidence-based follow-through</p><h1>{id ? "Responsibility" : "Responsibilities"}</h1>
-      <p>Define an outcome, review the exact sources and limits, then separately activate a supported pilot.</p></div>
-      {id ? <Link href="/app/responsibilities">All responsibilities</Link> : canManage && !creating && <button type="button" onClick={() => setCreating(true)}>New responsibility</button>}
+    <header className={styles.header}><div><h1>{id ? "Follow-up" : "Follow-ups"}</h1>
+      <p>Give Asael an outcome to keep checking, using sources you choose and limits you set. Review the plan before turning it on; reminders are optional.</p></div>
+      {id ? <Link href="/app/responsibilities">All follow-ups</Link> : canManage && !creating && <button type="button" onClick={() => setCreating(true)}>New follow-up</button>}
     </header>
-    <p className={styles.identity}>Workspace: {owner.tenantId}{detail?.record.actorId || state.references.value?.owner.actorId || owner.actorId ? ` · owner: ${detail?.record.actorId ?? state.references.value?.owner.actorId ?? owner.actorId}` : ""}</p>
+    <details className={styles.support}><summary>Access details</summary><p className={styles.identity}>Workspace: {owner.tenantId}{detail?.record.actorId || state.references.value?.owner.actorId || owner.actorId ? ` · owner: ${detail?.record.actorId ?? state.references.value?.owner.actorId ?? owner.actorId}` : ""}</p></details>
     {state.submitting && <p role="status" className={styles.notice}>Submitting the frozen exact request. Draft, lifecycle and notification controls are locked until its result is known.</p>}
     {(state.mutationError || state.pending && state.pending.key === recoveringKey) && <div role="alert" className={styles.notice}><p>{state.mutationError ?? "Recovering the exact submitted receipt…"}</p>{state.pending && <button ref={recoveryRef} type="button" aria-disabled={state.submitting} onClick={() => {
       if (!state.submitting && state.pending) { setRecoveringKey(state.pending.key); void controller.retry(); }
@@ -70,11 +70,11 @@ function ScopedWorkspace({ scope, owner, id, active, sessionStatus, canManage }:
       {creating && !created && <DraftEditor key="new" canManage={canManage} frozen={frozen} references={state.references} refreshReferences={() => void controller.load("references")}
         save={(body) => void controller.submit({ kind: "draft", body })} preview={() => undefined} />}
       {creating && created && <p>The inactive draft was created. Open its permanent link above to edit or review it.</p>}
-      <section className={styles.card} aria-labelledby="responsibility-list"><div className={styles.header}><h2 id="responsibility-list">Recent responsibilities</h2><button type="button" disabled={state.list.state === "loading"} onClick={() => void controller.load("list", undefined, false, limit)}>Refresh list</button></div>
+      <section className={styles.card} aria-labelledby="responsibility-list"><div className={styles.header}><h2 id="responsibility-list">Your follow-ups</h2><button type="button" disabled={state.list.state === "loading"} onClick={() => void controller.load("list", undefined, false, limit)}>Refresh list</button></div>
         {state.list.state === "loading" && <p role="status">Loading recent responsibilities…</p>}
         {state.list.state === "error" && <p role="status">List unavailable. {state.list.error}{state.list.value ? " Previously loaded records may be stale." : " The list is not known to be empty."}</p>}
-        {state.list.value && (state.list.value.records.length === 0 ? <p>No responsibilities were returned in this recent window.</p> : <ul className={styles.list}>{state.list.value.records.map((item) => <li key={item.id}>
-          <Link href={responsibilityHref(item.id)}><strong>{item.draft.purpose || "Untitled inactive draft"}</strong><span>Draft review: {item.state} · revision {item.revision}</span><small className={styles.identity}>{item.id}</small></Link>
+        {state.list.value && (state.list.value.records.length === 0 ? <p>No follow-ups yet in this recent window. Create one when you have an outcome you want Asael to keep checking.</p> : <ul className={styles.list}>{state.list.value.records.map((item) => <li key={item.id}>
+          <Link href={responsibilityHref(item.id)}><strong>{item.draft.purpose || "Untitled inactive draft"}</strong><span>{item.state.replaceAll("_", " ")}</span></Link>
           <p>{item.draft.desiredOutcome || "No desired outcome recorded."}</p><p>Updated {item.updatedAt}. Open for current lifecycle, evidence and limits.</p>
         </li>)}</ul>)}
         {state.list.value && <p className={styles.support}>{state.list.value.records.length} most recent records shown, requested limit {limit}; total unavailable. Draft review status does not imply an active watcher.</p>}
@@ -83,7 +83,7 @@ function ScopedWorkspace({ scope, owner, id, active, sessionStatus, canManage }:
       </section>
     </>}
     {id && <>
-      <p className={styles.identity}>{id}</p><button type="button" disabled={state.detail.state === "loading" || frozen} onClick={() => void controller.load("detail", id)}>Refresh saved draft</button>
+      <details><summary>Reference</summary><p className={styles.identity}>{id}</p></details><button type="button" disabled={state.detail.state === "loading" || frozen} onClick={() => void controller.load("detail", id)}>Refresh saved draft</button>
       {state.detail.state === "loading" && <p role="status">Loading the exact responsibility…</p>}
       {state.detail.state === "error" && <p role="status">Responsibility unavailable. {state.detail.error}{detail ? " Last-loaded draft is read only until refreshed." : " It may be missing or no longer accessible."}</p>}
       {detail && <>

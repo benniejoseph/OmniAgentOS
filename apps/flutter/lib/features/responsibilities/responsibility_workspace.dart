@@ -97,9 +97,7 @@ class _ResponsibilityWorkspaceViewState
         return const Center(
           child: Padding(
             padding: EdgeInsets.all(24),
-            child: Text(
-              'Unlock your current account to read Responsibilities.',
-            ),
+            child: Text('Unlock your current account to read follow-ups.'),
           ),
         );
       }
@@ -117,10 +115,10 @@ class _ResponsibilityWorkspaceViewState
         child: Focus(
           child: Scaffold(
             appBar: AppBar(
-              title: const Text('Responsibilities'),
+              title: const Text('Follow-ups'),
               actions: [
                 IconButton(
-                  tooltip: 'Refresh Responsibilities',
+                  tooltip: 'Refresh follow-ups',
                   onPressed: controller.loading ? null : controller.refresh,
                   icon: const Icon(Icons.refresh),
                 ),
@@ -149,7 +147,7 @@ class _ResponsibilityWorkspaceViewState
                       key: const Key('responsibility-catalogue'),
                       initiallyExpanded: controller.selectedId == null,
                       title: Text(
-                        'Recent responsibilities · ${controller.records.length}',
+                        'Your follow-ups · ${controller.records.length}',
                       ),
                       children: [_catalogue(shrinkWrap: true)],
                     ),
@@ -186,7 +184,7 @@ class _ResponsibilityWorkspaceViewState
       if (controller.listing != null && controller.records.isEmpty)
         const Padding(
           padding: EdgeInsets.all(12),
-          child: Text('No responsibilities were returned for this account.'),
+          child: Text('No follow-ups yet for this account.'),
         ),
       for (final record in controller.records)
         ListTile(
@@ -197,9 +195,7 @@ class _ResponsibilityWorkspaceViewState
             maxLines: 3,
             overflow: TextOverflow.ellipsis,
           ),
-          subtitle: Text(
-            '${_label(record.state)} · revision ${record.revision}',
-          ),
+          subtitle: Text(_label(record.state)),
           onTap: () => _select(record.id),
         ),
       if (controller.listing?['hasMore'] == true)
@@ -211,6 +207,10 @@ class _ResponsibilityWorkspaceViewState
   Widget _detail() =>
       ListView(padding: const EdgeInsets.all(24), children: _detailChildren());
   List<Widget> _detailChildren() => [
+    const Text(
+      'Give Asael an outcome to keep checking, using sources you choose and limits you set. Review the plan before turning it on; reminders are optional.',
+    ),
+    const SizedBox(height: 16),
     if (!controller.canManage)
       const _Notice(
         'This account can read Responsibilities. A workflow manager is required to edit, review, activate, or enable in-app notices.',

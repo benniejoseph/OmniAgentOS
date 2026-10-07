@@ -118,7 +118,7 @@ class _SecurityWorkspaceViewState extends State<SecurityWorkspaceView> {
       _selectionNavigation++;
       _detailFocus.unfocus();
       _query = '';
-      _myRoleOnly = false;
+      _myRoleOnly = true;
       _attentionOnly = false;
       unawaited(c.refresh());
     }
@@ -207,7 +207,7 @@ class _SecurityWorkspaceViewState extends State<SecurityWorkspaceView> {
                 return desktop
                     ? MacosPageScaffold(
                         title: 'Security',
-                        description: 'Access rules and storage policy evidence',
+                        description: 'Your access, your data and recent security decisions',
                         icon: Icons.security_outlined,
                         actions: [refresh],
                         inspector: wide
@@ -233,14 +233,14 @@ class _SecurityWorkspaceViewState extends State<SecurityWorkspaceView> {
   );
 
   String _query = '';
-  bool _myRoleOnly = false, _attentionOnly = false;
+  bool _myRoleOnly = true, _attentionOnly = false;
   void _section(SecuritySection section) {
     if (!c.available || section == c.section) return;
     _selectionNavigation++;
     _detailFocus.unfocus();
     setState(() {
       _query = '';
-      _myRoleOnly = false;
+      _myRoleOnly = true;
       _attentionOnly = false;
     });
     c.selectSection(section);
@@ -267,12 +267,12 @@ class _SecurityWorkspaceViewState extends State<SecurityWorkspaceView> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Security evidence',
+              'Your workspace, under your control',
               style: Theme.of(context).textTheme.titleLarge,
             ),
             const SizedBox(height: 6),
             const Text(
-              'Understand your access, recent decisions and the reported storage policies.',
+              'See what Asael can do and how your data is kept. Technical details are there when you need them.',
             ),
             const SizedBox(height: 16),
             Wrap(
@@ -284,21 +284,21 @@ class _SecurityWorkspaceViewState extends State<SecurityWorkspaceView> {
                   c.context.data == null
                       ? _sourceLabel(c.context.state)
                       : _label(c.context.data!.role.name),
-                  'Exact authenticated native account',
+                  'Your signed-in account',
                 ),
                 _Metric(
-                  'Recent denied decisions',
+                  'Blocked requests',
                   c.audits.data == null
                       ? _sourceLabel(c.audits.state)
                       : '${c.audits.data!.denied}',
-                  'Statistics sample up to 200 latest audit records',
+                  'In up to 200 recent decisions',
                 ),
                 _Metric(
-                  'Storage policy assessment',
+                  'Data protection',
                   c.isolation.data == null
                       ? _sourceLabel(c.isolation.state)
                       : _assessment(c.isolation.data!.assessment),
-                  'Known storage catalog and policy checks',
+                  'Checks of known storage policies',
                 ),
               ],
             ),
@@ -381,8 +381,8 @@ class _SecurityWorkspaceViewState extends State<SecurityWorkspaceView> {
                 initialValue: _query,
                 decoration: InputDecoration(
                   labelText: switch (c.section) {
-                    SecuritySection.access => 'Find a role rule',
-                    SecuritySection.audits => 'Find an audit record',
+                    SecuritySection.access => 'Find a permission',
+                    SecuritySection.audits => 'Find a decision',
                     _ => 'Find a table',
                   },
                   prefixIcon: const Icon(Icons.search_rounded),
@@ -393,7 +393,7 @@ class _SecurityWorkspaceViewState extends State<SecurityWorkspaceView> {
               if (c.section == SecuritySection.access)
                 FilterChip(
                   key: const Key('security-my-role'),
-                  label: const Text('My role'),
+                  label: const Text('My permissions'),
                   selected: _myRoleOnly,
                   onSelected: (value) => _filter(() => _myRoleOnly = value),
                 ),
@@ -456,36 +456,33 @@ class _SecurityWorkspaceViewState extends State<SecurityWorkspaceView> {
             )
             .toList(growable: false);
         return [
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _Field('Tenant', data.tenantId),
-                  _Field('Actor', data.actorId),
-                  _Field('Canonical user', data.userId),
-                  Text('Native bearer identity · ${_label(data.role.name)}'),
-                ],
-              ),
-            ),
+          ExpansionTile(
+            title: const Text('Account details'),
+            subtitle: Text('Signed in as ${_label(data.role.name)}'),
+            tilePadding: EdgeInsets.zero,
+            children: [
+              _Field('Workspace reference', data.tenantId),
+              _Field('Account reference', data.actorId),
+              _Field('User reference', data.userId),
+            ],
           ),
           const _Notice(
-            'Role rules explain the reported policy. Each request still requires current authorization.',
+            'These permissions belong to your current role. Individual actions still follow their approval rules.',
             icon: Icons.info_outline,
           ),
           if (rows.isEmpty)
             const _Notice(
-              'No role rules match this view.',
+              'No permissions match this view.',
               icon: Icons.rule_outlined,
             ),
           for (final row in rows)
             _EvidenceRow(
               key: ValueKey('security-rule-${row.action}'),
-              title: row.action,
+              title: _permissionLabel(row.action),
               detail: row.description,
-              status:
-                  'Allowed roles: ${row.roles.map((role) => _label(role.name)).join(', ')}',
+              status: row.roles.contains(data.role)
+                  ? 'Available to you'
+                  : 'Requires another role',
               selected: c.selectedId == row.action,
               onTap: () => _select(row.action, compact: compact),
             ),
@@ -506,7 +503,7 @@ class _SecurityWorkspaceViewState extends State<SecurityWorkspaceView> {
             icon: Icons.history_rounded,
           ),
           const Text(
-            'Past decisions describe individual requests and do not grant current access. This list is not a signed or complete audit export.',
+            'A blocked request means a rule prevented an action. It does not, by itself, mean someone broke into your account.',
           ),
           const SizedBox(height: 12),
           if (rows.isEmpty)
@@ -519,12 +516,12 @@ class _SecurityWorkspaceViewState extends State<SecurityWorkspaceView> {
           for (final row in rows)
             _EvidenceRow(
               key: ValueKey('security-audit-${row.id}'),
-              title: row.action,
+              title: _permissionLabel(row.action),
               detail:
-                  '${row.actorId} · ${_label(row.actorRole.name)}\n${row.resourceType}',
+                  '${_label(row.actorRole.name)} · ${_readable(row.resourceType)}',
               status: row.decision == SecurityDecision.allow
                   ? 'Allowed'
-                  : 'Denied',
+                  : 'Blocked',
               attention: row.decision == SecurityDecision.deny,
               footer: _time(row.createdAt),
               selected: c.selectedId == row.id,
@@ -613,7 +610,7 @@ class _SecurityWorkspaceViewState extends State<SecurityWorkspaceView> {
             icon: Icons.schedule_outlined,
           ),
           const Text(
-            'These are configured retention windows. This response provides no last sweep time, deletion count or completion receipt.',
+            'These are configured retention periods, not proof of completed cleanup. Task records linked to protected execution evidence may be retained longer.',
           ),
           const SizedBox(height: 12),
           for (final group
@@ -640,6 +637,32 @@ class _SecurityWorkspaceViewState extends State<SecurityWorkspaceView> {
     }
   }
 }
+
+String _readable(String value) {
+  final words = value.replaceAll(RegExp(r'[._-]+'), ' ').trim();
+  return words.isEmpty
+      ? 'Not reported'
+      : '${words[0].toUpperCase()}${words.substring(1)}';
+}
+
+String _permissionLabel(String action) =>
+    const {
+      'read': 'View your workspace',
+      'write.memory': 'Save memories and documents',
+      'execute.tool': 'Use connected tools',
+      'manage.connector': 'Manage connections',
+      'run.agent': 'Ask your agents to work',
+      'manage.workflow': 'Manage repeatable work',
+      'run.evaluation': 'Run quality checks',
+      'read.security': 'Review security decisions',
+      'read.identity': 'View accounts and sessions',
+      'manage.own_device': 'Manage your devices',
+      'manage.own_preferences': 'Change your preferences',
+      'manage.identity': 'Manage workspace access',
+      'manage.storage': 'Manage data storage',
+      'manage.security': 'Maintain the platform',
+    }[action] ??
+    _readable(action);
 
 String _label(String value) => '${value[0].toUpperCase()}${value.substring(1)}';
 String _assessment(SecurityAssessment value) => switch (value) {
@@ -670,13 +693,12 @@ String _sourceLabel(SecurityLoadState state) => switch (state) {
 };
 String _description(SecuritySection section) => switch (section) {
   SecuritySection.access =>
-    'Your authenticated identity and the server’s declared role rules.',
+    'The permissions available to your signed-in account.',
   SecuritySection.audits =>
-    'Recent decisions for this tenant, including other authorized actors.',
+    'Requests that were allowed or blocked in your workspace.',
   SecuritySection.isolation =>
     'Reported table protections, configuration and dated evaluation evidence.',
-  SecuritySection.retention =>
-    'All 18 configured retention windows, expressed in days.',
+  SecuritySection.retention => 'How long each kind of data is kept. These periods do not confirm that cleanup has finished.',
 };
 
 class _Metric extends StatelessWidget {

@@ -37,6 +37,7 @@ import {
   sanitizeModelComputerObservation,
   type ModelComputerObservation,
 } from "@/lib/models/computer-observation";
+import { ModelProviderError } from "@/lib/models/types";
 import {
   createGoogleCalendarEvent,
   googleCalendarCreateSchema,
@@ -2169,7 +2170,12 @@ export async function executeGovernedTool({
     const record = createRecord({
       ...baseRecord,
       status: "failed" as const,
-      output: { error: message },
+      output: {
+        error: message,
+        ...(tool.id === "web.search" && error instanceof ModelProviderError
+          ? { failureKind: error.kind, retryable: error.retryable }
+          : {}),
+      },
       reason: message,
       completedAt: new Date().toISOString(),
     });

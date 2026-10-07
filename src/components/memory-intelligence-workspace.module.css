@@ -131,7 +131,7 @@
 .unavailable { color: var(--muted); }
 .scanButton { display: flex; inline-size: 100%; min-block-size: 2.75rem; align-items: center; justify-content: center; gap: .5rem; border: 1px solid var(--line-strong); border-radius: var(--radius-control); padding: .5rem .75rem; color: var(--foreground); background: var(--surface); font-weight: 500; }
 .governance { display: flex; align-items: start; gap: .5rem; margin-block-start: 1rem !important; color: var(--muted); font-size: .8125rem; line-height: 1.5385; }
-.universeWrap { min-inline-size: 0; padding-block-start: 1.5rem; }
+.universeWrap { min-inline-size: 0; padding-block-start: .75rem; }
 .universeLoading { display: flex; min-block-size: 24rem; align-items: center; justify-content: center; gap: .5rem; color: var(--muted); background: var(--surface); }
 
 /* Review decisions use complete, selectable evidence and shared ATLAS tokens. */

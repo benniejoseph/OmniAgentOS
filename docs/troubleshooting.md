@@ -376,8 +376,36 @@ live search succeeded.
 `web.search` requires a completed hosted search, a nonempty answer, and usable
 source URLs. Requests preserve `allowedDomains`; a model that rejects domain
 filters returns an actionable error instead of widening the search. The
-provider request has a 25-second deadline, no hidden SDK retries, and bounded
-hosted calls and output. Returned hosted calls determine search usage.
+provider request has a 60-second default deadline (or the deployment's explicit
+`OMNIAGENT_WEB_SEARCH_TIMEOUT_MS`), no hidden SDK retries, and bounded hosted
+calls and output. Returned hosted calls determine search usage. Caller
+cancellation and the enclosing run deadline still stop it sooner.
+
+Hosted search uses the Web search assignment independently of the answering
+Agent. For reasoning models it explicitly requests `low` effort and reserves
+the shared reasoning allowance in addition to the 2,000-token brief. Otherwise
+the provider's default reasoning can consume the whole brief allowance before
+any visible answer. `minimal` is not valid for GPT-5 hosted web search; see the
+[web search limitations](https://developers.openai.com/api/docs/guides/tools-web-search)
+and [reasoning output budget](https://developers.openai.com/api/docs/guides/reasoning).
+The complete Research report is synthesized separately from the collected
+sources; increasing this discovery allowance does not turn each search into
+another full report.
+
+The quick-answer prefetch uses the same bounded query builder as Research for
+messages longer than the tool's 4,000-character input limit. The original
+request remains available to synthesis. The tool schema advertises its actual
+query, source-count, and domain limits so generated calls can respect them.
+Timeouts, cancelled calls, rate limits, authentication failures, and invalid
+provider requests retain separate usage failure categories. An inactive saved
+route reports its Settings recovery instruction; it is never silently replaced
+with another model or credential.
+The governed search failure receipt retains `failureKind` and `retryable`.
+Research stops further discovery after a non-retryable failure, keeps any
+evidence already collected, and records the limitation. The synthesis loop is
+not offered the same failed search route again during that run. Transient
+provider failures keep their retry classification; the SDK itself never
+repeats a paid request.
 
 Automatic search resolves the Agent's permitted tools before using the governed
 executor. Research keeps that authorized search tool for follow-up questions.
@@ -397,3 +425,7 @@ retries a paid POST. `SMOKE_WEB_SEARCH_ONLY=1` limits the check to direct search
 The receipt and stream diagnostics omit answer text and credentials. A passing
 receipt applies only to the pinned deployment and queries tested; it is not a
 guarantee that every source is correct or every provider request will succeed.
+
+### Retention and immutable execution checkpoints
+
+A retention sweep must preserve runs referenced by immutable Loop v2 checkpoints. The restrictive run foreign key and checkpoint immutability triggers must not be changed to cascade. Both tenant and system retention batches exclude those parent runs before selecting a bounded deletion batch, preventing the observed `omni_agent_loop_v2_checkpoints_run_id_fkey` failure from aborting all cleanup. Protected parent records may retain content beyond the nominal run window; a separate bounded content-expiry policy is still needed. Security shows that exception rather than promising every record expires on the configured day.

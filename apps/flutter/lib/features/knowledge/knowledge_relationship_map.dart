@@ -5,11 +5,74 @@ import 'package:flutter/material.dart';
 import 'knowledge.dart';
 import 'knowledge_graph_contracts.dart';
 import 'knowledge_labels.dart';
+import 'knowledge_landscape.dart';
 
-/// Names are read only after selection or an explicit bounded Show names action.
-/// The v48 private sample and exact-read authority remain unchanged.
 class KnowledgeRelationshipMap extends StatefulWidget {
   const KnowledgeRelationshipMap({
+    super.key,
+    required this.controller,
+    this.active = true,
+    this.onOpenMemory,
+    this.onOpenSource,
+  });
+  final KnowledgeController controller;
+  final bool active;
+  final ValueChanged<MemoryRecord>? onOpenMemory;
+  final ValueChanged<KnowledgeItem>? onOpenSource;
+  @override
+  State<KnowledgeRelationshipMap> createState() =>
+      _KnowledgeRelationshipMapState();
+}
+
+class _KnowledgeRelationshipMapState extends State<KnowledgeRelationshipMap> {
+  bool _connections = false;
+  @override
+  Widget build(BuildContext context) => Column(
+    children: [
+      Padding(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+        child: Align(
+          alignment: Alignment.centerLeft,
+          child: Wrap(
+            spacing: 8,
+            children: [
+              ChoiceChip(
+                label: const Text('Knowledge map'),
+                avatar: const Icon(Icons.account_tree_outlined, size: 18),
+                selected: !_connections,
+                onSelected: (_) => setState(() => _connections = false),
+              ),
+              ChoiceChip(
+                label: const Text('Explore connections'),
+                avatar: const Icon(Icons.hub_outlined, size: 18),
+                selected: _connections,
+                onSelected: (_) => setState(() => _connections = true),
+              ),
+            ],
+          ),
+        ),
+      ),
+      Expanded(
+        child: _connections
+            ? _KnowledgeConnectionsMap(
+                controller: widget.controller,
+                active: widget.active,
+              )
+            : KnowledgeLandscape(
+                controller: widget.controller,
+                active: widget.active,
+                onOpenMemory: widget.onOpenMemory,
+                onOpenSource: widget.onOpenSource,
+              ),
+      ),
+    ],
+  );
+}
+
+/// Names are read only after selection or an explicit bounded Open visible names action.
+/// The v48 private sample and exact-read authority remain unchanged.
+class _KnowledgeConnectionsMap extends StatefulWidget {
+  const _KnowledgeConnectionsMap({
     super.key,
     required this.controller,
     this.active = true,
@@ -17,11 +80,11 @@ class KnowledgeRelationshipMap extends StatefulWidget {
   final KnowledgeController controller;
   final bool active;
   @override
-  State<KnowledgeRelationshipMap> createState() =>
-      _KnowledgeRelationshipMapState();
+  State<_KnowledgeConnectionsMap> createState() =>
+      _KnowledgeConnectionsMapState();
 }
 
-class _KnowledgeRelationshipMapState extends State<KnowledgeRelationshipMap>
+class _KnowledgeConnectionsMapState extends State<_KnowledgeConnectionsMap>
     with WidgetsBindingObserver {
   final _transform = TransformationController();
   final _search = TextEditingController();
@@ -30,12 +93,9 @@ class _KnowledgeRelationshipMapState extends State<KnowledgeRelationshipMap>
   final Map<String, String> _names = {};
   String? _selected, _error, _detailError;
   String _mode = 'nodes', _kind = 'all', _notice = '';
-  bool _loading = false,
-      _opening = false,
-      _naming = false,
-      _local = true,
-      _foreground = true;
-  int _epoch = 0, _selectionEpoch = 0, _depth = 1;
+  bool _loading = false, _opening = false, _naming = false, _foreground = true;
+  int _epoch = 0, _selectionEpoch = 0;
+  static const _depth = 1;
   double _viewWidth = 0;
   bool get _current =>
       mounted &&
@@ -54,7 +114,7 @@ class _KnowledgeRelationshipMapState extends State<KnowledgeRelationshipMap>
   }
 
   @override
-  void didUpdateWidget(covariant KnowledgeRelationshipMap oldWidget) {
+  void didUpdateWidget(covariant _KnowledgeConnectionsMap oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (!identical(oldWidget.controller, widget.controller) ||
         oldWidget.active != widget.active) {
@@ -170,6 +230,8 @@ class _KnowledgeRelationshipMapState extends State<KnowledgeRelationshipMap>
     final view = _mode == 'nodes' ? 'node' : 'entity';
     setState(() {
       _selected = id;
+      _kind = 'all';
+      _search.clear();
       _detail = null;
       _detailError = null;
       _opening = true;
@@ -299,7 +361,7 @@ class _KnowledgeRelationshipMapState extends State<KnowledgeRelationshipMap>
         for (var i = 0; i < nodes.length; i++) nodes[i]['id'] as String: i + 1,
       };
       var candidates = nodes;
-      if (_local && _selected != null && byId.containsKey(_selected)) {
+      if (_selected != null && byId.containsKey(_selected)) {
         final ids = <String>{_selected!};
         var frontier = <String>[_selected!];
         for (var hop = 0; hop < _depth; hop++) {
@@ -329,21 +391,18 @@ class _KnowledgeRelationshipMapState extends State<KnowledgeRelationshipMap>
                         .contains(search)),
           )
           .toList();
-      final visible = matching
-          .take(
-            _local
-                ? _selected != null
-                      ? 36
-                      : 18
-                : 60,
-          )
-          .toList();
+      final visible = matching.take(_selected != null ? 13 : 12).toList();
       final ids = visible.map((node) => node['id'] as String).toSet();
       final edges = links
-          .where((link) => ids.contains(link.from) && ids.contains(link.to))
+          .where(
+            (link) =>
+                (link.from == _selected || link.to == _selected) &&
+                ids.contains(link.from) &&
+                ids.contains(link.to),
+          )
           .take(120)
           .toList();
-      final points = _mapLayout(visible, edges);
+      final points = _mapLayout(visible, _selected);
       final kinds = nodes.map((node) => node['kind'] as String).toSet().toList()
         ..sort();
       final selected = byId[_selected];
@@ -360,7 +419,7 @@ class _KnowledgeRelationshipMapState extends State<KnowledgeRelationshipMap>
             children: [
               Expanded(
                 child: Text(
-                  'Relationship map',
+                  'One connection at a time',
                   style: Theme.of(context).textTheme.titleLarge,
                 ),
               ),
@@ -372,7 +431,7 @@ class _KnowledgeRelationshipMapState extends State<KnowledgeRelationshipMap>
             ],
           ),
           const Text(
-            'Select an item to focus on its connections. Show names opens up to 24 visible items at a time.',
+            'Choose a starting point, then follow up to 12 direct connections. Each line has a recorded source relationship.',
           ),
           const SizedBox(height: 12),
           Wrap(
@@ -446,7 +505,7 @@ class _KnowledgeRelationshipMapState extends State<KnowledgeRelationshipMap>
                         !visible.any((node) => !_names.containsKey(node['id']))
                     ? null
                     : () => _showNames(visible),
-                child: Text(_naming ? 'Opening names…' : 'Show names'),
+                child: Text(_naming ? 'Opening names…' : 'Open visible names'),
               ),
             ],
           ),
@@ -589,32 +648,14 @@ class _KnowledgeRelationshipMapState extends State<KnowledgeRelationshipMap>
               ),
             ],
           ),
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            title: const Text('Focus on selected item'),
-            subtitle: Text(
-              '${visible.length} items · ${edges.length} links${matching.length > visible.length ? ' · more match these filters' : ''}',
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: Text(
+              selected == null
+                  ? 'Choose a starting point to draw its connections.'
+                  : '${visible.length - 1} direct connections shown.',
+              style: Theme.of(context).textTheme.bodySmall,
             ),
-            value: _local,
-            onChanged: (value) => setState(() => _local = value),
-          ),
-          if (_local && selected != null)
-            Wrap(
-              spacing: 8,
-              children: [
-                for (final depth in [1, 2])
-                  ChoiceChip(
-                    label: Text(
-                      depth == 1 ? 'Direct connections' : 'Two steps',
-                    ),
-                    selected: _depth == depth,
-                    onSelected: (_) => setState(() => _depth = depth),
-                  ),
-              ],
-            ),
-          const Text(
-            '● Item    ● Selected item uses the accent color    ─ Source connection',
-            style: TextStyle(fontSize: 12),
           ),
           const Divider(),
           if (selected != null) ...[
@@ -703,7 +744,7 @@ class _KnowledgeRelationshipMapState extends State<KnowledgeRelationshipMap>
               Padding(
                 padding: EdgeInsets.all(12),
                 child: Text(
-                  'This private sample shows up to 60 items, or 36 in a neighborhood, and 120 connections. More may exist outside this map. Names load only after opening an item or choosing Show names. Search filters the names and types already loaded.',
+                  'This private sample shows one selected item and up to 12 direct connections. More may exist outside this map. Names open on request. Start in Knowledge map to browse your saved memory and source titles.',
                 ),
               ),
             ],
@@ -721,44 +762,23 @@ class _MapLink {
 
 Map<String, Offset> _mapLayout(
   List<Map<String, dynamic>> nodes,
-  List<_MapLink> edges,
+  String? selected,
 ) {
   final points = <String, Offset>{};
-  for (var i = 0; i < nodes.length; i++) {
-    final angle = i * 2.399963,
-        radius = 35 + math.sqrt((i + 1) / math.max(1, nodes.length)) * 205;
-    points[nodes[i]['id'] as String] = Offset(
-      450 + math.cos(angle) * radius * 1.6,
-      270 + math.sin(angle) * radius,
-    );
-  }
-  for (var iteration = 0; iteration < 60; iteration++) {
-    final movement = {for (final id in points.keys) id: Offset.zero};
-    for (var a = 0; a < nodes.length; a++) {
-      for (var b = a + 1; b < nodes.length; b++) {
-        final aid = nodes[a]['id'] as String,
-            bid = nodes[b]['id'] as String,
-            delta = points[aid]! - points[bid]!;
-        final distance = math.max(16.0, delta.distance),
-            force = math.min(5.0, 1600 / (distance * distance));
-        movement[aid] = movement[aid]! + delta / distance * force;
-        movement[bid] = movement[bid]! - delta / distance * force;
-      }
+  final related = nodes.where((node) => node['id'] != selected).toList();
+  if (selected != null && nodes.any((node) => node['id'] == selected)) {
+    points[selected] = const Offset(220, 270);
+    for (var i = 0; i < related.length; i++) {
+      points[related[i]['id'] as String] = Offset(
+        650,
+        35 + i * math.min(40.0, 460 / math.max(1, related.length - 1)),
+      );
     }
-    for (final edge in edges) {
-      final p = points[edge.from], q = points[edge.to];
-      if (p == null || q == null) continue;
-      final delta = q - p,
-          distance = math.max(1.0, delta.distance),
-          force = (distance - 105) * .014;
-      movement[edge.from] = movement[edge.from]! + delta / distance * force;
-      movement[edge.to] = movement[edge.to]! - delta / distance * force;
-    }
-    for (final id in points.keys.toList()) {
-      final p = points[id]! + movement[id]!;
-      points[id] = Offset(
-        p.dx.clamp(60, 840).toDouble(),
-        p.dy.clamp(40, 490).toDouble(),
+  } else {
+    for (var i = 0; i < nodes.length; i++) {
+      points[nodes[i]['id'] as String] = Offset(
+        160 + (i % 3) * 285,
+        65 + (i ~/ 3) * 125,
       );
     }
   }

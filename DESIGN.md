@@ -137,9 +137,11 @@ The macOS route families are:
 - **Missions and Projects:** state rail, task progression, attempts, artifacts, and proof in responsive master-detail.
 - **Inbox:** decision queue ordered by risk and urgency; each item explains consequence before action.
 - **Results:** evidence ledger with filters, verification state, and compact inspectors.
-- **Agents and Knowledge:** a readable library first, with an optional focused 2D relationship map and structured inspector. Use Obsidian-style local neighborhoods, search, bounded names and predictable pan/zoom; avoid an all-at-once 3D cloud. Keep technical types and IDs in optional details. Make Delete memory discoverable, then explain the exact permanent impact before the final action.
+- **Agents and Knowledge:** a named collection map built from the authorized memory and source catalog. Category branches explain where each saved record belongs; they must not imply inferred factual relationships. Offer title search, collection focus and direct access to the existing inspector. Keep relationship exploration secondary: one selected item, at most 12 direct connections, bounded name disclosure and predictable pan/zoom. Keep technical types and IDs in optional details. Make Delete memory discoverable, then explain the exact permanent impact before the final action.
 - **Administration:** dense domain navigation, health summary, resource list, and progressive configuration detail.
 
 ## Prohibited Patterns
 
 No decorative glass, gradient text, nested card grids, oversized rounded containers, ornamental animation, ambiguous loading zeros, or color-only status. The authenticated product never uses marketing hero composition.
+
+Navigation starts with Today, Assistant, Work, Memory and Capabilities. History brings Results and Timeline together lower in the menu. Connections live inside Capabilities; Quality Checks and Monitoring belong in Advanced. Motion should clarify selection, expansion and focus, stop after the transition and respect reduced-motion preferences. Security begins with Your access, Your data and Recent decisions; technical identifiers and maintenance controls require deliberate expansion.

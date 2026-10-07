@@ -250,7 +250,7 @@ describe("live web search provider boundary", () => {
       options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true });
     }));
     const pending = runLiveWebSearch({ query: "Current fact", usageScope: scope });
-    const assertion = expect(pending).rejects.toThrow("timed out after 60000ms");
+    const assertion = expect(pending).rejects.toThrow("Web search took longer than 60 seconds");
     await vi.advanceTimersByTimeAsync(59_999);
     expect(mocks.create.mock.calls[0][1].signal.aborted).toBe(false);
     expect(mocks.recordUsage).not.toHaveBeenCalled();

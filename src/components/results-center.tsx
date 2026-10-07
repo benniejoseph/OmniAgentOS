@@ -57,7 +57,7 @@ type PrimaryResult = {
   tone: Tone;
 };
 
-export function ResultsCenter() {
+export function ResultsCenter({ embedded = false }: { embedded?: boolean }) {
   const {
     session,
     status: sessionStatus,
@@ -252,7 +252,7 @@ export function ResultsCenter() {
         return selected;
       }
       return selectedResultKey
-        ? unavailableSelectedResult(selectedResultKey)
+        ? unavailableSelectedResult()
         : choosePrimaryResult(resultTimeline, resultSourceError);
     },
     [resultSourceError, resultTimeline, selectedResultKey],
@@ -297,10 +297,10 @@ export function ResultsCenter() {
   }
 
   return (
-    <div className={styles.shell} aria-busy={state === "loading"} data-testid="results-workspace">
+    <div className={clsx(styles.shell, embedded && styles.embedded)} aria-busy={state === "loading"} data-testid="results-workspace">
       <header className={styles.header}>
         <div className={styles.introduction}>
-          <h1>Results</h1>
+          <h2>Results</h2>
           <p>Review outputs, their current status, and the evidence behind them.</p>
           <p className={styles.refreshTime}>
             {lastRefresh ? `Updated ${lastRefresh}` : state === "loading" ? "Loading results" : "Update time unknown"}
@@ -414,9 +414,9 @@ export function ResultsCenter() {
             </section>
           </div>
 
-          <section className={styles.approvals} aria-labelledby="result-blockers-title">
+          {approvalItems.length > 0 ? <section className={styles.approvals} aria-labelledby="result-blockers-title">
             <div className={styles.sectionHeading}>
-              <h2 id="result-blockers-title">Blocked before result</h2>
+              <h2 id="result-blockers-title">Waiting for your decision</h2>
               <p>Resolve these requests before the outcome is final.</p>
             </div>
             <ResultRows
@@ -430,7 +430,7 @@ export function ResultsCenter() {
               empty={resourceError(data.approvals) ? "Approval state is unavailable. The source notice above has more detail." : "No approval blockers are waiting."}
               icon={ShieldCheck}
             />
-          </section>
+          </section> : null}
 
           <div className={styles.sharedOutputs}>
             <GeneratedArtifactsShelf refreshKey={lastRefresh} />
@@ -495,7 +495,7 @@ export function ResultsCenter() {
               <NextStepRow
                 icon={RefreshCw}
                 title="Active"
-                body="Open Activity to follow progress. A running or queued item is not a completed result."
+                body="Open the Timeline tab to follow progress. A running or queued item is not a completed result."
                 active={["running", "queued", "pending", "waiting_clarification"].includes(primaryResult.status)}
               />
               <NextStepRow
@@ -519,7 +519,7 @@ export function ResultsCenter() {
               <NextStepRow
                 icon={TerminalSquare}
                 title="No output yet"
-                body="Start or continue a run from Run Agent. Results will appear here after execution."
+                body="Start or continue a task in Assistant. Results will appear here after execution."
                 active={primaryResult.kind === "empty"}
               />
             </ul>
@@ -677,7 +677,7 @@ function EvidenceLink({ label, value, href }: { label: string; value: string; hr
 }
 
 function StatusPill({ label, tone }: { label: string; tone: Tone }) {
-  return <span className={clsx(styles.status, styles[tone])}>{label}</span>;
+  return <span className={clsx(styles.status, styles[tone])}>{label.replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase())}</span>;
 }
 
 function Metric({ label, value }: { label: string; value: string }) {
@@ -689,15 +689,14 @@ function Metric({ label, value }: { label: string; value: string }) {
   );
 }
 
-function unavailableSelectedResult(key: string): PrimaryResult {
-  const [kind, id] = key.split(":", 2);
+function unavailableSelectedResult(): PrimaryResult {
   return {
     kind: "unknown",
     title: "Linked result is unavailable",
     status: "unavailable",
     body:
       "This result could not be loaded. It may have expired under the retention policy, belong to another workspace, or use an invalid link.",
-    meta: `${kind || "result"} ${id || "unknown"}`,
+    meta: "Try another result or refresh your workspace.",
     href: "/app/results",
     tone: "neutral",
   };
@@ -724,7 +723,7 @@ function choosePrimaryResult(timeline: ResultTimelineItem[], sourceError: boolea
     title: "No result yet",
     status: "empty",
     body: "Start a task. Its latest run, workflow, or approval state will appear here after execution begins.",
-    meta: "Start / Runs / Approvals / Results",
+    meta: "Your completed work and saved outputs will collect here.",
     href: "/app/command",
     tone: "neutral",
   };
@@ -852,7 +851,6 @@ function workflowMeta(run: JsonRecord) {
     .toLowerCase()
     .replaceAll("_", " ");
   return [
-    stringValue(run.currentStep, "complete"),
     outcome ? `Outcome: ${outcome}` : "",
     formatResultTime(stringValue(run.completedAt || run.updatedAt || run.createdAt)),
   ].filter(Boolean).join(" / ");
@@ -862,10 +860,9 @@ function agentResultMeta(run: JsonRecord) {
   const card = asRecord(readPath(run, "agentIdentity.card"));
   const identity = stringValue(card.name)
     ? `${stringValue(card.name)} (${stringValue(card.role, "Agent")})`
-    : stringValue(run.agentId, "Agent");
+    : "Assistant";
   return [
     identity,
-    stringValue(run.mode, "agent"),
     formatResultTime(stringValue(run.completedAt || run.startedAt)),
   ].join(" / ");
 }

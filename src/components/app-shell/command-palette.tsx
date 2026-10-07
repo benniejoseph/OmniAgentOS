@@ -5,7 +5,7 @@ import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { Search, X } from "lucide-react";
 import { clsx } from "clsx";
-import { appNav, type AppNavItem } from "@/lib/navigation";
+import { navigationItems as appNav, type AppNavItem } from "@/lib/navigation";
 import type { WorkspaceRole, WorkspaceSession } from "./session-context";
 import { workspaceOwnerScope } from "./workspace-owner-scope";
 import { useContentSearch } from "./use-content-search";

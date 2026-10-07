@@ -12,6 +12,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   UserRound,
+  Wrench,
   X,
 } from "lucide-react";
 import { clsx } from "clsx";
@@ -320,6 +321,7 @@ export function AppShell({
               aria-current={active ? "page" : undefined}
               onFocus={(event) => event.currentTarget.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "instant" })}
               className={clsx(
+                styles.dockLink,
                 "flex min-h-14 flex-col items-center justify-center gap-1 rounded-md px-1 text-xs font-semibold transition",
                 active ? "text-primary" : "text-muted hover:bg-surface-raised hover:text-foreground",
               )}
@@ -411,10 +413,8 @@ export function MobileNavigation({
 }) {
   return (
     <nav className="min-h-0 flex-1 overflow-y-auto px-3 py-4" aria-label="Complete workspace navigation">
-      {appNavGroups.map((group) => (
-        <div key={group.label} className="mb-5">
-          <p className="px-3 text-xs font-semibold text-muted">{group.label}</p>
-          <div className="mt-2 space-y-1">
+      {appNavGroups.map((group) => {
+        const links = <div className="mt-2 space-y-1">
             {group.items.map((item) => {
               const Icon = item.icon;
               const active = isActivePath(pathname, item.href);
@@ -440,9 +440,14 @@ export function MobileNavigation({
                 </Link>
               );
             })}
-          </div>
-        </div>
-      ))}
+          </div>;
+        return group.label === "Advanced" ? <details key={group.label} className={styles.mobileAdvanced}
+          open={group.items.some((item) => isActivePath(pathname, item.href)) || undefined}>
+          <summary>Advanced tools</summary>{links}
+        </details> : <div key={group.label} className="mb-5">
+          <p className="px-3 text-xs font-semibold text-muted">{group.label}</p>{links}
+        </div>;
+      })}
     </nav>
   );
 }
@@ -450,40 +455,30 @@ export function MobileNavigation({
 export function CompactNavigation({ pathname, inboxCount }: { pathname: string; inboxCount?: number }) {
   return (
     <>
-      {appNavGroups.map((group, groupIndex) => (
-        <div
-          key={group.label}
-          role="group"
-          aria-label={group.label}
-          className={clsx("space-y-1", groupIndex > 0 && "border-t border-line/70 pt-3")}
-        >
-          {group.items.map((item) => {
-            const Icon = item.icon;
-            const active = isActivePath(pathname, item.href);
-            const badge = navBadgeLabel(item.href, inboxCount);
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                aria-label={navItemAccessibleName(item.label, badge)}
-                aria-current={active ? "page" : undefined}
-                title={`${item.label} — ${item.description}`}
-                className={clsx(
-                  "group relative grid min-h-11 w-full place-items-center rounded-md transition",
-                  styles.compactLink,
-                  active
-                    ? "bg-primary text-primary-ink shadow-sm"
-                    : "text-muted hover:bg-surface-raised hover:text-foreground",
-                )}
-              >
-                <Icon size={18} aria-hidden="true" />
-                <span className={styles.compactLabel} aria-hidden="true">{item.label}</span>
-                <NavCountPill badge={badge} active={active} compact />
-              </Link>
-            );
-          })}
-        </div>
-      ))}
+      {appNavGroups.map((group, groupIndex) => {
+        const links = group.items.map((item) => {
+          const Icon = item.icon;
+          const active = isActivePath(pathname, item.href);
+          const badge = navBadgeLabel(item.href, inboxCount);
+          return <Link key={item.href} href={item.href}
+            aria-label={navItemAccessibleName(item.label, badge)}
+            aria-current={active ? "page" : undefined}
+            title={`${item.label}: ${item.description}`}
+            className={clsx("group relative grid min-h-11 w-full place-items-center rounded-md transition", styles.compactLink,
+              active ? "bg-primary text-primary-ink" : "text-muted hover:bg-surface-raised hover:text-foreground")}>
+            <Icon size={18} aria-hidden="true" />
+            <span className={styles.compactLabel} aria-hidden="true">{item.label}</span>
+            <NavCountPill badge={badge} active={active} compact />
+          </Link>;
+        });
+        if (group.label === "Advanced") return <details key={group.label} className={styles.compactAdvanced}
+          open={group.items.some((item) => isActivePath(pathname, item.href)) || undefined}>
+          <summary aria-label="Advanced tools" title="Advanced tools"><Wrench size={18} aria-hidden="true" /></summary>
+          <div className="space-y-1">{links}</div>
+        </details>;
+        return <div key={group.label} role="group" aria-label={group.label}
+          className={clsx("space-y-1", groupIndex > 0 && "border-t border-line/70 pt-3")}>{links}</div>;
+      })}
     </>
   );
 }
@@ -750,5 +745,6 @@ function rememberDesktopNavCollapsed(collapsed: boolean) {
 }
 
 function isActivePath(pathname: string, href: string) {
+  if (href === "/app/history" && (pathname === "/app/activity" || pathname === "/app/results" || pathname.startsWith("/app/results/"))) return true;
   return pathname === href || (href !== "/app" && pathname.startsWith(`${href}/`));
 }

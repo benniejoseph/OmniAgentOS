@@ -35,7 +35,7 @@
 }
 
 .introduction { min-width: 0; flex: 1 1 20rem; }
-.header h1 { font-size: 1.5rem; font-weight: 600; line-height: 2rem; letter-spacing: -0.02em; }
+.header h1, .header h2 { font-size: 1.5rem; font-weight: 600; line-height: 2rem; letter-spacing: -0.02em; }
 .header p { max-width: 68ch; margin-block-start: 0.25rem; color: var(--muted); }
 .timestamp, .count, .references, .coverage, .resultsHeader > p, .pager > p {
   font-size: 0.8125rem;
@@ -127,7 +127,7 @@
 
 @media (min-width: 48rem) {
   .shell { padding: 1.5rem 1.5rem 2rem; }
-  .header h1 { font-size: 1.75rem; line-height: 2.25rem; }
+  .header h1, .header h2 { font-size: 1.75rem; line-height: 2.25rem; }
 }
 @media (min-width: 80rem) { .shell { padding-inline: 2rem; } }
 @container activity (min-width: 48rem) {
@@ -150,3 +150,6 @@
   .notice, .error, .coverage, .list, .list > li, .empty { border-color: CanvasText; }
   .shell :where(button, a, summary, [tabindex]):focus-visible { outline-color: Highlight; }
 }
+
+.embedded { padding: 0; max-width: none; }
+.embedded .header h2 { font-size: 1.125rem; line-height: 1.75rem; }
