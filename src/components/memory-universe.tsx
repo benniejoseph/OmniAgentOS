@@ -268,7 +268,9 @@ export function MemoryUniverse(props: { active: boolean; onAddConnectedFact?: ()
     (neighbors.get(b.id)?.size || 0) - (neighbors.get(a.id)?.size || 0) || b.weight - a.weight || a.id.localeCompare(b.id)
   ), [graph.nodes, neighbors]);
   const ordinals = useMemo(() => new Map(ordered.map((node, index) => [node.id, index + 1])), [ordered]);
-  const label = (node: SceneNode) => names[node.id] || `${singularKind(node.kind, mode)} ${ordinals.get(node.id) || ""}`.trim();
+  const label = (node: SceneNode) => names[node.id]
+    ? readableGraphLabel(names[node.id], `Assistant task ${ordinals.get(node.id) || ""}`.trim())
+    : `${singularKind(node.kind, mode)} ${ordinals.get(node.id) || ""}`.trim();
   const visible = useMemo(() => {
     let candidates = ordered;
     if (local && selectedId && nodeById.has(selectedId)) {
@@ -294,6 +296,7 @@ export function MemoryUniverse(props: { active: boolean; onAddConnectedFact?: ()
   const positions = useMemo(() => layoutRelationshipMap(mapNodes, mapEdges), [layoutKey, graph.edges]); // eslint-disable-line react-hooks/exhaustive-deps
   const kinds = [...new Set(ordered.map((node) => node.kind))];
   const selected = selectedId ? nodeById.get(selectedId) : undefined;
+  const visibleSummary = readableGraphSummary(detail?.summary || "");
   const connections = selectedId ? [...(neighbors.get(selectedId) || [])].flatMap((id) => nodeById.get(id) ? [nodeById.get(id)!] : []) : [];
 
   function clearSelection() { selectionGuard.clear(); setSelectedId(undefined); setDetail(undefined); setDetailError(undefined); setDetailLoading(false); }
@@ -401,14 +404,18 @@ export function MemoryUniverse(props: { active: boolean; onAddConnectedFact?: ()
       </div>
       <aside className={styles.sidebar}>
         {selected ? <section className={styles.inspector}>
-          <header><h3 ref={inspectorTitle} tabIndex={-1}>{detail?.label || label(selected)}</h3><button type="button" onClick={clearSelection} aria-label="Close selected item"><X size={16} /></button></header>
+          <header><h3 ref={inspectorTitle} tabIndex={-1}>{label(selected)}</h3><button type="button" onClick={clearSelection} aria-label="Close selected item"><X size={16} /></button></header>
           {detailLoading ? <p role="status">Opening item…</p> : null}
           {detailError ? <p className={styles.error} role="alert">{detailError}<button type="button" onClick={() => void selectNode(selected.id)}>Retry</button></p> : null}
-          {detail?.summary ? <p className={styles.summary}>{detail.summary}</p> : null}
+          {visibleSummary ? <p className={styles.summary}>{visibleSummary}</p> : null}
           <p className={styles.meta}>{singularKind(selected.kind, mode)} · {selected.sourceCount} {selected.sourceCount === 1 ? "source" : "sources"} · {connections.length} connections</p>
           {detail?.state ? <p className={styles.meta}>Status: {startCase(detail.state)}</p> : null}
           {connections.length ? <><h4>Connected items</h4><ul className={styles.pointList}>{connections.slice(0, 16).map((node) => <li key={node.id}><button type="button" onClick={() => void selectNode(node.id)}>{label(node)}<span>{singularKind(node.kind, mode)}</span></button></li>)}</ul>{connections.length > 16 ? <p className={styles.meta}>Showing 16 of {connections.length} connections.</p> : null}</> : null}
-          <details className={styles.technical}><summary>Technical reference</summary><code>{selected.id}</code>{detail ? <p>Updated {formatDate(detail.updatedAt)}</p> : null}</details>
+          <details className={styles.technical}><summary>Technical reference</summary><code>{selected.id}</code>{detail ? <>
+            <p>Updated {formatDate(detail.updatedAt)}</p>
+            {detail.label !== label(selected) ? <p>Original name: {detail.label}</p> : null}
+            {detail.summary && visibleSummary !== detail.summary ? <><p>Original source summary</p><p className={styles.summary}>{detail.summary}</p></> : null}
+          </> : null}</details>
         </section> : <section className={styles.entry}><h3>Start with an item</h3><p>Select a dot or a row below. Its direct connections will become the focus.</p></section>}
         <section className={styles.selector}><h3>{selected && local ? "In this neighborhood" : "Most connected items"}</h3><p className={styles.meta}>Open an item to read its name and source summary.</p><ul className={styles.pointList}>{mapNodes.map((node) => <li key={node.id}><button type="button" aria-pressed={selectedId === node.id} onClick={() => void selectNode(node.id)}><strong>{label(node)}</strong><span>{node.sourceCount} sources</span></button></li>)}</ul></section>
       </aside>
@@ -450,6 +457,18 @@ function layoutRelationshipMap(nodes: SceneNode[], edges: SceneEdge[]) {
 function colorForKind(kind: string, mode: GraphMode) { return `var(${mode === "evidence" ? evidenceColors[kind as MemoryGraphNodeKind] || "--foreground" : entityColors[kind as EntityTypeId] || "--foreground"})`; }
 function labelForKind(kind: string, mode: GraphMode) { return (mode === "evidence" ? evidenceLabels[kind as MemoryGraphNodeKind] : entityLabels[kind as EntityTypeId]) || startCase(kind); }
 function singularKind(kind: string, _mode: GraphMode) { if (kind === "concept") return "Topic"; if (kind === "person") return "Person"; if (kind === "memory") return "Memory"; if (kind === "trace") return "Recall"; return startCase(kind); }
+// Historical run tags are technical provenance, never a useful topic name.
+const generatedRunLabel = /^(?:source[\s_-]+)?run[\s:_-]+[a-f0-9]{8}(?:[\s-]+[a-f0-9]{1,12})*$/i;
+function readableGraphLabel(value: string, fallback: string) {
+  return generatedRunLabel.test(value.trim()) ? fallback : value;
+}
+function readableGraphSummary(value: string) {
+  const tag = /^Tag signal:\s*(.+)$/i.exec(value.trim());
+  if (tag && generatedRunLabel.test(tag[1])) return "Connects this item to a recorded assistant task.";
+  // Only split the known machine footer. Ordinary prose and its source remain exact.
+  const footer = /(?:^|\r?\n)[ \t]*Source run:[ \t]*[a-f0-9]{8}(?:-[a-f0-9]{1,12}){0,4}[ \t]*(?:\r?\n|$)/i.exec(value);
+  return footer ? value.slice(0, footer.index).trimEnd() : value;
+}
 function shortLabel(value: string) { return value.length > 30 ? `${value.slice(0, 29)}…` : value; }
 function formatDate(value: string) { const date = new Date(value); return Number.isNaN(date.getTime()) ? "Date unavailable" : new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(date); }
 function startCase(value: string) { return value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()); }
