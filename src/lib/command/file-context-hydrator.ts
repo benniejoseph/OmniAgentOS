@@ -66,7 +66,7 @@ export async function hydrateCommandFileContext(input: {
     MIN_CONTENT_CHARACTERS,
     Math.floor(input.maxCharacters),
   );
-  if (input.file.sourceAuthority === "source_item") {
+  if (input.file.sourceAuthority === "source_item" || input.file.sourceAuthority === "capture_transcript") {
     return hydrateSourceItemContext({
       context: input.context,
       file: input.file,
@@ -292,7 +292,7 @@ async function hydrateSourceItemContext(input: {
 
   const pinnedRevisionId = input.file.currentVersion.sourceRevisionId;
   if (
-    source.sourceItemId !== input.file.sourceId ||
+    (input.file.sourceAuthority === "source_item" && source.sourceItemId !== input.file.sourceId) ||
     source.sourceRevisionId !== pinnedRevisionId ||
     source.document.id !== knowledgeDocumentIds[0] ||
     source.document.contentHash !== input.file.currentVersion.contentSha256 ||

@@ -8,6 +8,13 @@ product
 
 Asael is a private personal operating system for one owner who wants a coordinated arsenal of AI agents to handle research, building, planning, administration, and creative work. The owner gives the system an outcome, watches specialist agents collaborate, corrects their work, and decides which actions may affect external systems.
 
+Work supports the owner's Salesforce Customer Success practice: mainly Secondary
+CSM assignments, with some Lead CSM clients. Each client has its own context,
+Success Path, stakeholder notes, and next actions. Evidence comes from supplied
+meeting recordings, screenshots, transcripts, decks, and documents. The product
+does not assume access to Salesforce orgs. Its dedicated CSM assistant prepares
+briefs and recommendations from the selected client's evidence for owner review.
+
 ## Product Purpose
 
 Asael turns personal goals into adaptive, durable work. It combines specialist agents, long-term memory, tools, approvals, recovery, and evidence so repeated reversible work becomes easier while novel or consequential actions remain supervised. Success means the owner can quickly answer four questions: what is working, what needs me, what did the system learn, and can I trust the result?

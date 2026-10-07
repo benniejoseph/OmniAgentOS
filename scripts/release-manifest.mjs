@@ -14,15 +14,23 @@ import {
   RELEASE_REPOSITORY,
   REQUIRED_RELEASE_CHECKS,
 } from "./release-provenance.mjs";
+import {
+  OWNER_LIVE_DEFERRED_COMMANDS,
+  OWNER_LIVE_LOCAL_COMMANDS,
+  OWNER_LIVE_VERIFICATION_MODE,
+  ownerLiveAuthorizationProblem,
+} from "./release-owner-live-authorization.mjs";
 
 /**
- * A signed release manifest says the release runner released this revision of
- * the release branch with these green checks. The runner signs it with a key
+ * A signed release manifest records the runner's exact revision and validation
+ * basis: green hosted checks in v1, or completed local validation and explicit
+ * owner-authorized deferrals in v2. The runner signs it with a key
  * that never leaves the release machine and hands it to the deployment, which
  * serves it from /api/health. A deployment made outside the runner has no
  * manifest a trusted key signed for the revision it serves.
  */
 export const RELEASE_MANIFEST_VERSION = 1;
+export const OWNER_LIVE_RELEASE_MANIFEST_VERSION = 2;
 export const RELEASE_MANIFEST_ENV = "OMNIAGENT_RELEASE_MANIFEST";
 export const RELEASE_SIGNING_KEY_FILE_ENV = "OMNIAGENT_RELEASE_SIGNING_KEY_FILE";
 /** The longest encoded manifest a deployment serves. */
@@ -48,6 +56,8 @@ const MAX_KEY_FILE_BYTES = 4096;
 const ENVELOPE_KEYS = ["payload", "signature"];
 const SIGNATURE_KEYS = ["algorithm", "keyId", "value"];
 const PAYLOAD_KEYS = ["branch", "checks", "repository", "revision", "signedAt", "version"];
+const OWNER_LIVE_PAYLOAD_KEYS = [...PAYLOAD_KEYS, "verification"];
+const VERIFICATION_KEYS = ["mode", "ownerAuthorization", "localValidation", "deferredHostedChecks", "deferredCommands"];
 // The checkout a deploy uploads, wherever the runner is started from.
 const REPOSITORY_ROOT = fileURLToPath(new URL("..", import.meta.url));
 
@@ -59,6 +69,13 @@ const REPOSITORY_ROOT = fileURLToPath(new URL("..", import.meta.url));
  *   branch: string;
  *   checks: string[];
  *   signedAt: string;
+ *   verification?: {
+ *     mode: string;
+ *     ownerAuthorization: { candidateRevision: string; previousRevision: string; reason: string; expiresAt: string };
+ *     localValidation: { revision: string; commands: string[]; completedAt: string };
+ *     deferredHostedChecks: string[];
+ *     deferredCommands: string[];
+ *   };
  * }} ReleaseManifest
  */
 
@@ -77,6 +94,7 @@ export function signReleaseManifest(manifest, { privateKey }) {
     branch: manifest.branch,
     checks: [...manifest.checks],
     signedAt: manifest.signedAt,
+    ...(manifest.verification ? { verification: manifest.verification } : {}),
   };
   const signature = sign(null, Buffer.from(canonicalJson(payload)), privateKey);
   const encoded = Buffer.from(JSON.stringify({
@@ -246,11 +264,12 @@ function publicKeyToBase64(publicKey) {
 /** @param {unknown} manifest */
 function manifestProblem(manifest) {
   if (!isRecord(manifest)) return "is not a release manifest";
-  if (manifest.version !== RELEASE_MANIFEST_VERSION) {
-    return `is version ${diagnostic(manifest.version)}, not ${RELEASE_MANIFEST_VERSION}`;
+  const ownerLive = manifest.version === OWNER_LIVE_RELEASE_MANIFEST_VERSION;
+  if (manifest.version !== RELEASE_MANIFEST_VERSION && !ownerLive) {
+    return `is unsupported version ${diagnostic(manifest.version)}`;
   }
-  if (!hasExactKeys(manifest, PAYLOAD_KEYS)) {
-    return `is not a version ${RELEASE_MANIFEST_VERSION} release manifest`;
+  if (!hasExactKeys(manifest, ownerLive ? OWNER_LIVE_PAYLOAD_KEYS : PAYLOAD_KEYS)) {
+    return `is not a version ${manifest.version} release manifest`;
   }
   if (typeof manifest.revision !== "string" || !REVISION.test(manifest.revision)) {
     return "names no exact revision";
@@ -266,12 +285,41 @@ function manifestProblem(manifest) {
   ) {
     return "lists unreadable checks";
   }
-  const missing = REQUIRED_RELEASE_CHECKS.filter((check) => !checks.includes(check));
-  if (missing.length) return `does not list the required checks ${missing.join(", ")}`;
   if (typeof manifest.signedAt !== "string" || !isTimestamp(manifest.signedAt)) {
     return "has no signing time";
   }
+  if (ownerLive) {
+    if (checks.length !== 0) return "claims hosted checks for an owner-authorized live release";
+    const verification = manifest.verification;
+    if (!hasExactKeys(verification, VERIFICATION_KEYS) ||
+      verification.mode !== OWNER_LIVE_VERIFICATION_MODE ||
+      !sameValues(verification.deferredHostedChecks, REQUIRED_RELEASE_CHECKS) ||
+      !sameValues(verification.deferredCommands, OWNER_LIVE_DEFERRED_COMMANDS)) {
+      return "has no exact owner-authorized live verification policy";
+    }
+    const problem = ownerLiveAuthorizationProblem(verification.ownerAuthorization, Date.parse(manifest.signedAt));
+    if (problem || verification.ownerAuthorization.candidateRevision !== manifest.revision) {
+      return "has no matching owner authorization valid at signing time";
+    }
+    const local = verification.localValidation;
+    if (!hasExactKeys(local, ["revision", "commands", "completedAt"]) ||
+      local.revision !== manifest.revision || !sameValues(local.commands, OWNER_LIVE_LOCAL_COMMANDS) ||
+      typeof local.completedAt !== "string" || !isTimestamp(local.completedAt) ||
+      Date.parse(local.completedAt) > Date.parse(manifest.signedAt) ||
+      Date.parse(local.completedAt) < Date.parse(manifest.signedAt) - 4 * 3_600_000) {
+      return "has no fresh local typecheck and build record for its exact revision";
+    }
+  } else {
+    const missing = REQUIRED_RELEASE_CHECKS.filter((check) => !checks.includes(check));
+    if (missing.length) return `does not list the required checks ${missing.join(", ")}`;
+  }
   return undefined;
+}
+
+/** @param {unknown} value @param {readonly string[]} expected */
+function sameValues(value, expected) {
+  return Array.isArray(value) && value.length === expected.length &&
+    value.every((item, index) => item === expected[index]);
 }
 
 /** @param {string} error */
