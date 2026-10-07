@@ -20,6 +20,7 @@ import {
   LOCAL_COMPUTER_RUN_BUDGET_LIMITS,
   TENANT_DAILY_MAX_COST_MICROUSD,
   TENANT_DAILY_MAX_TOKENS,
+  WEB_SEARCH_TIMEOUT_MS,
 } from "@/lib/config";
 import { getActiveAgentAdaptationGuidance } from "@/lib/agents/adaptation-store";
 import {
@@ -1536,7 +1537,7 @@ async function* runAgentUntilStopped(
         const searchTokens = search ? budgetPerRemainingModelTurn(runBudgetState, "tokens") : 0;
         const searchCost = search ? budgetPerRemainingModelTurn(runBudgetState, "costMicrousd") : 0;
         return Date.now() < collectionDeadline &&
-          remaining.wallTimeMs > (search ? 115_000 : 105_000) &&
+          remaining.wallTimeMs > 90_000 + (search ? WEB_SEARCH_TIMEOUT_MS : 15_000) &&
           remaining.toolCalls > 0 &&
           remaining.modelTurns > (search ? 1 : 0) &&
           remaining.tokens - searchTokens >= synthesisEstimate.tokens &&

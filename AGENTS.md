@@ -10,6 +10,10 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 # Asael repository map
 
+Owner-requested implementation includes deployment and live verification. Do not
+stop at a local build or merged PR; use the paired release procedure and report
+the live URL/revision. The Release Timeline remains stopped.
+
 Keep this file short. Read only the guide relevant to the change:
 
 - `docs/harness-engineering.md` — execution harness, golden rules, and failure workflow

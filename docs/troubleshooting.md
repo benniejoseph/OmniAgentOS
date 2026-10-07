@@ -188,6 +188,32 @@ A job is quarantined after its lease lapsed on three deliveries in a row: each t
 - A split recovery checks the web with `smoke:preflight` before it deploys, and preflight does not read the budget. Set the exception before such a release starts if the budget is held, or the post-activation `smoke:release` fails and the runner rolls the release back.
 - While the budget is held, the nightly `Production Smoke` fails its `release` gate too.
 
+### Owner-authorized deployment despite historical error rates
+
+The owner's delivery preference is to deploy implementation changes so they can
+verify them live. Historical run or tool failure rates must remain visible, but
+an explicitly authorized release can proceed through the paired runner using
+`OMNIAGENT_RELEASE_OWNER_ERROR_BUDGET_OVERRIDE`. Supply one JSON object with
+exactly `candidateRevision`, `previousRevision`, `reason`, and `expiresAt`.
+Revisions are distinct full commit SHAs; the reason is one line of at most 200
+characters; the expiry is an ISO timestamp no more than four hours ahead.
+Do not combine it with `OMNIAGENT_RELEASE_ERROR_BUDGET_EXCEPTION` or save it in
+Vercel, Fly, repository configuration, or an unattended recurring job.
+
+This exception accepts only fresh, measured 95% agent-run and 90% tool-call
+objectives, on the pinned previous revision during preflight/rollback and the
+pinned candidate during staged/canonical checks. An exhausted budget must be
+the sole failed gate, every other gate must pass, and warnings are not waived.
+Unread telemetry, changed objectives, missing gates, wrong revisions, expiry,
+and any additional failure still stop deployment. Ordinary checks without the
+pin keep their existing behavior.
+
+The local release artifact preserves the server's original blocked report and
+adds `ownerErrorBudgetOverride` with the bounded reason, revision pair, expiry,
+and measured proof. It never rewrites failure history or claims that the
+server's reliability gate passed. Keep each release artifact with the owner
+authorization, unset the pin afterward, and investigate the recorded failures.
+
 ## The provider contract suite fails
 
 - `<provider>/<scenario>: request N was POST <url>, but the fixture expected POST <url>`, or `request N (POST <url>) has no recorded response`: the adapter sent a request that the fixture does not have, such as a new endpoint or an extra turn. The adapter got a 400 `contract_fixture_mismatch` response instead, and the test reports the mismatch rather than the error that response caused. If the adapter changed on purpose, record the scenario again with `npm run test:provider-contract:record` and review the diff.

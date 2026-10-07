@@ -9,6 +9,10 @@ import {
   isSafeReleaseErrorBudgetException,
   selectedErrorBudgetProof,
 } from "./release-error-budget-scope.mjs";
+import {
+  ownerBudgetOverrideEvidence,
+  readOwnerBudgetOverride,
+} from "./release-owner-budget-override.mjs";
 
 const baseUrl = getSmokeBaseUrl();
 const email = process.env.SMOKE_ADMIN_EMAIL || process.env.OMNIAGENT_BOOTSTRAP_EMAIL;
@@ -46,8 +50,10 @@ if (process.env.OMNIAGENT_REQUIRE_ACTIVE_WORKER_HEARTBEATS === "true") {
   );
 }
 let errorBudgetException;
+let ownerBudgetPin;
 try {
   errorBudgetException = releaseErrorBudgetException();
+  ownerBudgetPin = readOwnerBudgetOverride();
 } catch (error) {
   failSmoke(error instanceof Error ? error.message : "invalid error budget exception");
 }
@@ -63,6 +69,8 @@ const json = await readJson(response);
 const report = json?.report;
 const gateById = new Map((report?.gates || []).map((gate) => [gate.id, gate]));
 const previousReleaseWithoutErrorBudget = previousRelease && !gateById.has("agent_error_budget");
+const ownerBudgetEvidence = ownerBudgetOverrideEvidence(report, ownerBudgetPin, previousRelease);
+const ownerBudgetApplied = ownerBudgetEvidence?.applied === true;
 const expectedSyntheticTenant = internalSecret
   ? process.env.SMOKE_TENANT_ID || "production_smoke"
   : undefined;
@@ -75,8 +83,8 @@ checks.push(assert(
   "release evidence tenant matches request scope",
   "missing or mismatched tenant identifier",
 ));
-checks.push(assert(report?.releaseGate?.approved === true, "release gate is approved", releaseGateDetail(report)));
-checks.push(assert(report?.releaseGate?.status === "passed", "release gate is fully passed", releaseGateDetail(report)));
+checks.push(assert(report?.releaseGate?.approved === true || ownerBudgetApplied, ownerBudgetApplied ? "owner authorized the measured reliability exception" : "release gate is approved", releaseGateDetail(report)));
+checks.push(assert(report?.releaseGate?.status === "passed" || ownerBudgetApplied, ownerBudgetApplied ? "all other release gates fully pass" : "release gate is fully passed", releaseGateDetail(report)));
 checks.push(assert(gateById.get("tenant_isolation_database")?.status === "pass", "database tenant isolation gate passes", gateDetail(gateById.get("tenant_isolation_database"))));
 checks.push(assert(gateById.get("latest_tenant_isolation_eval")?.status === "pass", "tenant isolation eval gate passes", gateDetail(gateById.get("latest_tenant_isolation_eval"))));
 checks.push(assert(gateById.get("internal_smoke_auth")?.status === "pass", "internal smoke auth gate passes", gateDetail(gateById.get("internal_smoke_auth"))));
@@ -87,7 +95,10 @@ checks.push(assert(gateById.get("dedicated_worker")?.status === "pass", "dedicat
 checks.push(assert(gateById.get("observability_slo")?.status === "pass", "observability SLO gate passes", gateDetail(gateById.get("observability_slo"))));
 checks.push(previousReleaseWithoutErrorBudget
   ? assert(true, "previous release predates the agent error budget gate")
-  : assert(gateById.get("agent_error_budget")?.status === "pass", "agent error budget gate passes", gateDetail(gateById.get("agent_error_budget"))));
+  : assert(gateById.get("agent_error_budget")?.status === "pass" || ownerBudgetApplied, ownerBudgetApplied ? "measured error budget covered by recorded owner exception" : "agent error budget gate passes", gateDetail(gateById.get("agent_error_budget"))));
+if (ownerBudgetPin) {
+  checks.push(assert(Boolean(ownerBudgetEvidence), "owner reliability exception matches this release and only measured error budgets", "revision, expiry, telemetry, or other release gates did not match"));
+}
 checks.push(assert(
   isSafeReleaseErrorBudgetException(gateById.get("agent_error_budget"), errorBudgetException),
   "agent error budget exception has measured agent-run-only scope",
@@ -189,6 +200,7 @@ async function writeReleaseEvidenceArtifact(report, httpStatus) {
     ...(errorBudgetException
       ? { errorBudgetProof: selectedErrorBudgetProof(gateById.get("agent_error_budget")) }
       : {}),
+    ...(ownerBudgetEvidence ? { ownerErrorBudgetOverride: ownerBudgetEvidence } : {}),
     releaseGate: {
       ...report.releaseGate,
       reasons: limitStrings(report.releaseGate?.reasons),

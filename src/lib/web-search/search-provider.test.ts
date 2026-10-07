@@ -11,7 +11,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/lib/config", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/lib/config")>(),
   WEB_SEARCH_MODEL: "gpt-4o-mini",
-  WEB_SEARCH_TIMEOUT_MS: 25_000,
+  WEB_SEARCH_TIMEOUT_MS: 60_000,
   hasOpenAIKey: () => true,
 }));
 vi.mock("@/lib/settings/specialized-runtime", () => ({
@@ -88,7 +88,7 @@ describe("live web search provider boundary", () => {
       max_output_tokens: 2_000,
       tools: [{ type: "web_search", search_context_size: "medium" }],
       include: ["web_search_call.results", "web_search_call.action.sources"],
-    }), expect.objectContaining({ maxRetries: 0, timeout: 25_000, signal: expect.any(AbortSignal) }));
+    }), expect.objectContaining({ maxRetries: 0, timeout: 60_000, signal: expect.any(AbortSignal) }));
     expect(result).toMatchObject({ summary: "A source-backed answer.", sourceCount: 1 });
     expect(mocks.recordUsage).toHaveBeenCalledOnce();
   });
@@ -195,19 +195,53 @@ describe("live web search provider boundary", () => {
     }));
   });
 
-  it("propagates cancellation while the provider is running", async () => {
+  it("accepts a search that completes beyond the former 25-second cutoff without retrying", async () => {
+    vi.useFakeTimers();
+    mocks.create.mockImplementation((_body, options: { signal: AbortSignal }) => new Promise((resolve, reject) => {
+      const cancel = () => {
+        clearTimeout(timer);
+        reject(options.signal.reason);
+      };
+      const timer = setTimeout(() => {
+        options.signal.removeEventListener("abort", cancel);
+        resolve(response());
+      }, 35_000);
+      options.signal.addEventListener("abort", cancel, { once: true });
+    }));
+    const pending = runLiveWebSearch({ query: "Compare primary sources", usageScope: scope });
+    await vi.advanceTimersByTimeAsync(25_000);
+    expect(mocks.create).toHaveBeenCalledOnce();
+    expect(mocks.create.mock.calls[0][1].signal.aborted).toBe(false);
+    expect(mocks.recordUsage).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(10_000);
+    await expect(pending).resolves.toMatchObject({ sourceCount: 1 });
+    expect(mocks.recordUsage).toHaveBeenCalledOnce();
+    expect(mocks.recordUsage).toHaveBeenCalledWith(expect.objectContaining({
+      status: "completed", latencyMs: 35_000, providerCallCount: 1, attemptCount: 1,
+    }));
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([
+    { afterMs: 35_000, reason: "Stopped by caller" },
+    { afterMs: 15_000, reason: "Run wall deadline exceeded" },
+  ])("honors an earlier caller abort after $afterMs ms: $reason", async ({ afterMs, reason }) => {
+    vi.useFakeTimers();
     const controller = new AbortController();
     mocks.create.mockImplementation((_body, options: { signal: AbortSignal }) => new Promise((_resolve, reject) => {
       options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true });
     }));
     const pending = runLiveWebSearch({ query: "Current fact", abortSignal: controller.signal, usageScope: scope });
-    const assertion = expect(pending).rejects.toThrow("Stopped by caller");
-    await vi.waitFor(() => expect(mocks.create).toHaveBeenCalledOnce());
-    controller.abort(new Error("Stopped by caller"));
+    const assertion = expect(pending).rejects.toThrow(reason);
+    setTimeout(() => controller.abort(new Error(reason)), afterMs);
+    await vi.advanceTimersByTimeAsync(afterMs);
     await assertion;
+    expect(mocks.create).toHaveBeenCalledOnce();
+    expect(mocks.recordUsage).toHaveBeenCalledOnce();
     expect(mocks.recordUsage).toHaveBeenCalledWith(expect.objectContaining({
       status: "failed", failureKind: "abort", retryable: false,
     }));
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("aborts a slow provider once and clears its timer", async () => {
@@ -216,8 +250,11 @@ describe("live web search provider boundary", () => {
       options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true });
     }));
     const pending = runLiveWebSearch({ query: "Current fact", usageScope: scope });
-    const assertion = expect(pending).rejects.toThrow("timed out");
-    await vi.advanceTimersByTimeAsync(25_000);
+    const assertion = expect(pending).rejects.toThrow("timed out after 60000ms");
+    await vi.advanceTimersByTimeAsync(59_999);
+    expect(mocks.create.mock.calls[0][1].signal.aborted).toBe(false);
+    expect(mocks.recordUsage).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
     await assertion;
     expect(mocks.create).toHaveBeenCalledOnce();
     expect(mocks.recordUsage).toHaveBeenCalledOnce();
