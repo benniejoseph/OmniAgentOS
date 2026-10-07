@@ -163,7 +163,7 @@ Key properties:
 - Text deltas stream to the client immediately but persist to the run ledger in batches.
 
 P9.1 inserts a transport-neutral application-service boundary between product
-callers and domain stores. Later phases extend it to 281 active `app.*`
+callers and domain stores. Later phases extend it to 251 active `app.*`
 operations, listed in `APP_SERVICE_OPERATION_CONTRACTS` in
 `src/lib/app-services/registry.ts`, across the workspace, project, work-item,
 asset, memory, Agent, Skill, run, workflow, connector, settings, Today, and
@@ -767,7 +767,7 @@ describes the lane budget and alerts.
 ### Durable notification dispositions
 
 The notification decision pipeline converts server-owned approval, Meeting,
-customer-risk, Agent-run, Today-reminder, delegated-task, scheduled-routine,
+Agent-run, Today-reminder, delegated-task, scheduled-routine,
 and security-incident state into a closed candidate vocabulary. A deterministic
 policy chooses `send`, `defer`, `digest`, or `suppress` while honoring critical
 delivery, quiet hours, cooldown, and digest policy. Migration v200 stores the
@@ -2575,195 +2575,25 @@ their exact IDs and whether ownership and due-date authority came from cited
 transcript evidence or explicit user confirmation. Proposal and resolution RLS
 inherits the Meeting's strict workspace/project/source access boundary.
 
-## Provider-neutral Customer Account 360
+## Retired Accounts feature
 
-P10.9 adds a customer-success projection over the existing versioned ontology,
-temporal graph coordinates, canonical Workspace membership, Projects, Meetings,
-and governed source revisions. It does not make Salesforce or any other CRM the
-internal source of truth. An immutable account revision binds the Account entity,
-optional Organization entity, lifecycle, semantic owner, and explicit customer-
-data purposes. A separate monotonic head points to the current revision without
-rewriting history.
-
-Account facts use the existing ontology categories for organization, contacts,
-stakeholders, products, opportunities, cases, usage, projects, interactions,
-health, risks, and renewal. Every immutable fact revision retains its exact
-source and source-revision digest, provider reference when external, permission
-basis, allowed customer-data purposes, observation and validity time, freshness
-deadline, confidence, and semantic owner. The Account 360 read model selects the
-latest revision of each source assertion, derives freshness at read time, and
-shows conflicting current values for the same fact key instead of silently
-choosing one. Retractions remain in history.
-
-Workspace members may read only records whose explicit purpose set includes
-`customer_success.account.read`. Mutations require the account owner to retain a
-contributor-or-manager Workspace membership and the explicit
-`customer_success.account.manage` purpose. Source purposes must be a subset of
-the Account boundary. External CRM effects remain structurally disabled until
-the separately governed P10.11 write slice; P10.9 creates no provider mutation
-tool or credential path.
-
-## Salesforce read synchronization
-
-P10.10 adds a read-only Salesforce adapter on the existing actor-owned OAuth
-grant boundary. Authorization resolves the canonical actor and exact Workspace
-before a connection is bound; the returned Salesforce organization and instance
-origin are fixed to that connection. Salesforce IDs, replay IDs, and revisions
-remain external references, and global organization/object uniqueness prevents
-one provider account or record from crossing Workspace or tenant boundaries.
-
-The reviewed scope is Account, Contact, Opportunity, Case, Task, Event, Asset,
-and Contract with an explicit per-object field allowlist. Initial backfill is
-fenced at an upper-bound timestamp. Each object advances an independent durable
-cursor, and delta reads intentionally re-read the timestamp boundary so delayed
-or duplicate observations converge through immutable revisions and a
-deterministic monotonic head. A generation-fenced lease prevents stale workers
-from advancing state. Webhook observations enter through a five-minute raw-body
-HMAC boundary; replay and event identifiers are digested before storage, and a
-complete provider record is hydrated before projection whenever it still exists.
-
-Only the winning immutable revision projects into Account 360. Account creates
-the canonical customer account link; the remaining object types become sourced
-organization, contact, opportunity, case, interaction, product, or renewal
-facts. Deletions retract facts without erasing history. The adapter exposes no
-Salesforce mutation method, and reconciliation only compares exact remote reads
-with stored revisions and records findings. Private health reports connection
-state, exact object/purpose scope, per-object cursors, lag, webhook readiness,
-and actionable errors. Manual sync/reconciliation require `manage.connector`;
-the existing secured workflow tick advances due connections under an explicit
-owner-and-Workspace-bound system execution scope.
-
-## Guarded Salesforce writes
-
-P10.11 adds a separate, default-off mutation plane without changing Salesforce
-into Asael's source of truth. Every Account 360 starts with external writes
-disabled. Its current owner must explicitly activate the approval-required state
-for an exact account revision after the deployment gate, actor-owned Salesforce
-connection, and exact Salesforce Account link are all present.
-
-The governed executor exposes allowlisted create/update contracts for Contact,
-Task, Case, and Opportunity, and allowlisted updates for Account and Note. Every
-provider effect requires a persisted human approval bound to the exact input,
-target identity, Account 360 revision, initiating actor, executing principal,
-and optional workflow plan. Creates use a deterministic provider key through a
-reviewed unique External ID field; updates require the exact provider revision
-and use a conditional request. Provider describe metadata must confirm that
-every requested, relationship, and idempotency field remains writable before a
-mutation can run.
-
-Each attempt is prepared in an immutable-identity, forced-RLS operation ledger
-before the provider call. Completion requires an exact provider re-read. The
-terminal commit and executor effect receipt retain hashes, verification state,
-and reason codes without raw Salesforce IDs or record content. A response-lost
-retry first reconciles the deterministic provider target; it never blindly
-repeats a create or overwrites a changed update target. Notes are update-only
-because the standard Note create surface has no deployment-independent unique
-idempotency identity.
-
-## Explainable customer health
-
-P10.12 derives customer health from the current Account 360 evidence projection
-through a pinned deterministic policy. Adoption, support, engagement, and
-commercial factors carry explicit weights totaling 10,000 basis points. Each
-factor retains the exact fact revision, fact digest, source revision and digest,
-value digest, raw score, source confidence, freshness state and multiplier, and
-conflict multiplier that contributed to its result. Missing and unscorable
-factors contribute no score or confidence; stale and conflicting evidence stays
-visible but receives the policy's deterministic confidence penalty.
-
-The overall score normalizes only across factors with scorable evidence, while
-coverage reports the missing factor weight and confidence retains that missing
-weight as zero. This prevents absence from becoming a negative customer fact.
-The policy snapshot, account revision/digest, evaluated input digest, factor
-results, score, confidence, coverage, and status are sealed into an immutable
-score revision. A monotonic projection points to the current revision, and an
-account change makes the previous score visibly outdated until it is evaluated
-again.
-
-Model output may supply bounded next-action, factor-review, or input-gap
-suggestions only when each statement cites current fact revision IDs and
-digests. Suggestions are stored as `authoritative: false`, do not enter any
-factor calculation, and cannot change the deterministic score. Evaluation is an
-idempotent owner-controlled application-service mutation that locks the exact
-Account 360 revision, persists policy and score evidence under forced Workspace
-RLS, and emits the metadata-only `customer.account.health.evaluated` event.
-
-## Governed customer-success workflows
-
-P10.13 adds the immutable `asael-csm-pack:1` definitions for onboarding,
-adoption review, risk escalation, renewal planning, QBR/EBR, meeting prep or
-follow-up, support escalation, and expansion discovery. Each definition has a
-strict discriminated input contract, acceptance criteria, required artifacts,
-required evidence classes, a default owner action, and the project/work-item
-template used for execution. The definition digest is retained on every run so
-a later application release cannot silently reinterpret existing work.
-
-Starting a workflow requires the exact current Account 360 revision and digest,
-canonical Workspace write authority, and the current account owner. It creates
-one idempotent actor-owned Project plus deterministic dependency-aware WorkItems
-through the existing Project event boundary. A second account lock rechecks the
-revision before the immutable workflow run is committed. The run retains the
-typed input digest, exact account and definition snapshots, semantic account
-owner, project/task identities, next action, and an initial `in_progress`
-outcome receipt.
-
-Completed, blocked, and cancelled outcomes are append-only revisions. A
-completed outcome must satisfy every required artifact and evidence key; each
-artifact receipt must name an artifact produced by the exact workflow Project,
-and every claimed evidence reference must already be attached to that artifact.
-The current projection is monotonic and terminal completed/cancelled outcomes
-cannot be rewritten. Both ledgers use forced tenant plus canonical Workspace
-and account-owner RLS.
-
-Workflow creation has no external side-effect path. Customer communications are
-declared `draft_only_until_governed_delivery`, and CRM changes are
-`proposal_only_until_governed_write`. WorkItems may prepare those proposals,
-but delivery and Salesforce mutation can happen only through their existing
-approval-bound governed tools and effect receipts.
-
-## Customer-success portfolio intelligence
-
-P10.14 adds a read-only decision projection over Account 360, deterministic
-health, governed customer-success runs, Account-linked Meetings and confirmed
-commitments, and the existing approval queue. It creates no competing customer
-record and grants no action authority. Both the portfolio and account detail are
-assembled under the exact tenant, canonical Workspace, readable actor set, and
-`customer_success.account.read` purpose; approval metadata is included only for
-a caller who independently holds workflow-management permission and only when
-its reviewed input contains an exact account, Project, WorkItem, or run identity
-from that Account 360.
-
-The pinned `p10.14-customer-success-intelligence:1` policy ranks a current
-approval before cited risk and commitment signals, then requests a deterministic
-health evaluation or evidence refresh before suggesting a typed CSM workflow.
-Every next-best action is `suggested: true` and `authoritative: false`, carries a
-digest, confidence, uncertainty, evidence freshness, and exact revision/digest
-references, and never executes from the projection itself. Customer risk rows
-preserve their originating fact, health, workflow, commitment, lifecycle, or
-data-quality class instead of silently collapsing different evidence.
-
-The account timeline orders immutable Account and fact revisions, health
-evaluations, customer-success run revisions, and Account-linked Meeting
-commitments. Commitment rows expose only the current Meeting projection,
-participant display owner, due date, follow-up state, and canonical WorkItem
-reference; participant email and source content remain outside this read model.
-Today consumes the same bounded portfolio response used by Account 360, so its
-customer-attention section cannot drift into a separate ranking policy.
+Accounts, Customer Account 360, and the Salesforce integration were retired on
+2026-10-07. Their product routes, governed tools, background sync, and web/native
+UI are withdrawn. Historical migrations and protected records are retained.
 
 ## Cohesive Today projection
 
 P11.1 replaces the dashboard's independent browser fan-out with the pinned
 `p11.1-cohesive-today:1` read projection. One actor-scoped application service
 combines the personal Today snapshot, canonical Meetings and confirmed
-commitments, customer-success portfolio, approvals, real Agent-run identities,
-workflow and Project state, and the complete consumption ledger. Each domain
+commitments, approvals, real Agent-run identities, workflow and Project state,
+and the complete consumption ledger. Each domain
 retains its own authority and reports `ready`, `restricted`, `error`, or
 user-selected `hidden` state plus observed and last-changed timestamps; an
 unavailable read is never projected as an empty fact.
 
-The projection is read-only and digest-bound. Customer next actions remain
-suggestions, Meeting commitments remain bound to their confirmed revision, and
-approval rows do not grant execution authority. The service establishes the
+The projection is read-only and digest-bound. Meeting commitments remain bound
+to their confirmed revision, and approval rows do not grant execution authority. The service establishes the
 canonical/current-email actor set itself, so server rendering, the private API,
 and governed Agent-tool dispatch cannot depend on ambient caller scope. Today
 section visibility is actor-owned and persisted in
@@ -2864,8 +2694,7 @@ visual cluster.
 P11.7 makes the Integrations workspace consume the strict
 `p11.7-truthful-integrations:1` projection before presenting connection health
 or capability. The projection independently reads request-bound OAuth grants,
-tenant MCP and OpenAPI contracts, canonical Workspace Salesforce health, and
-the tenant usage ledger. A failed source remains explicitly unavailable and
+tenant MCP and OpenAPI contracts, and the tenant usage ledger. A failed source remains explicitly unavailable and
 cannot be interpreted as disconnected, healthy, or free.
 
 Installed integrations are separate from catalog suggestions. Each installed
@@ -2927,8 +2756,7 @@ Google mail, calendar, and Drive store separate safe source checkpoints with
 backfill state, last attempted/successful time, and an allowlisted failure
 code. Initial history is complete only after that source reaches its delta
 boundary; provider-level sync history is never treated as per-source proof.
-Salesforce reuses the exact object-scope cursor and freshness contract. Native
-Capture and direct imports report only actor-owned submitted/current records.
+Native Capture and direct imports report only actor-owned submitted/current records.
 If Capture submission totals disagree with canonical source heads, the source
 is explicitly unknown and actionable instead of inferred empty.
 
@@ -2977,7 +2805,6 @@ source controls behind the original exact-owner mutation routes.
 | Evaluations + signed reports | `src/lib/evaluations/`, `src/lib/release/` |
 | Private asset objects, migration + signed delivery | `src/lib/storage/object-plane.ts`, `src/lib/storage/object-migration.ts`, `src/app/api/assets/` |
 | Unified workspace library read model | `src/lib/library/`, `src/lib/app-services/library.ts`, `src/app/api/library/` |
-| Customer Account 360 | `src/lib/customer-success/`, `src/lib/app-services/customer-accounts.ts`, `src/app/api/customer-accounts/` |
 | UI shell + workspaces | `src/components/`, `src/app/app/` |
 
 

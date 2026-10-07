@@ -92,7 +92,7 @@ class MeetingRelationshipFields extends StatelessWidget {
           ),
         ),
         MeetingSection(
-          'Customer and account context',
+          'Relationship context',
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [

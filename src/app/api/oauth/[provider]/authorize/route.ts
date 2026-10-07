@@ -12,7 +12,6 @@ import { isGoogleWorkspaceWriteAccess } from "@/lib/connectors/google-workspace-
 import { getOAuthGrantSecrets } from "@/lib/connectors/oauth-store";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
-import { resolveSalesforceRequestAccess } from "@/lib/customer-success/salesforce-access";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
@@ -20,7 +19,7 @@ async function GETHandler(request: Request, context: { params: Promise<{ provide
   const { provider } = await context.params;
   if (!isOAuthProvider(provider)) return Response.json({ error: "Unsupported OAuth provider." }, { status: 404 });
   let security;
-  try { security = await authorizeRequest({ request, action: provider === "salesforce" ? "manage.connector" : "write.memory", resourceType: "oauth_grant", metadata: { provider } }); } catch (error) { return forbiddenResponse(error); }
+  try { security = await authorizeRequest({ request, action: "write.memory", resourceType: "oauth_grant", metadata: { provider } }); } catch (error) { return forbiddenResponse(error); }
   if (!oauthConfigured(provider)) {
     return Response.json(
       { error: `${oauthProviders[provider].label} OAuth is not configured.` },
@@ -58,19 +57,6 @@ async function GETHandler(request: Request, context: { params: Promise<{ provide
   }
   const googleWriteAccess = requestedWriteAccess ?? undefined;
   try {
-    if (provider === "salesforce") {
-      const access = await resolveSalesforceRequestAccess(security, {
-        workspaceId: new URL(request.url).searchParams.get("workspaceId") || undefined,
-        mode: "write",
-        correlationId: crypto.randomUUID(),
-      });
-      return Response.redirect(createOAuthAuthorization(provider, {
-        tenantId: security.tenantId,
-        actorId: access.readAuthority.canonicalActorId,
-        workspaceId: access.readAuthority.workspaceId,
-        returnTo,
-      }), 302);
-    }
     if (!security.auth?.email) {
       return Response.json(
         { error: "Google Workspace connection requires a signed-in private account." },

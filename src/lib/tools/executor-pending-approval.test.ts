@@ -91,6 +91,42 @@ async function queue() {
 }
 
 describe("keyed tool approvals", () => {
+  it("cannot restore a retired CRM operation with an old approval", async () => {
+    const { executeGovernedTool } = await import("@/lib/tools/executor");
+    const { saveToolExecution } = await import("@/lib/tools/audit-store");
+    const oldApproval = {
+      id: "retired-crm-approval",
+      tenantId,
+      actorId,
+      toolId: "app.customer_accounts.salesforce.contact.create",
+      toolName: "Create Salesforce contact",
+      riskLevel: 2 as const,
+      status: "approval_required" as const,
+      dryRun: false,
+      approvalRequired: true,
+      input: { accountId: `customer-account:${"a".repeat(64)}` },
+      reason: "Awaiting review before retirement.",
+      createdAt: new Date().toISOString(),
+    };
+    await saveToolExecution(oldApproval);
+
+    const outcome = await executeGovernedTool({
+      toolId: oldApproval.toolId,
+      input: oldApproval.input,
+      dryRun: false,
+      approved: true,
+      context,
+      existingRecord: oldApproval,
+    });
+
+    expect(outcome.record).toMatchObject({
+      status: "blocked",
+      reason: "Unknown tools are blocked by default.",
+    });
+    expect(outcome.result).toBeNull();
+    expect(mocks.executeApp).not.toHaveBeenCalled();
+  });
+
   it("queues one approval for a key however often the request is sent", async () => {
     const { executeGovernedTool } = await import("@/lib/tools/executor");
     const retried = { ...statusCheck, idempotencyKey: "run-1:status" };

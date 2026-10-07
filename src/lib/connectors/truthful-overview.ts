@@ -18,7 +18,6 @@ import {
   isRemoteBrowserMcpIdentity,
   isRemoteBrowserMcpTool,
 } from "@/lib/connectors/mcp-trust";
-import type { SalesforceSyncHealth } from "@/lib/customer-success/salesforce-contracts";
 import type { UsageSummary } from "@/lib/usage/summary";
 
 export const TRUTHFUL_INTEGRATIONS_VERSION =
@@ -92,7 +91,7 @@ const integrationCostSchema = z.object({
 const installedIntegrationSchema = z.object({
   id: z.string().min(1).max(240),
   name: z.string().min(1).max(160),
-  kind: z.enum(["google_service", "mcp", "openapi", "salesforce"]),
+  kind: z.enum(["google_service", "mcp", "openapi"]),
   adapter: z.enum(["native", "mcp", "openapi"]),
   category: z.enum(["code", "communication", "knowledge", "data", "automation", "browser"]),
   installation: z.enum(["installed", "retained_read_only"]),
@@ -169,7 +168,6 @@ export const truthfulIntegrationsOverviewSchema = z.object({
     oauth: inventoryStateSchema,
     mcp: inventoryStateSchema,
     openapi: inventoryStateSchema,
-    salesforce: inventoryStateSchema,
     usage: inventoryStateSchema,
   }).strict(),
   installed: z.array(installedIntegrationSchema).max(200),
@@ -195,12 +193,8 @@ export type TruthfulIntegrationsInput = Readonly<{
     connectors: readonly OpenApiConnectorRecord[];
     operations: readonly OpenApiOperationRecord[];
   }>>;
-  salesforce: IntegrationSource<Readonly<{
-    health: SalesforceSyncHealth;
-    writesConfigured: boolean;
-  }>>;
   usage: IntegrationSource<UsageSummary>;
-  oauthConfigured: Readonly<{ google: boolean; salesforce: boolean }>;
+  oauthConfigured: Readonly<{ google: boolean }>;
   catalog: readonly ConnectionCatalogItem[];
   generatedAt?: string;
 }>;
@@ -257,7 +251,6 @@ const googleServices = Object.freeze([
 ]);
 
 const GOOGLE_SYNC_STALE_SECONDS = 2 * 60 * 60;
-const SALESFORCE_SYNC_STALE_SECONDS = 60 * 60;
 const CONTRACT_STALE_SECONDS = 30 * 24 * 60 * 60;
 
 export function projectTruthfulIntegrationsOverview(
@@ -320,26 +313,12 @@ export function projectTruthfulIntegrationsOverview(
     }
   }
 
-  const salesforceGrant = input.oauth.state === "ready"
-    ? input.oauth.value.find((grant) => grant.provider === "salesforce")
-    : undefined;
-  if (input.salesforce.state === "ready" &&
-      (input.salesforce.value.health.connected || salesforceGrant)) {
-    installed.push(projectSalesforce(
-      input.salesforce.value.health,
-      input.salesforce.value.writesConfigured,
-      Boolean(salesforceGrant?.manageable),
-      input.usage,
-      nowMs,
-    ));
-  }
-
   installed.sort((left, right) =>
     integrationStateRank(left.state) - integrationStateRank(right.state) ||
     left.name.localeCompare(right.name));
 
-  const suggestions = projectSuggestions(input, matchedCatalogIds, Boolean(salesforceGrant));
-  const sourceUnavailable = [input.oauth, input.mcp, input.openapi, input.salesforce, input.usage]
+  const suggestions = projectSuggestions(input, matchedCatalogIds);
+  const sourceUnavailable = [input.oauth, input.mcp, input.openapi, input.usage]
     .some((source) => source.state === "unavailable");
   const overview = {
     version: TRUTHFUL_INTEGRATIONS_VERSION,
@@ -364,7 +343,6 @@ export function projectTruthfulIntegrationsOverview(
       oauth: inventory(input.oauth, "OAuth connection inventory is current."),
       mcp: inventory(input.mcp, "MCP connection inventory is current."),
       openapi: inventory(input.openapi, "OpenAPI connection inventory is current."),
-      salesforce: inventory(input.salesforce, "Salesforce workspace health is current."),
       usage: inventory(input.usage, "Attributable 30-day usage receipts are current."),
     },
     installed,
@@ -747,113 +725,9 @@ function projectOpenApiConnector(
   };
 }
 
-function projectSalesforce(
-  health: SalesforceSyncHealth,
-  writesConfigured: boolean,
-  manageable: boolean,
-  usage: IntegrationSource<UsageSummary>,
-  nowMs: number,
-): TruthfulIntegrationsOverview["installed"][number] {
-  const cursorObjects = health.cursor ? Object.values(health.cursor.objects) : [];
-  const currentObjects = cursorObjects.filter((item) => item.phase === "current").length;
-  const advancingObjects = cursorObjects.filter((item) => item.phase === "backfill" || item.phase === "delta").length;
-  const pendingObjects = cursorObjects.filter((item) => item.phase === "pending").length;
-  const freshness = freshnessFrom(health.lastSuccessfulSyncAt || undefined, SALESFORCE_SYNC_STALE_SECONDS, nowMs);
-  const status = !health.connected
-    ? "not_started" as const
-    : health.status === "backfilling" || health.status === "syncing"
-      ? "syncing" as const
-      : health.status === "healthy"
-        ? freshness.state === "unavailable"
-          ? "unavailable" as const
-          : freshness.state === "stale" ? "stale" as const : "current" as const
-        : health.status === "degraded"
-          ? "partial" as const
-          : health.status === "error"
-            ? "error" as const
-            : "not_started" as const;
-  const failure = health.actionableError
-    ? presentFailure(
-        health.actionableError.code,
-        safeText(health.actionableError.message, "Salesforce synchronization reported an error."),
-        salesforceRecovery(health.actionableError.action),
-      )
-    : noFailure();
-  const state = !health.configured || !health.connected || health.status === "error" || status === "unavailable"
-    ? "action_required" as const
-    : status === "stale" || status === "syncing" || status === "partial"
-      ? "degraded" as const
-      : "working" as const;
-  return {
-    id: "salesforce:workspace",
-    name: "Salesforce",
-    kind: "salesforce",
-    adapter: "native",
-    category: "data",
-    installation: manageable ? "installed" : "retained_read_only",
-    state,
-    configured: health.configured,
-    connected: health.connected,
-    manageable,
-    permissions: {
-      mode: writesConfigured ? "write_approval_required" : "read_only",
-      granted: [
-        `${health.objectScope.length} read-only CRM objects`,
-        ...(writesConfigured ? ["Guarded Account 360 writes require approval and account activation"] : []),
-      ],
-      missing: writesConfigured ? [] : ["Production Salesforce write gate and reviewed external ID field"],
-      activeOperations: health.objectScope.length,
-      pendingReviewOperations: 0,
-      disabledOperations: writesConfigured ? 0 : 11,
-      approvalRequiredOperations: writesConfigured ? 11 : 0,
-    },
-    sync: {
-      supported: true,
-      status,
-      coverage: !health.connected || !cursorObjects.length
-        ? "none"
-        : currentObjects === health.objectScope.length
-          ? "complete"
-          : currentObjects || advancingObjects ? "partial" : "none",
-      coverageDetail: health.connected
-        ? `${currentObjects}/${health.objectScope.length} object cursors current · ${advancingObjects} advancing · ${pendingObjects} pending.`
-        : "No workspace-bound Salesforce connection exists, so object coverage is zero.",
-      cursor: !health.connected
-        ? cursor("not_started", "No workspace-bound Salesforce cursor exists.")
-        : advancingObjects
-          ? cursor("advancing", `${advancingObjects} object cursor${advancingObjects === 1 ? " is" : "s are"} advancing; provider paths and record IDs are withheld.`)
-          : cursorObjects.length
-            ? cursor("checkpointed", `${currentObjects}/${health.objectScope.length} object cursors are checkpointed; provider paths and record IDs are withheld.`)
-            : cursor("unknown", "Salesforce is connected but no valid object cursor was returned."),
-      lastSuccessfulAt: health.lastSuccessfulSyncAt,
-      freshness,
-    },
-    failure,
-    cost: usage.state === "unavailable"
-      ? unavailableCost()
-      : unknownCost("Salesforce API and license charges are not reported to Asael; no provider bill is inferred from sync activity."),
-    nextAction: !health.configured
-      ? "Configure the Salesforce Connected App before connecting a workspace."
-      : !health.connected
-        ? "Connect Salesforce to the canonical workspace."
-        : health.actionableError
-          ? salesforceRecovery(health.actionableError.action)
-          : status === "unavailable"
-            ? "Review the invalid Salesforce freshness timestamp before trusting this connection."
-          : status === "stale" || status === "not_started"
-            ? "Run Salesforce sync now."
-            : status === "syncing" || status === "partial"
-              ? "Let the resumable backfill continue, then review any remaining object cursors."
-              : "No action required; monitor cursor freshness and reconciliation findings.",
-    updatedAt: health.evaluatedAt,
-    manageHref: "/app/accounts",
-  };
-}
-
 function projectSuggestions(
   input: TruthfulIntegrationsInput,
   matchedCatalogIds: ReadonlySet<string>,
-  hasSalesforceGrant: boolean,
 ) {
   const suggestions: TruthfulIntegrationsOverview["suggestions"] = [];
   const googleCatalogIds = new Set(["gmail", "google-drive", "google-calendar"]);
@@ -911,31 +785,6 @@ function projectSuggestions(
     });
   }
 
-  if (!hasSalesforceGrant && input.salesforce.state === "ready" && !input.salesforce.value.health.connected) {
-    suggestions.push({
-      id: "salesforce",
-      name: "Salesforce",
-      adapter: "native",
-      category: "data",
-      state: input.oauthConfigured.salesforce ? "setup_available" : "configuration_required",
-      capabilities: ["CRM backfill", "delta sync", "webhooks", "read-only reconciliation", "guarded writes"],
-      installed: false,
-      detail: input.oauthConfigured.salesforce
-        ? "The native adapter is available, but no active workspace connection is installed."
-        : "A Salesforce Connected App is required before a workspace can connect.",
-    });
-  } else if (!hasSalesforceGrant && input.salesforce.state === "unavailable") {
-    suggestions.push({
-      id: "salesforce",
-      name: "Salesforce",
-      adapter: "native",
-      category: "data",
-      state: "availability_unknown",
-      capabilities: ["CRM backfill", "delta sync", "webhooks", "read-only reconciliation", "guarded writes"],
-      installed: false,
-      detail: "Salesforce workspace health is unavailable, so installed status cannot be resolved safely.",
-    });
-  }
   return suggestions.sort((left, right) => left.name.localeCompare(right.name)).slice(0, 100);
 }
 
@@ -1079,19 +928,6 @@ function annotationBoolean(value: unknown, key: string) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const candidate = (value as Record<string, unknown>)[key];
   return typeof candidate === "boolean" ? candidate : undefined;
-}
-
-function salesforceRecovery(action: SalesforceSyncHealth["actionableError"] extends infer T
-  ? T extends { action: infer A } ? A : never : never) {
-  const actions: Record<string, string> = {
-    reconnect: "Reconnect Salesforce from the workspace owner account.",
-    review_permissions: "Review the Salesforce Connected App and granted API scopes.",
-    retry: "Retry the resumable Salesforce sync.",
-    restart_backfill: "Restart the Salesforce backfill from its safe object checkpoints.",
-    review_conflict: "Review the reported Salesforce reconciliation conflict.",
-    contact_support: "Inspect the server-side failure receipt and contact support if it persists.",
-  };
-  return actions[String(action)] || "Review the Salesforce connection and retry safely.";
 }
 
 function integrationStateRank(state: TruthfulIntegrationsOverview["installed"][number]["state"]) {

@@ -339,12 +339,10 @@ export function getSql(): SqlClient {
 }
 
 /** Explicitly joins one manager-owned transaction for the closed responsibility
- * Meeting-read pilot and its normal audit stores, or the reviewed Account
- * workflow setup graph (project, tasks, canonical Work, and domain events),
- * or the reviewed native Agent/Skill catalog graph (definitions, identity,
+ * Meeting-read pilot and its normal audit stores, or the reviewed native
+ * Agent/Skill catalog graph (definitions, identity,
  * Trash, immutable acceptance, and domain events), reviewed Recording
- * admission/output checkpoints, or exact Salesforce local projection/revocation
- * and acceptance writes, or exact reviewed tenant connector state/contract
+ * admission/output checkpoints, or exact reviewed tenant connector state/contract
  * updates and their immutable acceptance/events.
  * This is not a general scoped
  * store adapter: memory-access/other transaction-local scope installers fail.

@@ -23,7 +23,6 @@ const canonicalTimestampSchema = z.string().datetime({ offset: true }).refine(
 export const notificationDispositionSourceKindSchema = z.enum([
   "tool_approval",
   "meeting",
-  "customer_risk",
   "agent_run",
   "today_reminder",
   "delegated_task",

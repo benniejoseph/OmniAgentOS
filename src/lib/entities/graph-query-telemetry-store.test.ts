@@ -19,12 +19,15 @@ import { sourceContractSha256 } from "@/lib/sources/contracts";
 let dataDirectory = "";
 
 beforeEach(async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-09-08T00:00:00.000Z"));
   dataDirectory = await mkdtemp(path.join(os.tmpdir(), "asael-graph-telemetry-"));
   vi.stubEnv("OMNIAGENT_DATA_DIR", dataDirectory);
   vi.stubEnv("DATABASE_URL", "");
 });
 
 afterEach(async () => {
+  vi.useRealTimers();
   vi.unstubAllEnvs();
   if (dataDirectory) await rm(dataDirectory, { recursive: true, force: true });
 });

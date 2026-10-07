@@ -65,7 +65,6 @@ class MobilePushEnvelope {
       'approval',
       'work_item',
       'meeting',
-      'customer',
       'run',
       'notification',
       'canary',
@@ -120,7 +119,6 @@ class MobilePushEnvelope {
             ? '/today?workItemId=$encodedId'
             : '/projects/${Uri.encodeComponent(parentId)}?workItemId=$encodedId',
       'meeting' => '/meetings/$encodedId',
-      'customer' => '/customers/$encodedId',
       'run' => '/results/${Uri.encodeComponent('agent:$id')}',
       'notification' => '/inbox?notificationId=$encodedId',
       'canary' => '/settings?pushCanary=$encodedId',

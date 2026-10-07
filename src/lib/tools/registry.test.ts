@@ -5,6 +5,21 @@ import { getGovernedTool, getGovernedTools } from "@/lib/tools/registry";
 import { MAIN_AGENT_EXCLUDED_APP_OPERATIONS } from "@/lib/app-services/registry";
 
 describe("governed native tool schemas", () => {
+  it("does not publish the retired CRM workspace or its mutation tools", () => {
+    expect(getGovernedTools().some((tool) =>
+      tool.id.startsWith("app.customer_accounts."),
+    )).toBe(false);
+    for (const id of [
+      "app.customer_accounts.list",
+      "app.customer_accounts.create",
+      "app.customer_accounts.salesforce.contact.create",
+    ]) {
+      expect(getGovernedTool(id), id).toBeUndefined();
+    }
+    expect(getGovernedTool("app.integrations.overview.show")).toBeDefined();
+    expect(getGovernedTool("app.projects.create")).toBeDefined();
+  });
+
   it("registers bounded public source reading as an explicit read-only tool", () => {
     const tool = getGovernedTool("web.read");
     expect(tool).toMatchObject({

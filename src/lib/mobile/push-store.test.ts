@@ -109,6 +109,24 @@ beforeEach(() => {
 });
 
 describe("mobile push acknowledgement storage", () => {
+  it("does not reopen retired destinations from stored deliveries", async () => {
+    const retired = { ...deliveryRow("delivered"), cause_kind: "customer", cause_id: "retired-account" };
+    dbMocks.responses.push([retired], [retired]);
+
+    await expect(getMobilePushAcknowledgementCandidate(context(), "delivery-one"))
+      .resolves.toBeUndefined();
+    await expect(recordMobilePushDeliveryReceipt(context(), "delivery-one", {
+      schemaVersion: 1,
+      kind: "opened",
+      observedAt: new Date().toISOString(),
+      appLifecycle: "foreground",
+    }, "retired-delivery-open")).resolves.toBeUndefined();
+
+    expect(eventMocks.appendScopedDomainEvent).not.toHaveBeenCalled();
+    expect(dbMocks.statements.every(({ text }) => !/INSERT|UPDATE omni_mobile_push_deliveries/.test(text)))
+      .toBe(true);
+  });
+
   it("selects a candidate only through the exact installation binding", async () => {
     dbMocks.responses.push([deliveryRow("delivered")]);
 
@@ -280,6 +298,11 @@ describe("mobile push delivery leases", () => {
     expect(leaseStatements).toHaveLength(2);
     expect(leaseStatements.every((statement) => statement.text.includes("LIMIT 1")))
       .toBe(true);
+    expect(leaseStatements.every(({ text, params }) =>
+      text.includes("cause_kind = ANY(") && params.some((value) =>
+        Array.isArray(value) && value.includes("meeting") && !value.includes("customer"),
+      ),
+    )).toBe(true);
     const settlementStatements = dbMocks.statements.filter((statement) =>
       statement.text.includes("SET status = 'delivered'") &&
       statement.text.includes("lease_owner ="),

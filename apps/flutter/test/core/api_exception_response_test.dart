@@ -3,7 +3,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 ApiException responseError(Object? data, {int status = 409}) {
-  final request = RequestOptions(path: '/api/customer-accounts/account/health');
+  final request = RequestOptions(path: '/api/projects/project-one');
   return ApiException.fromDio(
     DioException(
       requestOptions: request,
@@ -75,7 +75,7 @@ void main() {
     'retains exact conflict evidence as a detached deeply immutable JSON map',
     () {
       final body = <String, dynamic>{
-        'error': 'The reviewed account changed.',
+        'error': 'The reviewed project changed.',
         'admission': 'not_admitted',
         'evaluationId': 'evaluation-one',
         'requestSha256': 'digest-one',

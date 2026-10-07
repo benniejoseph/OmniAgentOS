@@ -1255,7 +1255,6 @@ const _notificationSourceKinds = {
   'responsibility_change',
   'tool_approval',
   'meeting',
-  'customer_risk',
   'agent_run',
   'today_reminder',
   'delegated_task',

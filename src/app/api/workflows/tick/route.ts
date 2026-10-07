@@ -69,7 +69,6 @@ import { dispatchMobilePushDeliveries } from "@/lib/mobile/push-store";
 import { processDomainMobilePushProducers } from "@/lib/mobile/push-producers";
 import { processActiveProjectExecutions } from "@/lib/projects/execution";
 import { syncDuePersonalProviders } from "@/lib/connectors/personal-sync";
-import { syncDueSalesforceConnections } from "@/lib/customer-success/salesforce-sync";
 import {
   processAllTenantDurableSpecialistQueues,
   processDurableSpecialistQueue,
@@ -520,10 +519,6 @@ async function POSTHandler(request: Request) {
         AbortSignal.timeout(90_000),
       ]),
     });
-    const salesforceSyncs = await syncDueSalesforceConnections({
-      tenantId: context.tenantId,
-      limit: 2,
-    });
     const moltbookHeartbeats = await processDueMoltbookHeartbeats({
       tenantId: context.tenantId,
       limit: 2,
@@ -615,7 +610,6 @@ async function POSTHandler(request: Request) {
       mobilePush,
       projectExecutions,
       connectedSourceSyncs,
-      salesforceSyncs,
       moltbookHeartbeats,
       moltbookAutonomy,
       slo,
@@ -1000,7 +994,6 @@ async function runAllTenantScheduledWork({
     mobilePushProviderAccepted: number;
     projectExecutionsProcessed: number;
     connectedSourcesSynced: number;
-    salesforceConnectionsSynced: number;
     moltbookHeartbeatsProcessed: number;
     moltbookAutonomyCyclesProcessed: number;
     dailyAgentLearning: Awaited<
@@ -1163,7 +1156,6 @@ async function runTenantMaintenance({
     mobilePushProviderAccepted: number;
     projectExecutionsProcessed: number;
     connectedSourcesSynced: number;
-    salesforceConnectionsSynced: number;
     moltbookHeartbeatsProcessed: number;
     moltbookAutonomyCyclesProcessed: number;
     dailyAgentLearning: Awaited<
@@ -1198,7 +1190,6 @@ async function runTenantMaintenance({
     mobilePushProviderAccepted: 0,
     projectExecutionsProcessed: 0,
     connectedSourcesSynced: 0,
-    salesforceConnectionsSynced: 0,
     moltbookHeartbeatsProcessed: 0,
     moltbookAutonomyCyclesProcessed: 0,
     dailyAgentLearning: emptyDailyAgentLearningSummary(),
@@ -1369,11 +1360,6 @@ async function runTenantMaintenance({
     ).filter((item) => item.status === "healthy").length;
   }
   if (Date.now() < deadlineAt) {
-    result.salesforceConnectionsSynced = (
-      await syncDueSalesforceConnections({ tenantId, limit: 2 })
-    ).filter((item) => item.status === "healthy").length;
-  }
-  if (Date.now() < deadlineAt) {
     result.moltbookHeartbeatsProcessed = (
       await processDueMoltbookHeartbeats({ tenantId, limit: 2 })
     ).processed;
@@ -1434,7 +1420,6 @@ function failedTenantMaintenance(
     mobilePushProviderAccepted: 0,
     projectExecutionsProcessed: 0,
     connectedSourcesSynced: 0,
-    salesforceConnectionsSynced: 0,
     moltbookHeartbeatsProcessed: 0,
     moltbookAutonomyCyclesProcessed: 0,
     dailyAgentLearning: emptyDailyAgentLearningSummary(),

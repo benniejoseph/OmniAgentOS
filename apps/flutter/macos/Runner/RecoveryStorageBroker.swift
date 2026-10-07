@@ -90,10 +90,10 @@ struct RecoveryStorageRequest {
   let expected: String?
   let ciphertext: String?
   let writing: Bool
-  var maximumRecords: Int { namespace == "markets" ? 12 : ["memory", "accounts"].contains(namespace) ? 16 : namespace == "specialist" ? 32 : namespace == "responsibility" ? 64 : 128 }
+  var maximumRecords: Int { namespace == "markets" ? 12 : namespace == "memory" ? 16 : namespace == "specialist" ? 32 : namespace == "responsibility" ? 64 : 128 }
   var maximumBytes: Int { Self.maximumBytes(for: namespace) }
   private static func maximumBytes(for namespace: String) -> Int {
-    namespace == "markets" ? 262_144 : ["accounts", "specialist"].contains(namespace) ? 1_048_576 : namespace == "memory" ? 8_388_608 : namespace == "builder" ? 8_000_000 : 4_000_000
+    namespace == "markets" ? 262_144 : namespace == "specialist" ? 1_048_576 : namespace == "memory" ? 8_388_608 : namespace == "builder" ? 8_000_000 : 4_000_000
   }
   var directoryName: String { namespace == "meetings" ? "asael-meeting-drafts-v1" : namespace == "memory" ? "asael-memory-submissions-v1" : "asael-\(namespace)-recovery-v1" }
   var fileExtension: String { namespace == "meetings" ? "meeting" : namespace }
@@ -107,7 +107,7 @@ struct RecoveryStorageRequest {
           let version = arguments["schemaVersion"] as? NSNumber,
           CFGetTypeID(version) != CFBooleanGetTypeID(), version == 1,
           let namespace = arguments["namespace"] as? String,
-          ["responsibility", "builder", "meetings", "markets", "accounts", "specialist", "memory"].contains(namespace),
+          ["responsibility", "builder", "meetings", "markets", "specialist", "memory"].contains(namespace),
           let secretId = arguments["secretId"] as? String,
           Self.matches(secretId, "^[A-Za-z0-9_-]{24}$"),
           let recordKey = arguments["recordKey"] as? String,

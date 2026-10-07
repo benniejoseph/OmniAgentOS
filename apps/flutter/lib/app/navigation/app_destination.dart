@@ -116,15 +116,6 @@ const appDestinations = <AppDestination>[
     group: AppDestinationGroup.workspace,
   ),
   AppDestination(
-    label: 'Accounts',
-    path: '/accounts',
-    icon: Icons.business_outlined,
-    selectedIcon: Icons.business_rounded,
-    eyebrow: 'CUSTOMER 360',
-    description: 'Customer health, evidence, risks, and renewal context.',
-    group: AppDestinationGroup.workspace,
-  ),
-  AppDestination(
     label: 'Markets',
     path: '/markets',
     icon: Icons.candlestick_chart_outlined,

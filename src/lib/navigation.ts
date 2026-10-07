@@ -4,7 +4,6 @@ import {
   Inbox,
   Brain,
   Bot,
-  Building2,
   CalendarDays,
   ChartCandlestick,
   Cable,
@@ -65,13 +64,6 @@ export const appNav: AppNavItem[] = [
     shortLabel: "Meetings",
     description: "Calendar context, participants, consent, media, and follow-through.",
     icon: CalendarDays,
-  },
-  {
-    href: "/app/accounts",
-    label: "Accounts",
-    shortLabel: "Accounts",
-    description: "Customer context, evidence, health, risks, and renewal.",
-    icon: Building2,
   },
   {
     href: "/app/markets",

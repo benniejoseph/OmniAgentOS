@@ -26,7 +26,6 @@ import '../../features/computer_use/local_computer.dart';
 import '../../features/companion/companion_entry.dart';
 import '../../features/companion/companion_models.dart';
 import '../../features/companion/companion_providers.dart';
-import '../../features/customers/accounts_workspace.dart';
 import '../../features/inbox/macos_inbox_view.dart';
 import '../../features/inbox/inbox.dart';
 import '../../features/inbox/inbox_providers.dart';
@@ -200,26 +199,6 @@ class ProviderBoundResponsibilityRoute extends ConsumerWidget {
       focusId: focusId,
       onOpenResponsibility: (id) => _openResponsibility(context, id),
       onNewDraft: () => context.go('/responsibilities'),
-    );
-  }
-}
-
-class ProviderBoundAccountsRoute extends StatelessWidget {
-  const ProviderBoundAccountsRoute({super.key, this.id});
-  final String? id;
-
-  @override
-  Widget build(BuildContext context) {
-    if (id != null &&
-        !RegExp(r'^customer-account:[a-f0-9]{64}$').hasMatch(id!)) {
-      return const Scaffold(
-        body: Center(child: Text('This customer account link is invalid.')),
-      );
-    }
-    return NativeAccountsView(
-      accountId: id,
-      onOpen: (account) =>
-          context.push('/accounts/${Uri.encodeComponent(account.id)}'),
     );
   }
 }
@@ -655,11 +634,6 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(path: '/missions', redirect: (_, _) => '/projects'),
       GoRoute(path: '/missions/:id', redirect: (_, _) => '/projects'),
-      GoRoute(
-        path: '/customers/:id',
-        builder: (_, state) =>
-            ProviderBoundAccountsRoute(id: state.pathParameters['id']!),
-      ),
       StatefulShellRoute.indexedStack(
         builder: (_, _, shell) => AdaptiveShell(navigationShell: shell),
         branches: [
@@ -772,7 +746,6 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                                     initialMemoryId:
                                         state.uri.queryParameters['memory'],
                                   ),
-                          '/accounts' => const ProviderBoundAccountsRoute(),
                           '/markets' => const NativeMarketsView(),
                           '/payments' => NativePrivateWorkspace(
                             ownNavigator: true,
@@ -807,16 +780,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                           ),
                           _ => DestinationPlaceholder(destination: destination),
                         },
-                  routes: destination.path == '/accounts'
-                      ? [
-                          GoRoute(
-                            path: ':id',
-                            builder: (_, state) => ProviderBoundAccountsRoute(
-                              id: state.pathParameters['id']!,
-                            ),
-                          ),
-                        ]
-                      : destination.path == '/projects'
+                  routes: destination.path == '/projects'
                       ? [
                           GoRoute(
                             path: ':id',

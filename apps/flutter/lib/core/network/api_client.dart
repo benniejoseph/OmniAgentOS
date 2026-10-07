@@ -1020,7 +1020,6 @@ Duration? _offlineProjectionMaxAge(String value) {
     '/api/memory',
     '/api/knowledge',
     '/api/missions',
-    '/api/customer-accounts',
     '/api/threads',
     '/api/artifacts',
   }.any((prefix) => _isPathWithin(path, prefix))) {

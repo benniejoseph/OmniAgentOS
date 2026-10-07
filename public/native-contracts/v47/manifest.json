@@ -2,19 +2,23 @@
   "schemaVersion": 1,
   "contractId": "asael.native-api",
   "version": 47,
-  "state": "current",
+  "state": "previous",
   "compatibility": {
-    "currentVersion": 47,
-    "previousVersion": 46,
+    "currentVersion": 48,
+    "previousVersion": 47,
     "supportedVersions": [
-      47,
-      46
+      48,
+      47
     ]
+  },
+  "retirement": {
+    "reason": "crm_workspace_retired",
+    "originalManifestSha256": "7213892e4b6e4143e8f87dec58fffac88fef3a1cc7b610ea24dd99687be30dae"
   },
   "documents": {
     "openapi": {
       "path": "openapi.json",
-      "sha256": "cc783eff3bf60b6a198607c4fce70c8d87b12bbbccec5b1909106e67084f6b24"
+      "sha256": "5692034ed7d906d1b94ace82e1a4a4d86c6b0c4002dc3494d609d8e30b5af455"
     },
     "events": {
       "path": "events.schema.json",
