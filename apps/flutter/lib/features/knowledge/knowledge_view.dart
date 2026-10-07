@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
 import 'knowledge.dart';
+import 'knowledge_labels.dart';
+import 'knowledge_relationship_map.dart';
 import 'knowledge_consent_view.dart';
 import 'knowledge_promotion_view.dart';
 import 'knowledge_source_map_view.dart';
@@ -105,13 +107,13 @@ class _KnowledgeViewState extends State<KnowledgeView>
               Tab(text: 'Memory'),
               Tab(text: 'Knowledge'),
               Tab(text: 'Reviews'),
-              Tab(text: 'Universe'),
+              Tab(text: 'Map'),
               Tab(text: 'Personal recall'),
               Tab(text: 'Promotions'),
               Tab(text: 'Source maps'),
               Tab(text: 'Source cleanup'),
-              Tab(text: 'Graph explorer'),
-              Tab(text: 'Private actions'),
+              Tab(text: 'Advanced graph'),
+              Tab(text: 'Maintenance'),
             ],
           ),
         ),
@@ -124,15 +126,15 @@ class _KnowledgeViewState extends State<KnowledgeView>
               )
             : Column(
                 children: [
-                  if (_tabs.index != 2 && _tabs.index < 4)
+                  if (_tabs.index < 2)
                     Padding(
                       padding: const EdgeInsets.all(12),
                       child: TextField(
                         controller: _search,
                         onSubmitted: controller.search,
                         decoration: InputDecoration(
-                          labelText: 'Search the live catalogue',
-                          helperText: 'Submit to search. Type filters apply to loaded memory rows.',
+                          labelText: 'Search memories and sources',
+                          helperText: 'Press search to update the list.',
                           prefixIcon: const Icon(Icons.search),
                           suffixIcon: IconButton(
                             tooltip: 'Submit catalogue search',
@@ -214,14 +216,17 @@ class _KnowledgeViewState extends State<KnowledgeView>
             key: ValueKey(selectedType),
             initialValue: selectedType,
             isExpanded: true,
-            decoration: const InputDecoration(labelText: 'Type · loaded rows'),
+            decoration: const InputDecoration(labelText: 'Category'),
             items: [
               const DropdownMenuItem(
                 value: 'all',
                 child: Text('All loaded types'),
               ),
               for (final type in types)
-                DropdownMenuItem(value: type, child: Text(type)),
+                DropdownMenuItem(
+                  value: type,
+                  child: Text(memoryFriendlyLabel(type)),
+                ),
             ],
             onChanged: (value) => setState(() => _memoryType = value ?? 'all'),
           ),
@@ -235,10 +240,14 @@ class _KnowledgeViewState extends State<KnowledgeView>
           Card(
             margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
             child: ListTile(
-              contentPadding: const EdgeInsets.all(16),
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 12,
+                vertical: 4,
+              ),
               title: Text(memory.title),
+              trailing: const Icon(Icons.chevron_right),
               subtitle: Text(
-                '${memory.type} · ${memory.tier} · ${memory.claimStatus}\n${memory.evidenceCount} evidence references · ${memory.metadata.visibility}',
+                '${memoryFriendlyLabel(memory.tier)} · ${memoryFriendlyLabel(memory.claimStatus)} · ${memory.evidenceCount} sources',
               ),
               onTap: () => setState(() => _selectedMemoryId = memory.id),
             ),
@@ -292,6 +301,11 @@ class _KnowledgeViewState extends State<KnowledgeView>
     ],
   );
   Widget _universe(KnowledgeState state) {
+    if (widget.controller.advancedGraphAvailable)
+      return KnowledgeRelationshipMap(
+        controller: widget.controller,
+        active: _tabs.index == 3,
+      );
     GraphNode? selected;
     for (final node in state.nodes) {
       if (node.id == _selectedNodeId) selected = node;

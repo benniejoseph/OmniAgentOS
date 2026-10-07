@@ -1,8 +1,8 @@
 {
-  "creativeRevision": "atlas-orbit-20261007",
-  "creator": "Original Asael ATLAS vector artwork",
+  "creativeRevision": "atlas-scout-20261007",
+  "creator": "Original Asael ATLAS Scout vector rig",
   "source": ".design/asael-ace-revamp/atlas-lottie/source/generate.mjs",
-  "format": "Lottie JSON; vector shape layers only",
+  "format": "Lottie JSON; vector shape layers, parented character rig",
   "frameRate": 30,
   "externalAssets": false,
   "paletteSource": "src/app/globals.css and apps/flutter/lib/app/theme/app_theme.dart",
@@ -15,5 +15,26 @@
     "blocked",
     "completed",
     "paused"
-  ]
+  ],
+  "references": [
+    {
+      "title": "Robot standing",
+      "creator": "Penxel Studio",
+      "url": "https://lottiefiles.com/free-animation/robot-standing-cdB6OGVdsa",
+      "influence": "Readable face and restrained blink"
+    },
+    {
+      "title": "Cute Bot Say Users Hello",
+      "creator": "Abdul Latif",
+      "url": "https://lottiefiles.com/free-animation/cute-bot-say-users-hello-fsKwsuIXi0",
+      "influence": "Clear greeting silhouette and friendly proportions"
+    },
+    {
+      "title": "Futuristic Robot Constructor",
+      "creator": "Tanjil Mahmud",
+      "url": "https://lottiefiles.com/free-animation/futuristic-robot-constructor-5FSNfVhxoG",
+      "influence": "Articulated hand gesture"
+    }
+  ],
+  "thirdPartyArtworkEmbedded": false
 }

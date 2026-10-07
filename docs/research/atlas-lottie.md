@@ -1,8 +1,10 @@
 # ATLAS vector companion
 
 Research and implementation direction: 7 October 2026. The owner's replacement
-request supersedes the historical eagle/raster studies. `DESIGN.md` and the
-existing shared theme remain the design authority.
+request supersedes the historical eagle/raster studies. The subsequent request
+for a **new recognizable animated mascot**, informed by LottieFiles, also
+supersedes the first compass/orbit design. `DESIGN.md` and the existing shared
+theme remain the design authority.
 
 ## Format research
 
@@ -34,32 +36,57 @@ It is loaded as a client-only dynamic component according to the installed
 Next.js lazy-loading guide. A quiet still pose does not need the animation
 runtime. [Maintainer's React package](https://github.com/Gamote/lottie-react)
 
-## Original artwork and state vocabulary
+## Concrete LottieFiles references
 
-ATLAS is a rounded compass heart within an open orbital path, accompanied by a
-small guiding satellite. The restrained silhouette remains readable in the
-compact conversation status and expands to the voice stage without a separate
-character design. Artwork uses the current light/dark surface, outline, gold,
-success and warning tokens from `src/app/globals.css` and native `AppTheme`.
-These fixed export palettes match the theme; changing theme tokens requires
-updating the authoring palette and regenerating both deliveries.
+These creator-published references informed the character's gesture vocabulary.
+They are references, not bundled stock assets:
 
-| Application state | Still pose | Eligible finite reaction |
+- [Robot standing, Penxel Studio](https://lottiefiles.com/free-animation/robot-standing-cdB6OGVdsa):
+  the creator describes a standing robot with body movement and blinking eyes.
+  This supports a clear face and restrained expression changes.
+- [Cute Bot Say Users Hello, Abdul Latif](https://lottiefiles.com/free-animation/cute-bot-say-users-hello-fsKwsuIXi0):
+  the greeting character demonstrates a readable face and a distinct welcoming
+  gesture. Its image reference informed approachable head/body proportions.
+- [Futuristic Robot Constructor, Tanjil Mahmud](https://lottiefiles.com/free-animation/futuristic-robot-constructor-5FSNfVhxoG):
+  a character reference for an articulated hand gesture and a clear silhouette.
+
+The implementation authors its own paths, rig hierarchy, poses and keyframes.
+No source JSON, image, character geometry or remote asset URL is embedded.
+Reference pages and their published image references were retrieved directly;
+interactive playback on LottieFiles was unavailable in this tool session.
+
+## Original ATLAS Scout artwork and state vocabulary
+
+ATLAS Scout has an ivory shell, a large charcoal face with expressive eyes and
+mouth, articulated hands, a compact body, and a small gold crest. The face is the
+primary identifying feature at small sizes. A listening tilt, raised hand,
+focused glance and open speaking expression communicate state through the
+character. The retired compass is absent from current artwork and fallbacks.
+
+The parented rig moves the head, face, eyes and crest together. Hands rotate from
+shoulders, and completion lifts the whole character before settling. Shapes use
+the existing warm-neutral, charcoal, gold, success and warning palette from
+`src/app/globals.css` and native `AppTheme`. Light/dark exports preserve the ivory
+shell and charcoal face while adapting outlines and accent brightness. Updating
+theme colors requires regenerating the exports from their authoring palette.
+
+| Application state | Still pose | Authored finite reaction |
 |---|---|---|
-| Available / idle | Compass heart and satellite | Still in normal use |
-| Listening | Two curved listening marks | A small ring expansion and settle |
-| Working | Compass and orbit | A short forward turn and settle |
-| Responding | Three response marks | A restrained pulse |
-| Needs you | Attention badge | Still under the existing intensity policy |
-| Blocked | Attention badge and unchanged status text | Still |
-| Completed | Confirmed check and small glint | One reveal after the existing receipt gate |
-| Paused | Pause badge | Still |
+| Available / idle | Open eyes, small smile, relaxed hands | Welcome wave is authored; normal idle/greeting policy remains still |
+| Listening | Head tilted, hand near head | Attentive tilt and hand-to-ear gesture |
+| Working | Focused downward glance | A short look between work areas and coordinated hand movement |
+| Responding | Open speaking expression, hands outward | Three small mouth changes and an open-hand gesture |
+| Needs you | Raised hand and attention badge | A deliberate raised-hand gesture; existing policy keeps it still |
+| Blocked | Concerned eye shape, level mouth, attention badge | Restrained head tilt; existing policy keeps it still |
+| Completed | Both hands raised, check on chest | One lift and acknowledgment after the receipt gate |
+| Paused | Resting eyes and pause badge | Still |
 
-Each animation is 256 × 256, 30 fps, and 700 ms (completion: 800 ms). There are
+Each animation is 256 × 256 at 30 fps for 1.2 seconds, with no loop. There are
 eight state files for each theme. The generator writes byte-identical JSON to
-web and Flutter and produces the web's SVG poses from the same shape geometry.
-The SVG completion pose shows its check even when motion is disabled. These are
-original vectors; no stock animation or third-party character is embedded.
+web and Flutter and produces SVG stills from the same geometry and final rig
+transforms. The completion still keeps its check with motion disabled. Original
+art was manually inspected in light/dark contact sheets at large and compact
+sizes; no device or runtime performance result is inferred from those sheets.
 
 Authoring source:
 `.design/asael-ace-revamp/atlas-lottie/source/generate.mjs`.
@@ -75,7 +102,7 @@ assets; it is not a test or application build.
 - Native: `atlas_player.dart` uses the same JSON compositions through
   `atlas_lottie_assets.dart`. It retains the original lifecycle, route/TickerMode,
   viewport/scroll and explicit macOS low-power-state checks. Reduced motion and
-  accessible navigation keep a still pose. A theme-aware vector painter is the
+  accessible navigation keep a still pose. A theme-aware Scout vector painter is the
   loading/failure fallback. The former brand mascot uses this same player.
 - No clip loops. Idle has no running animation controller. Offscreen, hidden,
   low-power, reduced-motion, disabled-motion and unavailable reactions remain
@@ -100,8 +127,8 @@ as part of this release.
 
 ## Validation boundary
 
-This change was prepared through source inspection and deterministic asset
-authoring. No test suite, audit, application build or deployment was run by this
+This change was prepared through primary-source research, source inspection,
+deterministic asset authoring and visual inspection of exported still poses. No test suite, audit, application build or deployment was run by this
 implementation lane. The release owner is responsible for the authorized build
 and live verification. No performance measurement or device validation is
 claimed by this document.

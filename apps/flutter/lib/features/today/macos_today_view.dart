@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../app/macos/macos_page_scaffold.dart';
 import '../../app/theme/macos_app_theme.dart';
@@ -48,16 +49,18 @@ class MacosTodayView extends StatelessWidget {
           key: const Key('macos-today-add'),
           onPressed: controller.acting ? null : () => _addItem(context),
           icon: const Icon(Icons.add_rounded, size: 17),
-          label: const Text('Add focus'),
+          label: const Text('Add task'),
         ),
         toolbar: _TodayToolbar(
-          open: openCount,
-          complete: completeCount,
-          projects: snapshot?.projects.length ?? 0,
-          conversations: snapshot?.threads.length ?? 0,
+          open: snapshot == null ? null : openCount,
+          complete: snapshot == null ? null : completeCount,
           refreshing: controller.loading,
         ),
-        inspector: snapshot == null
+        inspector:
+            snapshot == null ||
+                (snapshot.brief == null &&
+                    snapshot.projects.isEmpty &&
+                    snapshot.threads.isEmpty)
             ? null
             : _TodayInspector(
                 snapshot: snapshot,
@@ -112,7 +115,7 @@ class _AddFocusDialogState extends State<_AddFocusDialog> {
 
   @override
   Widget build(BuildContext context) => AlertDialog(
-    title: const Text('Add focus item'),
+    title: const Text('Add task'),
     content: SizedBox(
       width: 440,
       child: Column(
@@ -167,15 +170,11 @@ class _TodayToolbar extends StatelessWidget {
   const _TodayToolbar({
     required this.open,
     required this.complete,
-    required this.projects,
-    required this.conversations,
     required this.refreshing,
   });
 
-  final int open;
-  final int complete;
-  final int projects;
-  final int conversations;
+  final int? open;
+  final int? complete;
   final bool refreshing;
 
   @override
@@ -197,23 +196,17 @@ class _TodayToolbar extends StatelessWidget {
             refreshing ? 'Refreshing Today…' : _longDate(DateTime.now()),
             style: Theme.of(context).textTheme.labelMedium,
           ),
-          _ToolbarDivider(color: mac.divider),
-          _ToolbarFact(
-            icon: Icons.radio_button_unchecked_rounded,
-            label: '$open open',
-          ),
-          _ToolbarFact(
-            icon: Icons.check_circle_outline_rounded,
-            label: '$complete complete',
-          ),
-          _ToolbarFact(
-            icon: Icons.folder_open_outlined,
-            label: '$projects active projects',
-          ),
-          _ToolbarFact(
-            icon: Icons.forum_outlined,
-            label: '$conversations conversations',
-          ),
+          if (open != null) _ToolbarDivider(color: mac.divider),
+          if (open != null)
+            _ToolbarFact(
+              icon: Icons.radio_button_unchecked_rounded,
+              label: '$open open',
+            ),
+          if (complete != null && complete! > 0)
+            _ToolbarFact(
+              icon: Icons.check_circle_outline_rounded,
+              label: '$complete complete',
+            ),
         ],
       ),
     );
@@ -294,16 +287,17 @@ class _TodayBody extends StatelessWidget {
       );
     }
 
-    final items = [...data.items]
-      ..sort((left, right) {
-        if (left.id == focusItemId && right.id != focusItemId) return -1;
-        if (right.id == focusItemId && left.id != focusItemId) return 1;
-        if (left.isDone != right.isDone) return left.isDone ? 1 : -1;
-        final priority = right.priority.index.compareTo(left.priority.index);
-        if (priority != 0) return priority;
-        return _compareDates(left.dueAt, right.dueAt);
-      });
-    final open = items.where((item) => !item.isDone).length;
+    final items = todayOrderedItems(data.items, focusItemId: focusItemId);
+    final open = items.where((item) => !item.isDone).toList();
+    final completed = items.where((item) => item.isDone).toList();
+
+    Widget itemRow(TodayItem item) => _TodayItemRow(
+      key: Key('macos-today-item-${item.id}'),
+      item: item,
+      focused: item.id == focusItemId,
+      busy: controller.updating.contains(item.id),
+      onToggle: () => controller.toggle(item),
+    );
 
     return Column(
       children: [
@@ -314,61 +308,76 @@ class _TodayBody extends StatelessWidget {
             onRetry: controller.refresh,
           ),
         Expanded(
-          child: Padding(
-            padding: const EdgeInsets.all(18),
-            child: MacosPane(
-              padding: EdgeInsets.zero,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 14, 12, 12),
-                    child: MacosSectionHeader(
-                      title: 'Focus list',
-                      description: open == 0
-                          ? 'No open work needs attention.'
-                          : '$open item${open == 1 ? '' : 's'} still need attention.',
-                      trailing: Text(
-                        '${items.length} total',
-                        style: Theme.of(context).textTheme.labelMedium
-                            ?.copyWith(
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .onSurfaceVariant,
-                            ),
-                      ),
-                    ),
+          child: Scrollbar(
+            child: ListView(
+              padding: const EdgeInsets.all(24),
+              children: [
+                const TodayWelcome(),
+                const SizedBox(height: 24),
+                if (open.isNotEmpty) ...[
+                  TodayNextTask(
+                    item: open.first,
+                    busy: controller.updating.contains(open.first.id),
+                    onComplete: () => controller.toggle(open.first),
                   ),
-                  const Divider(),
-                  Expanded(
-                    child: items.isEmpty
-                        ? const MacosEmptyState(
-                            icon: Icons.task_alt_rounded,
-                            title: 'No focus items yet',
-                            message:
-                                'Add a focus item to keep it in view today.',
-                          )
-                        : Scrollbar(
-                            child: ListView.separated(
-                              padding: const EdgeInsets.only(bottom: 8),
-                              itemCount: items.length,
-                              separatorBuilder: (_, _) =>
-                                  const Divider(indent: 50, endIndent: 12),
-                              itemBuilder: (context, index) {
-                                final item = items[index];
-                                return _TodayItemRow(
-                                  key: Key('macos-today-item-${item.id}'),
-                                  item: item,
-                                  focused: item.id == focusItemId,
-                                  busy: controller.updating.contains(item.id),
-                                  onToggle: () => controller.toggle(item),
-                                );
-                              },
+                  const SizedBox(height: 24),
+                  if (open.length > 1)
+                    MacosPane(
+                      padding: EdgeInsets.zero,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
+                            child: MacosSectionHeader(
+                              title: 'Also on your list',
+                              description: '${open.length - 1} more to do',
                             ),
                           ),
+                          for (final item in open.skip(1)) ...[
+                            const Divider(indent: 16, endIndent: 16),
+                            itemRow(item),
+                          ],
+                        ],
+                      ),
+                    ),
+                ] else
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 20),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          completed.isEmpty
+                              ? 'What would you like to move forward?'
+                              : 'Your list is clear',
+                          style: Theme.of(context).textTheme.titleLarge,
+                        ),
+                        const SizedBox(height: 8),
+                        const Text(
+                          'Add a task or continue a recent conversation.',
+                        ),
+                        const SizedBox(height: 12),
+                        OutlinedButton.icon(
+                          onPressed: () => context.go('/talk'),
+                          icon: const Icon(
+                            Icons.chat_bubble_outline_rounded,
+                            size: 17,
+                          ),
+                          label: const Text('Open Assistant'),
+                        ),
+                      ],
+                    ),
+                  ),
+                if (completed.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  TodayCompletedDisclosure(
+                    count: completed.length,
+                    focused: completed.any((item) => item.id == focusItemId),
+                    children: completed.map(itemRow).toList(),
                   ),
                 ],
-              ),
+              ],
             ),
           ),
         ),
@@ -447,6 +456,8 @@ class _TodayItemRow extends StatelessWidget {
     final metadata = <String>[
       _sentenceCase(item.kind),
       '${_sentenceCase(item.priority.name)} priority',
+      if (!item.isDone && item.dueAt?.isBefore(DateTime.now()) == true)
+        'Overdue',
       if (item.dueAt != null) 'Due ${_shortDate(item.dueAt!)}',
       if (item.reminderState != 'none')
         _sentenceCase(item.reminderState.replaceAll('_', ' ')),
@@ -560,19 +571,28 @@ class _TodayInspector extends StatelessWidget {
       key: const Key('macos-today-inspector'),
       padding: const EdgeInsets.fromLTRB(18, 18, 18, 28),
       children: [
-        _BriefSection(
-          brief: snapshot.brief,
-          acting: acting,
-          onGenerate: onGenerateBrief,
-        ),
-        const SizedBox(height: 20),
-        const Divider(),
-        const SizedBox(height: 18),
-        _ProjectContext(projects: snapshot.projects),
-        const SizedBox(height: 20),
-        const Divider(),
-        const SizedBox(height: 18),
-        _ConversationContext(threads: snapshot.threads),
+        if (snapshot.brief != null) ...[
+          _BriefSection(
+            brief: snapshot.brief,
+            acting: acting,
+            onGenerate: onGenerateBrief,
+          ),
+          if (snapshot.projects.isNotEmpty || snapshot.threads.isNotEmpty) ...[
+            const SizedBox(height: 20),
+            const Divider(),
+            const SizedBox(height: 18),
+          ],
+        ],
+        if (snapshot.threads.isNotEmpty)
+          _ConversationContext(threads: snapshot.threads),
+        if (snapshot.projects.isNotEmpty) ...[
+          if (snapshot.threads.isNotEmpty) ...[
+            const SizedBox(height: 20),
+            const Divider(),
+            const SizedBox(height: 18),
+          ],
+          _ProjectContext(projects: snapshot.projects),
+        ],
       ],
     ),
   );
@@ -712,53 +732,29 @@ class _ProjectContext extends StatelessWidget {
   Widget build(BuildContext context) => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
-      MacosSectionHeader(
-        title: 'Active projects',
-        description: projects.isEmpty
-            ? 'No projects are shown in this view.'
-            : '${projects.length} project${projects.length == 1 ? '' : 's'} in view',
+      const MacosSectionHeader(
+        title: 'Continue a project',
+        description: 'Open the work you already started.',
       ),
-      const SizedBox(height: 10),
-      if (projects.isEmpty)
-        Text(
-          'Project progress will appear here when work is active.',
-          style: Theme.of(context).textTheme.bodySmall,
-        )
-      else
-        for (final project in projects.take(6))
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 7),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        project.title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.bodyMedium
-                            ?.copyWith(fontWeight: FontWeight.w600),
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Text(
-                      '${project.completed}/${project.total}',
-                      style: Theme.of(context).textTheme.labelMedium,
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 6),
-                LinearProgressIndicator(
-                  value: project.total == 0
-                      ? 0
-                      : (project.completed / project.total).clamp(0, 1),
-                  minHeight: 3,
-                ),
-              ],
-            ),
+      const SizedBox(height: 8),
+      for (final project in projects.take(6))
+        ListTile(
+          dense: true,
+          contentPadding: EdgeInsets.zero,
+          onTap: () =>
+              context.push('/projects/${Uri.encodeComponent(project.id)}'),
+          title: Text(
+            project.title,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
           ),
+          subtitle: Text(
+            project.total == 0
+                ? 'Open project'
+                : '${project.completed} of ${project.total} tasks complete',
+          ),
+          trailing: const Icon(Icons.chevron_right_rounded, size: 17),
+        ),
     ],
   );
 }
@@ -771,49 +767,35 @@ class _ConversationContext extends StatelessWidget {
   Widget build(BuildContext context) => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
-      MacosSectionHeader(
-        title: 'Recent conversations',
-        description: threads.isEmpty
-            ? 'No recent conversations are shown in this view.'
-            : '${threads.length} recent thread${threads.length == 1 ? '' : 's'}',
+      const MacosSectionHeader(
+        title: 'Resume a conversation',
+        description: 'Pick up where you left off.',
       ),
       const SizedBox(height: 8),
-      if (threads.isEmpty)
-        Text(
-          'Conversations that inform current work will appear here.',
-          style: Theme.of(context).textTheme.bodySmall,
-        )
-      else
-        for (final thread in threads.take(7))
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 7),
-            child: Row(
-              children: [
-                Icon(
-                  Icons.chat_bubble_outline_rounded,
-                  size: 15,
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                ),
-                const SizedBox(width: 9),
-                Expanded(
-                  child: Text(
-                    thread.title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-              ],
-            ),
+      for (final thread in threads.take(7))
+        ListTile(
+          dense: true,
+          contentPadding: EdgeInsets.zero,
+          onTap: () => context.go(
+            Uri(
+              path: '/talk',
+              queryParameters: {'thread': thread.id},
+            ).toString(),
           ),
+          leading: Icon(
+            Icons.chat_bubble_outline_rounded,
+            size: 17,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+          title: Text(
+            thread.title,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+          trailing: const Icon(Icons.chevron_right_rounded, size: 17),
+        ),
     ],
   );
-}
-
-int _compareDates(DateTime? left, DateTime? right) {
-  if (left == null && right == null) return 0;
-  if (left == null) return 1;
-  if (right == null) return -1;
-  return left.compareTo(right);
 }
 
 String _sentenceCase(String value) => value.isEmpty

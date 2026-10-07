@@ -2,7 +2,7 @@ import type { CompanionState } from "./presentation";
 import type { AtlasTheme } from "./atlas-assets";
 
 export const ATLAS_LOTTIE_ROOT = "/companion/atlas-lottie";
-export const ATLAS_CREATIVE_REVISION = "atlas-orbit-20261007";
+export const ATLAS_CREATIVE_REVISION = "atlas-scout-20261007";
 
 export function atlasLottieAsset(state: CompanionState, theme: AtlasTheme, format: "json" | "svg") {
   return `${ATLAS_LOTTIE_ROOT}/${state}-${theme}.${format}?v=${ATLAS_CREATIVE_REVISION}`;
@@ -29,7 +29,7 @@ export async function fetchAtlasLottie(state: CompanionState, theme: AtlasTheme,
     if (!data || typeof data !== "object" || Array.isArray(data)) return undefined;
     const value = data as Record<string, unknown>;
     if (value.w !== 256 || value.h !== 256 || value.fr !== 30 || value.ip !== 0
-      || typeof value.op !== "number" || value.op < 1 || value.op > 30
+      || typeof value.op !== "number" || value.op < 1 || value.op > 36
       || !Array.isArray(value.assets) || value.assets.length !== 0
       || !Array.isArray(value.layers) || value.layers.length > 32
       || value.layers.some((layer) => !layer || typeof layer !== "object" || layer.ty !== 4)) return undefined;

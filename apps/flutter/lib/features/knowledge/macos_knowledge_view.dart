@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import '../../app/macos/macos_page_scaffold.dart';
 import '../../app/theme/macos_app_theme.dart';
 import 'knowledge.dart';
+import 'knowledge_labels.dart';
+import 'knowledge_relationship_map.dart';
 import 'knowledge_consent_view.dart';
 import 'knowledge_promotion_view.dart';
 import 'knowledge_source_map_view.dart';
@@ -119,7 +121,7 @@ class _MacosKnowledgeViewState extends State<MacosKnowledgeView> {
       final selectedNode = _findNode(state?.nodes ?? const [], _selectedNodeId);
 
       return MacosPageScaffold(
-        title: 'Knowledge',
+        title: 'Memory',
         description: 'Browse what Asael remembers, inspect its sources, and trace relationships.',
         icon: Icons.account_tree_outlined,
         actions: [
@@ -177,8 +179,11 @@ class _MacosKnowledgeViewState extends State<MacosKnowledgeView> {
         inspectorMinWidth: 320,
         inspectorMaxWidth: 540,
         inspector:
-            _workspace == _KnowledgeWorkspace.memories &&
-                _selectedMemoryId != null
+            _workspace == _KnowledgeWorkspace.relationships &&
+                controller.advancedGraphAvailable
+            ? null
+            : _workspace == _KnowledgeWorkspace.memories &&
+                  _selectedMemoryId != null
             ? KnowledgeMemoryInspector(
                 key: ValueKey(_selectedMemoryId),
                 controller: controller,
@@ -250,6 +255,9 @@ class _MacosKnowledgeViewState extends State<MacosKnowledgeView> {
     required GraphNode? selectedNode,
   }) {
     final controller = widget.controller;
+    if (_workspace == _KnowledgeWorkspace.relationships &&
+        controller.advancedGraphAvailable)
+      return KnowledgeRelationshipMap(controller: controller);
     if (_workspace == _KnowledgeWorkspace.recall) {
       return KnowledgePersonalRecall(controller: controller);
     }
@@ -509,8 +517,8 @@ class _KnowledgeToolbar extends StatelessWidget {
                 _KnowledgeWorkspace.promotions: 'Promotions',
                 _KnowledgeWorkspace.sourceMaps: 'Source maps',
                 _KnowledgeWorkspace.sourceCleanup: 'Source cleanup',
-                _KnowledgeWorkspace.graphExplorer: 'Graph explorer',
-                _KnowledgeWorkspace.privateActions: 'Private actions',
+                _KnowledgeWorkspace.graphExplorer: 'Advanced graph',
+                _KnowledgeWorkspace.privateActions: 'Maintenance',
               }.entries)
                 ChoiceChip(
                   label: Text(entry.value),
@@ -529,6 +537,7 @@ class _KnowledgeToolbar extends StatelessWidget {
               workspace != _KnowledgeWorkspace.promotions &&
               workspace != _KnowledgeWorkspace.sourceMaps &&
               workspace != _KnowledgeWorkspace.sourceCleanup &&
+              workspace != _KnowledgeWorkspace.relationships &&
               workspace != _KnowledgeWorkspace.graphExplorer &&
               workspace != _KnowledgeWorkspace.privateActions) ...[
             const SizedBox(width: 12),
@@ -640,9 +649,9 @@ class _MemoryIndex extends StatelessWidget {
     return Column(
       children: [
         const _IndexHeader(
-          leading: 'Memory and claim',
+          leading: 'Memory',
           middle: 'Kind',
-          trailing: 'Confidence',
+          trailing: 'Status',
         ),
         Expanded(
           child: ListView.builder(
@@ -730,7 +739,7 @@ class _MemoryRow extends StatelessWidget {
                 Expanded(
                   flex: 2,
                   child: Text(
-                    _label(memory.category),
+                    memoryFriendlyLabel(memory.tier),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: Theme.of(context).textTheme.bodySmall,
@@ -741,7 +750,7 @@ class _MemoryRow extends StatelessWidget {
                   child: Align(
                     alignment: Alignment.centerRight,
                     child: Text(
-                      '${(memory.confidence * 100).round()}%',
+                      memoryFriendlyLabel(memory.claimStatus),
                       style: Theme.of(context).textTheme.labelLarge,
                     ),
                   ),

@@ -7,7 +7,6 @@ import {
   AlertTriangle,
   Bell,
   BrainCircuit,
-  CalendarDays,
   Check,
   Circle,
   Coins,
@@ -15,7 +14,6 @@ import {
   Database,
   Loader2,
   MessageSquareText,
-  FolderKanban,
   Layers3,
   Plus,
   RefreshCw,
@@ -26,6 +24,8 @@ import {
 import { clsx } from "clsx";
 import { IntentPrefetchLink as Link } from "@/components/app-shell/intent-prefetch-link";
 import { useWorkspaceSession } from "@/components/app-shell/session-context";
+import { CompanionAtlasPortrait, useCompanionAtlasPlayer } from "@/components/companion-atlas-player";
+import { companionPresentation } from "@/lib/companion/presentation";
 import { SourceCoveragePanel } from "@/components/source-coverage/source-coverage-panel";
 import { useLiveRefresh } from "@/components/use-live-refresh";
 import { approvalInboxHref, parseApprovalKind } from "@/lib/approvals/inbox-link";
@@ -110,6 +110,7 @@ export function TodayWorkspace({
   const [announcement, setAnnouncement] = useState("Today is ready.");
   const [now, setNow] = useState<Date | null>(null);
   const [hydrated, setHydrated] = useState(false);
+  const [showCompleted, setShowCompleted] = useState(false);
   const lastFullRefreshAtRef = useRef(
     initialProjection?.generatedAt ? Date.parse(initialProjection.generatedAt) : 0,
   );
@@ -120,7 +121,7 @@ export function TodayWorkspace({
   const workflows = sourceData(summary, "workflows");
   const approvals = sourceData(summary, "approvals");
   const activeWork = [...runs, ...workflows].filter((item) =>
-    ["running", "queued", "pending", "waiting_approval", "paused"].includes(
+    ["running", "queued", "pending", "resuming"].includes(
       text(item.status).toLowerCase(),
     ),
   );
@@ -129,9 +130,7 @@ export function TodayWorkspace({
       text(item.status).toLowerCase(),
     ),
   );
-  const visibleWorkflowWork = activeWorkflowWork.length
-    ? activeWorkflowWork
-    : workflows.slice(0, 5);
+  const visibleWorkflowWork = activeWorkflowWork;
   const sourceErrors = ["runs", "workflows", "approvals"]
     .map((source) => ({ source, error: sourceError(summary, source) }))
     .filter((item) => item.error);
@@ -145,11 +144,11 @@ export function TodayWorkspace({
     : undefined;
 
   const visibleItems = useMemo(() => {
-    const day = localDayKey(now);
+    const day = localDayKey(now, today.preferences.timezone);
     return today.items.filter((item) =>
-      item.status === "open" || localDayKey(item.completedAt ? new Date(item.completedAt) : null) === day
+      item.status === "open" || localDayKey(item.completedAt ? new Date(item.completedAt) : null, today.preferences.timezone) === day
     );
-  }, [now, today.items]);
+  }, [now, today.items, today.preferences.timezone]);
   const completed = visibleItems.filter((item) => item.status === "done").length;
   const open = visibleItems.filter((item) => item.status === "open");
   const progress = visibleItems.length ? completed / visibleItems.length : 0;
@@ -174,8 +173,29 @@ export function TodayWorkspace({
           : agendaRestricted ? "Agenda access limited"
             : "Agenda unavailable";
   const approvalsCurrent = sourceIsCurrent("approvals");
-  const workCurrent = sourceIsCurrent("active_agents") && sourceIsCurrent("work");
+  const workCurrent = (!visibleSections.has("active_agents") || sourceIsCurrent("active_agents")) && (!visibleSections.has("work") || sourceIsCurrent("work"));
   const sourceIssueCount = sourceStates.filter((source) => source.status === "error" || source.status === "restricted").length;
+  const sourceNeedsAttention = (key: TodayProjectionSourceState["source"]) => sourceStates.some(
+    (source) => source.source === key && ["error", "restricted"].includes(source.status),
+  );
+  const rankedOpen = [...open].sort((a, b) => {
+    const urgency = (item: TodayItem) => (item.reminderState === "overdue" ? 4 : 0) + (item.priority === "high" ? 2 : item.priority === "medium" ? 1 : 0);
+    return urgency(b) - urgency(a) || (a.dueAt ? Date.parse(a.dueAt) : Infinity) - (b.dueAt ? Date.parse(b.dueAt) : Infinity);
+  });
+  const focusItems = showCompleted ? [...rankedOpen, ...visibleItems.filter((item) => item.status === "done")] : rankedOpen;
+  const nextMeeting = agendaItems.filter((item) => item.kind === "meeting" && item.scheduledAt && Date.parse(item.scheduledAt) >= relativeAsOf)
+    .sort((a, b) => Date.parse(a.scheduledAt!) - Date.parse(b.scheduledAt!))[0];
+  const nextMove = approvalsCurrent && approvals.length && visibleSections.has("approvals")
+    ? { label: "Needs your decision", title: text(approvals[0].title, "Review a proposed action"), detail: "Your approval is needed before this can continue.", href: approvalInboxHref({ id: text(approvals[0].id), kind: parseApprovalKind(approvals[0].kind), returnTo: "/app" }), action: "Review action", attention: true }
+    : rankedOpen[0] && visibleSections.has("focus")
+      ? { label: rankedOpen[0].reminderState === "overdue" ? "Overdue" : "Start here", title: rankedOpen[0].title, detail: rankedOpen[0].dueAt ? `Due ${formatTodayDue(rankedOpen[0].dueAt, presentationTimezone)}` : "One useful thing to move forward today.", href: "#today-focus", action: "See your tasks", attention: rankedOpen[0].reminderState === "overdue" }
+      : nextMeeting && visibleSections.has("agenda")
+        ? { label: "Coming up", title: nextMeeting.title, detail: formatTodayTime(nextMeeting.scheduledAt!, presentationTimezone), href: nextMeeting.href, action: "Open meeting", attention: false }
+        : { label: "Make room for what matters", title: "What would you like to move forward?", detail: "Ask Asael to research, plan, or help you take the next step.", href: "/app/command", action: "Talk to Asael", attention: false };
+  const firstName = session?.user?.name?.trim().split(/\s+/)[0];
+  const ownerScope = sessionStatus === "ready" && session?.context?.tenantId && session.context.actorId
+    ? JSON.stringify([session.context.tenantId, session.context.actorId, session.user?.id, session.context.role, session.membership?.role]) : undefined;
+
 
   function maybeGenerateBrief(nextToday: TodaySnapshot) {
     if (
@@ -324,7 +344,7 @@ export function TodayWorkspace({
           candidate.id === item.id ? payload.item as TodayItem : candidate
         ),
       }));
-      setAnnouncement(nextStatus === "done" ? "Focus item completed." : "Focus item reopened.");
+      setAnnouncement(nextStatus === "done" ? "Task completed." : "Task reopened.");
     } catch (error) {
       setToday((current) => ({ ...current, items: previous }));
       setTodayError(errorMessage(error));
@@ -393,37 +413,29 @@ export function TodayWorkspace({
       <p className="sr-only" role="status" aria-live="polite">{announcement}</p>
 
       <header className={styles["today-brief"]}>
-        <div className={styles["today-intro"]}>
-          <p className={styles["today-kicker"]}>{now ? formatTodayDate(now, presentationTimezone) : "Your day"}</p>
-          <h1>Today</h1>
-          <p>
-            {open.length
-              ? `${open.length} ${open.length === 1 ? "item needs" : "items need"} your attention. ${completed} completed in this view.`
-              : completed
-                ? `No open tasks or reminders. ${completed} ${completed === 1 ? "item" : "items"} completed in this view.`
-                : loading ? "Loading your tasks and reminders…" : "No open tasks or reminders. Add an item or start a task."}
-          </p>
+        <div className={styles.welcomeCopy}>
+          <p className={styles["today-kicker"]}>{now ? formatTodayDate(now, presentationTimezone) : "Today"}</p>
+          <h1>{todayGreeting(now, presentationTimezone)}{firstName ? `, ${firstName}` : ""}.</h1>
+          <p>Your day, with the important things in reach.</p>
           <div className={styles["today-operating-line"]} aria-label="Current workspace status">
-            <span>
-              <i className={clsx(activeWork.length && styles["is-active"])} aria-hidden="true" />
-              {!workCurrent ? loading && !hasInitialWorkspace ? "Checking work status…" : "Work status unavailable" : activeWork.length
-                ? `${activeWork.length} ${activeWork.length === 1 ? "run is" : "runs are"} active`
-                : "No background work in view"}
-            </span>
-            <span>{!approvalsCurrent ? loading && !hasInitialWorkspace ? "Checking approvals…" : "Approval status unavailable" : approvals.length ? `${approvals.length} waiting for approval` : "No approvals waiting"}</span>
-            <span>{agendaStatus}</span>
+            {visibleSections.has("focus") ? <span><Check size={14} aria-hidden="true" />{loading && !hasInitialWorkspace ? "Checking your tasks…" : `${open.length} open · ${completed} done today`}</span> : null}
+            {visibleSections.has("active_agents") || visibleSections.has("work") ? <span><i className={clsx(activeWork.length && styles["is-active"])} aria-hidden="true" />{workCurrent ? activeWork.length ? `${activeWork.length} in progress` : "No work running" : "Work status not confirmed"}</span> : null}
+            {visibleSections.has("approvals") ? <span><Bell size={14} aria-hidden="true" />{approvalsCurrent ? approvals.length ? `${approvals.length} awaiting your decision` : "No decisions waiting" : "Decisions not checked"}</span> : null}
           </div>
         </div>
+        <TodayCompanion key={ownerScope} scope={ownerScope} />
         <div className={styles["today-actions"]}>
-          <button type="button" onClick={() => void load({ force: true, showLoading: true, announce: true })} disabled={loading} className={styles["today-icon-button"]} aria-label="Refresh Today">
-            <RefreshCw size={16} className={loading ? "animate-spin" : ""} aria-hidden="true" />
-          </button>
-          <Link href="/app/capture" className="action-link">Capture</Link>
-          <Link href="/app/command" className="primary-button" aria-label="Start task">
-            Start a task <ArrowRight size={15} aria-hidden="true" />
-          </Link>
+          <button type="button" onClick={() => void load({ force: true, showLoading: true, announce: true })} disabled={loading} className={styles["today-icon-button"]} aria-label="Refresh Today" title="Refresh Today"><RefreshCw size={16} className={loading ? "animate-spin" : ""} aria-hidden="true" /></button>
+          <Link href="/app/capture" className="action-link">Save a note</Link>
+          <Link href="/app/command" className="primary-button" aria-label="Start task">Ask Asael <ArrowRight size={15} aria-hidden="true" /></Link>
         </div>
       </header>
+
+      <section className={styles.nextMove} data-attention={nextMove.attention} aria-labelledby="today-next-move">
+        <div className={styles.nextMoveIcon}>{nextMove.attention ? <Bell size={22} aria-hidden="true" /> : <ArrowRight size={22} aria-hidden="true" />}</div>
+        <div><p>{nextMove.label}</p><h2 id="today-next-move">{nextMove.title}</h2><span>{nextMove.detail}</span></div>
+        <Link href={nextMove.href}>{nextMove.action}<ArrowRight size={16} aria-hidden="true" /></Link>
+      </section>
 
       {todayError ? (
         <div className={styles["today-error"]} role="alert">
@@ -432,18 +444,19 @@ export function TodayWorkspace({
         </div>
       ) : null}
 
-      <section className={styles["today-generated-brief"]} aria-labelledby="daily-brief-title">
+      <section className={styles["today-generated-brief"]} data-has-priorities={Boolean(today.brief?.focus.length)} aria-labelledby="daily-brief-title">
         <div className={styles["today-brief-lead"]}>
           <div className={styles["today-brief-title-row"]}>
             <div>
-              <h2 id="daily-brief-title">Daily brief</h2>
+              <h2 id="daily-brief-title">Your daily brief</h2>
             </div>
           </div>
           {today.brief ? (
             <>
               <p className={styles["today-brief-summary"]}>{today.brief.summary}</p>
               <div className={styles["today-brief-meta"]}>
-                <span>{today.brief.generatedBy === "ai" ? "Synthesized by Asael" : "Built from your focus list"}</span>
+                {today.brief.localDate !== today.briefLocalDate ? <span>Earlier brief</span> : null}
+                <span>{today.brief.generatedBy === "ai" ? "Prepared by Asael" : "From your tasks and reminders"}</span>
                 <span><time dateTime={today.brief.generatedAt}>{formatTodayTime(today.brief.generatedAt, presentationTimezone)}</time></span>
                 <button type="button" onClick={() => void generateBrief(true)} disabled={generatingBrief}>
                   {generatingBrief ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <RefreshCw size={13} aria-hidden="true" />} Refresh
@@ -452,7 +465,7 @@ export function TodayWorkspace({
             </>
           ) : (
             <div className={styles["today-brief-empty"]}>
-              <p>{generatingBrief ? "Reading your focus, memory, and recent work…" : "Generate a grounded view of what deserves your attention."}</p>
+              <p>{generatingBrief ? "Reading your focus, memory, and recent work…" : "A short read on your priorities, recent work, and anything to keep an eye on."}</p>
               <button type="button" onClick={() => void generateBrief(true)} disabled={generatingBrief}>
                 {generatingBrief ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <Sparkles size={14} aria-hidden="true" />}
                 {generatingBrief ? "Preparing" : "Generate brief"}
@@ -461,7 +474,7 @@ export function TodayWorkspace({
           )}
         </div>
 
-        <div className={styles["today-brief-focus"]} aria-label="Brief priorities">
+        {today.brief?.focus.length ? <div className={styles["today-brief-focus"]} aria-label="Brief priorities">
           <p className={styles["today-brief-label"]}>Priorities</p>
           {today.brief?.focus.length ? today.brief.focus.slice(0, 3).map((item, index) => (
             <div className={styles["today-brief-priority"]} key={`${item.title}-${index}`}>
@@ -469,16 +482,16 @@ export function TodayWorkspace({
               <div><strong>{item.title}</strong><p>{item.reason}</p></div>
             </div>
           )) : <p className={styles["today-brief-placeholder"]}>Your top priorities will appear here.</p>}
-        </div>
+        </div> : null}
 
         <div className={styles["today-brief-side"]}>
-          <div>
+          {today.brief?.watchouts.length ? <div>
             <p className={styles["today-brief-label"]}><AlertTriangle size={12} aria-hidden="true" /> Risks and blockers</p>
             {today.brief?.watchouts.length ? today.brief.watchouts.slice(0, 2).map((item) => <p key={item} className={styles["today-watchout"]}>{item}</p>) : <p className={styles["today-brief-placeholder"]}>{today.brief ? "No risks or blockers in this brief." : "Generate a brief to review risks and blockers."}</p>}
-          </div>
+          </div> : null}
           {today.brief?.resurfaced[0] ? <div className={styles["today-resurfaced"]}><p className={styles["today-brief-label"]}>From your memory</p><strong>{today.brief.resurfaced[0].title}</strong><p>{today.brief.resurfaced[0].context}</p></div> : null}
           <details className={styles["today-brief-schedule"]}>
-            <summary><Settings2 size={13} aria-hidden="true" /> Brief settings</summary>
+            <summary><Settings2 size={13} aria-hidden="true" /> Personalize Today</summary>
             <form onSubmit={saveSchedule}>
               <label className={styles["today-switch-row"]}><span>Automatic brief</span><input type="checkbox" checked={today.preferences.briefEnabled} onChange={(event) => updatePreference("briefEnabled", event.currentTarget.checked)} /></label>
               <label><span>Time</span><input type="time" value={today.preferences.briefTime} onChange={(event) => updatePreference("briefTime", event.currentTarget.value)} /></label>
@@ -505,98 +518,22 @@ export function TodayWorkspace({
         </div>
       </section>
 
-      <section className={styles["today-overview"]} aria-labelledby="today-overview-title">
-        <div className={styles["today-overview-heading"]}>
-          <div>
-            <h2 id="today-overview-title">At a glance</h2>
-            <p>Your focus, schedule, active work, and recent context in one view.</p>
-          </div>
-          <span className={styles["today-overview-summary"]}>
-            <strong>{completed}</strong> completed
-            <i aria-hidden="true" />
-            <strong>{open.length}</strong> open
-          </span>
-        </div>
-        <div className={styles["today-overview-list"]} aria-label="Today overview">
-          {visibleSections.has("focus") ? <TodayOverviewLink
-            icon={Circle}
-            label="Open today"
-            value={open.length}
-            detail={`${completed} completed`}
-            href="#today-focus"
-            tone="focus"
-          /> : null}
-          {visibleSections.has("agenda") ? <TodayOverviewLink
-            icon={CalendarDays}
-            label="Agenda"
-            value={agendaIsCurrent ? agendaItems.length : "—"}
-            detail={agendaIsCurrent ? `${agenda.filter((item) => item.kind === "meeting").length} meetings` : agendaStatus}
-            href="#today-agenda"
-            tone="agenda"
-          /> : null}
-          {visibleSections.has("active_agents") || visibleSections.has("work") ? <TodayOverviewLink
-            icon={Workflow}
-            label="Work in progress"
-            value={workCurrent ? activeWork.length : "—"}
-            detail={workCurrent ? "Agents and workflows" : "Status unavailable"}
-            href="/app/workflows"
-            tone="work"
-          /> : null}
-          {visibleSections.has("approvals") ? <TodayOverviewLink
-            icon={Bell}
-            label="Approvals"
-            value={approvalsCurrent ? approvals.length : "—"}
-            detail={approvalsCurrent ? "Waiting for review" : "Status unavailable"}
-            href="/app/approvals"
-            attention={approvals.length > 0}
-            tone="approvals"
-          /> : null}
-          {visibleSections.has("work") ? <TodayOverviewLink
-            icon={FolderKanban}
-            label="Projects"
-            value={today.projects?.length || 0}
-            detail="Active projects in view"
-            href="/app/projects"
-            tone="projects"
-          /> : null}
-          {visibleSections.has("memory") ? <TodayOverviewLink
-            icon={BrainCircuit}
-            label="Memory"
-            value={today.memories.length}
-            detail="Recent memories in view"
-            href="/app/memory"
-            tone="memory"
-          /> : null}
-          {visibleSections.has("conversations") ? <TodayOverviewLink
-            icon={MessageSquareText}
-            label="Conversations"
-            value={today.threads.length}
-            detail="Recent threads"
-            href="/app/command"
-            tone="conversations"
-          /> : null}
-        </div>
-      </section>
-
       {visibleSections.has("focus") || visibleSections.has("agenda") ? <section className={styles["today-grid"]}>
         {visibleSections.has("focus") ? <div className={styles["today-focus"]} id="today-focus">
           <div className={styles["today-section-heading"]}>
             <div>
-              <h2>Tasks and reminders</h2>
+              <h2>Your focus</h2>
               <p className={styles["today-section-copy"]}>{open.length} open and {completed} completed in this view.</p>
             </div>
             <ProgressRing value={progress} completed={completed} total={visibleItems.length} />
           </div>
 
-          <div className={styles["today-capture-panel"]}>
-            <div className={styles["today-capture-heading"]}>
-              <Plus size={17} aria-hidden="true" />
-              <div><strong>Add to Today</strong><span>Create a task or reminder with an optional due time.</span></div>
-            </div>
+          <details className={styles["today-capture-panel"]}>
+            <summary className={styles["today-capture-heading"]}><Plus size={17} aria-hidden="true" />Add a task or reminder</summary>
             <form className={styles["today-capture-row"]} onSubmit={addItem}>
               <label className={clsx(styles["today-capture-field"], styles["today-capture-title"])}>
                 <span>What needs to happen?</span>
-                <input aria-label="Add a focus item" id="today-item-title" value={title} onChange={(event) => setTitle(event.currentTarget.value)} placeholder="Write a clear task or reminder" maxLength={280} />
+                <input aria-label="Task or reminder" id="today-item-title" value={title} onChange={(event) => setTitle(event.currentTarget.value)} placeholder="Write a clear task or reminder" maxLength={280} />
               </label>
               <label className={styles["today-capture-field"]}>
                 <span>Type</span>
@@ -616,17 +553,18 @@ export function TodayWorkspace({
               </label>
               <button type="submit" disabled={saving || !title.trim()}>{saving ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : "Add"}</button>
             </form>
-          </div>
+          </details>
 
+          {completed ? <button type="button" className={styles.completedToggle} aria-pressed={showCompleted} onClick={() => setShowCompleted(!showCompleted)}>{showCompleted ? "Hide" : "Show"} {completed} completed</button> : null}
           <div className={styles["today-focus-list"]} aria-label="Focus items">
-            {visibleItems.length ? visibleItems.map((item) => (
-              <button key={item.id} type="button" onClick={() => void toggleItem(item)} className={clsx(styles["today-focus-item"], item.status === "done" && styles["is-done"], item.reminderState && styles[`is-${item.reminderState}`])}>
+            {focusItems.length ? focusItems.map((item) => (
+              <button key={item.id} type="button" onClick={() => void toggleItem(item)} aria-label={`${item.status === "done" ? "Reopen" : "Complete"}: ${item.title}`} className={clsx(styles["today-focus-item"], item.status === "done" && styles["is-done"], item.reminderState && styles[`is-${item.reminderState}`])}>
                 <span className={styles["today-check"]}>{item.status === "done" ? <Check size={14} aria-hidden="true" /> : <Circle size={14} aria-hidden="true" />}</span>
-                <span className={styles["today-item-copy"]}><strong>{item.title}</strong><small>{item.kind}{item.dueAt ? ` · ${formatTodayDue(item.dueAt, presentationTimezone)}` : ""}{dueStateLabel(item.reminderState)}</small></span>
-                <span className={clsx(styles["today-priority"], styles[`priority-${item.priority}`])}>{item.priority}</span>
+                <span className={styles["today-item-copy"]}><strong>{item.title}</strong><small>{item.kind === "reminder" ? "Reminder" : "Task"}{item.dueAt ? ` · ${formatTodayDue(item.dueAt, presentationTimezone)}` : ""}{dueStateLabel(item.reminderState)}</small></span>
+                <span className={clsx(styles["today-priority"], styles[`priority-${item.priority}`])}>{friendlyLabel(item.priority)}</span>
               </button>
             )) : (
-              <div className={styles["today-empty"]}><Sparkles size={20} aria-hidden="true" /><p>No tasks or reminders yet.</p><span>Add your first item above.</span></div>
+              <div className={styles["today-empty"]}><Sparkles size={20} aria-hidden="true" /><p>{loading && !hasInitialWorkspace ? "Loading your tasks…" : completed ? "Your focus list is clear." : "A little focus goes a long way."}</p><span>{completed ? "Your completed tasks are saved above." : "Add one thing you want to move forward today."}</span></div>
             )}
           </div>
         </div> : null}
@@ -645,9 +583,9 @@ export function TodayWorkspace({
             {!agendaIsCurrent && !(loading && !hasInitialWorkspace) ? <p className={styles.sourceNotice}>{uncheckedAgendaSources.map((key) => {
               const source = sourceStates.find((candidate) => candidate.source === key);
               return `${sourceLabel(key)}: ${source ? sourceStatusLabel(source.status).toLowerCase() : "not available"}`;
-            }).join(" · ")}. Review data confidence below.</p> : null}
+            }).join(" · ")}. See “About this view” below.</p> : null}
           </div>
-          {visibleSections.has("approvals") ? <div className={styles["today-attention"]}>
+          {visibleSections.has("approvals") && (approvals.length > 0 || sourceNeedsAttention("approvals")) ? <div className={styles["today-attention"]}>
             <Bell size={15} aria-hidden="true" />
             <div>
               <strong>{!approvalsCurrent ? "Approval status unavailable" : approvals.length ? `${approvals.length} ${approvals.length === 1 ? "approval" : "approvals"} waiting` : "No approvals waiting"}</strong>
@@ -659,23 +597,23 @@ export function TodayWorkspace({
       </section> : null}
 
       {["approvals", "active_agents", "work", "memory", "conversations"].some((section) => visibleSections.has(section as TodaySectionKey)) ? <section className={styles["today-context-grid"]}>
-        {visibleSections.has("approvals") ? <TodayContextSection icon={Bell} title="Needs your approval" description="Consequential actions remain paused until you review them." href="/app/approvals">
+        {visibleSections.has("approvals") && (approvals.length > 0 || sourceNeedsAttention("approvals")) ? <TodayContextSection icon={Bell} title="Needs your approval" description="Consequential actions remain paused until you review them." href="/app/approvals">
           {approvals.length ? approvals.slice(0, 5).map((approval, index) => (
             <Link key={text(approval.id) || index} href={approvalInboxHref({ id: text(approval.id), kind: parseApprovalKind(approval.kind), returnTo: "/app" })} className={styles["today-context-row"]}>
               <span className={clsx(styles["today-live-dot"], styles["is-active"])} /><div><strong>{text(approval.title, "Approval required")}</strong><small>Risk {text(approval.riskLevel, "unknown")} · {text(approval.status, "waiting").replaceAll("_", " ")}</small></div><ArrowRight size={14} aria-hidden="true" />
             </Link>
-          )) : <ContextEmpty>{approvalsCurrent ? "No governed action is waiting for your approval." : "The approval queue could not be checked."}</ContextEmpty>}
+          )) : <ContextEmpty>{approvalsCurrent ? "Nothing is waiting for your approval." : "The approval queue could not be checked."}</ContextEmpty>}
         </TodayContextSection> : null}
 
-        {visibleSections.has("active_agents") ? <TodayContextSection icon={Cpu} title="Active agents" description="Real agent-run identities and their current state." href="/app/command">
+        {visibleSections.has("active_agents") && (activeRuns.length > 0 || sourceNeedsAttention("active_agents")) ? <TodayContextSection icon={Cpu} title="Happening now" description="What Asael is working on for you." href="/app/command">
           {activeRuns.length ? activeRuns.slice(0, 5).map((run, index) => (
-            <Link key={text(run.id) || index} href="/app/command" className={styles["today-context-row"]}>
-              <span className={styles["today-live-dot"]} /><div><strong>{text(run.agentId, "atlas")}</strong><small>{text(run.prompt, "Untitled work")} · {text(run.status, "active").replaceAll("_", " ")}</small></div><ArrowRight size={14} aria-hidden="true" />
+            <Link key={text(run.id) || index} href={text(run.id) ? `/app/command?run=${encodeURIComponent(text(run.id))}` : "/app/command"} className={styles["today-context-row"]}>
+              <span className={styles["today-live-dot"]} /><div><strong>{text(run.prompt, "Assistant task")}</strong><small>{friendlyLabel(text(run.status, "active"))}</small></div><ArrowRight size={14} aria-hidden="true" />
             </Link>
           )) : <ContextEmpty>{sourceIsCurrent("active_agents") ? "No agent is currently running." : "Agent status could not be checked."}</ContextEmpty>}
         </TodayContextSection> : null}
 
-        {visibleSections.has("work") ? <TodayContextSection icon={Workflow} title="Work in progress" description="Workflows, active projects, and their next task." href="/app/workflows">
+        {visibleSections.has("work") && (visibleWorkflowWork.length > 0 || Boolean(today.projects?.length) || sourceNeedsAttention("work")) ? <TodayContextSection icon={Workflow} title="Work in progress" description="Workflows, active projects, and their next task." href="/app/workflows">
           {visibleWorkflowWork.length ? visibleWorkflowWork.slice(0, 4).map((item, index) => (
             <Link key={text(item.id) || index} href="/app/workflows" className={styles["today-context-row"]}>
               <span className={styles["today-live-dot"]} /><div><strong>{text(item.goal, "Untitled workflow")}</strong><small>{text(item.status, "active").replaceAll("_", " ")}</small></div><ArrowRight size={14} aria-hidden="true" />
@@ -689,13 +627,13 @@ export function TodayWorkspace({
           ))}
         </TodayContextSection> : null}
 
-        {visibleSections.has("memory") ? <TodayContextSection icon={BrainCircuit} title="Memory" description="Recent knowledge Asael may use." href="/app/memory">
+        {visibleSections.has("memory") && today.memories.length > 0 ? <TodayContextSection icon={BrainCircuit} title="Memory" description="Recent knowledge Asael may use." href="/app/memory">
           {today.memories.length ? today.memories.slice(0, 4).map((memory) => (
-            <Link key={memory.id} href="/app/memory" className={styles["today-memory-row"]}><div><strong>{memory.title}</strong><p>{memory.content}</p></div><span>{memory.type}</span></Link>
+            <Link key={memory.id} href="/app/memory" className={styles["today-memory-row"]}><div><strong>{memory.title}</strong><p>{memoryPreview(memory.content)}</p></div><span>{friendlyLabel(memory.type)}</span></Link>
           )) : <ContextEmpty>Capture a note and useful knowledge will resurface here.</ContextEmpty>}
         </TodayContextSection> : null}
 
-        {visibleSections.has("conversations") ? <TodayContextSection icon={MessageSquareText} title="Conversations" description="Pick up where you left off." href="/app/command">
+        {visibleSections.has("conversations") && today.threads.length > 0 ? <TodayContextSection icon={MessageSquareText} title="Pick up where you left off" description="Your recent conversations." href="/app/command">
           {today.threads.length ? today.threads.slice(0, 5).map((thread) => (
             <Link key={thread.id} href={`/app/command?thread=${encodeURIComponent(thread.id)}`} className={styles["today-context-row"]}><div><strong>{thread.title}</strong><small>{formatTodayRelative(thread.updatedAt, relativeAsOf)}</small></div><ArrowRight size={14} aria-hidden="true" /></Link>
           )) : <ContextEmpty>Your recent conversations will appear here.</ContextEmpty>}
@@ -703,7 +641,7 @@ export function TodayWorkspace({
       </section> : null}
 
       {visibleSections.has("consumption") ? <details className={styles.detailSection}>
-        <summary><span>AI consumption</span><span>{usage ? `${formatTokens(usage.periods[usagePeriod].current.totalTokens)} tokens · ${usage.periods[usagePeriod].label}` : usageLoading ? "Loading…" : "Unavailable"}</span></summary>
+        <summary><span>AI usage</span><span>{usage ? `${formatTokens(usage.periods[usagePeriod].current.totalTokens)} tokens · ${usage.periods[usagePeriod].label}` : usageLoading ? "Loading…" : "Unavailable"}</span></summary>
         <UsageCockpit
           summary={usage}
           periodKey={usagePeriod}
@@ -714,12 +652,12 @@ export function TodayWorkspace({
         />
       </details> : null}
 
-      <details className={styles.detailSection}>
-        <summary><span>Data confidence</span><span>{sourceIssueCount ? `${sourceIssueCount} sources need attention` : sourceStates.length ? "Source freshness and coverage" : "Waiting for sources"}</span></summary>
+      <details className={styles.detailSection} id="today-sources">
+        <summary><span>About this view</span><span>{sourceIssueCount ? `${sourceIssueCount} sources need attention` : sourceStates.length ? "Source freshness and coverage" : "Waiting for sources"}</span></summary>
         <section className={styles.projectionStatus} aria-labelledby="today-projection-status-title">
           <div>
-            <p className={styles.projectionKicker}>Data confidence</p>
-            <h2 id="today-projection-status-title">Trusted status</h2>
+            <p className={styles.projectionKicker}>About this view</p>
+            <h2 id="today-projection-status-title">What has been checked</h2>
             <p>See which parts of Asael are current enough to rely on. If a source cannot be checked, Asael says so instead of pretending it is empty.</p>
           </div>
           <div className={styles.sourceStateGrid}>
@@ -769,7 +707,7 @@ function UsageCockpit({
       <header className={styles.usageHeader}>
         <div>
           <p className={styles.usageKicker}><Activity size={14} aria-hidden="true" /> Consumption</p>
-          <h2 id="usage-cockpit-title">AI consumption</h2>
+          <h2 id="usage-cockpit-title">AI usage</h2>
           <p>Models, retrieval, media AI, retries, and known estimated cost in one ledger.</p>
         </div>
         <div className={styles.usagePeriodSwitch} role="group" aria-label="Consumption period">
@@ -1074,37 +1012,6 @@ function ProgressRing({ value, completed, total }: { value: number; completed: n
   return <div className={styles["today-progress"]} aria-label={`${completed} of ${total} focus items completed`}><svg viewBox="0 0 44 44" aria-hidden="true"><circle cx="22" cy="22" r="18" /><circle className={styles["progress-value"]} cx="22" cy="22" r="18" style={{ strokeDasharray: circumference, strokeDashoffset: circumference * (1 - value) }} /></svg><span>{total ? `${Math.round(value * 100)}%` : "—"}</span></div>;
 }
 
-function TodayOverviewLink({
-  icon: Icon,
-  label,
-  value,
-  detail,
-  href,
-  attention = false,
-  tone,
-}: {
-  icon: typeof Workflow;
-  label: string;
-  value: number | string;
-  detail: string;
-  href: string;
-  attention?: boolean;
-  tone: "focus" | "agenda" | "work" | "approvals" | "projects" | "memory" | "conversations";
-}) {
-  return (
-    <Link
-      href={href}
-      className={clsx(styles["today-overview-item"], attention && styles["needs-attention"])}
-      data-tone={tone}
-    >
-      <span className={styles["today-overview-icon"]}><Icon size={17} aria-hidden="true" /></span>
-      <span className={styles["today-overview-copy"]}><strong>{label}</strong><small>{detail}</small></span>
-      <span className={styles["today-overview-value"]}>{value}</span>
-      <ArrowRight size={14} aria-hidden="true" />
-    </Link>
-  );
-}
-
 function TodayContextSection({
   icon: Icon,
   title,
@@ -1246,7 +1153,7 @@ function sourceLabel(source: TodayProjectionSourceState["source"]) {
     approvals: "Approvals",
     active_agents: "Active agents",
     work: "Canonical work",
-    consumption: "AI consumption",
+    consumption: "AI usage",
   };
   return labels[source];
 }
@@ -1270,7 +1177,7 @@ function sectionLabel(section: TodaySectionKey) {
     work: "Canonical work",
     memory: "Memory",
     conversations: "Conversations",
-    consumption: "AI consumption",
+    consumption: "AI usage",
   };
   return labels[section];
 }
@@ -1278,5 +1185,34 @@ function sectionLabel(section: TodaySectionKey) {
 function record(value: unknown): JsonRecord { return value && typeof value === "object" && !Array.isArray(value) ? value as JsonRecord : {}; }
 function text(value: unknown, fallback = "") { return typeof value === "string" || typeof value === "number" ? String(value) : fallback; }
 function errorMessage(error: unknown) { return error instanceof Error ? error.message : "Today could not be refreshed."; }
-function localDayKey(value: Date | null) { return value ? `${value.getFullYear()}-${value.getMonth()}-${value.getDate()}` : ""; }
+function localDayKey(value: Date | null, timezone: string) {
+  if (!value || !Number.isFinite(value.getTime())) return "";
+  try { return new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" }).format(value); }
+  catch { return value.toISOString().slice(0, 10); }
+}
+
+function todayGreeting(value: Date | null, timezone: string) {
+  if (!value) return "Welcome back";
+  let hour = value.getHours();
+  try { hour = Number(new Intl.DateTimeFormat("en-GB", { timeZone: timezone, hour: "numeric", hourCycle: "h23" }).format(value)); } catch { /* Device clock is a presentation fallback. */ }
+  return hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+}
+
+function memoryPreview(content: string) {
+  return /^\s*[\[{]/.test(content) ? "Saved context. Open Memory to read more." : content;
+}
+
+function friendlyLabel(value: string) {
+  const known: Record<string, string> = { episodic: "Experience", semantic: "Knowledge", procedural: "How-to", preference: "Preference", working: "Current context", waiting_approval: "Waiting for your approval", waiting_clarification: "Waiting for your reply", running: "In progress", resuming: "Continuing" };
+  const label = known[value] || value.replaceAll("_", " ");
+  return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
+function TodayCompanion({ scope }: { scope?: string }) {
+  const { portrait, observationRef, showPortrait } = useCompanionAtlasPlayer({ scope, presentation: companionPresentation({}), greeting: true });
+  return <section ref={observationRef} className={styles.welcomeCompanion} aria-label="Your ATLAS companion" data-visible={showPortrait}>
+    <CompanionAtlasPortrait {...portrait} className={styles.welcomePortrait} size="112px" />
+    {showPortrait ? <span>ATLAS</span> : null}
+  </section>;
+}
 function dueStateLabel(value?: TodayItem["reminderState"]) { return value === "overdue" ? " · overdue" : value === "due_soon" ? " · due soon" : ""; }

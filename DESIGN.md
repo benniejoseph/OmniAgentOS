@@ -12,7 +12,9 @@ palettes, control shapes or typography. Work, Assistant and Activity share these
 controls, readable status language and compact row patterns.
 
 The owner requested the original raster mascot be replaced on 7 October 2026.
-ATLAS now uses an original vector Lottie companion; the earlier eagle studies
+ATLAS uses an original Scout character with an ivory shell, charcoal face,
+expressive eyes, articulated hands and restrained gold details. Its authored
+Lottie gestures use LottieFiles character references; the earlier eagle studies
 remain historical design references, not the production asset direction.
 
 ## Direction
@@ -129,13 +131,13 @@ The macOS route families are:
 
 ## Page Families
 
-- **Today:** editorial priority strip plus operational agenda, with attention surfaced before activity.
+- **Today:** a personal welcome and one useful next action, followed by the daily brief, focus list and agenda. Decisions and overdue work take priority. Collapse completed tasks and omit empty secondary sections; preserve visible unavailable states. ATLAS follows owner visibility and motion preferences.
 - **Talk:** transcript as the dominant plane; stage, tools, plan, citations, and evidence remain adjacent.
 - **Capture:** one strong composer that expands by modality; upload/index progress stays inline.
 - **Missions and Projects:** state rail, task progression, attempts, artifacts, and proof in responsive master-detail.
 - **Inbox:** decision queue ordered by risk and urgency; each item explains consequence before action.
 - **Results:** evidence ledger with filters, verification state, and compact inspectors.
-- **Agents and Knowledge:** searchable workspace with relationship map and structured inspector.
+- **Agents and Knowledge:** a readable library first, with an optional focused 2D relationship map and structured inspector. Use Obsidian-style local neighborhoods, search, bounded names and predictable pan/zoom; avoid an all-at-once 3D cloud. Keep technical types and IDs in optional details. Make Delete memory discoverable, then explain the exact permanent impact before the final action.
 - **Administration:** dense domain navigation, health summary, resource list, and progressive configuration detail.
 
 ## Prohibited Patterns

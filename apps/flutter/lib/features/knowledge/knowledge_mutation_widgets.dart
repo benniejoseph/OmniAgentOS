@@ -489,18 +489,21 @@ class _MemoryLifecycleControlsState extends State<MemoryLifecycleControls> {
               ? null
               : _read,
           child: Text(
-            _reading
-                ? 'Reading current lifecycle…'
-                : 'Review pin and archive settings',
+            _reading ? 'Checking memory settings…' : 'Pin and archive settings',
           ),
         ),
         if (_error != null) Text(_error!),
         if (target != null && life != null) ...[
-          SelectableText(
-            'Private owner: ${target['ownerActorId']}\nTarget revision: ${target['targetRevision']} · lifecycle revision: ${target['lifecycleRevision']}',
+          ExpansionTile(
+            title: const Text('Technical reference'),
+            children: [
+              SelectableText(
+                'Private owner: ${target['ownerActorId']}\nTarget revision: ${target['targetRevision']} · lifecycle revision: ${target['lifecycleRevision']}',
+              ),
+            ],
           ),
           const Text(
-            'These changes affect retrieval and preserve historical truth. Permanent forgetting has a separate impact review.',
+            'Pin keeps a memory close at hand. Archive removes it from regular recall without deleting it.',
           ),
           Wrap(
             spacing: 8,
@@ -517,7 +520,7 @@ class _MemoryLifecycleControlsState extends State<MemoryLifecycleControls> {
                       ? null
                       : () => _apply(action),
                   child: Text(
-                    '${action[0].toUpperCase()}${action.substring(1)} reviewed memory',
+                    '${action[0].toUpperCase()}${action.substring(1)} memory',
                   ),
                 ),
             ],
