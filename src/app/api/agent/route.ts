@@ -2068,6 +2068,7 @@ async function POSTHandler(request: Request) {
                   receiptSha256: commandContext.receiptSha256,
                   selectionSha256: commandContext.selectionSha256,
                   pinCount: commandContext.pins.length,
+                  citationSources: commandContext.citationSources,
                 } : undefined,
               },
               agentAbortController.signal,

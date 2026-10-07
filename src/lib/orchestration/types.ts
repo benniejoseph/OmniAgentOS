@@ -2,7 +2,7 @@ import type { RequestMemoryAccessV1 } from "@/lib/memory/request-access";
 import type { RequestPersonalContextMemoryAccessV1 } from "@/lib/memory/personal-context-access";
 import type { RequestSharedMemoryAccessV1 } from "@/lib/memory/shared-context";
 import type { RequestEntityAccessV1 } from "@/lib/entities/request-access";
-import type { GroundingReport } from "@/lib/rag/citations";
+import type { CitationSource, GroundingReport } from "@/lib/rag/citations";
 import type { ContextSelectionLockBinding } from "@/lib/rag/context-selection-lock";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
 import type { SecurityContext } from "@/lib/security/types";
@@ -328,5 +328,7 @@ export type AgentRunRequest = {
     receiptSha256: string;
     selectionSha256: string;
     pinCount: number;
+    /** Server-authorized canonical excerpts included in this exact context. */
+    citationSources?: readonly CitationSource[];
   };
 };

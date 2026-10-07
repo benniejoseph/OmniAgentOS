@@ -69,7 +69,7 @@ import {
   CommandComposerField,
   type CommandSlashAction,
 } from "@/components/command/command-composer-field";
-import { CommandModelPicker } from "@/components/command/command-model-picker";
+import { CommandModelPicker, commandModelDisplayName } from "@/components/command/command-model-picker";
 import workspaceStyles from "@/components/agent-runs-workspace.module.css";
 import {
   modelRouteDegradedActivity,
@@ -921,10 +921,6 @@ function OwnedAgentRunsWorkspace({
   const activityTerminal = workflowRun
     ? ["completed", "failed", "canceled"].includes(activeWorkflowStatus)
     : agentRunTerminal && loading !== "agent";
-  const activityCount = workflowRun
-    ? arrayPath(workflowRun, "steps").length + arrayPath(workflowRun, "events").length
-    : streamEvents.filter((event) => event.type !== "delta").length;
-
   const runPosture = useMemo(() => {
     if (workflowRun) {
       if (activeWorkflowStatus === "completed") {
@@ -963,10 +959,10 @@ function OwnedAgentRunsWorkspace({
       return { label: "Canceled", tone: "neutral" as const };
     }
     if (loading === "agent") {
-      return { label: "Agent running", tone: "neutral" as const };
+      return { label: "Working on your request", tone: "neutral" as const };
     }
     if (agentResponse) {
-      return { label: "Evidence captured", tone: "success" as const };
+      return { label: "Response ready", tone: "success" as const };
     }
     if (workflowPlan) {
       if (reviewedPlanStatus === "failed") {
@@ -3647,7 +3643,6 @@ function OwnedAgentRunsWorkspace({
                   terminal={activityTerminal}
                   tone={runPosture.tone}
                   summary={taskProgressSummary({ workflowRun, streamEvents, loading })}
-                  count={activityCount}
                   onOpen={() => openTaskDetails("execute")}
                 />
               ) : null}
@@ -3748,7 +3743,7 @@ function OwnedAgentRunsWorkspace({
                         </summary>
                         <div className="space-y-2 border-t border-line/70 py-3">
                           {citedGroundingSources(grounding).map((source, sourceIndex) => {
-                            const sourceUrl = safeExternalUrl(source.url);
+                            const sourceUrl = safeSourceUrl(source.url);
                             return (
                               <div key={source.citationId} className="rounded-lg bg-surface px-3 py-2 text-xs">
                                 {sourceUrl ? (
@@ -3764,10 +3759,12 @@ function OwnedAgentRunsWorkspace({
                                   <p className="font-medium text-foreground">{source.title}</p>
                                 )}
                                 {source.snippet ? <p className="mt-1 line-clamp-2 leading-5 text-muted">{source.snippet}</p> : null}
-                                <p className="mt-1 font-mono text-muted">
-                                  Source {sourceIndex + 1} · [{source.citationId}] · {source.kind}
-                                  {source.confidence === undefined ? "" : ` · ${Math.round(source.confidence * 100)}%`}
-                                </p>
+                                <p className="mt-1 text-muted">Source {sourceIndex + 1}</p>
+                                <details className="mt-1 text-muted">
+                                  <summary className="cursor-pointer">Source details</summary>
+                                  <p className="mt-1 break-all font-mono">[{source.citationId}] · {source.kind}</p>
+                                  {source.confidence === undefined ? null : <p>Retrieval confidence: {Math.round(source.confidence * 100)}%</p>}
+                                </details>
                               </div>
                             );
                           })}
@@ -3778,19 +3775,21 @@ function OwnedAgentRunsWorkspace({
                       <ClaimEvidencePanel
                         content={currentAssistantResponse}
                         claimEvidence={grounding.claimEvidence}
+                        sources={citedGroundingSources(grounding)}
                       />
                     ) : null}
                     {grounding?.status === "missing" ? (
                       <p className="mt-3 rounded-lg border border-warning/25 bg-warning/5 px-3 py-2 text-xs leading-5 text-muted" role="status">
                         {grounding.claimEvidence
-                          ? "Some material claims are not supported by authorized evidence. Open Claim evidence to see which statements need verification."
-                          : "Evidence was available, but this response did not cite it. Open Evidence to review the captured sources."}
+                          ? "Some statements still need source verification. Open Source review to see which ones need checking."
+                          : "This response needs citations. Open Evidence to review the available sources."}
                       </p>
                     ) : null}
                     {grounding?.invalidIds.length ? (
-                      <p className="mt-3 rounded-lg border border-danger/25 bg-danger/5 px-3 py-2 text-xs leading-5 text-muted" role="status">
-                        Unverified source marker{grounding.invalidIds.length === 1 ? "" : "s"}: {grounding.invalidIds.map((id) => `[${id}]`).join(", ")}
-                      </p>
+                      <details className="mt-3 rounded-lg border border-warning/25 bg-warning/5 px-3 py-2 text-xs leading-5 text-muted">
+                        <summary className="cursor-pointer">Some source references could not be verified</summary>
+                        <p className="mt-1 break-all font-mono">{grounding.invalidIds.map((id) => `[${id}]`).join(", ")}</p>
+                      </details>
                     ) : null}
                     {agentResponse && activeAgentRunId && agentRunCompleted ? (
                       <RunFeedbackPanel feedback={runFeedback} saving={feedbackSaving} onSave={saveRunFeedback} />
@@ -4621,13 +4620,11 @@ function InlineTaskProgress({
   terminal,
   tone,
   summary,
-  count,
   onOpen,
 }: {
   terminal: boolean;
   tone: Tone;
   summary: string;
-  count: number;
   onOpen: () => void;
 }) {
   const title = terminal
@@ -4635,7 +4632,7 @@ function InlineTaskProgress({
       ? "Work stopped"
       : tone === "warning"
         ? "Waiting for input"
-        : `Worked through ${count || 1} ${count === 1 ? "update" : "updates"}`
+        : tone === "success" ? "Response ready" : "Work stopped"
     : "Asael is working";
   return (
     <article className="flex min-w-0 justify-start">
@@ -4775,6 +4772,9 @@ export const ConversationMessageContent = memo(function ConversationMessageConte
         ] as const)
       : [],
   );
+  const unavailableReferences = [...new Set(
+    Array.from(recoveredMedia.content.matchAll(/\[((?:(?:memory|knowledge|graph|web):[^\]\s]+|(?:csm|evidence_unit)_[a-zA-Z0-9_-]+))\]/g), (match) => match[1]),
+  )].filter((reference) => !citations.has(reference));
   let index = 0;
 
   while (index < lines.length) {
@@ -4918,6 +4918,15 @@ export const ConversationMessageContent = memo(function ConversationMessageConte
   return (
     <div className="min-w-0 max-w-[45rem]">
       {blocks.length ? <div className="max-w-[72ch]">{blocks}</div> : null}
+      {unavailableReferences.length ? (
+        <details className="mt-3 rounded-lg border border-line px-3 py-2 text-xs leading-5 text-muted">
+          <summary className="cursor-pointer">Unavailable source details</summary>
+          <p className="mt-2">These references could not be matched to source details for this response. They do not establish support for its statements.</p>
+          <ul className="mt-1 space-y-1 break-all font-mono">
+            {unavailableReferences.map((reference) => <li key={reference}>[{reference}]</li>)}
+          </ul>
+        </details>
+      ) : null}
       {renderedMedia.length ? (
         <div className={clsx("space-y-4", blocks.length ? "mt-5" : "mt-0")}>
           {renderedMedia.map((artifact) => (
@@ -5203,7 +5212,7 @@ function MessageInline({
   text: string;
   citations?: Map<string, { source: GroundingReport["sources"][number]; index: number }>;
 }) {
-  const pattern = /\*\*[^*]+\*\*|(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)|\[[^\]]+\]\(https?:\/\/[^)\s]+\)|\[(?:memory|knowledge|graph|web):[^\]\s]+\]/g;
+  const pattern = /\*\*[^*]+\*\*|(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)|\[[^\]]+\]\((?:https?:\/\/|\/)[^)\s]+\)|\[(?:(?:memory|knowledge|graph|web):[^\]\s]+|(?:csm|evidence_unit)_[a-zA-Z0-9_-]+)\]/g;
   const tokens: string[] = [];
   let cursor = 0;
   for (const match of text.matchAll(pattern)) {
@@ -5222,18 +5231,21 @@ function MessageInline({
         if (code) {
           return <code key={`${token}-${index}`} className="rounded bg-surface-raised px-1.5 py-0.5 font-mono text-[0.88em] text-foreground">{code[2]}</code>;
         }
-        const link = /^\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)$/.exec(token);
+        const link = /^\[([^\]]+)\]\(((?:https?:\/\/|\/)[^)\s]+)\)$/.exec(token);
         if (link) {
-          return <a key={`${token}-${index}`} href={link[2]} target="_blank" rel="noreferrer noopener" className="font-medium text-primary underline decoration-primary/35 underline-offset-4 hover:decoration-primary">{link[1]}</a>;
+          const href = safeSourceUrl(link[2]);
+          return href
+            ? <a key={`${token}-${index}`} href={href} target="_blank" rel="noreferrer noopener" className="font-medium text-primary underline decoration-primary/35 underline-offset-4 hover:decoration-primary">{link[1]}</a>
+            : link[1];
         }
-        const citationId = /^\[((?:memory|knowledge|graph|web):[^\]\s]+)\]$/.exec(token)?.[1];
+        const citationId = /^\[((?:(?:memory|knowledge|graph|web):[^\]\s]+|(?:csm|evidence_unit)_[a-zA-Z0-9_-]+))\]$/.exec(token)?.[1];
         const citation = citationId ? citations?.get(citationId) : undefined;
         if (citation) {
-          const sourceUrl = safeExternalUrl(citation.source.url);
+          const sourceUrl = safeSourceUrl(citation.source.url);
           const marker = (
             <span
               className="inline-flex min-w-5 items-center justify-center rounded-md border border-primary/20 bg-primary/10 px-1.5 py-0.5 align-super font-mono text-xs font-semibold leading-none text-primary"
-              title={`${citation.source.title} · ${citation.source.kind}`}
+              title={citation.source.title}
             >
               {citation.index}
             </span>
@@ -5254,6 +5266,9 @@ function MessageInline({
               {marker}
             </span>
           );
+        }
+        if (citationId) {
+          return <span key={`${token}-${index}`} className="mx-0.5 inline-flex rounded-md border border-warning/25 bg-warning/5 px-1.5 py-0.5 align-super text-xs leading-none text-muted" title="Source details are unavailable for this reference. This marker does not verify the statement.">Source unavailable</span>;
         }
         return token;
       })}
@@ -5937,12 +5952,12 @@ function PromptQueuePanel({
                         <p className="line-clamp-2 text-sm font-medium leading-5">{item.prompt}</p>
                       )}
                       <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
-                        <span className="font-semibold capitalize text-foreground">{item.state}</span>
-                        <span>{item.agent.logicalAgentId} v{item.agent.definitionVersion}</span>
+                        <span className="font-semibold text-foreground">{{ queued: "Queued", paused: "Paused", dispatching: "In progress", completed: "Complete", failed: "Needs attention" }[item.state]}</span>
+                        <span>{builtInAgentPresentation(item.agent.logicalAgentId)?.name || "Custom assistant"}</span>
                         <span>
-                          {item.model.providerId} · {item.model.modelId}
+                          {commandModelDisplayName(item.model)}
                           {item.model.reasoningLevel
-                            ? ` · ${item.model.reasoningLevel} thinking`
+                            ? ` · ${item.model.reasoningLevel.replaceAll("_", " ")} thinking`
                             : ""}
                         </span>
                         {item.contextReferenceCount ? (
@@ -5951,14 +5966,15 @@ function PromptQueuePanel({
                             {item.contextReferenceCount === 1 ? "" : "s"}
                           </span>
                         ) : null}
-                        {item.progressLabel ? <span>{item.progressLabel}</span> : null}
                       </div>
                       <details className="mt-2 text-xs text-muted">
-                        <summary className="cursor-pointer">Pinned target and context</summary>
+                        <summary className="cursor-pointer">Technical details</summary>
                         <div className="mt-2 space-y-1 break-all">
+                          {item.progressLabel ? <p>{item.progressLabel}</p> : null}
                           <p>Revision {item.lifecycleRevision} · {item.target.executionTarget}</p>
                           <p>Conversation: {item.target.threadId || "new conversation"} · Mission: {item.target.missionId || "none"} · Project: {item.target.projectId || "none"}</p>
-                          <p>Agent version: {item.agent.definitionVersionId} · Principal generation: {item.agent.principalGeneration}</p>
+                          <p>Agent: {item.agent.logicalAgentId} · Version: {item.agent.definitionVersionId} · Principal generation: {item.agent.principalGeneration}</p>
+                          <p>Model: {item.model.providerId} · {item.model.modelId}</p>
                           <p>Model assignment: {item.model.assignmentId || "default route"}{item.model.assignmentRevision !== null ? ` · revision ${item.model.assignmentRevision}` : ""}</p>
                           {item.context?.references.map((reference) => <p key={`${reference.kind}:${reference.id}`}>{reference.kind}: {reference.id}{reference.versionId ? ` · version ${reference.versionId}` : ""}{reference.expectedVersion ? ` · revision ${reference.expectedVersion}` : ""}{reference.bindingSha256 ? ` · digest ${reference.bindingSha256}` : ""}</p>)}
                           <p>Context receipt: {item.context?.receiptSha256 || "no pinned context"}</p>
@@ -6950,14 +6966,90 @@ function taskProgressSummary({
   if (workflowRun) {
     const steps = arrayPath(workflowRun, "steps");
     const completed = steps.filter((step) => ["completed", "skipped"].includes(stringValue(step.status))).length;
-    const current = steps.find((step) => stringValue(step.stepKey) === stringPath(workflowRun, "run.currentStep", ""));
-    if (current) return `${stringValue(current.label, "Workflow stage")} · ${completed} of ${steps.length} stages complete`;
-    const status = stringPath(workflowRun, "run.status", "starting").replaceAll("_", " ");
-    return steps.length ? `${completed} of ${steps.length} stages complete · ${status}` : `Workflow ${status}`;
+    const status = stringPath(workflowRun, "run.status", "starting");
+    if (status === "completed") return "Your plan is complete";
+    if (status === "failed") return "The plan could not finish. Open activity for details";
+    if (status === "canceled") return "The plan was stopped";
+    if (status === "waiting_approval") return "Review the next action to continue";
+    if (status === "paused") return "Your plan is paused";
+    if (status === "queued") return "Your plan is queued";
+    return steps.length ? `${completed} of ${steps.length} steps complete` : "Preparing your plan";
   }
-  const latest = [...streamEvents].reverse().find((event) => event.type !== "delta");
-  if (latest) return streamEventLabel(latest);
-  return loading === "agent" ? "Starting the task…" : "Task activity is available.";
+  const latest = streamEvents.at(-1);
+  if (latest) return assistantProgressLabel(latest);
+  return loading === "agent" ? "Preparing your response" : "Task activity is available";
+}
+
+/** The conversation shows the task phase; exact routing and receipts stay in Activity. */
+function assistantProgressLabel(event: StreamEvent): string {
+  if (event.type === "status") {
+    const label = event.label?.trim().toLowerCase() || "";
+    const phases: Record<string, string> = {
+      starting: "Preparing your response",
+      "starting workflow": "Preparing your plan",
+      "planning research": "Planning your research",
+      "gathering research evidence": "Searching for sources",
+      "reading research sources": "Reading your sources",
+      "writing research report": "Writing your research report",
+      "live web search": "Searching the web",
+      "live web unavailable": "Live web sources are unavailable",
+      "retrieving memory": "Finding relevant saved context",
+      "retrieving personal context": "Finding relevant personal context",
+      "project memory isolated": "Project context is unavailable for this request",
+      "this mac connected": "Your Mac is connected",
+      "this mac evidence isolated": "Keeping this task within your selected Mac context",
+      "computer use model unavailable": "Computer actions are unavailable right now",
+      "dev fallback": "Preview response — no AI model is connected",
+      "reasoning model selected": "Preparing your response",
+      "fast model selected": "Preparing your response",
+      "workspace capabilities ready": "Preparing your response",
+      "tool budget reached": "The task reached its action limit",
+      "tool call budget enforced": "The task reached its action limit",
+      "tool approval required": "Review the next action to continue",
+      "tool calls refused": "An action could not proceed",
+      "answer cut off": "The response stopped before it was complete",
+      "finishing within budget": "Wrapping up within the task limit",
+      "resuming after approval": "Continuing your task",
+      reconnecting: "Reconnecting to your task",
+      "read retry scheduled": "Retrying a source read",
+      "loop v2 recovery": "Resuming your task",
+      "loop v2 clarification received": "Continuing with your clarification",
+      "run no longer active": "This task is no longer running",
+      canceled: "The task was stopped",
+      stopped: "The connection stopped. Open activity for details",
+    };
+    if (phases[label]) return phases[label];
+    if (label.startsWith("retrieving shared ")) return "Finding relevant shared context";
+    return "Working on your request";
+  }
+  if (event.type === "tool") {
+    if (event.status === "approval_required") return "Review the next action to continue";
+    if (event.status === "blocked") return "An action needs your attention";
+    if (event.status === "dry_run") return "Action preview ready; no changes were made";
+    if (event.status === "failed") return "A task step could not finish. Open activity for details";
+    if (event.status === "executed") return event.toolId === "web.search"
+      ? "Web search finished" : event.toolId === "web.read" ? "Source read finished" : "Task step finished";
+    if (event.status === "running") return event.toolId === "web.search"
+      ? "Searching the web" : event.toolId === "web.read" ? "Reading a web source" : "Working on your request";
+    return "Updating task progress";
+  }
+  if (event.type === "delta") return "Writing your response";
+  if (event.type === "memory") return "Saved context is ready";
+  if (event.type === "run" || event.type === "harness" || event.type === "model") return "Preparing your response";
+  if (event.type === "council_member") return event.status === "failed"
+    ? "A specialist review could not finish" : event.status === "completed" ? "Specialist review finished" : "Reviewing the response";
+  if (event.type === "council_verdict") return event.status === "passed"
+    ? "Response review finished" : event.status === "revised" ? "The response was revised after review" : "The response needs further review";
+  if (event.type === "waiting_approval") return "Review the next action to continue";
+  if (event.type === "budget_exhausted") return "The task reached its limit. Review activity to continue";
+  if (event.type === "model_route_degraded") return event.outcome === "deployment_environment"
+    ? "Using another available model" : "Your selected model needs attention";
+  if (event.type === "delegated") return "Your task is continuing in the background";
+  if (event.type === "clarification") return "A little more information is needed to continue";
+  if (event.type === "done") return "Response ready";
+  if (event.type === "canceled") return "The task was stopped";
+  if (event.type === "error") return "The task could not finish. Open activity for details";
+  return "Working on your request";
 }
 
 function activityTitle(event: StreamEvent) {
@@ -7038,19 +7130,27 @@ function workflowEventLabel(type: string) {
 function ClaimEvidencePanel({
   content,
   claimEvidence,
+  sources,
 }: {
   content: string;
   claimEvidence: NonNullable<GroundingReport["claimEvidence"]>;
+  sources: GroundingReport["sources"];
 }) {
   const coverage = claimEvidence.coverage;
+  const citations = new Map(sources.map((source, index) => [source.citationId, { source, index: index + 1 }] as const));
   return (
     <details className="mt-3 rounded-xl border border-line/80 bg-background px-3">
       <summary className="flex min-h-10 cursor-pointer items-center justify-between gap-3 text-xs font-semibold">
-        <span>Claim evidence</span>
+        <span>Source review</span>
         <span className="text-muted">
-          {coverage.supportedMaterialClaimCount}/{coverage.materialClaimCount} supported
+          {coverage.materialClaimCount === 0 ? "No key statements to check"
+            : coverage.coverageBps === 10_000 ? "Key statements supported" : "Sources need review"}
         </span>
       </summary>
+      <p className="border-t border-line/70 pt-3 text-xs leading-5 text-muted">
+        {coverage.supportedMaterialClaimCount} of {coverage.materialClaimCount} key statements have verified source support.
+        Recommendations and paraphrases may still need review.
+      </p>
       <ol className="max-h-96 space-y-2 overflow-y-auto border-t border-line/70 py-3">
         {claimEvidence.claims.map((claim) => {
           const claimText = content.slice(
@@ -7060,7 +7160,7 @@ function ClaimEvidencePanel({
           return (
             <li key={claim.claimId} className="rounded-lg bg-surface px-3 py-2.5 text-xs">
               <div className="flex items-start justify-between gap-3">
-                <p className="min-w-0 leading-5 text-foreground">{claimText}</p>
+                <p className="min-w-0 leading-5 text-foreground"><MessageInline text={claimText} citations={citations} /></p>
                 <span className={clsx(
                   "shrink-0 rounded-full px-2 py-1 text-xs font-semibold uppercase tracking-wide",
                   claimSupportTone(claim.supportState),
@@ -7090,7 +7190,7 @@ function claimSupportLabel(state: ClaimSupportState) {
         ? "Disputed"
         : state === "stale"
           ? "Stale"
-          : "Unsupported";
+          : "Needs checking";
 }
 
 function claimSupportTone(state: ClaimSupportState) {
@@ -7104,14 +7204,14 @@ function claimSupportTone(state: ClaimSupportState) {
 function groundingLabel(grounding: GroundingReport) {
   const coverage = grounding.claimEvidence?.coverage;
   if (coverage) {
-    if (coverage.materialClaimCount === 0) return "No material claims";
-    if (coverage.coverageBps === 10_000) return "Claims supported";
-    return `${coverage.supportedMaterialClaimCount}/${coverage.materialClaimCount} claims supported`;
+    if (coverage.materialClaimCount === 0) return "No key statements to verify";
+    if (coverage.coverageBps === 10_000) return "Key statements supported";
+    return "Sources need review";
   }
   if (grounding.status === "verified") return "Sources cited";
   if (grounding.status === "not_required") return "No citations required";
-  if (grounding.status === "invalid") return "Invalid source";
-  return "Citation needed";
+  if (grounding.status === "invalid") return "Sources need review";
+  return "Sources needed";
 }
 
 function renderSafeGroundingReport(value: unknown): GroundingReport | undefined {
@@ -7213,9 +7313,18 @@ function citedGroundingSources(grounding: GroundingReport) {
     values.findIndex((candidate) => candidate.citationId === source.citationId) === index);
 }
 
-function safeExternalUrl(value?: string) {
+function safeSourceUrl(value?: string) {
   if (!value) return undefined;
+  if (/[\\\u0000-\u0020\u007f]/.test(value)) return undefined;
   try {
+    if (value.startsWith("/") && !value.startsWith("//")) {
+      const local = new URL(value, "https://asael.invalid");
+      const appPage = local.pathname.startsWith("/app/");
+      const privateFile = /^\/api\/capture\/assets\/[A-Za-z0-9_-]+$/.test(local.pathname) &&
+        local.searchParams.get("content") === "1";
+      return local.origin === "https://asael.invalid" && (appPage || privateFile)
+        ? `${local.pathname}${local.search}${local.hash}` : undefined;
+    }
     const url = new URL(value);
     if (url.username || url.password) return undefined;
     return url.protocol === "http:" || url.protocol === "https:"

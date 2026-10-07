@@ -523,6 +523,7 @@ export async function getCaptureAssetContentForRequest(
 export async function getCaptureAssetExtractionForRequest(
   asset: RequestCaptureAsset,
   owner: CaptureAssetListOwner,
+  options: { includeKnowledgeChunkIds?: boolean } = {},
 ) {
   const receipt = asset.extractionReceipt;
   if (
@@ -586,6 +587,9 @@ export async function getCaptureAssetExtractionForRequest(
     return {
       index,
       evidenceUnitId: String(row.evidence_unit_id),
+      // Runtime claim verification resolves canonical evidence by chunk ID.
+      // Keep this internal mapping out of the default public extraction shape.
+      ...(options.includeKnowledgeChunkIds ? { knowledgeChunkId: String(row.id) } : {}),
       label: safeText(metadata.evidenceLabel, 240) || `Evidence ${index + 1}`,
       content,
       locator: locator.data as EvidenceLocatorV1,

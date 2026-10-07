@@ -1490,7 +1490,10 @@ async function* runAgentUntilStopped(
       : baseInstructions;
 
     let liveWebContext = "";
-    let citationSources = buildCitationSources(retrieval.results);
+    let citationSources = mergeCitationSources(
+      [...(request.commandContext?.citationSources || [])],
+      buildCitationSources(retrieval.results),
+    );
     const webSearchTool = toolbox.tools.find(
       ({ definition }) => definition.id === "web.search",
     )?.definition;
