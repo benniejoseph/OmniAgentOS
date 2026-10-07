@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 /// Presentation labels only. Stored identities and mutation contracts stay exact.
 String memoryFriendlyLabel(String value) {
   const labels = <String, String>{
@@ -90,4 +92,50 @@ String memoryDisplayTitle(String title, DateTime? updatedAt) {
   if (!generated && !memoryRetiredPlaceholder(title)) return title;
   final suffix = updatedAt == null ? '' : ' · ${memoryFriendlyDate(updatedAt)}';
   return '${generated ? 'Assistant note' : 'Retired memory'}$suffix';
+}
+
+/// Recognizes only the existing version-one CSM role record, never arbitrary JSON.
+({String text, int sourceCount})? memoryRoleContext(String content) {
+  try {
+    final value = jsonDecode(content);
+    if (value is! Map<String, dynamic> ||
+        value.length != 5 ||
+        value['schemaVersion'] != 1 ||
+        value['kind'] != 'csm_role_context' ||
+        value['text'] is! String ||
+        (value['text'] as String).length > 20000 ||
+        value['requestSha256'] is! String ||
+        !RegExp(r'^[a-f0-9]{64}$').hasMatch(value['requestSha256'] as String) ||
+        value['sourceLinks'] is! List)
+      return null;
+    final links = value['sourceLinks'] as List;
+    if (links.length > 50) return null;
+    final identities = <String>{};
+    for (final link in links) {
+      if (link is! Map<String, dynamic> ||
+          link.length != 3 ||
+          link['libraryItemId'] is! String ||
+          link['versionId'] is! String ||
+          link['contentSha256'] is! String ||
+          !RegExp(r'^[a-f0-9]{64}$').hasMatch(link['contentSha256'] as String))
+        return null;
+      for (final key in ['libraryItemId', 'versionId']) {
+        final id = (link[key] as String).trim();
+        if (id.isEmpty || id.length > 320) return null;
+      }
+      if (!identities.add((link['libraryItemId'] as String).trim()))
+        return null;
+    }
+    return (text: value['text'] as String, sourceCount: links.length);
+  } catch (_) {
+    return null;
+  }
+}
+
+String memoryReadableContent(String content) {
+  final role = memoryRoleContext(content);
+  if (role == null) return content;
+  return role.text.trim().isEmpty
+      ? 'No role notes saved yet. Add your responsibilities, working preferences and guidance in Work → My CSM role.'
+      : role.text;
 }

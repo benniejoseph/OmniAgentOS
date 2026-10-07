@@ -612,7 +612,6 @@ function CompactLibrary({
               <span>v{item.currentVersion.versionNumber} / {item.versionCount}</span>
               <span>{workspaceLibraryVersionSize(item.currentVersion)}</span>
               <span>{scopeLabel(item.scope.visibility)}</span>
-              <code title={item.citationRefs[0]}>{item.citationRefs[0]}</code>
               {relatedLinks.slice(0, 2).map((link) => link.href ? (
                 <Link key={`${link.kind}:${link.id}`} href={link.href}>{link.label}</Link>
               ) : (

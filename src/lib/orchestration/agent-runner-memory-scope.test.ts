@@ -445,7 +445,7 @@ describe("agent memory scope", () => {
       expect(mocks.executeGovernedTool).toHaveBeenCalledTimes(4);
       expect(mocks.executeGovernedTool).toHaveBeenNthCalledWith(1, expect.objectContaining({
         toolId: "web.search",
-        input: { query: value.messages[0].content, limit: 8, searchContextSize: "high" },
+        input: { query: value.messages[0].content, limit: 8, searchContextSize: "low" },
         dryRun: false,
         approved: false,
         requireReadOnly: true,

@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
@@ -29,6 +30,9 @@ import { useLiveRefresh } from "@/components/use-live-refresh";
 import { GeneratedArtifactsShelf } from "@/components/generated-artifacts-shelf";
 import { WorkspaceLibrary } from "@/components/workspace-library";
 import styles from "./results-center.module.css";
+
+const ResultReport = dynamic(() => import("@/components/agent-runs-workspace")
+  .then((module) => module.ConversationMessageContent));
 
 const RESULT_LIBRARY_KINDS = [
   "image",
@@ -539,6 +543,8 @@ function PrimaryResultCard({
   canceling: boolean;
   onCancel: () => void;
 }) {
+  const title = resultTitle(result.title);
+  const request = result.title;
   const canCancel =
     result.kind === "agent" &&
     ["running", "waiting_approval", "resuming"].includes(
@@ -549,10 +555,13 @@ function PrimaryResultCard({
       <div className={styles.resultHeading}>
         <p className={styles.resultLabel}>Current result</p>
         <StatusPill label={result.status} tone={result.tone} />
-        <h2 id="current-result-title">{result.title}</h2>
+        <h2 id="current-result-title">{title}</h2>
         <p className={styles.resultMeta}>{result.meta}</p>
       </div>
-      <div className={styles.resultBody}>{result.body}</div>
+      {request !== title ? <details className={styles.requestDisclosure}>
+        <summary>Read full request</summary><p tabIndex={0}>{request}</p>
+      </details> : null}
+      <div className={styles.resultBody}><ResultReport content={result.body} /></div>
       <div className={styles.actions}>
         <Link href={result.href} className={styles.button}>
           {result.href.startsWith("/app/results?")
@@ -632,13 +641,13 @@ function ResultRows({
           <>
             <Icon size={18} className={styles.rowIcon} aria-hidden="true" />
             <span className={styles.rowCopy}>
-              <span className={styles.rowTitle}>{row.title}</span>
+              <span className={styles.rowTitle}>{resultTitle(row.title)}</span>
               <span className={styles.rowStatus}>
                 <StatusPill label={row.status} tone={toneForStatus(row.status)} />
                 {selected ? <span className={styles.selectedLabel}>Selected</span> : null}
               </span>
-              <span className={styles.rowMeta}>{row.meta}</span>
-              <span className={styles.rowPreview}>{row.body}</span>
+              <span className={styles.rowMeta}>{friendlyResultText(row.meta)}</span>
+              <span className={styles.rowPreview}>{friendlyResultText(row.body)}</span>
             </span>
           </>
         );
@@ -947,4 +956,21 @@ function resourceMetric(
     return state === "loading" ? "Loading" : "Unknown";
   }
   return value;
+}
+
+// Presentation only: preserve original requests and reports for deliberate review.
+function friendlyResultText(value: string) {
+  return value
+    .replace(/(?:captureasset:)?capture_asset_[A-Za-z0-9_-]+/g, "saved capture")
+    .replace(/\b(?:project|appbuild|agent|run)_[a-f0-9]{16,}\b/gi, "workspace reference");
+}
+
+function resultTitle(value: string) {
+  const text = friendlyResultText(value).trim().replace(/^#{1,6}\s*/, "")
+    .split(/\r?\n/).find((line) => line.trim())?.trim() || "Untitled task";
+  const sentence = text.match(/^.{12,140}?[.!?](?:\s|$)/)?.[0]?.trim() || text;
+  if (sentence.length <= 120) return sentence;
+  const prefix = sentence.slice(0, 117);
+  const boundary = prefix.lastIndexOf(" ");
+  return `${prefix.slice(0, boundary > 75 ? boundary : prefix.length)}…`;
 }

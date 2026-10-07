@@ -345,7 +345,15 @@ class _KnowledgeMemoryInspectorState extends State<KnowledgeMemoryInspector> {
               style: Theme.of(context).textTheme.titleLarge,
             ),
             const SizedBox(height: 16),
-            SelectableText(memory.content),
+            SelectableText(memoryReadableContent(memory.content)),
+            if (memoryRoleContext(memory.content) case final role?) ...[
+              const SizedBox(height: 12),
+              Text(
+                role.sourceCount == 0
+                    ? 'No role documents linked yet.'
+                    : '${role.sourceCount} linked ${role.sourceCount == 1 ? 'document' : 'documents'}. View the saved sources in Work → My CSM role.',
+              ),
+            ],
             const SizedBox(height: 16),
             MemoryEvidenceDetails(memory: memory),
             const SizedBox(height: 16),
@@ -477,6 +485,10 @@ class MemoryEvidenceDetails extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final metadata = memory.metadata;
+    final roleContext = memoryRoleContext(memory.content);
+    final visibleTags = memory.tags
+        .where((tag) => roleContext == null || tag != 'csm-role-context-v1')
+        .toList();
     final entries = <String, String>{
       'Original title': memory.title,
       'Type / tier / claim':
@@ -515,14 +527,14 @@ class MemoryEvidenceDetails extends StatelessWidget {
             padding: const EdgeInsets.only(top: 8),
             child: Text(metadata.why),
           ),
-        if (memory.tags.isNotEmpty)
+        if (visibleTags.isNotEmpty)
           Padding(
             padding: const EdgeInsets.only(top: 8),
             child: Wrap(
               spacing: 6,
               runSpacing: 6,
               children: [
-                for (final tag in memory.tags.take(12)) Chip(label: Text(tag)),
+                for (final tag in visibleTags.take(12)) Chip(label: Text(tag)),
               ],
             ),
           ),
@@ -533,6 +545,11 @@ class MemoryEvidenceDetails extends StatelessWidget {
           ),
           children: [
             SelectableText('Reference: ${memory.id}'),
+            if (roleContext != null) ...[
+              const Text('Stored role record'),
+              SelectableText(memory.content),
+              SelectableText('Stored tags: ${memory.tags.join(', ')}'),
+            ],
             for (final entry in entries.entries)
               Padding(
                 padding: const EdgeInsets.only(bottom: 8),

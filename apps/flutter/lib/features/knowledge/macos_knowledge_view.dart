@@ -742,7 +742,7 @@ class _MemoryRow extends StatelessWidget {
                       ),
                       const SizedBox(height: 2),
                       Text(
-                        memory.content,
+                        memoryReadableContent(memory.content),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: Theme.of(context).textTheme.bodySmall,

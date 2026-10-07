@@ -41,15 +41,32 @@ export function shouldInvestigateResearchQuery(query: string): boolean {
   return true;
 }
 
-/** Complementary search scopes retain the user's question rather than inventing subtopics. */
+/** Separate finding evidence from writing the eventual report. */
 export function researchSearchQueries(query: string): string[] {
-  const question = query.trim();
+  const question = researchDiscoveryQuestion(query);
   const scopes = [
     "",
     "\nResearch focus: primary evidence, original sources, background, and relevant comparisons. Preserve every constraint in the original question; do not invent missing details.",
     "\nResearch focus: limitations, conflicting evidence, and independent checks. Preserve every constraint in the original question; do not assume a disagreement exists.",
   ];
   return scopes.map((scope) => `${shortenQuestion(question, MAX_QUERY_CHARS - scope.length)}${scope}`);
+}
+
+function researchDiscoveryQuestion(query: string): string {
+  // Remove only recognizable deliverable formatting. A source/date/domain
+  // restriction always keeps its complete sentence. The report writer still
+  // receives the untouched original request, including every output preference.
+  const retrievalRestriction = /https?:\/\/|\bsite:|\b(?:only|solely|exclusively|except|excluding|exclude|before|after|since|until|between|published|dated|as of|sources? from|official|primary sources?|government sources?|peer[- ]reviewed)\b|\b(?:do not|don['’]?t|never)\s+(?:search|browse|use|include|visit|consult|access)\b|\b(?:19|20)\d{2}\b/i;
+  const presentationSentence = /^(?:(?:organize|format|structure)\s+(?:the|your|this|a)?\s*(?:report|answer|response|output)\b|use\s+(?:markdown|exact\s+\[web:)|explain the evidence.*\b(?:connected prose|search results)\b|disclose sources that could not be read\b)/i;
+  const parts = query.trim().split(/(?<=[.!?])\s+|\n+/u).filter((part) =>
+    retrievalRestriction.test(part) || !presentationSentence.test(part)
+  );
+  const modifiers = "(?:(?:a|an|the|detailed|comprehensive|substantial|concise|in-depth|evidence-led|source-backed|[0-9]+(?:[–—-][0-9]+)?\\s*[- ]?words?)\\s+)*";
+  const reportOpening = new RegExp(`^(?:please\\s+)?(?:research\\s+and\\s+)?(?:write|prepare|produce|create|provide)\\s+${modifiers}(?:report|analysis|brief|overview)\\s+(?:about|on|of|comparing)\\s+`, "i");
+  if (parts.length && !retrievalRestriction.test(parts[0])) {
+    parts[0] = parts[0].replace(reportOpening, "Investigate ");
+  }
+  return parts.join(" ").trim() || query.trim();
 }
 
 /** Source order from web.search already prioritizes the provider's actual citations. */

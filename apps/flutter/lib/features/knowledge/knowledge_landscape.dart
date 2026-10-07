@@ -11,11 +11,13 @@ class KnowledgeLandscape extends StatefulWidget {
     required this.active,
     this.onOpenMemory,
     this.onOpenSource,
+    this.onShowConnections,
   });
   final KnowledgeController controller;
   final bool active;
   final ValueChanged<MemoryRecord>? onOpenMemory;
   final ValueChanged<KnowledgeItem>? onOpenSource;
+  final VoidCallback? onShowConnections;
   @override
   State<KnowledgeLandscape> createState() => _KnowledgeLandscapeState();
 }
@@ -102,34 +104,8 @@ class _KnowledgeLandscapeState extends State<KnowledgeLandscape> {
         builder: (context, constraints) {
           final wide = constraints.maxWidth >= 760;
           return ListView(
-            padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
             children: [
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Your knowledge map',
-                          style: Theme.of(context).textTheme.titleLarge,
-                        ),
-                        const SizedBox(height: 6),
-                        const Text(
-                          'Explore a collection, then open the memories and sources that belong to it.',
-                        ),
-                      ],
-                    ),
-                  ),
-                  IconButton(
-                    tooltip: 'Refresh knowledge map',
-                    onPressed: controller.loading ? null : controller.refresh,
-                    icon: const Icon(Icons.refresh),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 16),
               Wrap(
                 spacing: 8,
                 runSpacing: 8,
@@ -150,9 +126,20 @@ class _KnowledgeLandscapeState extends State<KnowledgeLandscape> {
                         _search.clear();
                       }),
                     ),
+                  if (widget.onShowConnections != null)
+                    TextButton.icon(
+                      onPressed: widget.onShowConnections,
+                      icon: const Icon(Icons.hub_outlined, size: 16),
+                      label: const Text('Connections'),
+                    ),
+                  IconButton(
+                    tooltip: 'Refresh knowledge map',
+                    onPressed: controller.loading ? null : controller.refresh,
+                    icon: const Icon(Icons.refresh),
+                  ),
                 ],
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 8),
               TextField(
                 controller: _search,
                 onChanged: (_) => setState(() => _category = _selected = null),

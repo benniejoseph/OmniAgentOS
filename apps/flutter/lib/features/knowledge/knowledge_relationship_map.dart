@@ -27,46 +27,35 @@ class KnowledgeRelationshipMap extends StatefulWidget {
 class _KnowledgeRelationshipMapState extends State<KnowledgeRelationshipMap> {
   bool _connections = false;
   @override
-  Widget build(BuildContext context) => Column(
-    children: [
-      Padding(
-        padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-        child: Align(
-          alignment: Alignment.centerLeft,
-          child: Wrap(
-            spacing: 8,
-            children: [
-              ChoiceChip(
-                label: const Text('Knowledge map'),
-                avatar: const Icon(Icons.account_tree_outlined, size: 18),
-                selected: !_connections,
-                onSelected: (_) => setState(() => _connections = false),
+  Widget build(BuildContext context) => _connections
+      ? Column(
+          children: [
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+                child: TextButton.icon(
+                  onPressed: () => setState(() => _connections = false),
+                  icon: const Icon(Icons.arrow_back, size: 16),
+                  label: const Text('Back to knowledge map'),
+                ),
               ),
-              ChoiceChip(
-                label: const Text('Explore connections'),
-                avatar: const Icon(Icons.hub_outlined, size: 18),
-                selected: _connections,
-                onSelected: (_) => setState(() => _connections = true),
-              ),
-            ],
-          ),
-        ),
-      ),
-      Expanded(
-        child: _connections
-            ? _KnowledgeConnectionsMap(
+            ),
+            Expanded(
+              child: _KnowledgeConnectionsMap(
                 controller: widget.controller,
                 active: widget.active,
-              )
-            : KnowledgeLandscape(
-                controller: widget.controller,
-                active: widget.active,
-                onOpenMemory: widget.onOpenMemory,
-                onOpenSource: widget.onOpenSource,
               ),
-      ),
-    ],
-  );
+            ),
+          ],
+        )
+      : KnowledgeLandscape(
+          controller: widget.controller,
+          active: widget.active,
+          onOpenMemory: widget.onOpenMemory,
+          onOpenSource: widget.onOpenSource,
+          onShowConnections: () => setState(() => _connections = true),
+        );
 }
 
 /// Names are read only after selection or an explicit bounded Open visible names action.
