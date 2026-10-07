@@ -507,6 +507,8 @@ function OwnedAgentRunsWorkspace({
   ), [requestScope]);
   const [restoredDraft] = useState(() => initialGoal || initialAgentId ? undefined : assistantComposerDrafts.get(ownerScope));
   const [goal, setGoal] = useState(initialGoal || restoredDraft?.goal || "");
+  const goalRevisionRef = useRef(0);
+  const commandReferencesRevisionRef = useRef(0);
   const [mode, setMode] = useState<AgentMode>(restoredDraft?.mode || "orchestrate");
   const initialBuiltInAgent = initialAgentId
     ? builtInAgentPresentation(initialAgentId)
@@ -530,7 +532,6 @@ function OwnedAgentRunsWorkspace({
     useState<CommandModelSelectionRequest | undefined>(restoredDraft?.modelSelection);
   const preferredAgentId = preferredAgent?.id;
   const activeAssistantName = preferredAgent?.name || "Asael";
-  const [approvalRequired, setApprovalRequired] = useState(true);
   const [activeTab, setActiveTab] = useState<TabKey>("context");
   const [loading, setLoading] = useState<string>();
   const [error, setError] = useState<string>();
@@ -619,6 +620,7 @@ function OwnedAgentRunsWorkspace({
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [selectedActivityRunId, setSelectedActivityRunId] = useState("");
   const abortControllerRef = useRef<AbortController | null>(null);
+  const stoppedControllerRef = useRef<AbortController | null>(null);
   const contextControllerRef = useRef<AbortController | null>(null);
   const contextVersionRef = useRef(0);
   const contextSelectionReviewedRef = useRef(false);
@@ -1384,7 +1386,10 @@ function OwnedAgentRunsWorkspace({
     if (!controller && !runId) return;
     homeActionGate.invalidate();
     setRunAnnouncement("Stopping the agent run.");
-    agentRequestIdRef.current = "";
+    // Before admission is known, keep the request key so a restored draft
+    // cannot create a duplicate run if the server already received it.
+    if (runId) agentRequestIdRef.current = "";
+    stoppedControllerRef.current = controller;
     controller?.abort();
     if (!runId) {
       return;
@@ -1606,6 +1611,7 @@ function OwnedAgentRunsWorkspace({
     if (nextGoal === goal) {
       return;
     }
+    goalRevisionRef.current += 1;
     contextControllerRef.current?.abort();
     contextVersionRef.current += 1;
     setGoal(nextGoal);
@@ -1733,6 +1739,7 @@ function OwnedAgentRunsWorkspace({
       setError("Start a new conversation before changing its Project context.");
       return;
     }
+    commandReferencesRevisionRef.current += 1;
     setCommandReferences((current) => {
       const withoutSingleton = item.kind === "agent" || item.kind === "project"
         ? current.filter((candidate) => candidate.kind !== item.kind)
@@ -1768,6 +1775,7 @@ function OwnedAgentRunsWorkspace({
       setError("This conversation is already bound to its Project. Start a new conversation to change it.");
       return;
     }
+    commandReferencesRevisionRef.current += 1;
     setCommandReferences((current) => current.filter((candidate) =>
       candidate.kind !== item.kind || candidate.id !== item.id
     ));
@@ -1784,6 +1792,7 @@ function OwnedAgentRunsWorkspace({
   }
 
   function clearPreferredAgentSelection() {
+    commandReferencesRevisionRef.current += 1;
     setCommandModelSelection(undefined);
     setPreferredAgent(undefined);
     setCommandReferences((current) => current.filter((item) => item.kind !== "agent"));
@@ -1807,14 +1816,6 @@ function OwnedAgentRunsWorkspace({
       : action === "learn"
         ? "learn"
         : "research");
-  }
-
-  function changeApprovalRequired(nextValue: boolean) {
-    if (nextValue === approvalRequired) {
-      return;
-    }
-    setApprovalRequired(nextValue);
-    setWorkflowPlan(undefined);
   }
 
   async function buildContext({
@@ -2050,7 +2051,7 @@ function OwnedAgentRunsWorkspace({
         body: JSON.stringify({
           goal: taskQuery,
           mode,
-          requireApproval: approvalRequired,
+          requireApproval: true,
           contextScope,
           contextSelection,
           agentId: contextScope === "agent_private"
@@ -2063,8 +2064,8 @@ function OwnedAgentRunsWorkspace({
             ? initialMissionId
             : undefined,
           primaryAgentId: preferredAgentId || undefined,
-          contextReferences: commandReferences.map(
-            commandContextReferenceRequest,
+          contextReferences: commandContextReferencesForSubmission(
+            commandReferences, contextScope, selectedProjectId,
           ),
           modelSelection: commandModelSelection,
         }),
@@ -2165,10 +2166,10 @@ function OwnedAgentRunsWorkspace({
           goal: taskQuery,
           mode,
           planId: reviewedPlanId || undefined,
-          requireApproval: approvalRequired,
+          requireApproval: true,
           primaryAgentId: preferredAgentId || undefined,
-          contextReferences: commandReferences.map(
-            commandContextReferenceRequest,
+          contextReferences: commandContextReferencesForSubmission(
+            commandReferences, contextScope, selectedProjectId,
           ),
           modelSelection: commandModelSelection,
           metadata: {
@@ -2203,6 +2204,7 @@ function OwnedAgentRunsWorkspace({
 
   async function enqueuePrompt() {
     const prompt = goal.trim();
+    const submittedDraftRevision = goalRevisionRef.current;
     if (!prompt) {
       setPromptQueueError("Write a message before adding it to the queue.");
       return;
@@ -2221,8 +2223,8 @@ function OwnedAgentRunsWorkspace({
           mode,
           strategy: "auto",
           agentId: preferredAgentId || "atlas",
-          contextReferences: commandReferences.map(
-            commandContextReferenceRequest,
+          contextReferences: commandContextReferencesForSubmission(
+            commandReferences, contextScope, selectedProjectId,
           ),
           modelSelection: commandModelSelection,
           target: {
@@ -2235,7 +2237,9 @@ function OwnedAgentRunsWorkspace({
     });
     if (accepted) {
       // A response must not erase a draft edited while the request was pending.
-      setGoal((current) => current.trim() === prompt ? "" : current);
+      if (goalRevisionRef.current === submittedDraftRevision) {
+        setGoal((current) => current.trim() === prompt ? "" : current);
+      }
       setRunAnnouncement("Prompt saved to the queue. Its pinned context grants no execution authority.");
     }
   }
@@ -2384,9 +2388,15 @@ function OwnedAgentRunsWorkspace({
     const queueItem = options?.queueItem;
     if (queueItem && (queueMutation.pending || queueMutation.busy)) return;
     const submittedGoal = (queueItem?.prompt ?? options?.submittedGoal ?? goal).trim();
+    const submittedFromComposer = !queueItem && options?.submittedGoal === undefined;
+    const submittedDraft = goal;
+    const submittedDraftRevision = goalRevisionRef.current;
+    const submittedReferencesRevision = commandReferencesRevisionRef.current;
     const submittedCommandReferences = queueItem
       ? []
-      : commandReferences.map(commandContextReferenceRequest);
+      : commandContextReferencesForSubmission(
+          commandReferences, contextScope, selectedProjectId,
+        );
     if (!submittedGoal) {
       setError("Write a message before asking Asael.");
       return;
@@ -2496,8 +2506,24 @@ function OwnedAgentRunsWorkspace({
       ...current,
       { id: `pending-user-${Date.now()}`, role: "user", content: submittedGoal, createdAt: new Date().toISOString() },
     ]);
+    // Clear only the submitted draft. Streaming and terminal events must never
+    // erase a follow-up the owner starts while this request is running.
+    if (submittedFromComposer) {
+      setGoal("");
+      clearEphemeralCommandReferences();
+    }
 
+    let requestAccepted = false;
     let terminalEvent: "done" | "delegated" | "clarification" | "waiting_approval" | "error" | "canceled" | undefined;
+    const restoreUnsentDraft = () => {
+      if (requestAccepted || !submittedFromComposer || !currentAttempt() ||
+        (controller.signal.aborted && stoppedControllerRef.current !== controller) ||
+        goalRevisionRef.current !== submittedDraftRevision) return;
+      setGoal((current) => current === "" ? submittedDraft : current);
+      if (commandReferencesRevisionRef.current === submittedReferencesRevision) {
+        setCommandReferences(commandReferences);
+      }
+    };
     try {
       if (!scopeLease.current()) return;
       const response = await requestScope.run(() => fetch(queueItem
@@ -2542,11 +2568,17 @@ function OwnedAgentRunsWorkspace({
         throw new Error(stringValue(body.message || body.error, `/api/agent returned ${response.status}`));
       }
       streamRunIdRef.current = response.headers.get("x-asael-run-id") || "";
+      requestAccepted = Boolean(streamRunIdRef.current);
+      if (!queueItem && !submittedFromComposer &&
+        commandReferencesRevisionRef.current === submittedReferencesRevision) {
+        clearEphemeralCommandReferences();
+      }
 
       const handleStreamEvent = (event: StreamEvent) => {
         if (!currentAttempt() || controller.signal.aborted) return;
         if (event.type === "run" && event.runId) {
           if (streamRunIdRef.current && streamRunIdRef.current !== event.runId) throw new Error("The stream did not match the admitted run.");
+          requestAccepted = true;
           currentRunIdRef.current = event.runId;
           completedRunId = event.runId;
           setActiveAgentRunId(event.runId);
@@ -2557,12 +2589,14 @@ function OwnedAgentRunsWorkspace({
           return;
         }
         if (event.type === "delta" && event.text) {
+          requestAccepted = true;
           streamedResponse += event.text;
           queueDelta(event.text);
           return;
         }
         setStreamEvents((current) => [...current.slice(-199), event]);
         if (event.type === "delegated") {
+          requestAccepted = true;
           terminalEvent = "delegated";
           agentRequestIdRef.current = "";
           setClarificationRunId("");
@@ -2575,11 +2609,10 @@ function OwnedAgentRunsWorkspace({
             ...current,
             { id: `assistant-${Date.now()}`, role: "assistant", content: acknowledgement, createdAt: new Date().toISOString() },
           ]);
-          setGoal("");
-          clearEphemeralCommandReferences();
           void refreshThreads();
         }
         if (event.type === "clarification") {
+          requestAccepted = true;
           terminalEvent = "clarification";
           agentRequestIdRef.current = "";
           setClarificationRunId(event.runId || currentRunIdRef.current || "");
@@ -2591,10 +2624,10 @@ function OwnedAgentRunsWorkspace({
             ...current,
             { id: `assistant-${Date.now()}`, role: "assistant", content: clarification, createdAt: new Date().toISOString() },
           ]);
-          setGoal("");
           void refreshThreads();
         }
         if (event.type === "done") {
+          requestAccepted = true;
           terminalEvent = "done";
           agentRequestIdRef.current = "";
           setClarificationRunId("");
@@ -2608,19 +2641,18 @@ function OwnedAgentRunsWorkspace({
               { id: `assistant-${Date.now()}`, role: "assistant", content: completedResponse, createdAt: new Date().toISOString(), runId: currentRunIdRef.current || undefined },
             ]);
           }
-          setGoal("");
-          clearEphemeralCommandReferences();
           void refreshThreads();
         }
         if (event.type === "waiting_approval") {
+          requestAccepted = true;
           terminalEvent = "waiting_approval";
           agentRequestIdRef.current = "";
           setClarificationRunId("");
           setWaitingApproval(event);
           waitingApprovalEvent = event;
-          clearEphemeralCommandReferences();
         }
         if (event.type === "error") {
+          restoreUnsentDraft();
           terminalEvent = "error";
           agentRequestIdRef.current = "";
           setClarificationRunId("");
@@ -2688,6 +2720,7 @@ function OwnedAgentRunsWorkspace({
         void refreshRunProjection(currentRunIdRef.current);
       }
     } catch (agentError) {
+      restoreUnsentDraft();
       if (!scopeLease.current()) {
         const knownRunId = completedRunId || streamRunIdRef.current;
         if (knownRunId) setActiveAgentRunId(knownRunId);
@@ -2700,12 +2733,16 @@ function OwnedAgentRunsWorkspace({
         // stream does not cancel the durable run or replace the new selection.
         return;
       } else if (controller.signal.aborted) {
-        agentRequestIdRef.current = "";
+        if (requestAccepted) agentRequestIdRef.current = "";
         setStreamEvents((current) => [
           ...current.slice(-199),
-          { type: "status", label: "Canceled", detail: "The operator stopped this run." },
+          { type: "status", label: "Stopped", detail: requestAccepted
+            ? "The operator stopped this run."
+            : "The connection stopped before the server confirmed the message." },
         ]);
-        setRunAnnouncement("Agent run stopped.");
+        setRunAnnouncement(requestAccepted
+          ? "Agent run stopped."
+          : "Connection stopped before the run was confirmed.");
       } else {
         setError(agentError instanceof Error ? agentError.message : "Agent run failed.");
         setRunAnnouncement("Agent run failed.");
@@ -2716,6 +2753,9 @@ function OwnedAgentRunsWorkspace({
       if (abortControllerRef.current === controller) {
         abortControllerRef.current = null;
         setLoading(undefined);
+      }
+      if (stoppedControllerRef.current === controller) {
+        stoppedControllerRef.current = null;
       }
       if (currentAttempt() && queueItem) {
         await refreshPromptQueue().catch(() => undefined);
@@ -3806,7 +3846,6 @@ function OwnedAgentRunsWorkspace({
             <GoalStage
               goal={goal}
               mode={mode}
-              approvalRequired={approvalRequired}
               preferredAgent={preferredAgent}
               commandReferences={commandReferences}
               commandModelScope={modelAssignmentScopeForAgent(preferredAgentId)}
@@ -3835,7 +3874,6 @@ function OwnedAgentRunsWorkspace({
               voiceConversationId={threadId || undefined}
               onGoalChange={changeGoal}
               onModeChange={changeMode}
-              onApprovalChange={changeApprovalRequired}
               onClearPreferredAgent={clearPreferredAgentSelection}
               onSelectCommandReference={selectCommandReference}
               onRemoveCommandReference={removeCommandReference}
@@ -5976,7 +6014,6 @@ function PromptQueuePanel({
 function GoalStage({
   goal,
   mode,
-  approvalRequired,
   preferredAgent,
   commandReferences,
   commandModelScope,
@@ -6005,7 +6042,6 @@ function GoalStage({
   voiceConversationId,
   onGoalChange,
   onModeChange,
-  onApprovalChange,
   onClearPreferredAgent,
   onSelectCommandReference,
   onRemoveCommandReference,
@@ -6030,7 +6066,6 @@ function GoalStage({
 }: {
   goal: string;
   mode: AgentMode;
-  approvalRequired: boolean;
   preferredAgent?: AgentPresentation;
   commandReferences: readonly CommandContextCatalogItem[];
   commandModelScope: ModelAssignmentScope;
@@ -6059,7 +6094,6 @@ function GoalStage({
   voiceConversationId?: string;
   onGoalChange: (value: string) => void;
   onModeChange: (value: AgentMode) => void;
-  onApprovalChange: (value: boolean) => void;
   onClearPreferredAgent: () => void;
   onSelectCommandReference: (item: CommandContextCatalogItem) => void;
   onRemoveCommandReference: (item: CommandContextCatalogItem) => void;
@@ -6088,6 +6122,31 @@ function GoalStage({
   onStop: () => void;
   onWorkflow: () => void;
 }) {
+  const optionsRef = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    const closeOutside = (event: PointerEvent) => {
+      const menu = optionsRef.current;
+      if (menu?.open && event.target instanceof Node && !menu.contains(event.target)) menu.open = false;
+    };
+    const closeWithEscape = (event: KeyboardEvent) => {
+      const menu = optionsRef.current;
+      if (event.key !== "Escape" || !menu?.open) return;
+      event.preventDefault();
+      event.stopPropagation();
+      menu.open = false;
+      menu.querySelector("summary")?.focus();
+    };
+    document.addEventListener("pointerdown", closeOutside);
+    document.addEventListener("keydown", closeWithEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOutside);
+      document.removeEventListener("keydown", closeWithEscape);
+    };
+  }, []);
+  function chooseOption(action: () => void) {
+    if (optionsRef.current) optionsRef.current.open = false;
+    action();
+  }
   const goalMissing = !goal.trim();
   const activeRun = loading === "agent" || workflowInProgress;
   const draftLocked = Boolean(loading && loading !== "agent");
@@ -6132,6 +6191,156 @@ function GoalStage({
           </div>
 
           <div className={workspaceStyles.composerToolbar}>
+            <details ref={optionsRef} className={workspaceStyles.composerAdvanced} onBlur={(event) => {
+              if (event.relatedTarget instanceof Node && !event.currentTarget.contains(event.relatedTarget)) {
+                event.currentTarget.open = false;
+              }
+            }}>
+              <summary aria-haspopup="dialog" title="Choose an approach, review context, or plan your task">
+                <SlidersHorizontal size={15} aria-hidden="true" />
+                <span>Options</span>
+                <ChevronDown size={12} className={workspaceStyles.disclosureChevron} aria-hidden="true" />
+              </summary>
+              <div className={workspaceStyles.composerOptionsPanel} role="dialog" aria-label="Message options">
+                <div className={workspaceStyles.optionsHeading}>
+                  <span>Message options</span>
+                  <button type="button" onClick={() => {
+                    if (optionsRef.current) optionsRef.current.open = false;
+                    optionsRef.current?.querySelector("summary")?.focus();
+                  }} aria-label="Close message options" title="Close options">
+                    <X size={16} aria-hidden="true" />
+                  </button>
+                </div>
+                {preferredAgent ? (
+                  <div className={workspaceStyles.agentSelection}>
+                    <span title={preferredAgent.role}>Working with <strong>{preferredAgent.name}</strong></span>
+                    <button type="button" onClick={onClearPreferredAgent} title="Let Asael choose the best assistant for your request">
+                      Route automatically
+                    </button>
+                  </div>
+                ) : null}
+                <div className={workspaceStyles.composerOptions}>
+                  <label className={workspaceStyles.pickerControl} title="Choose how Asael approaches this message">
+                    <Sparkles size={15} aria-hidden="true" />
+                    <span className="sr-only">Approach</span>
+                    <select
+                      id="command-mode"
+                      aria-describedby="command-approach-help"
+                      value={mode}
+                      disabled={draftLocked}
+                      onChange={(event) => onModeChange(event.currentTarget.value as AgentMode)}
+                    >
+                      <option value="orchestrate">General</option>
+                      <option value="research">Research</option>
+                      <option value="execute">Act</option>
+                      <option value="learn">Knowledge</option>
+                    </select>
+                  </label>
+                  <p id="command-approach-help" className={workspaceStyles.optionHelp}>
+                    {mode === "research"
+                      ? "Compare multiple sources and build a detailed report with citations and evidence gaps."
+                      : mode === "execute"
+                        ? "Carry out a task using connected tools. Actions that need your approval still pause for review."
+                        : mode === "learn"
+                          ? "Work with knowledge, explain a topic, or learn from the context you choose."
+                          : "Let Asael choose the right approach for your question or task."}
+                  </p>
+                  {contextScope === "project" ? (
+                    <label className={workspaceStyles.pickerControl} title="Choose the project whose context this conversation uses">
+                      <FileText size={15} aria-hidden="true" />
+                      <span className="sr-only">Project context</span>
+                      <select
+                        id="command-project-scope"
+                        value={projectId}
+                        disabled={draftLocked || projectSelectionLocked}
+                        onChange={(event) => onProjectChange(event.currentTarget.value)}
+                      >
+                        <option value="">Choose project</option>
+                        {projects.map((project) => (
+                          <option key={project.id} value={project.id}>{project.title}</option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : null}
+                  <div className={workspaceStyles.optionActions}>
+                    <button
+                      type="button"
+                      onClick={() => chooseOption(contextReady || contextError ? onReviewContext : onContext)}
+                      disabled={contextLoading || goalMissing || Boolean(readDisabledReason)}
+                      title={goalMissing ? "Write a message first." : readDisabledReason || "Inspect and choose the saved information Asael may use"}
+                      aria-label={`Review context: ${contextLabel}`}
+                      aria-describedby="command-context-help"
+                      data-state={contextLocked ? "locked" : contextReady || contextError ? "review" : undefined}
+                    >
+                      {contextLoading ? <Loader2 size={17} className="animate-spin" aria-hidden="true" /> : <Brain size={17} aria-hidden="true" />}
+                      <span>{contextLoading ? "Finding context" : "Review context"}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => chooseOption(onPlan)}
+                      disabled={Boolean(loading) || goalMissing || Boolean(workflowDisabledReason) || workflowInProgress}
+                      title={goalMissing ? "Write a message first." : workflowDisabledReason || "Create a step-by-step plan to review before starting work"}
+                    >
+                      {loading === "plan" ? <Loader2 size={17} className="animate-spin" aria-hidden="true" /> : <GitBranch size={17} aria-hidden="true" />}
+                      <span>Create plan</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => chooseOption(onQueue)}
+                      disabled={draftLocked || goalMissing || Boolean(runDisabledReason) || queueLocked}
+                      title={goalMissing ? "Write a message first." : runDisabledReason || "Save this prompt to run after the current work"}
+                      aria-label="Add prompt to queue"
+                    >
+                      <Clock3 size={17} aria-hidden="true" />
+                      <span>Add to queue</span>
+                    </button>
+                    {workflowReady || (workflowStarted && workflowInProgress) ? (
+                      <button
+                        type="button"
+                        onClick={() => chooseOption(onWorkflow)}
+                        disabled={Boolean(loading) || goalMissing || Boolean(workflowDisabledReason) || !workflowReady || workflowStarted}
+                        title="Start the reviewed plan; governed actions still require their approvals"
+                      >
+                        <Workflow size={17} aria-hidden="true" />
+                        <span>{workflowStarted ? "Workflow active" : "Start plan"}</span>
+                      </button>
+                    ) : null}
+                  </div>
+                  <p id="command-context-help" className={workspaceStyles.optionHelp}>
+                    {contextScopeOption(contextScope).description}
+                    {contextScope === "explicit_selection" ? ` ${contextLabel}.` : ""}
+                  </p>
+                  <p className={workspaceStyles.optionHelp}>Use / for skills and @ to attach people, projects, or sources.</p>
+                </div>
+              </div>
+            </details>
+            <CommandModelPicker
+              scope={commandModelScope}
+              value={commandModelSelection}
+              disabled={draftLocked}
+              onChange={onCommandModelSelection}
+            />
+            <label className={workspaceStyles.pickerControl} title={contextScopeOption(contextScope).description}>
+              <Database size={15} aria-hidden="true" />
+              <span className="sr-only">Context scope</span>
+              <select
+                id="command-context-scope"
+                value={contextScope}
+                disabled={draftLocked || activeRun}
+                onChange={(event) => onContextScopeChange(event.currentTarget.value as ActiveContextScopeId)}
+              >
+                {CONTEXT_SCOPE_OPTIONS.map((option) => (
+                  <option
+                    key={option.id}
+                    value={option.id}
+                    disabled={(option.id === "personal" && !personalContextAvailable) ||
+                      (option.id === "mission" && !missionContextAvailable)}
+                  >
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
             <div className={workspaceStyles.composerActions}>
               <VoiceMode
                 onOpen={onVoiceOpen}
@@ -6174,151 +6383,8 @@ function GoalStage({
                 </button>
               )}
             </div>
-            <details className={workspaceStyles.composerAdvanced}>
-              <summary>
-                <SlidersHorizontal size={13} aria-hidden="true" />
-                <span>Options</span>
-                {preferredAgent ? <span className={workspaceStyles.optionSelection}>{preferredAgent.name}</span> : null}
-                {!approvalRequired ? <span className={workspaceStyles.approvalNotice}>Approvals off</span> : null}
-                <ChevronDown size={12} className={workspaceStyles.disclosureChevron} aria-hidden="true" />
-                <span className={workspaceStyles.composerHint}>/ Skills <span aria-hidden="true">·</span> @ Context</span>
-              </summary>
-              {preferredAgent ? (
-                <div className={workspaceStyles.agentSelection}>
-                  <span title={`${preferredAgent.visualIdentity} Voice: ${preferredAgent.voice}`}>
-                    Working with <strong>{preferredAgent.name}</strong> · {preferredAgent.role}
-                  </span>
-                  <button type="button" onClick={onClearPreferredAgent} className="min-h-8 rounded-full px-2 text-xs font-semibold text-primary hover:bg-primary/10">
-                    Route automatically
-                  </button>
-                </div>
-              ) : null}
-            <div className={workspaceStyles.composerOptions}>
-              <label className="sr-only" htmlFor="command-mode">Approach</label>
-              <select
-                id="command-mode"
-                aria-describedby={mode === "research" ? "command-research-description" : undefined}
-                value={mode}
-                disabled={draftLocked}
-                onChange={(event) => onModeChange(event.currentTarget.value as AgentMode)}
-                className="min-h-8 shrink-0 rounded-full border-0 bg-surface-raised px-2.5 text-xs font-semibold text-muted outline-none hover:text-foreground"
-              >
-                <option value="orchestrate">General</option>
-                <option value="research">Research</option>
-                <option value="execute">Act</option>
-                <option value="learn">Knowledge</option>
-              </select>
-              <CommandModelPicker
-                scope={commandModelScope}
-                value={commandModelSelection}
-                disabled={draftLocked}
-                onChange={onCommandModelSelection}
-              />
-              {contextScope === "project" ? (
-                <>
-                  <label className="sr-only" htmlFor="command-project-scope">Project context</label>
-                  <select
-                    id="command-project-scope"
-                    value={projectId}
-                    disabled={draftLocked || projectSelectionLocked}
-                    onChange={(event) => onProjectChange(event.currentTarget.value)}
-                    className="min-h-8 max-w-44 shrink-0 rounded-full border-0 bg-surface-raised px-2.5 text-xs font-semibold text-muted outline-none hover:text-foreground"
-                  >
-                    <option value="">Choose project</option>
-                    {projects.map((project) => (
-                      <option key={project.id} value={project.id}>{project.title}</option>
-                    ))}
-                  </select>
-                </>
-              ) : null}
-              <button
-                type="button"
-                onClick={() => onApprovalChange(!approvalRequired)}
-                disabled={draftLocked}
-                className={clsx(
-                  "inline-flex min-h-8 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-xs font-semibold transition",
-                  approvalRequired ? "bg-primary/10 text-primary" : "bg-surface-raised text-muted hover:text-foreground",
-                )}
-                aria-pressed={approvalRequired}
-                aria-label={`Approvals ${approvalRequired ? "on" : "off"}`}
-                title={`Approvals ${approvalRequired ? "on" : "off"}`}
-              >
-                <ShieldCheck size={12} aria-hidden="true" />
-                <span>Approvals {approvalRequired ? "on" : "off"}</span>
-              </button>
-              <label className="sr-only" htmlFor="command-context-scope">Context scope</label>
-              <select
-                id="command-context-scope"
-                value={contextScope}
-                disabled={draftLocked}
-                onChange={(event) => onContextScopeChange(
-                  event.currentTarget.value as ActiveContextScopeId,
-                )}
-                className="min-h-8 shrink-0 rounded-full border-0 bg-surface-raised px-2.5 text-xs font-semibold text-muted outline-none hover:text-foreground"
-              >
-                {CONTEXT_SCOPE_OPTIONS.map((option) => (
-                  <option
-                    key={option.id}
-                    value={option.id}
-                    disabled={(option.id === "personal" && !personalContextAvailable) ||
-                      (option.id === "mission" && !missionContextAvailable)}
-                  >
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-              <button
-                type="button"
-                onClick={contextReady || contextError ? onReviewContext : onContext}
-                disabled={contextLoading || goalMissing || Boolean(readDisabledReason)}
-                title={goalMissing ? "Write a message first." : readDisabledReason}
-                aria-label={`Context: ${contextLabel}`}
-                className={clsx(
-                  "inline-flex min-h-8 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-xs font-semibold transition",
-                  contextLocked ? "bg-success/10 text-success" : contextReady || contextError ? "bg-warning/10 text-warning" : "bg-surface-raised text-muted hover:text-foreground",
-                )}
-              >
-                {contextLoading ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <Brain size={13} aria-hidden="true" />}
-                <span>{contextLabel}</span>
-              </button>
-              <button
-                type="button"
-                onClick={onPlan}
-                disabled={Boolean(loading) || goalMissing || Boolean(workflowDisabledReason) || workflowInProgress}
-                title={goalMissing ? "Write a message first." : workflowDisabledReason}
-                aria-label="Create a plan"
-                className="inline-flex min-h-8 shrink-0 items-center gap-1.5 rounded-full bg-surface-raised px-2.5 text-xs font-semibold text-muted transition hover:text-foreground disabled:opacity-50"
-              >
-                {loading === "plan" ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <GitBranch size={13} aria-hidden="true" />}
-                <span>Plan</span>
-              </button>
-              {workflowReady || (workflowStarted && workflowInProgress) ? (
-                <button
-                  type="button"
-                  onClick={onWorkflow}
-                  disabled={Boolean(loading) || goalMissing || Boolean(workflowDisabledReason) || !workflowReady || workflowStarted}
-                  className="inline-flex min-h-8 shrink-0 items-center gap-1.5 rounded-full bg-primary/10 px-2.5 text-xs font-semibold text-primary disabled:opacity-50"
-                >
-                  <Workflow size={13} aria-hidden="true" />
-                  {workflowStarted ? "Workflow active" : "Start plan"}
-                </button>
-              ) : null}
-              <button
-                type="button"
-                onClick={onQueue}
-                disabled={draftLocked || goalMissing || Boolean(runDisabledReason) || queueLocked}
-                title={goalMissing ? "Write a message first." : "Add to the persistent prompt queue"}
-                className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-full bg-surface-raised px-3 text-xs font-semibold text-muted transition hover:text-foreground disabled:cursor-not-allowed"
-                aria-label="Add prompt to queue"
-              >
-                <Clock3 size={14} aria-hidden="true" />
-                Add to queue
-              </button>
-            </div>
-            </details>
           </div>
         </div>
-        {mode === "research" ? <p id="command-research-description" className="mt-1.5 px-2 text-center text-xs leading-5 text-muted">Research reviews multiple sources and builds a detailed report with citations, findings, and gaps in the evidence.</p> : null}
         {workflowInProgress ? <p className="mt-1.5 px-2 text-center text-xs leading-4 text-muted">This conversation is locked while active work finishes. New messages can be added to the persistent queue.</p> : null}
       </div>
     </section>
@@ -7173,16 +7239,27 @@ function builtInAgentPresentation(agentId: AgentId) {
   } satisfies AgentPresentation;
 }
 
-function commandContextReferenceRequest(
-  item: CommandContextCatalogItem,
-): CommandContextReference {
-  return {
-    kind: item.kind,
-    id: item.id,
-    expectedVersion: item.expectedVersion,
-    versionId: item.versionId,
-    bindingSha256: item.bindingSha256,
-  };
+function commandContextReferencesForSubmission(
+  items: readonly CommandContextCatalogItem[],
+  contextScope: ActiveContextScopeId,
+  selectedProjectId: string,
+): CommandContextReference[] {
+  const projectId = contextScope === "project" ? selectedProjectId : "";
+  const references: CommandContextReference[] = items
+    .filter((item) => !projectId || item.kind !== "project" || item.id === projectId)
+    .map((item) => ({
+      kind: item.kind,
+      id: item.id,
+      expectedVersion: item.expectedVersion,
+      versionId: item.versionId,
+      bindingSha256: item.bindingSha256,
+    }));
+  // A Project selected through the scope picker or Work handoff is just as
+  // explicit as an @Project attachment. The server still resolves its access.
+  if (projectId && !references.some((item) => item.kind === "project" && item.id === projectId)) {
+    references.push({ kind: "project", id: projectId });
+  }
+  return references;
 }
 
 function commandReferenceKindLabel(kind: CommandContextCatalogItem["kind"]) {

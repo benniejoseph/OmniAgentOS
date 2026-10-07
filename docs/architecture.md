@@ -2575,6 +2575,32 @@ their exact IDs and whether ownership and due-date authority came from cited
 transcript evidence or explicit user confirmation. Proposal and resolution RLS
 inherits the Meeting's strict workspace/project/source access boundary.
 
+## Client success Work workspace
+
+`/app/projects` presents client success Work by default; `?view=projects` retains
+the general Project workspace, including existing execution and Build Studio
+views. A client is an existing owned Project with a typed CSM brief and source
+references, not a Salesforce org connection or a revival of the retired CRM.
+
+`src/lib/csm/` saves immutable, versioned project-shared Memory snapshots with a
+reviewed Lead/Secondary role, supplied Success Plan, goals, Success Path,
+stakeholders, next review date, and exact Library source pins. Transactional
+revision checks, idempotency, supersession and typed events use existing storage;
+no additional migration is required. A source link does not widen source access.
+Processing, unavailable and changed versions are disclosed and excluded from
+prompt excerpts. Current source access and version/digest pins are rechecked at
+each Assistant admission.
+
+The dedicated Client Success Partner is provisioned through the ordinary custom
+Agent lifecycle when requested. Work opens an unsent Assistant prompt with that
+Agent and an explicit Project reference. The bounded context includes the saved
+brief and cited source excerpts; missing/omitted evidence stays visible. Proposed
+actions remain recommendations until accepted by the user. Tasks use existing
+WorkItem operations, and automatic client monitoring is not activated here.
+
+Research and public role boundaries are recorded in
+[`research/salesforce-csm-work.md`](research/salesforce-csm-work.md).
+
 ## Retired Accounts feature
 
 Accounts, Customer Account 360, and the Salesforce integration were retired on

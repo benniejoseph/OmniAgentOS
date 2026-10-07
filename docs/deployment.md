@@ -2143,7 +2143,7 @@ After the worker registration window, each release phase runs one successful log
 npm run deploy:production
 ```
 
-Before `npm run verify` or any platform change, the runner proves release
+By default, before `npm run verify` or any platform change, the runner proves release
 provenance against GitHub rather than the local clone. `OMNIAGENT_RELEASE_SHA`,
 when set, must equal the checked-out `HEAD`. GitHub's comparison of
 `benniejoseph/OmniAgentOS` `main` with that commit must report it as identical
@@ -2162,6 +2162,63 @@ release gate requires the worker heartbeat revision to equal the web revision,
 so web-only changes also use the paired runner. The scheduled `Production Smoke`
 repeats the provenance check for the served revision, and its `provenance` gate
 turns red when production serves a commit that did not come through this path.
+
+### Owner-authorized build and live validation
+
+When the owner explicitly directs a release without CI, tests, audits, or
+benchmarks, use the same paired runner with `--owner-authorized-live`. This is
+separate from `--use-hosted-verification`, which still requires green hosted CI.
+The two flags cannot be combined. It neither enables GitHub workflows nor
+changes application authentication, tool governance, or server release gates.
+
+Set `OMNIAGENT_RELEASE_OWNER_LIVE_AUTHORIZATION` to a fresh JSON object with
+exactly `previousRevision`, `candidateRevision`, `reason`, and `expiresAt`.
+Both revisions must be distinct full lowercase Git SHAs. The candidate must be
+the clean checked-out `HEAD` and the current `main` tip verified against the
+canonical GitHub repository. The previous revision must match the currently
+paired production web and gateway. Expiry must be canonical UTC ISO format,
+in the future and within four hours. The trimmed reason is limited to 200
+characters. It will appear in the signed public manifest, so use a concise
+release authorization reason without confidential material.
+
+```bash
+npm run deploy:production -- --owner-authorized-live
+```
+
+The runner consumes the pin before launching subprocesses and does not forward
+the environment variable to the app, smoke commands, Vercel, or Fly. It rechecks
+the exact clean candidate, GitHub `main` tip, and expiry before deployment,
+worker replacement, promotion, canonical rebind, and worker activation. A failed
+admission after a platform change follows the existing paired rollback path;
+expiry cannot prevent rollback.
+
+This mode runs `npm run typecheck` and `npm run build` locally, then verifies
+that the checkout still matches the candidate. It retains the signed previous
+manifest check, staged and canonical readiness, signature and manifest
+convergence, gateway token-pair checks, two real-session paid agent sentinels,
+`smoke:preflight`, and read-only `smoke:release` evidence. Post-activation evidence
+must still show fresh active worker heartbeats. The worker hold, canonical
+rebind, activation, token overlap, and automatic paired rollback stay intact.
+Manual feature validation should be recorded separately with the release result.
+
+It does not invoke `verify`, `test:production-smoke`, the security/tenant/eval
+smoke suites, or the preview/dashboard benchmarks. The read-only release report
+still checks database roles, isolation metadata, previously recorded evaluation
+status, provider access, worker revisions, and reliability; it does not launch
+an evaluation suite. An authorized exception for measured historical reliability
+continues to require the separate exact-pair
+`OMNIAGENT_RELEASE_OWNER_ERROR_BUDGET_OVERRIDE`; the live authorization cannot
+waive a failed release-evidence gate.
+
+An owner release has a strict **v2 signed manifest** with `checks: []`, an
+explicit owner-live policy, the exact authorization, completed local validation
+for that SHA, and the deferred hosted checks and commands. The manifest is
+signed before deployment and does not claim later live checks have passed.
+The runner reports their outcomes after execution. Existing v1 CI manifests
+remain verifiable for rollback. Pin expiry governs new release admission;
+historical signatures remain verifiable after expiry. The existing hosted CI
+provenance workflow remains unchanged and will not report green checks for
+an owner release whose CI was deferred. Unset the pin after the release.
 
 Set `BASE_URL` to the canonical production HTTPS origin and provide the smoke
 credentials, internal secret, pinned gateway URL, active token, optional

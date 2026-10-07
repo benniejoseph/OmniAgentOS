@@ -104,7 +104,7 @@ export const appNav: AppNavItem[] = [
     href: "/app/projects",
     label: "Work",
     shortLabel: "Work",
-    description: "Plan, execute, review, and verify durable work.",
+    description: "Client context, Success Paths, evidence, and next actions.",
     icon: FolderKanban,
   },
   {

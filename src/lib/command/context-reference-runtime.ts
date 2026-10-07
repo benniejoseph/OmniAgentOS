@@ -20,6 +20,7 @@ import {
 import { redactSensitive } from "@/lib/security/context";
 import type { SecurityContext } from "@/lib/security/types";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
+import { resolveCsmProjectPromptContext } from "@/lib/csm/context";
 
 const MAX_CONTEXT_BLOCK_CHARS = 18_000;
 
@@ -248,11 +249,22 @@ export async function resolveCommandContextReferences(input: {
         if (selectedProject.status === "archived") {
           throw changed("Project", "is archived");
         }
+        let clientContext;
+        try {
+          clientContext = await resolveCsmProjectPromptContext({
+            context: input.context, projectId: selectedProject.id, query: input.query || "",
+            maxCharacters: Math.max(0, Math.floor((MAX_CONTEXT_BLOCK_CHARS - 500) / input.references.length) - 1_600),
+          });
+        } catch {
+          throw new CommandContextResolutionError("command_context_unavailable",
+            "The selected client's saved context could not be revalidated. Refresh the client and try again.", 503);
+        }
         return resolvedReference(reference, {
           exactPin: {
             id: selectedProject.id,
             status: selectedProject.status,
             updatedAt: selectedProject.updatedAt,
+            ...(clientContext ? { clientContext: clientContext.pin } : {}),
           },
           context: {
             kind: "project",
@@ -260,6 +272,7 @@ export async function resolveCommandContextReferences(input: {
             title: safeText(selectedProject.title, 180),
             objective: safeText(selectedProject.objective, 800),
             status: selectedProject.status,
+            ...(clientContext ? { clientContext: clientContext.context } : {}),
             use: "Primary project scope only; membership and mutation authority are revalidated separately.",
           },
         });

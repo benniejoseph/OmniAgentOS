@@ -15,6 +15,7 @@ import {
 import {
   RELEASE_MANIFEST_ENV,
   RELEASE_MANIFEST_VERSION,
+  OWNER_LIVE_RELEASE_MANIFEST_VERSION,
   RELEASE_SIGNING_KEY_FILE_ENV,
   loadReleaseSigningKey,
   signReleaseManifest,
@@ -25,6 +26,14 @@ import {
   validateForwardSchemaPriorArtifact,
 } from "./forward-schema-recovery.mjs";
 import { readOwnerBudgetOverride } from "./release-owner-budget-override.mjs";
+import {
+  OWNER_LIVE_AUTHORIZATION_ENV,
+  OWNER_LIVE_DEFERRED_COMMANDS,
+  OWNER_LIVE_LOCAL_COMMANDS,
+  OWNER_LIVE_VERIFICATION_MODE,
+  assertOwnerLiveAuthorization,
+  readOwnerLiveAuthorization,
+} from "./release-owner-live-authorization.mjs";
 
 class ReadinessAccessError extends Error {
   constructor(status) {
@@ -75,6 +84,24 @@ const WORKER_RELEASE_ACTIVATION_FILE =
   "/tmp/asael-worker-release-activated";
 const dryRun = process.argv.includes("--dry-run");
 const useHostedVerification = process.argv.includes("--use-hosted-verification");
+const ownerLiveVerification = process.argv.includes("--owner-authorized-live");
+// Consume this before any subprocess starts. The signed, public manifest carries
+// its bounded authorization record; the environment pin grants no app authority.
+const rawOwnerLiveAuthorization = process.env[OWNER_LIVE_AUTHORIZATION_ENV];
+delete process.env[OWNER_LIVE_AUTHORIZATION_ENV];
+if (ownerLiveVerification && useHostedVerification) {
+  fail("--owner-authorized-live cannot be combined with --use-hosted-verification.");
+}
+if ((!dryRun && ownerLiveVerification && !rawOwnerLiveAuthorization?.trim()) ||
+  (!ownerLiveVerification && rawOwnerLiveAuthorization?.trim())) {
+  fail(`${OWNER_LIVE_AUTHORIZATION_ENV} and --owner-authorized-live must be supplied together.`);
+}
+let ownerLiveAuthorization;
+try {
+  ownerLiveAuthorization = readOwnerLiveAuthorization({
+    [OWNER_LIVE_AUTHORIZATION_ENV]: rawOwnerLiveAuthorization,
+  });
+} catch (error) { fail(errorMessage(error)); }
 // A lost-token recovery keeps the unknown, managed Fly primary untouched.
 // The locally supplied token is a fresh secondary, never the prior secret.
 const preserveGatewayPrimary = process.argv.includes("--preserve-gateway-primary");
@@ -236,7 +263,11 @@ if (dryRun) {
     console.log("DRY RUN verify deployed Fly secret metadata, immutable compatible rollback image, production-only sensitive Vercel primary, absent recovery alias/selector, and fresh old-deployment provider proof");
     console.log("DRY RUN create owned sensitive recovery alias through stdin; candidate uses only the non-secret recovery selector");
   }
-  if (useHostedVerification) {
+  if (ownerLiveVerification) {
+    console.log("DRY RUN require exact previous/candidate SHA authorization with expiry within four hours; defer CI, test/audit suites, and benchmarks without claiming they passed");
+    for (const command of OWNER_LIVE_LOCAL_COMMANDS) printDryRun("npm", ["run", command]);
+    console.log("DRY RUN recheck clean exact HEAD, GitHub main tip, and authorization before every release mutation boundary; sign v2 with actual local validation and explicit deferrals");
+  } else if (useHostedVerification) {
     console.log("DRY RUN use green exact-commit hosted verification; defer the repeated local suite");
   } else {
     printDryRun("npm", ["run", "verify"]);
@@ -335,10 +366,25 @@ const recoveryMigrationDatabaseUrl = forwardSchemaRecovery
   : undefined;
 if (forwardSchemaRecovery) delete process.env.MIGRATION_DATABASE_URL;
 await requireCleanWorkingTree();
-// Vercel and Fly build the checked-out tree, so prove that tree is a reviewed
-// commit on main with green CI before spending time on local verification.
+// Vercel and Fly build the checked-out tree. Prove exact main provenance before
+// local verification; only the explicit owner mode defers hosted CI.
 const provenance = await verifyRunnerProvenance();
-if (useHostedVerification) {
+let ownerLocalValidation;
+if (ownerLiveVerification) {
+  for (const command of OWNER_LIVE_LOCAL_COMMANDS) {
+    await run("npm", ["run", command], {
+      environment: { NEXT_PUBLIC_APP_URL: productionBaseUrl },
+    }).catch((error) => fail(`Owner-authorized ${command} failed: ${errorMessage(error)}`));
+  }
+  await requireCleanWorkingTree();
+  await verifyRunnerProvenance();
+  ownerLocalValidation = {
+    revision,
+    commands: [...OWNER_LIVE_LOCAL_COMMANDS],
+    completedAt: new Date().toISOString(),
+  };
+  console.log("Local typecheck and build passed; hosted CI, test/audit suites, and benchmarks remain deferred by the owner.");
+} else if (useHostedVerification) {
   console.log(`Using verified hosted checks for ${provenance.revision}; the repeated local suite is deferred.`);
 } else {
   await run("npm", ["run", "verify"]).catch((error) =>
@@ -360,6 +406,15 @@ const rollbackOpenAIGateway = openAIGateway && !initialOpenAIGatewayCutover && !
 const previousGatewayRevision = splitRecovery
   ? await getSplitGatewayRevision(openAIGateway, previousHealthRevision)
   : previousHealthRevision;
+if (ownerLiveVerification) {
+  if (previousGatewayRevision !== previousHealthRevision) {
+    fail("Owner-authorized live release requires one paired previous web and gateway revision.");
+  }
+  await requireOwnerLiveAdmission(previousHealthRevision);
+  await run("npm", ["run", "smoke:manifest"], {
+    environment: { BASE_URL: productionBaseUrl, SMOKE_EXPECTED_REVISION: previousHealthRevision },
+  });
+}
 if (forwardSchemaRecovery && (
   forwardSchemaRecovery.previousRevision !== previousHealthRevision ||
   previousGatewayRevision !== previousHealthRevision
@@ -432,16 +487,26 @@ try {
       },
     });
   }
-  // The deployment serves this manifest, so the nightly smoke can tell a
-  // release this runner made from one made any other way.
+  await requireOwnerLiveAdmission(previousHealthRevision);
+  // The manifest records provenance and completed local validation. Live checks
+  // happen after deployment and are never claimed as already passed here.
   const releaseManifest = signReleaseManifest(
     {
-      version: RELEASE_MANIFEST_VERSION,
+      version: ownerLiveVerification ? OWNER_LIVE_RELEASE_MANIFEST_VERSION : RELEASE_MANIFEST_VERSION,
       revision: provenance.revision,
       repository: RELEASE_REPOSITORY,
       branch: RELEASE_BRANCH,
       checks: provenance.checks,
       signedAt: new Date().toISOString(),
+      ...(ownerLiveVerification ? {
+        verification: {
+          mode: OWNER_LIVE_VERIFICATION_MODE,
+          ownerAuthorization: ownerLiveAuthorization,
+          localValidation: ownerLocalValidation,
+          deferredHostedChecks: [...REQUIRED_RELEASE_CHECKS],
+          deferredCommands: [...OWNER_LIVE_DEFERRED_COMMANDS],
+        },
+      } : {}),
     },
     signingKey,
   );
@@ -473,6 +538,7 @@ try {
   // A key the repository does not trust stops the release here, before
   // anything production runs on has changed.
   await runManifestVerification(stagedBaseUrl, releaseManifest);
+  await requireOwnerLiveAdmission(previousHealthRevision);
   workerMutationStarted = true;
   if (primaryRecovery) {
     await stageManagedPrimaryRecovery(primaryRecovery, openAIGateway.token);
@@ -498,6 +564,7 @@ try {
 
   // Only expose the web release after the exact staged web/worker pair passes.
   // Protected deployments are reached with VERCEL_AUTOMATION_BYPASS_SECRET.
+  await requireOwnerLiveAdmission(previousHealthRevision);
   vercelPromoted = true;
   await run(
     "vercel",
@@ -510,6 +577,7 @@ try {
   await runManifestVerification(productionBaseUrl, releaseManifest, previousHealthRevision);
   // Rebind the already-running worker in place. A second Fly deploy would
   // restart the co-hosted OpenAI gateway on the single production machine.
+  await requireOwnerLiveAdmission(previousHealthRevision);
   await run("fly", workerCanonicalTargetArgs());
   if (openAIGateway) {
     await waitForOpenAIGatewayTokenPair(
@@ -524,6 +592,7 @@ try {
   await waitForWorkerStartupWindow("Canonical worker");
   await runPaidAgentVerification(productionBaseUrl);
   await runVerificationCommands(productionBaseUrl);
+  await requireOwnerLiveAdmission(previousHealthRevision);
   const workerActivationStartedAt = new Date().toISOString();
   await run("fly", workerReleaseActivationArgs());
   await waitForWorkerStartupWindow("Activated canonical worker");
@@ -627,8 +696,22 @@ try {
 }
 
 console.log(
-  `Production release ${revision} passed canonical smoke and performance budgets with rollback-safe gateway token overlap.`,
+  ownerLiveVerification
+    ? `Production release ${revision} passed local typecheck/build and canonical live health, authenticated paid inference, signed manifest, and paired release gates with rollback-safe gateway token overlap. Hosted CI, test/audit suites, and benchmarks were deferred.`
+    : `Production release ${revision} passed canonical smoke and performance budgets with rollback-safe gateway token overlap.`,
 );
+
+async function requireOwnerLiveAdmission(previousRevision) {
+  if (!ownerLiveVerification) return;
+  assertOwnerLiveAuthorization(ownerLiveAuthorization, { candidateRevision: revision, previousRevision });
+  // Admission may run after the worker or web changed. Throw into the paired
+  // rollback handler here; the pre-deploy helpers call process.exit instead.
+  const changes = await capture("git", ["status", "--porcelain"]);
+  if (changes) throw new Error("Owner-authorized release checkout changed after validation.");
+  const head = await capture("git", ["rev-parse", "HEAD"]);
+  if (head !== revision) throw new Error("Owner-authorized release HEAD changed after validation.");
+  await verifyReleaseProvenance({ revision, ownerLiveAuthorization });
+}
 
 async function requireCleanWorkingTree() {
   const worktreeChanges = await capture("git", [
@@ -649,19 +732,25 @@ async function verifyRunnerProvenance() {
       `OMNIAGENT_RELEASE_SHA ${safeDiagnostic(revision)} does not match HEAD ${safeDiagnostic(head)}. Vercel and Fly build the checked-out tree, so the release revision must be HEAD.`,
     );
   }
-  const provenance = await verifyReleaseProvenance({ revision }).catch(
+  const provenance = await verifyReleaseProvenance({ revision, ownerLiveAuthorization }).catch(
     (error) => fail(`Release provenance check failed: ${errorMessage(error)}`),
   );
   const position = provenance.behindBy
     ? `${provenance.behindBy} commits behind ${RELEASE_BRANCH}`
     : `the tip of ${RELEASE_BRANCH}`;
   console.log(
-    `Release ${revision} is ${position} on ${RELEASE_REPOSITORY} with green checks: ${provenance.checks.join(", ")}.`,
+    ownerLiveVerification
+      ? `Release ${revision} is ${position} on ${RELEASE_REPOSITORY}; hosted CI is deferred under the exact owner authorization.`
+      : `Release ${revision} is ${position} on ${RELEASE_REPOSITORY} with green checks: ${provenance.checks.join(", ")}.`,
   );
   return provenance;
 }
 
 function validateReleaseConfiguration() {
+  if (ownerLiveVerification) {
+    try { assertOwnerLiveAuthorization(ownerLiveAuthorization, { candidateRevision: revision }); }
+    catch (error) { fail(errorMessage(error)); }
+  }
   let ownerBudgetPin;
   try { ownerBudgetPin = readOwnerBudgetOverride(); }
   catch (error) { fail(errorMessage(error)); }
@@ -1626,6 +1715,16 @@ async function runForwardSchemaPriorCheck(pin, baseUrl, previousRevision, migrat
 }
 
 async function runVerificationCommands(baseUrl) {
+  if (ownerLiveVerification) {
+    const environment = {
+      BASE_URL: baseUrl,
+      SMOKE_EXPECTED_REVISION: revision,
+      SMOKE_REQUEST_TIMEOUT_MS: "300000",
+    };
+    await run("npm", ["run", "smoke:preflight"], { environment });
+    await run("npm", ["run", "smoke:release"], { environment });
+    return;
+  }
   const sessionDirectory = await mkdtemp(
     path.join(tmpdir(), "omniagent-release-session-"),
   );
@@ -1682,7 +1781,7 @@ async function runPostActivationVerification(baseUrl, activatedAt) {
     OMNIAGENT_REQUIRE_ACTIVE_WORKER_HEARTBEATS: "true",
     OMNIAGENT_WORKER_HEARTBEAT_NOT_BEFORE: activatedAt,
   };
-  await run("npm", ["run", "smoke:security"], { environment });
+  if (!ownerLiveVerification) await run("npm", ["run", "smoke:security"], { environment });
   await run("npm", ["run", "smoke:release"], { environment });
 }
 
@@ -2239,7 +2338,9 @@ function safeDiagnostic(value) {
 
 function printDryRunReleaseProvenance() {
   console.log(
-    `DRY RUN verify release provenance revision=${revision} is clean HEAD on ${RELEASE_REPOSITORY} ${RELEASE_BRANCH} with green checks ${REQUIRED_RELEASE_CHECKS.join(",")}`,
+    ownerLiveVerification
+      ? `DRY RUN verify release provenance revision=${revision} is clean exact HEAD at ${RELEASE_REPOSITORY} ${RELEASE_BRANCH} tip; hosted checks are deferred, not passed`
+      : `DRY RUN verify release provenance revision=${revision} is clean HEAD on ${RELEASE_REPOSITORY} ${RELEASE_BRANCH} with green checks ${REQUIRED_RELEASE_CHECKS.join(",")}`,
   );
 }
 
@@ -2282,7 +2383,7 @@ function printPostActivationVerification(baseUrl, activatedAt) {
     OMNIAGENT_REQUIRE_ACTIVE_WORKER_HEARTBEATS: "true",
     OMNIAGENT_WORKER_HEARTBEAT_NOT_BEFORE: activatedAt,
   };
-  printDryRun("npm", ["run", "smoke:security"], environment);
+  if (!ownerLiveVerification) printDryRun("npm", ["run", "smoke:security"], environment);
   printDryRun("npm", ["run", "smoke:release"], environment);
 }
 
@@ -2364,6 +2465,12 @@ function boundedInteger(value, fallback, minimum, maximum) {
 }
 
 function printVerificationCommands(baseUrl) {
+  if (ownerLiveVerification) {
+    const environment = { BASE_URL: baseUrl, SMOKE_EXPECTED_REVISION: revision, SMOKE_REQUEST_TIMEOUT_MS: "300000" };
+    printDryRun("npm", ["run", "smoke:preflight"], environment);
+    printDryRun("npm", ["run", "smoke:release"], environment);
+    return;
+  }
   const sessionFile = "/tmp/omniagent-release-session/session-cookie";
   const environment = {
     ...smokeEnvironment,

@@ -9,6 +9,7 @@ import type {
   CommandReasoningLevel,
 } from "@/lib/models/command-selection";
 import type { ModelAssignmentScope } from "@/lib/settings/types";
+import styles from "@/components/agent-runs-workspace.module.css";
 
 type CatalogResponse = { command?: CommandModelCatalog };
 
@@ -63,6 +64,8 @@ export function CommandModelPicker({
     catalog?.choices.find((choice) => selectionMatchesChoice(value, choice)),
   [catalog?.choices, value]);
   const selectedChoiceId = selectedChoice?.id || "auto";
+  const defaultChoice = catalog?.choices.find((choice) => choice.id === catalog.defaultChoiceId);
+  const displayedChoice = selectedChoice || defaultChoice;
   const reasoningOptions = selectedChoice?.reasoningOptions || [];
 
   function chooseModel(choiceId: string) {
@@ -90,28 +93,30 @@ export function CommandModelPicker({
 
   const statusTitle = state === "error"
     ? "Model choices could not be read from Settings. Asael will use the saved default."
-    : catalog?.message || "Loading the validated Settings model route.";
+    : displayedChoice
+      ? `${displayedChoice.displayName}. ${catalog?.message || "Choose a model for this message."}`
+      : catalog?.message || "Loading the saved model route.";
   return (
     <div
-      className="inline-flex min-h-10 min-w-0 max-w-full flex-wrap items-center gap-2 rounded-[.625rem] bg-surface-raised px-2 text-muted"
+      className={styles.modelPicker}
       title={statusTitle}
     >
       {state === "loading"
         ? <Loader2 size={14} className="animate-spin" aria-hidden="true" />
         : <BrainCircuit size={14} aria-hidden="true" />}
       <label className="sr-only" htmlFor="command-model-choice">Model</label>
-      <span className="text-[13px] font-semibold text-foreground">Model</span>
       <select
         id="command-model-choice"
         value={selectedChoiceId}
         disabled={disabled || state !== "ready" || !catalog?.choices.length}
         onChange={(event) => chooseModel(event.currentTarget.value)}
-        className="min-h-9 min-w-0 max-w-[11rem] flex-1 bg-transparent px-1 text-[13px] font-semibold text-muted outline-none hover:text-foreground sm:max-w-[17rem]"
+        className={styles.modelSelect}
+        title={statusTitle}
       >
-        <option value="auto">Settings default</option>
+        <option value="auto">{defaultChoice?.displayName || (state === "loading" ? "Loading model…" : "Default unavailable")}</option>
         {catalog?.choices.map((choice) => (
           <option key={choice.id} value={choice.id}>
-            {providerLabel(choice.provider)} · {choice.displayName}{choice.route === "fallback" ? " · fallback" : ""}
+            {choice.displayName}{choice.route === "fallback" ? " · fallback" : ""}
           </option>
         ))}
       </select>
@@ -119,15 +124,15 @@ export function CommandModelPicker({
         <>
           <span className="h-4 w-px bg-line" aria-hidden="true" />
           <label className="sr-only" htmlFor="command-reasoning-choice">Thinking intensity</label>
-          <span className="text-[13px] font-semibold text-foreground">Thinking</span>
           <select
             id="command-reasoning-choice"
             value={value?.reasoningLevel || "default"}
             disabled={disabled || !reasoningOptions.length}
             onChange={(event) => chooseReasoning(event.currentTarget.value)}
-            className="min-h-9 max-w-28 bg-transparent px-1 text-[13px] font-semibold text-muted outline-none hover:text-foreground disabled:opacity-60 sm:max-w-32"
+            className={styles.reasoningSelect}
+            title="Thinking intensity: more reasoning can take longer"
           >
-            <option value="default">Default</option>
+            <option value="default">Default thinking</option>
             {reasoningOptions.map((option) => (
               <option key={option.id} value={option.id}>{option.label}</option>
             ))}
@@ -168,11 +173,4 @@ function selectionMatchesChoice(
     selection.provider === choice.provider &&
     selection.modelId === choice.modelId,
   );
-}
-
-function providerLabel(provider: CommandModelChoice["provider"]) {
-  if (provider === "openai") return "OpenAI";
-  if (provider === "google") return "Google";
-  if (provider === "anthropic") return "Claude";
-  return "Bedrock";
 }
