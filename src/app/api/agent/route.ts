@@ -951,6 +951,7 @@ async function POSTHandler(request: Request) {
       contextBlockSha256: commandContext.contextBlockSha256,
       receiptSha256: commandContext.receiptSha256,
       pins: commandContext.pins,
+      ...(commandContext.roleContextPin ? { roleContextPin: commandContext.roleContextPin } : {}),
       toolGrantCount: 0,
       delegationCount: 0,
     };

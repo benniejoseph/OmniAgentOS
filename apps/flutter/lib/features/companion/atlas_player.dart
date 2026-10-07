@@ -1,12 +1,13 @@
 import 'dart:async';
-import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:lottie/lottie.dart';
 
 import '../../core/platform/macos_power_state.dart';
-import 'atlas_assets.dart';
+import 'atlas_assets.dart' show atlasMotionAllowed;
+import 'atlas_lottie_assets.dart';
 import 'companion_models.dart';
 
 /// A decorative state portrait. A fresh reaction key permits one finite clip;
@@ -27,7 +28,7 @@ class AtlasPortrait extends StatefulWidget {
   final double size;
   final bool visible;
 
-  /// The reviewed static full-body crop is only used for an idle greeting.
+  /// Idle greetings keep the same quiet vector pose without a reaction.
   final bool greeting;
   final CompanionPreferences? preferences;
   final Object? scopeKey, reactionKey;
@@ -43,10 +44,9 @@ class _AtlasPortraitState extends State<AtlasPortrait>
   final _scrollPositions = <ScrollPosition>{};
   AssetBundle? _bundle;
   Object? _configuration, _handledReaction;
-  ui.Image? _image;
-  AtlasClip? _clip;
+  LottieComposition? _composition;
   bool _foreground = true, _dark = false, _motion = false, _allowed = false;
-  bool _sprite = false, _postFramePending = false;
+  bool _postFramePending = false;
   int _generation = 0;
 
   @override
@@ -56,8 +56,7 @@ class _AtlasPortraitState extends State<AtlasPortrait>
     _foreground =
         WidgetsBinding.instance.lifecycleState == null ||
         WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
-    // A completed ticker stops at the exact final pose. The single current
-    // texture stays until a state/scope change; no idle ticker or clip loop.
+    // Every reaction stops at the final vector pose. Idle has no ticker or loop.
     _clock = AnimationController(vsync: this);
     _powerState = widget.powerState ?? MacosPowerStateMonitor.instance;
     _powerState.addListener(_synchronize);
@@ -68,7 +67,8 @@ class _AtlasPortraitState extends State<AtlasPortrait>
     super.didChangeDependencies();
     _bundle = DefaultAssetBundle.of(context);
     _dark = Theme.of(context).brightness == Brightness.dark;
-    _motion = !MediaQuery.disableAnimationsOf(context);
+    _motion = !MediaQuery.disableAnimationsOf(context) &&
+        !MediaQuery.accessibleNavigationOf(context);
     _allowed =
         TickerMode.valuesOf(context).enabled &&
         (ModalRoute.of(context)?.isCurrent ?? true);
@@ -193,11 +193,12 @@ class _AtlasPortraitState extends State<AtlasPortrait>
       return;
     }
     _configuration = next;
-    _clearTexture();
-    if (visible && !_staticGreeting) {
+    _clearComposition();
+    if (visible) {
       unawaited(
         _load(
-          sprite:
+          animate:
+              !_staticGreeting &&
               freshReaction &&
               _motion &&
               _powerState.value == MacosPowerState.disabled &&
@@ -209,63 +210,31 @@ class _AtlasPortraitState extends State<AtlasPortrait>
     setState(() {});
   }
 
-  void _clearTexture() {
+  void _clearComposition() {
     _generation++;
     _clock.stop();
-    _image?.dispose();
-    _image = null;
-    _clip = null;
-    _sprite = false;
+    _composition = null;
   }
 
-  Future<void> _load({required bool sprite}) async {
+  Future<void> _load({required bool animate}) async {
     final bundle = _bundle;
-    if (bundle == null || !mounted || !_visible || _staticGreeting) {
-      return;
-    }
-    _clearTexture();
+    if (bundle == null || !mounted || !_visible) return;
     final generation = _generation;
     final configuration = _configuration;
-    final state = widget.state, dark = _dark;
-    bool current() =>
-        mounted &&
-        generation == _generation &&
-        configuration == _configuration &&
-        _visible;
+    bool current() => mounted && generation == _generation &&
+        configuration == _configuration && _visible;
     try {
-      final manifest = await AtlasAssets.manifest(bundle);
-      if (!current() || manifest == null) {
-        return;
-      }
-      final clip = manifest.states[state];
-      if (clip == null) {
-        return;
-      }
-      final animated = sprite && clip.durationMs > 0 && clip.frameCount > 1;
-      final image = await AtlasAssets.texture(
-        bundle,
-        clip,
-        dark: dark,
-        sprite: animated,
+      final composition = await AtlasLottieAssets.load(
+        bundle, widget.state, dark: _dark,
       );
-      if (!current()) {
-        image.dispose();
-        return;
-      }
-      setState(() {
-        _image = image;
-        _clip = clip;
-        _sprite = animated;
-      });
-      if (animated) {
-        _clock.duration = Duration(milliseconds: clip.durationMs);
-        _clock.forward(from: 0);
-      }
+      if (!current()) return;
+      _clock.duration = composition.duration;
+      _clock.value = 1;
+      setState(() => _composition = composition);
+      if (animate) _clock.forward(from: 0);
     } catch (_) {
-      // Missing, incomplete, or mismatched deliveries keep the approved neutral.
-      if (current()) {
-        setState(() {});
-      }
+      // A matching vector still remains available if a bundled file fails.
+      if (current()) setState(() {});
     }
   }
 
@@ -278,91 +247,85 @@ class _AtlasPortraitState extends State<AtlasPortrait>
       position.removeListener(_queueVisibilityCheck);
     }
     _clock.dispose();
-    _image?.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final image = _image, clip = _clip;
-    final visible =
-        widget.visible &&
-        widget.preferences?.visible == true &&
-        _foreground &&
-        _allowed;
+    final composition = _composition;
+    final visible = widget.visible && widget.preferences?.visible == true &&
+        _foreground && _allowed;
     return ExcludeSemantics(
       child: IgnorePointer(
         child: SizedBox.square(
           dimension: widget.size,
           child: !visible
               ? const SizedBox.expand()
-              : _staticGreeting
-              ? Image.asset(
-                  'assets/companion/atlas-greeting.png',
-                  key: ValueKey(('atlas-greeting', widget.scopeKey)),
-                  fit: BoxFit.contain,
-                  excludeFromSemantics: true,
-                  errorBuilder: (_, _, _) => Center(
-                    child: SizedBox.square(
-                      dimension: widget.size > 96 ? 96 : widget.size,
-                      child: _neutralPortrait(),
-                    ),
-                  ),
-                )
-              : image == null || clip == null
-              ? _neutralPortrait()
               : RepaintBoundary(
-                  child: CustomPaint(
-                    painter: _AtlasPainter(image, clip, _sprite, _clock),
-                  ),
+                  child: composition == null
+                      ? CustomPaint(painter: _AtlasStillPainter(
+                          Theme.of(context).colorScheme,
+                        ))
+                      : Lottie(
+                          composition: composition,
+                          controller: _clock,
+                          animate: false,
+                          repeat: false,
+                          fit: BoxFit.contain,
+                          frameRate: FrameRate.composition,
+                          addRepaintBoundary: false,
+                        ),
                 ),
         ),
       ),
     );
   }
-
-  Widget _neutralPortrait() => Image.asset(
-    'assets/companion/atlas-neutral.png',
-    fit: BoxFit.contain,
-    excludeFromSemantics: true,
-    errorBuilder: (_, _, _) => const SizedBox.expand(),
-  );
 }
 
-class _AtlasPainter extends CustomPainter {
-  _AtlasPainter(this.image, this.clip, this.sprite, this.clock)
-    : super(repaint: clock);
-  final ui.Image image;
-  final AtlasClip clip;
-  final bool sprite;
-  final Animation<double> clock;
+/// Loading/failure pose uses the current theme and never starts a timer.
+class _AtlasStillPainter extends CustomPainter {
+  const _AtlasStillPainter(this.colors);
+  final ColorScheme colors;
+
   @override
   void paint(Canvas canvas, Size size) {
-    final frame = !sprite
-        ? 0
-        : clock.value >= 1
-        ? clip.frameCount - 1
-        : (clock.value * clip.durationMs / 50).floor().clamp(
-            0,
-            clip.frameCount - 1,
-          );
-    final source = Rect.fromLTWH(
-      sprite ? (frame % 4) * 256.0 : 0,
-      sprite ? (frame ~/ 4) * 256.0 : 0,
-      256,
-      256,
-    );
-    canvas.drawImageRect(
-      image,
-      source,
-      Offset.zero & size,
-      Paint()..filterQuality = FilterQuality.medium,
-    );
+    canvas.save();
+    canvas.scale(size.width / 256, size.height / 256);
+    canvas.translate(128, 128);
+    canvas.drawCircle(Offset.zero, 91, Paint()..color = colors.secondaryContainer.withValues(alpha: .42));
+    canvas.save();
+    canvas.rotate(-26 * 3.141592653589793 / 180);
+    canvas.drawOval(Rect.fromCenter(center: Offset.zero, width: 210, height: 138),
+      Paint()..color = colors.outlineVariant..style = PaintingStyle.stroke..strokeWidth = 2);
+    canvas.restore();
+    canvas.drawCircle(Offset.zero, 66, Paint()..color = colors.surface);
+    canvas.drawCircle(Offset.zero, 66, Paint()..color = colors.outlineVariant..style = PaintingStyle.stroke..strokeWidth = 1.5);
+    canvas.drawCircle(Offset.zero, 56, Paint()..color = colors.secondary.withValues(alpha: .23)..style = PaintingStyle.stroke..strokeWidth = .7);
+    final star = Path()..moveTo(0, -40)
+      ..cubicTo(3, -40, 7, -18, 13, -13)
+      ..cubicTo(18, -7, 40, -3, 40, 0)
+      ..cubicTo(40, 3, 18, 7, 13, 13)
+      ..cubicTo(7, 18, 3, 40, 0, 40)
+      ..cubicTo(-3, 40, -7, 18, -13, 13)
+      ..cubicTo(-18, 7, -40, 3, -40, 0)
+      ..cubicTo(-40, -3, -18, -7, -13, -13)
+      ..cubicTo(-7, -18, -3, -40, 0, -40)..close();
+    canvas.save();
+    canvas.rotate(-12 * 3.141592653589793 / 180);
+    canvas.drawPath(star, Paint()..color = colors.secondary);
+    canvas.restore();
+    canvas.drawCircle(Offset.zero, 4.5, Paint()..color = colors.surface);
+    canvas.save();
+    canvas.rotate(-26 * 3.141592653589793 / 180);
+    canvas.drawArc(Rect.fromCenter(center: Offset.zero, width: 210, height: 138),
+      15 * 3.141592653589793 / 180, 132 * 3.141592653589793 / 180, false,
+      Paint()..color = colors.secondary..style = PaintingStyle.stroke..strokeWidth = 2.6..strokeCap = StrokeCap.round);
+    canvas.restore();
+    canvas.drawCircle(const Offset(55.75, -74.45), 11, Paint()..color = colors.surface);
+    canvas.drawCircle(const Offset(55.75, -74.45), 6.5, Paint()..color = colors.secondary);
+    canvas.restore();
   }
 
   @override
-  bool shouldRepaint(covariant _AtlasPainter oldDelegate) =>
-      oldDelegate.image != image ||
-      oldDelegate.sprite != sprite ||
-      oldDelegate.clip != clip;
+  bool shouldRepaint(covariant _AtlasStillPainter oldDelegate) => oldDelegate.colors != colors;
 }

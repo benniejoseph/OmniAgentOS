@@ -45,3 +45,13 @@ Clear, calm, and accountable. The interface should feel technically capable with
 ## Accessibility & Inclusion
 
 Target WCAG 2.2 AA across authenticated and public surfaces. All workflows must be keyboard operable, screen-reader understandable, robust at 200% zoom, usable without color alone, and functional with reduced motion. Touch targets, focus visibility, live status announcements, contrast, error recovery, and mobile navigation are release requirements rather than polish.
+
+
+### CSM role context
+
+Work includes a personal “My CSM role” space for evolving responsibilities,
+working preferences, notes, screenshots and role documents. The CSM assistant
+reads current saved role guidance alongside the selected client’s context on
+each request. Role guidance is scoped to its owner and kept separate from client
+facts; file readiness and bounded excerpt coverage remain explicit. This is
+context retrieval, not model training or permission expansion.

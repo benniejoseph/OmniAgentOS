@@ -13,7 +13,7 @@ export default async function ProjectsPage({
   const showProjects = query.view === "projects" || query.view === "execution" || query.view === "build" || query.fromSearch === "1";
   if (!showProjects) {
     const initialProjectId = typeof query.project === "string" && /^[a-zA-Z0-9_.:-]{1,200}$/.test(query.project) ? query.project : undefined;
-    return <CsmWorkspace deployment={deployment} initialProjectId={initialProjectId} />;
+    return <CsmWorkspace deployment={deployment} initialProjectId={initialProjectId} initialView={query.view === "role" ? "role" : "clients"} />;
   }
   const initialView = query.view === "execution" ? "execution" : query.view === "build" ? "build" : "overview";
   return <ProjectsWorkspace initialView={initialView} deployment={deployment} />;
