@@ -44,6 +44,22 @@ export type LiveWebSearchResult = {
   sourceCount: number;
 };
 
+/** Content-free provider evidence for diagnosing failed hosted searches. */
+export type WebSearchFailureDiagnostics = {
+  responseStatus: string;
+  incompleteReason: string | null;
+  hostedCallCount: number;
+  calls: Array<{ status: string; action: string | null; sourceCount: number; resultCount: number }>;
+  answerChars: number;
+  sourceCount: number;
+};
+
+const webSearchFailures = new WeakMap<Error, WebSearchFailureDiagnostics>();
+
+export function getWebSearchFailureDiagnostics(error: unknown) {
+  return error instanceof Error ? webSearchFailures.get(error) : undefined;
+}
+
 export async function runLiveWebSearch({
   query,
   contextSize = "medium",
@@ -91,6 +107,7 @@ export async function runLiveWebSearch({
     : timeoutController.signal;
 
   let searchCallCount = 0;
+  let providerDiagnostics: WebSearchFailureDiagnostics | undefined;
   let dispatched = false;
   const startedAt = Date.now();
   try {
@@ -147,6 +164,10 @@ export async function runLiveWebSearch({
       );
     });
     const searchCalls = hostedWebSearchCalls(response);
+    // Keep only bounded enums and counts, never provider text, query contents,
+    // URLs, headers, credentials, or private reasoning. SDK types can lag the
+    // live API's optional action and incomplete hosted-call status.
+    providerDiagnostics = webSearchResponseDiagnostics(response);
     // The usage ledger's legacy query counter records hosted invocations,
     // not the number of URLs or query strings inside one invocation.
     searchCallCount = searchCalls.length;
@@ -158,7 +179,7 @@ export async function runLiveWebSearch({
     const summary = response.output_text?.trim() || "";
     const searchFailure = searchCalls.some((call) => call.status !== "completed")
       ? "Live web search did not complete its search calls."
-      : !searchCalls.some((call) => call.action.type === "search")
+      : !searchCalls.some((call) => call.action?.type === "search")
         ? "Live web search returned no completed search call."
         : !summary
           ? "Live web search returned no answer."
@@ -225,6 +246,7 @@ export async function runLiveWebSearch({
               "openai", "abort", false,
             ))
           : classifyProviderError("openai", caught);
+    if (providerDiagnostics) webSearchFailures.set(error, providerDiagnostics);
     const responseReceipt = getModelProviderResponseReceipt(error);
     const providerFailure = error instanceof ModelProviderError ? error : undefined;
     if (meteredUsageScope) {
@@ -263,6 +285,30 @@ function hostedWebSearchCalls(response: Pick<Response, "output">) {
   return response.output.filter((item): item is ResponseFunctionWebSearch =>
     item.type === "web_search_call"
   );
+}
+
+function webSearchResponseDiagnostics(response: Response): WebSearchFailureDiagnostics {
+  const known = (value: unknown, allowed: readonly string[]) =>
+    typeof value === "string" && allowed.includes(value) ? value : "unknown";
+  const calls = hostedWebSearchCalls(response);
+  return {
+    responseStatus: known(response.status, ["completed", "failed", "in_progress", "cancelled", "queued", "incomplete"]),
+    incompleteReason: response.incomplete_details?.reason == null
+      ? null
+      : known(response.incomplete_details.reason, ["max_output_tokens", "content_filter"]),
+    hostedCallCount: calls.length,
+    calls: calls.slice(0, 12).map((call) => {
+      const value = call as unknown as { status?: unknown; action?: { type?: unknown; sources?: unknown }; results?: unknown };
+      return {
+        status: known(value.status, ["queued", "in_progress", "searching", "completed", "failed", "incomplete"]),
+        action: value.action == null ? null : known(value.action.type, ["search", "open_page", "find_in_page"]),
+        sourceCount: Array.isArray(value.action?.sources) ? value.action.sources.length : 0,
+        resultCount: Array.isArray(value.results) ? value.results.length : 0,
+      };
+    }),
+    answerChars: response.output_text?.length || 0,
+    sourceCount: extractWebSources(response).length,
+  };
 }
 
 function isRejectedDomainFilterError(error: unknown) {

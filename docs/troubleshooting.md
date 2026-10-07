@@ -423,6 +423,17 @@ queries plus governed page reads supply evidence for the separate full report;
 the original request and its output requirements remain intact for synthesis.
 The run and provider deadlines were not increased.
 
+Revision `e2987876` removed that timeout in the same live report, but all three
+prefetches still failed in 23–25 seconds because a hosted call was not marked
+completed. A 73-character follow-up also failed while a 95-character query
+succeeded. Low context and a shorter query therefore do not by themselves
+establish reliability. Failed `web.search` receipts retain `providerDiagnostics`:
+the terminal response status, incomplete reason, and each hosted call's
+status/action plus source counts. These bounded enums and counts exclude query,
+answer, source URLs, credentials, and private reasoning. Inspect them before
+changing the completed-search gate or retrying a paid request; the provider may
+return optional actions or statuses newer than the installed SDK declares.
+
 A completed report may have valid citation IDs while grounding says `missing`.
 The served grounding status comes from material-claim evidence coverage, not
 just matching references. Do not force that status to `verified` to make a
