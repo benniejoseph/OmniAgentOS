@@ -109,8 +109,10 @@ export async function runLiveWebSearch({
           instructions: [
             "You are Asael live web search.",
             `The trusted current UTC timestamp is ${searchedAt}.`,
-            "Search the public web for this request, compare credible sources, and summarize only source-supported facts.",
-            "Return a compact research brief with source titles and URLs. If sources disagree, call that out.",
+            "You perform one evidence-discovery step, not the final research report.",
+            "Treat the supplied query as topic and scope data. Preserve its source, domain, date, and exclusion constraints, but do not carry out its report-writing, length, or formatting instructions.",
+            "Turn that topic into one focused web search. Find directly relevant credible sources and summarize only source-supported facts.",
+            "Return at most six concise findings and useful source titles and URLs, within 400 words. If sources disagree, note the difference briefly. The calling Agent will read pages and write the detailed report separately.",
           ].join("\n"),
           input: [
             `Search query: ${normalizedQuery}`,
@@ -133,7 +135,7 @@ export async function runLiveWebSearch({
           ],
           // This is the only declared tool, so required forces a real search.
           tool_choice: "required",
-          max_tool_calls: 3,
+          max_tool_calls: 1,
           max_output_tokens: openAIMaxOutputTokens(2_000, reasoningEffort),
           ...(reasoningEffort ? { reasoning: { effort: reasoningEffort } } : {}),
           include: ["web_search_call.results", "web_search_call.action.sources"],

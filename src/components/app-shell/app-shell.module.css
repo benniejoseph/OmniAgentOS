@@ -346,3 +346,33 @@
 .mobileAdvanced { margin-block-end: 1.25rem; }
 .mobileAdvanced summary { min-height: 2.75rem; padding: 0.75rem; color: var(--muted); font-size: 0.875rem; font-weight: 600; cursor: pointer; }
 @media (prefers-reduced-motion: reduce) { .dockLink::before { transition: none; } }
+
+/* Route changes settle the selected destination without moving the sidebar. */
+.sidebar :global(nav a[aria-current="page"]) {
+  animation: destination-arrives 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.sidebar :global(nav a[aria-current="page"] > svg:last-child) {
+  animation: destination-arrow 260ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.sidebar :global(nav button[aria-expanded="true"] + div) {
+  animation: navigation-reveals 180ms ease-out;
+}
+@keyframes destination-arrives {
+  from { background-color: var(--surface-raised); }
+  to { background-color: var(--accent-surface); }
+}
+@keyframes destination-arrow {
+  from { opacity: 0; transform: translateX(-4px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@keyframes navigation-reveals {
+  from { opacity: 0; transform: translateY(-3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sidebar :global(nav a[aria-current="page"]),
+  .sidebar :global(nav a[aria-current="page"] > svg:last-child),
+  .sidebar :global(nav button[aria-expanded="true"] + div) { animation: none; }
+  .sidebar :global(nav a), .sidebar :global(nav button),
+  .sidebar :global(nav svg), .mobilePanel :global(nav a) { transition: none; }
+}

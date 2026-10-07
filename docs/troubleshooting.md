@@ -401,11 +401,32 @@ provider requests retain separate usage failure categories. An inactive saved
 route reports its Settings recovery instruction; it is never silently replaced
 with another model or credential.
 The governed search failure receipt retains `failureKind` and `retryable`.
-Research stops further discovery after a non-retryable failure, keeps any
-evidence already collected, and records the limitation. The synthesis loop is
-not offered the same failed search route again during that run. Transient
-provider failures keep their retry classification; the SDK itself never
-repeats a paid request.
+Research stops further discovery after a non-retryable configuration, access,
+or provider-request failure, keeps collected evidence, and records the
+limitation. A timed-out call is not replayed. The next distinct preplanned
+query may still run through normal governed accounting if the remaining
+budget admits it; a timeout does not disable every other research question.
+The synthesis model is not offered the failed search route again during that
+run. Transient provider failures keep their retry classification; the SDK
+itself never repeats a paid request.
+
+On revision `459b52ed`, live verification found that sending the complete
+1,213-character report-writing brief with high search context exhausted the
+60-second deadline (60,143 ms), while a 77-character low-context discovery
+completed in 10,779 ms on the same saved GPT-6 Astra assignment. Increasing
+the deadline alone did not solve the request-design problem. Discovery now
+removes recognizable report-format instructions without removing sentences
+containing explicit source/domain/date restrictions, uses low search context,
+and permits one hosted invocation per focused query. The provider is explicitly
+asked to return at most six findings within 400 words. Three complementary
+queries plus governed page reads supply evidence for the separate full report;
+the original request and its output requirements remain intact for synthesis.
+The run and provider deadlines were not increased.
+
+A completed report may have valid citation IDs while grounding says `missing`.
+The served grounding status comes from material-claim evidence coverage, not
+just matching references. Do not force that status to `verified` to make a
+search check pass; inspect invalid citation IDs and claim coverage separately.
 
 Automatic search resolves the Agent's permitted tools before using the governed
 executor. Research keeps that authorized search tool for follow-up questions.

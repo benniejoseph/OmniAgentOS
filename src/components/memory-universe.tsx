@@ -190,13 +190,9 @@ const entityLabels: Record<EntityTypeId, string> = {
 
 export function MemoryUniverse(props: { active: boolean; onAddConnectedFact?: () => void; onOpenMemory?: (id: string) => void; onOpenSource?: (title: string) => void }) {
   const [view, setView] = useState<"library" | "connections">("library");
-  return <div className={styles.shell}>
-    <div className={styles.viewSwitch} aria-label="Knowledge map view">
-      <button type="button" aria-pressed={view === "library"} onClick={() => setView("library")}><Layers3 size={16} />Knowledge map</button>
-      <button type="button" aria-pressed={view === "connections"} onClick={() => setView("connections")}><GitBranch size={16} />Explore connections</button>
-    </div>
-    {view === "library" ? <MemoryLandscape active={props.active} onOpenMemory={props.onOpenMemory} onOpenSource={props.onOpenSource} /> : <MemoryConnections active={props.active} onAddConnectedFact={props.onAddConnectedFact} />}
-  </div>;
+  return view === "library"
+    ? <MemoryLandscape active={props.active} onOpenMemory={props.onOpenMemory} onOpenSource={props.onOpenSource} onShowConnections={() => setView("connections")} />
+    : <div className={styles.shell}><div className={styles.viewSwitch}><button type="button" onClick={() => setView("library")}><Layers3 size={16} />Back to knowledge map</button></div><MemoryConnections active={props.active} onAddConnectedFact={props.onAddConnectedFact} /></div>;
 }
 
 function MemoryConnections(props: { active: boolean; onAddConnectedFact?: () => void }) {

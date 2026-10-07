@@ -397,3 +397,6 @@
 .technicalDetails summary { cursor: pointer; }
 .technicalDetails p { margin-block-start: .5rem; overflow-wrap: anywhere; }
 @media (max-width: 640px) { .memoryRow { grid-template-columns: minmax(0,1fr) 1rem; gap: .5rem; } .memoryRow .rowFacts { grid-column: 1; grid-row: 2; justify-content: start; } .memoryRow > svg { grid-column: 2; } }
+
+.inspectorTitle a { display: inline-flex; align-items: center; gap: .4rem; min-height: 2.75rem; color: var(--accent); font-weight: 500; }
+.technicalDetails pre { white-space: pre-wrap; overflow-wrap: anywhere; }

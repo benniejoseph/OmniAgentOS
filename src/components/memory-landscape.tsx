@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { ArrowLeft, ArrowUpRight, BookOpen, Brain, CheckCheck, ChevronRight, FileText, Flag, Heart, Lightbulb, ListChecks, Mail, MessageSquare, Search, RefreshCw, Sparkles } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, BookOpen, Brain, CheckCheck, ChevronRight, FileText, Flag, GitBranch, Heart, Lightbulb, ListChecks, Mail, MessageSquare, Search, RefreshCw, Sparkles } from "lucide-react";
 import type { KnowledgeIndexItem, MemoryIndexItem } from "@/lib/memory/intelligence";
 import styles from "./memory-landscape.module.css";
 
@@ -27,7 +27,7 @@ const collections: Record<string, { label: string; description: string; icon: ty
 };
 
 /** Organizes the already-authorized catalog. Branches mean category membership, never inferred facts. */
-export function MemoryLandscape({ active, onOpenMemory, onOpenSource }: { active: boolean; onOpenMemory?: (id: string) => void; onOpenSource?: (title: string) => void }) {
+export function MemoryLandscape({ active, onOpenMemory, onOpenSource, onShowConnections }: { active: boolean; onOpenMemory?: (id: string) => void; onOpenSource?: (title: string) => void; onShowConnections?: () => void }) {
   const [collection, setCollection] = useState<Collection>("memory");
   const [catalogs, setCatalogs] = useState<Partial<Record<Collection, Catalog>>>({});
   const [loading, setLoading] = useState(false);
@@ -69,13 +69,11 @@ export function MemoryLandscape({ active, onOpenMemory, onOpenSource }: { active
   function recordDetails(entry: Entry) { return <aside className={styles.selection} aria-label="Selected record"><div><span className={styles.selectionType}>{collections[entry.category]?.label || readable(entry.category)}</span><h3>{entry.title}</h3><p>{entry.detail} · {dateLabel(entry.date)}{entry.state ? ` · ${readable(entry.state)}` : ""}</p></div>{collection === "memory" && onOpenMemory ? <button type="button" className={styles.openButton} onClick={() => onOpenMemory(entry.id)}>Open memory <ArrowUpRight size={16} /></button> : onOpenSource ? <button type="button" className={styles.openButton} onClick={() => onOpenSource(entry.title)}>Open source library <ArrowUpRight size={16} /></button> : <p className={styles.sourceHelp}>Find this title in the Knowledge tab to view its source record.</p>}<button type="button" className={styles.close} onClick={() => setSelected(undefined)} aria-label="Close selected record">×</button></aside>; }
 
   return <section className={styles.workspace} aria-label="Knowledge map">
-    <header className={styles.heading}>
-      <div><h2>Your knowledge map</h2><p>Explore what is saved, open a collection, then follow a memory back to its details.</p></div>
-      <button type="button" className={styles.iconButton} onClick={() => setRevision((value) => value + 1)} disabled={loading} aria-label="Refresh knowledge map"><RefreshCw size={17} /></button>
-    </header>
     <div className={styles.toolbar}>
       <div className={styles.switcher} aria-label="Map collection"><button type="button" aria-pressed={collection === "memory"} onClick={() => changeCollection("memory")}><Brain size={16} />Memories</button><button type="button" aria-pressed={collection === "knowledge"} onClick={() => changeCollection("knowledge")}><BookOpen size={16} />Sources</button></div>
+      {onShowConnections ? <button type="button" className={styles.connectionButton} onClick={onShowConnections}><GitBranch size={16} />Connections</button> : null}
       <label className={styles.search}><Search size={17} /><input aria-label="Search this map" placeholder="Find a title or collection" value={query} onChange={(event) => { setQuery(event.target.value); setCategory(undefined); setSelected(undefined); }} /></label>
+      <button type="button" className={styles.iconButton} onClick={() => setRevision((value) => value + 1)} disabled={loading} aria-label="Refresh knowledge map"><RefreshCw size={17} /></button>
     </div>
     {error ? <p className={styles.error} role="alert">{error}{catalog ? " Previously loaded titles are still shown." : ""}</p> : null}
     {loading ? <p className={styles.loading} role="status">{catalog ? "Refreshing your map…" : "Opening your memory library…"}</p> : null}
@@ -88,7 +86,7 @@ export function MemoryLandscape({ active, onOpenMemory, onOpenSource }: { active
         <div className={styles.origin}><div className={styles.originNode}>{collection === "memory" ? <Brain size={26} strokeWidth={1.5} /> : <BookOpen size={26} strokeWidth={1.5} />}<strong>{collection === "memory" ? "Your memory" : "Your sources"}</strong><span>{category ? collections[category]?.label || readable(category) : "A place for every piece"}</span></div></div>
         <div className={styles.branches}>{currentGroups.map(([key, rows]) => {
           const definition = collections[key] || { label: readable(key), description: "Saved context", icon: BookOpen }; const Icon = definition.icon;
-          const shown = category ? rows : rows.slice(0, groups.length === 1 ? 8 : groups.length < 3 ? 5 : groups.length > 4 ? 2 : 3);
+          const shown = category ? rows : rows.slice(0, groups.length > 3 ? 2 : 3);
           return <section key={key} className={styles.branch} aria-label={definition.label}>
             <div className={styles.collectionCell}><button type="button" className={styles.collectionButton} aria-pressed={category === key} onClick={() => { setCategory(category === key ? undefined : key); setSelected(undefined); }}><Icon size={20} strokeWidth={1.6} /><span><strong>{definition.label}</strong><small>{rows.length} {collection === "memory" ? "memories" : "sources"}</small></span><ChevronRight size={16} /></button><p>{definition.description}</p></div>
             <ul className={styles.records}>{shown.map((entry) => <li key={entry.id}><button type="button" className={styles.record} aria-pressed={selected === entry.id} onClick={() => setSelected(entry.id)}><span className={styles.recordMarker} /><span><strong>{entry.title}</strong><small>{dateLabel(entry.date)}</small></span><ChevronRight size={14} /></button>{selected === entry.id ? recordDetails(entry) : null}</li>)}{shown.length < rows.length ? <li className={styles.more}><button type="button" onClick={() => setCategory(key)}>Explore {rows.length - shown.length} more <ArrowUpRight size={14} /></button></li> : null}</ul>

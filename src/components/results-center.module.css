@@ -278,7 +278,7 @@
   color: var(--foreground);
   font-size: 1rem;
   line-height: 1.625rem;
-  white-space: pre-wrap;
+  white-space: normal;
   overflow-wrap: anywhere;
 }
 
@@ -726,3 +726,9 @@ a.resultRow .rowTitle {
 
 .embedded { padding: 0; max-width: none; }
 .embedded .introduction h2 { font-size: 1.125rem; line-height: 1.75rem; }
+
+.resultHeading h2, .rowTitle { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.requestDisclosure { max-width: 75ch; margin-block: 0.75rem; padding-block: 0.5rem; border-block-start: 1px solid var(--line); color: var(--muted); font-size: 0.875rem; line-height: 1.5rem; }
+.requestDisclosure summary { min-height: 2.75rem; display: list-item; padding-block: 0.625rem; cursor: pointer; color: var(--foreground); font-weight: 500; }
+.requestDisclosure p, .requestDisclosure pre { margin-block: 0.75rem; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 24rem; overflow: auto; }
+.requestDisclosure pre { font-size: 0.8125rem; }

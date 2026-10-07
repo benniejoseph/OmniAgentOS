@@ -84,7 +84,7 @@ describe("live web search provider boundary", () => {
     expect(mocks.create).toHaveBeenCalledWith(expect.objectContaining({
       store: false,
       tool_choice: "required",
-      max_tool_calls: 3,
+      max_tool_calls: 1,
       max_output_tokens: 2_000,
       tools: [{ type: "web_search", search_context_size: "medium" }],
       include: ["web_search_call.results", "web_search_call.action.sources"],

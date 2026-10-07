@@ -1587,13 +1587,21 @@ async function* runAgentUntilStopped(
         yield await emit({ type: "status", label: "gathering research evidence",
           detail: `Searching complementary evidence (${index + 1} of ${queries.length}).` });
         const execution = yield* gather(webSearchTool,
-          { query: searchQuery, limit: 8, searchContextSize: "high" },
+          // Discovery locates sources; full governed page reads provide depth.
+          // High-context, multi-call search was independently writing the
+          // entire report and exhausting its 60-second deadline here.
+          { query: searchQuery, limit: 8, searchContextSize: "low" },
           `research-search-${index + 1}`);
         const result = execution.record.status === "executed"
           ? liveWebPrefetchResult(execution.result) : undefined;
         if (result) searches.push(result);
         else {
           limitations.push(`Search ${index + 1} did not return usable evidence.`);
+          // An ambiguous timeout is not replayed by the synthesis model. The
+          // next preplanned facet is a distinct, separately budgeted query.
+          if (webSearchFailureIsNonRetryable(execution.record)) {
+            toolbox = filterAgentToolbox(toolbox, ["web.search"]);
+          }
           if (webSearchFailureStopsCollection(execution.record)) {
             limitations.push(execution.record.reason || "Further searches were stopped because the provider requires attention.");
             toolbox = filterAgentToolbox(toolbox, ["web.search"]);
@@ -1691,7 +1699,7 @@ async function* runAgentUntilStopped(
           count: liveWeb.sourceCount,
         });
       } else {
-        if (webSearchFailureStopsCollection(execution.record)) {
+        if (webSearchFailureIsNonRetryable(execution.record)) {
           toolbox = filterAgentToolbox(toolbox, ["web.search"]);
         }
         yield await emit({
@@ -6621,12 +6629,15 @@ function liveWebPrefetchResult(result: unknown): LiveWebSearchResult | undefined
 }
 
 function webSearchFailureStopsCollection(record: ToolExecutionRecord): boolean {
+  if (!webSearchFailureIsNonRetryable(record)) return false;
+  // A deadline says this search ran too long, not that another focused facet
+  // cannot work. Do not replay it, but do not cancel all remaining discovery.
+  return (record.output as Record<string, unknown>).failureKind !== "timeout";
+}
+
+function webSearchFailureIsNonRetryable(record: ToolExecutionRecord): boolean {
   if (record.toolId !== "web.search" || record.status !== "failed" ||
       !record.output || typeof record.output !== "object" || Array.isArray(record.output)) return false;
-  // A new discovery query cannot repair a disabled route, invalid credential,
-  // unsupported request, exhausted output, or elapsed search deadline. Keep
-  // any evidence already gathered and disclose the gap instead of asking the
-  // same provider to fail again in the synthesis loop.
   return (record.output as Record<string, unknown>).retryable === false;
 }
 
