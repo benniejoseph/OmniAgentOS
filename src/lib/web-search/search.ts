@@ -26,6 +26,8 @@ export type LiveWebSearchContextSize = "low" | "medium" | "high";
 // WebSocket event. Keep this documented extension explicit until the SDK catches up.
 // https://developers.openai.com/api/reference/python/resources/responses/methods/create
 type BoundedWebSearchRequest = ResponseCreateParamsNonStreaming & { max_tool_calls: number };
+const MAX_HOSTED_SEARCH_CALLS = 1;
+const INCOMPLETE_PAGE_READ_LIMITATION = "Search results are available; an additional page read did not finish. Read these pages before using detailed claims.";
 
 export type LiveWebSearchSource = {
   citationId: string;
@@ -42,10 +44,13 @@ export type LiveWebSearchResult = {
   summary: string;
   sources: LiveWebSearchSource[];
   sourceCount: number;
+  partialEvidence?: true;
+  limitations?: string[];
+  providerDiagnostics?: WebSearchProviderDiagnostics;
 };
 
-/** Content-free provider evidence for diagnosing failed hosted searches. */
-export type WebSearchFailureDiagnostics = {
+/** Content-free provider evidence for diagnosing hosted search coverage. */
+export type WebSearchProviderDiagnostics = {
   responseStatus: string;
   incompleteReason: string | null;
   hostedCallCount: number;
@@ -54,7 +59,7 @@ export type WebSearchFailureDiagnostics = {
   sourceCount: number;
 };
 
-const webSearchFailures = new WeakMap<Error, WebSearchFailureDiagnostics>();
+const webSearchFailures = new WeakMap<Error, WebSearchProviderDiagnostics>();
 
 export function getWebSearchFailureDiagnostics(error: unknown) {
   return error instanceof Error ? webSearchFailures.get(error) : undefined;
@@ -107,7 +112,7 @@ export async function runLiveWebSearch({
     : timeoutController.signal;
 
   let searchCallCount = 0;
-  let providerDiagnostics: WebSearchFailureDiagnostics | undefined;
+  let providerDiagnostics: WebSearchProviderDiagnostics | undefined;
   let dispatched = false;
   const startedAt = Date.now();
   try {
@@ -152,7 +157,7 @@ export async function runLiveWebSearch({
           ],
           // This is the only declared tool, so required forces a real search.
           tool_choice: "required",
-          max_tool_calls: 1,
+          max_tool_calls: MAX_HOSTED_SEARCH_CALLS,
           max_output_tokens: openAIMaxOutputTokens(2_000, reasoningEffort),
           ...(reasoningEffort ? { reasoning: { effort: reasoningEffort } } : {}),
           include: ["web_search_call.results", "web_search_call.action.sources"],
@@ -168,6 +173,7 @@ export async function runLiveWebSearch({
     // URLs, headers, credentials, or private reasoning. SDK types can lag the
     // live API's optional action and incomplete hosted-call status.
     providerDiagnostics = webSearchResponseDiagnostics(response);
+    const partialSearch = completedSearchWithUnfinishedPageOpen(response, searchCalls);
     // The usage ledger's legacy query counter records hosted invocations,
     // not the number of URLs or query strings inside one invocation.
     searchCallCount = searchCalls.length;
@@ -175,9 +181,15 @@ export async function runLiveWebSearch({
     const estimatedCostUsd = response.usage
       ? estimateWebSearchCostUsd(runtimeModel.model, usage, searchCallCount)
       : undefined;
-    const sources = extractWebSources(response).slice(0, Math.min(Math.max(maxSources, 1), 20));
-    const summary = response.output_text?.trim() || "";
-    const searchFailure = searchCalls.some((call) => call.status !== "completed")
+    // A partial response must not promote the unfinished page's URLs, answer
+    // annotations, or prose into evidence. Build discovery from the completed
+    // search item alone; governed web.read supplies actual page contents later.
+    const sources = extractWebSources(partialSearch ? { output: [partialSearch] } : response)
+      .slice(0, Math.min(Math.max(maxSources, 1), 20));
+    const summary = partialSearch
+      ? completedSearchDiscoveryBrief(sources)
+      : response.output_text?.trim() || "";
+    const searchFailure = !partialSearch && searchCalls.some((call) => call.status !== "completed")
       ? "Live web search did not complete its search calls."
       : !searchCalls.some((call) => call.action?.type === "search")
         ? "Live web search returned no completed search call."
@@ -223,6 +235,11 @@ export async function runLiveWebSearch({
       summary,
       sources,
       sourceCount: sources.length,
+      ...(partialSearch ? {
+        partialEvidence: true as const,
+        limitations: [INCOMPLETE_PAGE_READ_LIMITATION],
+        providerDiagnostics,
+      } : {}),
     };
   } catch (caught) {
     const error = allowedDomains?.length && isRejectedDomainFilterError(caught)
@@ -287,7 +304,34 @@ function hostedWebSearchCalls(response: Pick<Response, "output">) {
   );
 }
 
-function webSearchResponseDiagnostics(response: Response): WebSearchFailureDiagnostics {
+/** Recover only the exact observed partial-follow-up shape, never a failed search. */
+function completedSearchWithUnfinishedPageOpen(
+  response: Response,
+  calls: ResponseFunctionWebSearch[],
+): ResponseFunctionWebSearch | undefined {
+  if (MAX_HOSTED_SEARCH_CALLS !== 1 || response.status !== "completed" || response.error ||
+    response.incomplete_details || calls.length < 2) return;
+  const [search, ...followUps] = calls;
+  if (search.status !== "completed" || search.action?.type !== "search") return;
+  const noEvidence = (value: unknown) => value == null || (Array.isArray(value) && value.length === 0);
+  if (!followUps.every((call) => {
+    const value = call as unknown as { results?: unknown; action?: { sources?: unknown } };
+    return call.status === "searching" && call.action?.type === "open_page" &&
+      noEvidence(value.results) && noEvidence(value.action?.sources);
+  })) return;
+  return search;
+}
+
+function completedSearchDiscoveryBrief(sources: readonly LiveWebSearchSource[]) {
+  return [
+    INCOMPLETE_PAGE_READ_LIMITATION,
+    "Completed search findings (discovery only):",
+    ...sources.slice(0, 6).map((source) =>
+      `- ${source.title.slice(0, 240)}${source.snippet ? `: ${source.snippet.slice(0, 400)}` : ""}`),
+  ].join("\n");
+}
+
+function webSearchResponseDiagnostics(response: Response): WebSearchProviderDiagnostics {
   const known = (value: unknown, allowed: readonly string[]) =>
     typeof value === "string" && allowed.includes(value) ? value : "unknown";
   const calls = hostedWebSearchCalls(response);
@@ -345,6 +389,7 @@ export function formatLiveWebSearchContext(result: LiveWebSearchResult) {
     `Searched at: ${result.searchedAt}`,
     `Provider: ${result.provider}`,
     `Query: ${result.query}`,
+    ...(result.limitations?.length ? ["", "Limitations:", ...result.limitations] : []),
     "",
     "Brief:",
     summary,
