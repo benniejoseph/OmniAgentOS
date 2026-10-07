@@ -25,6 +25,14 @@ type ClientDetail = {
 };
 const EMPTY_PROFILE: ClientProfile = { role: "secondary", successPlan: "unknown", leadCsm: "", customerGoals: "", successPath: "", stakeholders: "" };
 const PLAN_LABELS = { unknown: "Plan not confirmed", standard: "Standard", premier: "Premier", signature: "Signature" };
+const FILE_TYPE_LABELS: Record<WorkspaceLibraryItem["kind"], string> = {
+  document: "Document", spreadsheet: "Spreadsheet", presentation: "Slide deck", file: "File", image: "Image",
+  audio: "Audio", video: "Video", recording: "Recording", transcript: "Transcript", email: "Email",
+  meeting: "Meeting", message: "Message", webpage: "Web page", record: "Saved item", generated_artifact: "Created file",
+};
+const FILE_STATUS_LABELS: Record<WorkspaceLibraryItem["status"], string> = {
+  ready: "Ready to use", processing: "Preparing to read", failed: "Could not prepare this file", unsupported: "File type not supported",
+};
 const STARTER_TASKS = [
   "Confirm my responsibilities and the Lead CSM handoff",
   "Capture the client's top business outcomes",
@@ -36,7 +44,7 @@ const ASSISTANT_ACTIONS = [
   { label: "Client brief", prompt: "Prepare a client brief from this client's saved context and linked evidence. Cover customer goals, recent developments, stakeholder responsibilities, open questions and the three most useful next actions. Cite sources and separate known facts from suggestions. Identify missing or stale context." },
   { label: "Prepare a meeting", prompt: "Prepare for the next meeting with this client. Review the selected client's saved evidence and commitments. Draft an agenda, questions, decisions needed and a preparation checklist. Ask for the meeting purpose and participants if they are not recorded. Cite the evidence behind your recommendations." },
   { label: "Follow up on a meeting", prompt: "Review this client's latest linked meeting evidence. Draft a recap with separate decisions, customer commitments, Salesforce commitments, proposed next steps and unresolved questions. Cite transcript timestamps or source passages. Never invent owners or dates; identify what needs confirmation. Prepare drafts only." },
-  { label: "Next best actions", prompt: "Review this client's goals, Success Path, evidence and recorded commitments. Recommend a short prioritized checklist with a reason, supporting source, suggested owner and timing for each action. Separate explicit commitments from your suggestions. For a Secondary CSM, identify decisions or handoffs for the Lead CSM. Do not invent customer agreement or current org status." },
+  { label: "Suggested next steps", prompt: "Review this client's goals, Success Path, evidence and recorded commitments. Recommend a short prioritized checklist with a reason, supporting source, suggested owner and timing for each action. Separate explicit commitments from your suggestions. For a Secondary CSM, identify decisions or handoffs for the Lead CSM. Do not invent customer agreement or current org status." },
   { label: "Draft Success Path", prompt: "Draft an evidence-based Success Path for this client. Map business outcomes to recommendations, measures, milestones, owners, dependencies and the next review. Mark unknown baselines, targets and entitlements explicitly. Distinguish proposals from customer-agreed plans. Cite the selected client's sources." },
   { label: "Specialist handoff", prompt: "Prepare a Salesforce specialist handoff for this client's most important unresolved need. Include business impact, evidence timeline, what has been tried, the exact decision or help needed, suggested role and missing information. Explain why that role fits. Draft only; do not claim a request was sent or a service entitlement confirmed." },
 ] as const;
@@ -44,7 +52,7 @@ const ASSISTANT_ACTIONS = [
 async function readJson<T>(href: string, init?: RequestInit): Promise<T> {
   const response = await fetch(href, { cache: "no-store", ...init });
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(typeof body.error === "string" ? body.error : `The request could not be completed (${response.status}).`);
+  if (!response.ok) throw new Error(requestErrorMessage(body.error, response.status));
   return body as T;
 }
 function jsonWrite(method: string, body: unknown, key: string): RequestInit {
@@ -55,7 +63,38 @@ function dateLabel(value?: string) {
   const parsed = new Date(value.length === 10 ? `${value}T12:00:00` : value);
   return Number.isNaN(parsed.getTime()) ? "Date unavailable" : parsed.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
 }
-function errorText(error: unknown) { return error instanceof Error ? error.message : "This action could not be completed."; }
+function requestErrorMessage(message: unknown, status: number) {
+  const friendly: Record<string, string> = {
+    "Invalid client context request.": "Some client details could not be saved. Check the fields and try again.",
+    "Client context access is unavailable.": "We couldn't open this client's details. Refresh the page and check that you still have access.",
+    "Client context is temporarily unavailable. Your accepted edits can be retried with the same edit key.": "We couldn't confirm whether your changes were saved. Try this action again to check or finish saving it.",
+    "Client context changed. Reload it before saving your edit.": "This client brief was updated while you were editing. Load the saved brief before making further changes.",
+    "Client context has conflicting active revisions.": "There are conflicting saved copies of this client brief. We can't safely choose one. Contact support for help.",
+    "The saved client context could not be verified.": "We couldn't verify the saved client brief. Refresh the page; if it still won't open, contact support.",
+    "Client context write access is required.": "You can view this client, but you don't have permission to change their brief or files.",
+    "An exact client edit intent is required.": "We couldn't safely save this change. Refresh the saved brief before trying again.",
+    "This edit key was already used for another change.": "The details of this change no longer match the earlier attempt. Refresh the saved brief before trying again.",
+    "Client context belongs to another project.": "These details don't belong to the selected client. Reopen the client before saving.",
+    "Client context was not found.": "This client's brief could not be found. Reopen the client to check whether it is still available.",
+    "The selected source is no longer available.": "This file is no longer available. Choose another file from Library.",
+    "The source changed. Select its current Library version again.": "This file was updated. Refresh Library and choose it again.",
+    "A client can have up to 50 linked sources.": "You can add up to 50 files or notes to a client. Remove one from this client before adding another.",
+    "Archived client work is read-only.": "This client is archived. Reopen their project in Other projects before making changes.",
+    "Project not found.": "This client is no longer available, or you don't have access to it.",
+    "Invalid project task": "Check the action's title, note and due date before trying again.",
+    "Invalid task update": "This action could not be updated. Refresh the saved actions before trying again.",
+    "Invalid project": "Check the client name and goals before trying again.",
+  };
+  if (typeof message === "string" && friendly[message]) return friendly[message];
+  if (typeof message === "string" && message.startsWith("Idempotency-Key")) return "We couldn't safely repeat this action because its details changed. Refresh the saved work before trying again.";
+  if (status === 401) return "Please sign in again to continue with this client.";
+  if (status === 403) return "You don't have permission to make this request. Check your access before trying again.";
+  return typeof message === "string" ? message : "We couldn't complete this request. Refresh the saved work before trying again.";
+}
+function errorText(error: unknown) {
+  if (error instanceof TypeError && /fetch|network/i.test(error.message)) return "The connection was interrupted. Refresh the saved work before retrying; your changes may have been saved.";
+  return error instanceof Error ? error.message : "This action could not be completed.";
+}
 
 export function CsmWorkspace({ deployment = "local", initialProjectId }: { deployment?: string; initialProjectId?: string }) {
   const { session, role, status } = useWorkspaceSession();
@@ -89,19 +128,19 @@ function CsmWorkspaceBody({ initialProjectId }: { initialProjectId?: string }) {
   const filtered = clients.filter((client) => client.project.title.toLocaleLowerCase().includes(query.toLocaleLowerCase()));
   return <main className={styles.shell}>
     <header className={styles.header}>
-      <div><h1>Work</h1><p>Your clients, their context, and what needs to happen next.</p></div>
+      <div><h1>Work</h1><p>Your clients, their priorities, and what needs to happen next.</p></div>
       <div className={styles.actions}><Link href="/app/projects?view=projects" className={styles.textButton}>Other projects <ArrowUpRight size={15} /></Link><button className={styles.primary} onClick={() => setCreateOpen(true)} disabled={!canWrite}><Plus size={17} />Add client</button></div>
     </header>
     {error ? <Notice error>{error} <button className={styles.textButton} onClick={() => void load()}>Reload</button></Notice> : null}
     {loading ? <p className={styles.muted} role="status">Loading clients…</p> : !clients.length && !selectedId && !error ?
-      <div className={styles.empty}><BriefcaseBusiness size={34} /><h2>Start with one client</h2><p>Add your role and their priorities. Bring in meeting recordings, transcripts, decks, and documents to build context for your next conversation.</p><button className={styles.primary} disabled={!canWrite} onClick={() => setCreateOpen(true)}><Plus size={17} />Add your first client</button></div> :
+      <div className={styles.empty}><BriefcaseBusiness size={34} /><h2>Start with one client</h2><p>Add your role and their priorities. Add meeting recordings, transcripts, decks, and documents to prepare for your next conversation.</p><button className={styles.primary} disabled={!canWrite} onClick={() => setCreateOpen(true)}><Plus size={17} />Add your first client</button></div> :
       <div className={styles.layout}>
         <aside className={clsx(styles.rail, showDetail && styles.railHidden)} aria-label="Clients">
           <div className={styles.railHeader}><span>Clients</span><span className={styles.muted}>{clients.length}{truncated ? "+" : ""}</span></div>
           <label className={styles.search}><Search size={16} aria-hidden="true" /><input aria-label="Find a client" placeholder="Find a client" value={query} onChange={(event) => setQuery(event.target.value)} /></label>
           <ul className={styles.clientList}>{filtered.map(({ project, profile }) => <li key={project.id}><button className={styles.clientButton} aria-current={project.id === selectedId ? "true" : undefined} onClick={() => { setSelectedId(project.id); setShowDetail(true); }}><strong>{project.title}</strong><span>{profile.role === "lead" ? "Lead CSM" : "Secondary CSM"} · {PLAN_LABELS[profile.successPlan]}</span></button></li>)}</ul>
           {!filtered.length ? <p className={styles.hint}>No clients match this name.</p> : null}
-          {truncated ? <p className={styles.hint}>Showing the available client window. Older projects remain in Other projects.</p> : null}
+          {truncated ? <p className={styles.hint}>Older clients may be under Other projects.</p> : null}
         </aside>
         <div className={clsx(styles.clientCanvas, !showDetail && styles.canvasHidden)}>
           <button className={clsx(styles.textButton, styles.mobileBack)} onClick={() => setShowDetail(false)}><ArrowLeft size={16} />All clients</button>
@@ -164,7 +203,7 @@ function ClientWorkspace({ projectId, onChange }: { projectId: string; onChange:
     const body = { libraryItemId: item.id, versionId: item.currentVersion.versionId, contentSha256: item.currentVersion.contentSha256, expectedRevision: detail.revision };
     const updated = await clientRead<ClientDetail>(`${base}/csm/sources`, jsonWrite("POST", body, keyFor("link", body)));
     if (!alive.current) return;
-    setDetail(updated); onChange(); setNotice("Source linked to this client.");
+    setDetail(updated); onChange(); setNotice("File added to this client.");
   }
   async function uploadFiles(files: FileList | null) {
     if (!files?.length || !detail) return;
@@ -174,7 +213,7 @@ function ClientWorkspace({ projectId, onChange }: { projectId: string; onChange:
       let linked = 0;
       for (const file of chosen) {
         assertOwner();
-        if (file.size > 4_000_000) throw new Error(`${file.name} is larger than this web upload's 4 MB limit. Use Capture for the supported upload or recording workflow.`);
+        if (file.size > 4_000_000) throw new Error(`${file.name} is larger than this web upload's 4 MB limit. Open Capture for other upload and recording options.`);
         const form = new FormData(); form.set("file", file); form.set("title", file.name); form.set("tags", "csm-client-evidence");
         const uploaded = await clientRead<{ asset: { id: string } }>("/api/capture", { method: "POST", headers: { "idempotency-key": crypto.randomUUID() }, body: form });
         const libraryItemId = `library:capture_asset:${uploaded.asset.id}`;
@@ -183,9 +222,9 @@ function ClientWorkspace({ projectId, onChange }: { projectId: string; onChange:
           current = await clientRead<ClientDetail>(`${base}/csm/sources`, jsonWrite("POST", body, keyFor("upload-link", body)));
           linked += 1;
           if (alive.current) setDetail(current);
-        } catch (caught) { throw new Error(`${file.name} was uploaded to Library, but could not be linked. Use Add from Library to finish. ${errorText(caught)}`); }
+        } catch (caught) { throw new Error(`${file.name} was uploaded to Library, but could not be added to this client. Choose Add from Library to finish. ${errorText(caught)}`); }
       }
-      if (alive.current) { setNotice(`${linked} file${linked === 1 ? "" : "s"} uploaded and linked. Extracted content becomes available after processing.${files.length > 8 ? " Only the first 8 files were included." : ""}`); onChange(); }
+      if (alive.current) { setNotice(`${linked} file${linked === 1 ? "" : "s"} uploaded and added. Your assistant can use them once they are ready to read.${files.length > 8 ? " Only the first 8 files were included." : ""}`); onChange(); }
     });
     if (uploadRef.current) uploadRef.current.value = "";
   }
@@ -211,32 +250,32 @@ function ClientWorkspace({ projectId, onChange }: { projectId: string; onChange:
       router.push(`/app/command?${params.toString()}`);
     });
   }
-  if (!detail) return <div>{error ? <Notice error>{error} <button className={styles.textButton} onClick={() => void act("reload", () => load())}>Reload client</button></Notice> : <p role="status" className={styles.muted}>Opening client context…</p>}</div>;
+  if (!detail) return <div>{error ? <Notice error>{error} <button className={styles.textButton} onClick={() => void act("reload", () => load())}>Reload client</button></Notice> : <p role="status" className={styles.muted}>Opening client details…</p>}</div>;
   const profile = detail.profile || EMPTY_PROFILE;
   const currentSources = detail.sourceLinks.filter((link) => link.status === "current").length;
   const openTasks = tasks.filter((task) => task.status !== "done");
   const missingStarterTasks = STARTER_TASKS.filter((title) => !tasks.some((task) => task.title.toLocaleLowerCase() === title.toLocaleLowerCase()));
   return <>
     <header className={styles.clientHeading}><div><h2>{detail.project.title}</h2><div className={styles.meta}><span><UserRound size={14} />{profile.role === "lead" ? "Lead CSM" : "Secondary CSM"}</span><span>{PLAN_LABELS[profile.successPlan]}</span><span><CalendarDays size={14} />Review: {dateLabel(profile.nextReviewDate)}</span></div></div><button className={styles.button} disabled={!canWrite || Boolean(busy)} onClick={() => setEditOpen(true)}>Edit client brief</button></header>
-    {error ? <Notice error>{error} <button className={styles.textButton} onClick={() => void act("reload", async () => { await load(); setNotice("Latest client context loaded."); })}>Reload</button></Notice> : null}
+    {error ? <Notice error>{error} <button className={styles.textButton} onClick={() => void act("reload", async () => { await load(); setNotice("Latest client details loaded."); })}>Reload</button></Notice> : null}
     {notice ? <Notice>{notice}</Notice> : null}
-    {!detail.profile ? <Notice>Set up this project's client brief to use the CSM workspace. <button className={styles.textButton} onClick={() => setEditOpen(true)} disabled={!canWrite}>Set up client</button></Notice> : null}
-    <div className={styles.tabs} role="tablist" aria-label="Client workspace">{[["overview", "Overview"], ["evidence", "Evidence"], ["path", "Success Path"], ["team", "People & roles"]].map(([id, label]) => <button key={id} id={`csm-tab-${id}`} role="tab" aria-selected={tab === id} aria-controls="csm-tab-panel" tabIndex={tab === id ? 0 : -1} onClick={() => setTab(id)} onKeyDown={(event) => { const ids = ["overview", "evidence", "path", "team"]; if (event.key === "ArrowRight" || event.key === "ArrowLeft") { event.preventDefault(); const next = ids[(ids.indexOf(id) + (event.key === "ArrowRight" ? 1 : 3)) % 4]; setTab(next); document.getElementById(`csm-tab-${next}`)?.focus(); } }}>{label}</button>)}</div>
+    {!detail.profile ? <Notice>Add a client brief to start preparing meetings and tracking next steps. <button className={styles.textButton} onClick={() => setEditOpen(true)} disabled={!canWrite}>Set up client</button></Notice> : null}
+    <div className={styles.tabs} role="tablist" aria-label="Client workspace">{[["overview", "Overview"], ["evidence", "Documents & notes"], ["path", "Success Path"], ["team", "People & roles"]].map(([id, label]) => <button key={id} id={`csm-tab-${id}`} role="tab" aria-selected={tab === id} aria-controls="csm-tab-panel" tabIndex={tab === id ? 0 : -1} onClick={() => setTab(id)} onKeyDown={(event) => { const ids = ["overview", "evidence", "path", "team"]; if (event.key === "ArrowRight" || event.key === "ArrowLeft") { event.preventDefault(); const next = ids[(ids.indexOf(id) + (event.key === "ArrowRight" ? 1 : 3)) % 4]; setTab(next); document.getElementById(`csm-tab-${next}`)?.focus(); } }}>{label}</button>)}</div>
     <div className={styles.contentGrid}>
       <div id="csm-tab-panel" role="tabpanel" aria-labelledby={`csm-tab-${tab}`}>
         {tab === "overview" ? <>
           <section className={styles.section}><div className={styles.sectionHeading}><h3>Customer outcomes</h3><span>Confirmed by you</span></div><p className={styles.prose}>{profile.customerGoals || detail.project.objective}</p></section>
-          <section className={styles.section}><div className={styles.sectionHeading}><h3>Your CSM assistant</h3><Bot size={18} /></div><p className={styles.muted}>Prepare, connect the evidence, and decide what to do next. Each conversation starts in this client's context.</p><div className={styles.assistantActions}>{ASSISTANT_ACTIONS.map((action) => <button key={action.label} className={styles.button} disabled={Boolean(busy) || !canPerform(role, "manage.workflow") || !detail.profile} onClick={() => void openAssistant(action.prompt)}>{busy === "assistant" ? <Loader2 size={15} className={styles.busy} /> : <ArrowUpRight size={15} />}{action.label}</button>)}</div><p className={styles.hint}>Recommendations and communication drafts stay yours to review. Opening a prompt does not send it.</p></section>
-          <section className={styles.section}><div className={styles.sectionHeading}><h3>Context coverage</h3><button className={styles.textButton} onClick={() => setTab("evidence")}>Manage evidence <ArrowUpRight size={14} /></button></div><p>{currentSources} current source{currentSources === 1 ? "" : "s"} · {detail.sourceLinks.length - currentSources} processing or needing review</p><p className={styles.hint}>Assistant starts with the client brief and up to four current source excerpts. It identifies omitted material. A screenshot or deck records what was known at that time.</p>{profile.leadCsm ? <p className={styles.hint}>Counterpart / Lead CSM: {profile.leadCsm}</p> : null}</section>
+          <section className={styles.section}><div className={styles.sectionHeading}><h3>Your CSM assistant</h3><Bot size={18} /></div><p className={styles.muted}>Prepare meetings, review the client's documents, and decide what to do next. Your assistant starts with this client's brief and selected documents.</p><div className={styles.assistantActions}>{ASSISTANT_ACTIONS.map((action) => <button key={action.label} className={styles.button} disabled={Boolean(busy) || !canPerform(role, "manage.workflow") || !detail.profile} onClick={() => void openAssistant(action.prompt)}>{busy === "assistant" ? <Loader2 size={15} className={styles.busy} /> : <ArrowUpRight size={15} />}{action.label}</button>)}</div><p className={styles.hint}>Recommendations and communication drafts stay yours to review. Opening a prompt does not send it.</p></section>
+          <section className={styles.section}><div className={styles.sectionHeading}><h3>What your assistant can use</h3><button className={styles.textButton} onClick={() => setTab("evidence")}>Manage documents <ArrowUpRight size={14} /></button></div><p>{currentSources} file{currentSources === 1 ? "" : "s"} ready · {detail.sourceLinks.length - currentSources} still preparing or needing attention</p><p className={styles.hint}>Your assistant starts with the client brief and selected passages from up to four documents or notes. It tells you what it could not read or include. Screenshots and decks reflect the information recorded at the time.</p>{profile.leadCsm ? <p className={styles.hint}>Counterpart / Lead CSM: {profile.leadCsm}</p> : null}</section>
         </> : null}
         {tab === "evidence" ? <section className={styles.section}>
-          <div className={styles.sectionHeading}><h3>Client evidence</h3><button className={styles.iconButton} aria-label="Refresh source processing" title="Refresh source processing" disabled={Boolean(busy)} onClick={() => void act("reload", () => load())}><RefreshCw size={16} /></button></div>
-          <p className={styles.muted}>Link transcripts, decks, documents, screenshots, or recordings from Library. Sources captured on mobile appear there too.</p>
+          <div className={styles.sectionHeading}><h3>Client documents & notes</h3><button className={styles.iconButton} aria-label="Refresh file status" title="Refresh file status" disabled={Boolean(busy)} onClick={() => void act("reload", () => load())}><RefreshCw size={16} /></button></div>
+          <p className={styles.muted}>Add transcripts, decks, documents, screenshots, or recordings from Library. Files captured on mobile appear there too.</p>
           <div className={styles.sourceActions}><button className={styles.button} disabled={!canWrite || Boolean(busy) || !detail.profile} onClick={() => uploadRef.current?.click()}><Upload size={16} />{busy === "upload" ? "Uploading…" : "Upload files"}</button><button className={styles.button} disabled={!canWrite || Boolean(busy) || !detail.profile} onClick={() => setPickerOpen(true)}><Link2 size={16} />Add from Library</button><Link className={styles.textButton} href="/app/capture">Open Capture <ArrowUpRight size={14} /></Link><input hidden ref={uploadRef} type="file" multiple accept=".pdf,.docx,.pptx,.txt,.md,.csv,.xlsx,.png,.jpg,.jpeg,.webp,.mp3,.m4a,.wav,.mp4,.webm" onChange={(event) => void uploadFiles(event.target.files)} /></div>
-          <p className={styles.hint}>Up to 8 files, 4 MB each here. Uploads process in the background; unavailable or changed versions are excluded from the assistant's context.</p>
-          {!detail.sourceLinks.length ? <div className={styles.empty}><FolderOpen size={28} /><h3>No evidence linked yet</h3><p>Start with the latest client transcript, Success Path, or review deck.</p></div> : <ul className={styles.sourceList}>{detail.sourceLinks.map((link) => {
+          <p className={styles.hint}>Add up to 8 files, 4 MB each. Files still being prepared or that cannot be opened won't be used. If a file is updated, choose its latest copy before your assistant uses it.</p>
+          {!detail.sourceLinks.length ? <div className={styles.empty}><FolderOpen size={28} /><h3>No documents or notes yet</h3><p>Start with the latest client transcript, Success Path, or review deck.</p></div> : <ul className={styles.sourceList}>{detail.sourceLinks.map((link) => {
             const item = detail.sources.find((source) => source.id === link.libraryItemId);
-            return <li key={link.libraryItemId} className={styles.sourceRow}><FileText className={styles.sourceIcon} size={20} /><div className={styles.sourceBody}><div className={styles.sourceTitle}>{item?.openHref ? <Link href={item.openHref}>{item.title}</Link> : item?.title || "Source no longer available"}</div><p className={styles.sourceMeta}>{item?.kind.replaceAll("_", " ") || "Evidence"} · {link.status === "current" ? "Ready for context" : link.status === "processing" ? "Processing" : link.status === "changed" ? "Version changed, relink to use" : "Access or source unavailable"}{item ? ` · ${dateLabel(item.updatedAt)}` : ""}</p></div><div>{link.status === "changed" && item ? <button className={styles.textButton} disabled={!canWrite || Boolean(busy)} onClick={() => void act("source", () => linkSource(item))}>Use latest</button> : null}<button className={styles.iconButton} aria-label={`Unlink ${item?.title || "source"} from this client`} title="Unlink from client; keep the original in Library" disabled={!canWrite || Boolean(busy)} onClick={() => void act("source", async () => { const body = { libraryItemId: link.libraryItemId, expectedRevision: detail.revision }; const updated = await clientRead<ClientDetail>(`${base}/csm/sources`, jsonWrite("DELETE", body, keyFor("unlink", body))); if (alive.current) { setDetail(updated); onChange(); setNotice("Source unlinked. The original remains in Library."); } })}><X size={15} /></button></div></li>;
+            return <li key={link.libraryItemId} className={styles.sourceRow}><FileText className={styles.sourceIcon} size={20} /><div className={styles.sourceBody}><div className={styles.sourceTitle}>{item?.openHref ? <Link href={item.openHref}>{item.title}</Link> : item?.title || "File no longer available"}</div><p className={styles.sourceMeta}>{item ? FILE_TYPE_LABELS[item.kind] : "File or note"} · {link.status === "current" ? "Ready to use" : link.status === "processing" ? "Preparing to read" : link.status === "changed" ? "Newer copy available" : "Cannot open this file"}{item ? ` · ${dateLabel(item.updatedAt)}` : ""}</p></div><div>{link.status === "changed" && item ? <button className={styles.textButton} disabled={!canWrite || Boolean(busy)} onClick={() => void act("source", () => linkSource(item))}>Use updated file</button> : null}<button className={styles.iconButton} aria-label={`Remove ${item?.title || "file"} from this client`} title="Remove from this client; keep the original in Library" disabled={!canWrite || Boolean(busy)} onClick={() => void act("source", async () => { const body = { libraryItemId: link.libraryItemId, expectedRevision: detail.revision }; const updated = await clientRead<ClientDetail>(`${base}/csm/sources`, jsonWrite("DELETE", body, keyFor("unlink", body))); if (alive.current) { setDetail(updated); onChange(); setNotice("Removed from this client. The original is still in Library."); } })}><X size={15} /></button></div></li>;
           })}</ul>}
         </section> : null}
         {tab === "path" ? <>
@@ -250,11 +289,11 @@ function ClientWorkspace({ projectId, onChange }: { projectId: string; onChange:
       </div>
       <aside aria-label="Client next actions">
         <section className={styles.section}><div className={styles.sectionHeading}><h3>Next actions</h3><span>{openTasks.length} open</span></div>
-          {!tasks.length ? <p className={styles.muted}>Turn agreed commitments into a checklist. Agent suggestions need your confirmation.</p> : null}{missingStarterTasks.length ? <button className={styles.textButton} disabled={!canWrite || Boolean(busy)} onClick={() => void act("checklist", async () => { for (const title of missingStarterTasks) await addTask(title); if (alive.current) setNotice("Starter checklist added. Adjust the actions to your responsibilities."); })}><Plus size={15} />{tasks.length ? "Complete onboarding checklist" : "Add onboarding checklist"}</button> : null}
-          <ul className={styles.taskList}>{[...openTasks, ...tasks.filter((task) => task.status === "done")].map((task) => <li className={styles.taskRow} key={task.id}><button className={styles.taskToggle} role="checkbox" aria-checked={task.status === "done"} aria-label={`${task.status === "done" ? "Reopen" : "Complete"}: ${task.title}`} title={task.workflowRunId ? "This task is managed by its execution. Open Other projects to review it." : undefined} disabled={!canWrite || Boolean(busy) || Boolean(task.workflowRunId)} onClick={() => void act("task", async () => { const payload = { status: task.status === "done" ? "open" : "done" }; await clientRead(`${base}/tasks/${encodeURIComponent(task.id)}`, jsonWrite("PATCH", payload, keyFor(`task-${task.id}-${task.status}`, payload))); mutationKeys.current.delete(JSON.stringify([`task-${task.id}-${task.status}`, payload])); await load(); onChange(); })}>{task.status === "done" ? <CheckCircle2 size={19} /> : <Circle size={19} />}</button><div className={styles.taskContent}><p className={task.status === "done" ? styles.taskDone : undefined}>{task.title}</p>{task.detail ? <p className={styles.taskMeta}>{task.detail}</p> : null}<p className={styles.taskMeta}>{task.dueAt ? `Due ${dateLabel(task.dueAt)}` : "No agreed due date"}{task.workflowRunId ? " · Managed execution" : ""}</p></div></li>)}</ul>
+          {!tasks.length ? <p className={styles.muted}>Turn agreed commitments into a checklist. Agent suggestions need your confirmation.</p> : null}{missingStarterTasks.length ? <button className={styles.textButton} disabled={!canWrite || Boolean(busy)} onClick={() => void act("checklist", async () => { for (const title of missingStarterTasks) await addTask(title); if (alive.current) setNotice("Starter checklist added. Adjust the actions to your responsibilities."); })}><Plus size={15} />{tasks.length ? "Add remaining starter actions" : "Add onboarding checklist"}</button> : null}
+          <ul className={styles.taskList}>{[...openTasks, ...tasks.filter((task) => task.status === "done")].map((task) => <li className={styles.taskRow} key={task.id}><button className={styles.taskToggle} role="checkbox" aria-checked={task.status === "done"} aria-label={`${task.status === "done" ? "Reopen" : "Complete"}: ${task.title}`} title={task.workflowRunId ? "This action is handled by an agent. Open Other projects to review its progress." : undefined} disabled={!canWrite || Boolean(busy) || Boolean(task.workflowRunId)} onClick={() => void act("task", async () => { const payload = { status: task.status === "done" ? "open" : "done" }; await clientRead(`${base}/tasks/${encodeURIComponent(task.id)}`, jsonWrite("PATCH", payload, keyFor(`task-${task.id}-${task.status}`, payload))); mutationKeys.current.delete(JSON.stringify([`task-${task.id}-${task.status}`, payload])); await load(); onChange(); })}>{task.status === "done" ? <CheckCircle2 size={19} /> : <Circle size={19} />}</button><div className={styles.taskContent}><p className={task.status === "done" ? styles.taskDone : undefined}>{task.title}</p>{task.detail ? <p className={styles.taskMeta}>{task.detail}</p> : null}<p className={styles.taskMeta}>{task.dueAt ? `Due ${dateLabel(task.dueAt)}` : "No agreed due date"}{task.workflowRunId ? " · Handled by an agent" : ""}</p></div></li>)}</ul>
           <form className={styles.taskForm} onSubmit={(event) => { event.preventDefault(); const submitted = taskTitle.trim(); if (!submitted) return; void act("add-task", async () => { await addTask(submitted, taskDate, taskDetail.trim()); if (alive.current) { setTaskTitle((current) => current.trim() === submitted ? "" : current); setTaskDate(""); setTaskDetail(""); setNotice("Action added."); } }); }}><input className={styles.input} aria-label="New action" placeholder="Add a next action" maxLength={240} required value={taskTitle} disabled={!canWrite} onChange={(event) => setTaskTitle(event.target.value)} /><input className={styles.input} aria-label="Action owner or note" placeholder="Owner or note (optional)" maxLength={1000} value={taskDetail} disabled={!canWrite} onChange={(event) => setTaskDetail(event.target.value)} /><div className={styles.fieldPair}><input type="date" className={styles.input} aria-label="Agreed action due date" value={taskDate} disabled={!canWrite} onChange={(event) => setTaskDate(event.target.value)} /><button className={styles.button} disabled={!canWrite || Boolean(busy) || !taskTitle.trim()}><Plus size={15} />Add action</button></div></form>
         </section>
-        <section className={styles.section}><h3>Meeting evidence</h3><p className={styles.hint}>Use Meetings to review a transcript and confirm source-backed commitments. Link its original or transcript here to include it in client preparation.</p><Link className={styles.textButton} href="/app/meetings">Open Meetings <ArrowUpRight size={14} /></Link></section>
+        <section className={styles.section}><h3>Meeting follow-up</h3><p className={styles.hint}>Use Meetings to review what was said and confirm agreed actions. Add the recording or transcript here to use it when preparing for this client.</p><Link className={styles.textButton} href="/app/meetings">Open Meetings <ArrowUpRight size={14} /></Link></section>
       </aside>
     </div>
     <ClientForm open={editOpen} detail={detail} onClose={() => setEditOpen(false)} onSaved={() => { setEditOpen(false); void act("reload", async () => { await load(); onChange(); setNotice("Client brief saved."); }); }} />
@@ -299,7 +338,7 @@ function ClientForm({ open, detail, onClose, onSaved }: { open: boolean; detail?
       ownerController.current.signal.throwIfAborted();
       pendingProject.current = undefined;
       onSaved(projectId);
-    } catch (caught) { if (!ownerController.current.signal.aborted) setError(`${pendingProject.current && !detail ? "The project was created; its client brief still needs saving. Retry keeps that same project. " : ""}${errorText(caught)}`); }
+    } catch (caught) { if (!ownerController.current.signal.aborted) setError(`${pendingProject.current && !detail ? "The client was created, but the brief still needs saving. Try again to finish setting up this same client. " : ""}${errorText(caught)}`); }
     finally { if (!ownerController.current.signal.aborted) setBusy(false); }
   }
   return <Modal open={open} title={detail ? "Edit client brief" : "Add a client"} onClose={onClose} preventClose={busy}>
@@ -308,7 +347,7 @@ function ClientForm({ open, detail, onClose, onSaved }: { open: boolean; detail?
       <label className={styles.field}>Client name<input className={styles.input} value={title} onChange={(event) => setTitle(event.target.value)} required maxLength={180} disabled={Boolean(detail || pendingProject.current) || busy} placeholder="Client or company name" /></label>
       <div className={styles.fieldPair}><label className={styles.field}>My role<select className={styles.select} value={profile.role} onChange={(event) => field("role", event.target.value as ClientProfile["role"])} disabled={busy}><option value="secondary">Secondary CSM</option><option value="lead">Lead CSM</option></select></label><label className={styles.field}>Success Plan<select className={styles.select} value={profile.successPlan} onChange={(event) => field("successPlan", event.target.value as ClientProfile["successPlan"])} disabled={busy}>{Object.entries(PLAN_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label></div>
       <label className={styles.field}>Lead CSM / counterpart<input className={styles.input} value={profile.leadCsm} onChange={(event) => field("leadCsm", event.target.value)} maxLength={240} disabled={busy} placeholder="Name and agreed responsibility, if known" /></label>
-      <label className={styles.field}>Customer goals and context<textarea className={styles.textarea} value={profile.customerGoals} onChange={(event) => field("customerGoals", event.target.value)} maxLength={4000} disabled={busy} placeholder="Business priorities, products in use, your responsibilities, and what matters most to this client." /></label>
+      <label className={styles.field}>Customer goals and background<textarea className={styles.textarea} value={profile.customerGoals} onChange={(event) => field("customerGoals", event.target.value)} maxLength={4000} disabled={busy} placeholder="Business priorities, products in use, your responsibilities, and what matters most to this client." /></label>
       <label className={styles.field}>Success Path<textarea className={styles.textarea} value={profile.successPath} onChange={(event) => field("successPath", event.target.value)} maxLength={4000} disabled={busy} placeholder="Outcome → recommendation → owner → measure → milestone. Separate agreed commitments from proposals." /></label>
       <label className={styles.field}>People and responsibilities<textarea className={styles.textarea} value={profile.stakeholders} onChange={(event) => field("stakeholders", event.target.value)} maxLength={4000} disabled={busy} placeholder="Customer sponsor, technical owner, Account Executive, CSMs, specialists, and their agreed responsibilities." /></label>
       <label className={styles.field}>Next Success Review<input className={styles.input} type="date" value={profile.nextReviewDate || ""} onChange={(event) => field("nextReviewDate", event.target.value || undefined)} disabled={busy} /></label>
@@ -329,13 +368,13 @@ function LibraryPicker({ open, onClose, linkedIds, onSelect }: { open: boolean; 
     const timer = window.setTimeout(() => { setLoading(true); void readJson<{ items: WorkspaceLibraryItem[] }>(`/api/library?limit=40&q=${encodeURIComponent(query)}`, { signal: controller.signal }).then((data) => { if (!controller.signal.aborted) { setItems(data.items); setError(""); } }).catch((caught) => { if (!controller.signal.aborted) setError(errorText(caught)); }).finally(() => { if (!controller.signal.aborted) setLoading(false); }); }, 180);
     return () => { controller.abort(); window.clearTimeout(timer); };
   }, [open, query]);
-  return <Modal open={open} title="Add client evidence" onClose={onClose} preventClose={Boolean(busy)}>
-    <p className={styles.hint}>Choose original material for this client. Linking keeps the original in Library and does not grant new access.</p>
-    <label className={styles.search}><Search size={16} /><input aria-label="Search evidence" placeholder="Find a transcript, deck, or recording" value={query} onChange={(event) => setQuery(event.target.value)} /></label>
+  return <Modal open={open} title="Add documents & notes" onClose={onClose} preventClose={Boolean(busy)}>
+    <p className={styles.hint}>Choose documents, notes or recordings for this client. The originals stay in Library, and their sharing settings stay the same.</p>
+    <label className={styles.search}><Search size={16} /><input aria-label="Search documents and notes" placeholder="Find a transcript, deck, or recording" value={query} onChange={(event) => setQuery(event.target.value)} /></label>
     {error ? <Notice error>{error}</Notice> : null}
-    {loading ? <p role="status" className={styles.muted}>Finding sources…</p> : null}
-    <ul className={styles.sourceList}>{items.map((item) => <li className={styles.sourceRow} key={item.id}><FileText className={styles.sourceIcon} size={19} /><div className={styles.sourceBody}><p className={styles.sourceTitle}>{item.title}</p><p className={styles.sourceMeta}>{item.kind.replaceAll("_", " ")} · {item.status} · {dateLabel(item.updatedAt)}</p></div><button className={styles.button} disabled={Boolean(busy) || linkedIds.includes(item.id) || item.status === "failed" || item.status === "unsupported"} onClick={() => { setBusy(item.id); setError(""); void onSelect(item).catch((caught) => setError(errorText(caught))).finally(() => setBusy("")); }}>{linkedIds.includes(item.id) ? <><Check size={15} />Linked</> : busy === item.id ? "Linking…" : "Link"}</button></li>)}</ul>
-    {!loading && !items.length ? <p className={styles.hint}>No matching sources. Upload files here or use Capture first.</p> : null}
+    {loading ? <p role="status" className={styles.muted}>Finding documents and notes…</p> : null}
+    <ul className={styles.sourceList}>{items.map((item) => <li className={styles.sourceRow} key={item.id}><FileText className={styles.sourceIcon} size={19} /><div className={styles.sourceBody}><p className={styles.sourceTitle}>{item.title}</p><p className={styles.sourceMeta}>{FILE_TYPE_LABELS[item.kind]} · {FILE_STATUS_LABELS[item.status]} · {dateLabel(item.updatedAt)}</p></div><button className={styles.button} disabled={Boolean(busy) || linkedIds.includes(item.id) || item.status === "failed" || item.status === "unsupported"} onClick={() => { setBusy(item.id); setError(""); void onSelect(item).catch((caught) => setError(errorText(caught))).finally(() => setBusy("")); }}>{linkedIds.includes(item.id) ? <><Check size={15} />Added</> : busy === item.id ? "Adding…" : "Add"}</button></li>)}</ul>
+    {!loading && !items.length ? <p className={styles.hint}>No matching documents or notes. Upload a file from the client page or add it through Capture first.</p> : null}
     <div className={styles.dialogFooter}><button className={styles.button} onClick={onClose} disabled={Boolean(busy)}>Done</button></div>
   </Modal>;
 }

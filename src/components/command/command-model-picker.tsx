@@ -94,8 +94,8 @@ export function CommandModelPicker({
   const statusTitle = state === "error"
     ? "Model choices could not be read from Settings. Asael will use the saved default."
     : displayedChoice
-      ? `${displayedChoice.displayName}. ${catalog?.message || "Choose a model for this message."}`
-      : catalog?.message || "Loading the saved model route.";
+      ? `${commandModelDisplayName(displayedChoice)}. ${selectedChoice ? "Chosen for this message." : "Your saved default."} Choose a model for this message.`
+      : state === "loading" ? "Loading your models." : "Review your model choices in Settings.";
   return (
     <div
       className={styles.modelPicker}
@@ -113,10 +113,10 @@ export function CommandModelPicker({
         className={styles.modelSelect}
         title={statusTitle}
       >
-        <option value="auto">{defaultChoice?.displayName || (state === "loading" ? "Loading model…" : "Default unavailable")}</option>
+        <option value="auto">{defaultChoice ? commandModelDisplayName(defaultChoice) : state === "loading" ? "Loading model…" : "Default unavailable"}</option>
         {catalog?.choices.map((choice) => (
           <option key={choice.id} value={choice.id}>
-            {choice.displayName}{choice.route === "fallback" ? " · fallback" : ""}
+            {commandModelDisplayName(choice)}
           </option>
         ))}
       </select>
@@ -141,6 +141,33 @@ export function CommandModelPicker({
       ) : null}
     </div>
   );
+}
+
+/** Presentation only: provider routing and exact selection IDs stay unchanged. */
+export function commandModelDisplayName(model: { modelId: string; displayName?: string; displayModelId?: string }) {
+  const displayName = model.displayName?.trim();
+  const namedClaude = displayName?.replace(/^(?:global|us|eu|apac)\s+(?:anthropic\s+)?(?=claude\s)/i, "");
+  if (namedClaude && namedClaude !== displayName) return namedClaude;
+  const rawName = displayName || model.modelId;
+  const knownName = rawName
+    .replace(/^(?:(?:global|us|eu|apac)\.)?(?:openai|anthropic|google)[./]/i, "")
+    .replace(/-\d{4}-\d{2}-\d{2}$/, "")
+    .replace(/(?:-\d{8})?(?:-v\d+(?::\d+)?)?$/, "");
+  const gpt = /^gpt-(\d+(?:\.\d+)*)(.*)$/i.exec(knownName);
+  if (gpt && /^(-[a-z0-9]+)*$/i.test(gpt[2])) {
+    const suffix = gpt[2].split("-").filter(Boolean).map((part) =>
+      part === "mini" || part === "nano" ? part : part[0].toUpperCase() + part.slice(1));
+    return [`GPT-${gpt[1]}`, ...suffix].join(" ");
+  }
+  const claude = /^claude-(opus|sonnet|haiku|fable|mythos)-(\d+)(?:[.-](\d+))?(?:-latest)?$/i.exec(knownName);
+  if (claude) return `Claude ${claude[1][0].toUpperCase()}${claude[1].slice(1)} ${claude[2]}${claude[3] ? `.${claude[3]}` : ""}`;
+  const gemini = /^gemini-(\d+(?:\.\d+)*)(?:-(pro|flash|flash-lite))?(?:-preview.*|-latest)?$/i.exec(knownName);
+  if (gemini) return `Gemini ${gemini[1]}${gemini[2] ? ` ${gemini[2].split("-").map((part) => part[0].toUpperCase() + part.slice(1)).join(" ")}` : ""}`;
+  const reasoning = /^(o\d+)(?:-(mini|pro))?$/i.exec(knownName);
+  if (reasoning) return `${reasoning[1]}${reasoning[2] ? ` ${reasoning[2]}` : ""}`;
+  // A meaningful owner/provider label is more useful than a guessed model name.
+  if (displayName && displayName !== model.modelId && displayName !== model.displayModelId) return displayName;
+  return "Custom model";
 }
 
 function selectionFromChoice(

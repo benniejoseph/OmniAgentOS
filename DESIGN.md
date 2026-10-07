@@ -23,6 +23,16 @@ still outstanding.
 
 **Color strategy:** Restrained. Neutral surfaces carry the product; semantic colors communicate action, risk, status, and evidence. Decorative color is not used.
 
+## Product language
+
+Use familiar names and plain-language status messages in everyday screens.
+Show document titles, client names, readable model names, and meaningful next
+steps. Keep internal IDs, hashes, event names, routing messages, storage fields,
+and implementation terminology in the backend or explicitly opened diagnostics.
+Do not replace missing evidence with a reassuring claim: explain what needs
+review in ordinary language, with source details available on demand. Preserve
+user-entered names and the underlying identity, permissions, and evidence.
+
 ## Themes
 
 ### Light
@@ -79,7 +89,8 @@ Use the platform sans family throughout. Headings use weight 700 and modest nega
 - Compact `<600dp`: five primary destinations, contextual bottom sheets, drill-down detail.
 - Medium `600–1023dp`: navigation rail and flexible two-column content.
 - Expanded `>=1024dp`: extended rail, master-detail workspaces, persistent evidence inspector where useful.
-- Content width is capped at 1440dp. Reading text is capped near 72 characters.
+- Assistant and Work use the available screen width with responsive controls.
+  Other reading surfaces may cap content at 1440dp; long prose stays readable.
 
 ## Installed macOS application
 
@@ -113,8 +124,7 @@ The macOS route families are:
 - **Work:** Today command desk, Conversation cockpit, focused Capture intake,
   Project browser/detail/Build Studio, Meeting agenda/detail, and Results ledger.
 - **Knowledge:** practical indexed Memory browser with stable pan/zoom graph,
-  Agent roster/capabilities/outcomes, Customer Accounts and Customer 360, and the
-  market research terminal.
+  Agent roster/capabilities/outcomes, and the market research terminal.
 - **Review:** attention Inbox and approval detail, trusted read-only Payments,
   Quality Checks, and evidence inspectors.
 - **Control:** Workflows, Integrations, Tools, Monitoring, Security, model/provider
