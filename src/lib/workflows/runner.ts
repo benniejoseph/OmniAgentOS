@@ -40,7 +40,7 @@ import {
   type RuntimeModelResolution,
 } from "@/lib/settings/runtime-models";
 import type { ModelAssignmentScope } from "@/lib/settings/types";
-import { appendThreadTurn } from "@/lib/threads/store";
+import { appendThreadTurn, workflowThreadActorReadOrder } from "@/lib/threads/store";
 import { getToolExecutionsByIds } from "@/lib/tools/audit-store";
 import { EffectReceiptFinalizationError } from "@/lib/tools/executor";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
@@ -182,9 +182,14 @@ export async function tickWorkflowRun(
   // projections and report persistence, must restore the validated run owner.
   // Keep the bound workspace/project scope unchanged; metadata is not authority.
   return executionAuthority && actorId
-    ? runWithDatabaseActorScope(executionAuthority.executionScope.tenantId, [actorId], () =>
-        tickWorkflowRunWithAuthority(detail, executionAuthority, options),
-      )
+    ? runWithDatabaseActorScope(executionAuthority.executionScope.tenantId, [actorId], async () => {
+        const actorIds = isResearchWorkflow(detail)
+          ? await workflowThreadActorReadOrder(executionAuthority.executionScope.tenantId, actorId)
+          : [actorId];
+        return runWithDatabaseActorScope(executionAuthority.executionScope.tenantId, actorIds, () =>
+          tickWorkflowRunWithAuthority(detail, executionAuthority, options),
+        );
+      })
     : tickWorkflowRunWithAuthority(detail, executionAuthority, options);
 }
 
@@ -2048,23 +2053,29 @@ async function completeWorkflow(
           throw new Error("Workflow thread result has no owner actor binding.");
         }
         await runWithDatabaseActorScope(threadTenantId, [actorId], async () => {
-          if (!isResearchWorkflow(detail)) {
+          const research = isResearchWorkflow(detail);
+          const actorIds = research
+            ? await workflowThreadActorReadOrder(threadTenantId, actorId)
+            : [actorId];
+          await runWithDatabaseActorScope(threadTenantId, actorIds, async () => {
+            if (!research) {
+              await appendThreadTurn({
+                tenantId: threadTenantId,
+                threadId,
+                role: "user",
+                content: detail.run.goal,
+              });
+            }
             await appendThreadTurn({
+              ...(research ? {
+                id: `workflow:${detail.run.id}:research-report:v1`,
+                workflowRunId: detail.run.id,
+              } : {}),
               tenantId: threadTenantId,
               threadId,
-              role: "user",
-              content: detail.run.goal,
+              role: "assistant",
+              content: String(reportOutput?.report || "Workflow completed."),
             });
-          }
-          await appendThreadTurn({
-            ...(isResearchWorkflow(detail) ? {
-              id: `workflow:${detail.run.id}:research-report:v1`,
-              runId: `workflow:${detail.run.id}`,
-            } : {}),
-            tenantId: threadTenantId,
-            threadId,
-            role: "assistant",
-            content: String(reportOutput?.report || "Workflow completed."),
           });
         });
       } catch (error) {

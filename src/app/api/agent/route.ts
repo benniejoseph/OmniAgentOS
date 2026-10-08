@@ -1957,7 +1957,7 @@ async function POSTHandler(request: Request) {
               threadId: thread.id,
               role: "assistant",
               content: acknowledgement,
-              ...(deepResearch ? { runId: `workflow:${detail.run.id}` } : {}),
+              ...(deepResearch ? { workflowRunId: detail.run.id } : {}),
             });
             await enqueueEvent({
               type: "delegated",
