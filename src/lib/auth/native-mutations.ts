@@ -7,6 +7,7 @@ import type { SecurityContext } from "@/lib/security/types";
 
 export const NATIVE_MUTATION_CAPABILITIES = [
   "conversation.send",
+  "research.control",
   "prompt.queue.manage",
   "notifications.update",
   "capture.submit",
@@ -129,6 +130,7 @@ export function nativeMutationCapabilityPolicy(
 }
 
 function minimumVersion(capability: NativeMutationCapability) {
+  if (capability === "research.control") return 49;
   if (capability === "connectors.github.upgrade") return 47;
   if (capability === "connectors.mcp.discover") return 46;
   if (capability === "connectors.openapi.import") return 45;

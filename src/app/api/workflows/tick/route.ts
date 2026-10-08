@@ -856,7 +856,7 @@ async function runAllTenantScheduledWork({
   }
   const dispatchTenants = runFast || runBackground
     ? await listRunnableOperationDispatchTenants({
-        workflowLimit: runFast ? queueLimit : 0,
+        workflowLimit: runFast || runBackground ? queueLimit : 0,
         agentResumeLimit: runFast ? queueLimit : 0,
         agentExecuteLimit: runFast ? queueLimit : 0,
         backgroundLimit: runBackground ? Math.min(queueLimit, 3) : 0,
@@ -878,7 +878,9 @@ async function runAllTenantScheduledWork({
     runFast
       ? scrubExpiredLocalComputerObservations({ limit: 100 })
       : Promise.resolve({ scrubbed: 0, moreAvailable: false }),
-    runFast
+    // Long research phases use the background delivery budget. Queue leases
+    // prevent the fast and background lanes from running the same tick.
+    runFast || runBackground
       ? processAllTenantWorkflowQueues({
           limit: queueLimit,
           timeBudgetMs: dispatchBudgetMs,

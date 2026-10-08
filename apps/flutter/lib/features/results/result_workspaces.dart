@@ -2,11 +2,14 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:go_router/go_router.dart';
 
 import 'created_files_section.dart';
 import 'result_contracts.dart';
 import 'result_detail_controller.dart';
 import 'results.dart';
+import '../talk/talk_research.dart';
+import '../talk/talk_rich_message.dart';
 
 class ResultsWorkspace extends StatefulWidget {
   const ResultsWorkspace({
@@ -782,94 +785,121 @@ class ResultDocument extends StatelessWidget {
   const ResultDocument({super.key, required this.item});
   final ResultItem item;
   @override
-  Widget build(BuildContext context) => Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      SelectableText(
-        item.title,
-        style: Theme.of(context).textTheme.headlineSmall,
-      ),
-      const SizedBox(height: 12),
-      Text(item.statusLabel, style: Theme.of(context).textTheme.titleSmall),
-      SelectableText(item.key),
-      if (item.approvalKind != null)
-        Text('Approval kind: ${item.approvalKind}'),
-      SelectableText(item.meta),
-      if (item.timestamp != null)
-        Text('Recorded ${item.timestamp!.toIso8601String()}'),
-      const SizedBox(height: 20),
-      Text(
-        item.kind == ResultKind.approval ? 'Review context' : 'Output',
-        style: Theme.of(context).textTheme.titleMedium,
-      ),
-      const SizedBox(height: 8),
-      SelectableText(item.body, style: Theme.of(context).textTheme.bodyLarge),
-      const SizedBox(height: 20),
-      Text('Evidence', style: Theme.of(context).textTheme.titleMedium),
-      const SizedBox(height: 8),
-      Text(item.groundingLabel),
-      Text(
-        item.kind == ResultKind.agent
-            ? 'Citation verification describes the returned sources. Verified success requires a canonical outcome receipt.'
-            : 'The returned verification field does not establish successful completion. Verified success requires a canonical outcome receipt.',
-      ),
-      if (item.kind == ResultKind.agent)
-        Text(
-          'Created file evidence: ${item.metadata['Created file projection'] ?? 'not included in this record'}',
-        ),
-      if (item.evidence.isEmpty)
-        const Text('No evidence references were returned in this record.'),
-      for (var index = 0; index < item.evidence.length; index++)
-        Padding(
-          padding: const EdgeInsets.only(top: 12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Reference ${index + 1}',
-                style: Theme.of(context).textTheme.bodySmall,
+  Widget build(BuildContext context) {
+    final research = item.research;
+    if (research != null) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          TalkResearchPanel(workflow: research),
+          if (RegExp(r'^[A-Za-z0-9._:-]{1,200}$').hasMatch(research.threadId))
+            TextButton.icon(
+              onPressed: () => context.go(
+                '/talk?thread=${Uri.encodeComponent(research.threadId)}',
               ),
-              SelectableText(item.evidence[index]),
+              icon: const Icon(Icons.chat_bubble_outline_rounded, size: 18),
+              label: Text(
+                research.terminal
+                    ? 'Open conversation'
+                    : 'Open conversation and controls',
+              ),
+            ),
+          if (research.report case final report?) ...[
+            const SizedBox(height: 20),
+            TalkRichMessage(text: report.linkedContent),
+          ],
+        ],
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SelectableText(
+          item.title,
+          style: Theme.of(context).textTheme.headlineSmall,
+        ),
+        const SizedBox(height: 12),
+        Text(item.statusLabel, style: Theme.of(context).textTheme.titleSmall),
+        SelectableText(item.key),
+        if (item.approvalKind != null)
+          Text('Approval kind: ${item.approvalKind}'),
+        SelectableText(item.meta),
+        if (item.timestamp != null)
+          Text('Recorded ${item.timestamp!.toIso8601String()}'),
+        const SizedBox(height: 20),
+        Text(
+          item.kind == ResultKind.approval ? 'Review context' : 'Output',
+          style: Theme.of(context).textTheme.titleMedium,
+        ),
+        const SizedBox(height: 8),
+        SelectableText(item.body, style: Theme.of(context).textTheme.bodyLarge),
+        const SizedBox(height: 20),
+        Text('Evidence', style: Theme.of(context).textTheme.titleMedium),
+        const SizedBox(height: 8),
+        Text(item.groundingLabel),
+        Text(
+          item.kind == ResultKind.agent
+              ? 'Citation verification describes the returned sources. Verified success requires a canonical outcome receipt.'
+              : 'The returned verification field does not establish successful completion. Verified success requires a canonical outcome receipt.',
+        ),
+        if (item.kind == ResultKind.agent)
+          Text(
+            'Created file evidence: ${item.metadata['Created file projection'] ?? 'not included in this record'}',
+          ),
+        if (item.evidence.isEmpty)
+          const Text('No evidence references were returned in this record.'),
+        for (var index = 0; index < item.evidence.length; index++)
+          Padding(
+            padding: const EdgeInsets.only(top: 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Reference ${index + 1}',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                SelectableText(item.evidence[index]),
+              ],
+            ),
+          ),
+        if (item.canonical != null)
+          ExpansionTile(
+            expansionAnimationStyle: MediaQuery.disableAnimationsOf(context)
+                ? AnimationStyle.noAnimation
+                : null,
+            tilePadding: EdgeInsets.zero,
+            title: const Text('Canonical outcome receipt'),
+            children: [
+              SelectableText(
+                'Status: ${item.canonical!.status}\nBasis: ${item.canonical!.basis}\nSource: ${item.canonical!.source}\nSource status: ${item.canonical!.sourceStatus}\nVerification: ${item.canonical!.verificationState}',
+              ),
             ],
           ),
-        ),
-      if (item.canonical != null)
-        ExpansionTile(
-          expansionAnimationStyle: MediaQuery.disableAnimationsOf(context)
-              ? AnimationStyle.noAnimation
-              : null,
-          tilePadding: EdgeInsets.zero,
-          title: const Text('Canonical outcome receipt'),
-          children: [
-            SelectableText(
-              'Status: ${item.canonical!.status}\nBasis: ${item.canonical!.basis}\nSource: ${item.canonical!.source}\nSource status: ${item.canonical!.sourceStatus}\nVerification: ${item.canonical!.verificationState}',
-            ),
-          ],
-        ),
-      if (item.metadata.isNotEmpty)
-        ExpansionTile(
-          expansionAnimationStyle: MediaQuery.disableAnimationsOf(context)
-              ? AnimationStyle.noAnimation
-              : null,
-          tilePadding: EdgeInsets.zero,
-          title: const Text('Exact identity and provenance'),
-          children: [
-            for (final entry in item.metadata.entries)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      entry.key,
-                      style: Theme.of(context).textTheme.titleSmall,
-                    ),
-                    SelectableText(entry.value),
-                  ],
+        if (item.metadata.isNotEmpty)
+          ExpansionTile(
+            expansionAnimationStyle: MediaQuery.disableAnimationsOf(context)
+                ? AnimationStyle.noAnimation
+                : null,
+            tilePadding: EdgeInsets.zero,
+            title: const Text('Exact identity and provenance'),
+            children: [
+              for (final entry in item.metadata.entries)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        entry.key,
+                        style: Theme.of(context).textTheme.titleSmall,
+                      ),
+                      SelectableText(entry.value),
+                    ],
+                  ),
                 ),
-              ),
-          ],
-        ),
-    ],
-  );
+            ],
+          ),
+      ],
+    );
+  }
 }

@@ -26,6 +26,12 @@ import {
 } from "@/lib/rag/context-engine";
 import { parseContextSelectionLockBinding } from "@/lib/rag/context-selection-lock";
 import {
+  executeResearchWorkflowStep,
+  isResearchWorkflow,
+  isResearchWorkflowStep,
+  ResearchWorkflowNeedsAttention,
+} from "@/lib/research/workflow";
+import {
   deriveExecutionScope,
   type ExecutionScope,
 } from "@/lib/security/execution-scope";
@@ -302,7 +308,7 @@ export async function tickWorkflowRun(
     runBudget.snapshot();
     throwIfAborted(options.abortSignal);
     if (
-      stepKey === "execute" &&
+      (stepKey === "execute" || (isResearchWorkflow(freshDetail) && isResearchWorkflowStep(stepKey))) &&
       output &&
       typeof output === "object" &&
       "executionPending" in output &&
@@ -602,6 +608,24 @@ export async function tickWorkflowRun(
     if (!current) {
       throw error;
     }
+    if (error instanceof ResearchWorkflowNeedsAttention) {
+      if (current.run.status !== "running") return current;
+      const retainedStep = await updateWorkflowStepForRunFence(detail.run.id, stepKey, {
+        status: "pending", attempt: step.attempt, startedAt: undefined,
+        completedAt: undefined, error: error.message,
+      }, {
+        tenantId: detail.run.tenantId, expectedRunUpdatedAt: runFence,
+        executionAuthority,
+        events: [{ type: "step.interrupted", payload: { stepKey, reason: "research_model_receipt_missing" } }],
+      });
+      if (!retainedStep) return current;
+      await transitionWorkflowRunWithEvents(detail.run.id, ["running"], {
+        status: "paused", currentStep: stepKey, pausedAt: new Date().toISOString(), error: error.message,
+      }, [{ type: "workflow.paused", payload: { reason: "research_model_receipt_missing", requiresExplicitResume: true } }], {
+        tenantId: detail.run.tenantId, expectedUpdatedAt: runFence, executionAuthority,
+      });
+      return getWorkflowRunDetail(runId, { tenantId: options.tenantId }) as Promise<WorkflowRunDetail>;
+    }
     if (isAbortError(error, options.abortSignal)) {
       if (current.run.status !== "running") {
         return current;
@@ -890,6 +914,10 @@ export async function signalWorkflowRun(
 ) {
   const detail = await getWorkflowRunDetail(runId, options);
   if (!detail) {
+    throw new WorkflowNotFoundError();
+  }
+
+  if (isResearchWorkflow(detail) && options.actorId && detail.run.input.metadata?.actorId !== options.actorId) {
     throw new WorkflowNotFoundError();
   }
 
@@ -1198,6 +1226,32 @@ async function executeStep(
         specialistContext.contextBlock,
       ].filter(Boolean).join("\n\n").slice(0, 20_000),
     };
+  }
+
+  if (isResearchWorkflow(detail) && isResearchWorkflowStep(stepKey)) {
+    const authority = await getWorkflowRunExecutionAuthority(detail.run.id, {
+      tenantId: detail.run.tenantId,
+    });
+    if (!authority) throw new Error("Research workflow execution authority is missing.");
+    const profile = workflowAgentProfile(detail);
+    if (detail.run.input.metadata?.agentProfile && !profile) {
+      throw new Error("Research workflow Agent policy is invalid.");
+    }
+    const durableContext = await workflowDurableContextForRun(detail);
+    const commandContext = await workflowCommandContextForRun(detail);
+    const commandModel = await workflowCommandModelForRun(detail);
+    return executeResearchWorkflowStep({
+      stepKey, detail, budget: runBudget, authority, profile, abortSignal, deadlineAt,
+      commandContext: commandContext?.contextBlock,
+      boundarySha256: canonicalJsonSha256({
+        context: durableContext?.contextBoundary || null,
+        commandContext: commandContext?.boundary || null,
+        commandModel: commandModel?.boundary || null,
+        profile: profile || null,
+      }),
+      resolveModel: async (role) => commandModel?.runtime || resolveWorkflowRuntimeModel(detail, role),
+      usageScope: (purpose, runtime) => workflowUsageScope(detail, "structured_generation", purpose, runtime),
+    });
   }
 
   if (stepKey === "plan") {
@@ -1862,6 +1916,10 @@ async function completeWorkflow(
     memoryId: reportOutput?.memoryId,
     dynamicPlanId: reportOutput?.dynamicPlanId,
     planExecutionStatus: reportOutput?.planExecutionStatus,
+    ...(reportOutput?.researchReportV1 ? {
+      researchReportV1: reportOutput.researchReportV1,
+      researchProgress: reportOutput.researchProgress,
+    } : {}),
   };
   let outcomeEventPayload: Record<string, unknown> | undefined;
   let authoritativeToolExecutions: ToolExecutionRecord[] = [];
@@ -1958,13 +2016,19 @@ async function completeWorkflow(
           throw new Error("Workflow thread result has no owner actor binding.");
         }
         await runWithDatabaseActorScope(threadTenantId, [actorId], async () => {
+          if (!isResearchWorkflow(detail)) {
+            await appendThreadTurn({
+              tenantId: threadTenantId,
+              threadId,
+              role: "user",
+              content: detail.run.goal,
+            });
+          }
           await appendThreadTurn({
-            tenantId: threadTenantId,
-            threadId,
-            role: "user",
-            content: detail.run.goal,
-          });
-          await appendThreadTurn({
+            ...(isResearchWorkflow(detail) ? {
+              id: `workflow:${detail.run.id}:research-report:v1`,
+              runId: `workflow:${detail.run.id}`,
+            } : {}),
             tenantId: threadTenantId,
             threadId,
             role: "assistant",

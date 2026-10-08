@@ -1,6 +1,10 @@
 import { isPublicBrowserHost } from "@/lib/local-computer/contracts";
 import { isLiveWebSearchExplicitlyDisabled } from "@/lib/web-search/intent";
 import type { LiveWebSearchResult, LiveWebSearchSource } from "@/lib/web-search/search";
+import { rankResearchSources, type ResearchCoverage, type ResearchPassage, type ResearchSourceProvenance } from "@/lib/research/evidence";
+import { researchDomainAllowed, researchTextRelevance, type ResearchPlan } from "@/lib/research/plan";
+export { buildResearchPlan, type ResearchPlan } from "@/lib/research/plan";
+export { assessResearchCoverage, buildResearchClaimReviewReceipt, researchClaimReviewSchema, researchClaimReviewInstructions, type ResearchCoverage, type ResearchClaimReviewReceipt, type ResearchPassage } from "@/lib/research/evidence";
 
 const MAX_QUERY_CHARS = 4_000;
 const MAX_EVIDENCE_CHARS = 48_000;
@@ -17,6 +21,12 @@ export type ResearchSourceRead = {
   citationId: string;
   truncated: boolean;
   contentTrust: "untrusted";
+  requestedUrl?: string;
+  sourceContentSha256?: string;
+  selectionQuery?: string;
+  passages?: ResearchPassage[];
+  provenance?: ResearchSourceProvenance;
+  limitations?: string[];
 };
 
 export function isResearchWebExplicitlyDisabled(query: string): boolean {
@@ -73,10 +83,13 @@ function researchDiscoveryQuestion(query: string): string {
 export function selectResearchSources(
   searches: readonly LiveWebSearchResult[],
   maxSources = MAX_READS,
+  plan?: ResearchPlan,
 ): LiveWebSearchSource[] {
-  const limit = Number.isFinite(maxSources) ? Math.min(MAX_READS, Math.max(0, Math.floor(maxSources))) : MAX_READS;
+  const cap = plan?.limits.reads || MAX_READS;
+  const limit = Number.isFinite(maxSources) ? Math.min(cap, Math.max(0, Math.floor(maxSources))) : cap;
   const groups = new Map<string, LiveWebSearchSource[]>();
-  for (const source of discoveredSources(searches)) {
+  const sources = discoveredSources(searches, plan?.limits.searches);
+  for (const source of plan ? rankResearchSources(sources, plan) : sources) {
     const hostname = new URL(source.url).hostname.toLowerCase().replace(/^www\./, "").replace(/\.$/, "");
     const group = groups.get(hostname) ?? [];
     group.push(source);
@@ -111,29 +124,46 @@ export function formatResearchEvidence(input: {
   searches: readonly LiveWebSearchResult[];
   reads: readonly ResearchSourceRead[];
   limitations?: readonly string[];
+  plan?: ResearchPlan;
+  coverage?: ResearchCoverage;
 }): string {
-  const sources = discoveredSources(input.searches);
+  const maxSearches = input.plan?.limits.searches || MAX_SEARCHES;
+  const maxReads = input.plan?.limits.reads || MAX_READS;
+  const maxEvidenceChars = input.plan?.limits.evidenceChars || MAX_EVIDENCE_CHARS;
+  const sources = discoveredSources(input.searches, maxSearches)
+    .filter((source) => researchDomainAllowed(source.url, input.plan?.allowedDomains));
   const seenReadUrls = new Set<string>();
-  const reads = input.reads.slice(0, MAX_READS).filter((read) => {
+  const reads = input.reads.slice(0, maxReads).filter((read) => {
     const key = sourceKey(read);
-    if (!key || !read.content.trim() || seenReadUrls.has(key)) return false;
+    if (!key || !read.content.trim() || seenReadUrls.has(key) || !researchDomainAllowed(read.url, input.plan?.allowedDomains)) return false;
     seenReadUrls.add(key);
     return true;
   });
   const publishers = new Set(sources.map((source) => new URL(source.url).hostname.replace(/^www\./, "")));
-  const notices = [
+  const notices = [...new Set([
     ...(input.limitations ?? []).slice(0, 8).map((value) => value.slice(0, 400)),
-    ...new Set(input.searches.slice(0, MAX_SEARCHES).flatMap((search) =>
+    ...new Set(input.searches.slice(0, maxSearches).flatMap((search) =>
       (search.limitations ?? []).slice(0, 3).map((value) => value.slice(0, 400)))),
+    ...new Set(reads.flatMap((read) => (read.limitations || []).slice(0, 3))),
+    ...(input.coverage?.limitations || []).slice(0, 8),
     ...(reads.length ? [] : ["No source-page text was successfully read; this report can use search summaries only and must say so."]),
     ...(publishers.size < 3 ? ["Limited source coverage: fewer than three distinct source hostnames were discovered."] : []),
     ...(reads.some((read) => read.truncated) ? ["One or more source extracts were truncated by the reader; do not describe them as complete pages."] : []),
-    ...(input.searches.length > MAX_SEARCHES || input.reads.length > MAX_READS ? ["Additional inputs were omitted by the bounded research context."] : []),
-  ];
+    ...(input.searches.length > maxSearches || input.reads.length > maxReads ? ["Additional inputs were omitted by the bounded research context."] : []),
+  ])].slice(0, 16).map((value) => value.slice(0, 400));
   const payload = {
+    ...(input.plan ? { plan: { id: input.plan.id, questions: input.plan.facets.map((facet) => ({ id: facet.id, question: facet.question })), sourceGuidance: input.plan.sourceGuidance, allowedDomains: input.plan.allowedDomains } } : {}),
+    ...(input.coverage ? { topicCoverage: {
+      facets: input.coverage.facets.slice(0, 6).map((facet) => ({
+        question: facet.question.slice(0, 500), status: facet.status,
+        sourceCitationIds: facet.sourceCitationIds.slice(0, 4),
+      })),
+      gaps: input.coverage.gaps.slice(0, 6).map((gap) => gap.slice(0, 600)),
+      relevantReadCount: input.coverage.relevantReadCount,
+    } } : {}),
     coverage: {
       searchResultsAvailable: input.searches.length,
-      searchesIncluded: Math.min(input.searches.length, MAX_SEARCHES),
+      searchesIncluded: Math.min(input.searches.length, maxSearches),
       discoveredSourceCount: sources.length,
       discoveredSourceHostnames: publishers.size,
       sourcePagesRead: reads.length,
@@ -145,7 +175,7 @@ export function formatResearchEvidence(input: {
     limitations: notices,
     sources: [] as Array<{ citationId: string; url: string; title: string; evidenceKind: "read_extract" | "search_discovery" }>,
     searches: [] as Array<{ query: string; searchedAt: string; summary: string; summaryTruncated: boolean; sourceCitationIds: string[] }>,
-    reads: [] as Array<{ citationId: string; contentType: string; fetchedAt: string; contentTrust: "untrusted"; readerTruncated: boolean; contextTruncated: boolean; content: string }>,
+    reads: [] as Array<{ citationId: string; contentType: string; fetchedAt: string; contentTrust: "untrusted"; readerTruncated: boolean; contextTruncated: boolean; content: string; passages?: ResearchPassage[]; sourceContentSha256?: string }>,
   };
   // Put provenance before content. Reserve most of the 48k envelope for actual
   // extracts; oversized metadata cannot consume the whole synthesis context.
@@ -160,7 +190,7 @@ export function formatResearchEvidence(input: {
       evidenceKind: seenReadUrls.has(key) ? "read_extract" as const : "search_discovery" as const,
     };
     payload.sources.push(item);
-    if (jsonData(payload).length > 14_000) {
+    if (jsonData(payload).length > (input.plan ? input.plan.depth === "deep" ? 18_000 : 12_000 : 14_000)) {
       payload.sources.pop();
       continue;
     }
@@ -168,14 +198,14 @@ export function formatResearchEvidence(input: {
   }
   payload.coverage.sourceReferencesIncluded = catalog.size;
   payload.coverage.sourceReferencesOmitted = new Set([...sources, ...reads].map(sourceKey).filter(Boolean)).size - catalog.size;
-  for (const search of input.searches.slice(0, MAX_SEARCHES)) {
-    const summary = boundedJsonString(search.summary, 2_800);
+  for (const search of input.searches.slice(0, maxSearches)) {
+    const summary = boundedJsonString(search.summary, input.plan ? input.plan.depth === "deep" ? 800 : 1_200 : 2_800);
     payload.searches.push({
-      query: boundedJsonString(search.query, 1_000),
+      query: boundedJsonString(search.query, input.plan ? 600 : 1_000),
       searchedAt: boundedJsonString(search.searchedAt, 80),
       summary,
       summaryTruncated: summary.length < search.summary.length,
-      sourceCitationIds: search.sources.slice(0, MAX_SOURCES_PER_SEARCH).filter((source) => catalog.has(sourceKey(source))).map((source) => source.citationId),
+      sourceCitationIds: search.sources.slice(0, MAX_SOURCES_PER_SEARCH).filter((source) => catalog.has(sourceKey(source))).slice(0, input.plan ? 12 : MAX_SOURCES_PER_SEARCH).map((source) => source.citationId),
     });
   }
   const includedReads = reads.filter((read) => catalog.has(sourceKey(read)));
@@ -187,17 +217,32 @@ export function formatResearchEvidence(input: {
     readerTruncated: read.truncated,
     contextTruncated: true,
     content: "",
+    ...(read.sourceContentSha256 ? { sourceContentSha256: read.sourceContentSha256 } : {}),
+    ...(read.passages?.length ? { passages: [] as ResearchPassage[] } : {}),
   }));
   payload.coverage.pageExtractsIncluded = includedReads.length;
   // Limits on source IDs plus metadata ensure the empty-extract envelope fits.
   // Allocate the remaining serialized character budget fairly to read pages.
   for (let index = 0; index < includedReads.length; index += 1) {
-    const available = MAX_EVIDENCE_CHARS - evidencePreamble.length - evidenceEnd.length - 1 - jsonData(payload).length;
+    const available = maxEvidenceChars - evidencePreamble.length - evidenceEnd.length - 1 - jsonData(payload).length;
     const allowance = Math.max(0, Math.floor(available / (includedReads.length - index)) - 20);
-    const content = boundedJsonString(includedReads[index].content.slice(0, 8_000), allowance);
-    payload.reads[index].content = content;
-    payload.reads[index].contextTruncated = content.length < includedReads[index].content.length;
+    const read = includedReads[index];
+    if (read.passages?.length) {
+      const kept: ResearchPassage[] = [];
+      const ranked = input.plan ? read.passages.toSorted((a, b) =>
+        Math.max(...input.plan!.facets.map((facet) => researchTextRelevance(b.text, facet.question))) - Math.max(...input.plan!.facets.map((facet) => researchTextRelevance(a.text, facet.question)))) : read.passages;
+      for (const passage of ranked) {
+        if (jsonData([...kept, passage]).length <= allowance) kept.push(passage);
+      }
+      payload.reads[index].passages = kept.sort((a, b) => a.startUtf16 - b.startUtf16);
+      payload.reads[index].contextTruncated = kept.length < read.passages.length;
+    } else {
+      const content = boundedJsonString(read.content.slice(0, 8_000), allowance);
+      payload.reads[index].content = content;
+      payload.reads[index].contextTruncated = content.length < read.content.length;
+    }
   }
+  payload.coverage.pageExtractsIncluded = payload.reads.filter((read) => read.content || read.passages?.length).length;
   return `${evidencePreamble}\n${jsonData(payload)}${evidenceEnd}`;
 }
 
@@ -219,13 +264,13 @@ function shortenQuestion(question: string, maxChars: number): string {
   return `${question.slice(0, side)}${marker}${question.slice(-(maxChars - side - marker.length))}`;
 }
 
-function discoveredSources(searches: readonly LiveWebSearchResult[]): LiveWebSearchSource[] {
+function discoveredSources(searches: readonly LiveWebSearchResult[], maxSearches = MAX_SEARCHES): LiveWebSearchSource[] {
   const seen = new Set<string>();
   const sources: LiveWebSearchSource[] = [];
   // Interleave rank positions, giving each complementary scope a chance before
   // taking lower-ranked sources from the first search.
   for (let rank = 0; rank < MAX_SOURCES_PER_SEARCH; rank += 1) {
-    for (const search of searches.slice(0, MAX_SEARCHES)) {
+    for (const search of searches.slice(0, maxSearches)) {
       const source = search.sources[rank];
       const key = source && sourceKey(source);
       if (!key || seen.has(key)) continue;

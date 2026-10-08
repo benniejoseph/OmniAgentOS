@@ -82,6 +82,18 @@ export function domainNotificationCandidate(
   }
 }
 
+/** A requested background report is a completion the owner is waiting for.
+ * Its notification still respects quiet hours, cooldown and delivery preferences. */
+export function researchWorkflowNotificationCandidate(input:
+  ProactiveCandidateCoordinates & Readonly<{ state: "completed" | "failed" }>,
+): NotificationCandidateV1 {
+  if (input.sourceKind !== "research_workflow") throw new Error("Research notification source kind is invalid.");
+  const base = candidateBase(input);
+  return input.state === "completed"
+    ? { ...base, kind: "research_ready" }
+    : { ...base, kind: "failure", actionable: true, severity: "warning" };
+}
+
 export function todayReminderNotificationCandidate(
   input: CandidateCoordinates & Readonly<{ urgency: "due_soon" | "overdue" }>,
 ): NotificationCandidateV1 {

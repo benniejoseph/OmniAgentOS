@@ -95,7 +95,7 @@ export function NotificationDispositionHistoryView({
             <article key={item.dispositionId} data-outcome={item.outcome}>
               <span className="notification-decision-icon" aria-hidden="true">{outcomeIcon(item.outcome)}</span>
               <div>
-                <header><strong>{item.sourceKind === "responsibility_change" && item.outcome === "send" ? item.state === "terminal" ? "Recorded in your inbox" : "Delivery was held" : outcomeLabel(item.outcome)}</strong><time>{formatDecisionTime(item.evaluatedAt)}</time></header>
+                <header><strong>{item.sourceKind === "responsibility_change" && item.outcome === "send" ? item.state === "terminal" ? "Recorded in your inbox" : "Delivery was held" : item.sourceKind === "research_workflow" && item.outcome === "send" && item.state === "pending" ? "Waiting for a device" : outcomeLabel(item.outcome)}</strong><time>{formatDecisionTime(item.evaluatedAt)}</time></header>
                 <p>{reasonCopy(item.reason, item.outcome)}</p>
                 <dl>
                   <div><dt>Source</dt><dd>{sourceLabel(item.sourceKind)}</dd></div>
@@ -132,6 +132,7 @@ function reasonCopy(reason: string, outcome: NotificationDispositionView["outcom
     actionable_failure: "A failed task needs a person to act.",
     meeting_imminent: "A meeting is close enough to need a reminder.",
     material_change: "An explicitly enabled Responsibility recorded a material change for your in-app inbox.",
+    research_ready: "Your background research finished and its saved report is available.",
     critical_delivery: "A critical alert bypassed normal holding rules.",
     quiet_hours: "Quiet hours delayed a required alert.",
     cooldown_active: "A recent alert started a short cooldown.",
@@ -145,6 +146,7 @@ function reasonCopy(reason: string, outcome: NotificationDispositionView["outcom
 }
 
 function sourceLabel(value: string) {
+  if (value === "research_workflow") return "Deep research";
   return value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 

@@ -24,6 +24,7 @@ const notificationCandidateKindSchema = z.enum([
   "routine_success",
   "informational",
   "responsibility_change",
+  "research_ready",
 ]);
 
 export const notificationCandidateV1Schema = z.discriminatedUnion("kind", [
@@ -44,6 +45,7 @@ export const notificationCandidateV1Schema = z.discriminatedUnion("kind", [
   candidateBase.extend({ kind: z.literal("routine_success") }).strict(),
   candidateBase.extend({ kind: z.literal("informational") }).strict(),
   candidateBase.extend({ kind: z.literal("responsibility_change") }).strict(),
+  candidateBase.extend({ kind: z.literal("research_ready") }).strict(),
 ]);
 
 export type NotificationCandidateV1 = Readonly<
@@ -72,6 +74,7 @@ export const notificationDecisionReasonSchema = z.enum([
   "meeting_not_imminent",
   "not_worthy",
   "material_change",
+  "research_ready",
 ]);
 
 const decisionBodySchema = z.object({
@@ -207,7 +210,7 @@ type Classification = Readonly<{
   mustSend: boolean;
   critical: boolean;
   directReason: "approval_required" | "security_alert" | "actionable_failure" |
-    "meeting_imminent" | "material_change";
+    "meeting_imminent" | "material_change" | "research_ready";
   suppressReason: "routine_success" | "failure_not_actionable" |
     "meeting_not_imminent" | "not_worthy";
 }>;
@@ -222,6 +225,8 @@ function classifyCandidate(
       return classification(true, false, "approval_required", "not_worthy");
     case "responsibility_change":
       return classification(true, false, "material_change", "not_worthy");
+    case "research_ready":
+      return classification(true, false, "research_ready", "not_worthy");
     case "security":
       return classification(
         true,
@@ -344,7 +349,9 @@ function expectedDecisionCoordinates(decision: {
         valid: true as const,
       };
     }
-    const reason = decision.candidateKind === "responsibility_change"
+    const reason = decision.candidateKind === "research_ready"
+      ? "research_ready" as const
+      : decision.candidateKind === "responsibility_change"
       ? "material_change" as const
       : decision.candidateKind === "approval"
       ? "approval_required" as const
@@ -361,7 +368,7 @@ function expectedDecisionCoordinates(decision: {
       valid: true as const,
     };
   }
-  if (decision.candidateKind === "approval" || decision.candidateKind === "security" || decision.candidateKind === "responsibility_change") {
+  if (decision.candidateKind === "approval" || decision.candidateKind === "security" || decision.candidateKind === "responsibility_change" || decision.candidateKind === "research_ready") {
     return invalidDecisionCoordinates();
   }
   if (decision.candidateKind === "routine_success") {

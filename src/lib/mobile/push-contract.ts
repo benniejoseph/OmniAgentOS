@@ -7,6 +7,7 @@ const opaqueId = z.string().trim().min(1).max(240);
 // Keep the minimum next to the target contract so server-side fan-out can
 // preserve rolling compatibility with still-active v22 sessions.
 export const GENERIC_NOTIFICATION_TARGET_MIN_NATIVE_CONTRACT_VERSION = 23;
+export const RESEARCH_NOTIFICATION_TARGET_MIN_NATIVE_CONTRACT_VERSION = 49;
 
 export const mobilePushTargetSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("approval"), id: opaqueId }).strict(),
@@ -17,6 +18,7 @@ export const mobilePushTargetSchema = z.discriminatedUnion("kind", [
   }).strict(),
   z.object({ kind: z.literal("meeting"), id: opaqueId }).strict(),
   z.object({ kind: z.literal("run"), id: opaqueId }).strict(),
+  z.object({ kind: z.literal("research"), id: opaqueId }).strict(),
   z.object({ kind: z.literal("notification"), id: opaqueId }).strict(),
   z.object({ kind: z.literal("canary"), id: opaqueId }).strict(),
 ]);
@@ -56,6 +58,7 @@ export const mobilePushEnvelopeSchema = z.object({
     "work_item",
     "meeting",
     "run",
+    "research",
     "notification",
     "canary",
   ]),
@@ -87,6 +90,8 @@ export function mobilePushDeepLink(input: MobilePushTarget) {
       return `/meetings/${id}`;
     case "run":
       return `/results/${encodeURIComponent(`agent:${target.id}`)}`;
+    case "research":
+      return `/results/${encodeURIComponent(`workflow:${target.id}`)}`;
     case "notification":
       return `/inbox?notificationId=${id}`;
     case "canary":
@@ -128,7 +133,7 @@ export function mobilePushPreview(
   if (policy === "hidden") {
     return { title: "Asael", body: "You have an update." } as const;
   }
-  if (policy === "title" && sensitiveTitle?.trim()) {
+  if (policy === "title" && target.kind !== "research" && sensitiveTitle?.trim()) {
     return {
       title: "Asael",
       body: sensitiveTitle.replace(/\s+/g, " ").trim().slice(0, 160),
@@ -142,6 +147,8 @@ export function mobilePushPreview(
         ? "A meeting update is ready."
         : target.kind === "run"
             ? "A run update is ready."
+            : target.kind === "research"
+              ? "A research update is ready."
             : target.kind === "notification"
               ? "A notification summary needs your attention."
               : "Push notification verification is ready.";

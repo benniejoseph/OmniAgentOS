@@ -233,6 +233,9 @@ const webSearchSchema = z.object({
 
 const webReadSchema = z.object({
   url: z.string().trim().min(1).max(4_000).url(),
+  query: z.string().trim().min(1).max(4_000).optional(),
+  allowedDomains: z.array(z.string().trim().toLowerCase().max(253)
+    .regex(/^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,63}$/)).max(10).optional(),
 }).strict();
 
 const localMacObserveSchema = z.object({
@@ -4346,8 +4349,8 @@ async function runTool(
   }
 
   if (tool.id === "web.read") {
-    const { url } = webReadSchema.parse(parsed);
-    return readPublicWebSource({ url, abortSignal });
+    const { url, query, allowedDomains } = webReadSchema.parse(parsed);
+    return readPublicWebSource({ url, query, allowedDomains, abortSignal });
   }
 
   if (tool.id === "media.image.generate") {

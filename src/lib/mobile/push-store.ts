@@ -9,6 +9,7 @@ import { appendScopedDomainEvent } from "@/lib/events/store";
 import {
   createMobilePushEnvelope,
   GENERIC_NOTIFICATION_TARGET_MIN_NATIVE_CONTRACT_VERSION,
+  RESEARCH_NOTIFICATION_TARGET_MIN_NATIVE_CONTRACT_VERSION,
   mobilePushDedupeKey,
   mobilePushEnvelopeSchema,
   mobilePushReceiptRequestSchema,
@@ -372,6 +373,10 @@ export async function enqueueMobilePush(input: {
       AND (
         ${target.kind !== "notification"}::BOOLEAN
         OR session.client_contract_version >= ${GENERIC_NOTIFICATION_TARGET_MIN_NATIVE_CONTRACT_VERSION}
+      )
+      AND (
+        ${target.kind !== "research"}::BOOLEAN
+        OR session.client_contract_version >= ${RESEARCH_NOTIFICATION_TARGET_MIN_NATIVE_CONTRACT_VERSION}
       )
       AND (${input.registrationId || null}::TEXT IS NULL OR registration.id = ${input.registrationId || null})
     ORDER BY registration.id COLLATE "C"

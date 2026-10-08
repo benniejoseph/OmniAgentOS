@@ -66,6 +66,7 @@ class MobilePushEnvelope {
       'work_item',
       'meeting',
       'run',
+      'research',
       'notification',
       'canary',
     }.contains(causeKind)) {
@@ -120,6 +121,7 @@ class MobilePushEnvelope {
             : '/projects/${Uri.encodeComponent(parentId)}?workItemId=$encodedId',
       'meeting' => '/meetings/$encodedId',
       'run' => '/results/${Uri.encodeComponent('agent:$id')}',
+      'research' => '/results/${Uri.encodeComponent('workflow:$id')}',
       'notification' => '/inbox?notificationId=$encodedId',
       'canary' => '/settings?pushCanary=$encodedId',
       _ => throw const FormatException('Unknown push target.'),

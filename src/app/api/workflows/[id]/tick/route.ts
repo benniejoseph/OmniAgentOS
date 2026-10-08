@@ -24,6 +24,9 @@ async function POSTHandler(
       resourceType: "workflow",
       resourceId: id,
     });
+    if (!await getWorkflowRunDetail(id, { tenantId: securityContext.tenantId, actorId: securityContext.actorId })) {
+      return Response.json({ error: "Workflow run not found." }, { status: 404 });
+    }
     // Stop the tick before the platform ends the request, so it goes back
     // to the queue instead of stranding on its lease.
     const deadlineAt = requestWorkDeadline(maxDuration);

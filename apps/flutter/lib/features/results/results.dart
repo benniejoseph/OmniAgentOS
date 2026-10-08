@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 
 import 'result_contracts.dart';
 import 'result_projection.dart';
+import '../talk/talk_research.dart';
 export 'results_controller.dart' show ResultsController;
 
 typedef Json = Map<String, dynamic>;
@@ -26,6 +27,7 @@ class ResultItem {
     this.canonical,
     this.approvalKind,
     this.threadId,
+    this.research,
   });
   final String key, title, status, body, meta, groundingStatus;
   final ResultKind kind;
@@ -35,6 +37,7 @@ class ResultItem {
   final Map<String, String> metadata;
   final ResultCanonical? canonical;
   final String? approvalKind, threadId;
+  final TalkResearchWorkflow? research;
   String get selectionIdentity =>
       kind == ResultKind.approval ? '$key:$approvalKind' : key;
   bool get canCancel =>
@@ -83,12 +86,15 @@ class ResultItem {
     'timed_out' => ResultTone.danger,
     _ => ResultTone.neutral,
   };
-  factory ResultItem._parsed(ParsedResult value) => ResultItem(
+  factory ResultItem._parsed(
+    ParsedResult value, {
+    TalkResearchWorkflow? research,
+  }) => ResultItem(
     key: value.key.value,
     kind: ResultKind.values.byName(value.key.kind),
     title: value.title,
     status: value.status,
-    body: value.body,
+    body: research?.report?.markdown ?? value.body,
     meta: value.meta,
     tone: toneFor(value.canonical?.status ?? value.status),
     timestamp: value.timestamp,
@@ -97,12 +103,18 @@ class ResultItem {
     metadata: value.metadata,
     canonical: value.canonical,
     approvalKind: value.approvalKind,
-    threadId: value.threadId,
+    threadId: value.threadId ?? research?.threadId,
+    research: research,
   );
   factory ResultItem.agent(Json value) =>
       ResultItem._parsed(ParsedResult.agent(value));
-  factory ResultItem.workflow(Json value) =>
-      ResultItem._parsed(ParsedResult.workflow(value));
+  factory ResultItem.workflow(Json value) => ResultItem._parsed(
+    ParsedResult.workflow(value),
+    research: TalkResearchWorkflow.fromDetail({
+      'run': value,
+      'steps': value['steps'],
+    }),
+  );
   factory ResultItem.approval(Json value) =>
       ResultItem._parsed(ParsedResult.approval(value));
 }
