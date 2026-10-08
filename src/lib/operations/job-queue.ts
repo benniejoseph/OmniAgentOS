@@ -8,8 +8,10 @@ import {
   runWithDatabaseSystemScope,
 } from "@/lib/db/client";
 import { appendDomainEvent } from "@/lib/events/store";
+import { RESEARCH_WORKFLOW_METADATA_KEY } from "@/lib/research/contracts";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
+import type { WorkflowLedger } from "@/lib/workflows/types";
 
 export type OperationJobType =
   | "workflow.tick"
@@ -296,6 +298,8 @@ type LeaseOperationJobInput = {
   limit?: number;
   leaseSeconds?: number;
   owner?: string;
+  /** Leave long research ticks queued for a delivery with sufficient runway. */
+  excludeDeepResearchWorkflows?: boolean;
 };
 
 export type OperationJobDedupeLease =
@@ -598,6 +602,16 @@ export async function leaseOperationJobs(input: LeaseOperationJobInput = {}) {
       params.push(storageDedupeKey(tenantId, input.dedupeKey));
       filters.push(`dedupe_key = $${params.length}`);
     }
+    if (input.excludeDeepResearchWorkflows) {
+      params.push(RESEARCH_WORKFLOW_METADATA_KEY);
+      filters.push(`NOT (type = 'workflow.tick' AND EXISTS (
+        SELECT 1 FROM omni_workflow_runs workflow
+        WHERE workflow.tenant_id = omni_operation_jobs.tenant_id
+          AND workflow.id = omni_operation_jobs.payload ->> 'workflowRunId'
+          AND workflow.input ->> 'mode' = 'research'
+          AND workflow.input -> 'metadata' -> $${params.length}::text ->> 'depth' = 'deep'
+      ))`);
+    }
     params.push(limit);
     const limitParam = params.length;
     params.push(owner);
@@ -644,6 +658,14 @@ export async function leaseOperationJobs(input: LeaseOperationJobInput = {}) {
   const allowedTypes = input.types?.length
     ? new Set(input.types)
     : undefined;
+  const researchRunIds = input.excludeDeepResearchWorkflows
+    ? new Set((await readJsonFile<WorkflowLedger>(getDataPath("workflows.json"), {
+        runs: [], steps: [], events: [],
+      })).runs.filter((run) => (run.tenantId || "default") === tenantId &&
+        run.input.mode === "research" &&
+        (run.input.metadata?.[RESEARCH_WORKFLOW_METADATA_KEY] as { depth?: unknown } | undefined)?.depth === "deep")
+        .map((run) => run.id))
+    : undefined;
   let leased: OperationJobRecord[] = [];
   await mutateJobLedger((ledger) => {
     const candidates = ledger.jobs
@@ -653,6 +675,7 @@ export async function leaseOperationJobs(input: LeaseOperationJobInput = {}) {
       .filter((job) => !input.type || job.type === input.type)
       .filter((job) => !allowedTypes || allowedTypes.has(job.type))
       .filter((job) => !input.dedupeKey || job.dedupeKey === input.dedupeKey)
+      .filter((job) => job.type !== "workflow.tick" || !researchRunIds?.has(String(job.payload.workflowRunId || "")))
       .sort((left, right) => {
         const priority =
           operationJobEffectivePriority(right, nowMs) -

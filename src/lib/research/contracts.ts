@@ -14,6 +14,8 @@ export const researchOptionsSchema = z.object({
 export type ResearchOptions = z.infer<typeof researchOptionsSchema>;
 
 export const RESEARCH_WORKFLOW_METADATA_KEY = "researchOptionsV1";
+/** A research delivery reserves 90 seconds for one model call and five to save. */
+export const RESEARCH_DELIVERY_MIN_RUNWAY_MS = 95_000;
 
 export const RESEARCH_DEPTH_LIMITS = {
   quick: { searches: 4, reads: 8, questions: 3, gapRounds: 1, evidenceChars: 48_000, reportWords: "1,200–2,000" },

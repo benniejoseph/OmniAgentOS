@@ -21,6 +21,7 @@ import {
 } from "@/lib/operations/job-queue";
 import { requestWorkDeadline } from "@/lib/observability/request-timing";
 import { redactSensitive } from "@/lib/security/context";
+import { RESEARCH_DELIVERY_MIN_RUNWAY_MS } from "@/lib/research/contracts";
 import { inspectWorkflowSpecialistDependencies } from "@/lib/subagents/context";
 import { tickWorkflowRun } from "@/lib/workflows/runner";
 import {
@@ -329,6 +330,10 @@ async function processWorkflowQueueInScope(
     limit,
     leaseSeconds: OPERATION_QUEUE_LEASE_SECONDS,
     tenantId: input.tenantId,
+    // Fast workers and short response drains must not take a research lease
+    // only to yield it. Leave these jobs available to the long background lane.
+    excludeDeepResearchWorkflows: input.deadlineAt !== undefined &&
+      input.deadlineAt - Date.now() < RESEARCH_DELIVERY_MIN_RUNWAY_MS,
   });
   const results: WorkflowQueueJobResult[] = [];
   let earlierTickRan = input.keepQueuePlaceOnDeadline === true;
