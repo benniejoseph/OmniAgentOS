@@ -596,7 +596,9 @@ async function POSTHandler(request: Request) {
       },
     });
     return Response.json({
-      queue,
+      // A tenant-wide wake can advance another owner’s queued research.
+      // Return counts only; exact workflow reads enforce owner visibility.
+      queue: { ...queue, jobs: [] },
       workflowSchedules,
       responsibilitySchedules,
       responsibilityNotifications,
