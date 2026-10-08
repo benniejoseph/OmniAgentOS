@@ -552,6 +552,7 @@ class TalkRunInspection {
     this.error,
     this.waitingApproval,
     this.terminalReceipt,
+    this.research,
   });
 
   final String runId;
@@ -561,6 +562,7 @@ class TalkRunInspection {
   final String? error;
   final TalkWaitingApprovalSummary? waitingApproval;
   final Object? terminalReceipt;
+  final TalkResearchWorkflow? research;
   final TalkGroundingSummary grounding;
   final TalkAgentIdentitySummary agentIdentity;
   final List<TalkMediaArtifactSummary> mediaArtifacts;
@@ -862,6 +864,7 @@ class TalkRunInspection {
       runId: runId,
       status: status,
       terminalReceipt: run['terminalReceipt'],
+      research: TalkResearchWorkflow.fromAgentRun(run),
       threadId: projectedThreadId.isEmpty ? null : projectedThreadId,
       response: response.isEmpty ? null : response,
       error: error.isEmpty ? null : error,
@@ -908,17 +911,24 @@ class TalkMessage {
     required this.text,
     this.streaming = false,
     this.failed = false,
+    this.runId,
   });
   final TalkRole role;
   final String text;
   final bool streaming, failed;
-  TalkMessage copyWith({String? text, bool? streaming, bool? failed}) =>
-      TalkMessage(
-        role: role,
-        text: text ?? this.text,
-        streaming: streaming ?? this.streaming,
-        failed: failed ?? this.failed,
-      );
+  final String? runId;
+  TalkMessage copyWith({
+    String? text,
+    bool? streaming,
+    bool? failed,
+    String? runId,
+  }) => TalkMessage(
+    role: role,
+    text: text ?? this.text,
+    streaming: streaming ?? this.streaming,
+    failed: failed ?? this.failed,
+    runId: runId ?? this.runId,
+  );
 }
 
 abstract interface class TalkRepository {
@@ -1025,6 +1035,13 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   final _workflowMonitorTokens = <String, Object>{};
   final _researchWorkflows = <String, TalkWorkflowSnapshot>{};
   TalkResearchProgress? researchProgress;
+  TalkResearchWorkflow? quickResearch;
+  final _researchReportsByRunId = <String, TalkResearchReport>{};
+  Object _researchProjectionToken = Object();
+  String displayMessageText(TalkMessage message) =>
+      _researchReportsByRunId[message.runId]?.linkedContent ?? message.text;
+  String copyMessageText(TalkMessage message) =>
+      _researchReportsByRunId[message.runId]?.markdown ?? message.text;
   bool researchControlBusy = false;
   String? researchError;
   TalkWorkflowSnapshot? get researchWorkflow =>
@@ -1213,6 +1230,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   void applyHistoryThreadProjection(TalkThreadDetail detail) {
     _abandonAcceptedRun();
     messages.clear();
+    _researchReportsByRunId.clear();
     messages.addAll(
       detail.turns.map(
         (turn) => TalkMessage(
@@ -1220,6 +1238,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
               ? TalkRole.user
               : TalkRole.assistant,
           text: turn.text,
+          runId: turn.runId,
         ),
       ),
     );
@@ -1230,6 +1249,8 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     _workflowMonitorTokens.clear();
     _researchWorkflows.clear();
     researchProgress = null;
+    quickResearch = null;
+    _researchProjectionToken = Object();
     researchError = null;
     _retryInput = null;
     _retryMode = null;
@@ -1242,10 +1263,14 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     _retryResearch = null;
     status = null;
     canceling = false;
+    unawaited(_restoreSavedQuickResearch(detail, _researchProjectionToken));
     final workflowTurn = detail.turns.reversed
-        .where((turn) => turn.runId?.startsWith('workflow:') == true)
+        .where(
+          (turn) => turn.role == TalkThreadRole.assistant && turn.runId != null,
+        )
         .firstOrNull;
-    if (workflowTurn?.runId case final marker?) {
+    if (workflowTurn?.runId case final marker?
+        when marker.startsWith('workflow:')) {
       final workflowId = safeTalkHistoryId(
         marker.substring('workflow:'.length),
       );
@@ -1256,10 +1281,52 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     }
   }
 
+  Future<void> _restoreSavedQuickResearch(
+    TalkThreadDetail detail,
+    Object token,
+  ) async {
+    final ids = detail.turns.reversed
+        .where((turn) => turn.role == TalkThreadRole.assistant)
+        .map((turn) => turn.runId)
+        .whereType<String>()
+        .where((id) => !id.startsWith('workflow:'))
+        .toSet()
+        .take(8);
+    for (final id in ids) {
+      if (_disposed ||
+          threadId != detail.thread.id ||
+          !identical(token, _researchProjectionToken))
+        return;
+      try {
+        final inspection = await repository.inspectRun(id);
+        if (_disposed ||
+            threadId != detail.thread.id ||
+            !identical(token, _researchProjectionToken))
+          return;
+        if (inspection.runId != id || inspection.threadId != detail.thread.id) {
+          throw const FormatException(
+            'Saved research did not match this conversation.',
+          );
+        }
+        final research = inspection.research;
+        if (research?.report == null) continue;
+        _researchReportsByRunId[id] = research!.report!;
+        // Most recent saved Quick report owns the panel. Earlier reports retain
+        // their own source catalog for inline citations and copying.
+        quickResearch ??= research;
+        researchProgress ??= research.progress;
+        notifyListeners();
+      } catch (_) {
+        // Keep the saved answer; an unavailable exact run never borrows sources.
+      }
+    }
+  }
+
   @override
   void clearHistoryThreadProjection() {
     _abandonAcceptedRun();
     messages.clear();
+    _researchReportsByRunId.clear();
     activities.clear();
     _clearArtifacts();
     queuePaused = _allActivePromptsPaused(promptQueue);
@@ -1267,6 +1334,8 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     _workflowMonitorTokens.clear();
     _researchWorkflows.clear();
     researchProgress = null;
+    quickResearch = null;
+    _researchProjectionToken = Object();
     researchError = null;
     _retryInput = null;
     _retryMode = null;
@@ -1900,6 +1969,8 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     _clearArtifacts();
     _abandonAcceptedRun();
     researchProgress = null;
+    quickResearch = null;
+    _researchProjectionToken = Object();
     researchError = null;
     _researchWorkflows.clear();
     if (replaceFailedResponse && messages.lastOrNull?.failed == true) {
@@ -2021,6 +2092,11 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
               );
             }
             runId = acceptedRunId;
+            if (messages.lastOrNull?.role == TalkRole.assistant) {
+              messages[messages.length - 1] = messages.last.copyWith(
+                runId: acceptedRunId,
+              );
+            }
             _runLifecycleStatus = 'running';
             _clearRetry();
             _recordActivity(
@@ -2850,6 +2926,16 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   }
 
   void _projectTerminalRunEvidence(TalkRunInspection inspection) {
+    final research = inspection.research;
+    if (research?.report != null &&
+        inspection.threadId == threadId &&
+        messages.any((message) => message.runId == inspection.runId)) {
+      _researchReportsByRunId[inspection.runId] = research!.report!;
+      if (runId == inspection.runId) {
+        quickResearch = research;
+        researchProgress = research.progress;
+      }
+    }
     final route = _resultRoute('agent', inspection.runId);
     _projectAgentIdentity(inspection, route);
     _projectGrounding(inspection, route);
@@ -4290,7 +4376,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     final workflow = controller.researchWorkflow;
     return TalkResearchPanel(
       progress: controller.researchProgress,
-      workflow: workflow?.research,
+      workflow: workflow?.research ?? controller.quickResearch,
       refreshing:
           workflow != null &&
           controller.monitoringWorkflowIds.contains(workflow.id),
@@ -5436,7 +5522,8 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                                             children: [
                                               if (m.role == TalkRole.assistant)
                                                 TalkRichMessage(
-                                                  text: m.text,
+                                                  text: widget.controller
+                                                      .displayMessageText(m),
                                                   failed: m.failed,
                                                 )
                                               else
@@ -5469,7 +5556,10 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                                                     TextButton.icon(
                                                       onPressed: () =>
                                                           _copyAssistantResponse(
-                                                            m.text,
+                                                            widget.controller
+                                                                .copyMessageText(
+                                                                  m,
+                                                                ),
                                                           ),
                                                       icon: const Icon(
                                                         Icons.copy_rounded,
@@ -5544,6 +5634,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                         ),
                 ),
                 if (widget.controller.researchProgress != null ||
+                    widget.controller.quickResearch != null ||
                     widget.controller.researchWorkflow != null)
                   Padding(
                     padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),

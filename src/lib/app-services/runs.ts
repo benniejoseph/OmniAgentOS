@@ -16,6 +16,7 @@ import {
   appendRunEvent,
   cancelAgentRun,
   getAgentRun,
+  getAgentRunResearchProgress,
   getRunContextUseReceipt,
   getRunStats,
   listAgentRuns,
@@ -99,8 +100,16 @@ export async function showRunServiceWithRecord(
     getAgentIdentityCardForRun(value.runId, { tenantId: caller.context.tenantId }),
   ]);
   await assertRunReadable(run, caller);
+  const supportsResearchProgress = caller.context.source !== "mobile" ||
+    (caller.context.native?.clientContractVersion ?? 0) >= 49;
+  const researchProgress = run?.mode === "research" && supportsResearchProgress
+    ? await getAgentRunResearchProgress(run.id, {
+        tenantId: caller.context.tenantId,
+        actorId: run.ownerActorId,
+      })
+    : undefined;
   const result = completeAppServiceCall(authorized, {
-    run: run ? publicAgentRun(run) : null,
+    run: run ? { ...publicAgentRun(run), ...(researchProgress ? { researchProgress } : {}) } : null,
     contextReceipt: run ? contextReceipt : null,
     agentIdentity: run ? agentIdentity : null,
   }, { resourceCount: run ? 1 : 0 });

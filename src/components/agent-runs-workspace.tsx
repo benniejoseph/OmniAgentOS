@@ -176,6 +176,9 @@ type CommandProject = { id: string; title: string; status: string };
 type ThreadTurn = { id: string; role: "user" | "assistant"; content: string; createdAt: string; runId?: string };
 type RunMediaProjection = {
   runId: string;
+  threadId?: string;
+  grounding?: GroundingReport;
+  researchRun?: JsonRecord;
   companion?: CompanionWork;
   companionScope?: string;
   artifacts: CommandMediaArtifact[];
@@ -184,6 +187,12 @@ type RunMediaProjection = {
   workspaceArtifacts: CommandWorkspaceArtifact[];
   workspaceArtifactState: CommandWorkspaceArtifactState;
 };
+type TurnSourceProjection = {
+  state: "loading" | "ready" | "error";
+  grounding?: GroundingReport;
+  selection?: number;
+};
+const turnSourceKey = (threadId: string, runId: string) => JSON.stringify([threadId, runId]);
 type AgentMode = ClientAgentMode;
 type AgentId = string;
 type AgentPresentation = {
@@ -587,6 +596,15 @@ function OwnedAgentRunsWorkspace({
     workspaceArtifactState: "none",
   });
   const [grounding, setGrounding] = useState<GroundingReport>();
+  const [turnSources, setTurnSources] = useState<Record<string, TurnSourceProjection>>({});
+  const turnSourceReads = useRef(new Map<string, { controller: AbortController; selection: number }>());
+  const rememberTurnSources = useCallback((key: string, value: TurnSourceProjection) => {
+    setTurnSources((current) => {
+      const retained = { ...current };
+      delete retained[key];
+      return Object.fromEntries([...Object.entries(retained).slice(-99), [key, value]]);
+    });
+  }, []);
   const [activeAgentRunId, setActiveAgentRunId] = useState("");
   const [runFeedback, setRunFeedback] = useState<RunFeedback>();
   const [feedbackSaving, setFeedbackSaving] = useState(false);
@@ -906,6 +924,21 @@ function OwnedAgentRunsWorkspace({
   const conversationLocked = workflowInProgress || directRunInProgress;
   const workflowReport = stringPath(workflowRun, "run.result.report", "");
   const workflowResearchGrounding = useMemo(() => researchGroundingForWorkflow(workflowRun), [workflowRun]);
+  useEffect(() => {
+    if (runMediaProjection.runId && runMediaProjection.threadId && runMediaProjection.grounding) {
+      rememberTurnSources(turnSourceKey(runMediaProjection.threadId, runMediaProjection.runId), {
+        state: "ready", grounding: runMediaProjection.grounding,
+      });
+    }
+  }, [runMediaProjection, rememberTurnSources]);
+  useEffect(() => {
+    const ownedThread = stringPath(workflowRun, "run.input.metadata.threadId", "");
+    if (activeWorkflowId && ownedThread && workflowResearchGrounding) {
+      rememberTurnSources(turnSourceKey(ownedThread, `workflow:${activeWorkflowId}`), {
+        state: "ready", grounding: workflowResearchGrounding,
+      });
+    }
+  }, [activeWorkflowId, workflowRun, workflowResearchGrounding, rememberTurnSources]);
   const currentAssistantResponse = workflowReport || agentResponse;
   const currentResponseIsLastTurn = Boolean(
     currentAssistantResponse &&
@@ -1239,6 +1272,9 @@ function OwnedAgentRunsWorkspace({
           setRunSyncError(undefined);
           setRunMediaProjection({
             runId: activeAgentRunId,
+            threadId: stringPath(payload, "run.threadId", ""),
+            grounding: asRecord(payload.run).grounding ? renderSafeGroundingReport(asRecord(payload.run).grounding) : undefined,
+            researchRun: stringPath(payload, "run.mode", "") === "research" ? asRecord(payload.run) : undefined,
             companion: companionRunSnapshot(payload.run, activeAgentRunId),
             companionScope: companionOwnerScope,
             artifacts: projectCommandMediaArtifacts(payload),
@@ -1497,6 +1533,9 @@ function OwnedAgentRunsWorkspace({
       setAgentResponse(response);
       setRunMediaProjection({
         runId,
+        threadId: stringPath(payload, "run.threadId", ""),
+        grounding: asRecord(payload.run).grounding ? renderSafeGroundingReport(asRecord(payload.run).grounding) : undefined,
+        researchRun: stringPath(payload, "run.mode", "") === "research" ? asRecord(payload.run) : undefined,
         companion: companionRunSnapshot(payload.run, runId),
         companionScope: companionOwnerScope,
         artifacts: projectCommandMediaArtifacts(payload),
@@ -2978,6 +3017,9 @@ function OwnedAgentRunsWorkspace({
       if (stringPath(payload, "run.id", "") !== runId) throw new Error("The artifact response did not match the current run.");
       setRunMediaProjection({
         runId,
+        threadId: stringPath(payload, "run.threadId", ""),
+        grounding: asRecord(payload.run).grounding ? renderSafeGroundingReport(asRecord(payload.run).grounding) : undefined,
+        researchRun: stringPath(payload, "run.mode", "") === "research" ? asRecord(payload.run) : undefined,
         companion: companionRunSnapshot(payload.run, runId),
         companionScope: companionOwnerScope,
         artifacts: projectCommandMediaArtifacts(payload),
@@ -3066,6 +3108,47 @@ function OwnedAgentRunsWorkspace({
       // Keep the current transcript visible and let the next poll or reopen retry.
     }
   }
+
+  const loadTurnSources = useCallback(async (runId: string) => {
+    const selectedThread = selectedThreadRef.current;
+    if (!selectedThread || !requestScope.current()) return;
+    const selection = threadLoadVersionRef.current;
+    const key = turnSourceKey(selectedThread, runId);
+    const previous = turnSourceReads.current.get(key);
+    if (previous?.selection === selection) return;
+    previous?.controller.abort();
+    const read = { controller: new AbortController(), selection };
+    turnSourceReads.current.set(key, read);
+    const current = () => !read.controller.signal.aborted && requestScope.current() &&
+      threadLoadVersionRef.current === selection && selectedThreadRef.current === selectedThread;
+    rememberTurnSources(key, { state: "loading", selection });
+    try {
+      const workflowId = runId.startsWith("workflow:") ? runId.slice("workflow:".length) : undefined;
+      if (workflowId === "") throw new Error("The saved workflow reference is incomplete.");
+      const payload = asRecord(await readJson(workflowId
+        ? `/api/workflows/${encodeURIComponent(workflowId)}`
+        : `/api/runs/${encodeURIComponent(runId)}`, { signal: read.controller.signal }));
+      if (!current()) return;
+      const returnedThread = stringPath(payload, workflowId ? "run.input.metadata.threadId" : "run.threadId", "");
+      if (stringPath(payload, "run.id", "") !== (workflowId || runId) || returnedThread !== selectedThread) {
+        throw new Error("Saved sources did not match this conversation.");
+      }
+      const savedGrounding = workflowId
+        ? researchGroundingForWorkflow(payload)
+        : asRecord(payload.run).grounding ? renderSafeGroundingReport(asRecord(payload.run).grounding) : undefined;
+      rememberTurnSources(key, { state: "ready", grounding: savedGrounding });
+    } catch {
+      if (current()) rememberTurnSources(key, { state: "error" });
+    } finally {
+      if (turnSourceReads.current.get(key) === read) {
+        turnSourceReads.current.delete(key);
+        if (!current()) setTurnSources((stored) => {
+          if (stored[key]?.state !== "loading" || stored[key]?.selection !== selection) return stored;
+          const retained = { ...stored }; delete retained[key]; return retained;
+        });
+      }
+    }
+  }, [readJson, requestScope, rememberTurnSources]);
 
   async function loadThread(
     id: string,
@@ -3194,6 +3277,9 @@ function OwnedAgentRunsWorkspace({
           }
           setRunMediaProjection({
             runId: latestRunId,
+            threadId: id,
+            grounding: asRecord(runPayload.run).grounding ? renderSafeGroundingReport(asRecord(runPayload.run).grounding) : undefined,
+            researchRun: stringPath(runPayload, "run.mode", "") === "research" ? asRecord(runPayload.run) : undefined,
             companion: companionRunSnapshot(runPayload.run, latestRunId),
             companionScope: companionOwnerScope,
             artifacts: projectCommandMediaArtifacts(runPayload),
@@ -3204,7 +3290,29 @@ function OwnedAgentRunsWorkspace({
           });
           setContextUseReceipt(contextUseReceiptFromPayload(runPayload));
           const run = asRecord(runPayload.run);
-          if (stringValue(run.status) !== "waiting_clarification") return;
+          const status = stringValue(run.status);
+          if (run.mode === "research" && ["completed", "failed", "canceled"].includes(status)) {
+            const response = stringValue(run.response);
+            const nextGrounding = run.grounding ? renderSafeGroundingReport(run.grounding) : undefined;
+            const progress = readResearchProgress(run.researchProgress);
+            currentRunIdRef.current = latestRunId;
+            directRunStatusRef.current = status;
+            setSelectedActivityRunId(latestRunId);
+            setActiveAgentRunId("");
+            setAgentResponse(response);
+            setGrounding(nextGrounding);
+            setStreamEvents([
+              { type: "run", runId: latestRunId, threadId: id },
+              ...(progress ? [{ type: "research_progress" as const, progress }] : []),
+              ...(status === "completed"
+                ? [{ type: "done" as const, response, grounding: nextGrounding }]
+                : status === "failed"
+                  ? [{ type: "error" as const, message: stringValue(run.error, "Research stopped before completion.") }]
+                  : [{ type: "canceled" as const, message: "Research was stopped." }]),
+            ]);
+            return;
+          }
+          if (status !== "waiting_clarification") return;
           const message = stringValue(
             run.response,
             "Reply to the clarification request to continue this run.",
@@ -3326,6 +3434,9 @@ function OwnedAgentRunsWorkspace({
       setAgentResponse(response);
       setRunMediaProjection({
         runId: id,
+        threadId: stringPath(payload, "run.threadId", ""),
+        grounding: asRecord(payload.run).grounding ? renderSafeGroundingReport(asRecord(payload.run).grounding) : undefined,
+        researchRun: stringPath(payload, "run.mode", "") === "research" ? asRecord(payload.run) : undefined,
         companion: companionRunSnapshot(payload.run, id),
         companionScope: companionOwnerScope,
         artifacts: projectCommandMediaArtifacts(payload),
@@ -3740,6 +3851,8 @@ function OwnedAgentRunsWorkspace({
                   assistantName={activeAssistantName}
                   assistantRole={preferredAgent?.role}
                   projection={projectionForTurn(turn, runMediaProjection)}
+                  sourceProjection={turn.runId ? turnSources[turnSourceKey(threadId, turn.runId)] : undefined}
+                  onLoadSources={loadTurnSources}
                   onOpenActivity={openTurnActivity}
                 />
               ))}
@@ -3763,6 +3876,8 @@ function OwnedAgentRunsWorkspace({
                 onRefresh={() => void refreshResearch()}
                 showReport={activeWorkflowStatus === "failed" || activeWorkflowStatus === "canceled"}
                 directReport={agentResponse}
+                directGrounding={grounding}
+                directRun={runMediaProjection.researchRun}
                 directStatus={streamEvents.some((event) => event.type === "done") ? "complete" : streamEvents.some((event) => event.type === "error") ? "failed" : streamEvents.some((event) => event.type === "canceled") ? "canceled" : undefined}
                 renderReport={(content, reportGrounding) => <ConversationMessageContent content={content} grounding={reportGrounding} />}
               />
@@ -4785,12 +4900,14 @@ type TranscriptTurnProps = {
   turn: ThreadTurn;
   assistantName: string;
   assistantRole?: string;
-  /** The run's media, files, and workspace artifacts, when the turn is that run's. */
+  /** Saved sources and artifacts only when this turn belongs to their run. */
   projection?: RunMediaProjection;
+  sourceProjection?: TurnSourceProjection;
+  onLoadSources?: (runId: string) => void;
   onOpenActivity: (runId: string) => void;
 };
 
-/** A run's media, files, and workspace artifacts show on the turn it wrote. */
+/** Never lend the latest run's citation catalog or artifacts to another turn. */
 export function projectionForTurn(turn: Pick<ThreadTurn, "runId">, projection: RunMediaProjection) {
   return turn.runId && turn.runId === projection.runId ? projection : undefined;
 }
@@ -4809,6 +4926,8 @@ export function sameTranscriptTurn(previous: TranscriptTurnProps, next: Transcri
     previous.assistantName === next.assistantName &&
     previous.assistantRole === next.assistantRole &&
     previous.projection === next.projection &&
+    previous.sourceProjection === next.sourceProjection &&
+    previous.onLoadSources === next.onLoadSources &&
     previous.onOpenActivity === next.onOpenActivity
   );
 }
@@ -4818,9 +4937,14 @@ export const TranscriptTurn = memo(function TranscriptTurn({
   assistantName,
   assistantRole,
   projection,
+  sourceProjection,
+  onLoadSources,
   onOpenActivity,
 }: TranscriptTurnProps) {
   const runId = turn.runId;
+  const savedGrounding = sourceProjection?.grounding || projection?.grounding;
+  const hasReferences = /\[(?:(?:memory|knowledge|graph|web):[^\]\s]+|(?:csm|evidence_unit)_[a-zA-Z0-9_-]+)\]/.test(turn.content);
+  const canLoadSources = Boolean(runId && hasReferences && !savedGrounding && onLoadSources);
   return (
     <article className={clsx("flex", workspaceStyles.turn, turn.role === "user" ? "justify-end" : "justify-start")}>
       {turn.role === "user" ? (
@@ -4836,6 +4960,7 @@ export const TranscriptTurn = memo(function TranscriptTurn({
           </p>
           <ConversationMessageContent
             content={turn.content}
+            grounding={savedGrounding}
             mediaArtifacts={projection?.artifacts}
             fileArtifacts={projection?.files}
             fileArtifactState={projection?.fileState}
@@ -4853,6 +4978,16 @@ export const TranscriptTurn = memo(function TranscriptTurn({
               View activity
             </button>
           ) : null}
+          {canLoadSources && sourceProjection?.state !== "ready" ? (
+            <button type="button" disabled={sourceProjection?.state === "loading"}
+              onClick={() => runId && onLoadSources?.(runId)}
+              className="mt-3 inline-flex min-h-9 items-center gap-2 rounded-full px-3 text-xs font-semibold text-muted transition hover:bg-surface-raised hover:text-foreground disabled:opacity-60">
+              <Globe2 size={13} aria-hidden="true" />
+              {sourceProjection?.state === "loading" ? "Loading sources…" : sourceProjection?.state === "error" ? "Retry sources" : "Load sources"}
+            </button>
+          ) : null}
+          {sourceProjection?.state === "error" ? <p className="mt-2 text-xs text-muted" role="status">Saved sources could not be loaded. Try again.</p> : null}
+          {canLoadSources && sourceProjection?.state === "ready" ? <p className="mt-2 text-xs text-muted" role="status">No saved source catalog is available for this answer.</p> : null}
         </div>
       )}
     </article>

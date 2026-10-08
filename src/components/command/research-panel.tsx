@@ -63,7 +63,7 @@ export function researchGroundingForWorkflow(workflow: unknown): GroundingReport
     sources: view.sources.map((source) => ({ citationId: source.citationId, evidenceId: source.url, title: source.title, url: source.url, kind: "web" })) };
 }
 
-export function ResearchPanel({ workflow, progress: liveProgress, disabledReason, pending, error, onSignal, onRefresh, renderReport, showReport = true, directReport, directStatus, directRun }: {
+export function ResearchPanel({ workflow, progress: liveProgress, disabledReason, pending, error, onSignal, onRefresh, renderReport, showReport = true, directReport, directStatus, directRun, directGrounding }: {
   workflow?: unknown;
   progress?: ResearchProgress;
   disabledReason?: string;
@@ -74,13 +74,14 @@ export function ResearchPanel({ workflow, progress: liveProgress, disabledReason
   renderReport?: (content: string, grounding: GroundingReport) => ReactNode;
   showReport?: boolean;
   directReport?: string;
+  directGrounding?: unknown;
   directStatus?: "complete" | "failed" | "canceled";
   directRun?: unknown;
 }) {
   const view = researchViewFromWorkflow(workflow);
   const savedRun = record(directRun);
   const savedQuick = savedRun.mode === "research";
-  const progress = view?.progress || liveProgress;
+  const progress = view?.progress || liveProgress || readResearchProgress(savedRun.researchProgress);
   const active = Boolean(view && !["completed", "failed", "canceled"].includes(view.status));
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => { if (!active) return; const timer = window.setInterval(() => setNow(Date.now()), 10_000); return () => window.clearInterval(timer); }, [active]);
@@ -89,7 +90,7 @@ export function ResearchPanel({ workflow, progress: liveProgress, disabledReason
   const stopped = status === "failed" || status === "canceled";
   const partial = view?.reportStatus === "partial" || progress?.reportStatus === "partial" || stopped;
   const content = view?.content || (stopped ? view?.draft : "") || (directStatus ? directReport : "") || (savedQuick ? text(savedRun.response, 250_000) : "") || "";
-  const sources = view?.sources || (savedQuick ? safeSources(record(savedRun.grounding).sources) : []);
+  const sources = view?.sources || safeSources(record(directGrounding || (savedQuick ? savedRun.grounding : undefined)).sources);
   const grounding: GroundingReport = { status: "not_required", citedIds: sources.map((source) => source.citationId), invalidIds: [],
     sources: sources.map((source) => ({ citationId: source.citationId, evidenceId: source.url, title: source.title, url: source.url, kind: "web" })) };
   const started = Date.parse(view?.startedAt || ""); const ended = active ? now : Date.parse(view?.endedAt || "");
