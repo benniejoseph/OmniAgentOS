@@ -1902,8 +1902,18 @@ async function POSTHandler(request: Request) {
             ) {
               throw new Error("requestId was already used with a different context boundary. Submit this work with a new requestId.");
             }
-            if (deepResearch && JSON.stringify(detail.run.input.metadata?.[RESEARCH_WORKFLOW_METADATA_KEY]) !== JSON.stringify(parsed.data.research)) {
-              throw new Error("This request already has a different research brief. Start a new research request to change it.");
+            if (deepResearch) {
+              const storedResearch = researchOptionsSchema.safeParse(
+                detail.run.input.metadata?.[RESEARCH_WORKFLOW_METADATA_KEY],
+              );
+              // JSONB can reorder object keys; compare validated briefs canonically.
+              if (
+                !storedResearch.success ||
+                canonicalJsonSha256(storedResearch.data) !==
+                  canonicalJsonSha256(parsed.data.research)
+              ) {
+                throw new Error("This request already has a different research brief. Start a new research request to change it.");
+              }
             }
             if (!sameSavedProcedure(detail.run.input.metadata?.savedProcedure, savedProcedure)) {
               throw new Error("requestId was already used with a different saved procedure. Submit this work with a new requestId.");
