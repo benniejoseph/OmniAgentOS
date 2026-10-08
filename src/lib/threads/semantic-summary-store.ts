@@ -1206,6 +1206,7 @@ function turnFromRow(row: SqlRow): ThreadTurnRecord {
     role: String(row.role) as ChatRole,
     content: String(row.content),
     ...(row.run_id ? { runId: String(row.run_id) } : {}),
+    ...(row.workflow_run_id ? { workflowRunId: String(row.workflow_run_id) } : {}),
     createdAt: requiredTimestamp(row.created_at, "turn created at"),
   });
 }
@@ -1220,7 +1221,9 @@ function parseTurn(value: ThreadTurnRecord): ThreadTurnRecord {
     typeof value.content !== "string" ||
     value.content.length > SEMANTIC_EPISODE_MAX_TURN_CHARACTERS ||
     (value.runId !== undefined && requiredId(value.runId, "turn run id") !==
-      value.runId)
+      value.runId) ||
+    (value.workflowRunId !== undefined && requiredId(value.workflowRunId, "turn workflow run id") !==
+      value.workflowRunId)
   ) {
     throw new SemanticSummaryStaleSourceError(
       "The conversation episode contains an invalid source turn.",
@@ -1233,6 +1236,7 @@ function parseTurn(value: ThreadTurnRecord): ThreadTurnRecord {
     role: value.role,
     content: value.content,
     ...(value.runId ? { runId: value.runId } : {}),
+    ...(value.workflowRunId ? { workflowRunId: value.workflowRunId } : {}),
     createdAt: requiredTimestamp(value.createdAt, "turn created at"),
   };
 }

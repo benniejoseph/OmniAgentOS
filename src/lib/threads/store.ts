@@ -235,11 +235,23 @@ export async function appendThreadTurn(input: {
   role: ChatRole;
   content: string;
   runId?: string;
+  workflowRunId?: string;
 }) {
   const tenantId = normalizeTenantId(input.tenantId);
   const content = safeText(input.content, 40_000);
   const createdAt = new Date().toISOString();
-  const turn: ThreadTurnRecord = { id: input.id || randomUUID(), tenantId, threadId: input.threadId, role: input.role, content, runId: input.runId, createdAt };
+  const workflowRunId = optionalIdentifier(input.workflowRunId);
+  if (
+    (input.workflowRunId !== undefined && (
+      !workflowRunId || workflowRunId !== input.workflowRunId ||
+      workflowRunId.startsWith("workflow:")
+    )) ||
+    input.runId?.startsWith("workflow:") ||
+    (input.runId && workflowRunId)
+  ) {
+    throw new Error("Thread turns require one typed agent or workflow reference.");
+  }
+  const turn: ThreadTurnRecord = { id: input.id || randomUUID(), tenantId, threadId: input.threadId, role: input.role, content, runId: input.runId, ...(workflowRunId ? { workflowRunId } : {}), createdAt };
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const result = await getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
@@ -250,8 +262,27 @@ export async function appendThreadTurn(input: {
       `;
       const parent = parents[0] ? threadFromRow(parents[0]) : null;
       if (!parent) return { found: false };
-      const inserted = await sql`INSERT INTO omni_thread_turns (id, tenant_id, thread_id, role, content, run_id, created_at)
-        SELECT ${turn.id}, ${tenantId}, ${turn.threadId}, ${turn.role}, ${turn.content}, ${turn.runId || null}, ${createdAt}
+      if (workflowRunId) {
+        const workflows = await sql`
+          SELECT id FROM omni_workflow_runs
+          WHERE id = ${workflowRunId} AND tenant_id = ${tenantId}
+            AND input -> 'metadata' ->> 'threadId' = ${parent.id}
+            AND (
+              input -> 'metadata' ->> 'actorId' = ${parent.actorId}
+              OR public.omni_thread_workflow_canonical_actor_v1(
+                ${tenantId}, input -> 'metadata' ->> 'actorId'
+              ) = public.omni_thread_workflow_canonical_actor_v1(
+                ${tenantId}, ${parent.actorId}
+              )
+            )
+          LIMIT 1
+        `;
+        if (!workflows[0]) {
+          throw new Error("Workflow thread reference does not match this conversation's owner and binding.");
+        }
+      }
+      const inserted = await sql`INSERT INTO omni_thread_turns (id, tenant_id, thread_id, role, content, run_id, workflow_run_id, created_at)
+        SELECT ${turn.id}, ${tenantId}, ${turn.threadId}, ${turn.role}, ${turn.content}, ${turn.runId || null}, ${workflowRunId || null}, ${createdAt}
         WHERE EXISTS (SELECT 1 FROM omni_threads WHERE id = ${turn.threadId} AND tenant_id = ${tenantId})
         ON CONFLICT (id) DO NOTHING
         RETURNING id`;
@@ -275,14 +306,23 @@ export async function appendThreadTurn(input: {
     }) as { found: boolean; existing?: ThreadTurnRecord | null };
     if (!result.found) throw new Error("Thread not found.");
     return result.existing === undefined
-      ? turn
+      ? projectThreadTurn(turn)
       : sameThreadTurn(result.existing, turn);
   }
+  const workflow = workflowRunId
+    ? await (await import("@/lib/workflows/store")).getWorkflowRun(workflowRunId, { tenantId })
+    : undefined;
   let found = false;
   let existing: ThreadTurnRecord | undefined;
   await updateLedger((ledger) => {
     const thread = ledger.threads.find((candidate) => candidate.id === turn.threadId && candidate.tenantId === tenantId);
     if (!thread) return ledger;
+    if (workflowRunId && (
+      !workflow || workflow.input.metadata?.threadId !== thread.id ||
+      workflow.input.metadata?.actorId !== thread.actorId
+    )) {
+      throw new Error("Workflow thread reference does not match this conversation's owner and binding.");
+    }
     found = true;
     existing = input.id
       ? ledger.turns.find((candidate) => candidate.id === turn.id)
@@ -295,7 +335,22 @@ export async function appendThreadTurn(input: {
     return ledger;
   });
   if (!found) throw new Error("Thread not found.");
-  return existing ? sameThreadTurn(existing, turn) : turn;
+  return existing ? sameThreadTurn(existing, turn) : projectThreadTurn(turn);
+}
+
+/** Resolve only the bound user's canonical ID; never enumerate legacy aliases. */
+export async function workflowThreadActorReadOrder(tenantId: string, actorId: string): Promise<readonly string[]> {
+  if (!hasDatabaseUrl()) return [actorId];
+  await ensureDatabaseSchema();
+  const rows = await getSql()`
+    SELECT public.omni_thread_workflow_canonical_actor_v1(${tenantId}, ${actorId}) AS canonical_actor_id
+  `;
+  const canonicalActorId = rows[0]?.canonical_actor_id;
+  if (canonicalActorId === null || canonicalActorId === undefined) return [actorId];
+  if (typeof canonicalActorId !== "string" || !/^actor:[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(canonicalActorId)) {
+    throw new Error("Workflow conversation owner has an invalid canonical actor binding.");
+  }
+  return canonicalActorId === actorId ? [actorId] : [canonicalActorId, actorId];
 }
 
 function sameThreadTurn(existing: ThreadTurnRecord | null, requested: ThreadTurnRecord) {
@@ -304,11 +359,13 @@ function sameThreadTurn(existing: ThreadTurnRecord | null, requested: ThreadTurn
     existing.tenantId !== requested.tenantId ||
     existing.threadId !== requested.threadId ||
     existing.role !== requested.role ||
-    existing.content !== requested.content
+    existing.content !== requested.content ||
+    existing.runId !== requested.runId ||
+    existing.workflowRunId !== requested.workflowRunId
   ) {
     throw new Error("Thread turn identity is already bound to a different message.");
   }
-  return existing;
+  return projectThreadTurn(existing);
 }
 
 export async function listThreadTurns(threadId: string, options: { tenantId?: string; limit?: number } = {}) {
@@ -323,10 +380,10 @@ export async function listThreadTurns(threadId: string, options: { tenantId?: st
       LIMIT ${limit}
     ) AS recent_turns
     ORDER BY created_at ASC`;
-    return rows.map(turnFromRow);
+    return rows.map((row) => projectThreadTurn(turnFromRow(row)));
   }
   const ledger = await readLedger();
-  return ledger.turns.filter((turn) => turn.threadId === threadId && turn.tenantId === tenantId).slice(-limit);
+  return ledger.turns.filter((turn) => turn.threadId === threadId && turn.tenantId === tenantId).slice(-limit).map(projectThreadTurn);
 }
 
 export async function listConversationSummaries(
@@ -419,7 +476,11 @@ function updateLedger(mutate: (ledger: ThreadLedger) => ThreadLedger) {
 }
 function threadFromRow(row: Record<string, unknown>): ThreadRecord { return { id: String(row.id), tenantId: String(row.tenant_id), actorId: String(row.actor_id), projectId: row.project_id ? String(row.project_id) : undefined, title: String(row.title), mode: String(row.mode) as AgentMode, createdAt: date(row.created_at), updatedAt: date(row.updated_at) }; }
 function projectThreadForRequest(thread: ThreadRecord, requestActorId: string): ThreadRecord { return { ...thread, actorId: requestActorId }; }
-function turnFromRow(row: Record<string, unknown>): ThreadTurnRecord { return { id: String(row.id), tenantId: String(row.tenant_id), threadId: String(row.thread_id), role: String(row.role) as ChatRole, content: safeText(String(row.content), 40_000), runId: row.run_id ? String(row.run_id) : undefined, createdAt: date(row.created_at) }; }
+function turnFromRow(row: Record<string, unknown>): ThreadTurnRecord { return { id: String(row.id), tenantId: String(row.tenant_id), threadId: String(row.thread_id), role: String(row.role) as ChatRole, content: safeText(String(row.content), 40_000), runId: row.run_id ? String(row.run_id) : undefined, ...(row.workflow_run_id ? { workflowRunId: String(row.workflow_run_id) } : {}), createdAt: date(row.created_at) }; }
+/** Preserve the existing web/native workflow marker without storing it in run_id. */
+function projectThreadTurn(turn: ThreadTurnRecord): ThreadTurnRecord {
+  return turn.workflowRunId ? { ...turn, runId: `workflow:${turn.workflowRunId}` } : turn;
+}
 function titleFrom(value: string) { const title = safeText(value, 90).replace(/\s+/g, " ").trim(); return title || "New conversation"; }
 function safeText(value: string, max: number) { return String(redactSensitive(value)).trim().slice(0, max); }
 function date(value: unknown) { return value instanceof Date ? value.toISOString() : String(value); }

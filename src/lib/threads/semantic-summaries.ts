@@ -64,6 +64,7 @@ const sourceTurnSchema = z.object({
   role: z.enum(["user", "assistant"]),
   content: z.string().max(SEMANTIC_EPISODE_MAX_TURN_CHARACTERS),
   runId: identifierSchema.optional(),
+  workflowRunId: identifierSchema.optional(),
   createdAt: timestampSchema,
 }).strict();
 
