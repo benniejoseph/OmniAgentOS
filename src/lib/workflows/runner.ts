@@ -181,8 +181,8 @@ export async function tickWorkflowRun(
   // Discovery reads run in tenant scope. All delivery work, including mission
   // projections and report persistence, must restore the validated run owner.
   // Keep the bound workspace/project scope unchanged; metadata is not authority.
-  return actorId
-    ? runWithDatabaseActorScope(detail.run.tenantId, [actorId], () =>
+  return executionAuthority && actorId
+    ? runWithDatabaseActorScope(executionAuthority.executionScope.tenantId, [actorId], () =>
         tickWorkflowRunWithAuthority(detail, executionAuthority, options),
       )
     : tickWorkflowRunWithAuthority(detail, executionAuthority, options);
