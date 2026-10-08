@@ -4549,8 +4549,8 @@ function OwnedAgentRunsWorkspace({
                     Open Results
                   </Link>
                   <Link href="/app/approvals" className="action-link">Open approvals</Link>
-                  <Link href="/app/evaluations" className="action-link">Release evidence</Link>
-                  <Link href="/app/observability" className="action-link">Monitoring</Link>
+                  <Link href="/app/settings?section=quality" className="action-link">Release evidence</Link>
+                  <Link href="/app/settings?section=monitoring" className="action-link">Monitoring</Link>
                 </div>
                 <div className="grid gap-4">
                   {contextUseReceipt ? (

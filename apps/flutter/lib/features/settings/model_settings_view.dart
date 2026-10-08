@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../app/macos/macos_page_scaffold.dart';
 import '../../app/platform/macos_presentation.dart';
@@ -345,6 +346,39 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
                       ],
                       const SizedBox(height: 24),
                       const CompanionSettingsSection(),
+                      const SizedBox(height: 24),
+                      Text(
+                        'Workspace health',
+                        style: Theme.of(context).textTheme.titleLarge,
+                      ),
+                      const SizedBox(height: 8),
+                      _Surface(
+                        child: Column(
+                          children: [
+                            ListTile(
+                              leading: const Icon(Icons.rule_outlined),
+                              title: const Text('Quality Checks'),
+                              subtitle: const Text(
+                                'Evaluation results and release readiness',
+                              ),
+                              trailing: const Icon(Icons.chevron_right_rounded),
+                              onTap: () =>
+                                  context.go('/settings?section=quality'),
+                            ),
+                            const Divider(height: 1),
+                            ListTile(
+                              leading: const Icon(Icons.monitor_heart_outlined),
+                              title: const Text('Monitoring'),
+                              subtitle: const Text(
+                                'System health, alerts, and incidents',
+                              ),
+                              trailing: const Icon(Icons.chevron_right_rounded),
+                              onTap: () =>
+                                  context.go('/settings?section=monitoring'),
+                            ),
+                          ],
+                        ),
+                      ),
                       const SizedBox(height: 12),
                       const PortableArchivePanel(),
                       const SizedBox(height: 12),
@@ -797,10 +831,18 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
                         width: 210,
                         child: _MacSettingsNavigation(
                           selected: macosSection,
-                          onSelected: (value) => setState(() {
-                            macosSection = value;
-                            macosQuery = '';
-                          }),
+                          onSelected: (value) {
+                            if (value >= 4) {
+                              context.go(
+                                '/settings?section=${value == 4 ? 'quality' : 'monitoring'}',
+                              );
+                              return;
+                            }
+                            setState(() {
+                              macosSection = value;
+                              macosQuery = '';
+                            });
+                          },
                         ),
                       ),
                       VerticalDivider(
@@ -1153,6 +1195,8 @@ const _macSettingsSections = <({String label, IconData icon})>[
   (label: 'Models & roles', icon: Icons.route_outlined),
   (label: 'Providers', icon: Icons.hub_outlined),
   (label: 'This Mac', icon: Icons.laptop_mac_outlined),
+  (label: 'Quality Checks', icon: Icons.rule_outlined),
+  (label: 'Monitoring', icon: Icons.monitor_heart_outlined),
 ];
 
 class _MacSettingsNavigation extends StatelessWidget {

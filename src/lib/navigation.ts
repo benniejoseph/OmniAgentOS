@@ -182,7 +182,7 @@ export const appNav: AppNavItem[] = [
   {
     href: "/app/settings",
     label: "Settings",
-    description: "Models, environment, and configuration.",
+    description: "Preferences, models, Quality Checks, and Monitoring.",
     icon: Settings,
   },
 ];
@@ -207,11 +207,6 @@ export const appNavGroups: AppNavGroup[] = [
   {
     label: "Settings",
     items: ["/app/security", "/app/settings"].map(appNavItem),
-  },
-  {
-    label: "Advanced",
-    collapsible: true,
-    items: ["/app/evaluations", "/app/observability"].map(appNavItem),
   },
 ];
 

@@ -1,10 +1,5 @@
-import type { Metadata } from "next";
-import { QualityWorkspace } from "@/components/operations-console/quality-workspace";
-
-export const metadata: Metadata = {
-  title: "Evaluations",
-};
+import { redirect } from "next/navigation";
 
 export default function EvaluationsPage() {
-  return <QualityWorkspace />;
+  redirect("/app/settings?section=quality");
 }

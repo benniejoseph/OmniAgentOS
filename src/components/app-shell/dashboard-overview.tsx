@@ -419,8 +419,8 @@ export function DashboardOverview() {
         <div className="mt-4 flex flex-wrap gap-2">
           <Link href="/app/workflows" className="action-link">Workflow queue</Link>
           <Link href="/app/memory" className="action-link">Knowledge</Link>
-          <Link href="/app/evaluations" className="action-link">Evaluations</Link>
-          <Link href="/app/observability" className="action-link">Monitoring</Link>
+          <Link href="/app/settings?section=quality" className="action-link">Evaluations</Link>
+          <Link href="/app/settings?section=monitoring" className="action-link">Monitoring</Link>
           <Link href="/app/settings" className="action-link">Settings</Link>
         </div>
       </details>
@@ -558,7 +558,7 @@ function ActivityItem({ row, compact = false }: { row: ActivityRow; compact?: bo
 function AttentionItem({ item, kind }: { item: JsonRecord; kind: "approval" | "incident" }) {
   const status = kind === "approval" ? stringValue(item.status, "waiting_approval") : stringValue(item.status, "open");
   return (
-    <Link href={kind === "approval" ? "/app/approvals" : "/app/observability"} className="block rounded-md border border-line bg-background p-3 hover:bg-surface-raised">
+    <Link href={kind === "approval" ? "/app/approvals" : "/app/settings?section=monitoring"} className="block rounded-md border border-line bg-background p-3 hover:bg-surface-raised">
       <div className="flex items-start gap-3">
         <AlertTriangle size={16} className="mt-0.5 shrink-0 text-warning" aria-hidden="true" />
         <div className="min-w-0 flex-1">

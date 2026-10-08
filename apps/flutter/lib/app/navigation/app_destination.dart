@@ -196,6 +196,8 @@ const appDestinations = <AppDestination>[
     eyebrow: 'EVALUATIONS',
     description: 'Automated checks that verify agent behavior.',
     group: AppDestinationGroup.advanced,
+    macosVisible: false,
+    adaptiveVisible: false,
   ),
   AppDestination(
     label: 'Monitoring',
@@ -205,6 +207,8 @@ const appDestinations = <AppDestination>[
     eyebrow: 'SYSTEM HEALTH',
     description: 'Events, service health, alerts, and incidents.',
     group: AppDestinationGroup.advanced,
+    macosVisible: false,
+    adaptiveVisible: false,
   ),
   AppDestination(
     label: 'Security',
@@ -221,7 +225,7 @@ const appDestinations = <AppDestination>[
     icon: Icons.tune_outlined,
     selectedIcon: Icons.tune_rounded,
     eyebrow: 'CONFIGURATION',
-    description: 'Models, environment, identity, and portable data.',
+    description: 'Preferences, models, Quality Checks, and Monitoring.',
     group: AppDestinationGroup.system,
   ),
   AppDestination(

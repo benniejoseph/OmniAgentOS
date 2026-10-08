@@ -105,9 +105,10 @@ The macOS route families are:
 - **Knowledge:** practical indexed Memory browser with stable pan/zoom graph,
   Agent roster/capabilities/outcomes, and the market research terminal.
 - **Review:** attention Inbox and approval detail, trusted read-only Payments,
-  Quality Checks, and evidence inspectors.
-- **Control:** Workflows, Integrations, Tools, Monitoring, Security, model/provider
-  Settings, and a signed-installation Devices & Security ledger.
+  and evidence inspectors.
+- **Control:** Workflows, Integrations, Tools, Security, and Settings containing
+  model/provider configuration, Quality Checks, Monitoring, and a signed-installation
+  Devices & Security ledger.
 - **Lifecycle:** native sign-in, protected-session bootstrap, Quick Entry, auxiliary
   windows, empty/loading/error/offline states, and narrow-window inspector sheets.
 
@@ -144,4 +145,4 @@ The macOS route families are:
 
 No decorative glass, gradient text, nested card grids, oversized rounded containers, ornamental animation, ambiguous loading zeros, or color-only status. The authenticated product never uses marketing hero composition.
 
-Navigation starts with Today, Assistant, Work, Memory and Capabilities. History brings Results and Timeline together lower in the menu. Connections live inside Capabilities; Quality Checks and Monitoring belong in Advanced. Motion should clarify selection, expansion and focus, stop after the transition and respect reduced-motion preferences. Security begins with Your access, Your data and Recent decisions; technical identifiers and maintenance controls require deliberate expansion.
+Navigation starts with Today, Assistant, Work, Memory and Capabilities. History brings Results and Timeline together lower in the menu. Connections live inside Capabilities; Quality Checks and Monitoring are categories inside Settings, with no separate workspace-navigation entries. Open those operational surfaces only when selected; entering Settings must not run checks or monitoring actions. Motion should clarify selection, expansion and focus, stop after the transition and respect reduced-motion preferences. Security begins with Your access, Your data and Recent decisions; technical identifiers and maintenance controls require deliberate expansion.
