@@ -29,6 +29,7 @@ export const notificationDispositionSourceKindSchema = z.enum([
   "scheduled_routine",
   "security_incident",
   "responsibility_change",
+  "research_workflow",
 ]);
 
 export const notificationDispositionDeliveryKindSchema = z.enum([
@@ -91,6 +92,13 @@ const dispositionRecordBaseSchema = z.object({
 
 export const notificationDispositionRecordV1Schema = dispositionRecordBaseSchema
   .superRefine((record, context) => {
+    if (record.sourceKind === "research_workflow" && (
+      !record.mustSend || record.critical || !["send", "defer"].includes(record.outcome) ||
+      !["research_ready", "actionable_failure", "quiet_hours", "cooldown_active"].includes(record.reason) ||
+      (record.deliveryKind !== null && record.deliveryKind !== "mobile_push_outbox")
+    )) {
+      context.addIssue({ code: "custom", path: ["sourceKind"], message: "Research notification must respect its noncritical delivery policy." });
+    }
     const expectedId = notificationDispositionId({
       tenantId: record.tenantId,
       ownerActorId: record.ownerActorId,

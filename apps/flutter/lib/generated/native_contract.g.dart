@@ -3,9 +3,9 @@
 
 abstract final class NativeContract {
   static const id = 'asael.native-api';
-  static const currentVersion = 48;
-  static const previousVersion = 47;
-  static const supportedVersions = <int>[48, 47];
+  static const currentVersion = 49;
+  static const previousVersion = 48;
+  static const supportedVersions = <int>[49, 48];
   static const discoveryPath = '/api/mobile/contracts';
   static const operationIds = <String>{
     'auth.login',
@@ -263,6 +263,7 @@ abstract final class NativeContract {
     'connectors.native.githubUpgrades.submit',
     'connectors.native.githubUpgrades.read',
     'connectors.native.githubUpgrades.close',
+    'research.control',
   };
 
   static bool supports(int version) => supportedVersions.contains(version);
@@ -1040,6 +1041,7 @@ abstract final class NativePaths {
   static const connectorsNativeGithubUpgradesSubmit = '/api/connectors/native/github-upgrades';
   static String connectorsNativeGithubUpgradesRead(String keySha256) => '/api/connectors/native/github-upgrades/${Uri.encodeComponent(keySha256)}';
   static String connectorsNativeGithubUpgradesClose(String keySha256) => '/api/connectors/native/github-upgrades/${Uri.encodeComponent(keySha256)}/close';
+  static String researchControl(String id) => '/api/workflows/${Uri.encodeComponent(id)}/signal';
 }
 
 abstract final class NativeConversationEvents {

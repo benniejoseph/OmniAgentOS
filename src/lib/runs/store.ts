@@ -1078,6 +1078,16 @@ function domainEventPayload(event: AgentEvent): Record<string, unknown> {
         reasonCode: event.reasonCode,
         ...hashedTextFields("message", event.message),
       };
+    case "research_progress":
+      return {
+        schemaVersion, type: event.type,
+        depth: event.progress.depth, stage: event.progress.stage,
+        searches: event.progress.searches, sourcesRead: event.progress.sourcesRead,
+        questionCount: event.progress.questions.length,
+        gapCount: event.progress.gaps.length,
+        limitationCount: event.progress.limitations.length,
+        reportStatus: event.progress.reportStatus,
+      };
     case "status":
       return {
         schemaVersion,

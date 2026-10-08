@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { ResearchPanel, researchViewFromWorkflow } from "@/components/command/research-panel";
 import dynamic from "next/dynamic";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -225,6 +226,14 @@ export function ResultsCenter({ embedded = false }: { embedded?: boolean }) {
     return () => window.removeEventListener("popstate", readSelection);
   }, []);
 
+  useEffect(() => {
+    if (!selectedResultKey) return;
+    const timer = window.setTimeout(() => void load(), 0);
+    return () => window.clearTimeout(timer);
+    // A selected result needs its exact saved report, including interrupted drafts.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedResultKey]);
+
   const agentRuns = arrayPath(data, "runs.runs");
   const workflowRuns = arrayPath(data, "workflows.runs");
   const approvalItems = arrayPath(data, "approvals.items");
@@ -376,6 +385,12 @@ export function ResultsCenter({ embedded = false }: { embedded?: boolean }) {
           <div className={styles.resultsLayout}>
             <PrimaryResultCard
               result={primaryResult}
+              researchWorkflow={primaryResult.kind === "workflow"
+                ? stringValue(readPath(data.workflows, "selectedDetail.run.id")) === primaryResult.key?.slice("workflow:".length)
+                  ? readPath(data.workflows, "selectedDetail")
+                  : { run: workflowRuns.find((run) => `workflow:${run.id}` === primaryResult.key) }
+                : undefined}
+              researchRun={primaryResult.kind === "agent" ? agentRuns.find((run) => `agent:${run.id}` === primaryResult.key) : undefined}
               canceling={Boolean(cancelingRunId)}
               onCancel={() => void cancelAgentResult(primaryResult)}
             />
@@ -536,10 +551,14 @@ export function ResultsCenter({ embedded = false }: { embedded?: boolean }) {
 
 function PrimaryResultCard({
   result,
+  researchWorkflow,
+  researchRun,
   canceling,
   onCancel,
 }: {
   result: PrimaryResult;
+  researchWorkflow?: unknown;
+  researchRun?: JsonRecord;
   canceling: boolean;
   onCancel: () => void;
 }) {
@@ -561,7 +580,9 @@ function PrimaryResultCard({
       {request !== title ? <details className={styles.requestDisclosure}>
         <summary>Read full request</summary><p tabIndex={0}>{request}</p>
       </details> : null}
-      <div className={styles.resultBody}><ResultReport content={result.body} /></div>
+      {researchViewFromWorkflow(researchWorkflow) || researchRun?.mode === "research"
+        ? <ResearchPanel workflow={researchWorkflow} directRun={researchRun} renderReport={(content, grounding) => <ResultReport content={content} grounding={grounding} />} />
+        : <div className={styles.resultBody}><ResultReport content={result.body} /></div>}
       <div className={styles.actions}>
         <Link href={result.href} className={styles.button}>
           {result.href.startsWith("/app/results?")
@@ -775,12 +796,7 @@ async function loadSelectedResult(
   }
   if (requestedResultKey?.startsWith("workflow:")) {
     const runId = requestedResultKey.slice("workflow:".length);
-    if (
-      runId &&
-      !arrayPath(workflowsPayload, "runs").some(
-        (run) => stringValue(run.id) === runId,
-      )
-    ) {
+    if (runId) {
       const direct = asRecord(
         await readJson(`/api/workflows/${encodeURIComponent(runId)}`, {
           signal,
@@ -788,9 +804,10 @@ async function loadSelectedResult(
       );
       const directRun = asRecord(direct.run);
       if (stringValue(directRun.id) === runId) {
+        workflowsPayload.selectedDetail = direct;
         workflowsPayload.runs = [
           directRun,
-          ...arrayPath(workflowsPayload, "runs"),
+          ...arrayPath(workflowsPayload, "runs").filter((run) => stringValue(run.id) !== runId),
         ];
       }
     }

@@ -485,7 +485,7 @@ export const governedTools: ToolDefinition[] = [
   {
     id: "web.read",
     name: "Read Web Source",
-    description: "Read the public HTML or plain-text content of a source URL for deeper research. Returns bounded untrusted text and a citation; does not run scripts, sign in, or read PDFs.",
+    description: "Read public HTML, plain text, or text-based PDFs for deeper research. Returns bounded untrusted passages with citations and page locations where available. Does not run scripts, sign in, or perform OCR.",
     category: "web",
     status: "active",
     riskLevel: 0,
@@ -496,6 +496,8 @@ export const governedTools: ToolDefinition[] = [
     inputSchema: {
       ...objectSchema({
         url: { type: "string", description: "Public HTTP or HTTPS source URL to read.", minLength: 1, maxLength: 4_000 },
+        query: { type: "string", description: "Optional research question used to select relevant passages from the fetched document.", minLength: 1, maxLength: 4_000 },
+        allowedDomains: { type: "array", description: "Optional bare-domain restriction enforced on the source and every redirect.", maxItems: 10, items: { type: "string", minLength: 1, maxLength: 253 } },
       }),
       required: ["url"],
     },

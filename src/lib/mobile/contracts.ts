@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { researchOptionsSchema, researchProgressSchema } from "@/lib/research/contracts";
 import { contentSearchResponseSchema } from "@/lib/content-search/contracts";
 import { COMPANION_PREFERENCES_CONTRACT, companionChangeSchema, companionPreferencesSchema, companionThreadIdSchema } from "@/lib/companion/contracts";
 import { agentDailyLearningStatusV1Schema } from "@/lib/agents/learning-contracts";
@@ -65,9 +66,9 @@ import {
 import { voiceCommandInputSchema } from "@/lib/voice/command-input";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 48 as const;
-// v48 retires the CRM workspace; v47 clients retain all other operations.
-export const NATIVE_API_PREVIOUS_VERSION = 47 as const;
+export const NATIVE_API_CURRENT_VERSION = 49 as const;
+// v49 adds bounded research preferences, progress, and owner-only research controls.
+export const NATIVE_API_PREVIOUS_VERSION = 48 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -502,6 +503,7 @@ export const nativePushAcknowledgementResponseSchema = z.object({
     "work_item",
     "meeting",
     "run",
+    "research",
     "notification",
     "canary",
   ]),
@@ -514,6 +516,7 @@ const nativePushCauseKindSchema = z.enum([
   "work_item",
   "meeting",
   "run",
+    "research",
   "notification",
   "canary",
 ]);
@@ -596,6 +599,7 @@ export const nativeConversationRequestSchema = z.object({
   message: z.string().min(1).max(120_000),
   threadId: z.string().uuid().optional(),
   mode: z.enum(["orchestrate", "research", "execute", "learn"]).optional(),
+  research: researchOptionsSchema.optional(),
   strategy: z.enum(["auto", "direct", "durable"]).optional(),
   agentId: z.string().trim().min(1).max(120).regex(/^[a-zA-Z0-9_.:-]+$/).optional(),
   computerUseTarget: z.literal("local_macos").optional(),
@@ -758,6 +762,7 @@ const agentEventSchemas = [
   z.object({ type: z.literal("delegated"), threadId: opaqueId, workflowId: opaqueId, missionId: opaqueId.optional(), acknowledgement: z.string(), reason: z.string() }).passthrough(),
   z.object({ type: z.literal("clarification"), threadId: opaqueId, runId: opaqueId.optional(), message: z.string(), reasonCode: z.enum(["ambiguous_destructive_target", "ambiguous_known_procedure", "ambiguous_read_target"]) }).passthrough(),
   z.object({ type: z.literal("status"), label: z.string(), detail: z.string().optional() }).passthrough(),
+  z.object({ type: z.literal("research_progress"), progress: researchProgressSchema }).passthrough(),
   z.object({ type: z.literal("harness"), version: z.union([z.literal(1), z.literal(2)]), mode: z.enum(["orchestrate", "research", "execute", "learn"]) }).passthrough(),
   z.object({ type: z.literal("delta"), text: z.string() }).passthrough(),
   z.object({ type: z.literal("memory"), title: z.string(), count: z.number().int().min(0).optional() }).passthrough(),
@@ -2530,6 +2535,8 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 45) return v45Operations;
   if (version === 46) return v46Operations;
   if (version === 47 || version === 48) return v47Operations;
+  if (version === 49) return [...v47Operations,
+    operation("research.control", "POST", "/api/workflows/{id}/signal", "Pause, resume, or stop your Deep research.", "bearer", "JsonObject", "JsonObject")];
   return undefined;
 }
 

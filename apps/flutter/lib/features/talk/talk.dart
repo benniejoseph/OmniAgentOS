@@ -32,12 +32,14 @@ import 'talk_history.dart';
 import 'talk_history_view.dart';
 import 'talk_model_selection.dart';
 import 'talk_rich_message.dart';
+import 'talk_research.dart';
 import 'talk_voice_input.dart';
 
 export 'talk_history.dart';
 export 'talk_command_context.dart';
 export 'talk_model_selection.dart';
 export 'talk_voice_input.dart';
+export 'talk_research.dart';
 
 typedef Json = Map<String, dynamic>;
 
@@ -252,11 +254,13 @@ class TalkWorkflowSnapshot {
     required this.id,
     required this.status,
     this.currentStep,
+    this.research,
   });
 
   final String id;
   final String status;
   final String? currentStep;
+  final TalkResearchWorkflow? research;
 
   bool get terminal =>
       const {'completed', 'failed', 'canceled'}.contains(status);
@@ -282,6 +286,7 @@ class TalkWorkflowSnapshot {
       id: id,
       status: status,
       currentStep: currentStep.isEmpty ? null : currentStep,
+      research: TalkResearchWorkflow.fromDetail(payload),
     );
   }
 }
@@ -969,6 +974,25 @@ abstract interface class TalkCommandModelSelectionRepository {
   });
 }
 
+/// Research preferences travel together through text, context and voice sends.
+abstract interface class TalkResearchRepository {
+  Stream<SseEvent> sendResearch({
+    required String message,
+    required TalkResearchOptions research,
+    String? threadId,
+    String strategy = 'auto',
+    TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
+    String? agentId,
+    List<TalkCommandContextReference> contextReferences = const [],
+    TalkCommandModelSelection? modelSelection,
+    TalkVoiceInput? voiceInput,
+  });
+  Future<TalkWorkflowSnapshot> controlResearch(
+    String workflowId,
+    String signal,
+  );
+}
+
 abstract interface class TalkArtifactRepository {
   Future<TalkArtifactContent> loadArtifact(TalkMediaArtifactSummary artifact);
 }
@@ -978,7 +1002,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     this.repository, {
     this.localComputerPreviews,
     this.workflowPollInterval = const Duration(seconds: 3),
-    this.workflowPollLimit = 20,
+    this.workflowPollLimit = 120,
     this.runRecoveryPollInterval = const Duration(seconds: 3),
     this.runRecoveryPollLimit = 200,
   }) : assert(workflowPollLimit > 0 && workflowPollLimit <= 120),
@@ -999,6 +1023,14 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   final promptQueue = <TalkQueuedPrompt>[];
   final _workflowIds = <String>[];
   final _workflowMonitorTokens = <String, Object>{};
+  final _researchWorkflows = <String, TalkWorkflowSnapshot>{};
+  TalkResearchProgress? researchProgress;
+  bool researchControlBusy = false;
+  String? researchError;
+  TalkWorkflowSnapshot? get researchWorkflow =>
+      _researchWorkflows.values.lastOrNull;
+  bool get researchConversationBusy =>
+      researchWorkflow != null && !researchWorkflow!.terminal;
   final _inspectedRunIds = <String>{};
   Object? _runMonitorToken;
   String? _runLifecycleStatus;
@@ -1157,7 +1189,9 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       transcribing ||
       canceling ||
       promptQueueSyncing ||
-      _workflowMonitorTokens.isNotEmpty;
+      _workflowMonitorTokens.keys.any(
+        (id) => !_researchWorkflows.containsKey(id),
+      );
 
   CompanionWork get companionStatus => companionWork(
     runId: runId,
@@ -1194,6 +1228,9 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     queuePaused = _allActivePromptsPaused(promptQueue);
     _workflowIds.clear();
     _workflowMonitorTokens.clear();
+    _researchWorkflows.clear();
+    researchProgress = null;
+    researchError = null;
     _retryInput = null;
     _retryMode = null;
     _retryStrategy = null;
@@ -1202,8 +1239,21 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     _retryContextReferences = const [];
     _retryModelSelection = null;
     _retryVoiceInput = null;
+    _retryResearch = null;
     status = null;
     canceling = false;
+    final workflowTurn = detail.turns.reversed
+        .where((turn) => turn.runId?.startsWith('workflow:') == true)
+        .firstOrNull;
+    if (workflowTurn?.runId case final marker?) {
+      final workflowId = safeTalkHistoryId(
+        marker.substring('workflow:'.length),
+      );
+      if (workflowId.isNotEmpty) {
+        _rememberWorkflow(workflowId);
+        _startWorkflowMonitor(workflowId);
+      }
+    }
   }
 
   @override
@@ -1215,6 +1265,9 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     queuePaused = _allActivePromptsPaused(promptQueue);
     _workflowIds.clear();
     _workflowMonitorTokens.clear();
+    _researchWorkflows.clear();
+    researchProgress = null;
+    researchError = null;
     _retryInput = null;
     _retryMode = null;
     _retryStrategy = null;
@@ -1223,6 +1276,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     _retryContextReferences = const [];
     _retryModelSelection = null;
     _retryVoiceInput = null;
+    _retryResearch = null;
     status = null;
   }
 
@@ -1237,9 +1291,18 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     List<TalkCommandContextReference> contextReferences = const [],
     TalkCommandModelSelection? modelSelection,
     TalkVoiceInput? voiceInput,
+    TalkResearchOptions? research,
   }) async {
     final text = input.trim();
     if (_disposed || text.isEmpty) return;
+    if (researchConversationBusy ||
+        (mode == 'research' && hasPendingConversationWork)) {
+      throw StateError(
+        'Research is still running. Keep this draft, or start a new conversation.',
+      );
+    }
+    if (mode == 'research' && research?.validationError != null)
+      throw StateError(research!.validationError!);
     final targetAgent = assignedAgent;
     if (sending) {
       enqueuePrompt(
@@ -1265,6 +1328,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       contextReferences: contextReferences,
       modelSelection: modelSelection,
       voiceInput: voiceInput,
+      research: research,
     );
   }
 
@@ -1277,6 +1341,11 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     List<TalkCommandContextReference> contextReferences = const [],
     TalkCommandModelSelection? modelSelection,
   }) {
+    if (mode == 'research') {
+      researchError = 'Research cannot be queued. Your draft stays here until you start it.';
+      notifyListeners();
+      return;
+    }
     final text = input.trim();
     if (_disposed ||
         text.isEmpty ||
@@ -1705,6 +1774,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   // A retried voice command keeps its declaration: the first attempt may
   // already have consumed the voice session on the server.
   TalkVoiceInput? _retryVoiceInput;
+  TalkResearchOptions? _retryResearch;
 
   bool get canRetry => !sending && _retryInput != null;
   bool get _acceptedRunIsTerminal =>
@@ -1719,6 +1789,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     _retryContextReferences = const [];
     _retryModelSelection = null;
     _retryVoiceInput = null;
+    _retryResearch = null;
   }
 
   void _abandonAcceptedRun() {
@@ -1777,6 +1848,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       contextReferences: _retryContextReferences,
       modelSelection: _retryModelSelection,
       voiceInput: _retryVoiceInput,
+      research: _retryResearch,
       replaceFailedResponse: true,
     );
   }
@@ -1811,16 +1883,25 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     List<TalkCommandContextReference> contextReferences = const [],
     TalkCommandModelSelection? modelSelection,
     TalkVoiceInput? voiceInput,
+    TalkResearchOptions? research,
     TalkQueuedPrompt? queuedPrompt,
     bool queuedForce = true,
     bool replaceFailedResponse = false,
   }) async {
     final text = input.trim();
     if (_disposed || text.isEmpty || sending) return;
+    if (queuedPrompt != null && mode == 'research') {
+      researchError = 'Start Research from the composer so your questions and source preferences are retained.';
+      notifyListeners();
+      return;
+    }
     invalidateThreadRead();
     activities.clear();
     _clearArtifacts();
     _abandonAcceptedRun();
+    researchProgress = null;
+    researchError = null;
+    _researchWorkflows.clear();
     if (replaceFailedResponse && messages.lastOrNull?.failed == true) {
       messages[messages.length - 1] = const TalkMessage(
         role: TalkRole.assistant,
@@ -1868,6 +1949,22 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
               queuedPrompt,
               force: queuedForce,
             )
+          : mode == 'research'
+          ? (repository is TalkResearchRepository
+                ? (repository as TalkResearchRepository).sendResearch(
+                    message: text,
+                    research: research ?? const TalkResearchOptions(),
+                    threadId: voiceInput?.conversationId ?? threadId,
+                    strategy: strategy,
+                    executionTarget: executionTarget,
+                    agentId: assignedAgent?.id,
+                    contextReferences: contextReferences,
+                    modelSelection: modelSelection,
+                    voiceInput: voiceInput,
+                  )
+                : throw StateError(
+                    'Research preferences are not available in this build.',
+                  ))
           : voiceInput != null && voiceRepository != null
           ? voiceRepository.sendVoiceCommand(
               message: text,
@@ -1912,6 +2009,10 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
           flushPendingText();
         }
         switch (event.event) {
+          case 'research_progress':
+            researchProgress = TalkResearchProgress.fromJson(
+              event.data['progress'],
+            );
           case 'run':
             final acceptedRunId = safeTalkHistoryId(event.data['runId']);
             if (acceptedRunId.isEmpty) {
@@ -2053,12 +2154,26 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
               state: TalkActivityState.waiting,
             );
           case 'delegated':
+            _runLifecycleStatus = 'completed';
             final delegatedWorkflowId = _boundedDisplayText(
               event.data['workflowId'],
               200,
             );
             if (delegatedWorkflowId.isNotEmpty) {
               _rememberWorkflow(delegatedWorkflowId);
+              if (mode == 'research' &&
+                  research?.depth == 'deep' &&
+                  threadId != null) {
+                _researchWorkflows[delegatedWorkflowId] = TalkWorkflowSnapshot(
+                  id: delegatedWorkflowId,
+                  status: 'queued',
+                  research: TalkResearchWorkflow(
+                    threadId: threadId!,
+                    status: 'queued',
+                    progress: researchProgress,
+                  ),
+                );
+              }
               _startWorkflowMonitor(delegatedWorkflowId);
             }
             messages[messages.length - 1] = messages.last.copyWith(
@@ -2230,6 +2345,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
         _retryContextReferences = List.unmodifiable(contextReferences);
         _retryModelSelection = modelSelection;
         _retryVoiceInput = voiceInput;
+        _retryResearch = research;
         _recordActivity(
           key: 'run',
           title: 'Main agent',
@@ -2257,7 +2373,12 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   }
 
   Future<void> _drainPromptQueue() async {
-    if (_drainingQueue || sending || queuePaused || promptQueue.isEmpty) return;
+    if (_drainingQueue ||
+        sending ||
+        researchConversationBusy ||
+        queuePaused ||
+        promptQueue.isEmpty)
+      return;
     _drainingQueue = true;
     try {
       final queueRepository = _promptQueueRepository;
@@ -2535,11 +2656,60 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     unawaited(_monitorWorkflow(workflowId, token));
   }
 
+  void refreshResearch() {
+    final id = researchWorkflow?.id ?? _workflowIds.lastOrNull;
+    if (id != null) _startWorkflowMonitor(id);
+  }
+
+  Future<void> controlResearch(String signal) async {
+    final snapshot = researchWorkflow;
+    final researchRepository = repository;
+    if (snapshot == null ||
+        snapshot.research?.threadId != threadId ||
+        researchRepository is! TalkResearchRepository ||
+        researchControlBusy ||
+        !const {'pause', 'resume', 'cancel'}.contains(signal))
+      return;
+    final expectedThread = threadId;
+    researchControlBusy = true;
+    researchError = null;
+    _workflowMonitorTokens.remove(snapshot.id);
+    notifyListeners();
+    try {
+      final updated = await (researchRepository as TalkResearchRepository)
+          .controlResearch(snapshot.id, signal);
+      if (_disposed ||
+          threadId != expectedThread ||
+          updated.id != snapshot.id ||
+          updated.research?.threadId != expectedThread)
+        return;
+      _researchWorkflows[updated.id] = updated;
+      researchProgress = updated.research?.progress;
+      _projectWorkflowActivity(updated);
+      if (updated.terminal || updated.status == 'paused') {
+        _workflowMonitorTokens.remove(updated.id);
+      } else {
+        _startWorkflowMonitor(updated.id);
+      }
+    } catch (_) {
+      if (!_disposed && threadId == expectedThread) {
+        researchError = 'That update did not finish. Refresh to see the current state before trying again.';
+        _startWorkflowMonitor(snapshot.id);
+      }
+    } finally {
+      researchControlBusy = false;
+      if (!_disposed) notifyListeners();
+    }
+  }
+
   Future<void> _monitorWorkflow(String workflowId, Object token) async {
     var receivedProjection = false;
+    final expectedThread = threadId;
     for (var attempt = 0; attempt < workflowPollLimit; attempt += 1) {
       if (attempt > 0 && workflowPollInterval > Duration.zero) {
-        await Future<void>.delayed(workflowPollInterval);
+        await Future<void>.delayed(
+          attempt < 10 ? workflowPollInterval : workflowPollInterval * 3,
+        );
       }
       if (!_monitorIsCurrent(workflowId, token)) return;
       try {
@@ -2548,15 +2718,29 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
         if (snapshot.id != workflowId) {
           throw const FormatException('Workflow identity did not match.');
         }
+        final research = snapshot.research;
+        if (research != null) {
+          if (expectedThread == null ||
+              research.threadId != expectedThread ||
+              threadId != expectedThread) {
+            throw const FormatException(
+              'Research did not belong to this conversation.',
+            );
+          }
+          _researchWorkflows[workflowId] = snapshot;
+          researchProgress = research.progress;
+          researchError = null;
+        }
         receivedProjection = true;
         _projectWorkflowActivity(snapshot);
         if (!_disposed) notifyListeners();
-        if (snapshot.terminal) {
+        if (snapshot.terminal || snapshot.status == 'paused') {
           _workflowMonitorTokens.remove(workflowId);
           return;
         }
       } catch (_) {
         if (!_monitorIsCurrent(workflowId, token)) return;
+        if (_researchWorkflows.containsKey(workflowId)) researchError = 'Live updates are temporarily unavailable. Your last saved progress is shown; Asael will check again.';
         _recordActivity(
           key: 'workflow:$workflowId',
           title: receivedProjection
@@ -2572,6 +2756,9 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     }
     if (!_monitorIsCurrent(workflowId, token)) return;
     _workflowMonitorTokens.remove(workflowId);
+    if (_researchWorkflows.containsKey(workflowId))
+      researchError =
+          'Live updates paused. Refresh to follow the latest saved progress.';
     _recordActivity(
       key: 'workflow:$workflowId',
       title: 'Background work still running',
@@ -3296,6 +3483,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   bool ambientConsentAccepted = false;
   String strategy = 'auto';
   String commandMode = 'orchestrate';
+  TalkResearchOptions researchOptions = const TalkResearchOptions();
   bool composerOptionsExpanded = false;
   final commandReferences = <TalkCommandContextReference>[];
   TalkCommandModelCatalog? commandModelCatalog;
@@ -3980,6 +4168,25 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
       return;
     }
     final exactModelSelection = commandModelSelection;
+    if (controller.researchConversationBusy ||
+        (commandMode == 'research' && controller.hasPendingConversationWork)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Keep this draft until the current work finishes, or start a new conversation.',
+          ),
+        ),
+      );
+      return;
+    }
+    final researchFailure = commandMode == 'research'
+        ? researchOptions.validationError
+        : null;
+    if (researchFailure != null) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(researchFailure)));
+      return;
+    }
     input.clear();
     if (recordingError != null || voiceDraftNotice != null) {
       setState(() {
@@ -3995,6 +4202,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
       contextReferences: List.unmodifiable(commandReferences),
       modelSelection: exactModelSelection,
       voiceInput: voiceInput,
+      research: commandMode == 'research' ? researchOptions : null,
     );
     setState(() {
       commandReferences.removeWhere(
@@ -4062,6 +4270,45 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
       return;
     }
     setState(() => commandMode = mode);
+  }
+
+  bool get _researchSendBlocked =>
+      widget.controller.researchConversationBusy ||
+      (commandMode == 'research' &&
+          widget.controller.hasPendingConversationWork);
+
+  Widget _researchOptionsBar() => TalkResearchOptionsBar(
+    enabled: commandMode == 'research',
+    options: researchOptions,
+    onToggle: (enabled) =>
+        selectCommandApproach(enabled ? 'research' : 'orchestrate'),
+    onChanged: (value) => setState(() => researchOptions = value),
+  );
+
+  Widget _researchStatusPanel() {
+    final controller = widget.controller;
+    final workflow = controller.researchWorkflow;
+    return TalkResearchPanel(
+      progress: controller.researchProgress,
+      workflow: workflow?.research,
+      refreshing:
+          workflow != null &&
+          controller.monitoringWorkflowIds.contains(workflow.id),
+      controlBusy: controller.researchControlBusy,
+      error: controller.researchError,
+      onRefresh: controller.workflowIds.isEmpty
+          ? null
+          : controller.refreshResearch,
+      onControl: workflow == null
+          ? null
+          : (signal) => unawaited(controller.controlResearch(signal)),
+      onNewConversation: controller.historyInteractionBusy
+          ? null
+          : () {
+              controller.newConversation();
+              inputFocus.requestFocus();
+            },
+    );
   }
 
   void selectCommandModel(String? choiceId) {
@@ -4847,6 +5094,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                             ),
                           ),
                           const SizedBox(height: 9),
+                          _researchOptionsBar(),
                           TalkCommandComposer(
                             key: const ValueKey('quick-entry-input'),
                             controller: input,
@@ -4864,9 +5112,11 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                             hintText: 'What needs to move?',
                             suffixIcon: IconButton(
                               tooltip: widget.controller.sending
-                                  ? 'Add to prompt queue'
+                                  ? commandMode == 'research'
+                                        ? 'Start research after this reply finishes'
+                                        : 'Add to prompt queue'
                                   : 'Send and open Conversation',
-                              onPressed: submit,
+                              onPressed: _researchSendBlocked ? null : submit,
                               icon: Icon(
                                 widget.controller.sending
                                     ? Icons.playlist_add_rounded
@@ -5293,6 +5543,20 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                           },
                         ),
                 ),
+                if (widget.controller.researchProgress != null ||
+                    widget.controller.researchWorkflow != null)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(
+                        maxWidth: 732,
+                        maxHeight: constraints.maxHeight * .34,
+                      ),
+                      child: SingleChildScrollView(
+                        child: _researchStatusPanel(),
+                      ),
+                    ),
+                  ),
                 SafeArea(
                   top: false,
                   child: Container(
@@ -5309,6 +5573,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                           child: Column(
                             mainAxisSize: MainAxisSize.min,
                             children: [
+                              _researchOptionsBar(),
                               Align(
                                 alignment: Alignment.centerLeft,
                                 child: Semantics(
@@ -5562,7 +5827,8 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                                         TargetPlatform.macOS,
                                 minLines: 1,
                                 maxLines: 5,
-                                onSubmitted: voiceDraftBusy
+                                onSubmitted:
+                                    voiceDraftBusy || _researchSendBlocked
                                     ? null
                                     : (_) => submit(),
                                 hintText: 'Message Asael…',
@@ -5595,9 +5861,14 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                                     ),
                                     IconButton(
                                       tooltip: widget.controller.sending
-                                          ? 'Add to prompt queue'
+                                          ? commandMode == 'research'
+                                                ? 'Start research after this reply finishes'
+                                                : 'Add to prompt queue'
                                           : 'Send message',
-                                      onPressed: voiceDraftBusy ? null : submit,
+                                      onPressed:
+                                          voiceDraftBusy || _researchSendBlocked
+                                          ? null
+                                          : submit,
                                       style: IconButton.styleFrom(
                                         backgroundColor: Theme.of(context)
                                             .colorScheme

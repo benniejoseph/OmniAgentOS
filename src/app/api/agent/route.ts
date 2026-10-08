@@ -1,6 +1,15 @@
+import { enqueueWorkflowRunTick, scheduleWorkflowQueueDrain } from "@/lib/workflows/queue";
 import { createHash, randomUUID } from "node:crypto";
 import { after } from "next/server";
 import { z } from "zod";
+import { researchOptionsSchema, RESEARCH_WORKFLOW_METADATA_KEY } from "@/lib/research/contracts";
+import {
+  createWorkflowCommandContextBinding,
+  createWorkflowCommandModelBinding,
+  resolveReviewedWorkflowCommandModel,
+  WORKFLOW_COMMAND_CONTEXT_METADATA_KEY,
+  WORKFLOW_COMMAND_MODEL_METADATA_KEY,
+} from "@/lib/workflows/command-context";
 import {
   AGENT_MAX_MESSAGE_CHARS,
   AGENT_MAX_MESSAGES,
@@ -205,6 +214,7 @@ const requestSchema = z.object({
   requestId: z.string().trim().min(1).max(200).regex(/^[a-zA-Z0-9._:-]+$/).optional(),
   message: z.string().min(1).max(AGENT_MAX_MESSAGE_CHARS).optional(),
   mode: z.enum(["orchestrate", "research", "execute", "learn"]).optional(),
+  research: researchOptionsSchema.optional(),
   agentId: z.string().min(1).max(120).regex(/^[a-zA-Z0-9_.:-]+$/).optional(),
   requireReadOnlyAgent: z.boolean().optional(),
   specialistIds: z.array(z.enum(["atlas", "scout", "forge", "sentinel", "mnemosyne"])).max(5).optional(),
@@ -217,6 +227,12 @@ const requestSchema = z.object({
   budgets: runBudgetCountersV1Schema.partial().optional(),
   voiceInput: voiceCommandInputSchema.optional(),
 }).strict()
+  .refine((value) => !value.research || value.mode === "research", {
+    message: "Research options require Research mode.", path: ["research"],
+  })
+  .refine((value) => !value.research || !value.resumeRunId, {
+    message: "A resumed run keeps its original research brief.", path: ["research"],
+  })
   .refine((value) => Boolean(value.message || value.messages?.length), {
     message: "A message is required.",
   })
@@ -288,6 +304,13 @@ async function POSTHandler(request: Request) {
   const computerUseTarget = parsed.data.computerUseTarget === "local_macos"
     ? "local_macos" as const
     : undefined;
+  const deepResearch = parsed.data.mode === "research" && parsed.data.research?.depth === "deep";
+  if (deepResearch && (computerUseTarget || parsed.data.requireReadOnlyAgent || parsed.data.resumeRunId)) {
+    return Response.json({
+      error: "Research needs its own run",
+      message: "Start Deep research as a new Asael task so its plan and evidence can be saved in the background.",
+    }, { status: 409 });
+  }
 
   const requestMessage = parsed.data.message || parsed.data.messages?.at(-1)?.content || "";
   const safeRequestMessage = String(redactSensitive(requestMessage));
@@ -403,7 +426,7 @@ async function POSTHandler(request: Request) {
   }
   if (
     parsed.data.contextReferences?.length &&
-    parsed.data.strategy === "durable"
+    parsed.data.strategy === "durable" && !deepResearch
   ) {
     return Response.json({
       error: "Command context requires direct execution",
@@ -415,7 +438,7 @@ async function POSTHandler(request: Request) {
   }
   if (
     parsed.data.modelSelection &&
-    parsed.data.strategy === "durable"
+    parsed.data.strategy === "durable" && !deepResearch
   ) {
     return Response.json({
       error: "Model selection requires direct execution",
@@ -454,6 +477,9 @@ async function POSTHandler(request: Request) {
   let queuedLifecycleBinding: PromptQueueDispatchReceiptBinding | undefined;
   let commandContextSecurity = context;
   if (queuedItemId && queuedDispatchToken) {
+    if (parsed.data.research) {
+      return Response.json({ error: "Start research directly", message: "Start a fresh Research task to keep its brief and depth together." }, { status: 409 });
+    }
     const queuedSessionId = context.auth?.sessionId?.trim();
     if (!queuedSessionId) {
       return Response.json({
@@ -839,6 +865,7 @@ async function POSTHandler(request: Request) {
       // (after the last event this client saw, if it says) instead of running
       // the instruction again.
       return agentRunTailResponse({
+        includeResearchProgress: context.source !== "mobile" || (context.native?.clientContractVersion || 0) >= 49,
         runId: admission.runId,
         tenantId: context.tenantId,
         threadId: admission.threadId,
@@ -1066,7 +1093,9 @@ async function POSTHandler(request: Request) {
       getContextScopePolicy(parsed.data.contextScope).durableContext !== "none",
   );
   const preliminaryDecision =
-    parsed.data.requireReadOnlyAgent || computerUseTarget === "local_macos" || commandContext ||
+    deepResearch
+      ? applySupervisorStrategy(semanticResolution.decision, "durable")
+      : parsed.data.requireReadOnlyAgent || computerUseTarget === "local_macos" || commandContext ||
       (scopeCarriesDurableContext && parsed.data.strategy !== "durable")
       ? requireDirectRoute(semanticResolution.decision)
       : applySupervisorStrategy(
@@ -1181,7 +1210,7 @@ async function POSTHandler(request: Request) {
 
   if (
     scopeCarriesDurableContext &&
-    preliminaryDecision.route === "durable_workflow"
+    preliminaryDecision.route === "durable_workflow" && !deepResearch
   ) {
     return Response.json(
       {
@@ -1257,6 +1286,8 @@ async function POSTHandler(request: Request) {
       };
       stopHeartbeat = startSseHeartbeat(write);
       const enqueueTransportEvent = (event: AgentEvent) => {
+        if (event.type === "research_progress" && context.source === "mobile" &&
+          (context.native?.clientContractVersion || 0) < 49) return;
         firstOutput.observe(event);
         write(encodeSse(event, { id: runEventCursor(event) }));
       };
@@ -1306,6 +1337,9 @@ async function POSTHandler(request: Request) {
           }),
         );
         const executingAgentId = customAgent?.id || decision.primaryAgentId;
+        // Deep research owns its bounded evidence branches; generic specialists
+        // must not launch duplicate investigations outside that saved plan.
+        if (deepResearch) { decision.specialistIds = []; decision.procedure = undefined; }
         const agentIdentity = requestedCustomIdentity ||
           await resolveAgentIdentityForExecution({
             tenantId: context.tenantId,
@@ -1411,7 +1445,7 @@ async function POSTHandler(request: Request) {
           );
         }
         const loopV2Enrollment =
-          effectiveModelSelection
+          effectiveModelSelection || mode === "research"
             ? undefined
             : loopV2CanaryEnrollment || loopV2ContextTextEnrollment ||
               loopV2ModelTextEnrollment;
@@ -1763,6 +1797,30 @@ async function POSTHandler(request: Request) {
                   workflowExecutionScope,
                 })
               : undefined;
+            const workflowCommandContext = deepResearch && commandContext
+              ? createWorkflowCommandContextBinding({
+                  context: commandContextSecurity,
+                  references: parsed.data.contextReferences || [],
+                  resolved: commandContext,
+                  workflowExecutionScope,
+                })
+              : undefined;
+            const reviewedResearchModel = deepResearch && effectiveModelSelection
+              ? await resolveReviewedWorkflowCommandModel({
+                  tenantId: context.tenantId,
+                  actorId: context.actorId,
+                  primaryAgentId: customAgent?.id || decision.primaryAgentId,
+                  selection: effectiveModelSelection,
+                })
+              : undefined;
+            const workflowResearchModel = reviewedResearchModel && effectiveModelSelection
+              ? createWorkflowCommandModelBinding({
+                  primaryAgentId: customAgent?.id || decision.primaryAgentId,
+                  selection: effectiveModelSelection,
+                  boundary: reviewedResearchModel.boundary,
+                  workflowExecutionScope,
+                })
+              : undefined;
             if (await stopBeforeMutationIfCanceled()) return;
             const detail = await createWorkflowRun({
               tenantId: context.tenantId,
@@ -1776,6 +1834,9 @@ async function POSTHandler(request: Request) {
               budgetLimits: workflowBudgetLimits,
               metadata: {
                 source: "atomic_supervisor",
+                ...(deepResearch ? { [RESEARCH_WORKFLOW_METADATA_KEY]: parsed.data.research } : {}),
+                ...(workflowCommandContext ? { [WORKFLOW_COMMAND_CONTEXT_METADATA_KEY]: workflowCommandContext } : {}),
+                ...(workflowResearchModel ? { [WORKFLOW_COMMAND_MODEL_METADATA_KEY]: workflowResearchModel } : {}),
                 threadId: thread.id,
                 requestId,
                 actorId: context.actorId,
@@ -1841,6 +1902,9 @@ async function POSTHandler(request: Request) {
             ) {
               throw new Error("requestId was already used with a different context boundary. Submit this work with a new requestId.");
             }
+            if (deepResearch && JSON.stringify(detail.run.input.metadata?.[RESEARCH_WORKFLOW_METADATA_KEY]) !== JSON.stringify(parsed.data.research)) {
+              throw new Error("This request already has a different research brief. Start a new research request to change it.");
+            }
             if (!sameSavedProcedure(detail.run.input.metadata?.savedProcedure, savedProcedure)) {
               throw new Error("requestId was already used with a different saved procedure. Submit this work with a new requestId.");
             }
@@ -1851,6 +1915,10 @@ async function POSTHandler(request: Request) {
             );
             if (mission.status === "draft") {
               mission = await transitionMission(mission.id, "queued", missionOwner);
+            }
+            if (deepResearch) {
+              await enqueueWorkflowRunTick(detail.run.id, "research_created", undefined, context.tenantId);
+              scheduleWorkflowQueueDrain(undefined, context.tenantId, { routeMaxDurationSeconds: maxDuration });
             }
             scheduleDurableSpecialistDrain(
               context.tenantId,
@@ -1877,6 +1945,7 @@ async function POSTHandler(request: Request) {
               threadId: thread.id,
               role: "assistant",
               content: acknowledgement,
+              ...(deepResearch ? { runId: `workflow:${detail.run.id}` } : {}),
             });
             await enqueueEvent({
               type: "delegated",
@@ -2021,6 +2090,7 @@ async function POSTHandler(request: Request) {
                 mode: parsed.data.mode,
                 threadId,
                 messages: safeMessages,
+                research: parsed.data.research,
                 computerUseTarget,
                 localComputerWorkspaces,
                 securityContext: context,

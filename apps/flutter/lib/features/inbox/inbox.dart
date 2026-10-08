@@ -1095,7 +1095,9 @@ class NotificationDispositionCard extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 7),
-            Text('${_dispositionLabel(item.sourceKind)} · ${item.reason}'),
+            Text(
+              '${_dispositionLabel(item.sourceKind)} · ${_dispositionLabel(item.reason)}',
+            ),
             const Spacer(),
             Text(
               'Exact evidence · tap to inspect',
@@ -1256,6 +1258,7 @@ const _notificationSourceKinds = {
   'tool_approval',
   'meeting',
   'agent_run',
+  'research_workflow',
   'today_reminder',
   'delegated_task',
   'scheduled_routine',
@@ -1268,6 +1271,7 @@ const _notificationReasons = {
   'approval_required',
   'security_alert',
   'actionable_failure',
+  'research_ready',
   'meeting_imminent',
   'critical_delivery',
   'quiet_hours',

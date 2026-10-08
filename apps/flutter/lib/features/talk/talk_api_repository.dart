@@ -14,6 +14,7 @@ class ApiTalkRepository
         TalkRepository,
         TalkCommandContextRepository,
         TalkVoiceCommandRepository,
+        TalkResearchRepository,
         TalkCommandModelSelectionRepository,
         TalkHistoryRepository,
         TalkArtifactRepository,
@@ -407,14 +408,30 @@ class ApiTalkRepository
 
   @override
   Future<TalkWorkflowSnapshot> inspectWorkflow(String workflowId) async {
-    final json = await api.getJson(
+    final json = await api.getJsonFresh(
       NativePaths.evidenceWorkflow(workflowId),
-      query: const {'view': 'status'},
     );
     final snapshot = TalkWorkflowSnapshot.fromJson(json);
     if (snapshot.id != workflowId) {
       throw StateError('The workflow projection did not match the request.');
     }
+    return snapshot;
+  }
+
+  @override
+  Future<TalkWorkflowSnapshot> controlResearch(
+    String workflowId,
+    String signal,
+  ) async {
+    if (!const {'pause', 'resume', 'cancel'}.contains(signal))
+      throw ArgumentError.value(signal, 'signal');
+    final result = await api.postJson(
+      NativePaths.researchControl(workflowId),
+      data: {'signal': signal},
+    );
+    final snapshot = TalkWorkflowSnapshot.fromJson(result);
+    if (snapshot.id != workflowId || snapshot.research == null)
+      throw const FormatException('Research update did not match the request.');
     return snapshot;
   }
 
@@ -550,6 +567,30 @@ class ApiTalkRepository
     voiceInput: voiceInput,
   );
 
+  @override
+  Stream<SseEvent> sendResearch({
+    required String message,
+    required TalkResearchOptions research,
+    String? threadId,
+    String strategy = 'auto',
+    TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
+    String? agentId,
+    List<TalkCommandContextReference> contextReferences = const [],
+    TalkCommandModelSelection? modelSelection,
+    TalkVoiceInput? voiceInput,
+  }) => _sendAgent(
+    message: message,
+    research: research,
+    threadId: voiceInput?.conversationId ?? threadId,
+    mode: 'research',
+    strategy: strategy,
+    executionTarget: executionTarget,
+    agentId: agentId,
+    contextReferences: contextReferences,
+    modelSelection: modelSelection,
+    voiceInput: voiceInput,
+  );
+
   Stream<SseEvent> _sendAgent({
     required String message,
     required List<TalkCommandContextReference> contextReferences,
@@ -560,6 +601,7 @@ class ApiTalkRepository
     String? agentId,
     TalkCommandModelSelection? modelSelection,
     TalkVoiceInput? voiceInput,
+    TalkResearchOptions? research,
   }) async* {
     final selectedAgents = contextReferences
         .where((item) => item.kind == 'agent')
@@ -608,6 +650,7 @@ class ApiTalkRepository
           if (modelSelection != null)
             'modelSelection': modelSelection.toRequestJson(),
           if (voiceInput != null) 'voiceInput': voiceInput.toRequestJson(),
+          if (research != null) 'research': research.toRequestJson(),
           'computerUseTarget': ?executionTarget.apiValue,
           'requestId': 'flutter-${DateTime.now().microsecondsSinceEpoch}',
         },

@@ -1,4 +1,4 @@
-import { researchReportInstructions, formatResearchEvidence, researchSearchQueries, selectResearchSources, shouldInvestigateResearchQuery, isResearchWebExplicitlyDisabled, type ResearchSourceRead } from "@/lib/orchestration/research";
+import { buildResearchPlan, assessResearchCoverage, researchReportInstructions, formatResearchEvidence, researchSearchQueries, selectResearchSources, shouldInvestigateResearchQuery, isResearchWebExplicitlyDisabled, type ResearchSourceRead } from "@/lib/orchestration/research";
 import { createHash, randomUUID } from "node:crypto";
 import {
   buildAgentRunIdentityPinV1,
@@ -1486,10 +1486,11 @@ async function* runAgentUntilStopped(
     // Persist the compiled instructions on approval pauses and hash them in the
     // harness receipt, while leaving older definition and prompt pins intact.
     const instructions = mode === "research"
-      ? `${baseInstructions}\n\n${researchReportInstructions}`
+      ? `${baseInstructions}\n\n${researchReportInstructions}${request.research ? `\nUser research brief (preserve these preferences): ${JSON.stringify(redactSensitive(request.research))}` : ""}`
       : baseInstructions;
 
     let liveWebContext = "";
+    let researchProgress: import("@/lib/research/contracts").ResearchProgress | undefined;
     let citationSources = mergeCitationSources(
       [...(request.commandContext?.citationSources || [])],
       buildCitationSources(retrieval.results),
@@ -1511,6 +1512,20 @@ async function* runAgentUntilStopped(
       const searches: LiveWebSearchResult[] = [];
       const reads: ResearchSourceRead[] = [];
       const limitations: string[] = [];
+      const researchPlan = buildResearchPlan(query, { ...request.research, depth: "quick" });
+      let discoveryStopped = false;
+      let searchAttempts = 0;
+      let readAttempts = 0;
+      const attemptedSources = new Set<string>();
+      const progress = (stage: import("@/lib/research/contracts").ResearchProgress["stage"]) => {
+        const coverage = assessResearchCoverage({ plan: researchPlan, searches, reads });
+        researchProgress = { schemaVersion: 1, depth: "quick", stage,
+          questions: researchPlan.facets.map((facet) => facet.question), searches: searches.length,
+          sourcesRead: reads.length, gaps: coverage.gaps,
+          limitations: [...limitations, ...coverage.limitations].slice(0, 16) };
+        return researchProgress;
+      };
+      yield await emit({ type: "research_progress", progress: progress("planning") });
       // Collection shares the run's original authority and leaves at least
       // 90 seconds for synthesis/teardown. Individual tools keep their own
       // smaller deadlines; no parallel checkpoint/effect admission is needed.
@@ -1578,7 +1593,7 @@ async function* runAgentUntilStopped(
       }
       yield await emit({ type: "status", label: "planning research",
         detail: "Investigating the question, primary evidence, and limitations before writing the report." });
-      const queries = researchSearchQueries(query);
+      const queries = researchPlan.facets.map((facet) => facet.query);
       for (const [index, searchQuery] of queries.entries()) {
         if (!canCollect(true)) {
           limitations.push("Further searches were skipped to preserve the report's time and run budget.");
@@ -1586,11 +1601,12 @@ async function* runAgentUntilStopped(
         }
         yield await emit({ type: "status", label: "gathering research evidence",
           detail: `Searching complementary evidence (${index + 1} of ${queries.length}).` });
+        searchAttempts += 1;
         const execution = yield* gather(webSearchTool,
           // Discovery locates sources; full governed page reads provide depth.
           // High-context, multi-call search was independently writing the
           // entire report and exhausting its 60-second deadline here.
-          { query: searchQuery, limit: 8, searchContextSize: "low" },
+          { query: searchQuery, limit: 8, searchContextSize: "low", allowedDomains: researchPlan.allowedDomains },
           `research-search-${index + 1}`);
         const result = execution.record.status === "executed"
           ? liveWebPrefetchResult(execution.result) : undefined;
@@ -1603,6 +1619,7 @@ async function* runAgentUntilStopped(
             toolbox = filterAgentToolbox(toolbox, ["web.search"]);
           }
           if (webSearchFailureStopsCollection(execution.record)) {
+            discoveryStopped = true;
             limitations.push(execution.record.reason || "Further searches were stopped because the provider requires attention.");
             toolbox = filterAgentToolbox(toolbox, ["web.search"]);
             break;
@@ -1615,25 +1632,52 @@ async function* runAgentUntilStopped(
         !webReadTool.approvalRequired &&
         !forceApprovalForTool(agentToolPolicy, webReadTool.riskLevel) &&
         governedToolOperationClass(webReadTool, {}) === "read_only";
-      const selectedSources = selectResearchSources(searches);
+      yield await emit({ type: "research_progress", progress: progress("reading") });
       if (!canRead) limitations.push("Public-page reading is not authorized for this Agent; only search evidence is available.");
-      if (canRead && webReadTool) {
-        for (const [index, source] of selectedSources.entries()) {
-          if (!canCollect(false)) {
-            limitations.push("Remaining pages were not read because collection reached its bounded time or run allowance.");
+      async function* readSources(limit: number, prefix: string): AsyncGenerator<AgentEvent> {
+        if (!canRead || !webReadTool) return;
+        const selected = selectResearchSources(searches, researchPlan.limits.reads, researchPlan)
+          .filter((source) => !attemptedSources.has(source.citationId)).slice(0, limit);
+        for (const source of selected) {
+          if (readAttempts >= researchPlan.limits.reads || !canCollect(false)) {
+            limitations.push("Some pages were left unread to keep time for the report.");
             break;
           }
-          yield await emit({ type: "status", label: "reading research sources",
-            detail: `Reading public source ${index + 1} of ${selectedSources.length}; ${reads.length} page excerpts collected.` });
-          const execution = yield* gather(webReadTool, { url: source.url },
-            `research-read-${index + 1}`);
-          const page = execution.record.status === "executed"
-            ? researchSourceReadResult(execution.result) : undefined;
+          attemptedSources.add(source.citationId);
+          readAttempts += 1;
+          yield await emit({ type: "status", label: "Reading sources",
+            detail: `Reading ${source.title || new URL(source.url).hostname}; ${reads.length} sources collected.` });
+          const execution = yield* gather(webReadTool, {
+            url: source.url, query: researchPlan.facets.map((facet) => facet.question).join("\n"),
+            allowedDomains: researchPlan.allowedDomains,
+          }, `${prefix}-${readAttempts}`);
+          const page = execution.record.status === "executed" ? researchSourceReadResult(execution.result) : undefined;
           if (page) reads.push(page);
-          else limitations.push(`Page unavailable: ${source.url}. No page content was read for this source.`);
+          else limitations.push(`Could not read ${source.url}. Its detailed claims remain unconfirmed.`);
+          yield await emit({ type: "research_progress", progress: progress("reading") });
         }
       }
-      liveWebContext = String(redactSensitive(formatResearchEvidence({ searches, reads, limitations })));
+      // Leave capacity for replacement sources or a question not covered by the initial pass.
+      yield* readSources(Math.min(6, researchPlan.limits.reads), "research-read");
+      let coverage = assessResearchCoverage({ plan: researchPlan, searches, reads });
+      if (coverage.gapQueries.length && !discoveryStopped && searchAttempts < researchPlan.limits.searches && canCollect(true)) {
+        yield await emit({ type: "status", label: "Filling evidence gaps",
+          detail: "Looking for specific evidence still missing from the initial sources." });
+        searchAttempts += 1;
+        const execution = yield* gather(webSearchTool, {
+          query: coverage.gapQueries[0], limit: 6, searchContextSize: "low", allowedDomains: researchPlan.allowedDomains,
+        }, `research-gap-search-${searchAttempts}`);
+        const result = execution.record.status === "executed" ? liveWebPrefetchResult(execution.result) : undefined;
+        if (result) searches.push(result);
+        else limitations.push("The follow-up search did not return usable evidence; remaining questions are disclosed.");
+        yield* readSources(researchPlan.limits.reads - readAttempts, "research-gap-read");
+        coverage = assessResearchCoverage({ plan: researchPlan, searches, reads });
+      }
+      liveWebContext = String(redactSensitive(formatResearchEvidence({ searches, reads, limitations, plan: researchPlan, coverage })));
+      // The collection phase owns the exact depth and domain limits. The writer
+      // cannot silently extend them through a second, unrestricted web loop.
+      toolbox = filterAgentToolbox(toolbox, ["web.search", "web.read"]);
+      yield await emit({ type: "research_progress", progress: progress("writing") });
       if (!searches.length) {
         yield await emit({ type: "status", label: "live web unavailable",
           detail: "Research could not collect live sources; the report must disclose the evidence gap." });
@@ -3041,6 +3085,11 @@ async function* runAgentUntilStopped(
           "The run was canceled or finalized before the response could be committed.",
       });
       return;
+    }
+    if (researchProgress) {
+      researchProgress = { ...researchProgress, stage: "complete",
+        reportStatus: researchProgress.sourcesRead > 0 && !researchProgress.gaps.length ? "ready" : "partial" };
+      yield await emit({ type: "research_progress", progress: researchProgress });
     }
     // Clients get the public grounding projection, as on every other path;
     // the raw claim evidence stays on the stored run.

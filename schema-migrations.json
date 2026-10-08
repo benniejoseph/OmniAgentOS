@@ -1507,5 +1507,12 @@
     "checksum": "3d1e2f480d424d4f6da66008744928f883ee06745e32b147a26953c73c7c09f0",
     "file": "20261006110000_native_provider_function_acl_repair.sql",
     "sha256": "3d1e2f480d424d4f6da66008744928f883ee06745e32b147a26953c73c7c09f0"
+  },
+  {
+    "version": 246,
+    "name": "research_workflow_notifications_v1",
+    "checksum": "9399238975ab8f6af3d0df6f56d6432bbbcd67110385d77ddff4f7cdd6960873",
+    "file": "20261008100000_research_workflow_notifications.sql",
+    "sha256": "9399238975ab8f6af3d0df6f56d6432bbbcd67110385d77ddff4f7cdd6960873"
   }
 ]

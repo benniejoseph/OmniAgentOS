@@ -11,7 +11,7 @@ import {
   type ApprovalSourceAfter,
 } from "@/lib/approvals/order";
 import { WORKFLOW_RUN_BUDGET_LIMITS } from "@/lib/config";
-import { ensureDatabaseSchema, getDatabaseTenantContext, getSql, hasDatabaseUrl } from "@/lib/db/client";
+import { ensureDatabaseSchema, getDatabaseActorContext, getDatabaseTenantContext, getSql, hasDatabaseUrl } from "@/lib/db/client";
 import {
   appendDomainEvent,
   appendScopedDomainEvent,
@@ -438,8 +438,22 @@ function isSha256(value: unknown): value is string {
   return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 }
 
-export async function listWorkflowRuns(limit = 20, options: { tenantId?: string } = {}) {
+type WorkflowReadScope = { tenantId?: string; actorId?: string };
+
+function workflowReadActors(options: WorkflowReadScope): string[] {
+  const actors = getDatabaseActorContext();
+  return options.actorId ? [...new Set([options.actorId, ...actors])] : actors;
+}
+
+function researchVisibleToReader(run: WorkflowRunRecord, options: WorkflowReadScope) {
+  const actors = workflowReadActors(options);
+  return !actors.length || run.input.metadata?.researchOptionsV1 === undefined ||
+    actors.includes(String(run.input.metadata.actorId || ""));
+}
+
+export async function listWorkflowRuns(limit = 20, options: WorkflowReadScope = {}) {
   const tenantId = normalizeTenantId(options.tenantId);
+  const actors = workflowReadActors(options);
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
@@ -447,6 +461,8 @@ export async function listWorkflowRuns(limit = 20, options: { tenantId?: string 
       SELECT *
       FROM omni_workflow_runs
       WHERE tenant_id = ${tenantId}
+        AND (${actors.length === 0} OR NOT (COALESCE(input -> 'metadata', '{}'::jsonb) ? 'researchOptionsV1')
+          OR input -> 'metadata' ->> 'actorId' = ANY(${actors}::text[]))
       ORDER BY updated_at DESC
       LIMIT ${limit}
     `;
@@ -454,14 +470,15 @@ export async function listWorkflowRuns(limit = 20, options: { tenantId?: string 
   }
 
   const ledger = await readWorkflowLedger();
-  return ledger.runs.filter((run) => normalizeTenantId(run.tenantId) === tenantId).slice(0, limit);
+  return ledger.runs.filter((run) => normalizeTenantId(run.tenantId) === tenantId && researchVisibleToReader(run, options)).slice(0, limit);
 }
 
 export async function listWorkflowRunSummaries(
   limit = 20,
-  options: { tenantId?: string } = {},
+  options: WorkflowReadScope = {},
 ) {
   const tenantId = normalizeTenantId(options.tenantId);
+  const actors = workflowReadActors(options);
   const boundedLimit = Math.min(Math.max(limit, 1), 50);
 
   if (hasDatabaseUrl()) {
@@ -489,6 +506,8 @@ export async function listWorkflowRunSummaries(
         created_at, updated_at, completed_at
       FROM omni_workflow_runs
       WHERE tenant_id = ${tenantId}
+        AND (${actors.length === 0} OR NOT (COALESCE(input -> 'metadata', '{}'::jsonb) ? 'researchOptionsV1')
+          OR input -> 'metadata' ->> 'actorId' = ANY(${actors}::text[]))
       ORDER BY updated_at DESC
       LIMIT ${boundedLimit}
     `;
@@ -497,7 +516,7 @@ export async function listWorkflowRunSummaries(
 
   const ledger = await readWorkflowLedger();
   return ledger.runs
-    .filter((run) => normalizeTenantId(run.tenantId) === tenantId)
+    .filter((run) => normalizeTenantId(run.tenantId) === tenantId && researchVisibleToReader(run, options))
     .slice(0, boundedLimit);
 }
 
@@ -508,10 +527,12 @@ export async function listWorkflowRunSummaries(
  */
 export async function listWorkflowApprovalPage(options: {
   tenantId?: string;
+  actorId?: string;
   limit: number;
   after?: ApprovalSourceAfter;
 }): Promise<WorkflowApprovalPage> {
   const tenantId = normalizeTenantId(options.tenantId);
+  const actors = workflowReadActors(options);
   const limit = Math.min(Math.max(Math.trunc(options.limit) || 1, 1), 200);
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
@@ -529,6 +550,8 @@ export async function listWorkflowApprovalPage(options: {
         FROM omni_workflow_runs
         WHERE tenant_id = ${tenantId}
           AND status = 'waiting_approval'
+          AND (${actors.length === 0} OR NOT (COALESCE(input -> 'metadata', '{}'::jsonb) ? 'researchOptionsV1')
+            OR input -> 'metadata' ->> 'actorId' = ANY(${actors}::text[]))
       ),
       counts AS (
         SELECT COUNT(*)::int AS pending_total
@@ -580,7 +603,7 @@ export async function listWorkflowApprovalPage(options: {
     .filter(
       (run) =>
         normalizeTenantId(run.tenantId) === tenantId &&
-        run.status === "waiting_approval",
+        run.status === "waiting_approval" && researchVisibleToReader(run, options),
     )
     .map((run) => ({
       run,
@@ -655,9 +678,10 @@ export async function listRunnableWorkflowRuns(
 
 export async function getWorkflowRunStatus(
   runId: string,
-  options: { tenantId?: string } = {},
+  options: WorkflowReadScope = {},
 ) {
   const tenantId = normalizeTenantId(options.tenantId);
+  const actors = workflowReadActors(options);
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const rows = await getSql()`
@@ -665,6 +689,8 @@ export async function getWorkflowRunStatus(
       FROM omni_workflow_runs
       WHERE id = ${runId}
         AND tenant_id = ${tenantId}
+        AND (${actors.length === 0} OR NOT (COALESCE(input -> 'metadata', '{}'::jsonb) ? 'researchOptionsV1')
+          OR input -> 'metadata' ->> 'actorId' = ANY(${actors}::text[]))
       LIMIT 1
     `;
     const row = rows[0];
@@ -688,7 +714,7 @@ export async function getWorkflowRunStatus(
   const run = ledger.runs.find(
     (candidate) =>
       candidate.id === runId &&
-      normalizeTenantId(candidate.tenantId) === tenantId,
+      normalizeTenantId(candidate.tenantId) === tenantId && researchVisibleToReader(candidate, options),
   );
   return run
     ? {
@@ -705,9 +731,10 @@ export async function getWorkflowRunStatus(
 /** Reads one run without its steps and events. */
 export async function getWorkflowRun(
   runId: string,
-  options: { tenantId?: string } = {},
+  options: WorkflowReadScope = {},
 ): Promise<WorkflowRunRecord | null> {
   const tenantId = normalizeTenantId(options.tenantId);
+  const actors = workflowReadActors(options);
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const rows = await getSql()`
@@ -715,6 +742,8 @@ export async function getWorkflowRun(
       FROM omni_workflow_runs
       WHERE id = ${runId}
         AND tenant_id = ${tenantId}
+        AND (${actors.length === 0} OR NOT (COALESCE(input -> 'metadata', '{}'::jsonb) ? 'researchOptionsV1')
+          OR input -> 'metadata' ->> 'actorId' = ANY(${actors}::text[]))
       LIMIT 1
     `;
     return rows[0] ? workflowRunFromRow(rows[0]) : null;
@@ -724,7 +753,7 @@ export async function getWorkflowRun(
   return ledger.runs.find(
     (run) =>
       run.id === runId &&
-      normalizeTenantId(run.tenantId) === tenantId,
+      normalizeTenantId(run.tenantId) === tenantId && researchVisibleToReader(run, options),
   ) || null;
 }
 
@@ -734,7 +763,7 @@ export async function getWorkflowRun(
  */
 async function findWorkflowRunRecord(
   runId: string,
-  options: { tenantId?: string } = {},
+  options: WorkflowReadScope = {},
 ): Promise<WorkflowRunRecord | null> {
   const tenantId = options.tenantId ? normalizeTenantId(options.tenantId) : undefined;
   if (hasDatabaseUrl()) {
@@ -753,16 +782,17 @@ async function findWorkflowRunRecord(
           WHERE id = ${runId}
           LIMIT 1
         `;
-    return runRows[0] ? workflowRunFromRow(runRows[0]) : null;
+    const run = runRows[0] ? workflowRunFromRow(runRows[0]) : null;
+    return run && researchVisibleToReader(run, options) ? run : null;
   }
 
   const run = (await readWorkflowLedger()).runs.find((item) => item.id === runId);
-  return run && (!tenantId || normalizeTenantId(run.tenantId) === tenantId)
+  return run && researchVisibleToReader(run, options) && (!tenantId || normalizeTenantId(run.tenantId) === tenantId)
     ? run
     : null;
 }
 
-export async function getWorkflowRunDetail(runId: string, options: { tenantId?: string } = {}): Promise<WorkflowRunDetail | null> {
+export async function getWorkflowRunDetail(runId: string, options: WorkflowReadScope = {}): Promise<WorkflowRunDetail | null> {
   if (hasDatabaseUrl()) {
     const run = await findWorkflowRunRecord(runId, options);
     if (!run) {
@@ -793,7 +823,7 @@ export async function getWorkflowRunDetail(runId: string, options: { tenantId?: 
 
   const ledger = await readWorkflowLedger();
   const run = ledger.runs.find((item) => item.id === runId);
-  if (!run || (options.tenantId && normalizeTenantId(run.tenantId) !== normalizeTenantId(options.tenantId))) {
+  if (!run || !researchVisibleToReader(run, options) || (options.tenantId && normalizeTenantId(run.tenantId) !== normalizeTenantId(options.tenantId))) {
     return null;
   }
 
@@ -2141,9 +2171,10 @@ async function appendWorkflowDomainEvent(
 
 export async function listWorkflowRecoveryEvents(
   limit = 20,
-  options: { tenantId?: string } = {},
+  options: WorkflowReadScope = {},
 ): Promise<WorkflowRecoveryEventRecord[]> {
   const tenantId = normalizeTenantId(options.tenantId);
+  const actors = workflowReadActors(options);
   const boundedLimit = Math.min(Math.max(Math.round(limit), 1), 100);
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
@@ -2164,6 +2195,8 @@ export async function listWorkflowRecoveryEvents(
       FROM omni_workflow_events event
       INNER JOIN omni_workflow_runs run ON run.id = event.workflow_run_id
       WHERE event.tenant_id = ${tenantId}
+        AND (${actors.length === 0} OR NOT (COALESCE(run.input -> 'metadata', '{}'::jsonb) ? 'researchOptionsV1')
+          OR run.input -> 'metadata' ->> 'actorId' = ANY(${actors}::text[]))
         AND event.type IN ('workflow.recovery.requeued', 'workflow.recovery.failed')
       ORDER BY event.created_at DESC
       LIMIT ${boundedLimit}
@@ -2176,7 +2209,7 @@ export async function listWorkflowRecoveryEvents(
     .filter(
       (event) =>
         normalizeTenantId(event.tenantId) === tenantId &&
-        isWorkflowRecoveryEventType(event.type),
+        isWorkflowRecoveryEventType(event.type) && ledger.runs.some((run) => run.id === event.workflowRunId && researchVisibleToReader(run, options)),
     )
     .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))
     .slice(0, boundedLimit)
@@ -2186,8 +2219,9 @@ export async function listWorkflowRecoveryEvents(
     });
 }
 
-export async function getWorkflowStats(options: { tenantId?: string } = {}): Promise<WorkflowStats> {
+export async function getWorkflowStats(options: WorkflowReadScope = {}): Promise<WorkflowStats> {
   const tenantId = normalizeTenantId(options.tenantId);
+  const actors = workflowReadActors(options);
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
@@ -2195,6 +2229,8 @@ export async function getWorkflowStats(options: { tenantId?: string } = {}): Pro
       SELECT status, COUNT(*)::int AS count
       FROM omni_workflow_runs
       WHERE tenant_id = ${tenantId}
+        AND (${actors.length === 0} OR NOT (COALESCE(input -> 'metadata', '{}'::jsonb) ? 'researchOptionsV1')
+          OR input -> 'metadata' ->> 'actorId' = ANY(${actors}::text[]))
       GROUP BY status
     `;
     const byStatus = rows.reduce<Record<string, number>>((acc, row) => {
@@ -2207,12 +2243,12 @@ export async function getWorkflowStats(options: { tenantId?: string } = {}): Pro
       byStatus,
       active: ["queued", "running", "paused"].reduce((sum, status) => sum + (byStatus[status] || 0), 0),
       waitingApproval: byStatus.waiting_approval || 0,
-      latest: await listWorkflowRuns(5, { tenantId }),
+      latest: await listWorkflowRuns(5, options),
     };
   }
 
   const ledger = await readWorkflowLedger();
-  const runs = ledger.runs.filter((run) => normalizeTenantId(run.tenantId) === tenantId);
+  const runs = ledger.runs.filter((run) => normalizeTenantId(run.tenantId) === tenantId && researchVisibleToReader(run, options));
   const byStatus = runs.reduce<Record<string, number>>((acc, run) => {
     acc[run.status] = (acc[run.status] || 0) + 1;
     return acc;

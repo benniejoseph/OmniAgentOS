@@ -1,8 +1,12 @@
 import { parseDocument } from "htmlparser2";
 import { citationIdForWebUrl } from "@/lib/rag/citations";
 import { fetchPublicHttpUrl } from "@/lib/security/network";
+import { parseDocumentContained } from "@/lib/capture/document-parse";
+import { selectResearchPassages, type ResearchPassage, type ResearchSourceProvenance } from "@/lib/research/evidence";
+import { researchDomainAllowed } from "@/lib/research/plan";
 
 export const WEB_SOURCE_MAX_BYTES = 1_048_576;
+export const WEB_PDF_MAX_BYTES = 5 * 1_048_576;
 export const WEB_SOURCE_MAX_CHARACTERS = 12_000;
 export const WEB_SOURCE_TIMEOUT_MS = 15_000;
 const MAX_REDIRECTS = 3;
@@ -16,16 +20,27 @@ export type PublicWebSourceResult = {
   citationId: string;
   truncated: boolean;
   contentTrust: "untrusted";
+  requestedUrl?: string;
+  sourceContentSha256?: string;
+  selectionQuery?: string;
+  passages?: ResearchPassage[];
+  provenance?: ResearchSourceProvenance;
+  limitations?: string[];
 };
 
 /** Inert, bounded public reading only. Authority and audit belong to the tool executor. */
 export async function readPublicWebSource({
   url,
+  query,
+  allowedDomains,
   abortSignal,
 }: {
   url: string;
+  query?: string;
+  allowedDomains?: string[];
   abortSignal?: AbortSignal;
 }): Promise<PublicWebSourceResult> {
+  const startedAt = Date.now();
   const timeout = new AbortController();
   const timeoutId = setTimeout(() => timeout.abort(new Error(
     "Public source reading timed out after 15 seconds. Try another source.",
@@ -33,10 +48,14 @@ export async function readPublicWebSource({
   const signal = AbortSignal.any([timeout.signal, ...(abortSignal ? [abortSignal] : [])]);
   try {
     signal.throwIfAborted();
-    let currentUrl = normalizeUrl(url);
+    const requestedUrl = normalizeUrl(url);
+    let currentUrl = requestedUrl;
     const visited = new Set<string>();
     for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects += 1) {
       signal.throwIfAborted();
+      if (!researchDomainAllowed(currentUrl, allowedDomains)) {
+        throw new Error("This source or its redirect is outside the allowed research domains. Choose a source within your selected domains.");
+      }
       if (visited.has(currentUrl)) throw new Error("Public source redirects form a loop.");
       visited.add(currentUrl);
       // This transport checks every DNS answer and rechecks on connection, so
@@ -46,7 +65,7 @@ export async function readPublicWebSource({
         redirect: "manual",
         credentials: "omit",
         referrerPolicy: "no-referrer",
-        headers: { accept: "text/html,application/xhtml+xml,text/plain,text/markdown;q=0.9" },
+        headers: { accept: "text/html,application/xhtml+xml,text/plain,text/markdown,application/pdf;q=0.9" },
         signal,
       }, "Public source URL"), signal);
       if ([301, 302, 303, 307, 308].includes(response.status)) {
@@ -65,16 +84,51 @@ export async function readPublicWebSource({
         throw new Error(`Public source returned HTTP ${response.status}. Try another source.`);
       }
       const contentType = (response.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
-      if (!["text/html", "application/xhtml+xml", "text/plain", "text/markdown"].includes(contentType)) {
+      if (!["text/html", "application/xhtml+xml", "text/plain", "text/markdown", "application/pdf", "application/octet-stream"].includes(contentType)) {
         cancelBody(response);
-        throw new Error(contentType === "application/pdf"
-          ? "PDF sources are not supported by web.read. Find an HTML version or use a document reader."
-          : "This source is not a supported HTML or plain-text page. Choose a readable public page.");
+        throw new Error("This source is not a supported HTML, text, or PDF document. Choose a readable public source.");
       }
-      const source = await readBoundedBody(response, signal);
-      if (source.trimStart().startsWith("%PDF-")) {
-        throw new Error("PDF sources are not supported by web.read. Find an HTML version or use a document reader.");
+      const bytes = await readBoundedBytes(response, signal,
+        ["application/pdf", "application/octet-stream"].includes(contentType) ? WEB_PDF_MAX_BYTES : WEB_SOURCE_MAX_BYTES);
+      const pdfSignature = new TextDecoder("ascii").decode(bytes.subarray(0, 1_024)).includes("%PDF-");
+      if (contentType === "application/pdf" || pdfSignature) {
+        if (!pdfSignature) throw new Error("This source identifies itself as a PDF but does not contain a readable PDF header.");
+        const parsed = await parseDocumentContained({ format: "pdf", bytes }, {
+          timeoutMs: Math.max(1, WEB_SOURCE_TIMEOUT_MS - (Date.now() - startedAt)),
+        }, { signal });
+        signal.throwIfAborted();
+        if (parsed.kind === "pdf_scanned") {
+          throw new Error("This PDF contains scanned pages without extractable text. No OCR was run; use a text version or upload it for document processing.");
+        }
+        if (parsed.kind !== "units" || !parsed.units.length) throw new Error("This PDF did not contain readable text.");
+        const selected = selectResearchPassages({
+          url: currentUrl, query,
+          units: parsed.units.map((unit) => ({ content: unit.content,
+            ...(unit.locator.kind === "page" ? { pageNumber: unit.locator.pageNumber } : {}) })),
+          maxCharacters: WEB_SOURCE_MAX_CHARACTERS,
+        });
+        if (!selected.content.trim()) throw new Error("This PDF did not contain readable text within the extraction limits.");
+        const fetchedAt = new Date().toISOString();
+        const limitations = [
+          "PDF coverage includes extracted text only; images, charts, and scanned pages were not interpreted.",
+          ...(parsed.state === "partial" ? ["The PDF parser reached a page or text limit; some document content was not extracted."] : []),
+          ...(selected.selectionTruncated ? ["Only selected passages from this PDF are included."] : []),
+        ];
+        return {
+          url: currentUrl, requestedUrl,
+          title: decodePdfTitle(currentUrl),
+          content: selected.content, contentType: "application/pdf", fetchedAt,
+          citationId: citationIdForWebUrl(currentUrl),
+          truncated: parsed.state === "partial" || selected.selectionTruncated,
+          contentTrust: "untrusted", sourceContentSha256: selected.sourceContentSha256,
+          ...(query ? { selectionQuery: query.slice(0, 4_000) } : {}),
+          passages: selected.passages, limitations,
+          provenance: { method: "pdf_text", requestedUrl, finalUrl: currentUrl, fetchedAt,
+            sourceContentSha256: selected.sourceContentSha256, fullTextCharacters: selected.fullTextCharacters },
+        };
       }
+      if (contentType === "application/octet-stream") throw new Error("This download is not a supported text PDF.");
+      const source = decodeTextBody(bytes, response.headers.get("content-type") || "");
       const extracted = contentType === "text/html" || contentType === "application/xhtml+xml"
         ? extractHtmlText(source)
         : { title: new URL(currentUrl).hostname, content: normalizeText(source), restricted: false };
@@ -85,15 +139,26 @@ export async function readPublicWebSource({
       if (extracted.content.length < 120 || /^(?:enable javascript|please enable javascript|javascript is required)\b/i.test(extracted.content)) {
         throw new Error("This page has too little readable text or requires JavaScript. Choose another source; no browser scripts were executed.");
       }
+      const selected = selectResearchPassages({ url: currentUrl, content: extracted.content, query,
+        maxCharacters: WEB_SOURCE_MAX_CHARACTERS });
+      const fetchedAt = new Date().toISOString();
       return {
         url: currentUrl,
+        requestedUrl,
         title: extracted.title.slice(0, 300) || new URL(currentUrl).hostname,
-        content: extracted.content.slice(0, WEB_SOURCE_MAX_CHARACTERS),
+        content: selected.content,
         contentType,
-        fetchedAt: new Date().toISOString(),
+        fetchedAt,
         citationId: citationIdForWebUrl(currentUrl),
-        truncated: extracted.content.length > WEB_SOURCE_MAX_CHARACTERS,
+        truncated: selected.selectionTruncated,
         contentTrust: "untrusted",
+        sourceContentSha256: selected.sourceContentSha256,
+        ...(query ? { selectionQuery: query.slice(0, 4_000) } : {}),
+        passages: selected.passages,
+        limitations: selected.selectionTruncated ? ["Only selected passages from this page are included."] : [],
+        provenance: { method: contentType.includes("html") ? "public_html" : "public_text",
+          requestedUrl, finalUrl: currentUrl, fetchedAt, sourceContentSha256: selected.sourceContentSha256,
+          fullTextCharacters: selected.fullTextCharacters },
       };
     }
     throw new Error("Public source could not be read.");
@@ -112,11 +177,11 @@ function normalizeUrl(value: string) {
   return url.toString();
 }
 
-async function readBoundedBody(response: Response, signal: AbortSignal) {
+async function readBoundedBytes(response: Response, signal: AbortSignal, maxBytes: number) {
   const declaredSize = Number(response.headers.get("content-length") || 0);
-  if (declaredSize > WEB_SOURCE_MAX_BYTES) {
+  if (declaredSize > maxBytes) {
     cancelBody(response);
-    throw new Error("Public source exceeds the 1 MiB reading limit. Choose a smaller page.");
+    throw new Error(`Public source exceeds the ${maxBytes / 1_048_576} MiB reading limit. Choose a smaller source.`);
   }
   if (!response.body) throw new Error("Public source returned an empty body.");
   const reader = response.body.getReader();
@@ -129,24 +194,31 @@ async function readBoundedBody(response: Response, signal: AbortSignal) {
       size += value.byteLength;
       // Enforce decompressed bytes as well as Content-Length (which can be
       // absent, incorrect, or describe a much smaller compressed body).
-      if (size > WEB_SOURCE_MAX_BYTES) throw new Error("Public source exceeds the 1 MiB reading limit. Choose a smaller page.");
+      if (size > maxBytes) throw new Error(`Public source exceeds the ${maxBytes / 1_048_576} MiB reading limit. Choose a smaller source.`);
       chunks.push(value);
     }
     const bytes = new Uint8Array(size);
     let offset = 0;
     for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
-    const charset = /charset\s*=\s*["']?([^\s;"']+)/i.exec(response.headers.get("content-type") || "")?.[1] || "utf-8";
-    try {
-      return new TextDecoder(charset).decode(bytes);
-    } catch {
-      throw new Error("Public source uses an unsupported text encoding. Choose another source.");
-    }
+    return bytes;
   } finally {
     // Cancelling the request must not depend on a remote stream's teardown
     // resolving; the caller's deadline still applies while cleaning up.
     void reader.cancel().catch(() => undefined);
     reader.releaseLock();
   }
+}
+
+function decodeTextBody(bytes: Uint8Array, contentType: string) {
+  const charset = /charset\s*=\s*["']?([^\s;"']+)/i.exec(contentType)?.[1] || "utf-8";
+  try { return new TextDecoder(charset).decode(bytes); }
+  catch { throw new Error("Public source uses an unsupported text encoding. Choose another source."); }
+}
+
+function decodePdfTitle(url: string) {
+  const name = new URL(url).pathname.split("/").at(-1) || "Public PDF document";
+  try { return decodeURIComponent(name).replace(/[-_]+/gu, " ").slice(0, 300); }
+  catch { return name.slice(0, 300); }
 }
 
 function cancelBody(response: Response) {

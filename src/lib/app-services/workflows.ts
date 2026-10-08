@@ -91,7 +91,7 @@ const schedulePreviewSchema = z.object({
 export async function listWorkflowsService(caller: AppServiceCaller, input: z.input<typeof listSchema>) {
   const value = listSchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.workflows.list"));
-  const owner = { tenantId: caller.context.tenantId };
+  const owner = { tenantId: caller.context.tenantId, actorId: caller.context.actorId };
   const [runs, stats, queue] = await Promise.all([
     listWorkflowRuns(value.limit, owner),
     value.includeStats ? getWorkflowStats(owner) : Promise.resolve(undefined),
@@ -108,14 +108,14 @@ export async function listWorkflowsService(caller: AppServiceCaller, input: z.in
 export async function showWorkflowService(caller: AppServiceCaller, input: z.input<typeof idSchema>) {
   const value = idSchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.workflows.show"));
-  const detail = await getWorkflowRunDetail(value.workflowId, { tenantId: caller.context.tenantId });
+  const detail = await getWorkflowRunDetail(value.workflowId, { tenantId: caller.context.tenantId, actorId: caller.context.actorId });
   return completeAppServiceCall(authorized, { workflow: detail ? publicWorkflowRunDetail(detail) : null }, { resourceCount: detail ? 1 : 0 });
 }
 
 export async function listWorkflowPlansService(caller: AppServiceCaller, input: z.input<typeof plansListSchema>) {
   const value = plansListSchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.workflows.plans.list"));
-  const owner = { tenantId: caller.context.tenantId };
+  const owner = { tenantId: caller.context.tenantId, actorId: caller.context.actorId };
   const [plans, stats] = await Promise.all([listWorkflowPlans(value.limit, owner), getWorkflowPlanStats(owner)]);
   return completeAppServiceCall(authorized, { plans, stats }, { resourceCount: plans.length });
 }
@@ -139,7 +139,7 @@ export async function planWorkflowService(caller: AppServiceCaller, input: z.inp
 export async function listWorkflowExecutionsService(caller: AppServiceCaller, input: z.input<typeof executionsListSchema>) {
   const value = executionsListSchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.workflows.executions.list"));
-  const owner = { tenantId: caller.context.tenantId };
+  const owner = { tenantId: caller.context.tenantId, actorId: caller.context.actorId };
   const [executions, stats] = await Promise.all([listWorkflowPlanNodeExecutions(value.limit, owner), getWorkflowPlanNodeExecutionStats(owner)]);
   return completeAppServiceCall(authorized, { executions, stats }, { resourceCount: executions.length });
 }
@@ -185,8 +185,9 @@ export async function signalWorkflowService(caller: AppServiceCaller, input: z.i
 export async function tickWorkflowService(caller: AppServiceCaller, input: z.input<typeof tickSchema>) {
   const value = tickSchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.workflows.tick"));
+  if (!await getWorkflowRunDetail(value.workflowId, { tenantId: caller.context.tenantId, actorId: caller.context.actorId })) throw new Error("Workflow run not found.");
   const queue = await processWorkflowQueue({ workflowRunId: value.workflowId, limit: 1, bootstrapQueuedRuns: false, tenantId: caller.context.tenantId });
-  const detail = await getWorkflowRunDetail(value.workflowId, { tenantId: caller.context.tenantId });
+  const detail = await getWorkflowRunDetail(value.workflowId, { tenantId: caller.context.tenantId, actorId: caller.context.actorId });
   return completeAppServiceCall(authorized, { workflow: detail ? publicWorkflowRunDetail(detail) : null, queue }, { resourceCount: detail ? 1 : 0 });
 }
 

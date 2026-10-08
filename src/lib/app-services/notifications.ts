@@ -90,8 +90,12 @@ function readOwner(caller: AppServiceCaller) {
 // v31 and earlier have a closed notification vocabulary and reminder-only
 // controls. Filter at the storage boundary, before limits or bulk mutation.
 function notificationCompatibility(caller: AppServiceCaller) {
-  return caller.context.source === "mobile" && (caller.context.native?.clientContractVersion ?? 0) < 32
-    ? { includeResponsibilityChanges: false as const } : {};
+  if (caller.context.source !== "mobile") return {};
+  const version = caller.context.native?.clientContractVersion ?? 0;
+  return {
+    ...(version < 32 ? { includeResponsibilityChanges: false as const } : {}),
+    ...(version < 49 ? { includeResearchWorkflows: false as const } : {}),
+  };
 }
 
 function mutationContext(caller: AppServiceCaller) {

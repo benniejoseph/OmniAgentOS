@@ -19,6 +19,7 @@ import type {
 } from "@/lib/models/command-selection";
 import type { ModelRouteDegradation } from "@/lib/settings/runtime-models";
 import type { VoiceCommandInput } from "@/lib/voice/command-input";
+import type { ResearchOptions, ResearchProgress } from "@/lib/research/contracts";
 
 export type ChatRole = "user" | "assistant";
 
@@ -136,6 +137,7 @@ export type AgentHarnessEvent = {
 };
 
 export type AgentEvent =
+  | { type: "research_progress"; progress: ResearchProgress }
   | { type: "run"; runId: string; threadId?: string; missionId?: string }
   | {
       type: "delegated";
@@ -190,6 +192,7 @@ export type AgentEvent =
 
 export type AgentRunRequest = {
   messages: ChatMessage[];
+  research?: ResearchOptions;
   /** Trusted server-owned identity for a new root run. */
   runId?: string;
   /** Explicit owner-selected execution surface. Never inferred or silently changed. */
