@@ -1695,7 +1695,9 @@ async function POSTHandler(request: Request) {
             const executionMessage = parsed.data.missionId
               ? missionInstruction(mission, safeMessage)
               : safeMessage;
-            if (decision.route === "durable_workflow") {
+            // Deep Research owns its retrieval plan; the generic scheduler adds a
+            // default specialist even when the requested specialist list is empty.
+            if (decision.route === "durable_workflow" && !deepResearch) {
               if (await stopBeforeMutationIfCanceled()) return;
               const parentExecutionScope = executionScopeFromSecurityContext(
                 context,

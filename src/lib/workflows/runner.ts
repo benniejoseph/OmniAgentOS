@@ -110,6 +110,7 @@ import {
   updateWorkflowStep,
   updateWorkflowStepForRunFence,
   workflowStepDefinitions,
+  type WorkflowExecutionAuthority,
 } from "@/lib/workflows/store";
 import type {
   WorkflowDynamicPlan,
@@ -138,14 +139,16 @@ export class WorkflowSignalConflictError extends Error {
   }
 }
 
+type WorkflowTickOptions = {
+  tenantId?: string;
+  abortSignal?: AbortSignal;
+  /** Epoch ms at which abortSignal stops this tick. */
+  deadlineAt?: number;
+};
+
 export async function tickWorkflowRun(
   runId: string,
-  options: {
-    tenantId?: string;
-    abortSignal?: AbortSignal;
-    /** Epoch ms at which abortSignal stops this tick. */
-    deadlineAt?: number;
-  } = {},
+  options: WorkflowTickOptions = {},
 ) {
   throwIfAborted(options.abortSignal);
   const detail = await getWorkflowRunDetail(runId, { tenantId: options.tenantId });
@@ -165,6 +168,32 @@ export async function tickWorkflowRun(
     throw new Error("Workflow execution authority is missing.");
   }
 
+  const actorId = executionAuthority?.executionScope.initiatingActorId;
+  const metadataActorId = typeof detail.run.input.metadata?.actorId === "string"
+    ? detail.run.input.metadata.actorId.trim()
+    : "";
+  if (actorId && metadataActorId && actorId !== metadataActorId) {
+    throw new Error("Workflow metadata actor does not match its immutable execution scope.");
+  }
+  if (isResearchWorkflow(detail) && !actorId) {
+    throw new Error("Research workflow requires its bound initiating actor.");
+  }
+  // Discovery reads run in tenant scope. All delivery work, including mission
+  // projections and report persistence, must restore the validated run owner.
+  // Keep the bound workspace/project scope unchanged; metadata is not authority.
+  return actorId
+    ? runWithDatabaseActorScope(detail.run.tenantId, [actorId], () =>
+        tickWorkflowRunWithAuthority(detail, executionAuthority, options),
+      )
+    : tickWorkflowRunWithAuthority(detail, executionAuthority, options);
+}
+
+async function tickWorkflowRunWithAuthority(
+  detail: WorkflowRunDetail,
+  executionAuthority: WorkflowExecutionAuthority | undefined,
+  options: WorkflowTickOptions,
+) {
+  const runId = detail.run.id;
   if (detail.run.status === "paused" || detail.run.status === "waiting_approval" || detail.run.status === "running") {
     await appendWorkflowEvent(detail.run.id, "workflow.tick.noop", { status: detail.run.status });
     return getWorkflowRunDetail(runId, { tenantId: options.tenantId }) as Promise<WorkflowRunDetail>;
@@ -187,7 +216,7 @@ export async function tickWorkflowRun(
       return detail;
     }
     if (specialistGate.state === "failed") {
-      await failSpecialistParentMissionTask(
+      await failWorkflowParentMissionTask(
         detail,
         executionAuthority?.executionScope,
       );
@@ -209,7 +238,7 @@ export async function tickWorkflowRun(
         tenantId: options.tenantId,
       }) as Promise<WorkflowRunDetail>;
     }
-    await attachSpecialistParentMissionExecutor(
+    await attachWorkflowParentMissionExecutor(
       detail,
       executionAuthority?.executionScope,
     );
@@ -836,11 +865,11 @@ export async function tickWorkflowRun(
   return getWorkflowRunDetail(runId, { tenantId: options.tenantId }) as Promise<WorkflowRunDetail>;
 }
 
-async function attachSpecialistParentMissionExecutor(
+async function attachWorkflowParentMissionExecutor(
   detail: WorkflowRunDetail,
   executionScope?: ExecutionScope,
 ) {
-  const binding = specialistParentMissionBinding(detail);
+  const binding = workflowParentMissionBinding(detail);
   if (!binding) return;
   await attachMissionExecutor({
     taskId: binding.taskId,
@@ -856,11 +885,11 @@ async function attachSpecialistParentMissionExecutor(
   });
 }
 
-async function failSpecialistParentMissionTask(
+async function failWorkflowParentMissionTask(
   detail: WorkflowRunDetail,
   executionScope?: ExecutionScope,
 ) {
-  const binding = specialistParentMissionBinding(detail);
+  const binding = workflowParentMissionBinding(detail);
   if (!binding) return;
   const owner = {
     tenantId: detail.run.tenantId,
@@ -875,10 +904,13 @@ async function failSpecialistParentMissionTask(
   }
 }
 
-function specialistParentMissionBinding(detail: WorkflowRunDetail) {
+function workflowParentMissionBinding(detail: WorkflowRunDetail) {
   const metadata = detail.run.input.metadata;
   const specialistTaskIds = metadata?.specialistTaskIds;
-  if (!Array.isArray(specialistTaskIds) || specialistTaskIds.length === 0) {
+  if (
+    !isResearchWorkflow(detail) &&
+    (!Array.isArray(specialistTaskIds) || specialistTaskIds.length === 0)
+  ) {
     return undefined;
   }
   const actorId = typeof metadata?.actorId === "string" ? metadata.actorId : "";
@@ -887,7 +919,7 @@ function specialistParentMissionBinding(detail: WorkflowRunDetail) {
     : "";
   if (!actorId || !taskId) {
     throw new Error(
-      "Durable specialist workflow is missing its parent mission binding.",
+      "Durable workflow is missing its parent mission binding.",
     );
   }
   return { actorId, taskId };
