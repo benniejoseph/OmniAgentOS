@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   hasDatabaseUrl,
   runWithDatabaseTenantScope,
+  runWithDatabaseSystemScope,
   withDatabaseRequestScope,
 } from "@/lib/db/client";
 import {
@@ -881,11 +882,11 @@ async function runAllTenantScheduledWork({
     // Long research phases use the background delivery budget. Queue leases
     // prevent the fast and background lanes from running the same tick.
     runFast || runBackground
-      ? processAllTenantWorkflowQueues({
+      ? runWithDatabaseSystemScope("Dispatch authenticated all-tenant workflow queue work.", () => processAllTenantWorkflowQueues({
           limit: queueLimit,
           timeBudgetMs: dispatchBudgetMs,
           tenantIds: dispatchTenants.workflowTenantIds,
-        })
+        }))
       : Promise.resolve({
           requested: 0,
           leased: 0,
