@@ -81,8 +81,10 @@ class TalkResearchProgress {
     required this.sourcesRead,
     required this.gaps,
     required this.limitations,
+    this.reportStatus,
   });
   final String depth, stage;
+  final String? reportStatus;
   final List<String> questions, gaps, limitations;
   final int searches, sourcesRead;
   String get label => switch (stage) {
@@ -119,6 +121,9 @@ class TalkResearchProgress {
           : 0,
       gaps: _strings(data['gaps']),
       limitations: _strings(data['limitations']),
+      reportStatus: const {'ready', 'partial'}.contains(data['reportStatus'])
+          ? data['reportStatus'] as String
+          : null,
     );
   }
 }
@@ -132,7 +137,12 @@ class TalkResearchSource {
   });
   final String citationId, title;
   final Uri uri;
-  final bool wasRead;
+  final bool? wasRead;
+  String get evidenceLabel => switch (wasRead) {
+    true => 'Read excerpts',
+    false => 'Found in search; not read',
+    null => 'Saved source · reading status unavailable',
+  };
   static TalkResearchSource? fromJson(Object? value) {
     final data = _record(value);
     final uri = Uri.tryParse(_text(data['url'], 4000));
@@ -147,7 +157,11 @@ class TalkResearchSource {
       citationId: citationId,
       title: _text(data['title'], 400),
       uri: uri,
-      wasRead: data['evidenceKind'] == 'read_extract',
+      wasRead: switch (data['evidenceKind']) {
+        'read_extract' => true,
+        'search_discovery' => false,
+        _ => null,
+      },
     );
   }
 }
@@ -165,7 +179,7 @@ class TalkResearchReport {
   final bool partial;
   final List<TalkResearchSource> sources;
   final List<String> limitations;
-  final int checkedClaims;
+  final int? checkedClaims;
   static TalkResearchReport? fromJson(Object? value) {
     final data = _record(value);
     final content = _text(data['content'], 120000);
@@ -207,7 +221,7 @@ class TalkResearchReport {
   }
 
   String get markdown =>
-      '# ${title.isEmpty ? 'Research report' : title}\n\n$linkedContent\n\n## Sources\n\n${[for (var i = 0; i < sources.length; i += 1) '${i + 1}. [${sources[i].title.isEmpty ? sources[i].uri.host : sources[i].title}](${sources[i].uri}) — ${sources[i].wasRead ? 'Read excerpts' : 'Found in search; not read'}'].join('\n')}';
+      '# ${title.isEmpty ? 'Research report' : title}\n\n$linkedContent\n\n## Sources\n\n${[for (var i = 0; i < sources.length; i += 1) '${i + 1}. [${sources[i].title.isEmpty ? sources[i].uri.host : sources[i].title}](${sources[i].uri}) — ${sources[i].evidenceLabel}'].join('\n')}';
 }
 
 class TalkResearchWorkflow {
@@ -226,6 +240,58 @@ class TalkResearchWorkflow {
   final DateTime? createdAt, completedAt;
   bool get terminal =>
       const {'completed', 'failed', 'canceled'}.contains(status);
+
+  /// Restores a completed Quick report from the authorized saved run only.
+  /// Source URLs are never inferred from the response text.
+  static TalkResearchWorkflow? fromAgentRun(Map<String, dynamic> run) {
+    final progress = TalkResearchProgress.fromJson(run['researchProgress']);
+    final content = _text(run['response'], 120000);
+    final threadId = _text(run['threadId'], 200);
+    if (run['mode'] != 'research' ||
+        run['status'] != 'completed' ||
+        progress?.depth != 'quick' ||
+        content.isEmpty ||
+        threadId.isEmpty)
+      return null;
+    final grounding = _record(run['grounding']);
+    final seen = <String>{};
+    final sources = <TalkResearchSource>[];
+    final catalog = grounding['sources'];
+    if (catalog is List) {
+      for (final value in catalog.take(100)) {
+        final data = _record(value);
+        final id = _text(data['citationId'], 128);
+        if (data['kind'] != 'web' ||
+            !RegExp(r'^web:[a-f0-9]{16}$').hasMatch(id) ||
+            !seen.add(id))
+          continue;
+        final source = TalkResearchSource.fromJson({
+          'citationId': id,
+          'url': data['url'],
+          'title': data['title'],
+        });
+        if (source != null) sources.add(source);
+      }
+    }
+    return TalkResearchWorkflow(
+      threadId: threadId,
+      status: 'completed',
+      progress: progress,
+      createdAt: DateTime.tryParse(
+        _text(run['startedAt'] ?? run['createdAt'], 80),
+      ),
+      completedAt: DateTime.tryParse(_text(run['completedAt'], 80)),
+      report: TalkResearchReport(
+        title: 'Quick research report',
+        content: content,
+        partial: progress?.reportStatus != 'ready',
+        sources: List.unmodifiable(sources),
+        limitations: progress?.limitations ?? const [],
+        checkedClaims: null,
+      ),
+    );
+  }
+
   static TalkResearchWorkflow? fromDetail(Map<String, dynamic> payload) {
     final run = _record(payload['run']);
     final input = _record(run['input']);
@@ -679,7 +745,7 @@ class TalkResearchPanel extends StatelessWidget {
                             : entry.value.title,
                       ),
                       subtitle: Text(
-                        '${entry.value.uri.host} · ${entry.value.wasRead ? 'Read excerpts' : 'Found in search; not read'}',
+                        '${entry.value.uri.host} · ${entry.value.evidenceLabel}',
                       ),
                       trailing: const Icon(Icons.open_in_new_rounded, size: 18),
                       onTap: () => launchUrl(
@@ -699,7 +765,9 @@ class TalkResearchPanel extends StatelessWidget {
                   ],
                   const SizedBox(height: 16),
                   Text(
-                    '${report.checkedClaims} claims matched to exact source quotes. This checks the quoted evidence, not factual truth or every possible claim.',
+                    report.checkedClaims == null
+                        ? 'Source links come from the evidence saved with this report. Quick research does not include a separate claim review receipt.'
+                        : '${report.checkedClaims} claims matched to exact source quotes. This checks the quoted evidence, not factual truth or every possible claim.',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ],

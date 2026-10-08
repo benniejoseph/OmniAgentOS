@@ -106,8 +106,10 @@ class ResultItem {
     threadId: value.threadId ?? research?.threadId,
     research: research,
   );
-  factory ResultItem.agent(Json value) =>
-      ResultItem._parsed(ParsedResult.agent(value));
+  factory ResultItem.agent(Json value) => ResultItem._parsed(
+    ParsedResult.agent(value),
+    research: TalkResearchWorkflow.fromAgentRun(value),
+  );
   factory ResultItem.workflow(Json value) => ResultItem._parsed(
     ParsedResult.workflow(value),
     research: TalkResearchWorkflow.fromDetail({

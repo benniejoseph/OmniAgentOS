@@ -35,6 +35,7 @@ import {
 } from "@/lib/orchestration/loop-v2-context-contract";
 import { loopV2ExecutionScopeSha256 } from "@/lib/orchestration/loop-v2";
 import type { CitationSource, GroundingReport } from "@/lib/rag/citations";
+import { researchProgressSchema, type ResearchProgress } from "@/lib/research/contracts";
 import { parseRuntimeClaimEvidenceV1 } from "@/lib/rag/claim-evidence-runtime";
 import {
   parseContextCompilerV2AutomaticReceipt,
@@ -1913,6 +1914,44 @@ export async function getAgentRun(runId: string, options: { tenantId?: string } 
 
   const ledger = await readRunLedger();
   return ledger.runs.find((run) => run.id === runId && (!options.tenantId || normalizeTenantId(run.tenantId) === normalizeTenantId(options.tenantId)));
+}
+
+/** Latest saved research progress, bound to the same run owner as its report. */
+export async function getAgentRunResearchProgress(
+  runId: string,
+  options: { tenantId: string; actorId: string },
+): Promise<ResearchProgress | undefined> {
+  const tenantId = normalizeTenantId(options.tenantId);
+  let payload: unknown;
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT record.payload
+      FROM omni_agent_events record
+      JOIN omni_agent_runs run
+        ON run.id = record.run_id AND run.tenant_id = record.tenant_id
+      JOIN omni_events event
+        ON event.id = record.id AND event.tenant_id = record.tenant_id
+      WHERE run.id = ${runId} AND run.tenant_id = ${tenantId}
+        AND run.owner_actor_id = ${options.actorId} AND run.mode = 'research'
+        AND event.stream_id = ${`run:${runId}`} AND record.type = 'research_progress'
+      ORDER BY event.seq DESC
+      LIMIT 1
+    `;
+    payload = rows[0]?.payload;
+  } else {
+    const ledger = await readRunLedger();
+    const ownedRun = ledger.runs.some((run) => run.id === runId &&
+      normalizeTenantId(run.tenantId) === tenantId &&
+      run.ownerActorId === options.actorId && run.mode === "research");
+    if (!ownedRun) return undefined;
+    payload = ledger.events.findLast((event) => event.runId === runId &&
+      normalizeTenantId(event.tenantId) === tenantId &&
+      event.type === "research_progress")?.payload;
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
+  const parsed = researchProgressSchema.safeParse((payload as { progress?: unknown }).progress);
+  return parsed.success ? parsed.data : undefined;
 }
 
 const RUN_EVENT_PAGE_DEFAULT = 200;

@@ -438,7 +438,7 @@ class ApiTalkRepository
   @override
   Future<TalkRunInspection> inspectRun(String runId) async {
     final inspection = TalkRunInspection.fromJson(
-      await api.getJson(NativePaths.evidenceRun(runId)),
+      await api.getJsonFresh(NativePaths.evidenceRun(runId)),
     );
     if (inspection.runId != runId) {
       throw StateError('The run projection did not match the request.');
