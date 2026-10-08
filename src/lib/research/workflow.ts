@@ -10,7 +10,7 @@ import {
 } from "@/lib/orchestration/research";
 import type { AgentRunRequest } from "@/lib/orchestration/types";
 import {
-  RESEARCH_WORKFLOW_METADATA_KEY, researchOptionsSchema, type ResearchProgress,
+  RESEARCH_DELIVERY_MIN_RUNWAY_MS, RESEARCH_WORKFLOW_METADATA_KEY, researchOptionsSchema, type ResearchProgress,
 } from "@/lib/research/contracts";
 import {
   assessResearchCoverage, buildResearchClaimReviewReceipt, researchClaimReviewInstructions,
@@ -42,8 +42,8 @@ import type { WorkflowRunDetail, WorkflowStepKey } from "@/lib/workflows/types";
 const STATE_KEY = "researchStateV1";
 const RESEARCH_STEPS = new Set<WorkflowStepKey>(["plan", "execute", "verify", "persist_report"]);
 const MAX_PARALLEL_READS = 2;
-const RESEARCH_MODEL_TIMEOUT_MS = 90_000;
 const DELIVERY_SAVE_MARGIN_MS = 5_000;
+const RESEARCH_MODEL_TIMEOUT_MS = RESEARCH_DELIVERY_MIN_RUNWAY_MS - DELIVERY_SAVE_MARGIN_MS;
 
 /** This projection is report evidence, never a verified-grounding receipt. */
 export type ResearchWorkflowReport = {
@@ -168,6 +168,14 @@ export async function executeResearchWorkflowStep(context: ResearchStepContext):
     : context.stepKey === "verify" ? "review"
     : context.stepKey === "execute" && state.phase === "writing" && !state.response ? "report"
     : undefined;
+  if (nextModel) {
+    if (recoverModelReceipt(context.detail, state, nextModel)) {
+      await persist(nextModel === "plan" ? "planning" : nextModel === "review" ? "reviewing" : "writing", "research.model.receipt_recovered");
+    }
+    // An interrupted provider call is a receipt boundary, even in a short
+    // delivery. Do not hide it indefinitely behind a runway yield.
+    assertModelRetryAuthorized(context.detail, state.models[nextModel]);
+  }
   if (nextModel && state.models[nextModel]?.status !== "completed" && context.deadlineAt &&
     context.deadlineAt - Date.now() < modelTimeoutMs(nextModel) + DELIVERY_SAVE_MARGIN_MS) {
     const stage = nextModel === "plan" ? "planning" : nextModel === "review" ? "reviewing" : "writing";
@@ -424,13 +432,13 @@ async function modelCall(context: ResearchStepContext, state: ResearchWorkflowSt
   key: string, role: "planner" | "verifier", request: Pick<ModelStructuredRequest, "instructions" | "input" | "schema" | "name" | "maxOutputTokens">): Promise<string | undefined> {
   const prior = state.models[key];
   const requestSha256 = canonicalJsonSha256(request);
+  if (prior && prior.requestSha256 !== requestSha256) {
+    throw new Error("The stored research model receipt does not match the current request.");
+  }
   if (prior?.status === "completed") {
-    if (prior.requestSha256 !== requestSha256) throw new Error("The stored research model receipt does not match the current request.");
     return prior.text;
   }
-  if (prior && !context.detail.events.some((event) => event.type === "workflow.resumed" && Date.parse(event.createdAt) > Date.parse(prior.startedAt))) {
-    throw new ResearchWorkflowNeedsAttention();
-  }
+  assertModelRetryAuthorized(context.detail, prior);
   const runtime = await context.resolveModel(role);
   if (!runtime.configured) {
     state.limitations.push(`${key === "review" ? "Claim review" : key === "plan" ? "Model planning" : "Report synthesis"} is unavailable because its model route is not configured.`);
@@ -471,6 +479,29 @@ async function modelCall(context: ResearchStepContext, state: ResearchWorkflowSt
     // redelivery rule: a started boundary is not permission for a paid replay.
     throw new ResearchWorkflowNeedsAttention();
   }
+}
+
+function assertModelRetryAuthorized(detail: WorkflowRunDetail, prior: ModelJournalEntry | undefined) {
+  if (prior?.status === "started" && !detail.events.some((event) =>
+    event.type === "workflow.resumed" && Date.parse(event.createdAt) > Date.parse(prior.startedAt)
+  )) {
+    throw new ResearchWorkflowNeedsAttention();
+  }
+}
+
+/** Billing metadata is not response evidence; only an exact saved result can recover a call. */
+function recoverModelReceipt(detail: WorkflowRunDetail, state: ResearchWorkflowState, key: string) {
+  const prior = state.models[key];
+  if (prior?.status === "completed") return false;
+  const completed = detail.steps.flatMap((step) => {
+    const saved = step.output?.[STATE_KEY] as ResearchWorkflowState | undefined;
+    const receipt = saved?.schemaVersion === 1 ? saved.models?.[key] : undefined;
+    return receipt?.status === "completed" && typeof receipt.text === "string" &&
+      (!prior || receipt.requestSha256 === prior.requestSha256) ? [receipt] : [];
+  }).sort((left, right) => right.attempt - left.attempt)[0];
+  if (!completed) return false;
+  state.models[key] = structuredClone(completed);
+  return true;
 }
 
 function hasTool(context: ResearchStepContext, toolId: "web.search" | "web.read") {
