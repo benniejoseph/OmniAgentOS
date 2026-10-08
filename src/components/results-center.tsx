@@ -463,13 +463,13 @@ export function ResultsCenter({ embedded = false }: { embedded?: boolean }) {
                 <Metric label="Evaluations" value={resourceMetric(state, signedIn, data.evaluations, evaluationRuns.length.toString())} />
               </dl>
               <div className={styles.evidenceLinks}>
-                <EvidenceLink label="Release" value="Open release gate" href="/app/evaluations" />
+                <EvidenceLink label="Release" value="Open release gate" href="/app/settings?section=quality" />
                 <EvidenceLink
                   label="Evaluations"
                   value={resourceMetric(state, signedIn, data.evaluations, `${evaluationRuns.length} runs`)}
-                  href="/app/evaluations"
+                  href="/app/settings?section=quality"
                 />
-                <EvidenceLink label="Runtime" value="Open monitoring" href="/app/observability" />
+                <EvidenceLink label="Runtime" value="Open monitoring" href="/app/settings?section=monitoring" />
               </div>
               <ResultPanel title="Recent evaluations" description="Recorded checks and their exact run status.">
                 <ResultRows
@@ -478,7 +478,7 @@ export function ResultsCenter({ embedded = false }: { embedded?: boolean }) {
                     status: stringValue(run.status, "unknown"),
                     meta: formatResultTime(stringValue(run.completedAt || run.startedAt || run.createdAt)),
                     body: `Passed ${stringPath(run, "summary.passed", "0")} of ${stringPath(run, "summary.total", "0")} checks.`,
-                    href: "/app/evaluations",
+                    href: "/app/settings?section=quality",
                   }))}
                   empty={resourceError(data.evaluations) ? "Evaluation evidence is unavailable. Retry the source above." : "No evaluation runs loaded."}
                   icon={CheckCircle2}

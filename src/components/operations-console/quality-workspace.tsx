@@ -8,11 +8,11 @@ const endpoints: readonly Endpoint[] = [
   { key: "feedback", label: "Failure feedback", path: "/api/evaluations/failure-feedback?limit=50", permission: "read", coverage: "Up to 50 failure clusters and proposals in this tenant." },
   { key: "release", label: "Release evidence", path: "/api/release/evidence", permission: "read.security", coverage: "Current server gate report. May reuse the server's cached assessment." },
 ];
-export function QualityWorkspace() { return <ScopedOperationalWorkspace><QualityView /></ScopedOperationalWorkspace>; }
-function QualityView() {
+export function QualityWorkspace({ embedded = false }: { embedded?: boolean } = {}) { return <ScopedOperationalWorkspace><QualityView embedded={embedded} /></ScopedOperationalWorkspace>; }
+function QualityView({ embedded }: { embedded: boolean }) {
   const api = useOperationalWorkspace(endpoints); const evaluations = api.resources.evaluations; const feedback = api.resources.feedback;
   const clusters = rows(feedback?.data?.clusters); const proposals = rows(feedback?.data?.proposals);
-  return <OperationalFrame title="Quality" description="Inspect measured evaluations, recurring failures, and proposed harness changes. Review their evidence before another governed run." api={api}>
+  return <OperationalFrame embedded={embedded} title="Quality Checks" description="Inspect measured evaluations, recurring failures, and proposed harness changes. Review their evidence before another governed run." api={api}>
     <div className={styles.summary} aria-label="Quality snapshot"><p className={styles.support}>Values reflect each source’s last loaded snapshot. Source states below show refresh failures and unavailable reads.</p><Facts values={[["Recorded runs", count(at(evaluations?.data, "stats.total"))], ["Cases in loaded catalog", evaluations?.data ? rows(evaluations.data.cases).length : "Unavailable"], ["Active recurring failures", count(at(feedback?.data, "summary.activeRecurring"))], ["Proposed rules", count(at(feedback?.data, "summary.proposedRules"))]]} /></div>
     <div className={styles.columns}><div className={styles.mainColumn}>
       <DataSection title="Evaluation runs" source={evaluations} description="A completed run can contain failed or warning results. Run status is separate from case outcomes.">

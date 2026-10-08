@@ -18,10 +18,10 @@ export { mcpConfigurationActionBlocked, mcpConfigurationIsEditable, mcpContinuit
 export type { McpConfigurationGate, SettingsLoadResult } from "./settings-advanced-state";
 export { McpConfigurationSurface } from "./settings-advanced-editors";
 
-export function AdvancedSettingsWorkspace(props: { section: SettingsSection; onNavigate: (section: SettingsSection) => void }) {
+export function AdvancedSettingsWorkspace(props: { section: SettingsSection; onNavigate: (section: SettingsSection) => void; embedded?: boolean }) {
   return <AdvancedSettingsBoundary><AdvancedSettingsContent {...props} /></AdvancedSettingsBoundary>;
 }
-function AdvancedSettingsContent({ section, onNavigate }: { section: SettingsSection; onNavigate: (section: SettingsSection) => void }) {
+function AdvancedSettingsContent({ section, onNavigate, embedded = false }: { section: SettingsSection; onNavigate: (section: SettingsSection) => void; embedded?: boolean }) {
   const actions = useAdvancedSettingsActions();
   const [snapshot, setSnapshot] = useState<SettingsSnapshot>();
   const [loading, setLoading] = useState(true);
@@ -67,10 +67,10 @@ function AdvancedSettingsContent({ section, onNavigate }: { section: SettingsSec
   const providerBlocked = manageBlocked || (snapshot?.requestReadContracts?.providerConnections !== "readable_v1" ? "Provider ownership metadata is unavailable. Refresh settings." : undefined);
   const routingBlocked = providerBlocked || (snapshot?.requestReadContracts?.modelAssignments !== "readable_v1" ? "Model routing ownership metadata is unavailable. Refresh settings." : undefined);
   const title = settingsSections.find((item) => item.id === section)?.label ?? "Advanced settings";
-  return <div className={`${styles.workspace} ${styles.shell}`} data-testid="advanced-settings">
-    <header className={styles.header}><div><h1>Settings</h1><p>Review workspace configuration, exact identities and access boundaries before making a change.</p></div><button type="button" disabled={Boolean(actions.busy) || Boolean(readBlocked)} onClick={() => void load()}>Refresh settings</button></header>
-    <nav aria-label="Settings categories" className={styles.navigation}>{settingsSections.map((item) => <button key={item.id} type="button" aria-current={item.id === section ? "page" : undefined} onClick={() => onNavigate(item.id)}>{item.label}</button>)}</nav>
-    <h2>{title}</h2>
+  return <div className={`${styles.workspace} ${embedded ? styles.embedded : styles.shell}`} data-testid="advanced-settings">
+    <header className={styles.header}><div>{embedded ? <h2>{title}</h2> : <h1>Settings</h1>}<p>Review your workspace configuration and access before making a change.</p></div><button type="button" disabled={Boolean(actions.busy) || Boolean(readBlocked)} onClick={() => void load()}>Refresh settings</button></header>
+    {!embedded ? <nav aria-label="Settings categories" className={styles.navigation}>{settingsSections.map((item) => <button key={item.id} type="button" aria-current={item.id === section ? "page" : undefined} onClick={() => onNavigate(item.id)}>{item.label}</button>)}</nav> : null}
+    {!embedded ? <h2>{title}</h2> : null}
     <ReadNotice loaded={Boolean(snapshot)} loading={loading && !readBlocked} error={readBlocked || error} label="Settings" />
     {actions.busy ? <p role="status" className={styles.notice}>{actions.busy}… Work already sent to the server may continue if you leave Settings.</p> : null}
     {actions.error || localError ? <p role="alert" className={styles.error}>{actions.error || localError}</p> : null}

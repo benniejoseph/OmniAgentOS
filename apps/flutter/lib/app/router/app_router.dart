@@ -37,12 +37,10 @@ import '../../features/markets/markets_workspace.dart';
 import '../../features/payments/macos_payments_view.dart';
 import '../../features/payments/payments_view.dart';
 import '../../features/meetings/meetings_page.dart';
-import '../../features/monitoring/monitoring_workspace_view.dart';
 import '../../features/projects/macos_project_detail_view.dart';
 import '../../features/projects/projects_providers.dart';
 import '../../features/projects/macos_projects_view.dart';
 import '../../features/projects/projects_view.dart';
-import '../../features/quality/quality_workspace_view.dart';
 import '../../features/results/macos_result_detail_view.dart';
 import '../../features/results/results_providers.dart';
 import '../../features/results/macos_results_view.dart';
@@ -51,7 +49,7 @@ import '../../features/responsibilities/responsibility_providers.dart';
 import '../../features/responsibilities/responsibility_workspace.dart';
 import '../../features/settings/admin_console.dart';
 import '../../features/settings/macos_admin_workspace_view.dart';
-import '../../features/settings/model_settings_view.dart';
+import '../../features/settings/settings_workspace_page.dart';
 import '../../features/security/device_security_screen.dart';
 import '../../features/security/security_workspace_view.dart';
 import '../../features/search/content_search_targets.dart';
@@ -584,7 +582,8 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(
         path: '/administration',
-        redirect: (_, _) => usesMacosPresentation() ? '/monitoring' : null,
+        redirect: (_, _) =>
+            usesMacosPresentation() ? '/settings?section=monitoring' : null,
         builder: (_, _) => NativePrivateWorkspace(
           requireManager: true,
           ownNavigator: true,
@@ -649,8 +648,11 @@ final appRouterProvider = Provider<GoRouter>((ref) {
               routes: [
                 GoRoute(
                   path: destination.path,
-                  redirect: (_, _) =>
-                      legacyAutomationRedirect(destination.path),
+                  redirect: (_, _) => switch (destination.path) {
+                    '/quality' => '/settings?section=quality',
+                    '/monitoring' => '/settings?section=monitoring',
+                    _ => legacyAutomationRedirect(destination.path),
+                  },
                   builder: (context, state) =>
                       !nativeRouteQueryDecodes(state.uri)
                       ? const Center(
@@ -775,15 +777,9 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                             'integrations',
                           ),
                           '/tools' => _nativeAdminWorkspace('tools'),
-                          '/quality' => const NativeQualityPage(),
-                          '/monitoring' => const NativeMonitoringPage(),
                           '/security' => const NativeSecurityPage(),
-                          '/settings' => NativePrivateWorkspace(
-                            ownNavigator: true,
-                            builder: (access) => ModelSettingsView(
-                              api: access.api,
-                              authority: access.authority,
-                            ),
+                          '/settings' => SettingsWorkspacePage(
+                            section: state.uri.queryParameters['section'],
                           ),
                           _ => DestinationPlaceholder(destination: destination),
                         },

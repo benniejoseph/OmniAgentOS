@@ -245,7 +245,9 @@ class _DesktopSidebar extends StatelessWidget {
                     )
                   : ListView.builder(
                       padding: const EdgeInsets.symmetric(vertical: 10),
-                      itemCount: AdaptiveShell._adaptiveBranches.length + 1,
+                      itemCount:
+                          AdaptiveShell._adaptiveBranches.length +
+                          (AdaptiveShell._advancedBranches.isEmpty ? 0 : 1),
                       itemBuilder: (context, index) {
                         if (index == AdaptiveShell._adaptiveBranches.length) {
                           return _AdvancedMenu(onSelect: onSelect);

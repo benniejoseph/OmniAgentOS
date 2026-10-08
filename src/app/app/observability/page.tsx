@@ -1,10 +1,5 @@
-import type { Metadata } from "next";
-import { MonitoringWorkspace } from "@/components/operations-console/monitoring-workspace";
-
-export const metadata: Metadata = {
-  title: "Monitoring",
-};
+import { redirect } from "next/navigation";
 
 export default function ObservabilityPage() {
-  return <MonitoringWorkspace />;
+  redirect("/app/settings?section=monitoring");
 }

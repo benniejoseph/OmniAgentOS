@@ -1,4 +1,5 @@
 .workspace { --settings-gap: var(--background); min-inline-size: 0; color: var(--foreground); background: var(--background); font-family: var(--font-geist-sans), Arial, sans-serif; font-size: .875rem; line-height: 1.5; overflow-wrap: anywhere; container-type: inline-size; }
+.embedded { padding: 0; }
 .shell { max-inline-size: 88rem; margin-inline: auto; padding: 2rem; }
 .workspace h1 { margin: 0; font: 600 1.75rem/1.3 var(--font-geist-sans), Arial, sans-serif; letter-spacing: -.02em; }
 .navigation { display: flex; flex-wrap: wrap; gap: .5rem; margin-block: 1rem 1.5rem; }

@@ -75,7 +75,9 @@ class _NativeQualityPageState extends State<NativeQualityPage>
             _controller = controller;
             return controller == null
                 ? const Center(
-                    child: Text('Quality is unavailable for this session.'),
+                    child: Text(
+                      'Quality Checks are unavailable for this session.',
+                    ),
                   )
                 : QualityWorkspaceView(
                     key: ObjectKey(controller),
@@ -197,13 +199,15 @@ class _QualityWorkspaceViewState extends State<QualityWorkspaceView> {
                 final content = _content(context, wide: wide);
                 final refresh = IconButton(
                   key: const Key('quality-refresh'),
-                  tooltip: c.loading ? 'Refreshing Quality' : 'Refresh Quality',
+                  tooltip: c.loading
+                      ? 'Refreshing Quality Checks'
+                      : 'Refresh Quality Checks',
                   onPressed: c.loading ? null : c.refresh,
                   icon: const Icon(Icons.refresh_rounded),
                 );
                 return desktop
                     ? MacosPageScaffold(
-                        title: 'Quality',
+                        title: 'Quality Checks',
                         description: 'Evaluation outcomes and release evidence',
                         icon: Icons.fact_check_outlined,
                         actions: [refresh],
@@ -216,7 +220,7 @@ class _QualityWorkspaceViewState extends State<QualityWorkspaceView> {
                       )
                     : Scaffold(
                         appBar: AppBar(
-                          title: const Text('Quality'),
+                          title: const Text('Quality Checks'),
                           actions: [refresh],
                         ),
                         body: content,
