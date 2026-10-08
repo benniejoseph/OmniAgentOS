@@ -3,7 +3,7 @@ import { OPERATION_QUEUE_LEASE_SECONDS, WORKFLOW_DRAIN_LIMIT } from "@/lib/confi
 import { RunBudgetExceededError } from "@/lib/runs/budgets";
 import {
   getDatabaseTenantContext,
-  runWithDatabaseTenantScope,
+  runWithDatabaseActorScope,
 } from "@/lib/db/client";
 import {
   cancelOperationJobByDedupeKey,
@@ -188,7 +188,9 @@ export function processWorkflowQueue(
     getDatabaseTenantContext() ||
     process.env.OMNIAGENT_DEFAULT_TENANT ||
     "default";
-  return runWithDatabaseTenantScope(tenantId, () =>
+  // A delivery restores its actor from the stored execution authority. Never
+  // inherit the browser or worker actor that happened to wake this queue.
+  return runWithDatabaseActorScope(tenantId, [], () =>
     processWorkflowQueueInScope({ ...input, tenantId }),
   );
 }
