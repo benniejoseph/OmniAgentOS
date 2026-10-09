@@ -37,10 +37,15 @@ export function ResearchOptionsEditor({ value, disabled, onChange }: {
   return <fieldset className={styles.options} disabled={disabled}>
     <legend>Research depth</legend>
     <div className={styles.depthChoices}>
-      {(["quick", "deep"] as const).map((depth) => <label key={depth}>
-        <input type="radio" name={`${id}-depth`} value={depth} checked={value.depth === depth} onChange={() => onChange({ ...value, depth })} />
+      {(["quick", "deep"] as const).map((depth) => <button
+        key={depth}
+        type="button"
+        aria-pressed={value.depth === depth}
+        onClick={() => { if (value.depth !== depth) onChange({ ...value, depth }); }}
+      >
+        <span className={styles.depthIndicator} aria-hidden="true" />
         <span><strong>{depth === "quick" ? "Quick" : "Deep"}</strong><span>{depth === "quick" ? "A focused report in this conversation." : "Broader research in the background, with a saved plan and progress."}</span></span>
-      </label>)}
+      </button>)}
     </div>
     <details className={styles.brief}>
       <summary>Edit research brief <span className={styles.optional}>Optional</span></summary>
