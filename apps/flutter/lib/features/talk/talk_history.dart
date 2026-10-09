@@ -351,6 +351,29 @@ mixin TalkHistoryControllerMixin on ChangeNotifier {
     if (id != null) await openThread(id);
   }
 
+  /// Voice captions are persisted outside the live command stream. Refresh
+  /// their retained projection only if no newer conversation action has been
+  /// admitted while its final saves settle. The composer draft is not touched.
+  Future<void> refreshVoiceHistoryAfter(
+    String conversationId,
+    Future<void> captionsSettled,
+  ) async {
+    if (_historyDisposed ||
+        threadId != conversationId ||
+        historyInteractionBusy)
+      return;
+    final generation = _threadLoadGeneration;
+    await captionsSettled;
+    bool canAdopt() =>
+        !_historyDisposed &&
+        threadId == conversationId &&
+        !historyInteractionBusy;
+    if (!canAdopt() || generation != _threadLoadGeneration) return;
+    // openThread also checks its own generation after loading: a new command,
+    // thread selection, call or disposed owner invalidates an in-flight read.
+    await openThread(conversationId, canAdopt: canAdopt);
+  }
+
   void newConversation() {
     if (historyInteractionBusy || _historyDisposed) return;
     _threadLoadGeneration += 1;

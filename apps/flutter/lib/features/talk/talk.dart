@@ -5234,6 +5234,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     final consent = widget.ambientConsent;
     final controller = widget.controllerResolver?.call() ?? widget.controller;
     final selection = _voiceSelection(controller);
+    _invalidateCompanionHome();
     setState(() {
       _startingConversation = true;
       recordingError = null;
@@ -5275,6 +5276,11 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
         onConversationBound: (id) {
           _voiceBoundThread = id;
           controller.adoptConversationThreadId(id);
+        },
+        onConversationEnded: (id, captionsSettled) {
+          // This owner-scoped controller outlives the HUD. Its history guard
+          // refuses disposal, another thread and any newer admitted work.
+          unawaited(controller.refreshVoiceHistoryAfter(id, captionsSettled));
         },
         delegate:
             (request, turnId, sessionId, conversationId, pinnedContext) async {
