@@ -93,6 +93,10 @@ class VoiceConversationController extends ChangeNotifier {
         _ => false,
       };
   bool get microphoneActive => active && !muted && _microphone != null;
+
+  /// A presentation signal from the provider's actual speech events, not an
+  /// amplitude estimate. Muting capture immediately removes speech activity.
+  bool get userSpeaking => microphoneActive && _userSpeaking;
   bool get ready => active && phase != VoiceConversationPhase.connecting;
   bool _current(int generation) =>
       !_disposed && !_ending && generation == _generation;
@@ -367,6 +371,7 @@ class VoiceConversationController extends ChangeNotifier {
   void setMuted(bool value) {
     if (!ready) return;
     muted = value;
+    if (value) _userSpeaking = false;
     for (final track in _microphone?.getAudioTracks() ?? <MediaStreamTrack>[]) {
       track.enabled = !value;
     }

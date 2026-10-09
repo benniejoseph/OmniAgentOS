@@ -2141,8 +2141,7 @@ private final class DesktopHostController: NSObject {
   private static let regularWindowMinimumSize = NSSize(width: 1_024, height: 700)
   private static let quickEntryWindowMinimumSize = NSSize(width: 680, height: 320)
   private static let quickEntryWindowSize = NSSize(width: 760, height: 400)
-  private static let ambientVoiceWindowMinimumSize = NSSize(width: 520, height: 160)
-  private static let ambientVoiceWindowSize = NSSize(width: 680, height: 178)
+  private static let ambientVoiceWindowSize = NSSize(width: 400, height: 280)
   private static let appGroupIdentifier = "group.app.omniagent.omniagent"
   private static let sharedCaptureInbox = "ShareInbox"
   private static let sharedCaptureManifest = "manifest.json"
@@ -2327,8 +2326,23 @@ private final class DesktopHostController: NSObject {
         }
         result(nil)
       case "showAmbientVoicePresentation":
+        let options = call.arguments as? [String: Any]
+        let appearance = options?["appearance"] as? String ?? "companion"
+        let width = (options?["width"] as? NSNumber)?.doubleValue ?? Double(Self.ambientVoiceWindowSize.width)
+        let height = (options?["height"] as? NSNumber)?.doubleValue ?? Double(Self.ambientVoiceWindowSize.height)
+        let reduceMotion = options?["reduceMotion"] as? Bool ?? false
+        guard ["companion", "perch"].contains(appearance),
+              width.isFinite, height.isFinite,
+              (300...620).contains(width), (108...760).contains(height) else {
+          result(FlutterError(code: "invalid_voice_presentation", message: "The voice window appearance is unavailable.", details: nil))
+          return
+        }
         DispatchQueue.main.async {
-          self.showAmbientVoiceWindow()
+          self.showAmbientVoiceWindow(
+            appearance: appearance,
+            size: NSSize(width: width, height: height),
+            reduceMotion: reduceMotion
+          )
         }
         result(nil)
       case "requestRemoteNotifications":
@@ -3318,7 +3332,7 @@ private final class DesktopHostController: NSObject {
     focus(window)
   }
 
-  private func showAmbientVoiceWindow() {
+  private func showAmbientVoiceWindow(appearance: String, size: NSSize, reduceMotion: Bool) {
     dispatchPrecondition(condition: .onQueue(.main))
 
     guard let window = window ?? NSApp.windows.first(where: { $0 is MainFlutterWindow }) else {
@@ -3327,42 +3341,56 @@ private final class DesktopHostController: NSObject {
     }
 
     self.window = window
+    let wasPresented = isAmbientVoicePresented
+    let previousFrame = window.frame
     if !isQuickEntryPresented {
       regularWindowFrame = window.frame
     }
     isQuickEntryPresented = true
     isAmbientVoicePresented = true
-    window.minSize = Self.ambientVoiceWindowMinimumSize
+    window.minSize = size
     window.level = .floating
     window.collectionBehavior.insert(.fullScreenAuxiliary)
     window.styleMask.insert(.fullSizeContentView)
+    window.styleMask.remove(.resizable)
     window.titleVisibility = .hidden
     window.titlebarAppearsTransparent = true
     window.isMovableByWindowBackground = true
     window.isOpaque = false
     window.backgroundColor = .clear
-    window.hasShadow = true
+    (window.contentViewController as? FlutterViewController)?.backgroundColor = .clear
+    let isPerch = appearance == "perch"
+    window.hasShadow = !isPerch
     window.contentView?.wantsLayer = true
-    window.contentView?.layer?.cornerRadius = 30
-    window.contentView?.layer?.masksToBounds = true
+    window.contentView?.layer?.cornerRadius = isPerch ? 0 : 20
+    window.contentView?.layer?.masksToBounds = !isPerch
     for type in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
       window.standardWindowButton(type)?.isHidden = true
     }
 
     let visibleFrame = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame
     if let visibleFrame {
-      let x = visibleFrame.maxX - Self.ambientVoiceWindowSize.width - 28
-      let y = visibleFrame.minY + 28
-      window.setFrame(
-        NSRect(origin: NSPoint(x: x, y: y), size: Self.ambientVoiceWindowSize),
-        display: true,
-        animate: window.isVisible
-      )
+      // Preserve the lower-right anchor after a drag, caption expansion or
+      // appearance change. Only initial presentation chooses a screen corner.
+      let desiredX = wasPresented ? previousFrame.maxX - size.width : visibleFrame.maxX - size.width - 28
+      let desiredY = wasPresented ? previousFrame.minY : visibleFrame.minY + 28
+      let x = max(visibleFrame.minX, min(desiredX, visibleFrame.maxX - size.width))
+      let y = max(visibleFrame.minY, min(desiredY, visibleFrame.maxY - size.height))
+      let frame = NSRect(origin: NSPoint(x: x, y: y), size: size)
+      if wasPresented && window.isVisible && !reduceMotion && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+        NSAnimationContext.runAnimationGroup { context in
+          context.duration = 0.24
+          window.animator().setFrame(frame, display: true)
+        }
+      } else {
+        window.setFrame(frame, display: true)
+      }
     } else {
-      window.setContentSize(Self.ambientVoiceWindowSize)
-      window.center()
+      window.setContentSize(size)
+      if !wasPresented { window.center() }
     }
-    focus(window)
+    // A live status or settings change must not steal focus from the user's work.
+    if !wasPresented { focus(window) }
   }
 
   private func restoreAmbientWindowChrome(_ window: NSWindow) {
@@ -3371,6 +3399,7 @@ private final class DesktopHostController: NSObject {
     // Restore the shared Asael chrome instead of inventing a second "normal"
     // titlebar state when the HUD closes or hands off to Quick Entry.
     configureAsaelWindowChrome(window, role: .main)
+    (window.contentViewController as? FlutterViewController)?.backgroundColor = .windowBackgroundColor
     window.isMovableByWindowBackground = false
     window.contentView?.layer?.cornerRadius = 0
     window.contentView?.layer?.masksToBounds = false

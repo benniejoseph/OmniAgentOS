@@ -11,6 +11,7 @@ import {
   COMPANION_DESTINATIONS, COMPANION_INTENSITIES, COMPANION_MOTION, effectiveCompanionMotion,
   type CompanionPreferences as Preferences,
 } from "@/lib/companion/model";
+import { VoiceAppearancePicker } from "./voice/voice-appearance-picker";
 import styles from "./companion-preferences.module.css";
 
 const intensityLabels = { quiet: "Quiet", balanced: "Balanced", expressive: "Expressive" } as const;
@@ -205,6 +206,7 @@ function ScopedCompanionPreferences({ tenantId, actorId, blocked, checkAccess }:
     <p className={styles.support} role="status">{blocked || (loading ? current ? "Refreshing the saved snapshot. Your draft is retained." : "Loading Companion preferences…" : current ? `${fresh ? "Saved snapshot" : "Last loaded snapshot"} · revision ${current.snapshot.revision}${current.snapshot.persisted ? "" : " · defaults have not been saved"}` : "Preferences have not been loaded.")}</p>
     {blocked ? <button className={styles.button} type="button" onClick={checkAccess}>Check workspace access</button> : null}
     {readError ? <p className={styles.error} role="alert">{readError}</p> : null}
+    <VoiceAppearancePicker owner={{ tenantId, actorId }} disabled={Boolean(blocked)} />
     {!draft ? <p className={styles.empty}>The preference form becomes available after its saved state is confirmed.</p> : <>
       <div className={styles.layout}>
         <div className={styles.form}>
@@ -215,7 +217,7 @@ function ScopedCompanionPreferences({ tenantId, actorId, blocked, checkAccess }:
           <label className={styles.choice}><input type="checkbox" checked={draft.visible} disabled={Boolean(blocked)} onChange={(event) => edit({ visible: event.target.checked })} /><span>Show Companion character</span></label>
           <fieldset className={styles.fieldset} disabled={Boolean(blocked)}><legend>Visual motion</legend>
             <div className={styles.options}>{COMPANION_MOTION.map((value) => <label className={styles.choice} key={value}><input type="radio" name="companion-motion" value={value} checked={draft.motion === value} onChange={() => edit({ motion: value })} /><span>{motionLabels[value]}</span></label>)}</div>
-            <p className={styles.support}>With reviewed artwork, Balanced reacts to verified results; Expressive also reacts to listening, speaking and work. Quiet, Reduced and Off stay still. Your device’s reduced motion setting is always respected. Motion and visibility do not turn audio on.</p>
+            <p className={styles.support}>During voice conversations, Balanced and Expressive react to listening, thinking and speaking. Elsewhere, Balanced reacts to verified results; Expressive also reacts to active work. Quiet, Reduced and Off stay still. Your device’s reduced motion setting is always respected. Motion and visibility do not turn audio on.</p>
           </fieldset>
           <label className={styles.field}><span>Default destination</span><select value={draft.defaultDestination} disabled={Boolean(blocked)} onChange={(event) => edit({ defaultDestination: event.target.value as Preferences["defaultDestination"] })}>{COMPANION_DESTINATIONS.map((value) => <option key={value} value={value}>{destinationLabels[value]}</option>)}</select></label>
         </div>

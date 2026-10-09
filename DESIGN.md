@@ -130,6 +130,31 @@ The macOS route families are:
 - Repeated lists do not animate every row on every refresh.
 - Animations stop when offscreen, avoid blur filters and layout thrash, and collapse to crossfades or instant changes when reduced motion is enabled.
 
+### Voice companion
+
+Voice has two owner-selected appearances: **Companion**, a compact dock with a
+readable Scout face, short caption, and Mute/End controls; and **Perch**, a larger
+free-standing Scout with a temporary caption and the same discoverable controls.
+The choice lives under Settings → Companion → Voice appearance. It is saved for
+the current account on this device; changing it never restarts the conversation.
+Companion is the default. Both appearances share the same voice controller,
+microphone state, agent context, and accessibility/motion preferences.
+
+Make Scout expressive through clear eyes, eyelids, mouth, head tilt and hand
+gestures at the actual display size. Listening and thinking get distinct finite
+entry gestures. During an explicitly started voice conversation, Balanced and
+Expressive allow these reactions; the speaking clip may repeat only while real
+reply audio is playing. Interruption immediately yields the speaking pose to
+listening. Quiet, Reduced, Off, system reduced motion and native low-power mode
+retain static state portraits. There is no continuous idle loop. A visible Mac
+voice companion must not disappear merely because another application has focus.
+
+Microphone-off status remains separate from speech output: ATLAS may continue
+speaking while input is muted. Ending a call is never a task-completion signal.
+The character supplements readable status and controls, which remain useful when
+the character is hidden. Captions use real conversation text; presentation never
+invents audio levels, progress percentages, or phoneme synchronization.
+
 ## Page Families
 
 - **Today:** a personal welcome and one useful next action, followed by the daily brief, focus list and agenda. Decisions and overdue work take priority. Collapse completed tasks and omit empty secondary sections; preserve visible unavailable states. ATLAS follows owner visibility and motion preferences.

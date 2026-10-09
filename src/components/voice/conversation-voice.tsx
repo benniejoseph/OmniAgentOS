@@ -1,10 +1,14 @@
 "use client";
 
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
-import { AudioLines, Loader2, Mic, MicOff, PhoneOff, ShieldCheck, Volume2, X } from "lucide-react";
+import { AudioLines, Check, Captions, Loader2, Mic, MicOff, PhoneOff, ShieldCheck, SlidersHorizontal, Volume2, X } from "lucide-react";
 import { clsx } from "clsx";
 import { requestCurrentMicrophone } from "./microphone-attempt";
 import { VoiceAtlasStage } from "./voice-mode";
+import { useWorkspaceSession } from "@/components/app-shell/session-context";
+import { CompanionAtlasPortrait, useCompanionAtlasPlayer } from "@/components/companion-atlas-player";
+import type { CompanionState } from "@/lib/companion/presentation";
+import { useVoiceAppearance } from "./use-voice-appearance";
 import { classifyRealtimeError, RealtimeConnectionError, realtimeConnectionFailure } from "@/lib/voice/realtime-error";
 import {
   voiceConversationStartResponseSchema,
@@ -90,6 +94,13 @@ export function ConversationVoice(props: Props) {
   const primaryRef = useRef<HTMLButtonElement>(null);
   const captionsEndRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
+  const [captionsOpen, setCaptionsOpen] = useState(false);
+  const [reaction, setReaction] = useState(0);
+  const { session: workspace, status: workspaceStatus } = useWorkspaceSession();
+  const owner = workspaceStatus === "ready" && workspace?.context?.tenantId && workspace.context.actorId
+    && (!workspace.authEnabled || workspace.authenticated) && props.isAuthorityCurrent()
+    ? { tenantId: workspace.context.tenantId, actorId: workspace.context.actorId } : undefined;
+  const { appearance, setAppearance, persistenceNotice, available: appearanceAvailable } = useVoiceAppearance(owner);
   const [phase, setPhase] = useState<Phase>("notice");
   const [muted, setMuted] = useState(false);
   const [microphoneOpen, setMicrophoneOpen] = useState(false);
@@ -105,6 +116,7 @@ export function ConversationVoice(props: Props) {
   const titleId = useId();
   const statusId = useId();
   const configurationKey = JSON.stringify([props.configuration, props.modelSelectionKey]);
+  const active = !["notice", "error"].includes(phase);
 
   function hasAuthority(call: Call) {
     return latest.current.authorityScope === call.scope && latest.current.isAuthorityCurrent();
@@ -228,11 +240,12 @@ export function ConversationVoice(props: Props) {
   useEffect(() => {
     if (!open) return;
     const overflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    primaryRef.current?.focus();
+    if (!active) document.body.style.overflow = "hidden";
+    primaryRef.current?.focus({ preventScroll: true });
     const keydown = (event: KeyboardEvent) => {
+      if (active && !dialogRef.current?.contains(document.activeElement)) return;
       if (event.key === "Escape") { event.preventDefault(); endCall(); }
-      if (event.key !== "Tab" || !dialogRef.current) return;
+      if (active || event.key !== "Tab" || !dialogRef.current) return;
       const items = Array.from(dialogRef.current.querySelectorAll<HTMLElement>('button:not([disabled]), a[href], summary, [tabindex="0"]'));
       const first = items[0];
       const last = items.at(-1);
@@ -240,9 +253,9 @@ export function ConversationVoice(props: Props) {
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
     };
     window.addEventListener("keydown", keydown);
-    return () => { document.body.style.overflow = overflow; window.removeEventListener("keydown", keydown); };
-  }, [open]);
-  useEffect(() => { captionsEndRef.current?.scrollIntoView({ block: "nearest" }); }, [captions]);
+    return () => { if (!active) document.body.style.overflow = overflow; window.removeEventListener("keydown", keydown); };
+  }, [open, active]);
+  useEffect(() => { captionsEndRef.current?.scrollIntoView({ block: "nearest" }); }, [captions, captionsOpen]);
 
   function updateCaption(caption: Caption, append = false) {
     setCaptions((previous) => {
@@ -328,6 +341,7 @@ export function ConversationVoice(props: Props) {
       call.userItemId = itemId;
       if (call.outputResponseId) interruptResponse(call, call.outputResponseId);
       setOutputActive(false);
+      setReaction((value) => value + 1);
       setPhase("listening");
     } else if (type === "input_audio_buffer.speech_stopped") {
       call.userSpeaking = false;
@@ -352,6 +366,7 @@ export function ConversationVoice(props: Props) {
     } else if (type === "output_audio_buffer.started") {
       call.outputResponseId = responseId;
       if (responseId && call.outputBlocked) call.interruptedResponses.add(responseId);
+      setReaction((value) => value + 1);
       setOutputActive(true); setPhase("speaking");
     } else if (type === "output_audio_buffer.stopped" && responseId) {
       call.drainedResponses.add(responseId);
@@ -533,18 +548,85 @@ export function ConversationVoice(props: Props) {
     setMuted(call.muted);
     setMicrophoneOpen(!call.muted && Boolean(call.stream?.getAudioTracks().some((track) => track.readyState === "live")));
   }
-  const active = !["notice", "error"].includes(phase);
   const busy = ["requesting", "connecting", "reconnecting"].includes(phase);
   const speaking = outputActive && !audioBlocked;
   const label = phase === "requesting" ? "Allow microphone access" : phase === "connecting" ? "Connecting" : phase === "reconnecting" ? "Reconnecting"
-    : phase === "error" ? "Voice paused" : muted ? "Microphone muted" : speaking ? `${agentName} is speaking` : phase === "thinking" ? "Thinking" : "Listening";
+    : phase === "error" ? "Voice paused" : speaking ? "Speaking" : phase === "thinking" ? "Thinking" : muted ? "Microphone off" : microphoneOpen ? "Listening" : "Ready";
+  const lastCaption = captions.at(-1);
+  const portraitState: CompanionState = phase === "error" || phase === "reconnecting" ? "blocked" : speaking ? "responding"
+    : busy || phase === "thinking" ? "working" : muted ? "paused" : microphoneOpen ? "listening" : "available";
   return <>
     <button ref={triggerRef} type="button" className={styles.trigger} disabled={props.disabled}
-      title={props.disabledReason || "Start a voice conversation"} aria-label={`Start voice conversation with ${props.agentName}`} aria-haspopup="dialog"
-      onClick={() => { props.onOpen?.(); setAgentName(props.agentName); setPhase("notice"); setError(""); setDetail(""); setOpen(true); }}>
+      title={props.disabledReason || (open ? "Voice conversation is open" : "Start a voice conversation")} aria-label={open ? "Voice conversation is open" : `Start voice conversation with ${props.agentName}`} aria-haspopup="dialog" aria-expanded={open}
+      onClick={() => { if (open) { primaryRef.current?.focus(); return; } props.onOpen?.(); setAgentName(props.agentName); setPhase("notice"); setError(""); setDetail(""); setOpen(true); }}>
       <AudioLines size={17} aria-hidden="true" />
     </button>
-    {open ? <div className={styles.backdrop}>
+    <audio ref={audioRef} autoPlay playsInline onPlaying={() => {
+      const call = callRef.current;
+      if (call) call.outputBlocked = false;
+      setAudioBlocked(false);
+    }} />
+    {open && active ? <div className={conversationStyles.presenceLayer}>
+      <section ref={dialogRef} className={conversationStyles.presence} role="region" aria-labelledby={titleId}
+        data-voice-phase={phase} data-voice-appearance={appearance}>
+        <h2 id={titleId} className="sr-only">Conversation with {agentName}</h2>
+        {captionsOpen ? <section className={conversationStyles.captionPanel} aria-label="Conversation captions">
+          <header><h3>Conversation</h3><button type="button" aria-label="Hide captions" onClick={() => setCaptionsOpen(false)}><X size={17} aria-hidden="true" /></button></header>
+          <div className={conversationStyles.captionScroll}>
+            {captions.length ? captions.map((caption) => <div key={caption.itemId} className={conversationStyles.caption} data-speaker={caption.role}>
+              <span>{caption.role === "user" ? "You" : agentName}</span><p>{caption.text}</p>
+            </div>) : <p className={conversationStyles.captionEmpty}>Your conversation will appear here as you speak.</p>}
+            <div ref={captionsEndRef} />
+          </div>
+        </section> : null}
+        <div className={conversationStyles.presenceToolbar}>
+          <button type="button" aria-label={captionsOpen ? "Hide captions" : "Show captions"} title={captionsOpen ? "Hide captions" : "Show captions"}
+            aria-pressed={captionsOpen} onClick={() => setCaptionsOpen((value) => !value)}><Captions size={17} aria-hidden="true" /></button>
+          <details className={conversationStyles.appearanceMenu}>
+            <summary aria-label="Voice appearance" title="Voice appearance"><SlidersHorizontal size={16} aria-hidden="true" /></summary>
+            <div className={conversationStyles.appearanceOptions} role="group" aria-label="Voice appearance">
+              <p>Voice appearance</p>
+              {(["companion", "perch"] as const).map((value) => <button key={value} type="button" disabled={!appearanceAvailable}
+                aria-pressed={appearance === value} onClick={(event) => { if (setAppearance(value)) event.currentTarget.closest("details")?.removeAttribute("open"); }}>
+                {value === "companion" ? "Companion" : "Perch"}{appearance === value ? <Check size={16} aria-hidden="true" /> : null}
+              </button>)}
+              <span role="status">{persistenceNotice || "Saved on this device"}</span>
+            </div>
+          </details>
+        </div>
+        <div className={conversationStyles.presenceBody}>
+          <ConversationPortrait scope={props.isAuthorityCurrent() ? props.authorityScope : undefined}
+            conversationId={callRef.current?.session?.conversationId || props.conversationId} state={portraitState} label={label} reaction={reaction} />
+          <div className={conversationStyles.presenceCopy}>
+            <div className={conversationStyles.presenceIdentity}><span>{agentName}</span>
+              <span className={conversationStyles.microphoneBadge} data-microphone-open={microphoneOpen} role="img" aria-label={`Microphone ${microphoneOpen ? "on" : "off"}`} title={`Microphone ${microphoneOpen ? "on" : "off"}`}>
+                {microphoneOpen ? <Mic size={12} aria-hidden="true" /> : <MicOff size={12} aria-hidden="true" />}{!microphoneOpen ? "Off" : null}
+              </span>
+            </div>
+            <p id={statusId} className={conversationStyles.presenceStatus} role="status">{label}</p>
+            <p className={conversationStyles.presenceCaption}>{busy ? phase === "requesting" ? "Allow the microphone to begin." : "Opening your conversation…"
+              : lastCaption?.text || (muted ? "You can still hear replies." : "Go ahead, I’m listening.")}</p>
+          </div>
+          <div className={conversationStyles.presenceControls}>
+            <button ref={primaryRef} type="button" disabled={busy} onClick={toggleMute} aria-pressed={muted}
+              className={conversationStyles.voiceControl} title={muted ? "Unmute microphone" : "Mute microphone"}>
+              {muted ? <Mic size={19} aria-hidden="true" /> : <MicOff size={19} aria-hidden="true" />}<span>{muted ? "Unmute" : "Mute"}</span>
+            </button>
+            <button type="button" className={clsx(conversationStyles.voiceControl, conversationStyles.endControl)} onClick={() => endCall()} title="End voice conversation">
+              <PhoneOff size={19} aria-hidden="true" /><span>End</span>
+            </button>
+          </div>
+        </div>
+        {audioBlocked || notice || approvalPending || historyWarning ? <div className={conversationStyles.presenceNotice}>
+          {audioBlocked ? <button type="button" onClick={() => {
+            void audioRef.current?.play().then(() => setAudioBlocked(false)).catch(() => setNotice("Your browser is blocking sound. Check the site's audio permission."));
+          }}><Volume2 size={16} aria-hidden="true" />Enable sound</button> : null}
+          {notice ? <p role="status">{notice}</p> : null}
+          {approvalPending ? <p>An action needs your review. <a href="/app/approvals" onClick={() => endCall()}>Open approvals</a></p> : null}
+          {historyWarning ? <p role="status">{historyWarning}</p> : null}
+        </div> : null}
+      </section>
+    </div> : open ? <div className={styles.backdrop}>
       <section ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby={titleId} aria-describedby={statusId}
         className={clsx(styles.dialog, conversationStyles.dialog)} data-voice-phase={phase}>
         <header className={styles.header}>
@@ -554,11 +636,7 @@ export function ConversationVoice(props: Props) {
           </span>
           <button type="button" className={styles.close} aria-label="End voice conversation" onClick={() => endCall()}><X size={18} aria-hidden="true" /></button>
         </header>
-        <audio ref={audioRef} autoPlay playsInline onPlaying={() => {
-          const call = callRef.current;
-          if (call) call.outputBlocked = false;
-          setAudioBlocked(false);
-        }} />
+
         <div className={styles.stage}>
           <VoiceAtlasStage scope={props.isAuthorityCurrent() ? props.authorityScope : undefined} conversationId={callRef.current?.session?.conversationId || props.conversationId}
             phase={phase === "notice" ? "consent" : phase === "error" ? "error" : speaking ? "replying" : phase === "thinking" ? "waiting" : busy ? "connecting" : "listening"}
@@ -604,6 +682,23 @@ export function ConversationVoice(props: Props) {
       </section>
     </div> : null}
   </>;
+}
+
+
+/** The open interruption microphone is independent of ATLAS's current response.
+ * Real voice phases choose expression; playback alone enables a speaking loop. */
+function ConversationPortrait({ scope, conversationId, state, label, reaction }: {
+  scope?: string; conversationId?: string; state: CompanionState; label: string; reaction: number;
+}) {
+  const presentation = { state, label, detail: "", work: { state, label, detail: "" } };
+  const { observationRef, portrait, showPortrait, motion, intensity, assetFailed } = useCompanionAtlasPlayer({
+    scope, conversationId, presentation, voice: true, reaction,
+  });
+  return <aside ref={observationRef} aria-hidden="true" className={conversationStyles.presenceMascot} hidden={!showPortrait}
+    data-companion-state={state} data-companion-motion={motion} data-companion-intensity={intensity}
+    data-voice-portrait={showPortrait ? "visible" : assetFailed ? "unavailable" : "hidden"}>
+    <CompanionAtlasPortrait {...portrait} className={conversationStyles.presencePortrait} size="100%" />
+  </aside>;
 }
 
 function safeId(value: unknown) { return typeof value === "string" && /^[A-Za-z0-9_-]{1,160}$/.test(value) ? value : undefined; }

@@ -1,5 +1,6 @@
 // Original ATLAS Scout vector rig. Run from any directory to author both deliveries.
-// Geometry, poses and keyframes are original. LottieFiles references inform gestures only.
+// Geometry, poses and keyframes are self-authored. No remote artwork is embedded.
+// Voice-presence revision: the approved 9 October study, adapted to finite clips.
 import { mkdir, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
@@ -8,18 +9,18 @@ const root = fileURLToPath(new URL('../../../../', import.meta.url));
 const web = resolve(root, 'public/companion/atlas-lottie');
 const native = resolve(root, 'apps/flutter/assets/companion/atlas-lottie');
 const states = ['available','listening','working','responding','needs_you','blocked','completed','paused'];
-const revision = 'atlas-scout-20261007';
+const revision = 'atlas-scout-20261009-voice';
 const palettes = {
-  light: { shell:'#FAF9F6', edge:'#DDD8D0', outline:'#827A70', face:'#242321', light:'#FAF9F6', gold:'#806019', shadow:'#242321', success:'#286243', warning:'#805814' },
-  dark: { shell:'#F4F1EA', edge:'#D9D4CB', outline:'#888980', face:'#191A1B', light:'#FAF9F6', gold:'#E2BD74', shadow:'#000000', success:'#91CFAC', warning:'#E7C37C' },
+  light: { shell:'#FAF9F6', edge:'#DDD8D0', rim:'#BDB6A9', outline:'#827A70', face:'#242321', faceEdge:'#4D4D46', light:'#FAF9F6', gold:'#806019', shadow:'#242321', success:'#286243', warning:'#805814' },
+  dark: { shell:'#F4F1EA', edge:'#D9D4CB', rim:'#B7B0A2', outline:'#888980', face:'#191A1B', faceEdge:'#424640', light:'#FAF9F6', gold:'#E2BD74', shadow:'#000000', success:'#91CFAC', warning:'#E7C37C' },
 };
 const fixed = (k) => ({a:0,k});
 const color = (hex) => [...[1,3,5].map((n)=>parseInt(hex.slice(n,n+2),16)/255),1];
 const vector = (value) => Array.isArray(value) ? value : [value];
-const keys = (values) => ({a:1,k:values.map(([t,value],index)=>({t,s:vector(value),...(index<values.length-1?{e:vector(values[index+1][1]),i:{x:[.25],y:[1]},o:{x:[.25],y:[0]}}:{})}))});
+const keys = (values) => ({a:1,k:values.map(([t,value],index)=>({t,s:vector(value),...(index<values.length-1?{e:vector(values[index+1][1]),i:{x:[.22],y:[1]},o:{x:[.3],y:[0]}}:{})}))});
 const path = (v,c=false,i=v.map(()=>[0,0]),o=v.map(()=>[0,0])) => ({v,i,o,c});
 function roundedRect(x,y,w,h,r) {
-  const l=x-w/2, t=y-h/2, right=x+w/2, b=y+h/2, k=.55228475*r;
+  const l=x-w/2,t=y-h/2,right=x+w/2,b=y+h/2,k=.55228475*r;
   return path([[l+r,t],[right-r,t],[right,t+r],[right,b-r],[right-r,b],[l+r,b],[l,b-r],[l,t+r]],true,
     [[-k,0],[0,0],[0,-k],[0,0],[k,0],[0,0],[0,k],[0,0]],
     [[0,0],[k,0],[0,0],[0,k],[0,0],[-k,0],[0,0],[0,-k]]);
@@ -28,103 +29,145 @@ const ellipse = (x,y,w,h) => ({ellipse:[w,h],position:[x,y]});
 const outline = (points,c=false,i,o) => ({path:path(points,c,i,o)});
 const rect = (x,y,w,h,r) => ({path:roundedRect(x,y,w,h,r)});
 const shape = (name,geometry,fill,stroke=null,width=1,opacity=100) => ({name,geometry,fill,stroke,width,opacity});
-const smile = outline([[-11,15],[0,21],[11,15]],false,[[0,0],[-5,0],[-2,4]],[[2,4],[5,0],[0,0]]);
-const flatMouth = outline([[-8,19],[8,19]]);
-const headShell = outline([[-79,-5],[-61,-47],[3,-58],[62,-44],[80,-4],[74,32],[48,54],[-51,51],[-77,27]],true,
-  [[0,-18],[-14,10],[-24,-1],[-17,-12],[-1,-18],[5,-9],[19,-1],[22,6],[7,13]],
-  [[0,14],[14,-10],[24,1],[12,9],[1,17],[-8,16],[-24,2],[-19,-6],[-6,-11]]);
-const crest = outline([[-28,-48],[-24,-70],[-11,-65],[4,-66],[0,-50]],true,
-  [[-1,5],[-6,-2],[-6,-3],[-5,-2],[2,-6]],[[1,-7],[5,1],[6,2],[-1,6],[-7,0]]);
+const gentleMouth = outline([[-9,-1],[0,2],[9,-1]],false,[[0,0],[-4,0],[-3,2]],[[3,2],[4,0],[0,0]]);
+const listeningMouth = outline([[-6,0],[6,0]]);
+const headShell = outline([[0,-59],[68,-43],[87,-12],[81,32],[30,57],[-29,57],[-80,31],[-87,-9],[-68,-43]],true,
+  [[-28,0],[-16,-14],[0,-13],[5,-10],[20,-2],[20,2],[7,16],[0,19],[-15,12]],
+  [[28,0],[17,14],[0,20],[-7,14],[-20,2],[-22,-2],[-5,-13],[0,-16],[15,-12]]);
+const crest = outline([[-7,-56],[-3,-68],[1,-72],[19,-72],[12,-66],[5,-66],[1,-56]],true);
 
 function pose(state) {
   return {
-    head: state==='listening' ? -7 : state==='blocked' ? 5 : state==='needs_you' ? -3 : 0,
-    left: state==='completed' ? 133 : state==='responding' ? 43 : 14,
-    right: state==='listening' ? -145 : state==='needs_you' ? -138 : state==='completed' ? -133 : state==='responding' ? -47 : -14,
-    look: state==='working' ? [3,6] : state==='listening' ? [-4,0] : state==='needs_you' ? [0,-2] : [0,0],
-    eyes: state==='paused' ? 48 : 100,
+    head: state==='listening' ? -8 : state==='working' ? 4 : state==='blocked' ? 4 : state==='needs_you' ? -4 : state==='responding' ? -2 : 0,
+    left: state==='completed' ? 112 : state==='responding' ? 48 : state==='working' ? -16 : 12,
+    right: state==='listening' ? -151 : state==='needs_you' ? -137 : state==='completed' ? -116 : state==='responding' ? -59 : state==='working' ? 28 : -12,
+    look: state==='working' ? [5,-3] : state==='listening' ? [-4,-1] : state==='needs_you' ? [0,-3] : [0,0],
+    leftEye: state==='paused' ? 68 : state==='blocked' ? 76 : state==='working' ? 86 : 100,
+    rightEye: state==='paused' ? 68 : state==='blocked' ? 90 : state==='listening' ? 108 : 100,
   };
 }
 function rig(state,theme) {
-  const p=palettes[theme], rest=pose(state), frames=36, end=frames-1;
+  const p=palettes[theme],rest=pose(state),frames=36,end=frames-1;
   const rows=[];
   const add=(name,items,position=[0,0],extra={})=>{
     const row={name,items,position,rotation:0,scale:[100,100,100],...extra};
     row.id=rows.length+1;rows.push(row);return row.id;
   };
-  // Every child uses parent transforms. A face turn carries its eyes, crest and
-  // mouth together; hands articulate at the shoulder instead of sliding apart.
-  add('Ground shadow',[shape('Soft footprint',ellipse(0,0,96,13),p.shadow,null,0,10)],[128,231]);
-  const body=add('Scout root',[],[128,132]);
-  add('Left boot',[shape('Boot',rect(0,0,28,15,7),p.gold)],[-22,84],{parent:body});
-  add('Right boot',[shape('Boot',rect(0,0,28,15,7),p.gold)],[22,84],{parent:body});
-  const arm=(side,angle)=>add(`${side} hand`,[
-    shape('Sleeve',rect(0,16,21,42,10),p.edge,p.outline,1.8),
-    shape('Palm',ellipse(0,35,26,23),p.shell,p.outline,1.8),
-    shape('Cuff',rect(0,26,20,6,3),p.gold),
-  ],[side==='Left'?-52:52,26],{parent:body,rotation:angle});
+  add('Ground shadow',[shape('Quiet footprint',ellipse(0,0,113,10),p.shadow,null,0,10)],[128,241]);
+  const body=add('Scout root',[],[128,139]);
+  for(const [side,x] of [['Left',-23],['Right',23]])add(`${side} foot`,[
+    shape('Foot shell',rect(0,0,30,12,6),p.edge,p.outline,1.2),
+    shape('Sole seam',outline([[-10,3],[10,3]]),null,p.rim,1.3),
+  ],[x,90],{parent:body});
+  const arm=(side,angle)=>add(`${side} articulated hand`,[
+    shape('Shoulder joint',ellipse(0,3,18,18),p.face),
+    shape('Arm shell',rect(0,17,19,31,8),p.edge,p.outline,1.3),
+    shape('Arm highlight',outline([[-5,6],[-5,24]]),null,p.shell,2),
+    shape('Palm',rect(0,40,23,28,9),p.shell,p.outline,1.3),
+    shape('Thumb',ellipse(side==='Left'?-11:11,38,9,14),p.shell,p.outline,1.2),
+    shape('Palm cap',rect(0,37,19,17,7),p.shell),
+    shape('Finger joint one',outline([[-4,48],[-4,53]]),null,p.rim,1.25),
+    shape('Finger joint two',outline([[3,48],[3,53]]),null,p.rim,1.25),
+    shape('Fine gold cuff',rect(0,28,19,4,2),p.gold),
+  ],[side==='Left'?-60:60,23],{parent:body,rotation:angle});
   const left=arm('Left',rest.left),right=arm('Right',rest.right);
-  add('Body',[shape('Body shell',rect(0,0,75,67,28),p.shell,p.outline,2),shape('Lower contour',outline([[-23,19],[0,25],[23,19]],false,[[0,0],[-10,0],[-4,4]],[[4,4],[10,0],[0,0]]),null,p.edge,3)],[0,53],{parent:body});
-  add('Collar',[shape('Soft collar',rect(0,0,59,15,7),p.face)],[0,18],{parent:body});
-  const head=add('Head',[
-    shape('Gold crest',crest,p.gold),
-    shape('Helmet shell',headShell,p.shell,p.outline,2),
-    shape('Lower shell contour',outline([[-59,34],[-20,44],[33,42],[58,31]],false,[[0,0],[-14,-1],[-17,3],[-7,7]],[[8,7],[17,2],[14,-3],[0,0]]),null,p.edge,4),
-    shape('Dark face',rect(0,2,129,76,29),p.face),
-    shape('Brow highlight',outline([[-46,-37],[-11,-45],[25,-41]],false,[[0,0],[-11,-1],[-12,-4]],[[10,-6],[11,1],[0,0]]),null,'#FFFFFF',3,70),
-  ],[0,-39],{parent:body,rotation:rest.head});
+  add('Torso',[
+    shape('Torso shell',rect(0,0,85,78,28),p.shell,p.outline,1.5),
+    shape('Lower shell contour',outline([[-29,24],[0,31],[29,24]],false,[[0,0],[-12,0],[-5,4]],[[5,4],[12,0],[0,0]]),null,p.edge,3.2),
+    shape('Chest inset',rect(0,5,58,49,18),p.face),
+    shape('Chest rim',outline([[-20,-11],[0,-16],[20,-11]],false,[[0,0],[-8,0],[-4,-3]],[[4,-3],[8,0],[0,0]]),null,p.faceEdge,1.5),
+  ],[0,53],{parent:body});
+  add('Collar',[
+    shape('Neck',rect(0,-1,38,22,8),p.rim),
+    shape('Collar',rect(0,5,55,13,6),p.edge),
+    shape('Collar seam',outline([[-18,7],[18,7]]),null,p.outline,1),
+  ],[0,17],{parent:body});
+  const head=add('Sculpted head',[
+    shape('Fine gold crest',crest,p.gold),
+    shape('Left temple',rect(-87,3,9,29,4),p.rim),
+    shape('Right temple',rect(87,3,9,29,4),p.rim),
+    shape('Ivory helmet shell',headShell,p.shell,p.outline,1.5),
+    shape('Lower shell bevel',outline([[-68,35],[-29,49],[27,50],[69,34]],false,[[0,0],[-14,-1],[-19,3],[-10,9]],[[9,9],[17,2],[17,-2],[0,0]]),null,p.edge,5),
+    shape('Face inset rim',rect(0,4,155,91,29),p.rim),
+    shape('Charcoal face',rect(0,5,151,87,27),p.face),
+    shape('Visor upper bevel',outline([[-53,-27],[0,-34],[52,-27]],false,[[0,0],[-19,0],[-13,-6]],[[13,-6],[19,0],[0,0]]),null,p.faceEdge,1.35),
+    shape('Shell highlight',outline([[-64,-38],[-22,-49],[28,-46]],false,[[0,0],[-15,-1],[-17,-4]],[[12,-8],[17,1],[0,0]]),null,'#FFFFFF',2,60),
+  ],[0,-46],{parent:body,rotation:rest.head});
   const [lookX,lookY]=rest.look;
-  const eye=(side)=>add(`${side} eye`,[shape('Eye',rect(0,0,14,23,7),p.light)],[lookX+(side==='Left'?-26:26),lookY-2],{parent:head,scale:[100,rest.eyes,100]});
-  const leftEye=eye('Left'),rightEye=eye('Right');
-  const mouth=add('Expression',[
-    shape('Mouth',state==='paused'||state==='blocked'?flatMouth:state==='responding'?ellipse(0,19,15,11):smile,state==='responding'?p.light:null,state==='responding'?null:p.light,3.5),
-  ],[lookX,lookY],{parent:head});
-  const badgeItems=state==='completed' ? [shape('Confirmed check',outline([[-8,0],[-2,6],[9,-7]]),null,p.success,4)]
-    : state==='paused' ? [shape('Pause left',rect(-4,0,3.5,14,1.7),p.gold),shape('Pause right',rect(4,0,3.5,14,1.7),p.gold)]
-    : state==='blocked'||state==='needs_you' ? [shape('Attention stem',rect(0,-3,4,12,2),p.warning),shape('Attention point',ellipse(0,8,4,4),p.warning)]
-    : [shape('Scout badge',rect(0,0,14,14,5),p.gold),shape('Badge light',rect(0,-1,4,6,2),p.shell)];
-  const badge=add('Chest badge',badgeItems,[0,52],{parent:body});
-  if(state==='listening') add('Listening mark',[shape('Listening arc',outline([[0,-11],[5,0],[0,11]],false,[[0,0],[0,-5],[3,-3]],[[3,3],[0,5],[0,0]]),null,p.gold,3)],[29,92]);
+  const eye=(side,height)=>add(`${side} eye`,[
+    shape('Eye light',rect(0,0,17,27,8.5),p.light),
+    shape('Eye highlight',outline([[-3,-9],[0,-10]]),null,'#FFFFFF',1.1,72),
+  ],[lookX+(side==='Left'?-30:30),lookY-1],{parent:head,scale:[100,height,100]});
+  const leftEye=eye('Left',rest.leftEye),rightEye=eye('Right',rest.rightEye);
+  const lid=(side)=>add(`${side} expressive eyelid`,[
+    shape('Upper lid',rect(0,0,22,6,3),p.face),
+  ],[lookX+(side==='Left'?-30:30),lookY-16],{parent:head,rotation:state==='blocked'?(side==='Left'?12:-6):state==='working'?(side==='Left'?-8:5):0});
+  const leftLid=lid('Left'),rightLid=lid('Right');
+  const mouthShape=state==='responding'?ellipse(0,0,13,8):['paused','blocked','listening'].includes(state)?listeningMouth:gentleMouth;
+  const mouth=add('Mouth articulation',[
+    shape('Mouth',mouthShape,state==='responding'?p.light:null,state==='responding'?null:p.light,2.5),
+  ],[lookX,24+lookY],{parent:head});
+  const badgeItems=state==='completed' ? [shape('Confirmed check',outline([[-9,0],[-3,6],[10,-8]]),null,p.success,3.6)]
+    : state==='paused' ? [shape('Pause left',rect(-4,0,3,12,1.5),p.gold),shape('Pause right',rect(4,0,3,12,1.5),p.gold)]
+    : state==='blocked'||state==='needs_you' ? [shape('Attention stem',rect(0,-3,3.5,11,1.75),p.warning),shape('Attention point',ellipse(0,7,3.5,3.5),p.warning)]
+    : [shape('Scout insignia',outline([[-8,4],[-2,-6],[3,-6],[9,4]]),null,p.gold,2),shape('Insignia bridge',outline([[-5,0],[5,0]]),null,p.gold,1.6)];
+  const badge=add('Chest insignia',badgeItems,[0,57],{parent:body});
   if(state==='completed') {
-    add('Left acknowledgment',[shape('Glint',outline([[0,-7],[0,7]]),null,p.gold,2.5),shape('Glint cross',outline([[-7,0],[7,0]]),null,p.gold,2.5)],[38,66],{opacityFrames:[[0,0],[8,100],[23,100],[end,0]]});
-    add('Right acknowledgment',[shape('Glint',outline([[0,-5],[0,5]]),null,p.gold,2),shape('Glint cross',outline([[-5,0],[5,0]]),null,p.gold,2)],[217,79],{opacityFrames:[[0,0],[11,100],[25,100],[end,0]]});
+    add('Left acknowledgment',[shape('Glint',outline([[0,-5],[0,5]]),null,p.gold,2),shape('Glint cross',outline([[-5,0],[5,0]]),null,p.gold,2)],[29,73],{opacityFrames:[[0,0],[8,100],[23,100],[end,0]]});
+    add('Right acknowledgment',[shape('Glint',outline([[0,-4],[0,4]]),null,p.gold,1.8),shape('Glint cross',outline([[-4,0],[4,0]]),null,p.gold,1.8)],[227,81],{opacityFrames:[[0,0],[11,100],[25,100],[end,0]]});
   }
   const at=(id)=>rows[id-1];
   const turn=(id,values)=>at(id).rotationFrames=values;
   const move=(id,values)=>at(id).positionFrames=values;
   const scale=(id,values)=>at(id).scaleFrames=values;
-  const blink=(id,start=23)=>scale(id,[[0,[100,rest.eyes,100]],[start,[100,rest.eyes,100]],[start+2,[100,8,100]],[start+4,[100,rest.eyes,100]],[end,[100,rest.eyes,100]]]);
-  blink(leftEye);blink(rightEye);
+  const blink=(id,height,start=25)=>scale(id,[[0,[100,height,100]],[start,[100,height,100]],[start+2,[100,8,100]],[start+4,[100,height,100]],[end,[100,height,100]]]);
+  // The final authored transform is also the exact fallback pose. No state loops.
+  if(state!=='paused'){blink(leftEye,rest.leftEye);blink(rightEye,rest.rightEye);}
   if(state==='available') {
-    turn(right,[[0,-14],[8,-141],[13,-119],[18,-145],[23,-121],[end,-14]]);
-    turn(head,[[0,0],[8,-4],[23,-4],[end,0]]);
+    turn(right,[[0,-12],[8,-117],[14,-103],[20,-123],[26,-108],[end,rest.right]]);
+    turn(head,[[0,0],[8,-4],[22,-4],[end,rest.head]]);
+    scale(leftEye,[[0,[100,100,100]],[8,[100,110,100]],[21,[100,110,100]],[27,[100,8,100]],[31,[100,100,100]],[end,[100,100,100]]]);
+    scale(rightEye,[[0,[100,100,100]],[8,[100,110,100]],[21,[100,110,100]],[27,[100,8,100]],[31,[100,100,100]],[end,[100,100,100]]]);
   } else if(state==='listening') {
-    turn(head,[[0,0],[10,-9],[24,-9],[end,rest.head]]);
-    turn(right,[[0,-20],[11,-151],[25,-151],[end,rest.right]]);
+    // Eye focus leads the head; the raised open palm reads at Perch size.
+    move(leftEye,[[0,[-30,-1]],[4,[-34,-2]],[end,[-34,-2]]]);
+    move(rightEye,[[0,[30,-1]],[4,[26,-2]],[end,[26,-2]]]);
+    turn(head,[[0,0],[10,-10],[25,-10],[end,rest.head]]);
+    turn(right,[[0,-18],[12,-157],[25,-157],[end,rest.right]]);
+    turn(left,[[0,12],[12,19],[end,rest.left]]);
   } else if(state==='working') {
-    turn(head,[[0,0],[8,5],[19,-3],[28,2],[end,0]]);
-    move(leftEye,[[0,[-26,-2]],[8,[-23,4]],[20,[-29,4]],[end,[-23,4]]]);
-    move(rightEye,[[0,[26,-2]],[8,[29,4]],[20,[23,4]],[end,[29,4]]]);
-    turn(left,[[0,14],[8,-25],[16,-15],[24,-25],[end,14]]);
-    turn(right,[[0,-14],[8,25],[16,15],[24,25],[end,-14]]);
+    // One focused glance between two work areas, then a readable held pose.
+    turn(head,[[0,0],[9,5],[19,-3],[29,5],[end,rest.head]]);
+    move(leftEye,[[0,[-30,-1]],[5,[-24,-5]],[17,[-35,-2]],[27,[-25,-4]],[end,[-25,-4]]]);
+    move(rightEye,[[0,[30,-1]],[5,[36,-5]],[17,[25,-2]],[27,[35,-4]],[end,[35,-4]]]);
+    move(leftLid,[[0,[-30,-16]],[5,[-24,-20]],[17,[-35,-17]],[27,[-25,-19]],[end,[-25,-19]]]);
+    move(rightLid,[[0,[30,-16]],[5,[36,-20]],[17,[25,-17]],[27,[35,-19]],[end,[35,-19]]]);
+    turn(left,[[0,12],[10,-23],[21,-10],[end,rest.left]]);
+    turn(right,[[0,-12],[10,35],[21,19],[end,rest.right]]);
   } else if(state==='responding') {
-    turn(left,[[0,14],[9,47],[23,38],[end,rest.left]]);
-    turn(right,[[0,-14],[9,-51],[23,-39],[end,rest.right]]);
-    scale(mouth,[[0,[100,65,100]],[6,[100,115,100]],[11,[100,70,100]],[16,[100,120,100]],[23,[100,65,100]],[29,[100,105,100]],[end,[100,100,100]]]);
+    // Three syllable-sized articulations and an open-handed explanation.
+    // First/last transforms match so a caller may repeat ONLY during real
+    // output speech. This file itself has no loop or audio-level assumption.
+    turn(head,[[0,rest.head],[7,-3],[15,1],[24,-3],[end,rest.head]]);
+    move(head,[[0,[0,-46]],[7,[0,-48]],[15,[0,-46]],[24,[0,-48]],[end,[0,-46]]]);
+    turn(left,[[0,rest.left],[9,55],[20,39],[end,rest.left]]);
+    turn(right,[[0,rest.right],[8,-69],[19,-46],[28,-64],[end,rest.right]]);
+    scale(mouth,[[0,[100,100,100]],[5,[105,130,100]],[10,[90,40,100]],[15,[110,145,100]],[21,[90,45,100]],[27,[105,120,100]],[end,[100,100,100]]]);
+    scale(leftEye,[[0,[100,100,100]],[8,[100,88,100]],[16,[100,104,100]],[25,[100,100,100]],[27,[100,8,100]],[31,[100,100,100]],[end,[100,100,100]]]);
+    scale(rightEye,[[0,[100,100,100]],[8,[100,96,100]],[16,[100,108,100]],[25,[100,100,100]],[27,[100,8,100]],[31,[100,100,100]],[end,[100,100,100]]]);
   } else if(state==='needs_you') {
-    turn(right,[[0,-14],[10,-148],[18,-127],[25,-142],[end,rest.right]]);
+    turn(right,[[0,-12],[11,-145],[21,-127],[end,rest.right]]);
     turn(head,[[0,0],[12,-6],[end,rest.head]]);
   } else if(state==='blocked') {
-    turn(head,[[0,0],[9,7],[end,rest.head]]);
-    scale(leftEye,[[0,[100,100,100]],[12,[100,76,100]],[end,[100,76,100]]]);
-    at(leftEye).scale=[100,76,100];
+    turn(head,[[0,0],[10,6],[end,rest.head]]);
+    turn(leftLid,[[0,0],[10,12],[end,12]]);
+    turn(rightLid,[[0,0],[10,-6],[end,-6]]);
   } else if(state==='completed') {
-    turn(left,[[0,14],[11,139],[22,139],[end,rest.left]]);
-    turn(right,[[0,-14],[11,-139],[22,-139],[end,rest.right]]);
-    move(body,[[0,[128,132]],[10,[128,126]],[21,[128,126]],[end,[128,132]]]);
-    scale(badge,[[0,[65,65,100]],[12,[100,100,100]],[end,[100,100,100]]]);
+    turn(left,[[0,12],[11,118],[23,118],[end,rest.left]]);
+    turn(right,[[0,-12],[11,-122],[23,-122],[end,rest.right]]);
+    move(body,[[0,[128,139]],[11,[128,134]],[23,[128,134]],[end,[128,139]]]);
+    scale(badge,[[0,[70,70,100]],[12,[100,100,100]],[end,[100,100,100]]]);
   }
-  // All scenes end in the exact SVG pose; no ambient loop or hidden idle ticker.
   return {rows,frames};
 }
 function group(row) {
@@ -136,11 +179,10 @@ function group(row) {
   return {ty:'gr',it:items,nm:row.name};
 }
 function layer(row,frames) {
-  const position=row.position.map((n)=>n);position.push(0);
   return {ddd:0,ind:row.id,ty:4,nm:row.name,sr:1,...(row.parent?{parent:row.parent}:{}),ks:{
     o:row.opacityFrames?keys(row.opacityFrames):fixed(100),
     r:row.rotationFrames?keys(row.rotationFrames):fixed(row.rotation),
-    p:row.positionFrames?keys(row.positionFrames.map(([t,v])=>[t,[...v,0]])):fixed(position),
+    p:row.positionFrames?keys(row.positionFrames.map(([t,v])=>[t,[...v,0]])):fixed([...row.position,0]),
     a:fixed([0,0,0]),s:row.scaleFrames?keys(row.scaleFrames):fixed(row.scale),
   },ao:0,shapes:[...row.items].reverse().map(group),ip:0,op:frames,st:0,bm:0};
 }
@@ -157,7 +199,14 @@ function itemSvg(row){
   return g.ellipse?`<ellipse cx="${g.position[0]}" cy="${g.position[1]}" rx="${g.ellipse[0]/2}" ry="${g.ellipse[1]/2}" ${attrs}/>`:`<path d="${svgPath(g.path)}" ${attrs}/>`;
 }
 function poster(rows){
-  const transform=(row)=>`translate(${row.position.join(' ')}) rotate(${row.rotation}) scale(${row.scale[0]/100} ${row.scale[1]/100})`;
+  // Resolve final keyframes instead of duplicating pose values. This keeps every
+  // static fallback identical to its clip's last frame as the rig evolves.
+  const transform=(row)=>{
+    const p=row.positionFrames?.at(-1)?.[1]??row.position;
+    const r=row.rotationFrames?.at(-1)?.[1]??row.rotation;
+    const s=row.scaleFrames?.at(-1)?.[1]??row.scale;
+    return `translate(${p.join(' ')}) rotate(${r}) scale(${s[0]/100} ${s[1]/100})`;
+  };
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="none">${rows.map(row=>{
     if(row.opacityFrames?.at(-1)?.[1]===0)return '';
     const ancestors=[];let parent=row.parent;while(parent){const found=rows[parent-1];ancestors.unshift(found);parent=found.parent;}
@@ -167,8 +216,11 @@ function poster(rows){
 await Promise.all([mkdir(web,{recursive:true}),mkdir(native,{recursive:true})]);
 for(const theme of Object.keys(palettes))for(const state of states){
   const {rows,frames}=rig(state,theme);
-  const data={v:'5.12.2',fr:30,ip:0,op:frames,w:256,h:256,nm:`ATLAS Scout · ${state} · ${theme}`,ddd:0,assets:[],layers:[...rows].reverse().map(row=>layer(row,frames)),markers:[{tm:0,cm:state,dr:frames}]};
+  if(rows.length>32)throw new Error(`Layer budget exceeded: ${state}`);
+  const data={v:'5.12.2',fr:30,ip:0,op:frames,w:256,h:256,nm:`ATLAS Scout voice presence · ${state} · ${theme}`,ddd:0,assets:[],layers:[...rows].reverse().map(row=>layer(row,frames)),markers:[{tm:0,cm:state,dr:frames}]};
   const json=`${JSON.stringify(data)}\n`;
+  if(Buffer.byteLength(json)>128*1024)throw new Error(`Composition budget exceeded: ${state}`);
   await Promise.all([writeFile(resolve(web,`${state}-${theme}.json`),json),writeFile(resolve(native,`${state}-${theme}.json`),json),writeFile(resolve(web,`${state}-${theme}.svg`),poster(rows))]);
 }
-await writeFile(resolve(web,'provenance.json'),`${JSON.stringify({creativeRevision:revision,creator:'Original Asael ATLAS Scout vector rig',source:'.design/asael-ace-revamp/atlas-lottie/source/generate.mjs',format:'Lottie JSON; vector shape layers, parented character rig',frameRate:30,externalAssets:false,paletteSource:'src/app/globals.css and apps/flutter/lib/app/theme/app_theme.dart',states,references:[{title:'Robot standing',creator:'Penxel Studio',url:'https://lottiefiles.com/free-animation/robot-standing-cdB6OGVdsa',influence:'Readable face and restrained blink'},{title:'Cute Bot Say Users Hello',creator:'Abdul Latif',url:'https://lottiefiles.com/free-animation/cute-bot-say-users-hello-fsKwsuIXi0',influence:'Clear greeting silhouette and friendly proportions'},{title:'Futuristic Robot Constructor',creator:'Tanjil Mahmud',url:'https://lottiefiles.com/free-animation/futuristic-robot-constructor-5FSNfVhxoG',influence:'Articulated hand gesture'}],thirdPartyArtworkEmbedded:false},null,2)}\n`);
+await writeFile(resolve(web,'provenance.json'),`${JSON.stringify({creativeRevision:revision,creator:'Original Asael ATLAS Scout vector rig',source:'.design/asael-ace-revamp/atlas-lottie/source/generate.mjs',designDirection:'Owner-approved Companion and Perch voice-presence motion study, 9 October 2026',format:'Lottie JSON; vector shape layers, parented character rig',frameRate:30,durationSeconds:1.2,loop:false,externalAssets:false,paletteSource:'src/app/globals.css and apps/flutter/lib/app/theme/app_theme.dart',states,references:[{title:'Robot standing',creator:'Penxel Studio',url:'https://lottiefiles.com/free-animation/robot-standing-cdB6OGVdsa',influence:'Historical reference: readable face and restrained blink'},{title:'Cute Bot Say Users Hello',creator:'Abdul Latif',url:'https://lottiefiles.com/free-animation/cute-bot-say-users-hello-fsKwsuIXi0',influence:'Historical reference: clear greeting silhouette'},{title:'Futuristic Robot Constructor',creator:'Tanjil Mahmud',url:'https://lottiefiles.com/free-animation/futuristic-robot-constructor-5FSNfVhxoG',influence:'Historical reference: articulated hand gesture'}],thirdPartyArtworkEmbedded:false},null,2)}\n`);
+console.log(`Authored ${states.length*Object.keys(palettes).length} Scout clips and matching SVG poses (${revision}).`);

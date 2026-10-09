@@ -6,6 +6,7 @@ import 'companion_models.dart';
 import 'companion_presence.dart';
 import 'companion_presentation.dart';
 import 'companion_providers.dart';
+import 'voice_appearance_settings.dart';
 
 class CompanionSettingsSection extends ConsumerWidget {
   const CompanionSettingsSection({super.key});
@@ -153,10 +154,12 @@ class _CompanionSettingsEditorState extends State<CompanionSettingsEditor> {
             ),
             const SizedBox(height: 8),
             const Text(
-              'Choose ATLAS presentation and where Asael opens. These controls do not start agents, voice, or provider work.',
+              'Make ATLAS feel right for you, and choose where Asael opens.',
               style: TextStyle(fontSize: 16, height: 1.5),
             ),
             const SizedBox(height: 12),
+            const VoiceAppearanceSettings(),
+            const SizedBox(height: 24),
             Text(
               current == null
                   ? (c.loading
@@ -218,7 +221,7 @@ class _CompanionSettingsEditorState extends State<CompanionSettingsEditor> {
             Text(
               MediaQuery.disableAnimationsOf(context)
                   ? 'System Reduce Motion is active and takes precedence. ATLAS uses a static portrait.'
-                  : 'When system settings allow motion, Balanced reacts to verified results; Expressive also reacts to listening, speaking and work. Quiet, Reduced and Off stay still. On macOS, Low Power Mode or unavailable power status keeps ATLAS still. Idle animation never loops.',
+                  : 'During voice conversations, Balanced and Expressive bring ATLAS to life as you listen and speak. Quiet, Reduced and Off keep the character still. System Reduce Motion and Low Power Mode take priority. ATLAS rests between interactions.',
               style: const TextStyle(fontSize: 13),
             ),
             _choices(
@@ -227,7 +230,7 @@ class _CompanionSettingsEditorState extends State<CompanionSettingsEditor> {
               {
                 'assistant': 'Assistant',
                 'today': 'Today',
-                'activity': 'Activity',
+                'activity': 'History',
                 'work': 'Work',
               },
               editable,
