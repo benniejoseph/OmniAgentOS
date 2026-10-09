@@ -15,7 +15,7 @@ export const AGENT_RUN_RECONNECT_DELAYS_MS: readonly number[] = [
   8_000,
   8_000,
 ];
-const AGENT_RUN_FOLLOW_BUDGET_MS = 10 * 60_000;
+const AGENT_RUN_FOLLOW_BUDGET_MS = 30 * 60_000;
 
 export type AgentRunFollowOutcome =
   /** An event settled the run. */

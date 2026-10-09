@@ -24,7 +24,7 @@ import {
 } from "@/app/api/command/prompt-queue/http";
 
 export const runtime = "nodejs";
-export const maxDuration = 300;
+export const maxDuration = 1800;
 
 type PromptQueueDispatchRouteContext = { params: Promise<{ id: string }> };
 

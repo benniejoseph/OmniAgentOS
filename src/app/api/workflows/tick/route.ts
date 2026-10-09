@@ -14,10 +14,7 @@ import { getAlertDeliveryStats, runScheduledAlertDispatch } from "@/lib/diagnost
 import { serverErrorResponse } from "@/lib/http/errors";
 import { runObservabilitySloMonitor } from "@/lib/observability/slo-monitor";
 import { createRequestTelemetry, recordRuntimeEventSafely } from "@/lib/observability/store";
-import {
-  processAgentResumeQueue,
-  processAllTenantAgentResumeQueues,
-} from "@/lib/orchestration/resume-queue";
+import { scheduleAgentResumeQueueDrain } from "@/lib/orchestration/resume-queue";
 import { recoverInterruptedLoopV2Runs } from "@/lib/orchestration/loop-v2-recovery";
 import { reconcileMissionProjections } from "@/lib/missions/reconcile";
 import { repairStuckAgentRuns } from "@/lib/runs/store";
@@ -82,9 +79,9 @@ import { emptyResponsibilityScheduleSummary, processDueResponsibilities } from "
 import { emptyResponsibilityNotificationSummary, processDueResponsibilityNotifications } from "@/lib/responsibilities/notification-delivery";
 
 export const runtime = "nodejs";
-// Workflow steps run gpt-5 planning/execution that can exceed 60s; 300s is the
-// Vercel Pro ceiling (silently capped to 60s on Hobby).
-export const maxDuration = 300;
+// Foreground ticks keep their short dispatch budget. after() may finish one
+// approved continuation within the same 25-minute budget as a direct run.
+export const maxDuration = 1800;
 export const GET = withDatabaseRequestScope(GETHandler);
 export const POST = withDatabaseRequestScope(POSTHandler);
 
@@ -469,10 +466,10 @@ async function POSTHandler(request: Request) {
         limit: parsed.data.limit || 5,
         tenantId: context.tenantId,
       }),
-      processAgentResumeQueue({
-        limit: parsed.data.limit || 5,
+      Promise.resolve(scheduleAgentResumeQueueDrain({
         tenantId: context.tenantId,
-      }),
+        routeMaxDurationSeconds: maxDuration,
+      })),
       processDurableSpecialistQueue({
         limit: Math.min(parsed.data.limit || 2, 2),
         tenantId: context.tenantId,
@@ -670,6 +667,7 @@ function summarizeScheduledOutcome(
     workflowRequeued: scheduled.queue?.requeued || 0,
     workflowWaiting: scheduled.queue?.waiting || 0,
     agentResumesLeased: scheduled.agentResumes?.leased || 0,
+    agentResumesScheduled: scheduled.agentResumes?.scheduled || 0,
     agentResumesCompleted: scheduled.agentResumes?.completed || 0,
     agentResumesDeferred: scheduled.agentResumes?.deferred || 0,
     agentResumesFailed: scheduled.agentResumes?.failed || 0,
@@ -783,6 +781,25 @@ function normalizeWorkerTarget(value: string | null) {
   }
 }
 
+function scheduleAgentResumesAfterResponse(tenantIds: readonly string[]) {
+  const tenantId = tenantIds[0];
+  const scheduled = tenantId
+    ? scheduleAgentResumeQueueDrain({
+        tenantId,
+        routeMaxDurationSeconds: maxDuration,
+      }).scheduled || 0
+    : 0;
+  return {
+    tenantIds: tenantId ? [tenantId] : [],
+    tenantResults: [],
+    scheduled,
+    leased: 0,
+    completed: 0,
+    deferred: 0,
+    failed: 0,
+  };
+}
+
 async function runAllTenantScheduledWork({
   lane,
   trigger,
@@ -860,7 +877,7 @@ async function runAllTenantScheduledWork({
   const dispatchTenants = runFast || runBackground
     ? await listRunnableOperationDispatchTenants({
         workflowLimit: runFast || runBackground ? queueLimit : 0,
-        agentResumeLimit: runFast ? queueLimit : 0,
+        agentResumeLimit: runBackground ? 1 : 0,
         agentExecuteLimit: runFast ? queueLimit : 0,
         backgroundLimit: runBackground ? Math.min(queueLimit, 3) : 0,
       })
@@ -901,20 +918,9 @@ async function runAllTenantScheduledWork({
           tenantIds: [],
           tenantResults: [],
         }),
-    runFast
-      ? processAllTenantAgentResumeQueues({
-          limit: queueLimit,
-          timeBudgetMs: dispatchBudgetMs,
-          tenantIds: dispatchTenants.agentResumeTenantIds,
-        })
-      : Promise.resolve({
-          tenantIds: [],
-          tenantResults: [],
-          leased: 0,
-          completed: 0,
-          deferred: 0,
-          failed: 0,
-        }),
+    Promise.resolve(scheduleAgentResumesAfterResponse(
+      runBackground ? dispatchTenants.agentResumeTenantIds : [],
+    )),
     runFast
       ? processAllTenantDurableSpecialistQueues({
           limit: queueLimit,

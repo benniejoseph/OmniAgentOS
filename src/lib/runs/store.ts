@@ -60,7 +60,10 @@ import {
   type RunContractEnvelopeV1,
   type RunContractEventPayloadV1,
 } from "@/lib/runs/contracts";
-import { parsePersistedRunBudgetStateV1 } from "@/lib/runs/budgets";
+import {
+  parsePersistedRunBudgetStateV1,
+  runBudgetCountersV1Schema,
+} from "@/lib/runs/budgets";
 import {
   parseApprovalCheckpointShadowEnrollment,
   recordApprovalWaitingCheckpointShadow,
@@ -1486,6 +1489,46 @@ export async function cancelAgentRun(
   return setRunStatus(runId, "canceled", { error: reason }, options);
 }
 
+const AGENT_STALE_COMPLETION_GRACE_MS = 2 * 60_000;
+const recordedWallBudgetSchema = runBudgetCountersV1Schema
+  .pick({ wallTimeMs: true }).strip();
+
+/** Cleanup observes recorded authority; a changed default cannot extend old runs. */
+function agentRunIsStaleForRepair(input: {
+  status: string;
+  startedAt: string;
+  continuation?: unknown;
+  budgetLimits?: unknown;
+}, now: number, staleAfterMs: number) {
+  const continuation = input.continuation &&
+      typeof input.continuation === "object" &&
+      !Array.isArray(input.continuation)
+    ? input.continuation as Record<string, unknown>
+    : undefined;
+  const resumedBudget = input.status === "resuming"
+    ? parsePersistedRunBudgetStateV1(continuation?.budgetState)
+    : undefined;
+  // Only the recorded wall counter is needed; older harness events can have
+  // a redacted token counter. This grants no execution or retry authority.
+  const admittedBudget = recordedWallBudgetSchema.safeParse(input.budgetLimits);
+  const remainingWallTimeMs = resumedBudget
+    ? Math.max(0, resumedBudget.limits.wallTimeMs - resumedBudget.used.wallTimeMs)
+    : input.status === "running" && admittedBudget.success
+      ? admittedBudget.data.wallTimeMs
+      : 0;
+  const activeSince = input.status === "resuming" &&
+      typeof continuation?.resumeClaimedAt === "string"
+    ? continuation.resumeClaimedAt
+    : input.startedAt;
+  const activeSinceMs = Date.parse(activeSince);
+  return Number.isFinite(activeSinceMs) && now - activeSinceMs >= Math.max(
+    staleAfterMs,
+    remainingWallTimeMs > 0
+      ? remainingWallTimeMs + AGENT_STALE_COMPLETION_GRACE_MS
+      : 0,
+  );
+}
+
 /** Fail stale initial runs and interrupted resume claims without replaying work. */
 export async function repairStuckAgentRuns({
   staleAfterMs = 7 * 60 * 1000,
@@ -1495,14 +1538,24 @@ export async function repairStuckAgentRuns({
   tenantId?: string;
 } = {}) {
   const tenantId = normalizeTenantId(requestedTenantId);
-  const staleBeforeEpoch = new Date(Date.now() - staleAfterMs).toISOString();
+  const now = Date.now();
+  const staleBeforeEpoch = new Date(now - staleAfterMs).toISOString();
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const repaired = await runWithDatabaseSystemScope(
       `Repair stale agent runs for tenant ${tenantId}.`,
       () => getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
         const candidates = await sql`
-          SELECT id, owner_actor_id, status
+          SELECT id, owner_actor_id, status, started_at, continuation,
+            (
+              SELECT event.payload->'budgetLimits'
+              FROM omni_agent_events AS event
+              WHERE event.tenant_id = run.tenant_id
+                AND event.run_id = run.id
+                AND event.type = 'harness'
+              ORDER BY event.created_at ASC, event.id ASC
+              LIMIT 1
+            ) AS budget_limits
           FROM omni_agent_runs AS run
           WHERE tenant_id = ${tenantId}
             AND (
@@ -1539,6 +1592,12 @@ export async function repairStuckAgentRuns({
           const runId = String(candidate.id);
           const actorId = requiredOwnerActorId(String(candidate.owner_actor_id));
           const priorStatus = String(candidate.status);
+          if (!agentRunIsStaleForRepair({
+            status: priorStatus,
+            startedAt: String(candidate.started_at),
+            continuation: candidate.continuation,
+            budgetLimits: candidate.budget_limits,
+          }, now, staleAfterMs)) continue;
           const message = priorStatus === "resuming"
             ? "Approved run resume was interrupted; side effects were not replayed."
             : priorStatus === "queued"
@@ -1585,26 +1644,31 @@ export async function repairStuckAgentRuns({
   let repaired = 0;
   const repairedRuns: Array<{ runId: string; message: string }> = [];
   await updateRunLedger((ledger) => {
-    const staleBefore = Date.parse(staleBeforeEpoch);
     for (const run of ledger.runs) {
       if (normalizeTenantId(run.tenantId) !== tenantId) {
         continue;
       }
-      const staleInitial =
-        (run.status === "queued" || run.status === "running") &&
-        Date.parse(run.startedAt) <= staleBefore;
-      const resumeClaimedAt =
-        run.continuation?.resumeClaimedAt || run.startedAt;
-      const staleResuming =
-        run.status === "resuming" &&
-        Date.parse(resumeClaimedAt) <= staleBefore;
-      if (!staleInitial && !staleResuming) {
+      if (!["queued", "running", "resuming"].includes(run.status)) {
         continue;
       }
+      const harness = ledger.events.find((event) =>
+        event.runId === run.id &&
+        normalizeTenantId(event.tenantId) === tenantId &&
+        event.payload.type === "harness"
+      );
+      if (!agentRunIsStaleForRepair({
+        status: run.status,
+        startedAt: run.startedAt,
+        continuation: run.continuation,
+        budgetLimits: harness?.payload.type === "harness"
+          ? harness.payload.budgetLimits
+          : undefined,
+      }, now, staleAfterMs)) continue;
       repaired += 1;
       const wasQueued = run.status === "queued";
+      const wasResuming = run.status === "resuming";
       run.status = "failed";
-      run.error = staleResuming
+      run.error = wasResuming
         ? "Approved run resume was interrupted; side effects were not replayed."
         : wasQueued
           ? "Queued durable agent run expired before dispatch."

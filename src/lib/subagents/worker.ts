@@ -170,6 +170,8 @@ async function processSpecialistJob(
   const budgetLimits = payload.budgetLimits
     ? narrowRunBudgetLimits(AGENT_RUN_BUDGET_LIMITS, payload.budgetLimits)
     : narrowRunBudgetLimits(AGENT_RUN_BUDGET_LIMITS, {
+        // A queued legacy payload cannot inherit a later, wider root budget.
+        wallTimeMs: Math.min(270_000, AGENT_RUN_BUDGET_LIMITS.wallTimeMs),
         agents: 1,
         fanOut: 0,
         browserActions: 0,

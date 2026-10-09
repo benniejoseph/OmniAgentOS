@@ -192,9 +192,9 @@ import { listWorkspaceTemplates } from "@/lib/workspace-templates/store";
 import { personalWorkspaceId } from "@/lib/workspaces/contracts";
 
 export const runtime = "nodejs";
-// gpt-5 research/orchestrate runs can exceed 60s; 300s is the Vercel Pro ceiling.
-// On Hobby this is silently capped to 60s (harmless).
-export const maxDuration = 300;
+// Production uses Vercel Pro, Fluid Compute, and Node.js 24. Extended duration
+// is configured per route; the agent's own 25-minute budget remains tighter.
+export const maxDuration = 1800;
 export const POST = withRuntimeModelRequestCache(
   withDatabaseRequestScope(POSTHandler),
 );

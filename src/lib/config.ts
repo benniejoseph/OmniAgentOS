@@ -317,8 +317,9 @@ export const AGENT_MAX_COST_MICROUSD = normalizePositiveInteger(
 );
 export const AGENT_MAX_WALL_CLOCK_MS = normalizePositiveInteger(
   process.env.OMNIAGENT_AGENT_MAX_WALL_CLOCK_MS,
-  // The direct route allows 300 seconds; reserve its final 30 for teardown.
-  270_000,
+  // New direct runs get 25 minutes within the route's 30-minute host ceiling.
+  // The runner still reserves answer time and enforces the invocation margin.
+  1_500_000,
 );
 export const AGENT_MAX_BROWSER_ACTIONS = normalizePositiveInteger(
   process.env.OMNIAGENT_AGENT_MAX_BROWSER_ACTIONS,
