@@ -23,12 +23,12 @@ class ApiTalkRepository
     this.api, {
     TalkHistoryRepository? history,
     Duration recoveryPollInterval = const Duration(seconds: 3),
-    int recoveryPollLimit = 200,
+    int recoveryPollLimit = 600,
   }) : _history = history ?? ApiTalkHistoryRepository(api),
        _recoveryPollInterval = recoveryPollInterval.isNegative
            ? Duration.zero
            : recoveryPollInterval,
-       _recoveryPollLimit = recoveryPollLimit.clamp(0, 200);
+       _recoveryPollLimit = recoveryPollLimit.clamp(0, 600);
   static const agentStreamReceiveTimeout = Duration(minutes: 10);
   final ApiClient api;
   final TalkHistoryRepository _history;

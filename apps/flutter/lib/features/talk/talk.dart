@@ -1014,9 +1014,9 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     this.workflowPollInterval = const Duration(seconds: 3),
     this.workflowPollLimit = 120,
     this.runRecoveryPollInterval = const Duration(seconds: 3),
-    this.runRecoveryPollLimit = 200,
+    this.runRecoveryPollLimit = 600,
   }) : assert(workflowPollLimit > 0 && workflowPollLimit <= 120),
-       assert(runRecoveryPollLimit > 0 && runRecoveryPollLimit <= 200);
+       assert(runRecoveryPollLimit > 0 && runRecoveryPollLimit <= 600);
 
   final TalkRepository repository;
   final LocalComputerPreviewSource? localComputerPreviews;

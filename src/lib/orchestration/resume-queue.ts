@@ -1,3 +1,4 @@
+import { after } from "next/server";
 import { OPERATION_QUEUE_LEASE_SECONDS } from "@/lib/config";
 import {
   getSql,
@@ -22,7 +23,9 @@ import {
   resumeAgentRunAfterToolApproval,
 } from "@/lib/orchestration/agent-runner";
 import { syncMissionExecutorSafely } from "@/lib/missions/runtime";
+import { requestWorkDeadline } from "@/lib/observability/request-timing";
 import { parseApprovalCheckpointShadowEnrollment } from "@/lib/runs/approval-checkpoint-shadow";
+import { LEGACY_AGENT_RUN_BUDGET_LIMITS } from "@/lib/runs/budgets";
 import {
   authorizeLatestAgentRunCheckpointResume,
   heartbeatRunCheckpointResumeClaim,
@@ -65,6 +68,7 @@ const APPROVAL_REQUEST_LEASE_RETRY_MS = 250;
 
 export type AgentResumeQueueResult = {
   requested: number;
+  scheduled?: number;
   leased: number;
   completed: number;
   deferred: number;
@@ -73,12 +77,43 @@ export type AgentResumeQueueResult = {
   jobs: AgentResumeJobResult[];
 };
 
+/** Leaves the worker response free while one leased continuation runs. */
+export function scheduleAgentResumeQueueDrain(input: {
+  tenantId: string;
+  routeMaxDurationSeconds: number;
+}): AgentResumeQueueResult {
+  const deadlineAt = requestWorkDeadline(input.routeMaxDurationSeconds);
+  after(async () => {
+    try {
+      await processAgentResumeQueue({
+        tenantId: input.tenantId,
+        limit: 1,
+        deadlineAt,
+      });
+    } catch {
+      console.warn("Agent resume queue drain failed; the durable job remains recoverable.");
+    }
+  });
+  return {
+    requested: 1,
+    scheduled: 1,
+    leased: 0,
+    completed: 0,
+    deferred: 0,
+    failed: 0,
+    stale: 0,
+    jobs: [],
+  };
+}
+
 export async function processAgentResumeQueue({
   tenantId,
   limit = 1,
+  deadlineAt,
 }: {
   tenantId: string;
   limit?: number;
+  deadlineAt?: number;
 }): Promise<AgentResumeQueueResult> {
   const boundedLimit = Math.min(Math.max(Math.round(limit), 1), 10);
   return runWithDatabaseTenantScope(tenantId, async () => {
@@ -91,7 +126,7 @@ export async function processAgentResumeQueue({
     const results: AgentResumeJobResult[] = [];
 
     for (const job of jobs) {
-      results.push(await processAgentResumeJob(job));
+      results.push(await processAgentResumeJob(job, { deadlineAt }));
     }
 
     return {
@@ -182,11 +217,13 @@ export async function resumeAgentRunInApprovalRequest({
   tenantId,
   toolExecution,
   leaseRetry = {},
+  deadlineAt,
 }: {
   executionId: string;
   tenantId: string;
   toolExecution: ApprovedToolExecution;
   leaseRetry?: { attempts?: number; delayMs?: number };
+  deadlineAt?: number;
 }): Promise<ApprovalRequestResumeResult> {
   const attempts = Math.max(
     1,
@@ -211,6 +248,7 @@ export async function resumeAgentRunInApprovalRequest({
           status: "leased",
           result: await processAgentResumeJob(lease.job, {
             approvedToolExecution: toolExecution,
+            deadlineAt,
           }),
         };
       }
@@ -234,6 +272,8 @@ export async function resumeAgentRunInApprovalRequest({
 type ProcessAgentResumeJobOptions = {
   /** The approving request's own result for the job's tool execution. */
   approvedToolExecution?: ApprovedToolExecution;
+  /** The request deadline includes the time spent before its response. */
+  deadlineAt?: number;
 };
 
 async function processAgentResumeJob(
@@ -349,6 +389,21 @@ async function processAgentResumeJobInActorScope(
       return failResumeJob(
         job,
         `Tool execution reached unsupported status ${toolExecution.status}.`,
+        base,
+      );
+    }
+
+    const savedBudget = run.continuation.budgetState;
+    const remainingWallTimeMs = savedBudget
+      ? Math.max(0, savedBudget.limits.wallTimeMs - savedBudget.used.wallTimeMs)
+      : LEGACY_AGENT_RUN_BUDGET_LIMITS.wallTimeMs;
+    if (
+      options.deadlineAt !== undefined &&
+      options.deadlineAt - Date.now() < remainingWallTimeMs + 30_000
+    ) {
+      return deferResumeJob(
+        job,
+        "Waiting for a delivery with enough time for the saved continuation budget.",
         base,
       );
     }
