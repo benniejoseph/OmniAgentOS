@@ -528,14 +528,12 @@ export function VoiceMode({
     await peer.setLocalDescription(offer);
     if (!currentVoice(token) || peerRef.current !== peer) return;
     if (!offer.sdp) throw new Error("The browser did not create a realtime audio offer.");
-    const form = new FormData();
-    form.set("sdp", new Blob([offer.sdp], { type: "application/sdp" }), "offer.sdp");
     const controller = new AbortController();
     requestControllerRef.current = controller;
     const answerResponse = await fetch(session.transportUrl, {
       method: "POST",
-      headers: { authorization: `Bearer ${session.clientSecret}` },
-      body: form,
+      headers: { authorization: `Bearer ${session.clientSecret}`, "content-type": "application/sdp" },
+      body: offer.sdp,
       signal: controller.signal,
     });
     const answerSdp = await answerResponse.text();

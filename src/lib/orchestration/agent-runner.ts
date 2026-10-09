@@ -630,6 +630,17 @@ async function* runAgentUntilStopped(
   cancellation.watch({ runId, tenantId: runTenantId });
   const reserveEstimatedModelTurn = createAgentTurnBudgeter({
     tenantId: runTenantId,
+    // Keep time for synthesis in direct root conversations. Child runs and
+    // durable or computer workflows retain their own execution policies.
+    minimumToolRoundWallTimeMs:
+      request.invocation && !request.executionScope?.delegationId &&
+        !request.preclaimedRunId && mode !== "research" &&
+        computerUseTarget !== "local_macos"
+        ? Math.min(
+            90_000 + WEB_SEARCH_TIMEOUT_MS,
+            Math.floor(budgetLimits.wallTimeMs * 2 / 3),
+          )
+        : undefined,
     getState: () => runBudgetState,
     setState: (state) => {
       runBudgetState = state;
@@ -2646,6 +2657,14 @@ async function* runAgentUntilStopped(
           conversationItems ?? initialConversationItems;
         conversationItems = [...priorItems, ...turn.outputItems];
 
+        if (modelBudget.shouldFinishBeforeTools?.()) {
+          conversationItems.push(...turn.functionCalls.map((call) =>
+            functionCallOutput(call, { error: TOOL_TIME_RESERVED_FOR_ANSWER })
+          ));
+          yield await emit(finishingWithinBudgetEvent());
+          continue;
+        }
+
         toolSteps += 1;
         const outputs: Array<{ type: "function_call_output"; call_id: string; output: string }> = [];
 
@@ -2768,6 +2787,12 @@ async function* runAgentUntilStopped(
           }
         } else for (let callIndex = 0; callIndex < callsThisTurn.length; callIndex += 1) {
           const call = callsThisTurn[callIndex];
+          if (modelBudget.shouldFinishBeforeTools?.()) {
+            outputs.push(functionCallOutput(call, {
+              error: TOOL_TIME_RESERVED_FOR_ANSWER,
+            }));
+            continue;
+          }
           const entry = toolbox.byFunctionName.get(call.name);
           if (!entry) {
             outputs.push(functionCallOutput(call, { error: `Unknown tool ${call.name}.` }));
@@ -3155,6 +3180,9 @@ async function* runAgentUntilStopped(
 const CUT_OFF_ANSWER_NOTICE =
   "\n\n[The answer reached its length limit and stops here. Ask to continue for the rest.]";
 
+const TOOL_TIME_RESERVED_FOR_ANSWER =
+  "This call was not run because the remaining time is reserved for your final answer. Answer from completed results and state any remaining gaps.";
+
 function answerCutOffEvent() {
   return {
     type: "status" as const,
@@ -3281,6 +3309,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   }) => Promise<{
     maxAttempts?: number;
     finalTurn?: boolean;
+    shouldFinishBeforeTools?: () => boolean;
     settle?: (turn: ModelToolTurnResult) => void;
   } | void>;
   afterModelFailure?: (input: {
@@ -3537,6 +3566,15 @@ export async function* runNonOpenAIProviderToolLoop(input: {
       continue;
     }
 
+    if (modelBudget?.shouldFinishBeforeTools?.()) {
+      budgetFinal = true;
+      toolResults = turn.toolCalls.map((call) => providerToolResult(call, {
+        error: TOOL_TIME_RESERVED_FOR_ANSWER,
+      }, true));
+      yield finishingWithinBudgetEvent();
+      continue;
+    }
+
     toolSteps += 1;
     const callsThisTurn = turn.toolCalls.slice(0, maxToolCallsPerTurn);
     if (
@@ -3660,6 +3698,13 @@ export async function* runNonOpenAIProviderToolLoop(input: {
     } else {
       for (let callIndex = 0; callIndex < callsThisTurn.length; callIndex += 1) {
         const call = callsThisTurn[callIndex];
+        if (modelBudget?.shouldFinishBeforeTools?.()) {
+          budgetFinal = true;
+          outputs.push(providerToolResult(call, {
+            error: TOOL_TIME_RESERVED_FOR_ANSWER,
+          }, true));
+          continue;
+        }
         const entry = input.toolbox.byFunctionName.get(call.name);
         if (!entry) {
           outputs.push(providerToolResult(call, {
@@ -3933,6 +3978,8 @@ type AgentModelTurnBudget = {
   maxAttempts: number;
   /** The turn may not call tools: the budget has no room for another round. */
   finalTurn?: boolean;
+  /** Recheck time after model reasoning or each completed sequential tool. */
+  shouldFinishBeforeTools?: () => boolean;
   /** Replace the turn's reservation with what it spent, once it completes. */
   settle?: (turn: SpentModelTurn) => void;
 };
@@ -4066,9 +4113,11 @@ function tenantDailyBudgetCeiling(
  */
 function createAgentTurnBudgeter(input: {
   tenantId: string;
+  minimumToolRoundWallTimeMs?: number;
   getState: () => RunBudgetStateV1;
   setState: (state: RunBudgetStateV1) => void;
 }) {
+  const minimumToolRoundWallTimeMs = input.minimumToolRoundWallTimeMs;
   let window: Promise<TenantDailyBudgetWindow | undefined> | undefined;
   return async (
     budget: AgentTurnBudget,
@@ -4080,11 +4129,16 @@ function createAgentTurnBudgeter(input: {
       ...budget,
       allowRetry,
       ceiling,
+      minimumToolRoundWallTimeMs,
     });
     input.setState(plan.state);
     return {
       maxAttempts: plan.maxAttempts,
       finalTurn: plan.finalTurn,
+      ...(minimumToolRoundWallTimeMs !== undefined ? {
+        shouldFinishBeforeTools: () => remainingRunBudget(input.getState()).wallTimeMs <=
+          minimumToolRoundWallTimeMs,
+      } : {}),
       settle: (turn) => input.setState(settleModelTurnBudget(
         input.getState(),
         plan.reserved,

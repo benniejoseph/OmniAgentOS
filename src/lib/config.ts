@@ -317,7 +317,8 @@ export const AGENT_MAX_COST_MICROUSD = normalizePositiveInteger(
 );
 export const AGENT_MAX_WALL_CLOCK_MS = normalizePositiveInteger(
   process.env.OMNIAGENT_AGENT_MAX_WALL_CLOCK_MS,
-  240_000,
+  // The direct route allows 300 seconds; reserve its final 30 for teardown.
+  270_000,
 );
 export const AGENT_MAX_BROWSER_ACTIONS = normalizePositiveInteger(
   process.env.OMNIAGENT_AGENT_MAX_BROWSER_ACTIONS,

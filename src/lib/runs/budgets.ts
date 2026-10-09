@@ -145,11 +145,23 @@ export class RunBudgetExceededError extends Error {
     readonly attempted: number,
   ) {
     super(
-      `Run ${budgetDimensionLabel(dimension)} budget is exhausted `
+      dimension === "wallTimeMs"
+        ? `This run reached its time limit of ${formatRunDuration(limit)}.`
+        : `Run ${budgetDimensionLabel(dimension)} budget is exhausted `
         + `(${attempted} requested, limit ${limit}).`,
     );
     this.name = "RunBudgetExceededError";
   }
+}
+
+function formatRunDuration(milliseconds: number) {
+  const totalSeconds = Math.max(0, Math.ceil(milliseconds / 1_000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return [
+    ...(minutes ? [`${minutes} minute${minutes === 1 ? "" : "s"}`] : []),
+    ...(seconds || !minutes ? [`${seconds} second${seconds === 1 ? "" : "s"}`] : []),
+  ].join(" ");
 }
 
 /** A turn would take the workspace's AI usage past its 24-hour limit. */
@@ -378,6 +390,7 @@ export function planModelTurnBudget(
   input: {
     estimate: ModelTurnBudgetEstimate;
     toolsEnabled: boolean;
+    minimumToolRoundWallTimeMs?: number;
     allowRetry?: boolean;
     ceiling?: TenantDailyBudgetCeiling;
     now?: number;
@@ -415,6 +428,8 @@ export function planModelTurnBudget(
       : Number.POSITIVE_INFINITY,
   );
   const finalTurn = input.toolsEnabled && (
+    (input.minimumToolRoundWallTimeMs !== undefined &&
+      remaining.wallTimeMs <= input.minimumToolRoundWallTimeMs) ||
     remaining.modelTurns < 1 ||
     room("tokens") < input.estimate.followUpTokens ||
     room("costMicrousd") < input.estimate.followUpCostMicrousd
