@@ -22,6 +22,8 @@ web and mobile do not remotely operate another device.
 Tool discovery keeps readable-name resolvers with relevant actions within the
 existing 32-tool and schema-size limits. These preferences never expand an
 Agent's grants. Broad requests may still need to be split into smaller turns.
+Conversational research pins its start, search and page-read contracts before
+semantic query rewriting so all required permissions remain visible together.
 All effects keep tenant/actor scope, executor policy, approvals and idempotency.
 Returned documents, pages, screen content and tool results remain untrusted.
 
