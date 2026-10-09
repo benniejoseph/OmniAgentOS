@@ -356,7 +356,10 @@ Synthetic smoke requests carry correlation IDs and are marked SLO-excluded. Sear
 After installing a hardened owner-only build:
 
 - If Asael quits at launch and the crash report says `mapped file has no Team ID and is not a platform binary`, the host lost `com.apple.security.cs.disable-library-validation`.
-- If voice never prompts for the microphone and records nothing, the host lost `com.apple.security.device.audio-input`. The Hardened Runtime denies the microphone without that entitlement.
+- If Voice says it could not save the agreement, check the consent preference before diagnosing the microphone or provider. The frozen Mac credential broker accepts only fixed credential keys and rejects dynamic preference keys. Mac Voice consent belongs in the dedicated desktop host preference, scoped by the tenant/actor digest and exact consent terms; never expand the broker's credential allowlist or bypass agreement to store it.
+- If voice proceeds beyond agreement but cannot open the microphone, verify `com.apple.security.device.audio-input` on the installed host and its macOS microphone permission. The Hardened Runtime denies the microphone without that entitlement.
+
+For web Voice, microphone permission may remain pending in an embedded browser even when the provider is healthy. Startup must bound permission, session creation, audio negotiation, and channel readiness separately, release late microphone streams after cancellation, and show an actionable retry. HTTP acceptance of an SDP offer alone does not prove Voice works: verify actual transcription and audible reply on the target client, then stop capture.
 
 ## Web presentation regression
 

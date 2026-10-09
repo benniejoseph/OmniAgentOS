@@ -18,7 +18,7 @@ import {
   realtimeTranscriptText,
   type RealtimeTranscriptState,
 } from "@/lib/voice/realtime-transcript";
-import { classifyRealtimeError } from "@/lib/voice/realtime-error";
+import { classifyRealtimeError, RealtimeConnectionError, realtimeConnectionFailure } from "@/lib/voice/realtime-error";
 import { ReplyEchoGuard } from "@/lib/voice/reply-echo";
 import {
   StreamingPcmPlayer,
@@ -67,6 +67,10 @@ type VoiceSession = Readonly<{
 type AgentMode = "orchestrate" | "research" | "execute" | "learn";
 type SessionOutcome = "sent" | "canceled" | "failed";
 const REALTIME_TRANSPORT_URL = "https://api.openai.com/v1/realtime/calls";
+const VOICE_MICROPHONE_TIMEOUT_MS = 30_000;
+const VOICE_SESSION_TIMEOUT_MS = 45_000;
+const VOICE_AUDIO_CONNECT_TIMEOUT_MS = 20_000;
+const VOICE_CHANNEL_READY_TIMEOUT_MS = 15_000;
 const restingMeter = [0.18, 0.28, 0.42, 0.24, 0.52, 0.34, 0.62, 0.3, 0.48, 0.24, 0.16];
 const languageOptions = [
   ["auto", "Auto-detect"],
@@ -116,6 +120,7 @@ export function VoiceMode({
   const [open, setOpen] = useState(false);
   const [phase, setPhase] = useState<VoicePhase>("consent");
   const [error, setError] = useState("");
+  const [connectionErrorDetail, setConnectionErrorDetail] = useState("");
   const [language, setLanguage] = useState("auto");
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [meterLevels, setMeterLevels] = useState(restingMeter);
@@ -279,6 +284,7 @@ export function VoiceMode({
     setDecisionRecovery(undefined);
     setElapsedSeconds(0);
     setError("");
+    setConnectionErrorDetail("");
     setAnnouncement("Voice mode ready.");
   }, []);
 
@@ -382,7 +388,7 @@ export function VoiceMode({
     }
   }
 
-  function failVoice(message: string, token: number) {
+  function failVoice(message: string, token: number, detail = "") {
     if (!currentVoice(token)) return;
     // Ends the session's pending work, so a review finishing in the
     // background cannot replace the error.
@@ -392,13 +398,14 @@ export function VoiceMode({
     stopTransport();
     setPhase("error");
     setError(message);
+    setConnectionErrorDetail(detail);
     setAnnouncement(message);
   }
 
   /** Keeps the draft for review when the session ends before its review. */
-  function reviewAfterSessionEnded(message: string, token: number) {
+  function reviewAfterSessionEnded(message: string, token: number, detail = "") {
     if (!realtimeTranscriptText(transcriptStateRef.current).trim()) {
-      failVoice(`${message} Nothing was sent.`, token);
+      failVoice(`${message} Nothing was sent.`, token, detail);
       return;
     }
     if (!currentVoice(token)) return;
@@ -424,29 +431,67 @@ export function VoiceMode({
     const controller = new AbortController();
     requestControllerRef.current?.abort();
     requestControllerRef.current = controller;
-    const response = await fetch("/api/voice/realtime/session", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        ...(reconnectAttempt && existing
-          ? { sessionId: existing.sessionId, conversationId: existing.conversationId }
-          : conversationOverride
-            ? { conversationId: conversationOverride }
-            : conversationId
-              ? { conversationId }
-              : {}),
-        mode,
-        ...(language === "auto" ? {} : { language }),
-        providerConsent: true,
-        audioRetention: "not_stored_by_asael",
-        reconnectAttempt,
-      }),
-      signal: controller.signal,
-    });
-    const body: unknown = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(errorMessage(body, "Realtime voice could not start."));
-    if (!currentVoice(token)) throw new DOMException("Canceled", "AbortError");
-    return parseVoiceSession(body);
+    try {
+      return await withVoiceStartupDeadline(controller, VOICE_SESSION_TIMEOUT_MS,
+        new RealtimeConnectionError(
+          "Voice setup took too long. Check your connection, then try again.",
+          "Voice setup · connection timed out",
+        ), async () => {
+          const response = await fetch("/api/voice/realtime/session", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              ...(reconnectAttempt && existing
+                ? { sessionId: existing.sessionId, conversationId: existing.conversationId }
+                : conversationOverride
+                  ? { conversationId: conversationOverride }
+                  : conversationId
+                    ? { conversationId }
+                    : {}),
+              mode,
+              ...(language === "auto" ? {} : { language }),
+              providerConsent: true,
+              audioRetention: "not_stored_by_asael",
+              reconnectAttempt,
+            }),
+            signal: controller.signal,
+          });
+          const body: unknown = await response.json().catch(() => ({}));
+          if (!currentVoice(token)) throw new DOMException("Canceled", "AbortError");
+          if (!response.ok) throw realtimeConnectionFailure("session", response.status, body);
+          return parseVoiceSession(body);
+        });
+    } catch (sessionError) {
+      if (sessionError instanceof TypeError) {
+        throw new RealtimeConnectionError(
+          "Asael could not reach the voice service. Check your connection, then try again.",
+          "Voice setup · network request failed",
+        );
+      }
+      throw sessionError;
+    } finally {
+      if (requestControllerRef.current === controller) requestControllerRef.current = null;
+    }
+  }
+
+  async function requestAttemptMicrophone(token: number) {
+    if (!currentVoice(token)) throw new DOMException("Workspace access changed.", "AbortError");
+    const controller = new AbortController();
+    requestControllerRef.current?.abort();
+    requestControllerRef.current = controller;
+    try {
+      const stream = await withVoiceStartupDeadline(controller, VOICE_MICROPHONE_TIMEOUT_MS,
+        new RealtimeConnectionError(
+          "Microphone permission is still pending. Allow microphone access in your browser or site settings, then try again. If no prompt appears, open Asael in a full browser.",
+          "Microphone access · permission request timed out",
+        ), () => requestCurrentMicrophone(requestMicrophone, () => (
+          currentVoice(token) && !controller.signal.aborted
+        )));
+      if (!stream) throw new DOMException("Canceled", "AbortError");
+      return stream;
+    } finally {
+      if (requestControllerRef.current === controller) requestControllerRef.current = null;
+    }
   }
 
   async function connectPeer(session: VoiceSession, stream: MediaStream, token: number) {
@@ -454,6 +499,7 @@ export function VoiceMode({
     stopPeer();
     const peer = new RTCPeerConnection();
     peerRef.current = peer;
+    let connected = false;
     for (const track of stream.getAudioTracks()) peer.addTrack(track, stream);
     const channel = peer.createDataChannel("oai-events");
     dataChannelRef.current = channel;
@@ -515,7 +561,9 @@ export function VoiceMode({
       updateTranscript(applyRealtimeTranscriptEvent(transcriptStateRef.current, providerEvent));
     });
     peer.addEventListener("connectionstatechange", () => {
-      if (!currentVoice(token) || peerRef.current !== peer || !["failed", "disconnected"].includes(peer.connectionState)) return;
+      // Startup owns failures until the channel is ready; do not start a
+      // competing reconnect while its SDP exchange is still pending.
+      if (!connected || !currentVoice(token) || peerRef.current !== peer || !["failed", "disconnected"].includes(peer.connectionState)) return;
       if (reconnectTimerRef.current !== null) return;
       reconnectTimerRef.current = window.setTimeout(() => {
         reconnectTimerRef.current = null;
@@ -523,23 +571,77 @@ export function VoiceMode({
       }, 650);
     });
 
-    const offer = await peer.createOffer();
-    if (!currentVoice(token) || peerRef.current !== peer) return;
-    await peer.setLocalDescription(offer);
-    if (!currentVoice(token) || peerRef.current !== peer) return;
-    if (!offer.sdp) throw new Error("The browser did not create a realtime audio offer.");
     const controller = new AbortController();
+    requestControllerRef.current?.abort();
     requestControllerRef.current = controller;
-    const answerResponse = await fetch(session.transportUrl, {
-      method: "POST",
-      headers: { authorization: `Bearer ${session.clientSecret}`, "content-type": "application/sdp" },
-      body: offer.sdp,
-      signal: controller.signal,
-    });
-    const answerSdp = await answerResponse.text();
-    if (!answerResponse.ok || answerSdp.length > 1_000_000 || !answerSdp.startsWith("v=0")) throw new Error("The realtime audio connection was rejected.");
-    if (!currentVoice(token) || peerRef.current !== peer) return;
-    await peer.setRemoteDescription({ type: "answer", sdp: answerSdp });
+    const peerCurrent = () => currentVoice(token) && peerRef.current === peer;
+    try {
+      await withVoiceStartupDeadline(controller, VOICE_AUDIO_CONNECT_TIMEOUT_MS,
+        new RealtimeConnectionError(
+          "The audio connection took too long. Check whether your network allows live audio, then try again.",
+          "Audio connection · connection timed out",
+        ), async () => {
+          const offer = await peer.createOffer();
+          if (!peerCurrent()) throw new DOMException("Canceled", "AbortError");
+          await peer.setLocalDescription(offer);
+          if (!peerCurrent()) throw new DOMException("Canceled", "AbortError");
+          if (!offer.sdp) throw new RealtimeConnectionError(
+            "The browser could not prepare live audio. Try again or use another browser.",
+            "Audio connection · browser audio offer unavailable",
+          );
+          const answerResponse = await fetch(session.transportUrl, {
+            method: "POST",
+            headers: { authorization: `Bearer ${session.clientSecret}`, "content-type": "application/sdp" },
+            body: offer.sdp,
+            signal: controller.signal,
+          });
+          const answerSdp = await answerResponse.text();
+          if (!peerCurrent()) throw new DOMException("Canceled", "AbortError");
+          if (!answerResponse.ok) {
+            let failureBody: unknown;
+            if (answerSdp.length <= 16_384) {
+              try { failureBody = JSON.parse(answerSdp); } catch { /* No provider text is shown. */ }
+            }
+            const failure = realtimeConnectionFailure("audio", answerResponse.status, failureBody);
+            providerErrorCodeRef.current = failure.providerCode || "unknown";
+            throw failure;
+          }
+          if (answerSdp.length > 1_000_000 || !answerSdp.startsWith("v=0")) throw new RealtimeConnectionError(
+            "The voice service returned an unusable audio connection. Try again shortly.",
+            `Audio connection · HTTP ${answerResponse.status} · invalid audio handshake`,
+          );
+          await peer.setRemoteDescription({ type: "answer", sdp: answerSdp });
+        });
+      await withVoiceStartupDeadline(controller, VOICE_CHANNEL_READY_TIMEOUT_MS,
+        new RealtimeConnectionError(
+          "Live audio could not connect on this network. Check your connection or try another network, then retry.",
+          "Audio connection · listening channel timed out",
+        ), () => waitForDataChannelOpen(channel, peerCurrent, peer));
+      connected = true;
+    } catch (connectionError) {
+      if (peerRef.current === peer) {
+        stopPeer();
+        if (streamRef.current === stream) stopMedia();
+      } else {
+        channel.close();
+        peer.close();
+      }
+      if (connectionError instanceof TypeError) {
+        throw new RealtimeConnectionError(
+          "The browser could not reach OpenAI for live audio. Check your network or browser connection settings, then try again.",
+          "Audio connection · network request failed",
+        );
+      }
+      if (!(connectionError instanceof RealtimeConnectionError) && !isAbortError(connectionError)) {
+        throw new RealtimeConnectionError(
+          "The browser could not establish live audio. Try again or open Asael in another browser.",
+          "Audio connection · browser audio handshake failed",
+        );
+      }
+      throw connectionError;
+    } finally {
+      if (requestControllerRef.current === controller) requestControllerRef.current = null;
+    }
   }
 
   async function reconnect(token: number) {
@@ -557,9 +659,7 @@ export function VoiceMode({
     try {
       let stream = streamRef.current;
       if (!stream || stream.getAudioTracks().every((track) => track.readyState === "ended")) {
-        const acquired = await requestCurrentMicrophone(requestMicrophone, () => currentVoice(token));
-        if (!acquired) return;
-        stream = acquired;
+        stream = await requestAttemptMicrophone(token);
         streamRef.current = stream;
         startMeter(stream);
       }
@@ -569,6 +669,16 @@ export function VoiceMode({
     } catch (reconnectError) {
       reconnectingRef.current = false;
       if (isAbortError(reconnectError) || !currentVoice(token)) return;
+      stopPeer();
+      stopMedia();
+      if (attempt >= 3) {
+        reviewAfterSessionEnded(
+          reconnectError instanceof Error ? reconnectError.message : "Realtime voice could not reconnect.",
+          token,
+          reconnectError instanceof RealtimeConnectionError ? reconnectError.detail : "",
+        );
+        return;
+      }
       reconnectTimerRef.current = window.setTimeout(() => {
         reconnectTimerRef.current = null;
         void reconnect(token);
@@ -588,7 +698,7 @@ export function VoiceMode({
       return;
     }
     try {
-      const stream = await requestMicrophone();
+      const stream = await requestAttemptMicrophone(token);
       if (!currentVoice(token)) {
         stream.getTracks().forEach((track) => track.stop());
         return;
@@ -607,7 +717,8 @@ export function VoiceMode({
       maxSessionTimerRef.current = window.setTimeout(() => void finishListening(), 10 * 60 * 1_000);
     } catch (startError) {
       if (isAbortError(startError) || !currentVoice(token)) return;
-      failVoice(startError instanceof Error ? startError.message : "Realtime voice could not start.", token);
+      failVoice(startError instanceof Error ? startError.message : "Realtime voice could not start.", token,
+        startError instanceof RealtimeConnectionError ? startError.detail : "");
     }
   }
 
@@ -663,7 +774,7 @@ export function VoiceMode({
     setElapsedSeconds(0);
     setError("");
     setAnnouncement("Reopening listening so you can interrupt the reply.");
-    const stream = await requestMicrophone();
+    const stream = await requestAttemptMicrophone(token);
     if (!currentVoice(token)) {
       stream.getTracks().forEach((track) => track.stop());
       throw new DOMException("Canceled", "AbortError");
@@ -675,12 +786,6 @@ export function VoiceMode({
     onConversationBound(nextSession.conversationId);
     recordingStartedAtRef.current = Date.now();
     await connectPeer(nextSession, stream, token);
-    if (!currentVoice(token)) throw new DOMException("Workspace access changed.", "AbortError");
-    const channel = dataChannelRef.current;
-    if (!channel) throw new Error("The listening channel did not open.");
-    await waitForDataChannelOpen(channel, () => (
-      currentVoice(token)
-    ));
     if (!currentVoice(token)) throw new DOMException("Workspace access changed.", "AbortError");
     maxSessionTimerRef.current = window.setTimeout(
       () => void finishListening(),
@@ -1022,6 +1127,12 @@ export function VoiceMode({
                 </div>
                 <p id="voice-mode-status" className={styles.statusTitle}>{status.title}</p>
                 <p id="voice-mode-detail" className={clsx(styles.statusDetail, phase === "error" && styles.error)}>{status.detail}</p>
+                {phase === "error" && connectionErrorDetail ? (
+                  <details className="w-full text-left text-xs leading-5 text-muted">
+                    <summary className="cursor-pointer">Connection details</summary>
+                    <p>{connectionErrorDetail}</p>
+                  </details>
+                ) : null}
                 <p role="status" aria-live="polite" className="sr-only">{announcement}</p>
                 {replyText && !(pendingApproval && ["approval", "deciding", "resolved"].includes(phase)) ? (
                   <section className={styles.reply} aria-label={`${agentName}'s response`}>
@@ -1238,7 +1349,7 @@ function microphoneErrorMessage(error: unknown) {
 }
 
 function voiceStatus(phase: VoicePhase, elapsedSeconds: number, error: string, replyAudioPlaying: boolean) {
-  if (phase === "requesting") return { title: "Allow microphone access", detail: "The provider session starts only after permission is granted." };
+  if (phase === "requesting") return { title: "Allow microphone access", detail: "Allow microphone access in your browser or system prompt. If no prompt appears, check this site's microphone permission or open Asael in a full browser." };
   if (phase === "connecting") return { title: "Connecting", detail: "Opening a short-lived transcription-only connection." };
   if (phase === "listening") return { title: formatDuration(elapsedSeconds), detail: "Listening. Partial multilingual text appears below." };
   if (phase === "speaking") return { title: formatDuration(elapsedSeconds), detail: "Speech detected. Server VAD will close this turn after a short pause." };
@@ -1344,14 +1455,45 @@ async function waitForVoiceRun(
 async function waitForDataChannelOpen(
   channel: RTCDataChannel,
   isCurrent: () => boolean,
+  peer: RTCPeerConnection,
 ) {
-  const deadline = Date.now() + 10_000;
-  while (channel.readyState === "connecting" && Date.now() < deadline) {
+  while (channel.readyState === "connecting") {
     if (!isCurrent()) throw new DOMException("Canceled", "AbortError");
+    if (peer.connectionState === "failed" || peer.connectionState === "closed") break;
     await delay(50);
   }
   if (!isCurrent()) throw new DOMException("Canceled", "AbortError");
   if (channel.readyState !== "open") {
-    throw new Error("The listening channel did not become ready.");
+    throw new RealtimeConnectionError(
+      "Live audio could not connect. Check whether your network allows live audio, then try again.",
+      "Audio connection · listening channel closed before it was ready",
+    );
+  }
+}
+
+/** One deadline covers the request and its response body. Cancellation also
+ * releases callers waiting on browser WebRTC promises that cannot be aborted. */
+async function withVoiceStartupDeadline<T>(
+  controller: AbortController,
+  timeoutMs: number,
+  timeoutError: RealtimeConnectionError,
+  operation: () => Promise<T>,
+): Promise<T> {
+  if (controller.signal.aborted) throw new DOMException("Canceled", "AbortError");
+  let timer: number | undefined;
+  let onAbort: (() => void) | undefined;
+  const interrupted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(new DOMException("Canceled", "AbortError"));
+    controller.signal.addEventListener("abort", onAbort, { once: true });
+    timer = window.setTimeout(() => {
+      reject(timeoutError);
+      controller.abort();
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([operation(), interrupted]);
+  } finally {
+    if (timer !== undefined) window.clearTimeout(timer);
+    if (onAbort) controller.signal.removeEventListener("abort", onAbort);
   }
 }
