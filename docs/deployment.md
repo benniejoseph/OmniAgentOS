@@ -4,6 +4,13 @@ Production uses Node.js 24.x and npm 11.x across local metadata, CI, and the wor
 
 ## Required production configuration
 
+ATLAS conversation controls use native contract **v52** and app **1.27.0+86**.
+Deploy the paired server/worker before installing the updated Mac build. This
+release adds no database migration; migration 248 and the 270-table inventory
+remain current. Native v51/v50 artifacts stay byte-frozen and supported. New Mac
+keyboard/app-discovery options and command deadlines above 30 seconds require
+v52. See [conversation controls](atlas-conversation-controls.md).
+
 About me adds migration **248** (`20261009203000_personal_profiles.sql`) and
 native contract **v51**. Apply the additive migration with the existing
 encrypted-backup and quiescence procedure before deploying the candidate.

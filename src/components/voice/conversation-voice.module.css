@@ -47,6 +47,9 @@
 .endControl:hover { background: var(--danger-surface); }
 .presenceNotice { display: grid; gap: .375rem; margin-block-start: .5rem; padding: .75rem 1rem; border-radius: var(--radius-surface); background: var(--surface); color: var(--muted); box-shadow: var(--shadow-floating); font-size: .75rem; line-height: 1.5; overflow-wrap: anywhere; max-block-size: 10rem; overflow-y: auto; }
 .presenceNotice a { color: var(--foreground); text-decoration: underline; text-underline-offset: .15em; }
+.presence[data-reviewing-action="true"] { inline-size: min(34rem, calc(100vw - 2rem)); }
+.presence[data-reviewing-action="true"] .presenceNotice { max-block-size: min(32rem, 60dvh); }
+.presenceNotice details > summary { cursor: pointer; color: var(--foreground); font-size: .875rem; font-weight: 600; padding-block: .375rem; }
 .presenceNotice button { display: inline-flex; gap: .5rem; align-items: center; justify-content: center; min-block-size: 2.75rem; border: 1px solid var(--line-strong); border-radius: var(--radius-control); background: var(--surface-raised); color: var(--foreground); font-size: .8125rem; }
 .captionPanel { display: flex; flex-direction: column; min-block-size: 0; margin-block-end: .5rem; border-radius: var(--radius-sheet); background: var(--surface); box-shadow: var(--shadow-floating); overflow: hidden; }
 .captionPanel > header { display: flex; justify-content: space-between; align-items: center; gap: .75rem; padding: .5rem .75rem .5rem 1rem; border-block-end: 1px solid var(--line); }

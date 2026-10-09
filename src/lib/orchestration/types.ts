@@ -214,6 +214,11 @@ export type AgentRunRequest = {
     id: string;
     name: string;
   }>[];
+  /** Fresh capabilities of the exact native session admitted by the server. */
+  localComputerCapabilities?: Readonly<{
+    visualControlReady: boolean;
+    commandRunnerReady: boolean;
+  }>;
   /**
    * Live authenticated request identity for owner-scoped governed tools.
    * This value is never persisted in a continuation; approval resumes under

@@ -258,12 +258,16 @@ class TalkWorkflowSnapshot {
     required this.status,
     this.currentStep,
     this.research,
+    this.response,
+    this.threadId,
   });
 
   final String id;
   final String status;
   final String? currentStep;
   final TalkResearchWorkflow? research;
+  final String? response;
+  final String? threadId;
 
   bool get terminal =>
       const {'completed', 'failed', 'canceled'}.contains(status);
@@ -285,11 +289,20 @@ class TalkWorkflowSnapshot {
       throw const FormatException('Invalid workflow status projection.');
     }
     final currentStep = _boundedDisplayText(run['currentStep'], 80);
+    final result = _jsonRecord(run['result']);
+    final report = _jsonRecord(result['researchReportV1']);
+    final response = _boundedRunText(
+      report['content'] ?? result['response'] ?? result['summary'],
+      24000,
+    );
+    final metadata = _jsonRecord(_jsonRecord(run['input'])['metadata']);
     return TalkWorkflowSnapshot(
       id: id,
       status: status,
       currentStep: currentStep.isEmpty ? null : currentStep,
       research: TalkResearchWorkflow.fromDetail(payload),
+      response: response.isEmpty ? null : response,
+      threadId: safeTalkHistoryId(metadata['threadId']),
     );
   }
 }
@@ -556,6 +569,7 @@ class TalkRunInspection {
     this.waitingApproval,
     this.terminalReceipt,
     this.research,
+    this.delegatedWorkflowId,
   });
 
   final String runId;
@@ -566,6 +580,7 @@ class TalkRunInspection {
   final TalkWaitingApprovalSummary? waitingApproval;
   final Object? terminalReceipt;
   final TalkResearchWorkflow? research;
+  final String? delegatedWorkflowId;
   final TalkGroundingSummary grounding;
   final TalkAgentIdentitySummary agentIdentity;
   final List<TalkMediaArtifactSummary> mediaArtifacts;
@@ -594,6 +609,13 @@ class TalkRunInspection {
       throw const FormatException('Invalid run evidence projection.');
     }
     final projectedThreadId = safeTalkHistoryId(run['threadId']);
+    final delegated = _jsonRecord(run['delegatedWork']);
+    final delegatedWorkflowId =
+        status == 'completed' &&
+            delegated['status'] == 'accepted' &&
+            delegated['threadId'] == projectedThreadId
+        ? safeTalkHistoryId(delegated['workflowId'])
+        : '';
     final response = _boundedRunText(run['response'], 40000);
     final error = _boundedRunText(run['error'], 2000);
     final rawWaitingApproval = _jsonRecord(run['waitingApproval']);
@@ -868,6 +890,9 @@ class TalkRunInspection {
       status: status,
       terminalReceipt: run['terminalReceipt'],
       research: TalkResearchWorkflow.fromAgentRun(run),
+      delegatedWorkflowId: delegatedWorkflowId.isEmpty
+          ? null
+          : delegatedWorkflowId,
       threadId: projectedThreadId.isEmpty ? null : projectedThreadId,
       response: response.isEmpty ? null : response,
       error: error.isEmpty ? null : error,
@@ -1077,13 +1102,16 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
 
   void rememberVoiceContext(
     String mode,
-    List<TalkCommandContextReference> references,
-  ) {
+    List<TalkCommandContextReference> references, {
+    TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
+  }) {
     final project = references
         .where((item) => item.kind == 'project')
         .firstOrNull;
     final next = <String, dynamic>{
       'mode': mode,
+      if (executionTarget == TalkExecutionTarget.thisMac)
+        'computerUseTarget': 'local_macos',
       'contextScope': project == null ? 'session' : 'project',
       if (project != null) 'projectId': project.id,
       'contextReferences': [
@@ -1110,7 +1138,9 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
         'status': 'unavailable',
         'message': 'The conversation is no longer open.',
       };
-    if (hasPendingConversationWork || researchConversationBusy) {
+    if ((hasPendingConversationWork &&
+            _runLifecycleStatus != 'waiting_clarification') ||
+        researchConversationBusy) {
       return {
         'status': waitingForApproval ? 'waiting_approval' : 'busy',
         'message': waitingForApproval
@@ -1133,9 +1163,13 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
         )
         .toList(growable: false);
     final before = messages.length;
+    final previousWorkflows = _workflowIds.toSet();
     await _send(
       request,
       mode: pinnedContext['mode'] as String,
+      executionTarget: pinnedContext['computerUseTarget'] == 'local_macos'
+          ? TalkExecutionTarget.thisMac
+          : TalkExecutionTarget.agent,
       strategy: 'direct',
       assignedAgent: TalkAssignedAgent(
         id: pinnedContext['agentId'] as String,
@@ -1149,23 +1183,116 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
         'status': 'waiting_approval',
         'message': 'This action needs approval. Ask the user to review it in Inbox; spoken agreement cannot approve it.',
         'runId': ?runId,
+        'approvalId': ?_voiceApprovalId,
+      };
+    if (_runLifecycleStatus == 'waiting_clarification')
+      return {
+        'status': 'waiting_clarification',
+        'message':
+            messages.lastOrNull?.text ?? 'Please clarify which item you mean.',
+        'runId': ?runId,
+      };
+    final workflowId = _workflowIds
+        .where((id) => !previousWorkflows.contains(id))
+        .lastOrNull;
+    if (workflowId != null)
+      return {
+        'status': 'accepted',
+        'message': 'Your background task has been saved. I’ll follow its progress and let you know when it finishes.',
+        'runId': ?runId,
+        'workflowId': workflowId,
       };
     if (hasPendingConversationWork)
       return {
-        'status': 'pending',
+        'status': _runLifecycleStatus == 'waiting_clarification'
+            ? 'waiting_clarification'
+            : 'running',
         'message': 'The task is continuing in History. Do not resend it.',
         'runId': ?runId,
       };
     final reply = messages.length > before ? messages.last : null;
     final text = reply?.role == TalkRole.assistant ? reply!.text : '';
     return {
-      'status': reply?.failed == true ? 'failed' : 'completed',
+      'status': _runLifecycleStatus == 'canceled'
+          ? 'canceled'
+          : reply?.failed == true
+          ? 'failed'
+          : 'completed',
       'message': text.isEmpty
           ? 'Check History for this task’s outcome.'
           : text.length > 10000
           ? text.substring(0, 10000)
           : text,
       'runId': ?runId,
+    };
+  }
+
+  String? get _voiceApprovalId {
+    final route = pendingApprovalRoute;
+    return route?.startsWith('/inbox/approvals/') == true
+        ? Uri.decodeComponent(route!.substring('/inbox/approvals/'.length))
+        : null;
+  }
+
+  /// Read the exact admitted work; never restart a request after voice timeout.
+  Future<Map<String, dynamic>> inspectVoiceWork(
+    Map<String, dynamic> work,
+    String conversationId,
+  ) async {
+    if (_disposed || threadId != conversationId)
+      throw StateError('The voice conversation changed.');
+    final workflowId = safeTalkHistoryId(work['workflowId']);
+    final acceptedRunId = safeTalkHistoryId(work['runId']);
+    if (workflowId.isNotEmpty) {
+      final snapshot = await repository.inspectWorkflow(workflowId);
+      if (_disposed ||
+          threadId != conversationId ||
+          snapshot.id != workflowId ||
+          (snapshot.threadId?.isNotEmpty == true &&
+              snapshot.threadId != conversationId)) {
+        throw StateError('The task conversation changed.');
+      }
+      return {
+        'workflowId': workflowId,
+        'runId': ?work['runId'],
+        'status': snapshot.status == 'paused'
+            ? 'waiting_clarification'
+            : snapshot.status,
+        'message': snapshot.status == 'completed'
+            ? snapshot.response ?? snapshot.research?.report?.content ?? 'The task completed. Its saved result is available in History.'
+            : snapshot.status == 'waiting_approval'
+            ? 'An action needs your review before work can continue.'
+            : 'Your background task is ${snapshot.status.replaceAll('_', ' ')}.',
+      };
+    }
+    if (acceptedRunId.isEmpty) throw StateError('No admitted task identity.');
+    final snapshot = await repository.inspectRun(acceptedRunId);
+    if (_disposed ||
+        threadId != conversationId ||
+        snapshot.runId != acceptedRunId ||
+        (snapshot.threadId != null && snapshot.threadId != conversationId)) {
+      throw StateError('The task conversation changed.');
+    }
+    if (snapshot.delegatedWorkflowId != null)
+      return {
+        'runId': acceptedRunId,
+        'workflowId': snapshot.delegatedWorkflowId,
+        'status': 'accepted',
+        'message': 'The approved action started your background task. I’m following it until it finishes.',
+      };
+    return {
+      'runId': acceptedRunId,
+      'status': snapshot.status,
+      'approvalId': ?snapshot.waitingApproval?.executionId,
+      'message': snapshot.status == 'completed'
+          ? snapshot.response ?? 'Your task completed.'
+          : snapshot.status == 'failed' || snapshot.status == 'canceled'
+          ? snapshot.error ?? 'The task ${snapshot.status}.'
+          : snapshot.status == 'waiting_approval'
+          ? 'Review the exact action to continue. Your voice call stays connected.'
+          : snapshot.status == 'waiting_clarification'
+          ? snapshot.response ?? 'This task needs your input.'
+          : 'Your task is still running.',
     };
   }
 
@@ -2684,6 +2811,10 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     _runLifecycleStatus = inspection.status;
     adoptConversationThreadId(inspection.threadId);
     _clearRetry();
+    if (inspection.delegatedWorkflowId case final workflowId?) {
+      _rememberWorkflow(workflowId);
+      _startWorkflowMonitor(workflowId);
+    }
     switch (inspection.status) {
       case 'queued':
         status = 'Queued';
@@ -4467,6 +4598,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     if (value == executionTarget) return;
     setState(() => executionTarget = value);
     resetCommandModelCatalog();
+    _rememberVoiceContext();
   }
 
   void resetCommandModelCatalog() {
@@ -5198,7 +5330,11 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
 
   void _rememberVoiceContext() {
     if (!widget.ambientVoice)
-      widget.controller.rememberVoiceContext(commandMode, commandReferences);
+      widget.controller.rememberVoiceContext(
+        commandMode,
+        commandReferences,
+        executionTarget: executionTarget,
+      );
   }
 
   void _handleVoiceSelectionChanged() {
@@ -5272,10 +5408,27 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
         ...controller.voiceConversationContext,
         'agentId': controller.assignedAgent?.id ?? 'atlas',
       };
+      if (context['computerUseTarget'] == 'local_macos') {
+        final localComputer = widget.localComputer;
+        if (localComputer == null ||
+            !localComputer.canClaimCommands ||
+            !await localComputer.prepareForCommand()) {
+          throw const AmbientVoiceException(
+            'this_mac_unavailable',
+            'This Mac is not ready. Open Settings → This Mac to enable access, or choose Asael before starting voice.',
+          );
+        }
+        if (!mounted ||
+            widget.controller != controller ||
+            selection != _voiceSelection(controller) ||
+            widget.workspaceLocked?.value == true)
+          return;
+      }
       await voice.start(
         consentAccepted: ambientConsentAccepted,
         context: context,
         existingConversationId: controller.threadId,
+        readWork: controller.inspectVoiceWork,
         onConversationBound: (id) {
           _voiceBoundThread = id;
           controller.adoptConversationThreadId(id);

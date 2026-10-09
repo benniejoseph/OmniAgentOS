@@ -6,6 +6,11 @@ export const csmRoleWriteSchema = z.object({
   text: z.string().trim().max(CSM_ROLE_CONTEXT_LIMITS.textCharacters),
   expectedRevision: z.string().trim().min(1).max(320).nullable(),
 }).strict();
+export const csmRolePatchSchema = z.object({
+  text: z.string().trim().max(CSM_ROLE_CONTEXT_LIMITS.textCharacters),
+  mode: z.enum(["append", "replace"]).default("append"),
+  expectedRevision: z.string().trim().min(1).max(320).nullable(),
+}).strict().refine(value => value.mode === "replace" || value.text.length > 0, "Add the role notes to save.");
 
 export const csmRoleSnapshotSchema = z.object({
   schemaVersion: z.literal(1),

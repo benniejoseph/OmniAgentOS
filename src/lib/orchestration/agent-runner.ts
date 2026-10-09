@@ -35,6 +35,7 @@ import {
   composeCapabilitySearchQuery,
   loadProgressiveAgentTools,
 } from "@/lib/capabilities/toolbox";
+import { requestsConversationalResearch } from "@/lib/capabilities/conversation-controls";
 import { runWithDatabaseTenantScope } from "@/lib/db/client";
 import { databaseMemoryAccessScopeFromExecutionScope } from "@/lib/db/memory-access-scope";
 import { generateModelToolTurn } from "@/lib/models/gateway";
@@ -83,6 +84,7 @@ import {
   buildAgentInstructions,
 } from "@/lib/orchestration/prompts";
 import { resolveAgentToolPolicy } from "@/lib/orchestration/agent-tool-policy";
+import { workflowHandoffFromExecution, type WorkflowHandoff } from "@/lib/orchestration/workflow-handoff";
 import { assignedSkillsWithinRuntimeLimit } from "@/lib/skills/limits";
 import { modelAssignmentScopeForAgent } from "@/lib/orchestration/computer-use-routing";
 import { runtimeModelRoutingPolicySha256 } from "@/lib/settings/runtime-model-routing-pin";
@@ -1253,7 +1255,7 @@ async function* runAgentUntilStopped(
       ...request.agentProfile.toolIds,
       ...runtimeAgentSkills.flatMap((skill) => skill.toolIds),
     ])] : undefined;
-    const localComputerToolIds = [
+    const localVisualToolIds = [
       "local.macos.observe",
       "local.macos.list_apps",
       "local.macos.activate_app",
@@ -1263,17 +1265,24 @@ async function* runAgentUntilStopped(
       "local.macos.type",
       "local.macos.key",
       "local.macos.scroll",
-      ...(request.localComputerWorkspaces?.length
-        ? ["local.macos.command.run" as const]
-        : []),
     ] as const;
+    const allLocalComputerToolIds = [...localVisualToolIds, "local.macos.command.run"];
+    const localComputerToolIds = localComputerUseRequested ? [
+      ...(request.localComputerCapabilities?.visualControlReady !== false ? localVisualToolIds : []),
+      ...(request.localComputerWorkspaces?.length && request.localComputerCapabilities?.commandRunnerReady !== false
+        ? ["local.macos.command.run"] : []),
+    ] : [];
+    const unavailableLocalToolIds = allLocalComputerToolIds.filter(id => !localComputerToolIds.includes(id));
+    // This Mac adds a currently admitted device to the same governed app
+    // toolbox. It never discards the Agent's app tools or expands its custom
+    // allowlist; command access retains the existing explicit folder opt-in.
     const configuredToolIds = localComputerUseRequested
       ? request.agentProfile
-        ? localComputerToolIds.filter((id) =>
-            id === "local.macos.command.run" ||
-            profileConfiguredToolIds?.includes(id)
-          )
-        : [...localComputerToolIds]
+        ? [...new Set([
+            ...(profileConfiguredToolIds || []).filter(id => !unavailableLocalToolIds.includes(id)),
+            ...(localComputerToolIds.includes("local.macos.command.run") ? ["local.macos.command.run"] : []),
+          ])]
+        : undefined
       : profileConfiguredToolIds;
     const groundToolDiscoveryInMemory = !isolatedMemoryContext &&
       durableMemoryEnabled &&
@@ -1285,6 +1294,7 @@ async function* runAgentUntilStopped(
       : groundToolDiscoveryInMemory
         ? undefined
         : buildAgentToolbox(request.tenantId, {
+            excludeToolIds: unavailableLocalToolIds,
             query: composeCapabilitySearchQuery(
               mode === "research" && liveWebRequested ? "web.search web.read" : undefined,
               baseCapabilitySearchQuery || query,
@@ -1366,6 +1376,7 @@ async function* runAgentUntilStopped(
         )
       : baseCapabilitySearchQuery;
     const resolvedToolboxPromise = toolboxPromise || buildAgentToolbox(request.tenantId, {
+      excludeToolIds: unavailableLocalToolIds,
       query: composeCapabilitySearchQuery(
         mode === "research" && liveWebRequested ? "web.search web.read" : undefined,
         capabilitySearchQuery || query,
@@ -1389,9 +1400,7 @@ async function* runAgentUntilStopped(
         ...((isLiveWebSearchExplicitlyDisabled(query) ||
           (mode === "research" && isResearchWebExplicitlyDisabled(query)))
           ? ["web.search", "web.read"] : []),
-        ...(!localComputerUseRequested
-          ? localComputerToolIds
-          : []),
+        ...unavailableLocalToolIds,
       ],
     );
     let agentToolPolicy: AgentRunContinuation["toolPolicy"];
@@ -1416,7 +1425,13 @@ async function* runAgentUntilStopped(
     if (request.voiceInput || request.voiceOrigin) {
       agentToolPolicy = {
         ...agentToolPolicy,
-        forceApprovalAboveRisk: 0,
+        // Routine reversible app actions follow their ordinary policy. Keep
+        // any stricter configured Agent policy, and always review risk-two
+        // Mac actions, terminal commands and other consequential operations.
+        forceApprovalAboveRisk: Math.min(
+          agentToolPolicy.forceApprovalAboveRisk ?? 1,
+          request.voiceInput?.schemaVersion === 2 ? 1 : 0,
+        ),
       };
     }
     if (promptMemoryAccessScope || personalPromptMemoryAccessScope) {
@@ -1518,7 +1533,9 @@ async function* runAgentUntilStopped(
     // A prefetch has no model approval continuation. Only the currently
     // authorized, approval-free read may run here; all other tools stay in
     // the normal governed model loop.
-    const useLiveWeb = Boolean(liveWebRequested &&
+    const conversationalResearch = mode !== "research" && requestsConversationalResearch(query) &&
+      toolbox.tools.some(({ definition }) => definition.id === "app.research.start");
+    const useLiveWeb = Boolean(liveWebRequested && !conversationalResearch &&
       !localComputerUseRequested &&
       webSearchTool &&
       webSearchTool.riskLevel === 0 &&
@@ -2215,6 +2232,7 @@ async function* runAgentUntilStopped(
     });
 
     let response = "";
+    let workflowHandoff: WorkflowHandoff | undefined;
     const delegationExecutionsForReceiptReconciliation:
       GovernedToolExecutionResult[] = [];
 
@@ -2267,6 +2285,7 @@ async function* runAgentUntilStopped(
           moltbookAutonomy: request.moltbookAutonomy,
           executionScope,
           runId: run.id,
+          threadId: run.threadId,
           promptCacheScope: agentPromptCacheScope(run.agentId),
           computerUseTarget,
           usageReceipt: runtimeModel.usageReceipt,
@@ -2461,6 +2480,7 @@ async function* runAgentUntilStopped(
           }, { tenantId: request.tenantId, actorId: securityContext.actorId });
           return;
         }
+        workflowHandoff = result.workflowHandoff;
         providerTextCompleted = true;
       }
 
@@ -2476,7 +2496,7 @@ async function* runAgentUntilStopped(
 
       // Tool loop: stream a turn; if the model called tools, execute them
       // through the governed executor and continue with the outputs.
-      for (;;) {
+      while (!workflowHandoff) {
         runAbortSignal.throwIfAborted();
         const durableTurnInput = conversationItems ?? initialConversationItems;
         const turnInput: ResponseTurnInput = openAITurnInputWithComputerObservations(
@@ -2959,6 +2979,10 @@ async function* runAgentUntilStopped(
             return;
           }
 
+          workflowHandoff = workflowHandoffFromExecution(execution, {
+            tenantId: runTenantId, actorId: securityContext.actorId, threadId: run.threadId,
+          });
+          if (workflowHandoff) break;
           outputs.push(functionCallOutput(call, executionPayload(execution)));
           const observationTransition = transitionEphemeralLocalObservation(
             latestLocalObservation,
@@ -2981,6 +3005,7 @@ async function* runAgentUntilStopped(
           }
         }
 
+        if (workflowHandoff) break;
         for (const call of turn.functionCalls.slice(maxToolCallsPerTurn)) {
           outputs.push(functionCallOutput(call, { error: "Per-turn tool call limit reached; call skipped." }));
         }
@@ -3000,7 +3025,7 @@ async function* runAgentUntilStopped(
       await flushDeltas();
     }
 
-    if (councilActive && councilAgentIds.includes("sentinel") && response.trim()) {
+    if (!workflowHandoff && councilActive && councilAgentIds.includes("sentinel") && response.trim()) {
       try {
         const verdict = await reviewCouncilResponse({
           goal: query,
@@ -3088,6 +3113,7 @@ async function* runAgentUntilStopped(
     const finalization = await finalizeAgentRun({
       runId: run.id,
       response,
+      workflowHandoff,
       delegationExecutions: delegationExecutionsForReceiptReconciliation,
       recordStatus: async (event) => {
         finalStatusEvents.push(await emit(event));
@@ -3119,14 +3145,14 @@ async function* runAgentUntilStopped(
       });
       return;
     }
-    if (researchProgress) {
+    if (researchProgress && !workflowHandoff) {
       researchProgress = { ...researchProgress, stage: "complete",
         reportStatus: researchProgress.sourcesRead > 0 && !researchProgress.gaps.length ? "ready" : "partial" };
       yield await emit({ type: "research_progress", progress: researchProgress });
     }
     // Clients get the public grounding projection, as on every other path;
     // the raw claim evidence stays on the stored run.
-    yield {
+    yield workflowHandoff || {
       type: "done",
       response,
       grounding: publicGroundingReport(finalization.grounding),
@@ -3242,6 +3268,7 @@ type NonOpenAIProviderLoopResult = {
   toolSteps: number;
   citationSources: CitationSource[];
   delegationExecutions: readonly GovernedToolExecutionResult[];
+  workflowHandoff?: WorkflowHandoff;
   waitingApproval?: {
     executionId: string;
     toolId: string;
@@ -3288,6 +3315,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   moltbookAutonomy?: AgentRunRequest["moltbookAutonomy"];
   executionScope?: ExecutionScope;
   runId: string;
+  threadId?: string;
   /** What the loop's model turns share a prompt cache with. */
   promptCacheScope?: string;
   computerUseTarget?: ComputerUseTarget;
@@ -3375,6 +3403,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   };
   let citationSources: CitationSource[] = [];
   const delegationExecutions: GovernedToolExecutionResult[] = [];
+  let workflowHandoff: WorkflowHandoff | undefined;
   let activeProvider: "openai" | "google" | "anthropic" | "aws_bedrock" = input.provider;
 
   const finish = (
@@ -3395,6 +3424,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
     toolSteps,
     citationSources,
     delegationExecutions: Object.freeze([...delegationExecutions]),
+    ...(workflowHandoff ? { workflowHandoff } : {}),
     ...(waitingApproval ? { waitingApproval } : {}),
   });
 
@@ -3839,6 +3869,10 @@ export async function* runNonOpenAIProviderToolLoop(input: {
             },
           });
         }
+        workflowHandoff = workflowHandoffFromExecution(execution, {
+          tenantId: input.securityContext.tenantId, actorId: input.securityContext.actorId, threadId: input.threadId,
+        });
+        if (workflowHandoff) return finish();
         const isError =
           execution.record.status !== "executed" &&
           execution.record.status !== "dry_run";
@@ -4732,6 +4766,9 @@ async function resumeAgentRunAfterToolApprovalInScope({
     );
   }
   let response = continuation.response || run.response || "";
+  let workflowHandoff = workflowHandoffFromExecution(toolExecution, {
+    tenantId: continuation.context.tenantId, actorId: continuation.context.actorId, threadId: run.threadId,
+  });
   let toolSteps = continuation.toolSteps;
   let citationSources = mergeCitationSources(
     continuation.citationSources || [],
@@ -4815,7 +4852,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
   }
 
   try {
-    for (let queueIndex = 0; queueIndex < queuedCalls.length; queueIndex += 1) {
+    for (let queueIndex = 0; !workflowHandoff && queueIndex < queuedCalls.length; queueIndex += 1) {
       const call = queuedCalls[queueIndex];
       if (call.skipReason) {
         carriedOutputs.push(functionCallOutput(call, { error: call.skipReason }));
@@ -4963,6 +5000,10 @@ async function resumeAgentRunAfterToolApprovalInScope({
         return { resumed: true, status: "waiting_approval" };
       }
 
+      workflowHandoff = workflowHandoffFromExecution(execution, {
+        tenantId: continuation.context.tenantId, actorId: continuation.context.actorId, threadId: run.threadId,
+      });
+      if (workflowHandoff) break;
       carriedOutputs.push(functionCallOutput(call, {
         executionId: execution.record.id,
         status: execution.record.status,
@@ -4992,7 +5033,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
     }
     conversationItems = [...conversationItems, ...carriedOutputs];
 
-    for (;;) {
+    while (!workflowHandoff) {
       resumeAbortSignal.throwIfAborted();
       const turnInput: ResponseTurnInput = openAITurnInputWithComputerObservations(
         conversationItems,
@@ -5331,6 +5372,10 @@ async function resumeAgentRunAfterToolApprovalInScope({
           return { resumed: true, status: "waiting_approval" };
         }
 
+        workflowHandoff = workflowHandoffFromExecution(execution, {
+          tenantId: continuation.context.tenantId, actorId: continuation.context.actorId, threadId: run.threadId,
+        });
+        if (workflowHandoff) break;
         outputs.push(functionCallOutput(call, {
           executionId: execution.record.id,
           status: execution.record.status,
@@ -5359,6 +5404,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
         }
       }
 
+      if (workflowHandoff) break;
       for (const call of turn.functionCalls.slice(maxToolCallsPerTurn)) {
         outputs.push(functionCallOutput(call, { error: "Per-turn tool call limit reached; call skipped." }));
       }
@@ -5379,6 +5425,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
     const finalization = await finalizeAgentRun({
       runId: run.id,
       response,
+      workflowHandoff,
       delegationExecutions: resumeDelegationExecutions,
       carriedDelegationReceipts: continuation.delegationReceipts,
       recordStatus: appendScopedRunEvent,
@@ -5786,6 +5833,9 @@ async function resumeProviderBoundAgentRunAfterApproval({
   }
 
   let response = continuation.response || run.response || "";
+  let workflowHandoff = workflowHandoffFromExecution(toolExecution, {
+    tenantId: continuation.context.tenantId, actorId: continuation.context.actorId, threadId: run.threadId,
+  });
   let toolSteps = continuation.toolSteps;
   let citationSources = mergeCitationSources(
     continuation.citationSources || [],
@@ -5919,7 +5969,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
   try {
     for (
       let queueIndex = 0;
-      queueIndex < providerState.queuedCalls.length;
+      !workflowHandoff && queueIndex < providerState.queuedCalls.length;
       queueIndex += 1
     ) {
       const call = providerState.queuedCalls[queueIndex];
@@ -6035,6 +6085,10 @@ async function resumeProviderBoundAgentRunAfterApproval({
           },
         });
       }
+      workflowHandoff = workflowHandoffFromExecution(execution, {
+        tenantId: continuation.context.tenantId, actorId: continuation.context.actorId, threadId: run.threadId,
+      });
+      if (workflowHandoff) break;
       const observationTransition = transitionEphemeralLocalObservation(
         latestLocalObservation,
         definition.id,
@@ -6054,6 +6108,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
       ));
     }
 
+    if (!workflowHandoff) {
     const providerLoop = runNonOpenAIProviderToolLoop({
       maxOutputTokens,
       requireReadOnly: continuation.toolPolicy?.readOnly,
@@ -6072,6 +6127,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
       requestActorBinding: resumeActorBinding,
       executionScope,
       runId: run.id,
+      threadId: run.threadId,
       promptCacheScope: agentPromptCacheScope(run.agentId),
       computerUseTarget: continuation.computerUseTarget === "local_macos"
         ? "local_macos"
@@ -6237,11 +6293,15 @@ async function resumeProviderBoundAgentRunAfterApproval({
     if (result.waitingApproval) {
       return await parkForApproval(result.waitingApproval);
     }
+    workflowHandoff = result.workflowHandoff;
+    }
 
+    await flushDeltas();
     runBudgetState = refreshRunBudgetWallTime(runBudgetState);
     const finalization = await finalizeAgentRun({
       runId: run.id,
       response,
+      workflowHandoff,
       delegationExecutions: resumeDelegationExecutions,
       carriedDelegationReceipts: continuation.delegationReceipts,
       recordStatus: appendScopedRunEvent,
@@ -6352,6 +6412,7 @@ type AgentRunFinalization =
 async function finalizeAgentRun(input: {
   runId: string;
   response: string;
+  workflowHandoff?: WorkflowHandoff;
   delegationExecutions: readonly GovernedToolExecutionResult[];
   carriedDelegationReceipts?: readonly DelegationReceiptProjection[];
   recordStatus: (event: AgentEvent) => Promise<unknown>;
@@ -6372,7 +6433,7 @@ async function finalizeAgentRun(input: {
     input.delegationExecutions,
     input.carriedDelegationReceipts,
   );
-  if (reconciliation.replaced) {
+  if (reconciliation.replaced && !input.workflowHandoff) {
     await input.recordStatus({
       type: "status",
       label: "Delegation receipts reconciled",
@@ -6380,7 +6441,7 @@ async function finalizeAgentRun(input: {
         `The final response was replaced with ${reconciliation.receiptCount} server-owned delegation receipt(s).`,
     });
   }
-  const response = reconciliation.response;
+  const response = input.workflowHandoff?.acknowledgement || reconciliation.response;
   const grounding = await buildClaimGroundingReport({
     runId: input.runId,
     response,
@@ -6391,7 +6452,7 @@ async function finalizeAgentRun(input: {
     input.runId,
     response,
     grounding,
-    input.runMutationOptions,
+    { ...input.runMutationOptions, workflowHandoff: input.workflowHandoff },
   );
   if (!completed) return { committed: false, response };
   await appendAssistantTurnSafely({
@@ -6402,7 +6463,7 @@ async function finalizeAgentRun(input: {
   });
   // Only a durable decision forms memory. A continuation saved before runs
   // carried the decision has none, so it resumes withheld.
-  const consolidation = input.memory.formation === "durable"
+  const consolidation = input.memory.formation === "durable" && !input.workflowHandoff
     ? enqueueMemoryConsolidationSafely({
         runId: input.runId,
         tenantId: input.tenantId,

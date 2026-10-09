@@ -6,7 +6,7 @@ import type { WorkspaceLibraryItem } from "@/lib/library/contracts";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { canPerform, redactSensitive } from "@/lib/security/context";
 import { CsmError, csmSourceDeleteSchema, csmSourceWriteSchema, type CsmSourceLink } from "./contracts";
-import { CSM_ROLE_CONTEXT_LIMITS, csmRoleWriteSchema, type CsmRoleSnapshot } from "./role-contracts";
+import { CSM_ROLE_CONTEXT_LIMITS, csmRolePatchSchema, csmRoleWriteSchema, type CsmRoleSnapshot } from "./role-contracts";
 import { csmRoleAccess, readCsmRoleContext, writeCsmRoleContext } from "./role-store";
 import { resolveCsmSources } from "./service";
 
@@ -32,6 +32,19 @@ export async function saveCsmRoleText(caller: AppServiceCaller, body: unknown) {
   return mutate(caller, input.expectedRevision, { operation: "text", text }, (current) => ({
     ...emptySnapshot(), ...current, text,
   }));
+}
+
+export async function patchCsmRoleText(caller: AppServiceCaller, body: unknown) {
+  const input = csmRolePatchSchema.parse(body);
+  const text = String(redactSensitive(input.text));
+  return mutate(caller, input.expectedRevision, { operation: "text_patch", mode: input.mode, text }, current => {
+    const snapshot = current || emptySnapshot();
+    const updated = input.mode === "append" && snapshot.text ? `${snapshot.text}\n\n${text}` : text;
+    if (updated.length > CSM_ROLE_CONTEXT_LIMITS.textCharacters) {
+      throw new CsmError("Your role notes are full. Shorten the update or revise existing notes first.", 409);
+    }
+    return { ...snapshot, text: updated };
+  });
 }
 
 export async function linkCsmRoleSource(caller: AppServiceCaller, body: unknown) {

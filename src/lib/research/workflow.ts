@@ -142,7 +142,8 @@ type ResearchStepContext = {
 
 export function isResearchWorkflow(detail: WorkflowRunDetail) {
   const options = researchOptionsSchema.safeParse(detail.run.input.metadata?.[RESEARCH_WORKFLOW_METADATA_KEY]);
-  return detail.run.input.mode === "research" && options.success && options.data.depth === "deep";
+  return detail.run.input.mode === "research" && options.success &&
+    (options.data.depth === "deep" || detail.run.input.metadata?.source === "conversation_research");
 }
 
 export function isResearchWorkflowStep(step: WorkflowStepKey) { return RESEARCH_STEPS.has(step); }

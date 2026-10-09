@@ -6,7 +6,7 @@ import {
   startSseHeartbeat,
 } from "@/lib/http/sse";
 import { agentRunOutcomeEvent } from "@/lib/runs/public";
-import { getAgentRun, listAgentRunEventsAfter } from "@/lib/runs/store";
+import { getAgentRun, getAgentRunWorkflowHandoff, listAgentRunEventsAfter } from "@/lib/runs/store";
 import { redactSensitive } from "@/lib/security/context";
 
 /**
@@ -116,7 +116,10 @@ export function agentRunTailResponse(input: {
             }
             if (page.length < TAIL_PAGE_SIZE || stop.signal.aborted) break;
           }
-          const outcome = agentRunOutcomeEvent(run);
+          const workflowHandoff = run.status === "completed"
+            ? await getAgentRunWorkflowHandoff(run.id, { tenantId: input.tenantId, actorId: run.ownerActorId })
+            : undefined;
+          const outcome = agentRunOutcomeEvent(run, { workflowHandoff });
           if (outcome) {
             write(encodeSse(outcome));
             break;

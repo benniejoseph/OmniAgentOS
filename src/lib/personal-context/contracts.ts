@@ -41,6 +41,14 @@ export const personalProfileChangeSchema = z.object({
   source: personalProfileSourceSchema.default("you"),
 }).strict();
 export type PersonalProfileChange = z.infer<typeof personalProfileChangeSchema>;
+/** A conversation changes only named fields. Omitted fields retain their saved values. */
+export const personalProfilePatchSchema = z.object({
+  expectedRevision: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER - 1),
+  enabled: z.boolean().optional(),
+  profile: personalProfileSchema.partial().optional(),
+}).strict().refine(value => value.enabled !== undefined || Object.keys(value.profile || {}).length > 0,
+  "Name at least one About me field to change.");
+export type PersonalProfilePatch = z.infer<typeof personalProfilePatchSchema>;
 export const personalProfileResponseSchema = z.object({
   schemaVersion: z.literal(1), contract: z.literal(PERSONAL_PROFILE_CONTRACT),
   revision: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER), enabled: z.boolean(),

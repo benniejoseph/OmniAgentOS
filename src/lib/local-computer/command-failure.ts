@@ -5,6 +5,10 @@
  */
 export function localComputerCommandFailureMessage(code: string) {
   switch (code) {
+    case "native_upgrade_required":
+      return "Update the Asael Mac app to use this action. It was not sent to the older app.";
+    case "application_open_failed":
+      return "macOS could not open that app. Check that it is installed and can open normally; ATLAS has not accepted any permission prompt.";
     case "typing_interrupted":
       return (
         "The installed Mac stopped typing partway (typing_interrupted): the field " +

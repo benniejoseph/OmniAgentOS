@@ -5,7 +5,7 @@ import { showWorkspaceLibraryItemService } from "@/lib/app-services/library";
 import { listProjectsService, showProjectService } from "@/lib/app-services/projects";
 import type { WorkspaceLibraryItem } from "@/lib/library/contracts";
 import { redactSensitive } from "@/lib/security/context";
-import { CsmError, clientProfileSchema, csmProfileWriteSchema, csmSourceDeleteSchema, csmSourceWriteSchema, type CsmSnapshot, type CsmSourceLink } from "./contracts";
+import { CsmError, clientProfileSchema, csmProfilePatchSchema, csmProfileWriteSchema, csmSourceDeleteSchema, csmSourceWriteSchema, type CsmSnapshot, type CsmSourceLink } from "./contracts";
 import { csmProjectAccess, hasCsmContextHistory, readCsmContext, writeCsmContext, type CsmStoredContext } from "./store";
 
 const readContract = { operation: "app.csm.context.show", action: "read", resourceType: "project", accessMode: "read" as const, eventContract: "app_service.read" };
@@ -52,6 +52,19 @@ export async function saveCsmProfile(caller: AppServiceCaller, projectId: string
   return mutate(caller, projectId, input.expectedRevision, { operation: "profile", profile }, (current) => ({
     ...emptySnapshot(projectId), ...current, profile,
   }));
+}
+
+export async function patchCsmProfile(caller: AppServiceCaller, projectId: string, body: unknown) {
+  const input = csmProfilePatchSchema.parse(body);
+  const patch = csmProfilePatchSchema.shape.profile.parse(redactSensitive(input.profile));
+  return mutate(caller, projectId, input.expectedRevision, { operation: "profile_patch", patch }, current => {
+    const snapshot = current || emptySnapshot(projectId);
+    const { nextReviewDate, ...fields } = patch;
+    const profile = { ...snapshot.profile, ...fields };
+    if (nextReviewDate === null) delete profile.nextReviewDate;
+    else if (nextReviewDate !== undefined) profile.nextReviewDate = nextReviewDate;
+    return { ...snapshot, profile: clientProfileSchema.parse(profile) };
+  });
 }
 
 export async function linkCsmSource(caller: AppServiceCaller, projectId: string, body: unknown) {

@@ -29,6 +29,7 @@ import {
   type ExecutionScope,
 } from "@/lib/security/execution-scope";
 import type { AgentEvent, AgentMode, ChatMessage } from "@/lib/orchestration/types";
+import { workflowHandoffEventSchema, type WorkflowHandoff } from "@/lib/orchestration/workflow-handoff";
 import {
   parseLoopV2ContextBindingV1,
   type LoopV2ContextBindingV1,
@@ -967,6 +968,7 @@ async function appendLegacyRunTerminalReceiptSafely(
     !runContractEnvelope ||
     event.type !== "waiting_approval" &&
       event.type !== "done" &&
+      event.type !== "delegated" &&
       event.type !== "error" &&
       event.type !== "canceled"
   ) {
@@ -980,7 +982,7 @@ async function appendLegacyRunTerminalReceiptSafely(
     const currentRun = await getAgentRun(runId, { tenantId });
     const expectedStatus: RunStatus = event.type === "waiting_approval"
       ? "waiting_approval"
-      : event.type === "done"
+      : event.type === "done" || event.type === "delegated"
         ? "completed"
         : event.type === "canceled"
           ? "canceled"
@@ -988,7 +990,7 @@ async function appendLegacyRunTerminalReceiptSafely(
     if (currentRun?.status !== expectedStatus) return;
     const legacyStatus = event.type === "waiting_approval"
       ? "waiting_approval" as const
-      : event.type === "done"
+      : event.type === "done" || event.type === "delegated"
         ? "completed" as const
         : event.type === "canceled"
           ? "canceled" as const
@@ -996,8 +998,8 @@ async function appendLegacyRunTerminalReceiptSafely(
     const pendingApprovalIds = event.type === "waiting_approval"
       ? [runContractReferenceId("approval", event.executionId)]
       : [];
-    const outputSha256 = event.type === "done"
-      ? createHash("sha256").update(event.response).digest("hex")
+    const outputSha256 = event.type === "done" || event.type === "delegated"
+      ? createHash("sha256").update(event.type === "done" ? event.response : event.acknowledgement).digest("hex")
       : null;
     const receipt = buildLegacyTerminalReceiptV1({
       terminalReceiptId: runContractReferenceId(
@@ -1470,9 +1472,12 @@ export async function completeAgentRun(
   runId: string,
   response: string,
   grounding?: GroundingReport,
-  options: AgentRunTerminalOptions = {},
+  options: AgentRunTerminalOptions & { workflowHandoff?: WorkflowHandoff } = {},
 ) {
-  return setRunStatus(runId, "completed", { response, grounding }, options);
+  return setRunStatus(runId, "completed", {
+    response, grounding,
+    ...(options.workflowHandoff ? { workflowHandoff: workflowHandoffEventSchema.parse(options.workflowHandoff) } : {}),
+  }, options);
 }
 
 export async function failAgentRun(
@@ -2025,6 +2030,43 @@ export async function getAgentRunResearchProgress(
 const RUN_EVENT_PAGE_DEFAULT = 200;
 const RUN_EVENT_PAGE_MAX = 500;
 
+/** A terminal handoff is read from its committed event, never inferred from answer text. */
+export async function getAgentRunWorkflowHandoff(
+  runId: string,
+  options: { tenantId?: string; actorId?: string },
+): Promise<WorkflowHandoff | undefined> {
+  if (!options.actorId) return undefined;
+  const tenantId = normalizeTenantId(options.tenantId);
+  let payload: unknown;
+  let threadId: unknown;
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT event.payload, run.thread_id
+      FROM omni_agent_events event
+      JOIN omni_agent_runs run ON run.id = event.run_id AND run.tenant_id = event.tenant_id
+      WHERE run.id = ${runId} AND run.tenant_id = ${tenantId}
+        AND run.owner_actor_id = ${options.actorId} AND run.status = 'completed'
+        AND event.type = 'delegated'
+      ORDER BY event.created_at DESC LIMIT 1
+    `;
+    payload = rows[0]?.payload;
+    threadId = rows[0]?.thread_id;
+  } else {
+    const ledger = await readRunLedger();
+    const run = ledger.runs.find(candidate => candidate.id === runId &&
+      normalizeTenantId(candidate.tenantId) === tenantId &&
+      candidate.ownerActorId === options.actorId && candidate.status === "completed");
+    if (!run) return undefined;
+    threadId = run.threadId;
+    payload = ledger.events.filter(event => event.runId === runId &&
+      normalizeTenantId(event.tenantId) === tenantId && event.type === "delegated")
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0]?.payload;
+  }
+  const parsed = workflowHandoffEventSchema.safeParse(payload);
+  return parsed.success && parsed.data.threadId === threadId ? parsed.data : undefined;
+}
+
 /**
  * Lists a run's persisted events after a stream position, oldest first, for
  * a client resuming a dropped event stream. Positions come from the run's
@@ -2325,7 +2367,7 @@ export async function getRunStats(options: { tenantId?: string } = {}) {
 async function setRunStatus(
   runId: string,
   status: RunStatus,
-  values: { response?: string; error?: string; grounding?: GroundingReport },
+  values: { response?: string; error?: string; grounding?: GroundingReport; workflowHandoff?: WorkflowHandoff },
   options: AgentRunTerminalOptions = {},
 ) {
   const completedAt = new Date().toISOString();
@@ -2335,7 +2377,7 @@ async function setRunStatus(
   const safeError = values.error ? safeRunText(values.error, 2_000) : undefined;
   const terminalEvent = redactSensitive(
     status === "completed"
-      ? { type: "done", response: safeResponse || "", grounding: values.grounding }
+      ? values.workflowHandoff || { type: "done", response: safeResponse || "", grounding: values.grounding }
       : status === "canceled"
         ? { type: "canceled", message: safeError || "Canceled." }
         : { type: "error", message: safeError || "Agent run failed." },

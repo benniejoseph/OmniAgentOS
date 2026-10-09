@@ -159,9 +159,14 @@ export async function startWorkflowService(caller: AppServiceCaller, input: z.in
     metadata: { actorId: caller.context.actorId },
     executionAuthority: { executionScope: caller.executionScope!, requesterRole: caller.context.role },
   });
-  const queueJob = await enqueueWorkflowRunTick(detail.run.id, "app_workflow_created", undefined, caller.context.tenantId);
-  scheduleWorkflowQueueDrain(undefined, caller.context.tenantId);
-  return completeAppServiceCall(authorized, { ...publicWorkflowRunDetail(detail), queueJob });
+  const queueJob = detail.run.status === "queued" || detail.run.status === "running"
+    ? await enqueueWorkflowRunTick(detail.run.id, "app_workflow_created", undefined, caller.context.tenantId)
+    : undefined;
+  if (queueJob) scheduleWorkflowQueueDrain(undefined, caller.context.tenantId);
+  return completeAppServiceCall(authorized, redactSensitive({
+    ...publicWorkflowRunDetail(detail), queueJob,
+    workflowId: detail.run.id, status: detail.run.status, title: detail.run.goal.slice(0, 180),
+  }));
 }
 
 export async function signalWorkflowService(caller: AppServiceCaller, input: z.input<typeof signalSchema>) {

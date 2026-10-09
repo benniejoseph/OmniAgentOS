@@ -192,6 +192,8 @@ import { COMPANION_PERSONALITIES } from "@/lib/companion/personality";
 import {
   conversationVoiceContextMatches, conversationVoiceRequestId,
   requireActiveConversationVoiceSession, VoiceConversationError,
+  resolveConversationVoiceClarification, recordConversationVoiceClarification, claimConversationVoiceClarification,
+  type ConversationVoiceSession, type ConversationVoiceClarification,
 } from "@/lib/voice/conversation-session";
 import { listWorkspaceTemplates } from "@/lib/workspace-templates/store";
 import { personalWorkspaceId } from "@/lib/workspaces/contracts";
@@ -318,8 +320,8 @@ async function POSTHandler(request: Request) {
     }, { status: 409 });
   }
 
-  const requestMessage = parsed.data.message || parsed.data.messages?.at(-1)?.content || "";
-  const safeRequestMessage = String(redactSensitive(requestMessage));
+  let requestMessage = parsed.data.message || parsed.data.messages?.at(-1)?.content || "";
+  let safeRequestMessage = String(redactSensitive(requestMessage));
   if (
     parsed.data.contextSelection &&
     normalizeTaskQuery(parsed.data.contextSelection.query) !== normalizeTaskQuery(requestMessage)
@@ -384,24 +386,35 @@ async function POSTHandler(request: Request) {
   const requestActorBinding =
     canonicalRequestActorBindingFromSecurityContext(context);
   let companionPersonality = parsed.data.companionPersonality;
+  let activeVoiceSession: ConversationVoiceSession | undefined;
+  let voiceClarification: ConversationVoiceClarification | undefined;
   if (parsed.data.voiceInput?.schemaVersion === 2) {
     try {
       const voiceInput = parsed.data.voiceInput;
       const active = await requireActiveConversationVoiceSession({
         context, sessionId: voiceInput.sessionId, conversationId: voiceInput.conversationId,
       });
+      activeVoiceSession = active;
       // A spoken task keeps the delivery chosen when its live session began.
       // The client cannot hot-swap that session by changing a later request.
       companionPersonality = active.companionLanguageStyle?.personality;
       if (!conversationVoiceContextMatches(active.commandContext, {
         agentId: parsed.data.agentId || "atlas", projectId: parsed.data.projectId,
         mode: parsed.data.mode || "orchestrate", contextScope: parsed.data.contextScope || "session",
+        computerUseTarget: parsed.data.computerUseTarget === "local_macos" ? "local_macos" : undefined,
         contextReferences: parsed.data.contextReferences || [], contextSelection: parsed.data.contextSelection,
       }) || parsed.data.missionId || parsed.data.messages || parsed.data.message!.length > 8000 ||
           request.headers.has(PROMPT_QUEUE_DISPATCH_ID_HEADER) ||
           request.headers.has(PROMPT_QUEUE_DISPATCH_TOKEN_HEADER)) {
         throw new VoiceConversationError("voice_context_changed",
           "This spoken request no longer matches its voice conversation. End voice and start again with the selected Agent and context.", 409);
+      }
+      voiceClarification = await resolveConversationVoiceClarification({ context, session: active, requestId });
+      if (voiceClarification) {
+        requestMessage = `${voiceClarification.prompt}\nLatest reply from the user: ${parsed.data.message}\nUse the latest reply to clarify or change the earlier request. Do not treat the earlier question as permission for an action.`;
+        if (requestMessage.length > AGENT_MAX_MESSAGE_CHARS) throw new VoiceConversationError("voice_clarification_too_long",
+          "This task has accumulated too much clarification context. Start a new call and restate the complete task concisely.", 409);
+        safeRequestMessage = String(redactSensitive(requestMessage));
       }
     } catch (error) {
       return Response.json({
@@ -960,6 +973,7 @@ async function POSTHandler(request: Request) {
   let localComputerWorkspaces:
     | readonly Readonly<{ id: string; name: string }>[]
     | undefined;
+  let localComputerCapabilities: { visualControlReady: boolean; commandRunnerReady: boolean } | undefined;
   if (computerUseTarget === "local_macos") {
     try {
       const localSession = await startLocalComputerSession(
@@ -967,6 +981,7 @@ async function POSTHandler(request: Request) {
         directRootRunId,
       );
       localComputerWorkspaces = localSession.workspaces;
+      localComputerCapabilities = localSession.capabilities;
     } catch (error) {
       if (!(error instanceof LocalComputerUnavailableError)) throw error;
       return Response.json({
@@ -1099,7 +1114,11 @@ async function POSTHandler(request: Request) {
     ? safeMessages
     : [{ role: "user" as const, content: safeRequestMessage }];
   const deterministicDecision = routeAgentRequest(
-    requestMessage,
+    // The earlier vague wording already caused this server-bound question.
+    // Classify the new answer, while semantic/model context retains the exact
+    // original request. Reclassifying "delete it" would ask forever even after
+    // the user supplied its target. Real effects still need governed previews.
+    voiceClarification ? parsed.data.message! : requestMessage,
     mode,
     requestedBuiltInAgent,
     toSupervisorKnownProcedures(savedProcedures),
@@ -1386,6 +1405,14 @@ async function POSTHandler(request: Request) {
             actorId: context.actorId,
             agentId: executingAgentId,
           });
+        if (voiceClarification && activeVoiceSession) {
+          if (agentIdentity.definition.logicalAgentId !== voiceClarification.agentId ||
+              agentIdentity.definition.definitionSha256 !== voiceClarification.definitionSha256 ||
+              agentIdentity.principal.principalSha256 !== voiceClarification.principalSha256) {
+            throw new Error("The Agent’s permissions or instructions changed after its question. Start a new call and restate the task.");
+          }
+          await claimConversationVoiceClarification({ context, session: activeVoiceSession, requestId, clarification: voiceClarification });
+        }
         if (queuedDispatch && (
           queuedDispatch.agent.logicalAgentId !== agentIdentity.definition.logicalAgentId ||
           queuedDispatch.agent.definitionVersionId !== agentIdentity.definition.definitionVersionId ||
@@ -1585,7 +1612,7 @@ async function POSTHandler(request: Request) {
                 turnId: voiceInput.turnId, provider: voiceInput.provider,
                 submission: "continuous_conversation", reviewAttested: false,
                 transcriptSha256: createHash("sha256").update(safeMessage, "utf8").digest("hex"),
-                transcriptCharacters: safeMessage.length, sessionEvidence: "minted", forceApprovalAboveRisk: 0,
+                transcriptCharacters: safeMessage.length, sessionEvidence: "minted", forceApprovalAboveRisk: 1,
               },
             });
           } else if (parsed.data.voiceInput?.schemaVersion === 1) {
@@ -1691,11 +1718,17 @@ async function POSTHandler(request: Request) {
                 effectCount: 0,
               },
             });
-            await appendThreadTurn({
+            const questionTurn = await appendThreadTurn({
+              ...(activeVoiceSession ? { id: agentRequestDelegatedTurnId(context.tenantId, context.actorId, thread.id, requestId) } : {}),
               tenantId: context.tenantId,
               threadId: thread.id,
               role: "assistant",
               content: ambiguity.clarificationPrompt,
+            });
+            if (activeVoiceSession) await recordConversationVoiceClarification({
+              context, session: activeVoiceSession, requestId, questionId: questionTurn.id, userTurnId: userTurn.id,
+              agentId: agentIdentity.definition.logicalAgentId, definitionSha256: agentIdentity.definition.definitionSha256,
+              principalSha256: agentIdentity.principal.principalSha256, prior: voiceClarification,
             });
             await enqueueEvent({
               type: "clarification",
@@ -2043,6 +2076,11 @@ async function POSTHandler(request: Request) {
           } else {
             safeMessages = [{ role: "user", content: safeMessage }];
           }
+          if (voiceClarification) {
+            // Exact same-call clarification context is not ambient retrieval.
+            // Keep it even when the selected scope excludes older chat history.
+            safeMessages = [...safeMessages.slice(0, -1), { role: "user", content: safeRequestMessage }];
+          }
         }
         if (parsed.data.missionId && (!mission || !missionTask)) {
           if (await stopBeforeMutationIfCanceled()) return;
@@ -2163,6 +2201,7 @@ async function POSTHandler(request: Request) {
                 companionPersonality,
                 computerUseTarget,
                 localComputerWorkspaces,
+                localComputerCapabilities,
                 securityContext: context,
                 requestActorBinding,
                 semanticRouting: {

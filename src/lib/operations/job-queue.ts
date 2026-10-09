@@ -609,7 +609,9 @@ export async function leaseOperationJobs(input: LeaseOperationJobInput = {}) {
         WHERE workflow.tenant_id = omni_operation_jobs.tenant_id
           AND workflow.id = omni_operation_jobs.payload ->> 'workflowRunId'
           AND workflow.input ->> 'mode' = 'research'
-          AND workflow.input -> 'metadata' -> $${params.length}::text ->> 'depth' = 'deep'
+          AND (workflow.input -> 'metadata' -> $${params.length}::text ->> 'depth' = 'deep'
+            OR (workflow.input -> 'metadata' ->> 'source' = 'conversation_research'
+              AND workflow.input -> 'metadata' -> $${params.length}::text ->> 'depth' = 'quick'))
       ))`);
     }
     params.push(limit);
@@ -663,7 +665,9 @@ export async function leaseOperationJobs(input: LeaseOperationJobInput = {}) {
         runs: [], steps: [], events: [],
       })).runs.filter((run) => (run.tenantId || "default") === tenantId &&
         run.input.mode === "research" &&
-        (run.input.metadata?.[RESEARCH_WORKFLOW_METADATA_KEY] as { depth?: unknown } | undefined)?.depth === "deep")
+        ((run.input.metadata?.[RESEARCH_WORKFLOW_METADATA_KEY] as { depth?: unknown } | undefined)?.depth === "deep" ||
+          (run.input.metadata?.source === "conversation_research" &&
+            (run.input.metadata?.[RESEARCH_WORKFLOW_METADATA_KEY] as { depth?: unknown } | undefined)?.depth === "quick")))
         .map((run) => run.id))
     : undefined;
   let leased: OperationJobRecord[] = [];

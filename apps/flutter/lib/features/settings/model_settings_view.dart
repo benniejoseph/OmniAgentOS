@@ -1186,8 +1186,8 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
         padding: const EdgeInsets.all(22),
         children: [
           const MacosSectionHeader(
-            title: 'Computer use on this Mac',
-            description: 'Permission state, signed helper, command broker, and the immediate kill switch.',
+            title: 'ATLAS on this Mac',
+            description: 'Use apps, work with files and run development commands while you talk with ATLAS.',
           ),
           const SizedBox(height: 10),
           _LocalComputerControl(coordinator: localComputer),
@@ -1410,49 +1410,51 @@ class _LocalComputerControl extends StatelessWidget {
       final (title, detail, icon, color) = switch (phase) {
         LocalComputerBrokerPhase.starting => (
           'Checking this Mac',
-          'Reading the signed helper and macOS permission state.',
+          'Checking app access and available command folders.',
           Icons.sync_rounded,
           scheme.primary,
         ),
         LocalComputerBrokerPhase.unavailable => (
           'Local control unavailable',
-          'Install the private signed Asael macOS build to use this device.',
+          'Update the Asael Mac app to enable local controls.',
           Icons.laptop_mac_outlined,
           scheme.onSurfaceVariant,
         ),
         LocalComputerBrokerPhase.disabled => (
           'This Mac is not enabled',
-          'Enable it explicitly before an agent can receive governed actions.',
+          'Turn it on to let ATLAS help with apps, files and commands.',
           Icons.pause_circle_outline_rounded,
           scheme.onSurfaceVariant,
         ),
         LocalComputerBrokerPhase.permissionsRequired => (
           'macOS access is required',
-          'Grant Accessibility and Screen Recording, then enable this Mac.',
+          'Allow Accessibility and Screen Recording for app control, or choose a folder for commands.',
           Icons.admin_panel_settings_outlined,
           scheme.tertiary,
         ),
         LocalComputerBrokerPhase.ready => (
           'This Mac is ready',
-          'Only explicitly targeted, governed commands can run here.',
+          native?.computerUseReady == true
+              ? 'Choose This Mac in your conversation when you want ATLAS to use local apps or files.'
+              : 'Ready for files and commands. App control needs Accessibility and Screen Recording.',
           Icons.check_circle_outline_rounded,
           scheme.primary,
         ),
         LocalComputerBrokerPhase.active => (
           'Asael is controlling this Mac',
-          'A visible, bounded local action is in progress.',
+          'ATLAS is carrying out your request. Stop now ends local control.',
           Icons.radio_button_checked_rounded,
           scheme.error,
         ),
         LocalComputerBrokerPhase.stopped => (
           'Local control stopped',
-          'The kill switch is active. Enable this Mac to start a new session.',
+          'Turn this Mac on again when you want ATLAS to continue.',
           Icons.stop_circle_outlined,
           scheme.error,
         ),
         LocalComputerBrokerPhase.degraded => (
           'Reconnecting',
-          'No new local action will start until the governed service returns.',
+          'Waiting for a secure connection before starting another action.',
           Icons.sync_problem_rounded,
           scheme.tertiary,
         ),
@@ -1461,6 +1463,13 @@ class _LocalComputerControl extends StatelessWidget {
           native?.accessibility == LocalComputerPermission.granted &&
           native?.screenRecording == LocalComputerPermission.granted;
       final primary = coordinator.canClaimCommands;
+      final folders =
+          native?.commandWorkspaces ?? const <LocalCommandWorkspace>[];
+      final canManageFolders =
+          primary &&
+          native?.commandHelperInstalled == true &&
+          !coordinator.changing &&
+          !coordinator.active;
       return _Surface(
         child: Padding(
           padding: const EdgeInsets.all(16),
@@ -1515,12 +1524,12 @@ class _LocalComputerControl extends StatelessWidget {
                     value: native?.screenRecording,
                   ),
                   _LocalPermissionState(
-                    label: 'Signed helper',
+                    label: 'App controls',
                     ready: native?.helperInstalled == true,
-                    fallback: native?.helperVersion ?? 'Checking',
+                    fallback: native == null ? 'Checking' : 'Update needed',
                   ),
                   _LocalPermissionState(
-                    label: 'Command broker',
+                    label: 'Connection',
                     ready: coordinator.device?.online == true,
                     fallback: coordinator.device?.online == true
                         ? 'Online'
@@ -1528,10 +1537,86 @@ class _LocalComputerControl extends StatelessWidget {
                   ),
                 ],
               ),
+              const Divider(height: 28),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.apps_rounded),
+                title: const Text('Use Mac apps'),
+                subtitle: Text(
+                  accessGranted
+                      ? 'Open apps, find controls, type text and use keyboard shortcuts. You review actions that send, delete or change access.'
+                      : 'Allow Accessibility and Screen Recording to let ATLAS see and control app windows. Files and commands can work separately.',
+                ),
+              ),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.terminal_rounded),
+                title: const Text('Files and development commands'),
+                subtitle: Text(
+                  native?.commandHelperInstalled == true
+                      ? 'Read and edit files, inspect Git changes and build projects with your approval. Each command can run for up to 5 minutes.'
+                      : 'Update the Mac app to install command support.',
+                ),
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      'Command folders',
+                      style: TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: canManageFolders
+                        ? coordinator.addCommandWorkspace
+                        : null,
+                    icon: const Icon(
+                      Icons.create_new_folder_outlined,
+                      size: 18,
+                    ),
+                    label: const Text('Choose folder'),
+                  ),
+                ],
+              ),
+              if (folders.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 10),
+                  child: Text(
+                    'Choose a project or document folder to make file and command work available.',
+                  ),
+                ),
+              for (final folder in folders)
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.folder_outlined),
+                  title: Text(folder.name),
+                  subtitle: Text(
+                    folder.path,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  trailing: IconButton(
+                    tooltip: 'Remove folder',
+                    onPressed: canManageFolders
+                        ? () => coordinator.removeCommandWorkspace(folder.id)
+                        : null,
+                    icon: const Icon(Icons.remove_circle_outline),
+                  ),
+                ),
+              Text(
+                'Commands start in these folders and can access other files your Mac account can access. Each exact command is shown for approval. Commands finish as one job; interactive terminals and background servers are not available.',
+                style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 12),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                'ATLAS uses Asael’s own actions for app data. Password fields, security settings and permission prompts remain under your control.',
+                style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 12),
+              ),
               if (!primary) ...[
                 const SizedBox(height: 12),
                 Text(
-                  'Auxiliary window · status and Stop now are available here. Enablement and command claiming stay with the main Asael window.',
+                  'Open the main Asael window to change access or choose folders. You can stop local control here.',
                   style: TextStyle(
                     color: scheme.onSurfaceVariant,
                     fontSize: 12,
@@ -1567,7 +1652,10 @@ class _LocalComputerControl extends StatelessWidget {
                       icon: const Icon(Icons.lock_open_rounded, size: 18),
                       label: const Text('Grant macOS access'),
                     ),
-                  if (primary && accessGranted)
+                  if (primary &&
+                      (accessGranted ||
+                          (native?.commandHelperInstalled == true &&
+                              folders.isNotEmpty)))
                     FilledButton.icon(
                       onPressed: coordinator.changing
                           ? null
@@ -1581,8 +1669,8 @@ class _LocalComputerControl extends StatelessWidget {
                       ),
                       label: Text(
                         native?.enabled == true
-                            ? 'Disable this Mac'
-                            : 'Enable this Mac',
+                            ? 'Turn off Mac control'
+                            : 'Turn on Mac control',
                       ),
                     ),
                   if (native?.enabled == true || coordinator.active)

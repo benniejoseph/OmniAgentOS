@@ -798,15 +798,44 @@ class LocalComputerCoordinator extends ChangeNotifier
         errorCode: 'uncertain_prior_claim',
       );
     } else {
-      final result = await host.execute(
-        LocalComputerCommand(
-          id: claim.id,
-          action: claim.action,
-          input: claim.input,
-          expiresAt: claim.expiresAt,
-          authority: claim.authority,
-        ),
-      );
+      // Commands can outlive the short device readiness lease. Keep that lease
+      // current without claiming or replaying another effect while one runs.
+      var heartbeatRunning = false;
+      final heartbeat = Timer.periodic(heartbeatInterval, (_) async {
+        if (!_loopCurrent(generation) ||
+            activeCommandId != claim.id ||
+            heartbeatRunning)
+          return;
+        heartbeatRunning = true;
+        try {
+          final current = await host.getStatus();
+          if (!_loopCurrent(generation) || activeCommandId != claim.id) return;
+          final published = await repository.updateDevice(current);
+          if (!_loopCurrent(generation) || activeCommandId != claim.id) return;
+          status = current;
+          device = published;
+          _lastHeartbeatAt = DateTime.now().toUtc();
+        } catch (_) {
+          // A lost heartbeat cannot restart an already dispatched command.
+          // Its exact completion is reconciled by the existing receipt path.
+        } finally {
+          heartbeatRunning = false;
+        }
+      });
+      late final LocalComputerCommandResult result;
+      try {
+        result = await host.execute(
+          LocalComputerCommand(
+            id: claim.id,
+            action: claim.action,
+            input: claim.input,
+            expiresAt: claim.expiresAt,
+            authority: claim.authority,
+          ),
+        );
+      } finally {
+        heartbeat.cancel();
+      }
       if (!_loopCurrent(generation)) return;
       _stageRequestedScreenshot(claim, result);
       _stageTerminalOutput(claim, result);

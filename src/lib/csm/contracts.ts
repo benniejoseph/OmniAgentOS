@@ -19,6 +19,21 @@ export const clientProfileSchema = z.object({
 }).strict();
 export type ClientProfile = z.infer<typeof clientProfileSchema>;
 
+/** No defaults here: a partial conversational edit must preserve omitted fields. */
+export const clientProfilePatchSchema = z.object({
+  role: z.enum(["secondary", "lead"]).optional(),
+  successPlan: z.enum(["unknown", "standard", "premier", "signature"]).optional(),
+  leadCsm: z.string().trim().max(240).optional(),
+  customerGoals: z.string().trim().max(4_000).optional(),
+  successPath: z.string().trim().max(4_000).optional(),
+  stakeholders: z.string().trim().max(4_000).optional(),
+  nextReviewDate: date.nullable().optional(),
+}).strict().refine(value => Object.keys(value).length > 0, "Name at least one client field to change.");
+export const csmProfilePatchSchema = z.object({
+  profile: clientProfilePatchSchema,
+  expectedRevision: id.nullable(),
+}).strict();
+
 export const csmSourceLinkSchema = z.object({
   libraryItemId: id,
   versionId: id,
