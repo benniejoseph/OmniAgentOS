@@ -22,6 +22,7 @@ import type { VoiceCommandInput } from "@/lib/voice/command-input";
 import type { ResearchOptions, ResearchProgress } from "@/lib/research/contracts";
 import type { CompanionPersonality } from "@/lib/companion/personality";
 import type { CompanionLanguageStyle } from "@/lib/companion/language-style";
+import type { PersonalProfileRuntimeReceipt } from "@/lib/personal-context/contracts";
 
 export type ChatRole = "user" | "assistant";
 
@@ -117,6 +118,8 @@ export type AgentHarnessEvent = {
   instructionsSha256: string;
   /** Content-free delivery receipt; the compiled instruction digest remains the replay pin. */
   companionLanguageStyle?: CompanionLanguageStyle;
+  /** Content-free About me inclusion receipt; contains no profile text. */
+  personalProfile?: PersonalProfileRuntimeReceipt;
   maxToolSteps: number;
   maxToolCallsPerTurn: number;
   maxToolResultChars: number;

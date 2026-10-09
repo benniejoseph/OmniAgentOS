@@ -528,6 +528,7 @@ class ApiClient {
     String path, {
     required NativeRequestAuthority authority,
     Map<String, dynamic>? query,
+    Map<String, dynamic>? headers,
     CancelToken? cancelToken,
   }) {
     _requireAuthorityTransport(authority);
@@ -536,7 +537,10 @@ class ApiClient {
         path,
         queryParameters: query,
         cancelToken: cancelToken,
-        options: Options(extra: {_requestAuthorityKey: authority}),
+        options: Options(
+          headers: headers,
+          extra: {_requestAuthorityKey: authority},
+        ),
       ),
     );
   }

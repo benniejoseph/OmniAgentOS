@@ -3,9 +3,9 @@
 
 abstract final class NativeContract {
   static const id = 'asael.native-api';
-  static const currentVersion = 50;
-  static const previousVersion = 49;
-  static const supportedVersions = <int>[50, 49, 48];
+  static const currentVersion = 51;
+  static const previousVersion = 50;
+  static const supportedVersions = <int>[51, 50, 49];
   static const discoveryPath = '/api/mobile/contracts';
   static const operationIds = <String>{
     'auth.login',
@@ -267,6 +267,8 @@ abstract final class NativeContract {
     'voice.conversation.session.start',
     'voice.conversation.session.finish',
     'voice.conversation.turns',
+    'personal.profile.get',
+    'personal.profile.update',
   };
 
   static bool supports(int version) => supportedVersions.contains(version);
@@ -1048,6 +1050,8 @@ abstract final class NativePaths {
   static const voiceConversationSessionStart = '/api/voice/conversation/session';
   static const voiceConversationSessionFinish = '/api/voice/conversation/session';
   static const voiceConversationTurns = '/api/voice/conversation/turns';
+  static const personalProfileGet = '/api/personal-context/profile';
+  static const personalProfileUpdate = '/api/personal-context/profile';
 }
 
 abstract final class NativeConversationEvents {

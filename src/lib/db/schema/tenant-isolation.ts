@@ -274,6 +274,8 @@ export const migrationScopedTenantTables = [
   "omni_responsibility_notification_receipts",
   "omni_companion_preferences",
   "omni_companion_preference_mutations",
+  "omni_personal_profiles",
+  "omni_personal_profile_mutations",
   "omni_local_computer_commands",
   "omni_local_computer_devices",
   "omni_local_computer_sessions",

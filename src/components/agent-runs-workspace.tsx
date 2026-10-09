@@ -241,7 +241,7 @@ const CONTEXT_SCOPE_OPTIONS: readonly Readonly<{
   {
     id: "agent_private",
     label: "This agent's memory",
-    description: "Use only memory owned by you and the assigned agent.",
+    description: "Use this agent's memories and About me when enabled.",
   },
   {
     id: "project",
@@ -256,7 +256,7 @@ const CONTEXT_SCOPE_OPTIONS: readonly Readonly<{
   {
     id: "session",
     label: "Conversation only",
-    description: "Use this conversation without saved memory or knowledge.",
+    description: "Use this conversation and About me when enabled. Saved memories stay excluded.",
   },
   {
     id: "current_turn",

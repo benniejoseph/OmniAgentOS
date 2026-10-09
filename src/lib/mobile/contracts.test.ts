@@ -18,7 +18,7 @@ import {
 } from "@/lib/mobile/contracts";
 
 describe("native API contracts", () => {
-  it("withdraws the retired workspace from both supported surfaces while preserving every surviving v47 contract", async () => {
+  it("withdraws the retired workspace from the v47 and v48 publications while preserving every surviving v47 contract", async () => {
     const original = JSON.parse(await readFile(new URL("../../../docs/archive/native-contracts/v47/openapi.json", import.meta.url), "utf8"));
     const expected = structuredClone(original);
     for (const [path, methods] of Object.entries(expected.paths)) {
@@ -37,7 +37,7 @@ describe("native API contracts", () => {
     ]) causeKind.enum = causeKind.enum.filter((kind: string) => kind !== "customer");
     const previous = JSON.parse(await readFile(new URL("../../../public/native-contracts/v47/openapi.json", import.meta.url), "utf8"));
     expect(previous).toEqual(expected);
-    for (const version of NATIVE_API_SUPPORTED_VERSIONS) {
+    for (const version of [47, 48] as const) {
       const document = JSON.parse(await readFile(new URL(`../../../public/native-contracts/v${version}/openapi.json`, import.meta.url), "utf8"));
       expect(document.paths).toEqual(expected.paths);
       expect(Object.keys(document.components.schemas).filter((name) => /Customer|Salesforce/.test(name))).toEqual([]);
@@ -305,14 +305,15 @@ describe("native API contracts", () => {
       expect(current.paths[path].get.parameters).toContainEqual({ name: "view", in: "query", required: false, schema: { type: "string", enum: [view] } });
     }
   });
-  it("retains exactly the current and previous rollout versions", () => {
+  it("retains the current and two compatible rollout versions", () => {
     // Tripwire: a native contract bump must be a deliberate, reviewed change.
     // The other tests follow these constants.
-    expect(NATIVE_API_CURRENT_VERSION).toBe(48);
-    expect(NATIVE_API_PREVIOUS_VERSION).toBe(47);
+    expect(NATIVE_API_CURRENT_VERSION).toBe(51);
+    expect(NATIVE_API_PREVIOUS_VERSION).toBe(50);
     expect(NATIVE_API_SUPPORTED_VERSIONS).toEqual([
       NATIVE_API_CURRENT_VERSION,
       NATIVE_API_PREVIOUS_VERSION,
+      49,
     ]);
     expect(NATIVE_API_PREVIOUS_VERSION).toBeLessThan(NATIVE_API_CURRENT_VERSION);
     expect(nativeOperationsForVersion(NATIVE_API_CURRENT_VERSION)).toBeDefined();
@@ -565,6 +566,9 @@ describe("native API contracts", () => {
       45: added("connectors.native.openapiImportPreparations.submit", "connectors.native.openapiImportPreparations.read", "connectors.native.openapiImportPreparations.abandon", "connectors.native.openapiImports.submit", "connectors.native.openapiImports.read"),
       47: added("connectors.native.githubUpgrades.review", "connectors.native.githubUpgrades.submit", "connectors.native.githubUpgrades.read", "connectors.native.githubUpgrades.close"),
       48: added(),
+      49: added("research.control"),
+      50: added("voice.conversation.session.start", "voice.conversation.session.finish", "voice.conversation.turns"),
+      51: added("personal.profile.get", "personal.profile.update"),
     });
     // v20 and v23 changed only request and push schemas.
     expect(nativeOperationsForVersion(20)).toEqual(nativeOperationsForVersion(19));

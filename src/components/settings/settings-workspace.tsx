@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
 import { CompanionPreferences } from "@/components/companion-preferences";
+import { PersonalContextProfile } from "@/components/personal-context-profile";
 import { useWorkspaceSession } from "@/components/app-shell/session-context";
 import { isAdvancedSettingsSection, settingsHref, settingsSection, settingsSections, type AdvancedSettingsSection, type SettingsSection } from "./settings-navigation";
 import styles from "./settings-workspace.module.css";
@@ -32,9 +33,11 @@ function ScopedSettingsWorkspace() {
   const section = settingsSection(searchParams.get("section"));
   const isAdvanced = isAdvancedSettingsSection(section);
   const [advancedSection, setAdvancedSection] = useState<AdvancedSettingsSection | undefined>(isAdvanced ? section : undefined);
+  const [profileOpened, setProfileOpened] = useState(section === "about-me");
   // Keep in-flight configuration actions and drafts across category changes.
   // Operational views are mounted only while their category is selected.
   if (isAdvanced && advancedSection !== section) setAdvancedSection(section);
+  if (section === "about-me" && !profileOpened) setProfileOpened(true);
   const navigate = (next: SettingsSection) => {
     router.push(settingsHref(next), { scroll: false });
   };
@@ -51,6 +54,7 @@ function ScopedSettingsWorkspace() {
         </nav>
         <div className={styles.content}>
           <div hidden={section !== "general"}><CompanionPreferences /></div>
+          {profileOpened ? <div hidden={section !== "about-me"}><PersonalContextProfile /></div> : null}
           {advancedSection ? <div hidden={!isAdvanced}><AdvancedSettingsWorkspace section={advancedSection} onNavigate={navigate} embedded /></div> : null}
           {section === "quality" ? <QualityWorkspace embedded /> : null}
           {section === "monitoring" ? <MonitoringWorkspace embedded /> : null}

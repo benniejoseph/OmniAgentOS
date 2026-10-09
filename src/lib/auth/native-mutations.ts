@@ -19,6 +19,7 @@ export const NATIVE_MUTATION_CAPABILITIES = [
   "markets.backtest.run",
   "settings.update",
   "companion.preferences.update",
+  "personal.profile.update",
   "responsibilities.drafts.manage",
   "responsibilities.lifecycle.manage",
   "responsibilities.notifications.manage",
@@ -130,6 +131,7 @@ export function nativeMutationCapabilityPolicy(
 }
 
 function minimumVersion(capability: NativeMutationCapability) {
+  if (capability === "personal.profile.update") return 51;
   if (capability === "research.control") return 49;
   if (capability === "connectors.github.upgrade") return 47;
   if (capability === "connectors.mcp.discover") return 46;

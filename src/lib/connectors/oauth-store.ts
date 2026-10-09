@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { ensureDatabaseSchema, getSql, hasDatabaseUrl } from "@/lib/db/client";
+import { ensureDatabaseSchema, getSql, hasDatabaseUrl, runWithDatabaseSystemScope } from "@/lib/db/client";
 import {
   isOAuthProvider,
   type GoogleConnectionPurpose,
@@ -452,6 +452,39 @@ export async function listOAuthGrantsForRequest(input: {
     exactActorId,
   );
   return records.map((grant) => requestOAuthGrant(grant, exactActorId));
+}
+
+/** Scheduling metadata only; credentials and source content are opened later
+ * under the connection's existing tenant and owner scope. */
+export async function listDuePersonalSyncTenantIds(limit = 2): Promise<string[]> {
+  const boundedLimit = Math.min(Math.max(Math.floor(limit), 1), 5);
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    return runWithDatabaseSystemScope(
+      "Find due connected-source tenants independently of historical maintenance pagination.",
+      async () => {
+        const rows = await getSql()`
+          SELECT tenant_id, MIN(COALESCE(last_synced_at, created_at)) AS oldest_sync
+          FROM omni_oauth_grants
+          WHERE provider = 'google' AND connection_purpose = 'personal' AND status = 'active'
+            AND (last_synced_at IS NULL OR last_synced_at <= clock_timestamp() - INTERVAL '30 minutes')
+            AND (sync_retry_at IS NULL OR sync_retry_at <= clock_timestamp())
+            AND (sync_lease_owner_id IS NULL OR sync_lease_expires_at <= clock_timestamp())
+            AND public.omni_google_personal_sync_allowed_v1(tenant_id, actor_id)
+          GROUP BY tenant_id ORDER BY oldest_sync, tenant_id LIMIT ${boundedLimit}
+        `;
+        return rows.map(row => String(row.tenant_id));
+      },
+    );
+  }
+  const ledger = await readJsonFile<{ grants: InternalGrant[] }>(filePath(), { grants: [] });
+  const now = Date.now();
+  const due = ledger.grants.filter(grant => grant.provider === "google" &&
+    (grant.connectionPurpose || "personal") === "personal" && grant.status === "active" &&
+    (!grant.lastSyncedAt || Date.parse(grant.lastSyncedAt) <= now - 30 * 60_000) &&
+    (!grant.syncRetryAt || Date.parse(grant.syncRetryAt) <= now))
+    .sort((left, right) => (left.lastSyncedAt || "").localeCompare(right.lastSyncedAt || ""));
+  return [...new Set(due.map(grant => grant.tenantId))].slice(0, boundedLimit);
 }
 
 export async function listOAuthGrantsForTenant(tenantId: string) {

@@ -4,6 +4,24 @@ Production uses Node.js 24.x and npm 11.x across local metadata, CI, and the wor
 
 ## Required production configuration
 
+About me adds migration **248** (`20261009203000_personal_profiles.sql`) and
+native contract **v51**. Apply the additive migration with the existing
+encrypted-backup and quiescence procedure before deploying the candidate.
+The two new tenant/actor-private tables hold current profile values and
+content-free save receipts. A prior server remains compatible with ordinary
+traffic, but its release inventory does not classify the new tables; use the
+exact forward-schema recovery pin for that previous/candidate pair. Native
+v50/v49 contracts remain byte-frozen. Profile writes require v51's dedicated
+capability; existing clients keep their previous operations. App 1.26.0+85
+adds the shared profile editor. See [About me](personal-context.md).
+
+Due Google connections now have a separate bounded maintenance pass before
+historical tenant pagination, so stale evaluation tenants cannot postpone an
+owner's source refresh. It selects at most two due tenants, retains the normal
+30-minute freshness rule, backoff, owner scope and sync leases, and reserves at
+most one minute of the existing maintenance budget. In-progress backfills stay
+partial; this is not proof that an entire mailbox has been indexed.
+
 Accounts, Customer Account 360, and the Salesforce integration were retired on
 2026-10-07. Their product routes, governed tools, background sync, and web/native
 UI are withdrawn. Historical migrations and protected records are retained.

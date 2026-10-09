@@ -248,6 +248,7 @@ import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
 import { appendThreadTurn } from "@/lib/threads/store";
 import { findActorTimezone } from "@/lib/today/briefs";
 import { resolveDirectConversationLanguageStyle } from "@/lib/companion/language-style-resolver";
+import { resolveDirectPersonalProfile } from "@/lib/personal-context/runtime";
 import { loadTenantAiUsageSince } from "@/lib/usage/allowance";
 import { recordAiUsageSafely } from "@/lib/usage/ledger";
 import {
@@ -1316,6 +1317,9 @@ async function* runAgentUntilStopped(
     const companionLanguageStylePromise = providerConfigured
       ? resolveDirectConversationLanguageStyle(request)
       : Promise.resolve(undefined);
+    const personalProfilePromise = providerConfigured
+      ? resolveDirectPersonalProfile(request)
+      : Promise.resolve(undefined);
     const adaptationGuidancePromise = !isolatedMemoryContext &&
       durableMemoryEnabled &&
       request.contextSelection?.evidenceIds.length !== 0 &&
@@ -1467,6 +1471,8 @@ async function* runAgentUntilStopped(
     );
     const actorTimeZone = await actorTimeZonePromise;
     const companionLanguageStyle = await companionLanguageStylePromise;
+    const personalProfile = await personalProfilePromise;
+    const directCommandContext = [request.commandContext?.content, personalProfile?.content].filter(Boolean).join("\n\n");
     const baseInstructions = buildAgentInstructions({
       mode,
       runtimeClock: { timeZone: actorTimeZone },
@@ -1553,7 +1559,7 @@ async function* runAgentUntilStopped(
         inputTokens: estimateModelInputTokens([
           instructions,
           buildAgentInput({ messages: safeMessages,
-            commandContext: request.commandContext?.content,
+            commandContext: directCommandContext,
             memoryContext: request.agentProfile?.memoryScope === "session" ? "" : retrieval.contextBlock,
             injectionCanary: renderInjectionCanary(normalizeTenantId(request.tenantId)),
             liveWebContext: "", councilContext: "", workspaceCapabilityContext }),
@@ -1913,6 +1919,7 @@ async function* runAgentUntilStopped(
       toolboxSha256: stableToolboxFingerprint(toolbox.tools),
       instructionsSha256: createHash("sha256").update(instructions).digest("hex"),
       companionLanguageStyle,
+      personalProfile: personalProfile?.receipt,
       maxToolSteps,
       maxToolCallsPerTurn,
       maxToolResultChars: MAX_TOOL_RESULT_CHARS,
@@ -2199,7 +2206,7 @@ async function* runAgentUntilStopped(
     }
     const initialConversationItems = buildAgentInput({
       messages: safeMessages,
-      commandContext: request.commandContext?.content,
+      commandContext: directCommandContext,
       memoryContext: request.agentProfile?.memoryScope === "session" ? "" : retrieval.contextBlock,
       injectionCanary: renderInjectionCanary(normalizeTenantId(request.tenantId)),
       liveWebContext,

@@ -12,6 +12,7 @@ import '../../core/platform/local_computer_bridge.dart';
 import '../../generated/native_contract.g.dart';
 import '../computer_use/local_computer.dart';
 import '../companion/companion_settings.dart';
+import 'personal_profile_settings.dart';
 import 'portable_archive_panel.dart';
 
 typedef Json = Map<String, dynamic>;
@@ -344,6 +345,8 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
                         const SizedBox(height: 12),
                         _SettingsError(error: error!, retry: _load),
                       ],
+                      const SizedBox(height: 24),
+                      const PersonalProfileSettings(),
                       const SizedBox(height: 24),
                       const CompanionSettingsSection(),
                       const SizedBox(height: 24),
@@ -895,6 +898,8 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
     key: const ValueKey('macos-settings-general'),
     padding: const EdgeInsets.all(22),
     children: [
+      const PersonalProfileSettings(),
+      const SizedBox(height: 24),
       const CompanionSettingsSection(),
       const SizedBox(height: 24),
       const PortableArchivePanel(),

@@ -1,7 +1,7 @@
-import { Activity, Bot, BrainCircuit, CheckCircle2, Cloud, Code2, Settings2, ShieldCheck } from "lucide-react";
+import { Activity, Bot, BrainCircuit, CheckCircle2, Cloud, Code2, Settings2, ShieldCheck, UserRound } from "lucide-react";
 
-export type SettingsSection = "general" | "overview" | "providers" | "models" | "agents" | "api" | "data" | "quality" | "monitoring";
-export type AdvancedSettingsSection = Exclude<SettingsSection, "general" | "quality" | "monitoring">;
+export type SettingsSection = "general" | "about-me" | "overview" | "providers" | "models" | "agents" | "api" | "data" | "quality" | "monitoring";
+export type AdvancedSettingsSection = Exclude<SettingsSection, "general" | "about-me" | "quality" | "monitoring">;
 
 export const settingsSections: Array<{
   id: SettingsSection;
@@ -10,6 +10,7 @@ export const settingsSections: Array<{
   icon: typeof Settings2;
 }> = [
   { id: "general", label: "General", description: "Companion and home", icon: Settings2 },
+  { id: "about-me", label: "About me", description: "What ATLAS knows about you", icon: UserRound },
   { id: "overview", label: "Workspace", description: "Readiness and defaults", icon: Settings2 },
   { id: "providers", label: "AI providers", description: "Credentials and catalogs", icon: Cloud },
   { id: "models", label: "Model routing", description: "Assign work by role", icon: BrainCircuit },
@@ -25,7 +26,7 @@ export function settingsSection(value: string | null): SettingsSection {
 }
 
 export function isAdvancedSettingsSection(section: SettingsSection): section is AdvancedSettingsSection {
-  return section !== "general" && section !== "quality" && section !== "monitoring";
+  return section !== "general" && section !== "about-me" && section !== "quality" && section !== "monitoring";
 }
 
 export function settingsHref(section: SettingsSection) {
