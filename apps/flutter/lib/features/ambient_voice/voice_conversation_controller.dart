@@ -71,6 +71,8 @@ class VoiceConversationController extends ChangeNotifier {
   int _pendingSaves = 0;
   int _turnCount = 0;
   VoiceConversationDelegate? _delegate;
+  void Function(String conversationId, Future<void> captionsSettled)?
+  _onConversationEnded;
 
   VoiceConversationPhase phase = VoiceConversationPhase.idle;
   String? sessionId;
@@ -104,6 +106,8 @@ class VoiceConversationController extends ChangeNotifier {
     required VoiceConversationDelegate delegate,
     String? existingConversationId,
     ValueChanged<String>? onConversationBound,
+    void Function(String conversationId, Future<void> captionsSettled)?
+    onConversationEnded,
   }) async {
     if (_disposed || active || _ending) return;
     if (!consentAccepted) {
@@ -132,6 +136,7 @@ class VoiceConversationController extends ChangeNotifier {
     _interruptedResponses.clear();
     _turnCount = 0;
     _delegate = delegate;
+    _onConversationEnded = onConversationEnded;
     _startedAt = DateTime.now();
     _changed();
     try {
@@ -682,6 +687,8 @@ class VoiceConversationController extends ChangeNotifier {
     final startedAt = _startedAt;
     final turnCount = _turnCount;
     final savedCaptions = _saveQueue;
+    final onConversationEnded = _onConversationEnded;
+    _onConversationEnded = null;
     sessionId = null;
     _expiry?.cancel();
     _disconnectTimer?.cancel();
@@ -700,6 +707,9 @@ class VoiceConversationController extends ChangeNotifier {
     }
     if (!failed) phase = VoiceConversationPhase.ended;
     _changed();
+    if (session != null && conversation != null) {
+      onConversationEnded?.call(conversation, savedCaptions);
+    }
     if (microphone != null) await _releaseMicrophone(microphone);
     try {
       await channel?.close();
