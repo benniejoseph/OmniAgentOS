@@ -1162,6 +1162,14 @@ async function* runAgentUntilStopped(
       (mode === "research"
         ? shouldInvestigateResearchQuery(query)
         : shouldUseLiveWebSearch(query));
+    // Keep research admission's complete tool bundle ahead of a semantic
+    // discovery rewrite. A rewritten query can retain the start action while
+    // losing the natural-language phrase that would select its web contracts.
+    // These IDs still pass through the Agent's existing allowlist and budget.
+    const researchCapabilityPrefix = mode !== "research" && request.liveWebPolicy !== "disabled" &&
+      !personalPromptMemoryAccessScope && requestsConversationalResearch(query)
+      ? "app.research.start web.search web.read app.workflows.show"
+      : mode === "research" && liveWebRequested ? "web.search web.read" : undefined;
     if (durableMemoryEnabled) {
       reserveBudget({
         tokens: AGENT_CONTEXT_TASK_TOKEN_LIMIT,
@@ -1296,7 +1304,7 @@ async function* runAgentUntilStopped(
         : buildAgentToolbox(request.tenantId, {
             excludeToolIds: unavailableLocalToolIds,
             query: composeCapabilitySearchQuery(
-              mode === "research" && liveWebRequested ? "web.search web.read" : undefined,
+              researchCapabilityPrefix,
               baseCapabilitySearchQuery || query,
             ),
             preferredToolIds: configuredToolIds,
@@ -1378,7 +1386,7 @@ async function* runAgentUntilStopped(
     const resolvedToolboxPromise = toolboxPromise || buildAgentToolbox(request.tenantId, {
       excludeToolIds: unavailableLocalToolIds,
       query: composeCapabilitySearchQuery(
-        mode === "research" && liveWebRequested ? "web.search web.read" : undefined,
+        researchCapabilityPrefix,
         capabilitySearchQuery || query,
       ),
       preferredToolIds: configuredToolIds,

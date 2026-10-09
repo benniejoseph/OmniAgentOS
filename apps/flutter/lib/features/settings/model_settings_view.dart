@@ -1518,15 +1518,31 @@ class _LocalComputerControl extends StatelessWidget {
                   _LocalPermissionState(
                     label: 'Accessibility',
                     value: native?.accessibility,
+                    fallback:
+                        native?.enabled == false &&
+                            native?.accessibility ==
+                                LocalComputerPermission.unknown
+                        ? 'Not checked'
+                        : null,
                   ),
                   _LocalPermissionState(
                     label: 'Screen Recording',
                     value: native?.screenRecording,
+                    fallback:
+                        native?.enabled == false &&
+                            native?.screenRecording ==
+                                LocalComputerPermission.unknown
+                        ? 'Not checked'
+                        : null,
                   ),
                   _LocalPermissionState(
                     label: 'App controls',
                     ready: native?.helperInstalled == true,
-                    fallback: native == null ? 'Checking' : 'Update needed',
+                    fallback: native == null
+                        ? 'Checking'
+                        : native.helperInstalled
+                        ? 'Installed'
+                        : 'Update needed',
                   ),
                   _LocalPermissionState(
                     label: 'Connection',

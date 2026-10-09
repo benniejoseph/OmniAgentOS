@@ -64,6 +64,12 @@ build cover web changes; the signed native canary covers installed-Mac control.
 
 ## This Mac
 
+Settings shows **Installed** when the app-control helper is bundled, and
+**Not checked** for permissions that have not been queried while Mac control is
+off. Refresh retains the existing passive status behaviour; these labels do not
+grant permissions or enable local control. The corrected labels ship in the
+Mac-only 1.27.1 (87) update.
+
 ### Device courier
 
 Only an authenticated compatible macOS client (current v30 or previous v29) may publish
