@@ -254,8 +254,10 @@ cannot choose the next app the task drives. A human-approved action never
 carries the marker, and a refusal code on an action the user already reviewed
 stays a failure.
 A voice-originated command, whether the client declared it or the server
-inferred it from an open voice session, never runs on task authority: every
-action above risk zero enters per-action approval.
+inferred it from an open voice session, never runs on task authority. New v2
+continuous calls retain the normal policy for risk-one actions; keyboard,
+clicking, typing and commands still require exact review. Legacy and inferred
+voice retain their risk-zero approval threshold.
 The direct command runner is never covered by task authority and always requires
 a fresh approval. `open_url` accepts only allowlisted Chrome and an
 absolute HTTP(S) URL without embedded credentials, waits for at most 15 seconds,
@@ -280,10 +282,20 @@ execution.
 Migration 205 and native v27 add `local.macos.command.run` without widening the
 visual helper. Every request carries one owner-selected opaque workspace grant ID,
 one executable basename, a bounded argument vector, a relative working directory
-inside that workspace, and a timeout of at most 30 seconds. It always enters the
+inside that workspace, and a bounded timeout. Native v52 extends the maximum from
+30 to 300 seconds. It always enters the
 governed tool executor as risk two and always requires a fresh approval showing those
 exact coordinates. A v26 client continues visual Computer Use but cannot advertise or
 claim this v27 capability.
+
+Native v52 uses a request deadline of the requested command duration plus
+45 seconds for pickup and completion transport. Its non-replayable command claim
+lasts through that exact deadline; visual action claims keep their short lease.
+Flutter maintains the device readiness heartbeat while a command is executing.
+The host and command helper enforce the same 300-second program limit, and the
+host allows two seconds for helper cleanup before terminating it. Commands are
+one-shot: there is no interactive stdin, persistent shell, or background server.
+An older native client cannot enqueue or claim a command longer than 30 seconds.
 
 The owner selects starting folders in the native app. Their security-scoped bookmarks
 and absolute roots remain on the Mac; only a bounded ID and display name travel in the
@@ -320,6 +332,31 @@ assigned model may consume the output once. Durable command, tool, run, approval
 event, continuation, and conversation state retains only exit status, byte counts,
 truncation flags, output hashes, timing, and the governed receipt. Relaunch or a
 durable retry cannot reconstruct raw output.
+
+### Native v52 app and keyboard controls
+
+`local.macos.list_apps` can include installed applications and filter by name or
+bundle ID. Inventory is bounded to standard Applications folders, two levels,
+600 inspected entries, 1.5 seconds, and 80 returned matches; truncation is explicit.
+Only app metadata is returned, never paths or arbitrary file contents.
+`local.macos.activate_app` can explicitly launch a resolved bundle with
+`launchIfNeeded: true`. LaunchServices runs without prompting for new authority,
+and the same restricted-app, host-app and regular-application checks still apply.
+
+The keyboard catalog adds letters, digits, named punctuation, forward Delete and
+F1–F20, with aliases such as Enter and Escape. `keyboard-policy.json` is the source
+for the tool schema and generated Swift/Dart copies; regenerate them with
+`node scripts/generate-local-keyboard-policy.mjs`. Keys name ANSI positions;
+ordinary text still uses Unicode typing. Shortcut capability does not grant
+shortcut authority: current focus, snapshot revision, secure-field checks and
+the reviewed action policy still apply. Installed-app options, new keys and
+longer commands require v52 at enqueue and again at claim.
+
+Settings → This Mac describes app control, files and development commands and
+lets the owner add/remove starting folders. Command-only access can be enabled
+without screen permissions. The admitted session returns separate
+`visualControlReady` and `commandRunnerReady` booleans so the agent receives only
+the local capabilities currently available.
 
 ## Owner-Mac release evidence
 

@@ -40,6 +40,16 @@ import {
 } from "@/lib/app-services/workspaces";
 import { showTruthfulIntegrationsService } from "@/lib/app-services/integrations";
 import { showSourceCoverageService } from "@/lib/app-services/source-coverage";
+import { listWorkspaceLibraryService, showWorkspaceLibraryItemService } from "@/lib/app-services/library";
+import { installPluginService, listPluginsService, previewCatalogPluginService, transitionPluginService } from "@/lib/app-services/plugins";
+import { showUsageSummaryService } from "@/lib/app-services/usage";
+import { startResearchService } from "@/lib/app-services/research";
+import { showPersonalProfileService, updatePersonalProfileService } from "@/lib/app-services/personal-profile";
+import {
+  linkCsmClientSourceService, linkCsmRoleSourceService, listCsmClientsService,
+  showCsmClientService, showCsmRoleService, unlinkCsmClientSourceService,
+  unlinkCsmRoleSourceService, updateCsmClientService, updateCsmRoleService,
+} from "@/lib/app-services/csm-controls";
 import {
   generateMarketAnalysisVersionService,
   generateMarketForecastService,
@@ -248,6 +258,27 @@ export async function executeFirstPartyAppTool(input: {
   const handlers: Record<string, () => Promise<unknown>> = {
     "app.workspaces.summary": () => getWorkspaceSummaryService(caller, input.toolInput as never),
     "app.workspaces.readiness": () => getWorkspaceReadinessService(caller, input.toolInput as never),
+    "app.usage.summary.show": () => showUsageSummaryService(caller, input.toolInput),
+    "app.research.start": () => startResearchService(caller, input.toolInput),
+    "app.personal_profile.show": () => showPersonalProfileService(caller, input.toolInput),
+    "app.personal_profile.update": () => updatePersonalProfileService(caller, input.toolInput),
+    "app.csm.clients.list": () => listCsmClientsService(caller, input.toolInput),
+    "app.csm.clients.show": () => showCsmClientService(caller, input.toolInput),
+    "app.csm.clients.update": () => updateCsmClientService(caller, input.toolInput),
+    "app.csm.clients.sources.link": () => linkCsmClientSourceService(caller, input.toolInput),
+    "app.csm.clients.sources.unlink": () => unlinkCsmClientSourceService(caller, input.toolInput),
+    "app.csm.role.show": () => showCsmRoleService(caller, input.toolInput),
+    "app.csm.role.update": () => updateCsmRoleService(caller, input.toolInput),
+    "app.csm.role.sources.link": () => linkCsmRoleSourceService(caller, input.toolInput),
+    "app.csm.role.sources.unlink": () => unlinkCsmRoleSourceService(caller, input.toolInput),
+    "app.library.list": () => listWorkspaceLibraryService(caller, input.toolInput as never),
+    "app.library.show": () => showWorkspaceLibraryItemService(caller, input.toolInput as never),
+    "app.plugins.list": () => listPluginsService(caller, input.toolInput as never),
+    "app.plugins.preview": () => previewCatalogPluginService(caller, input.toolInput),
+    "app.plugins.install": () => installPluginService(caller, input.toolInput as never),
+    "app.plugins.enable": () => transitionPluginService(caller, { ...input.toolInput, action: "enable" } as never),
+    "app.plugins.disable": () => transitionPluginService(caller, { ...input.toolInput, action: "disable" } as never),
+    "app.plugins.uninstall": () => transitionPluginService(caller, { ...input.toolInput, action: "uninstall" } as never),
     "app.integrations.overview.show": () => showTruthfulIntegrationsService(caller, input.toolInput as never),
     "app.sources.coverage.show": () => showSourceCoverageService(caller, input.toolInput as never),
     "app.market_research.overview.show": () => showMarketResearchOverviewService(caller),

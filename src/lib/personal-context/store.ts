@@ -9,8 +9,8 @@ import { withJsonFileLock, writeJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
 import {
   EMPTY_PERSONAL_PROFILE, PERSONAL_PROFILE_CONTRACT, PERSONAL_PROFILE_FIELDS, PERSONAL_PROFILE_SOURCE_LABELS,
-  personalProfileChangeSchema, personalProfileFieldSourcesSchema, personalProfileSchema,
-  type PersonalProfileChange, type PersonalProfileFieldSources, type PersonalProfileResponse,
+  personalProfileChangeSchema, personalProfileFieldSourcesSchema, personalProfilePatchSchema, personalProfileSchema,
+  type PersonalProfileChange, type PersonalProfileFieldSources, type PersonalProfilePatch, type PersonalProfileResponse,
 } from "./contracts";
 
 export class PersonalProfileError extends Error {
@@ -52,13 +52,30 @@ export async function readPersonalProfile(owner: CompanionOwner): Promise<Person
 export async function changePersonalProfile(owner: CompanionOwner, change: PersonalProfileChange, key: string): Promise<PersonalProfileResponse> {
   const parsed = personalProfileChangeSchema.safeParse(change);
   if (!parsed.success) throw new PersonalProfileError("Check the About me fields and try again.", 400, "personal_profile_invalid");
+  return mutatePersonalProfile(owner, key, hash(parsed.data), () => parsed.data);
+}
+
+export async function patchPersonalProfile(owner: CompanionOwner, change: PersonalProfilePatch, key: string): Promise<PersonalProfileResponse> {
+  const parsed = personalProfilePatchSchema.safeParse(change);
+  if (!parsed.success) throw new PersonalProfileError("Check the About me fields and try again.", 400, "personal_profile_invalid");
+  const patch = parsed.data;
+  // Hash the original patch, before reading saved fields. A replay after a later
+  // edit returns the current profile without resurrecting an earlier value.
+  return mutatePersonalProfile(owner, key, hash(["personal-profile-patch:1", patch]), prior => ({
+    expectedRevision: patch.expectedRevision,
+    enabled: patch.enabled ?? prior?.enabled ?? false,
+    profile: personalProfileSchema.parse({ ...EMPTY_PERSONAL_PROFILE, ...prior?.profile, ...patch.profile }),
+    source: "conversation",
+  }));
+}
+
+async function mutatePersonalProfile(owner: CompanionOwner, key: string, requestSha256: string,
+  resolveChange: (prior: StoredProfile | undefined) => PersonalProfileChange): Promise<PersonalProfileResponse> {
   if (!/^[A-Za-z0-9][A-Za-z0-9._:@/+~-]{0,511}$/.test(key)) {
     throw new PersonalProfileError("A save identifier is required.", 400, "personal_profile_idempotency_invalid");
   }
-  const input = parsed.data;
   const coordinates = companionOwnerCoordinates(owner);
   const keySha256 = hash(["personal-profile-save:1", key]);
-  const requestSha256 = hash(input);
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     return runWithDatabaseActorScope(coordinates.tenantId, coordinates.readableActorIds, async () =>
@@ -74,6 +91,7 @@ export async function changePersonalProfile(owner: CompanionOwner, change: Perso
         if (rows.length > 1) throw unavailable();
         const receipt = rows[0] ? parseMutationRow(rows[0], coordinates) : undefined;
         if (replayed(prior, receipt, requestSha256)) return response(prior);
+        const input = resolveChange(prior);
         const next = prepare(coordinates, prior, input);
         const saved = prior ? await sql`UPDATE omni_personal_profiles
           SET revision = ${next.revision}, enabled = ${next.enabled}, profile = ${next.profile}::jsonb,
@@ -99,6 +117,7 @@ export async function changePersonalProfile(owner: CompanionOwner, change: Perso
     if (matches.length > 1) throw unavailable();
     const receipt = matches[0] ? mutationSchema.parse(matches[0]) : undefined;
     if (replayed(prior, receipt, requestSha256)) return response(prior);
+    const input = resolveChange(prior);
     const next = prepare(coordinates, prior, input);
     const mutation: Mutation = { tenantId: next.tenantId, actorId: next.actorId, keySha256, requestSha256, revision: next.revision, savedAt: next.updatedAt };
     await writeJsonFile(ledgerPath(), { schemaVersion: 1,

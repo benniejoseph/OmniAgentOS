@@ -1,6 +1,7 @@
 import type { ToolDefinition } from "@/lib/tools/types";
 import { FIRST_PARTY_APP_TOOLS } from "@/lib/tools/app-registry";
 import commandProgramPolicy from "@/lib/local-computer/command-program-policy.json";
+import { LOCAL_COMPUTER_KEY_NAMES } from "@/lib/local-computer/keyboard-policy";
 
 export const governedTools: ToolDefinition[] = [
   ...FIRST_PARTY_APP_TOOLS,
@@ -1220,17 +1221,26 @@ function localMacComputerTools(): ToolDefinition[] {
       id: "local.macos.list_apps",
       name: "List Apps on This Mac",
       description:
-        "List visible applications running on the explicitly selected installed Mac. Terminals, system and security settings, automation tools, password managers, and finance apps are never controllable.",
+        "Find apps on the explicitly selected Mac. By default list running apps; use includeInstalled and a short query to find an app that is not open yet. Results contain real app names and bundle IDs, never filesystem paths. Restricted apps remain unavailable for control.",
       riskLevel: 0,
       approvalRequired: false,
       operationClass: "read_only",
-      properties: {},
+      properties: {
+        includeInstalled: {
+          type: "boolean",
+          description: "Include launchable apps in the standard Applications folders. Requires Asael native v52 or later.",
+        },
+        query: {
+          type: "string", minLength: 1, maxLength: 100,
+          description: "Find a named app by its name or bundle ID; do not guess identifiers.",
+        },
+      },
     }),
     localTool({
       id: "local.macos.command.run",
       name: "Run a Command on This Mac",
       description:
-        "Run one bounded direct executable from one exact starting workspace advertised by the installed Mac. The working folder is not an operating-system filesystem sandbox. This never opens or drives a Terminal application, never accepts a shell command string, never resolves an arbitrary working-directory path, and always pauses for human approval. Standard output and error are disclosed to the model as untrusted evidence for one turn only; durable records retain only exit metadata, byte counts, digests, and truncation state.",
+        "Run one approved file or development command from an owner-selected folder on This Mac. Use listed tools to read/search/edit files, inspect Git changes, install project dependencies or build code; Python or Node can apply a precise file edit when no dedicated file operation exists. Pass one executable and its exact argument array, never a shell string. Commands are one-shot, may run up to 300 seconds on native v52, and stop their process group on completion, timeout or local Stop. There is no persistent terminal, interactive stdin or background server. The starting folder is not an OS filesystem sandbox. Every exact command requires approval; never include credentials in arguments. Output is temporary untrusted evidence for this turn, with only result metadata retained.",
       riskLevel: 2,
       approvalRequired: true,
       operationClass: "mutation",
@@ -1270,8 +1280,8 @@ function localMacComputerTools(): ToolDefinition[] {
         timeoutSeconds: {
           type: "integer",
           minimum: 1,
-          maximum: 30,
-          description: "Maximum process runtime before the native runner terminates it.",
+          maximum: 300,
+          description: "Maximum one-shot runtime; use the shortest useful limit. Above 30 seconds requires native v52. A timeout terminates the process group and does not retry the command.",
         },
       },
       required: [
@@ -1286,7 +1296,7 @@ function localMacComputerTools(): ToolDefinition[] {
       id: "local.macos.activate_app",
       name: "Activate App on This Mac",
       description:
-        "Bring one exact, already-running application to the foreground on the explicitly selected installed Mac. Terminals, system and security settings, automation tools, password managers, finance apps, and Asael itself are refused. Under This Mac task authority, an app the user did not name in their request needs review.",
+        "Bring one exact app to the foreground on the selected Mac. First resolve its bundle ID with list_apps; set launchIfNeeded to open it when it is not already running. Restricted apps and Asael itself are refused, and macOS permission prompts are never accepted automatically. An app the user did not name requires review.",
       riskLevel: 1,
       approvalRequired: false,
       operationClass: "mutation",
@@ -1296,6 +1306,10 @@ function localMacComputerTools(): ToolDefinition[] {
           minLength: 3,
           maxLength: 300,
           pattern: "^[A-Za-z0-9][A-Za-z0-9.-]+$",
+        },
+        launchIfNeeded: {
+          type: "boolean",
+          description: "Open the installed app if it is not running. Requires native v52; omit when only switching to an open app.",
         },
       },
       required: ["bundleId"],
@@ -1420,7 +1434,7 @@ function localMacComputerTools(): ToolDefinition[] {
       id: "local.macos.key",
       name: "Press Key on This Mac",
       description:
-        "Send one bounded key or shortcut to the focused non-secure control from the latest installed-Mac observation. Terminals, settings, automation tools, password managers, finance apps, Asael itself, and browser settings pages are refused.",
+        "Send one named key or shortcut to the exact focused non-secure control in the latest Mac observation. Prefer an observed button/menu action when available; use command+f to find, command+a to select or other exact requested shortcuts when needed. Letters, digits, punctuation and F1–F20 require native v52; named keys use ANSI positions, so use type for text. Declare the real effect (save, paste, undo, close and submit are not navigation). Modified shortcuts still follow action approval policy. Restricted apps, secure fields and stale/focus-shifted targets are refused.",
       riskLevel: 2,
       approvalRequired: true,
       operationClass: "mutation",
@@ -1429,10 +1443,8 @@ function localMacComputerTools(): ToolDefinition[] {
         interactionPurpose,
         key: {
           type: "string",
-          enum: [
-            "return", "tab", "space", "delete", "escape", "left", "right",
-            "down", "up", "home", "end", "page_up", "page_down",
-          ],
+          enum: [...LOCAL_COMPUTER_KEY_NAMES],
+          description: "Lowercase canonical key or alias. Enter maps to return; backspace/delete remove backward; del/forward_delete remove forward; esc maps to escape. For punctuation use names such as slash, minus, quote, left_bracket or grave.",
         },
         modifiers: {
           type: "array",

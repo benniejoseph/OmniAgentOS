@@ -1,5 +1,7 @@
 import type { ToolDefinition } from "@/lib/tools/types";
 import { MAX_ASSIGNED_SKILLS } from "@/lib/skills/limits";
+import { PERSONAL_PROFILE_FIELD_DETAILS, PERSONAL_PROFILE_FIELDS } from "@/lib/personal-context/contracts";
+import { workspaceLibraryKindSchema } from "@/lib/library/contracts";
 
 export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   readTool("app.workspaces.summary", "Workspace summary", "Read the current tenant workspace summary, including recent runs, workflows, and permitted approval items.", objectSchema({
@@ -7,6 +9,72 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
     approvalLimit: integer(1, 25, 12),
   })),
   readTool("app.workspaces.readiness", "Workspace readiness", "Read the authenticated tenant workspace readiness checks.", objectSchema({})),
+  mutationTool("app.research.start", "Start research", "Start a durable Quick or Deep report from this conversation using the existing research pipeline. Use for explicit requests to research a public topic or produce a detailed multi-source report; ordinary short factual questions can use web.search directly. Supply only the requested public topic and brief, never private profile, client, email or saved-context details. Returns a workflow ID; completion and report arrive in the same conversation. Saved context is not inherited.", requiredObjectSchema({
+    goal: text(1, 4_000), depth: { type: "string", enum: ["quick", "deep"], default: "quick" },
+    questions: { type: "array", maxItems: 6, items: text(1, 500), description: "Up to three focus questions for Quick, or six for Deep." },
+    sourceGuidance: text(0, 1_500),
+    allowedDomains: { type: "array", maxItems: 10, items: { type: "string", maxLength: 253, pattern: "^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\\.)+[a-z]{2,63}$" } },
+  }, ["goal", "depth"]), { reversible: false }),
+  readTool("app.usage.summary.show", "Show AI consumption", "Read recorded AI usage, tokens, estimated cost, failed calls, and provider/model breakdown for the current workspace. Compare the selected rolling period with the preceding period; preserve unknown pricing and incomplete coverage.", objectSchema({
+    period: { type: "string", enum: ["day", "week", "month"], default: "week" },
+    breakdownLimit: integer(1, 20, 10),
+  })),
+  readTool("app.personal_profile.show", "Show About me", "Read the signed-in user's saved About me profile, field sources, enabled state, and exact revision. Use before changing any personal field; this does not grant access to private memory or connected sources.", objectSchema({})),
+  mutationTool("app.personal_profile.update", "Update About me", "Change only the named About me fields from the user's explicit request, using the exact revision from app.personal_profile.show. Omitted fields and enabled state are preserved; an empty string clears a named field. Do not infer or silently save new personal facts.", requiredObjectSchema({
+    expectedRevision: integer(0, Number.MAX_SAFE_INTEGER - 1),
+    enabled: { type: "boolean", description: "Change only when the user explicitly asks to enable or disable About me." },
+    profile: objectSchema(Object.fromEntries(PERSONAL_PROFILE_FIELDS.map(field => [field, {
+      ...text(0, PERSONAL_PROFILE_FIELD_DETAILS[field].maxLength), description: PERSONAL_PROFILE_FIELD_DETAILS[field].label,
+    }]))),
+  }, ["expectedRevision"]), { reversible: true }),
+  readTool("app.csm.clients.list", "List clients", "List the current user's Salesforce Customer Success clients and saved brief summaries. Resolve readable client names before requesting an exact client or changing its fields.", objectSchema({})),
+  readTool("app.csm.clients.show", "Show client brief", "Read one exact client brief, current revision, role, success plan, goals, stakeholders, next review, tasks and linked source freshness. This reads saved context and does not connect to a Salesforce org.", requiredObjectSchema({
+    projectId: opaqueId("Exact client project ID returned by app.csm.clients.list or app.projects.list."),
+  }, ["projectId"])),
+  mutationTool("app.csm.clients.update", "Update client brief", "Update only explicitly named client brief fields from the user's request. First read the exact current brief and revision. Omitted fields and linked evidence are preserved; empty strings clear text and null clears the next review date.", requiredObjectSchema({
+    projectId: opaqueId("Exact client project ID."), expectedRevision: csmRevision(),
+    profile: objectSchema({
+      role: { type: "string", enum: ["secondary", "lead"] },
+      successPlan: { type: "string", enum: ["unknown", "standard", "premier", "signature"] },
+      leadCsm: text(0, 240), customerGoals: text(0, 4_000), successPath: text(0, 4_000), stakeholders: text(0, 4_000),
+      nextReviewDate: { type: ["string", "null"], format: "date", description: "Client's next review date, or null to clear it." },
+    }),
+  }, ["projectId", "expectedRevision", "profile"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
+  readTool("app.csm.role.show", "Show my CSM role context", "Read the user's saved CSM role notes, current revision and linked private role documents. Keep these general working instructions separate from each client's own context.", objectSchema({})),
+  mutationTool("app.csm.role.update", "Update my CSM role context", "Add the user's new role notes while preserving existing notes and source links. Use replace only for an explicit correction, replacement or clearing request, after reading the complete current notes. A stale revision cannot overwrite another edit.", requiredObjectSchema({
+    expectedRevision: csmRevision(), text: text(0, 20_000),
+    mode: { type: "string", enum: ["append", "replace"], default: "append" },
+  }, ["expectedRevision", "text"]), { reversible: true }),
+  mutationTool("app.csm.clients.sources.link", "Link client evidence", "Attach one exact current Library version to a saved client brief without copying content or expanding source access. Resolve the document by name, inspect it, and preserve its exact version and digest.", requiredObjectSchema({
+    projectId: opaqueId("Exact client project ID."), ...csmSourceLinkProperties(),
+  }, ["projectId", "expectedRevision", "libraryItemId", "versionId", "contentSha256"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
+  mutationTool("app.csm.clients.sources.unlink", "Unlink client evidence", "Remove one source reference from the exact client brief revision. The source file itself remains saved.", requiredObjectSchema({
+    projectId: opaqueId("Exact client project ID."), expectedRevision: csmRevision(), libraryItemId: libraryId(),
+  }, ["projectId", "expectedRevision", "libraryItemId"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
+  mutationTool("app.csm.role.sources.link", "Link a CSM role document", "Attach one inspected private Library document to the user's general CSM role context. Client, workspace and mission documents cannot be used as general role sources.", requiredObjectSchema(csmSourceLinkProperties(),
+    ["expectedRevision", "libraryItemId", "versionId", "contentSha256"]), { reversible: true }),
+  mutationTool("app.csm.role.sources.unlink", "Unlink a CSM role document", "Remove one document reference from the exact CSM role revision. The document itself remains saved.", requiredObjectSchema({
+    expectedRevision: csmRevision(), libraryItemId: libraryId(),
+  }, ["expectedRevision", "libraryItemId"]), { reversible: true }),
+  readTool("app.library.list", "Find files and evidence", "Find readable documents, decks, recordings, transcripts, connected sources and generated files by title or text in the Library. Return bounded metadata and exact IDs for inspection; source permissions remain unchanged.", objectSchema({
+    query: text(0, 240), kinds: { type: "array", maxItems: 20, items: { type: "string", enum: workspaceLibraryKindSchema.options } },
+    projectId: { type: "string", minLength: 1, maxLength: 320 }, limit: integer(1, 100, 30), offset: integer(0, 10_000, 0),
+  })),
+  readTool("app.library.show", "Inspect a file or source", "Read one exact accessible Library item's title, current version and digest, source freshness, citation metadata and app links. Binary bytes and credentials remain excluded.", requiredObjectSchema({
+    libraryItemId: libraryId(),
+  }, ["libraryItemId"])),
+  readTool("app.plugins.list", "Show plugins", "List available declarative plugins and this actor's installed plugins, current lifecycle revisions, component counts and activation limits. Installed templates do not imply connected integrations or executable workflows.", objectSchema({})),
+  mutationTool("app.plugins.preview", "Prepare plugin installation", "Prepare a reviewed installation from an exact catalog plugin ID, version and manifest digest returned by app.plugins.list. This creates only a preview and does not activate a plugin or execute code.", requiredObjectSchema({
+    pluginId: text(3, 120), version: text(5, 80), manifestSha256: sha256("Exact catalog manifest digest."),
+  }, ["pluginId", "version", "manifestSha256"]), { reversible: true }),
+  mutationTool("app.plugins.install", "Install reviewed plugin", "Install one exact unexpired preview after approval. Copy preview ID and manifest digest from the preview response; existing integration discovery, credential setup and workflow review remain separate.", requiredObjectSchema({
+    previewId: text(16, 200), manifestSha256: sha256("Exact reviewed manifest digest."),
+  }, ["previewId", "manifestSha256"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
+  ...(["enable", "disable", "uninstall"] as const).map(action => mutationTool(`app.plugins.${action}`,
+    `${action === "enable" ? "Enable" : action === "disable" ? "Disable" : "Uninstall"} plugin`,
+    `${action === "enable" ? "Enable" : action === "disable" ? "Disable" : "Uninstall"} one exact installed plugin using its current lifecycle revision from app.plugins.list. Never infer a plugin's state from its catalog availability.`,
+    requiredObjectSchema({ installationId: text(16, 200), expectedRevision: integer(1, Number.MAX_SAFE_INTEGER) }, ["installationId", "expectedRevision"]),
+    { riskLevel: 2, approvalRequired: true, reversible: action !== "uninstall" })),
   readTool("app.sources.coverage.show", "Show source coverage", "Read connected knowledge domains, bounded backfill completeness, last verified freshness, and explicit source blind spots without inferring absence as a negative fact.", objectSchema({
     workspaceId: opaqueId("Optional exact workspace ID for Workspace-scoped integrations."),
   })),
@@ -729,6 +797,17 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
 
 function readTool(id: string, name: string, description: string, inputSchema: Record<string, unknown>): ToolDefinition {
   return { id, name, description, category: "app", status: "active", riskLevel: 0, dryRunSupported: true, approvalRequired: false, operationClass: "read_only", reversible: true, inputSchema };
+}
+
+function csmRevision() {
+  return { type: ["string", "null"], minLength: 1, maxLength: 320,
+    description: "Exact current revision from the matching CSM read; null only when no saved revision exists." };
+}
+function libraryId() { return { type: "string", minLength: 1, maxLength: 320, description: "Exact Library item ID from a readable source result." }; }
+function csmSourceLinkProperties() {
+  return { expectedRevision: csmRevision(), libraryItemId: libraryId(),
+    versionId: { type: "string", minLength: 1, maxLength: 320 },
+    contentSha256: sha256("Exact current content digest returned by app.library.show.") };
 }
 
 function mutationTool(

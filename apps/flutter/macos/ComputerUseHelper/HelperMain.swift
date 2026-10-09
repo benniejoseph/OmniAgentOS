@@ -984,8 +984,7 @@ private final class ComputerUseExecutor {
         data: permissionData()
       )
     case "list_apps":
-      guard input.isEmpty else { throw HelperFailure.rejected("invalid_input") }
-      return result(summary: "Listed visible applications.", data: ["applications": runningApps()])
+      return try listApps(input)
     case "activate_app":
       return try await activateApp(input)
     case "open_url":
@@ -1035,24 +1034,143 @@ private final class ComputerUseExecutor {
           "bundleId": bounded(app.bundleIdentifier ?? "unknown", limit: 300),
           "pid": Int(app.processIdentifier),
           "active": app.isActive,
+          "running": true,
         ]
       }
   }
 
+  private func listApps(_ input: [String: Any]) throws -> [String: Any] {
+    guard input.keys.allSatisfy({ $0 == "includeInstalled" || $0 == "query" }),
+          input["includeInstalled"] == nil || input["includeInstalled"] is Bool,
+          input["query"] == nil || input["query"] is String
+    else { throw HelperFailure.rejected("invalid_input") }
+    let query = (input["query"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard input["query"] == nil || (!query.isEmpty && query.count <= 100),
+          !query.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+    else { throw HelperFailure.rejected("invalid_input") }
+    let includeInstalled = input["includeInstalled"] as? Bool == true
+    var apps = runningApps()
+    var seen = Set(apps.compactMap { ($0["bundleId"] as? String)?.lowercased() })
+    var truncated = false
+    if includeInstalled {
+      // Discover application bundles only in standard app folders. No arbitrary
+      // path comes from the model; paths and bundle contents never leave here.
+      let roots = [
+        URL(fileURLWithPath: "/Applications", isDirectory: true),
+        URL(fileURLWithPath: "/System/Applications", isDirectory: true),
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications", isDirectory: true),
+      ]
+      var examined = 0
+      let deadline = Date().addingTimeInterval(1.5)
+      for root in roots {
+        guard let enumerator = FileManager.default.enumerator(
+          at: root, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+          options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else { continue }
+        for case let url as URL in enumerator {
+          examined += 1
+          if examined > 600 || Date() >= deadline { truncated = true; break }
+          let depth = url.pathComponents.count - root.pathComponents.count
+          let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+          if depth > 2 || values?.isSymbolicLink == true {
+            enumerator.skipDescendants()
+            continue
+          }
+          guard url.pathExtension.lowercased() == "app" else { continue }
+          enumerator.skipDescendants()
+          guard let bundle = launchableBundle(at: url), let bundleId = bundle.bundleIdentifier,
+                seen.insert(bundleId.lowercased()).inserted else { continue }
+          let name = bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
+            ?? bundle.object(forInfoDictionaryKey: "CFBundleName") as? String
+            ?? url.deletingPathExtension().lastPathComponent
+          apps.append([
+            "name": bounded(name, limit: 160), "bundleId": bounded(bundleId, limit: 300),
+            "running": false, "active": false,
+          ])
+        }
+        if truncated { break }
+      }
+    }
+    let matching = apps.filter { app in
+      query.isEmpty || (app["name"] as? String)?.localizedCaseInsensitiveContains(query) == true
+        || (app["bundleId"] as? String)?.localizedCaseInsensitiveContains(query) == true
+    }.sorted { ($0["name"] as? String ?? "").localizedStandardCompare($1["name"] as? String ?? "") == .orderedAscending }
+    return result(
+      summary: includeInstalled ? "Found running and installed apps. Use the returned bundle ID to open one." : "Listed running apps.",
+      data: ["applications": Array(matching.prefix(80)), "includesInstalled": includeInstalled,
+             "truncated": truncated || matching.count > 80]
+    )
+  }
+
+  private func launchableBundle(at url: URL) -> Bundle? {
+    guard url.isFileURL, url.pathExtension.lowercased() == "app",
+          let bundle = Bundle(url: url), let identifier = bundle.bundleIdentifier,
+          isSafeIdentifier(identifier),
+          identifier.lowercased() != ParentVerifier.parentIdentifier.lowercased(),
+          identifier.lowercased() != Bundle.main.bundleIdentifier?.lowercased(),
+          bundle.object(forInfoDictionaryKey: "LSUIElement") as? Bool != true,
+          bundle.object(forInfoDictionaryKey: "LSBackgroundOnly") as? Bool != true,
+          !RestrictedApplicationPolicy.refuses(
+            bundleIdentifier: identifier,
+            declaredCategory: RestrictedApplicationPolicy.declaredCategory(ofBundleAt: url),
+            storeGenre: RestrictedApplicationPolicy.storeGenre(ofBundleAt: url)
+          )
+    else { return nil }
+    return bundle
+  }
+
   private func activateApp(_ input: [String: Any]) async throws -> [String: Any] {
-    guard input.count == 1,
+    guard input.keys.allSatisfy({ $0 == "bundleId" || $0 == "launchIfNeeded" }),
+          input["launchIfNeeded"] == nil || input["launchIfNeeded"] is Bool,
           let bundleId = input["bundleId"] as? String,
-          isSafeIdentifier(bundleId),
-          let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).first,
+          isSafeIdentifier(bundleId)
+    else { throw HelperFailure.rejected("application_not_allowed") }
+    let app: NSRunningApplication
+    var launched = false
+    if let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).first {
+      app = running
+    } else {
+      guard input["launchIfNeeded"] as? Bool == true,
+            let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId),
+            let bundle = launchableBundle(at: url),
+            bundle.bundleIdentifier?.lowercased() == bundleId.lowercased()
+      else { throw HelperFailure.rejected("application_not_allowed") }
+      let configuration = NSWorkspace.OpenConfiguration()
+      configuration.activates = true
+      configuration.createsNewApplicationInstance = false
+      configuration.promptsUserIfNeeded = false
+      app = try await withCheckedThrowingContinuation {
+        (continuation: CheckedContinuation<NSRunningApplication, Error>) in
+        NSWorkspace.shared.openApplication(at: url, configuration: configuration) { opened, error in
+          guard error == nil, let opened else {
+            continuation.resume(throwing: HelperFailure.rejected("application_open_failed"))
+            return
+          }
+          continuation.resume(returning: opened)
+        }
+      }
+      launched = true
+    }
+    guard app.bundleIdentifier?.lowercased() == bundleId.lowercased(),
           app.activationPolicy == .regular,
           !refusesTarget(app)
-    else { throw HelperFailure.rejected("application_not_allowed") }
+    else {
+      if launched {
+        return result(summary: "The app launch was accepted, but its controllable window could not be confirmed. Do not repeat the launch.",
+                      data: ["bundleId": bundleId, "launched": true, "effectVerdict": "unverifiable"])
+      }
+      throw HelperFailure.rejected("application_not_allowed")
+    }
     guard app.activate(options: [.activateAllWindows]) else {
+      if launched {
+        return result(summary: "The app opened but could not be brought to the foreground. Observe before continuing.",
+                      data: ["bundleId": bundleId, "launched": true, "effectVerdict": "unverifiable"])
+      }
       throw HelperFailure.rejected("activation_failed")
     }
     return await postActionResult(
-      summary: "Activated \(bounded(app.localizedName ?? "application", limit: 100)).",
-      data: ["bundleId": bundleId],
+      summary: "\(launched ? "Opened" : "Activated") \(bounded(app.localizedName ?? "application", limit: 100)).",
+      data: ["bundleId": bundleId, "launched": launched],
       expectedApplication: app,
       expectedBundleIdentifier: bundleId
     )
@@ -1516,10 +1634,12 @@ private final class ComputerUseExecutor {
             $0 == "key" || $0 == "modifiers" || $0 == "snapshotRevision"
           }),
           let revision = input["snapshotRevision"] as? String,
-          let name = input["key"] as? String,
-          let code = keyCode(name),
+          let rawName = input["key"] as? String,
+          let name = canonicalKey(rawName),
+          let code = Self.keyboardCodes[name],
           let modifierNames = input["modifiers"] as? [String],
-          modifierNames.count <= 4
+          modifierNames.count <= 4,
+          Set(modifierNames).count == modifierNames.count
     else { throw HelperFailure.rejected("invalid_input") }
     let focusTarget = try observedFocusTarget(requireFocusedElement: true)
     try verifyObservedTarget(
@@ -2571,13 +2691,115 @@ private final class ComputerUseExecutor {
     return displays.prefix(Int(count)).map(CGDisplayBounds)
   }
 
-  private func keyCode(_ name: String) -> CGKeyCode? {
-    let codes: [String: CGKeyCode] = [
-      "return": 36, "tab": 48, "space": 49, "delete": 51, "escape": 53,
-      "left": 123, "right": 124, "down": 125, "up": 126,
-      "home": 115, "end": 119, "page_up": 116, "page_down": 121,
-    ]
-    return codes[name]
+  // BEGIN GENERATED local keyboard policy
+  // From src/lib/local-computer/keyboard-policy.json; regenerate with
+  // node scripts/generate-local-keyboard-policy.mjs.
+  private static let keyboardCodes: [String: CGKeyCode] = [
+    "0": 29,
+    "1": 18,
+    "2": 19,
+    "3": 20,
+    "4": 21,
+    "5": 23,
+    "6": 22,
+    "7": 26,
+    "8": 28,
+    "9": 25,
+    "a": 0,
+    "b": 11,
+    "backslash": 42,
+    "c": 8,
+    "comma": 43,
+    "d": 2,
+    "delete": 51,
+    "down": 125,
+    "e": 14,
+    "end": 119,
+    "equal": 24,
+    "escape": 53,
+    "f": 3,
+    "f1": 122,
+    "f10": 109,
+    "f11": 103,
+    "f12": 111,
+    "f13": 105,
+    "f14": 107,
+    "f15": 113,
+    "f16": 106,
+    "f17": 64,
+    "f18": 79,
+    "f19": 80,
+    "f2": 120,
+    "f20": 90,
+    "f3": 99,
+    "f4": 118,
+    "f5": 96,
+    "f6": 97,
+    "f7": 98,
+    "f8": 100,
+    "f9": 101,
+    "forward_delete": 117,
+    "g": 5,
+    "grave": 50,
+    "h": 4,
+    "home": 115,
+    "i": 34,
+    "j": 38,
+    "k": 40,
+    "l": 37,
+    "left": 123,
+    "left_bracket": 33,
+    "m": 46,
+    "minus": 27,
+    "n": 45,
+    "o": 31,
+    "p": 35,
+    "page_down": 121,
+    "page_up": 116,
+    "period": 47,
+    "q": 12,
+    "quote": 39,
+    "r": 15,
+    "return": 36,
+    "right": 124,
+    "right_bracket": 30,
+    "s": 1,
+    "semicolon": 41,
+    "slash": 44,
+    "space": 49,
+    "t": 17,
+    "tab": 48,
+    "u": 32,
+    "up": 126,
+    "v": 9,
+    "w": 13,
+    "x": 7,
+    "y": 16,
+    "z": 6,
+  ]
+  private static let keyboardAliases: [String: String] = [
+    "apostrophe": "quote",
+    "arrow_down": "down",
+    "arrow_left": "left",
+    "arrow_right": "right",
+    "arrow_up": "up",
+    "backspace": "delete",
+    "backtick": "grave",
+    "dash": "minus",
+    "del": "forward_delete",
+    "enter": "return",
+    "equals": "equal",
+    "esc": "escape",
+    "pagedown": "page_down",
+    "pageup": "page_up",
+    "pgdn": "page_down",
+    "pgup": "page_up",
+  ]
+  // END GENERATED local keyboard policy
+
+  private func canonicalKey(_ name: String) -> String? {
+    let key = Self.keyboardAliases[name] ?? name
+    return Self.keyboardCodes[key] == nil ? nil : key
   }
 }
 

@@ -72,13 +72,13 @@ import {
 import { conversationVoiceTurnsRequestSchema, conversationVoiceTurnsResponseSchema } from "@/lib/voice/conversation-transcript";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 51 as const;
-// v51 adds About me; the installed continuous-voice v50 client stays compatible.
-export const NATIVE_API_PREVIOUS_VERSION = 50 as const;
+export const NATIVE_API_CURRENT_VERSION = 52 as const;
+// v52 adds conversation Mac targeting, keyboard/app discovery and longer commands.
+export const NATIVE_API_PREVIOUS_VERSION = 51 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
-  49,
+  50,
 ] as const;
 
 const positiveDatabaseInteger = z.number().int().min(1).max(2_147_483_647);
@@ -311,7 +311,7 @@ export const nativeCompatibilitySchema = z.object({
   supportedContractVersions: z.tuple([
     z.literal(NATIVE_API_CURRENT_VERSION),
     z.literal(NATIVE_API_PREVIOUS_VERSION),
-    z.literal(49),
+    z.literal(50),
   ]),
   status: z.enum(["compatible", "upgrade_required", "unknown"]),
   agentCatalogEnrollment: z.object({
@@ -400,7 +400,7 @@ export const nativeBootstrapResponseSchema = nativePublicIdentitySchema.extend({
       supportedVersions: z.tuple([
         z.literal(NATIVE_API_CURRENT_VERSION),
         z.literal(NATIVE_API_PREVIOUS_VERSION),
-        z.literal(49),
+        z.literal(50),
       ]),
       discoveryPath: z.literal("/api/mobile/contracts"),
     }).strict(),
@@ -2371,6 +2371,15 @@ const nativeCompanionPreferencesResponseSchema = z.object({
 }).strict();
 
 export const nativeContractSchemas = Object.freeze({
+  NativeEvidenceRunResponse: z.object({
+    run: z.object({
+      delegatedWork: z.object({
+        workflowId: z.string().min(1).max(200),
+        threadId: z.string().min(1).max(200),
+        status: z.literal("accepted"),
+      }).strict().optional(),
+    }).passthrough().nullable(),
+  }).passthrough(),
   NativePersonalProfileRequest: personalProfileChangeSchema,
   NativePersonalProfileResponse: personalProfileResponseSchema,
   ...nativeGooglePersonalSchemas,
@@ -2493,7 +2502,7 @@ export const nativeContractSchemas = Object.freeze({
     supportedVersions: z.tuple([
       z.literal(NATIVE_API_CURRENT_VERSION),
       z.literal(NATIVE_API_PREVIOUS_VERSION),
-      z.literal(49),
+      z.literal(50),
     ]),
     versions: z.array(z.object({
       version: z.number().int().positive(),
@@ -2561,6 +2570,10 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
     operation("voice.conversation.session.finish", "PATCH", "/api/voice/conversation/session", "End one continuous voice conversation without retaining audio.", "bearer", "NativeVoiceConversationFinishRequest", "NativeVoiceConversationFinishResponse", { requestBodyMaxBytes: 8000 }),
     operation("voice.conversation.turns", "POST", "/api/voice/conversation/turns", "Save bounded client-observed captions in the owned conversation.", "bearer", "NativeVoiceConversationTurnsRequest", "NativeVoiceConversationTurnsResponse", { requestBodyMaxBytes: 64_000 }),
   ];
+  if (version === 52) return nativeOperationsForVersion(51)!.map(descriptor =>
+    descriptor.id === "evidence.run"
+      ? { ...descriptor, responseSchema: "NativeEvidenceRunResponse" }
+      : descriptor);
   if (version === 51) return [...nativeOperationsForVersion(50)!,
     operation("personal.profile.get", "GET", "/api/personal-context/profile", "Read About me for the authenticated owner.", "bearer", undefined, "NativePersonalProfileResponse", { ...privateReadOptions, headerParameters: companionOwnerHeaders }),
     operation("personal.profile.update", "PUT", "/api/personal-context/profile", "Save or clear the owner's About me profile with an optimistic revision. Does not grant personal memory or connector access.", "bearer", "NativePersonalProfileRequest", "NativePersonalProfileResponse", { ...privateReadOptions, headerParameters: [...companionOwnerHeaders, ...pluginMutationHeaders], requestBodyMaxBytes: 48_000 }),
@@ -2576,7 +2589,7 @@ export function nativeContractDiscovery() {
     previousVersion: NATIVE_API_PREVIOUS_VERSION,
     supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [
       typeof NATIVE_API_CURRENT_VERSION, typeof NATIVE_API_PREVIOUS_VERSION,
-      49,
+      50,
     ],
     versions: NATIVE_API_SUPPORTED_VERSIONS.map((version) => ({
       version,

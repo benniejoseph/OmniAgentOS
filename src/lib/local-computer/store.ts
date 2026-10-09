@@ -12,6 +12,8 @@ import {
   LOCAL_COMPUTER_COMMAND_LEASE_SECONDS,
   LOCAL_COMPUTER_COMMAND_RUNNER_CONTRACT_VERSION,
   LOCAL_COMPUTER_COMMAND_TIMEOUT_MS,
+  LOCAL_COMPUTER_EXTENDED_CONTROLS_CONTRACT_VERSION,
+  LOCAL_COMPUTER_PROGRAM_TRANSPORT_GRACE_MS,
   LOCAL_COMPUTER_DEVICE_LEASE_SECONDS,
   LOCAL_COMPUTER_NATIVE_CONTRACT_VERSION,
   LOCAL_COMPUTER_OPEN_URL_CONTRACT_VERSION,
@@ -30,6 +32,7 @@ import {
   type LocalComputerCompletionRequest,
   type LocalComputerDeviceUpdate,
 } from "@/lib/local-computer/contracts";
+import { localComputerKeyNeedsV52 } from "@/lib/local-computer/keyboard-policy";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
 import {
   deriveExecutionScope,
@@ -221,7 +224,7 @@ export async function startLocalComputerSession(
     },
   });
   const deviceRows = await getSql()`
-    SELECT command_runner
+    SELECT command_runner, permission_status
     FROM omni_local_computer_devices
     WHERE tenant_id = ${context.tenantId}
       AND owner_actor_id = ${context.actorId}
@@ -238,7 +241,15 @@ export async function startLocalComputerSession(
         name,
       }))
     : [];
-  return { id, deviceId: native.deviceId, expiresAt, workspaces };
+  const permissions = objectRecord(deviceRows[0]?.permission_status);
+  return {
+    id, deviceId: native.deviceId, expiresAt, workspaces,
+    capabilities: {
+      visualControlReady: permissions.accessibility === "granted" &&
+        permissions.screenRecording === "granted",
+      commandRunnerReady: native.contractVersion >= LOCAL_COMPUTER_COMMAND_RUNNER_CONTRACT_VERSION && workspaces.length > 0,
+    },
+  };
 }
 
 export async function stopLocalComputerDevice(
@@ -366,7 +377,10 @@ export async function claimLocalComputerCommand(context: SecurityContext) {
     UPDATE omni_local_computer_commands command
     SET state = 'claimed', claim_token_sha256 = ${claimTokenSha256},
         claim_generation = command.claim_generation + 1,
-        claimed_at = NOW(), claim_expires_at = ${claimExpiresAt},
+        claimed_at = NOW(), claim_expires_at = CASE
+          WHEN command.action = 'run_command' THEN command.expires_at
+          ELSE LEAST(command.expires_at, ${claimExpiresAt}::timestamptz)
+        END,
         updated_at = NOW()
     FROM candidate
     WHERE command.tenant_id = candidate.tenant_id
@@ -417,6 +431,24 @@ export async function claimLocalComputerCommand(context: SecurityContext) {
         ? error.message
         : "The governed local computer command binding is invalid.",
     );
+  }
+  if (
+    native.contractVersion < requiredNativeContractVersionForCommand(
+      localComputerActionSchema.parse(row.action), commandInput,
+    )
+  ) {
+    // Recheck at dispatch: the app may have been replaced after the exact
+    // action was queued. A stale client receives no unsupported command.
+    await getSql()`
+      UPDATE omni_local_computer_commands
+      SET state = 'failed', outcome = 'failed', error_code = 'native_upgrade_required',
+          completed_at = NOW(), updated_at = NOW()
+      WHERE tenant_id = ${context.tenantId}
+        AND owner_actor_id = ${context.actorId}
+        AND id = ${String(row.id)}
+        AND state = 'claimed'
+    `;
+    return { schemaVersion: LOCAL_COMPUTER_PROTOCOL_VERSION, command: null, pollAfterMs: 0 };
   }
   if (
     taskAuthority &&
@@ -648,7 +680,9 @@ async function enqueueLocalComputerCommand(input: {
   ]).slice(0, 48)}`;
   const now = new Date();
   const expiresAt = new Date(
-    now.getTime() + LOCAL_COMPUTER_COMMAND_TIMEOUT_MS,
+    now.getTime() + (runCommandInput?.success
+      ? runCommandInput.data.timeoutSeconds * 1_000 + LOCAL_COMPUTER_PROGRAM_TRANSPORT_GRACE_MS
+      : LOCAL_COMPUTER_COMMAND_TIMEOUT_MS),
   ).toISOString();
   const inputSha256 = canonicalJsonSha256(toolInput);
   const requiredNativeContractVersion =
@@ -1131,6 +1165,14 @@ function requiredNativeContractVersionForCommand(
   action: LocalComputerAction,
   input: Record<string, unknown>,
 ) {
+  if (
+    (action === "key" && localComputerKeyNeedsV52(input.key)) ||
+    (action === "list_apps" && (input.includeInstalled !== undefined || input.query !== undefined)) ||
+    (action === "activate_app" && input.launchIfNeeded !== undefined) ||
+    (action === "run_command" && typeof input.timeoutSeconds === "number" && input.timeoutSeconds > 30)
+  ) {
+    return LOCAL_COMPUTER_EXTENDED_CONTROLS_CONTRACT_VERSION;
+  }
   if (action === "open_url") {
     return LOCAL_COMPUTER_OPEN_URL_CONTRACT_VERSION;
   }

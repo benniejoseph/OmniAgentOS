@@ -8,6 +8,8 @@ import '../../core/platform/desktop_host_bridge.dart';
 import '../companion/atlas_player.dart';
 import '../companion/companion_models.dart';
 import '../companion/voice_appearance.dart';
+import '../inbox/inbox.dart' as approvals;
+import '../inbox/inbox_providers.dart';
 import 'voice_conversation_controller.dart';
 
 class VoiceConversationSurface extends ConsumerStatefulWidget {
@@ -41,6 +43,7 @@ class _VoiceConversationSurfaceState
     extends ConsumerState<VoiceConversationSurface> {
   final _portraitKey = GlobalKey(debugLabel: 'voice-atlas');
   bool _expanded = false;
+  bool _reviewingApproval = false;
   String? _lastPortrait;
   bool _wasUserSpeaking = false;
   Object? _reaction;
@@ -56,6 +59,8 @@ class _VoiceConversationSurfaceState
       voice.active ? voice.agentName : widget.selectedAgentName;
   String get _portraitState => _error != null
       ? 'blocked'
+      : voice.waitingForApproval
+      ? 'needs_you'
       : _speaking
       ? 'responding'
       : voice.phase == VoiceConversationPhase.working || _connecting
@@ -67,6 +72,8 @@ class _VoiceConversationSurfaceState
       : 'available';
   String get _status => _error != null
       ? 'Needs attention'
+      : voice.waitingForApproval
+      ? 'Needs your review'
       : _connecting
       ? 'Connecting…'
       : !voice.active
@@ -132,21 +139,23 @@ class _VoiceConversationSurfaceState
   }
 
   void _presentWindow(VoiceAppearance appearance, bool details, double scale) {
-    final width =
-        (appearance == VoiceAppearance.perch
-            ? (details ? 360.0 : 300.0)
-            : details
-            ? 400.0
-            : 360.0) *
-        math.min(scale, 1.45);
-    final height =
-        (appearance == VoiceAppearance.perch
-            ? (details ? 380.0 : 256.0) -
-                  (widget.companionPreferences?.visible == true ? 0 : 104)
-            : details
-            ? 280.0
-            : 108.0) *
-        math.min(scale, 2.0);
+    final width = _reviewingApproval
+        ? 560.0
+        : (appearance == VoiceAppearance.perch
+                  ? (details ? 360.0 : 300.0)
+                  : details
+                  ? 400.0
+                  : 360.0) *
+              math.min(scale, 1.45);
+    final height = _reviewingApproval
+        ? 680.0
+        : (appearance == VoiceAppearance.perch
+                  ? (details ? 380.0 : 256.0) -
+                        (widget.companionPreferences?.visible == true ? 0 : 104)
+                  : details
+                  ? 280.0
+                  : 108.0) *
+              math.min(scale, 2.0);
     final configuration = (appearance, width, height, _reduceMotion);
     if (_windowConfiguration == configuration) return;
     _windowConfiguration = configuration;
@@ -265,6 +274,25 @@ class _VoiceConversationSurfaceState
             ),
           ),
         ],
+        if (voice.workNotice case final notice? when expanded) ...[
+          const SizedBox(height: 8),
+          Text(
+            notice,
+            style: TextStyle(
+              fontSize: 12,
+              height: 1.4,
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+        ],
+        if (expanded &&
+            voice.commandContext?['computerUseTarget'] == 'local_macos') ...[
+          const SizedBox(height: 8),
+          Text(
+            'Asael + This Mac · device actions remain reviewed',
+            style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
+          ),
+        ],
       ],
     );
     return expanded ? SingleChildScrollView(child: content) : content;
@@ -283,6 +311,15 @@ class _VoiceConversationSurfaceState
       runSpacing: 6,
       crossAxisAlignment: WrapCrossAlignment.center,
       children: [
+        if (voice.waitingForApproval)
+          TextButton.icon(
+            style: style,
+            onPressed: _reviewingApproval
+                ? null
+                : () => unawaited(_reviewApproval()),
+            icon: const Icon(Icons.fact_check_outlined, size: 15),
+            label: const Text('Review action'),
+          ),
         if (voice.active || _connecting)
           Semantics(
             label: _microphoneStatus,
@@ -337,6 +374,46 @@ class _VoiceConversationSurfaceState
           ),
       ],
     );
+  }
+
+  Future<void> _reviewApproval() async {
+    if (!voice.active || !voice.waitingForApproval || _reviewingApproval)
+      return;
+    final call = voice;
+    final session = call.sessionId;
+    final repository = ref.read(inboxRepositoryProvider);
+    setState(() {
+      _reviewingApproval = true;
+      _expanded = true;
+    });
+    await appDesktopHostBridge.showAmbientVoicePresentation(
+      appearance: 'companion',
+      width: 560,
+      height: 680,
+      reduceMotion: _reduceMotion,
+    );
+    if (!mounted || !call.active || call.sessionId != session) {
+      if (mounted) setState(() => _reviewingApproval = false);
+      return;
+    }
+    try {
+      await showDialog<void>(
+        context: context,
+        builder: (_) => _VoiceApprovalDialog(
+          repository: repository,
+          voice: call,
+          sessionId: session!,
+          approvalId: call.approvalId,
+          workflowId: call.workWorkflowId,
+        ),
+      );
+    } finally {
+      if (mounted)
+        setState(() {
+          _reviewingApproval = false;
+          _windowConfiguration = null;
+        });
+    }
   }
 
   Widget _companion(
@@ -461,6 +538,195 @@ class _VoiceConversationSurfaceState
         child: appearance.appearance == VoiceAppearance.perch
             ? _perch(appearance, details, canCollapse)
             : _companion(appearance, details, canCollapse),
+      ),
+    );
+  }
+}
+
+/// Uses the ordinary approval repository and card. Opening it changes only
+/// presentation: microphone transport and the exact governed run remain live.
+class _VoiceApprovalDialog extends StatefulWidget {
+  const _VoiceApprovalDialog({
+    required this.repository,
+    required this.voice,
+    required this.sessionId,
+    this.approvalId,
+    this.workflowId,
+  });
+  final approvals.InboxRepository repository;
+  final VoiceConversationController voice;
+  final String sessionId;
+  final String? approvalId;
+  final String? workflowId;
+  @override
+  State<_VoiceApprovalDialog> createState() => _VoiceApprovalDialogState();
+}
+
+class _VoiceApprovalDialogState extends State<_VoiceApprovalDialog> {
+  approvals.ApprovalQueue? _queue;
+  bool _loading = true;
+  bool _closing = false;
+  String? _deciding;
+  String? _notice;
+  bool get _current =>
+      mounted &&
+      widget.voice.active &&
+      widget.voice.sessionId == widget.sessionId;
+  @override
+  void initState() {
+    super.initState();
+    widget.voice.addListener(_voiceChanged);
+    unawaited(_load());
+  }
+
+  void _voiceChanged() {
+    if (!_current && mounted && !_closing) {
+      _closing = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && !_current) Navigator.of(context).pop();
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.voice.removeListener(_voiceChanged);
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    try {
+      final queue = await widget.repository.loadApprovals();
+      if (_current)
+        setState(() {
+          _queue = queue;
+          _loading = false;
+        });
+    } catch (_) {
+      if (_current)
+        setState(() {
+          _loading = false;
+          _notice = 'The action could not be loaded. Close and try again.';
+        });
+    }
+  }
+
+  Future<void> _decide(approvals.ApprovalItem item, bool approve) async {
+    if (!_current || _deciding != null) return;
+    setState(() {
+      _deciding = item.id;
+      _notice = null;
+    });
+    try {
+      await widget.repository.decide(item, approve: approve);
+      if (_current) {
+        setState(
+          () => _notice =
+              'Your decision was recorded. ATLAS is following the same task.',
+        );
+        await _load();
+      }
+    } catch (_) {
+      if (_current)
+        setState(
+          () => _notice = 'The decision could not be confirmed. Refresh the action before trying again.',
+        );
+    } finally {
+      if (_current) setState(() => _deciding = null);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final items =
+        _queue?.items
+            .where(
+              (item) =>
+                  item.id == widget.approvalId ||
+                  (widget.approvalId == null &&
+                      item.kind == 'workflow' &&
+                      item.id == widget.workflowId),
+            )
+            .toList() ??
+        const <approvals.ApprovalItem>[];
+    return Dialog(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 520, maxHeight: 600),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 18, 12, 4),
+              child: Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      'Review action',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Return to conversation',
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.close),
+                  ),
+                ],
+              ),
+            ),
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+              child: Text(
+                'Your voice call stays connected. Review the exact action before deciding.',
+              ),
+            ),
+            if (_loading)
+              const Padding(
+                padding: EdgeInsets.all(24),
+                child: Center(child: CircularProgressIndicator()),
+              ),
+            if (_notice != null)
+              Padding(padding: const EdgeInsets.all(20), child: Text(_notice!)),
+            if (!_loading && items.isEmpty)
+              const Padding(
+                padding: EdgeInsets.all(20),
+                child: Text(
+                  'No pending action remains here. ATLAS will read the updated task status.',
+                ),
+              ),
+            Flexible(
+              child: SingleChildScrollView(
+                child: Column(
+                  children: [
+                    for (final item in items)
+                      approvals.ApprovalCard(
+                        item: item,
+                        busy: _deciding != null,
+                        focused: true,
+                        onDecision: (approve) =>
+                            unawaited(_decide(item, approve)),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(12),
+              child: TextButton(
+                onPressed: _loading || _deciding != null
+                    ? null
+                    : () {
+                        setState(() => _loading = true);
+                        unawaited(_load());
+                      },
+                child: const Text('Refresh action'),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

@@ -2622,6 +2622,7 @@ function OwnedAgentRunsWorkspace({
     let completedResponse = "";
     let streamedResponse = "";
     let completedRunId = resumeRunId || "";
+    let voiceWorkflowId: string | undefined;
     let pendingVoiceApproval: VoiceApprovalEvidence | undefined;
     let waitingApprovalEvent: Extract<StreamEvent, { type: "waiting_approval" }> | undefined;
     agentRequestIdRef.current = requestId;
@@ -2678,6 +2679,7 @@ function OwnedAgentRunsWorkspace({
               contextReferences: resumeRunId ? undefined : submittedCommandReferences,
               modelSelection: resumeRunId ? undefined : commandModelSelection,
               voiceInput: resumeRunId ? undefined : options?.voiceReview,
+              computerUseTarget: voiceContext?.computerUseTarget,
             }),
         signal: controller.signal,
       }), controller.signal);
@@ -2734,6 +2736,7 @@ function OwnedAgentRunsWorkspace({
           setClarificationRunId("");
           const acknowledgement = event.acknowledgement || "This task is continuing as a durable workflow.";
           completedResponse = acknowledgement;
+          voiceWorkflowId = event.workflowId;
           if (event.threadId) setThreadId(event.threadId);
           if (event.workflowId) setWorkflowRun({ run: { id: event.workflowId } });
           setAgentResponse(acknowledgement);
@@ -2789,11 +2792,13 @@ function OwnedAgentRunsWorkspace({
           agentRequestIdRef.current = "";
           setClarificationRunId("");
           setError(event.message || "Agent run failed.");
+          completedResponse = event.message || "The task failed.";
         }
         if (event.type === "canceled") {
           terminalEvent = "canceled";
           agentRequestIdRef.current = "";
           setClarificationRunId("");
+          completedResponse = event.message || "The task was canceled.";
         }
         const announcement = runStreamAnnouncement(event);
         if (announcement) {
@@ -2897,10 +2902,14 @@ function OwnedAgentRunsWorkspace({
       }
     }
     if (!currentAttempt()) return;
-    return completedResponse.trim() || pendingVoiceApproval
+    return completedResponse.trim() || pendingVoiceApproval || completedRunId
       ? {
-          text: completedResponse || "Review the exact action before it runs.",
+          text: completedResponse || (pendingVoiceApproval ? "Review the exact action before it runs." : "The task outcome is not yet confirmed. I’m following its saved status."),
+          status: pendingVoiceApproval ? "waiting_approval" : terminalEvent === "delegated" ? "accepted"
+            : terminalEvent === "done" ? "completed" : terminalEvent === "clarification" ? "waiting_clarification"
+              : terminalEvent === "error" ? "failed" : terminalEvent === "canceled" ? "canceled" : "unconfirmed",
           runId: completedRunId || undefined,
+          workflowId: voiceWorkflowId,
           agentId: submittedAgentId,
           approval: pendingVoiceApproval,
         }

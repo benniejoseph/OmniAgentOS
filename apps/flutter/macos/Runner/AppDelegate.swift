@@ -894,7 +894,7 @@ private final class LocalComputerController: NSObject {
           let expiresAt = values["expiresAt"] as? String,
           let expiration = Self.parseDate(expiresAt),
           expiration > Date(),
-          expiration.timeIntervalSinceNow <= 300,
+          expiration.timeIntervalSinceNow <= (action == "run_command" ? 345 : 300),
           JSONSerialization.isValidJSONObject(input),
           let inputData = try? JSONSerialization.data(withJSONObject: input),
           inputData.count <= 64 * 1_024
@@ -956,7 +956,7 @@ private final class LocalComputerController: NSObject {
           let relativeDirectory = input["relativeDirectory"] as? String,
           Self.isSafeRelativeDirectory(relativeDirectory),
           let timeoutSeconds = input["timeoutSeconds"] as? Int,
-          (1...30).contains(timeoutSeconds),
+          (1...300).contains(timeoutSeconds),
           let workspace = resolveCommandWorkspace(workspaceId),
           let workingDirectory = Self.resolveCommandWorkingDirectory(
             root: workspace.root,
@@ -1084,7 +1084,7 @@ private final class LocalComputerController: NSObject {
     }
     commandTimeoutWorkItem = timeout
     DispatchQueue.main.asyncAfter(
-      deadline: .now() + min(max(expiresIn, 0.25), 122),
+      deadline: .now() + min(max(expiresIn, 0.25), 302),
       execute: timeout
     )
 

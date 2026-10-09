@@ -189,6 +189,22 @@ export function foldRunProjection(events: DomainEvent[]): RunProjection {
           message: String(payload.message || ""),
         };
         break;
+      case "delegated":
+        // The conversation request completed by handing work to a durable job;
+        // the workflow's own projection remains authoritative for its progress.
+        projection.status = "completed";
+        projection.response = typeof payload.acknowledgement === "string"
+          ? payload.acknowledgement
+          : undefined;
+        projection.responseLength = typeof payload.acknowledgementLength === "number"
+          ? payload.acknowledgementLength
+          : projection.response?.length;
+        projection.responseSha256 = typeof payload.acknowledgementSha256 === "string"
+          ? payload.acknowledgementSha256
+          : undefined;
+        projection.error = undefined;
+        projection.waitingApproval = undefined;
+        break;
       case "done":
         projection.status = "completed";
         projection.response = typeof payload.response === "string"
