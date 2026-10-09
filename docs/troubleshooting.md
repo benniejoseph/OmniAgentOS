@@ -361,6 +361,39 @@ After installing a hardened owner-only build:
 
 For web Voice, microphone permission may remain pending in an embedded browser even when the provider is healthy. Startup must bound permission, session creation, audio negotiation, and channel readiness separately, release late microphone streams after cancellation, and show an actionable retry. HTTP acceptance of an SDP offer alone does not prove Voice works: verify actual transcription and audible reply on the target client, then stop capture.
 
+## Continuous Voice conversation
+
+Web and Mac Voice now keep one WebRTC microphone and remote-audio connection
+open. Start once, then speak, interrupt, mute/unmute or end. Ordinary replies
+come directly from OpenAI Realtime; they do not wait for the agent loop and a
+separate speech-generation request. Workspace questions, research and actions
+use the single `ask_asael` function through the existing governed agent route.
+Approvals remain in Inbox; a spoken agreement does not bypass them.
+
+The session binds the selected agent and context for its lifetime. Changing
+the selection or account ends capture. Query-bound evidence selections and
+mission context require switching to another context before starting. Calls
+expire after thirty minutes; start a new call to continue. Web may reconnect
+up to three times without replaying accepted work; Mac ends a failed connection
+and offers Start again.
+
+`POST /api/voice/conversation/session` issues a short-lived credential using
+the active actor-owned OpenAI connection. A saved disabled or unreadable
+connection fails closed; the deployment key is a fallback only when no saved
+OpenAI connection exists. `OPENAI_REALTIME_CONVERSATION_MODEL` optionally
+overrides the default `gpt-realtime`; the separate transcription assignment
+does not select this conversation model. Native contract v50 adds the session,
+finish and caption operations and keeps v49/v48 clients compatible. No database
+migration is required for this change.
+
+Asael stores final captions in conversation History, not raw audio. Captions
+are client-observed text, not provider-authenticated evidence. Interrupted
+replies omit the unheard tail; they may show a simple interruption marker.
+End stops local capture immediately, then saves pending captions before closing
+the server receipt. A failed history write must remain visible without
+interrupting live audio. Mac asks for one fresh agreement because the updated
+terms cover continuous audio, selected context and saved captions.
+
 ## Web presentation regression
 
 Run the focused component or contract test for the changed surface, followed by

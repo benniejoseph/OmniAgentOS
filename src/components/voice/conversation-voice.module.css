@@ -1,0 +1,9 @@
+.dialog { inline-size: min(64rem, 100%); }
+.note { margin-block-start: 1rem; color: var(--muted); font-size: .8125rem; line-height: 1.6; overflow-wrap: anywhere; }
+.note summary { cursor: pointer; }
+.note a { color: var(--foreground); text-decoration: underline; text-underline-offset: .2em; }
+.captions { display: grid; gap: 1.25rem; margin-block-start: 2rem; border-block-start: 1px solid var(--line); padding-block-start: 1.25rem; }
+.caption { min-inline-size: 0; }
+.caption > span { color: var(--muted); font-size: .75rem; font-weight: 500; }
+.caption > p { margin-block-start: .25rem; color: var(--foreground); font-size: clamp(1rem, 1.8vw, 1.25rem); line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.caption[data-speaker="user"] { padding-inline-start: 1rem; border-inline-start: 2px solid var(--line-strong); }

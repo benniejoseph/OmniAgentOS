@@ -188,6 +188,10 @@ import {
 } from "@/lib/workflows/personal-context";
 import { resolveVoiceCommandGate, type VoiceCommandGate } from "@/lib/voice/command-gate";
 import { voiceCommandInputSchema } from "@/lib/voice/command-input";
+import {
+  conversationVoiceContextMatches, conversationVoiceRequestId,
+  requireActiveConversationVoiceSession, VoiceConversationError,
+} from "@/lib/voice/conversation-session";
 import { listWorkspaceTemplates } from "@/lib/workspace-templates/store";
 import { personalWorkspaceId } from "@/lib/workspaces/contracts";
 
@@ -349,7 +353,9 @@ async function POSTHandler(request: Request) {
   }
   let clientRequestId: string | undefined;
   try {
-    clientRequestId = resolveClientRequestId(request, parsed.data.requestId);
+    clientRequestId = parsed.data.voiceInput?.schemaVersion === 2
+      ? conversationVoiceRequestId(parsed.data.voiceInput.sessionId, parsed.data.voiceInput.turnId)
+      : resolveClientRequestId(request, parsed.data.requestId);
   } catch (error) {
     return Response.json(
       { error: error instanceof Error ? error.message : "Invalid request id." },
@@ -375,6 +381,29 @@ async function POSTHandler(request: Request) {
   }
   const requestActorBinding =
     canonicalRequestActorBindingFromSecurityContext(context);
+  if (parsed.data.voiceInput?.schemaVersion === 2) {
+    try {
+      const voiceInput = parsed.data.voiceInput;
+      const active = await requireActiveConversationVoiceSession({
+        context, sessionId: voiceInput.sessionId, conversationId: voiceInput.conversationId,
+      });
+      if (!conversationVoiceContextMatches(active.commandContext, {
+        agentId: parsed.data.agentId || "atlas", projectId: parsed.data.projectId,
+        mode: parsed.data.mode || "orchestrate", contextScope: parsed.data.contextScope || "session",
+        contextReferences: parsed.data.contextReferences || [], contextSelection: parsed.data.contextSelection,
+      }) || parsed.data.missionId || parsed.data.messages || parsed.data.message!.length > 8000 ||
+          request.headers.has(PROMPT_QUEUE_DISPATCH_ID_HEADER) ||
+          request.headers.has(PROMPT_QUEUE_DISPATCH_TOKEN_HEADER)) {
+        throw new VoiceConversationError("voice_context_changed",
+          "This spoken request no longer matches its voice conversation. End voice and start again with the selected Agent and context.", 409);
+      }
+    } catch (error) {
+      return Response.json({
+        error: error instanceof VoiceConversationError ? error.message : "Voice session verification is temporarily unavailable.",
+        code: error instanceof VoiceConversationError ? error.code : "voice_session_unavailable",
+      }, { status: error instanceof VoiceConversationError ? error.status : 503, headers: { "cache-control": "private, no-store" } });
+    }
+  }
   const queuedItemId = request.headers
     .get(PROMPT_QUEUE_DISPATCH_ID_HEADER)?.trim();
   const queuedDispatchToken = request.headers
@@ -887,11 +916,14 @@ async function POSTHandler(request: Request) {
   // policy that run started with.
   let voiceGate: VoiceCommandGate;
   try {
-    voiceGate = parsed.data.resumeRunId
+    voiceGate = parsed.data.voiceInput?.schemaVersion === 2
+      ? { state: "declared", sessionId: parsed.data.voiceInput.sessionId, sessionEvidence: "minted" }
+      : parsed.data.resumeRunId
       ? { state: "none" }
       : await resolveVoiceCommandGate({
           tenantId: context.tenantId,
           actorId: context.actorId,
+          readableOwnerActorIds: requestActorBinding?.readableOwnerActorIds,
           threadId: parsed.data.threadId,
           declaredSessionId: parsed.data.voiceInput?.sessionId,
           requestId,
@@ -1533,7 +1565,24 @@ async function POSTHandler(request: Request) {
             role: "user",
             content: safeMessage,
           });
-          if (parsed.data.voiceInput) {
+          if (parsed.data.voiceInput?.schemaVersion === 2) {
+            if (await stopBeforeMutationIfCanceled()) return;
+            const voiceInput = parsed.data.voiceInput;
+            await appendScopedDomainEvent({
+              streamId: `thread:${thread.id}`, type: "voice.command_dispatched",
+              executionScope: executionScopeFromSecurityContext(context, {
+                ...agentPrincipalExecution, projectId: threadProjectId,
+                correlationId: requestId, causationId: userTurn.id, purpose: "voice.command.dispatch",
+              }),
+              payload: {
+                schemaVersion: 2, threadId: thread.id, voiceSessionId: voiceInput.sessionId,
+                turnId: voiceInput.turnId, provider: voiceInput.provider,
+                submission: "continuous_conversation", reviewAttested: false,
+                transcriptSha256: createHash("sha256").update(safeMessage, "utf8").digest("hex"),
+                transcriptCharacters: safeMessage.length, sessionEvidence: "minted", forceApprovalAboveRisk: 0,
+              },
+            });
+          } else if (parsed.data.voiceInput?.schemaVersion === 1) {
             if (await stopBeforeMutationIfCanceled()) return;
             const voiceInput = parsed.data.voiceInput;
             await appendScopedDomainEvent({

@@ -2,7 +2,6 @@
 
 import Link from "next/link";
 import dynamic from "next/dynamic";
-import { voiceTextDraft } from "@/components/voice/voice-text-handoff";
 import { promptQueueMutationsForOwner, readPromptQueueItems, readQueueWriteResult, type PromptQueueItem, type QueueIntent } from "@/components/command/prompt-queue-client";
 import { memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
@@ -62,7 +61,9 @@ import {
   type PrivateMediaReadiness,
   privateCaptureAssetContentUrl,
 } from "@/components/media/private-media-preview";
-import { VoiceMode } from "@/components/voice/voice-mode";
+import { ConversationVoice, type ConversationVoiceRequest } from "@/components/voice/conversation-voice";
+import type { VoiceConversationInput } from "@/lib/voice/command-input";
+import type { VoiceConversationCommandContext } from "@/lib/voice/conversation-contracts";
 import { CompanionPresence } from "@/components/companion-presence";
 import { companionRunSnapshot, companionPendingWork, companionWork, createCompanionHomeGate, type CompanionWork } from "@/lib/companion/presentation";
 import {
@@ -2473,7 +2474,8 @@ function OwnedAgentRunsWorkspace({
     submittedGoal?: string;
     submittedThreadId?: string;
     prepareContextAutomatically?: boolean;
-    voiceReview?: VoiceCommandReview;
+    voiceReview?: VoiceCommandReview | VoiceConversationInput;
+    voiceContext?: VoiceConversationCommandContext;
     queueItem?: PromptQueueItem;
     queueForce?: boolean;
   }): Promise<VoiceCommandReply | undefined> {
@@ -2484,9 +2486,13 @@ function OwnedAgentRunsWorkspace({
       return;
     }
     const queueItem = options?.queueItem;
+    const voiceContext = options?.voiceContext;
+    const submittedMode = voiceContext?.mode ?? mode;
+    const submittedContextScope = voiceContext?.contextScope ?? contextScope;
+    const submittedProjectId = voiceContext ? voiceContext.projectId : selectedProjectId;
     if (!queueItem && conversationLocked) { setError("Start research or send your next message after the current work finishes. Your draft is kept here."); return; }
     let submittedResearch: ResearchOptions | undefined;
-    if (!queueItem && mode === "research") {
+    if (!queueItem && submittedMode === "research") {
       try { submittedResearch = researchOptionsFromDraft(researchDraft); }
       catch (failure) { setError((failure as Error).message); return; }
     }
@@ -2496,28 +2502,28 @@ function OwnedAgentRunsWorkspace({
     const submittedDraft = goal;
     const submittedDraftRevision = goalRevisionRef.current;
     const submittedReferencesRevision = commandReferencesRevisionRef.current;
-    const submittedCommandReferences = queueItem
+    const submittedCommandReferences = voiceContext?.contextReferences ?? (queueItem
       ? []
       : commandContextReferencesForSubmission(
           commandReferences, contextScope, selectedProjectId,
-        );
+        ));
     if (!submittedGoal) {
       setError("Write a message before asking Asael.");
       return;
     }
-    if (!queueItem && contextScope === "project" && !selectedProjectId) {
+    if (!queueItem && submittedContextScope === "project" && !submittedProjectId) {
       setError("Choose a project before using project context.");
       openTaskDetails("context");
       return;
     }
-    if (!queueItem && contextScope === "mission" && !initialMissionId) {
+    if (!queueItem && submittedContextScope === "mission" && !initialMissionId) {
       setError("Open Command from a Mission before using Mission context.");
       openTaskDetails("context");
       return;
     }
     if (
       !queueItem &&
-      contextScope === "explicit_selection" &&
+      !voiceContext && submittedContextScope === "explicit_selection" &&
       contextLoading &&
       !options?.prepareContextAutomatically
     ) {
@@ -2525,13 +2531,13 @@ function OwnedAgentRunsWorkspace({
       setRunAnnouncement("Wait for task context to finish loading, then run the task.");
       return;
     }
-    const contextSelection = !queueItem && contextScope === "explicit_selection" &&
+    const contextSelection = voiceContext ? voiceContext.contextSelection : !queueItem && submittedContextScope === "explicit_selection" &&
         contextSelectionReviewedRef.current
       ? contextSelectionForTask(submittedGoal)
       : undefined;
     if (
       !queueItem &&
-      contextScope === "explicit_selection" &&
+      !voiceContext && submittedContextScope === "explicit_selection" &&
       !contextSelection
     ) {
       if (!contextPreparedForGoal) {
@@ -2546,7 +2552,7 @@ function OwnedAgentRunsWorkspace({
       setRunAnnouncement("Review and lock the context selection before running this task.");
       return;
     }
-    const resumeRunId = queueItem ? undefined : clarificationRunId || undefined;
+    const resumeRunId = queueItem || voiceContext ? undefined : clarificationRunId || undefined;
     if (!scopeLease.current()) return;
     activityRead.cancel();
     initialThreadLoadedRef.current = true;
@@ -2596,11 +2602,13 @@ function OwnedAgentRunsWorkspace({
     // Sending the same message again after an interrupted attempt keeps its
     // requestId, so the server returns that attempt's outcome instead of
     // running it twice. An edited message is a new request.
-    const requestId = agentRequestIdRef.current &&
+    const requestId = options?.voiceReview?.schemaVersion === 2
+      ? `v:${options.voiceReview.sessionId}:${options.voiceReview.turnId}`
+      : agentRequestIdRef.current &&
         agentRequestGoalRef.current === submittedGoal
       ? agentRequestIdRef.current
       : crypto.randomUUID();
-    const submittedAgentId = queueItem?.agent.logicalAgentId || preferredAgentId;
+    const submittedAgentId = voiceContext?.agentId || queueItem?.agent.logicalAgentId || preferredAgentId;
     let completedResponse = "";
     let streamedResponse = "";
     let completedRunId = resumeRunId || "";
@@ -2643,17 +2651,17 @@ function OwnedAgentRunsWorkspace({
               force: options?.queueForce ?? true,
             }
           : {
-              mode,
+              mode: submittedMode,
               research: resumeRunId ? undefined : submittedResearch,
               threadId: options?.submittedThreadId || threadId || undefined,
               resumeRunId,
-              missionId: initialMissionId || undefined,
-              projectId: selectedProjectId || undefined,
+              missionId: voiceContext ? undefined : initialMissionId || undefined,
+              projectId: submittedProjectId || undefined,
               message: submittedGoal,
               requestId,
               strategy: "auto",
               agentId: submittedAgentId,
-              contextScope: resumeRunId ? undefined : contextScope,
+              contextScope: resumeRunId ? undefined : submittedContextScope,
               contextSelection: resumeRunId ? undefined : contextSelection,
               contextReferences: resumeRunId ? undefined : submittedCommandReferences,
               modelSelection: resumeRunId ? undefined : commandModelSelection,
@@ -2676,7 +2684,7 @@ function OwnedAgentRunsWorkspace({
       }
       streamRunIdRef.current = response.headers.get("x-asael-run-id") || "";
       requestAccepted = Boolean(streamRunIdRef.current);
-      if (!queueItem && !submittedFromComposer &&
+      if (!queueItem && !voiceContext && !submittedFromComposer &&
         commandReferencesRevisionRef.current === submittedReferencesRevision) {
         clearEphemeralCommandReferences();
       }
@@ -4130,21 +4138,20 @@ function OwnedAgentRunsWorkspace({
               onVoiceOpen={() => homeActionGate.invalidate()}
               isVoiceAuthorityCurrent={requestScope.current}
               voiceAuthorityScope={ownerScope}
-              onVoiceContinueInText={(transcript, voiceThreadId) => {
-                if (!requestScope.current() || (voiceThreadId && voiceThreadId !== selectedThreadRef.current)) return false;
-                changeGoal(voiceTextDraft(goal, transcript));
-                setRunAnnouncement("Voice transcript added to your editable draft. Nothing was sent. Any existing typed draft was preserved above it.");
-                return true;
+              onVoiceHistorySaved={(id) => {
+                if (!requestScope.current()) return;
+                void refreshThreadTurns(id);
+                void refreshThreads();
               }}
-              onVoiceTranscript={async (transcript, voiceConversationId, review) => {
-                const voiceGoal = transcript;
-                setThreadId(voiceConversationId);
-                changeGoal(voiceGoal);
+              onVoiceRequest={async ({ request, voiceInput, commandContext }) => {
+                if (!requestScope.current() || (selectedThreadRef.current && selectedThreadRef.current !== voiceInput.conversationId)) return;
+                setThreadId(voiceInput.conversationId);
                 return await runAgent({
-                  submittedGoal: voiceGoal,
-                  submittedThreadId: voiceConversationId,
+                  submittedGoal: request,
+                  submittedThreadId: voiceInput.conversationId,
                   prepareContextAutomatically: true,
-                  voiceReview: review,
+                  voiceReview: voiceInput,
+                  voiceContext: commandContext,
                 });
               }}
               onStop={stopAgent}
@@ -6334,8 +6341,8 @@ function GoalStage({
   onVoiceOpen,
   isVoiceAuthorityCurrent,
   voiceAuthorityScope,
-  onVoiceContinueInText,
-  onVoiceTranscript,
+  onVoiceHistorySaved,
+  onVoiceRequest,
   onStop,
   onWorkflow,
 }: {
@@ -6390,12 +6397,8 @@ function GoalStage({
   onVoiceOpen: () => void;
   isVoiceAuthorityCurrent: () => boolean;
   voiceAuthorityScope: string;
-  onVoiceContinueInText: (text: string, conversationId?: string) => boolean;
-  onVoiceTranscript: (
-    transcript: string,
-    conversationId: string,
-    review: VoiceCommandReview,
-  ) => Promise<VoiceCommandReply | undefined>;
+  onVoiceHistorySaved: (conversationId: string) => void;
+  onVoiceRequest: (request: ConversationVoiceRequest) => Promise<VoiceCommandReply | undefined>;
   onStop: () => void;
   onWorkflow: () => void;
 }) {
@@ -6623,19 +6626,25 @@ function GoalStage({
               </select>
             </label>
             <div className={workspaceStyles.composerActions}>
-              <VoiceMode
+              <ConversationVoice
                 onOpen={onVoiceOpen}
                 isAuthorityCurrent={isVoiceAuthorityCurrent}
                 authorityScope={voiceAuthorityScope}
-                onContinueInText={onVoiceContinueInText}
                 disabled={activeRun || researchInvalid || draftLocked || contextLoading || Boolean(voiceDisabledReason)}
                 disabledReason={voiceDisabledReason}
                 agentName={preferredAgent?.name || "Asael"}
-                agentVoice={preferredAgent?.voice}
                 conversationId={voiceConversationId}
-                mode={mode}
+                configuration={{
+                  agentId: preferredAgent?.id || "atlas",
+                  projectId: projectId || undefined,
+                  mode,
+                  contextScope,
+                  contextReferences: commandContextReferencesForSubmission(commandReferences, contextScope, projectId),
+                }}
+                modelSelectionKey={JSON.stringify(commandModelSelection || null)}
                 onConversationBound={onVoiceConversationBound}
-                onTranscript={onVoiceTranscript}
+                onRequest={onVoiceRequest}
+                onHistorySaved={onVoiceHistorySaved}
               />
               {activeRun ? <button
                 type="button"

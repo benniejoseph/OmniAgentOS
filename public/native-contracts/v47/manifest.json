@@ -4,9 +4,10 @@
   "version": 47,
   "state": "previous",
   "compatibility": {
-    "currentVersion": 49,
-    "previousVersion": 48,
+    "currentVersion": 50,
+    "previousVersion": 49,
     "supportedVersions": [
+      50,
       49,
       48
     ]

@@ -16,6 +16,8 @@ abstract interface class AmbientVoiceConsent {
 /// A non-secret, owner-scoped preference shared by the Mac app's windows.
 /// The frozen credential broker accepts credential keys only, not preferences.
 class MacOsAmbientVoiceConsent implements AmbientVoiceConsent {
+  static const conversationTerms =
+      'openai:continuous_conversation:audio_not_stored_by_asael:conversation_history:v2';
   const MacOsAmbientVoiceConsent({
     required this.tenantId,
     required this.actorId,
@@ -37,7 +39,7 @@ class MacOsAmbientVoiceConsent implements AmbientVoiceConsent {
     );
     return {
       'ownerDigest': base64UrlEncode(digest.bytes).replaceAll('=', ''),
-      'terms': SecureSessionStore.ambientVoiceConsentTerms,
+      'terms': conversationTerms,
     };
   }
 

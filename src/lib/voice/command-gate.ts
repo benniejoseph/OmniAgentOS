@@ -1,6 +1,7 @@
 import "server-only";
 
 import { listRecentActorEvents, type DomainEvent } from "@/lib/events/store";
+import { openConversationVoiceSessionIds } from "@/lib/voice/conversation-session";
 
 /**
  * How long a realtime voice session this server minted can still arrive as an
@@ -64,6 +65,7 @@ export type VoiceCommandGate =
 export async function resolveVoiceCommandGate(input: {
   tenantId: string;
   actorId: string;
+  readableOwnerActorIds?: readonly string[];
   threadId?: string;
   declaredSessionId?: string;
   /**
@@ -83,6 +85,18 @@ export async function resolveVoiceCommandGate(input: {
   }
 
   const now = (input.now ?? new Date()).getTime();
+  // An undeclared task cannot escape voice policy after a continuous session's
+  // first dispatch. Only ending/expiring that session clears this inference.
+  if (!declaredSessionId) {
+    const continuous = await openConversationVoiceSessionIds({
+      tenantId: input.tenantId, actorIds: input.readableOwnerActorIds || [input.actorId],
+      conversationId: threadId, now,
+    });
+    if (continuous.sessionIds.length || continuous.truncated) {
+      return { state: "inferred", sessionIds: continuous.sessionIds,
+        inference: continuous.truncated ? "voice_history_truncated" : "pending_voice_session" };
+    }
+  }
   const [lifecycle, consumption] = await Promise.all([
     listRecentActorEvents({
       tenantId: input.tenantId,

@@ -150,7 +150,7 @@ async function generate() {
   await retainRetiredV47Compatibility(expected);
   for (const version of NATIVE_API_SUPPORTED_VERSIONS) {
     const directory = path.join(repositoryRoot, "public", "native-contracts", `v${version}`);
-    if (version === NATIVE_API_PREVIOUS_VERSION) {
+    if (version !== NATIVE_API_CURRENT_VERSION) {
       continue;
     }
     const operations = nativeOperationsForVersion(version);

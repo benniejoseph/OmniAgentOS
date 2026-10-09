@@ -64,14 +64,20 @@ import {
   MODEL_PROVIDERS,
 } from "@/lib/settings/types";
 import { voiceCommandInputSchema } from "@/lib/voice/command-input";
+import {
+  voiceConversationStartRequestSchema, voiceConversationStartResponseSchema,
+  voiceConversationFinishRequestSchema, voiceConversationFinishResponseSchema,
+} from "@/lib/voice/conversation-contracts";
+import { conversationVoiceTurnsRequestSchema, conversationVoiceTurnsResponseSchema } from "@/lib/voice/conversation-transcript";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 49 as const;
-// v49 adds bounded research preferences, progress, and owner-only research controls.
-export const NATIVE_API_PREVIOUS_VERSION = 48 as const;
+export const NATIVE_API_CURRENT_VERSION = 50 as const;
+// v50 adds continuous voice while retaining both transcription-era clients.
+export const NATIVE_API_PREVIOUS_VERSION = 49 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
+  48,
 ] as const;
 
 const positiveDatabaseInteger = z.number().int().min(1).max(2_147_483_647);
@@ -392,6 +398,7 @@ export const nativeBootstrapResponseSchema = nativePublicIdentitySchema.extend({
       supportedVersions: z.tuple([
         z.literal(NATIVE_API_CURRENT_VERSION),
         z.literal(NATIVE_API_PREVIOUS_VERSION),
+        z.literal(48),
       ]),
       discoveryPath: z.literal("/api/mobile/contracts"),
     }).strict(),
@@ -607,6 +614,7 @@ export const nativeConversationRequestSchema = z.object({
   /** v34: existing server-resolved source references; never inline source content. */
   contextReferences: commandContextReferencesSchema.optional(),
   projectId: z.string().trim().min(1).max(200).regex(/^[a-zA-Z0-9_.:-]+$/).optional(),
+  contextScope: z.enum(["none", "current_turn", "session", "agent_private", "mission", "project", "workspace", "personal", "explicit_selection"]).optional(),
   requestId: z.string().min(1).max(200).regex(/^[A-Za-z0-9._:-]+$/),
   /** v30: the reviewed realtime voice declaration for this command. */
   voiceInput: voiceCommandInputSchema.optional(),
@@ -2455,6 +2463,12 @@ export const nativeContractSchemas = Object.freeze({
   NativeRealtimeVoiceSessionStartResponse: nativeRealtimeVoiceSessionStartResponseSchema,
   NativeRealtimeVoiceSessionFinishRequest: nativeRealtimeVoiceSessionFinishRequestSchema,
   NativeRealtimeVoiceSessionFinishResponse: nativeRealtimeVoiceSessionFinishResponseSchema,
+  NativeVoiceConversationStartRequest: voiceConversationStartRequestSchema,
+  NativeVoiceConversationStartResponse: voiceConversationStartResponseSchema,
+  NativeVoiceConversationFinishRequest: voiceConversationFinishRequestSchema,
+  NativeVoiceConversationFinishResponse: voiceConversationFinishResponseSchema,
+  NativeVoiceConversationTurnsRequest: conversationVoiceTurnsRequestSchema,
+  NativeVoiceConversationTurnsResponse: conversationVoiceTurnsResponseSchema,
   NativeSpeechStreamRequest: nativeSpeechStreamRequestSchema,
   NativeConversationRequest: nativeConversationRequestSchema,
   NativeConversationEvent: nativeConversationEventSchema,
@@ -2475,6 +2489,7 @@ export const nativeContractSchemas = Object.freeze({
     supportedVersions: z.tuple([
       z.literal(NATIVE_API_CURRENT_VERSION),
       z.literal(NATIVE_API_PREVIOUS_VERSION),
+      z.literal(48),
     ]),
     versions: z.array(z.object({
       version: z.number().int().positive(),
@@ -2483,7 +2498,7 @@ export const nativeContractSchemas = Object.freeze({
       openapi: z.string(),
       events: z.string(),
       fixtures: z.string(),
-    }).strict()).length(2),
+    }).strict()).length(3),
   }).strict(),
 });
 
@@ -2537,6 +2552,11 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 47 || version === 48) return v47Operations;
   if (version === 49) return [...v47Operations,
     operation("research.control", "POST", "/api/workflows/{id}/signal", "Pause, resume, or stop your Deep research.", "bearer", "JsonObject", "JsonObject")];
+  if (version === 50) return [...nativeOperationsForVersion(49)!,
+    operation("voice.conversation.session.start", "POST", "/api/voice/conversation/session", "Start or reconnect an actor-owned continuous voice conversation.", "bearer", "NativeVoiceConversationStartRequest", "NativeVoiceConversationStartResponse", { requestBodyMaxBytes: 64_000 }),
+    operation("voice.conversation.session.finish", "PATCH", "/api/voice/conversation/session", "End one continuous voice conversation without retaining audio.", "bearer", "NativeVoiceConversationFinishRequest", "NativeVoiceConversationFinishResponse", { requestBodyMaxBytes: 8000 }),
+    operation("voice.conversation.turns", "POST", "/api/voice/conversation/turns", "Save bounded client-observed captions in the owned conversation.", "bearer", "NativeVoiceConversationTurnsRequest", "NativeVoiceConversationTurnsResponse", { requestBodyMaxBytes: 64_000 }),
+  ];
   return undefined;
 }
 
@@ -2548,6 +2568,7 @@ export function nativeContractDiscovery() {
     previousVersion: NATIVE_API_PREVIOUS_VERSION,
     supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [
       typeof NATIVE_API_CURRENT_VERSION, typeof NATIVE_API_PREVIOUS_VERSION,
+      48,
     ],
     versions: NATIVE_API_SUPPORTED_VERSIONS.map((version) => ({
       version,
