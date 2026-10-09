@@ -31,7 +31,7 @@ beforeEach(() => {
     },
     motion: "full", intensity: "expressive", assetFailed: false, showPortrait: true,
     observationRef: createRef<HTMLElement>(),
-    portrait: { state: "available", theme: "light", playbackKey: undefined, motionAllowed: false, showPortrait: true, onUnavailable: vi.fn() },
+    portrait: { state: "available", theme: "light", playbackKey: undefined, motionAllowed: false, repeatWhileActive: false, showPortrait: true, onUnavailable: vi.fn() },
   };
   usePlayer.mockImplementation(({ presentation }) => ({
     ...player,
