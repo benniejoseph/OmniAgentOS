@@ -1654,14 +1654,16 @@ export async function repairStuckAgentRuns({
       const harness = ledger.events.find((event) =>
         event.runId === run.id &&
         normalizeTenantId(event.tenantId) === tenantId &&
-        event.payload.type === "harness"
+        event.type === "harness"
       );
+      const harnessPayload = harness?.payload;
       if (!agentRunIsStaleForRepair({
         status: run.status,
         startedAt: run.startedAt,
         continuation: run.continuation,
-        budgetLimits: harness?.payload.type === "harness"
-          ? harness.payload.budgetLimits
+        budgetLimits: harnessPayload && typeof harnessPayload === "object" &&
+            !Array.isArray(harnessPayload) && "budgetLimits" in harnessPayload
+          ? harnessPayload.budgetLimits
           : undefined,
       }, now, staleAfterMs)) continue;
       repaired += 1;
