@@ -122,6 +122,17 @@ The macOS route families are:
 - **Risk decision:** consequence, reversibility, requester, trust evidence, and explicit verb-object actions.
 - **Resource state:** skeleton, useful empty guidance, stale state, partial error, full error, forbidden, offline.
 
+## Conversational personality
+
+Under Companion settings, offer **Butler** (British poise and dry wit) and
+**Playful** (quick wit and friendly banter), with short original writing samples.
+Describe the choice as saved on this device, applying to the next message or new
+voice conversation. Keep it separate from appearance, expressive intensity and
+motion. The shared character and delivery rules are defined in
+[ATLAS personality](docs/research/atlas-personality.md). No personality selection
+starts audio or work. Use friendly product language; omit internal versions and
+request fields from the controls.
+
 ## Motion
 
 - Standard duration 180ms; emphasized state change 240ms; micro-feedback 120ms.

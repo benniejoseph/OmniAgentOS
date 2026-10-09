@@ -1122,6 +1122,7 @@ function domainEventPayload(event: AgentEvent): Record<string, unknown> {
         skillIds: event.skillIds,
         toolboxSha256: event.toolboxSha256,
         instructionsSha256: event.instructionsSha256,
+        companionLanguageStyle: event.companionLanguageStyle,
         maxToolSteps: event.maxToolSteps,
         maxToolCallsPerTurn: event.maxToolCallsPerTurn,
         maxToolResultChars: event.maxToolResultChars,

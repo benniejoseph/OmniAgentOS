@@ -7,12 +7,18 @@ import '../../core/network/api_client.dart';
 import '../../core/sync/reconnect_coordinator.dart';
 import '../../generated/native_contract.g.dart';
 import '../auth/application/session_controller.dart';
+import '../companion/companion_personality.dart';
 import '../computer_use/local_computer.dart';
 import 'talk.dart';
 import 'talk_api_repository.dart';
 
 final talkRepositoryProvider = Provider<TalkRepository>(
-  (ref) => ApiTalkRepository(ref.watch(apiClientProvider)),
+  (ref) => ApiTalkRepository(
+    ref.watch(apiClientProvider),
+    readCompanionPersonality: ref
+        .watch(companionPersonalityProvider.notifier)
+        .readSelection,
+  ),
 );
 final talkControllerProvider = ChangeNotifierProvider<TalkController>((ref) {
   final owner = ref.watch(sessionOwnerKeyProvider);

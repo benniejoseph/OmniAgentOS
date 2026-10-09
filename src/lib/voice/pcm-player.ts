@@ -1,4 +1,5 @@
 import { balanceCodeFences } from "@/lib/voice/speech-text";
+import type { CompanionPersonality } from "@/lib/companion/personality";
 
 export const ASAEL_PCM_SAMPLE_RATE = 24_000;
 export const ASAEL_VOICE_PROFILE_VERSION = "asael-voice:1";
@@ -10,6 +11,7 @@ type VersionedSpeechInput = Readonly<{
   threadId?: string;
   runId?: string;
   agentId?: string;
+  companionPersonality?: CompanionPersonality;
 }>;
 
 /** Decodes arbitrarily chunked little-endian signed 16-bit PCM. */
@@ -222,6 +224,7 @@ async function requestSpeechStream(
       ...(input.threadId ? { threadId: input.threadId } : {}),
       ...(input.runId ? { runId: input.runId } : {}),
       ...(input.agentId ? { agentId: input.agentId } : {}),
+      ...(input.companionPersonality ? { companionPersonality: input.companionPersonality } : {}),
     }),
     signal,
   });

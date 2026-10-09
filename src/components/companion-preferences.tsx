@@ -12,6 +12,7 @@ import {
   type CompanionPreferences as Preferences,
 } from "@/lib/companion/model";
 import { VoiceAppearancePicker } from "./voice/voice-appearance-picker";
+import { CompanionPersonalityPicker } from "./companion-personality-picker";
 import styles from "./companion-preferences.module.css";
 
 const intensityLabels = { quiet: "Quiet", balanced: "Balanced", expressive: "Expressive" } as const;
@@ -200,19 +201,20 @@ function ScopedCompanionPreferences({ tenantId, actorId, blocked, checkAccess }:
 
   return <section className={styles.shell} aria-labelledby="companion-preferences-title" data-testid="companion-preferences">
     <header className={styles.header}>
-      <div><h2 id="companion-preferences-title">Companion preferences</h2><p>Choose presentation and your default destination for this account.</p></div>
+      <div><h2 id="companion-preferences-title">Companion preferences</h2><p>Choose ATLAS’s personality, appearance and your default destination.</p></div>
       <button type="button" className={styles.button} disabled={Boolean(blocked) || loading || saving} onClick={() => void load()}>{loading ? "Refreshing preferences…" : current ? "Refresh preferences" : "Retry preferences"}</button>
     </header>
     <p className={styles.support} role="status">{blocked || (loading ? current ? "Refreshing the saved snapshot. Your draft is retained." : "Loading Companion preferences…" : current ? `${fresh ? "Saved snapshot" : "Last loaded snapshot"} · revision ${current.snapshot.revision}${current.snapshot.persisted ? "" : " · defaults have not been saved"}` : "Preferences have not been loaded.")}</p>
     {blocked ? <button className={styles.button} type="button" onClick={checkAccess}>Check workspace access</button> : null}
     {readError ? <p className={styles.error} role="alert">{readError}</p> : null}
+    <CompanionPersonalityPicker owner={{ tenantId, actorId }} disabled={Boolean(blocked)} />
     <VoiceAppearancePicker owner={{ tenantId, actorId }} disabled={Boolean(blocked)} />
     {!draft ? <p className={styles.empty}>The preference form becomes available after its saved state is confirmed.</p> : <>
       <div className={styles.layout}>
         <div className={styles.form}>
-          <fieldset className={styles.fieldset} disabled={Boolean(blocked)}><legend>Companion style</legend>
+          <fieldset className={styles.fieldset} disabled={Boolean(blocked)}><legend>Expressiveness</legend>
             <div className={styles.options}>{COMPANION_INTENSITIES.map((value) => <label className={styles.choice} key={value}><input ref={value === "quiet" ? firstStyleInput : undefined} type="radio" name="companion-intensity" value={value} checked={draft.intensity === value} onChange={() => edit({ intensity: value })} /><span>{intensityLabels[value]}</span></label>)}</div>
-            <p className={styles.support}>Quiet is direct. Balanced adds warmth. Expressive allows more personality. Agent permissions and task decisions stay governed.</p>
+            <p className={styles.support}>Quiet keeps either personality restrained. Balanced adds warmth. Expressive makes room for more humour and character. Your personality choice and voice appearance stay the same.</p>
           </fieldset>
           <label className={styles.choice}><input type="checkbox" checked={draft.visible} disabled={Boolean(blocked)} onChange={(event) => edit({ visible: event.target.checked })} /><span>Show Companion character</span></label>
           <fieldset className={styles.fieldset} disabled={Boolean(blocked)}><legend>Visual motion</legend>

@@ -27,6 +27,7 @@ import '../computer_use/local_computer.dart';
 import '../companion/atlas_player.dart';
 import '../companion/companion_controller.dart';
 import '../companion/companion_models.dart';
+import '../companion/companion_personality.dart';
 import '../companion/companion_presence.dart';
 import '../companion/companion_presentation.dart';
 import 'talk_command_context.dart';
@@ -1101,8 +1102,9 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     String turnId,
     String sessionId,
     String conversationId,
-    Map<String, dynamic> pinnedContext,
-  ) async {
+    Map<String, dynamic> pinnedContext, {
+    CompanionPersonality? companionPersonality,
+  }) async {
     if (_disposed)
       return {
         'status': 'unavailable',
@@ -1121,6 +1123,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       conversationId: conversationId,
       turnId: turnId,
       commandContext: pinnedContext,
+      companionPersonality: companionPersonality,
     );
     final references = (pinnedContext['contextReferences'] as List)
         .map(
@@ -5300,6 +5303,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                 sessionId,
                 conversationId,
                 pinnedContext,
+                companionPersonality: voice.companionPersonality,
               );
             },
       );

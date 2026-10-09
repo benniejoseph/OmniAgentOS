@@ -27,6 +27,7 @@ import '../../features/capture/capture_providers.dart';
 import '../../features/computer_use/local_computer.dart';
 import '../../features/companion/companion_entry.dart';
 import '../../features/companion/companion_models.dart';
+import '../../features/companion/companion_personality.dart';
 import '../../features/companion/companion_providers.dart';
 import '../../features/inbox/macos_inbox_view.dart';
 import '../../features/inbox/inbox.dart';
@@ -455,12 +456,20 @@ class ProviderBoundTalkRoute extends ConsumerWidget {
     quickEntry: quickEntry,
     ambientVoice: ambientVoice,
     voiceConversationFactory: ambientVoice && appDesktopHostBridge.supported
-        ? () => VoiceConversationController(api: ref.read(apiClientProvider))
+        ? () => VoiceConversationController(
+            api: ref.read(apiClientProvider),
+            readCompanionPersonality: ref
+                .read(companionPersonalityProvider.notifier)
+                .readSelection,
+          )
         : null,
     ambientRealtimeFactory: ambientVoice && !appDesktopHostBridge.supported
         ? () => AmbientRealtimeVoiceController(
             api: ref.read(apiClientProvider),
             sessionStore: ref.read(secureSessionStoreProvider),
+            readCompanionPersonality: ref
+                .read(companionPersonalityProvider.notifier)
+                .readSelection,
             onConversationBound: (id) =>
                 ref.read(talkControllerProvider).adoptConversationThreadId(id),
           )

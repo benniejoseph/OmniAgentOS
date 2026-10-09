@@ -1,5 +1,7 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import OpenAI from "openai";
+import { COMPANION_PERSONALITY_VERSION } from "@/lib/companion/personality";
+import type { CompanionLanguageStyle } from "@/lib/companion/language-style";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { appendScopedDomainEvent } from "@/lib/events/store";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
@@ -76,13 +78,17 @@ async function POSTHandler(request: Request) {
       projectId: input.projectId,
     });
     const sessionId = input.reconnectAttempt ? input.sessionId! : randomUUID();
+    let languageStyle: CompanionLanguageStyle | undefined;
     if (input.reconnectAttempt) {
       const existing = await requireActiveConversationVoiceSession({ context, sessionId, conversationId: conversation.id });
+      languageStyle = existing.companionLanguageStyle;
       if (!conversationVoiceContextMatches(existing.commandContext, commandContext)) {
         throw new VoiceConversationError("voice_context_changed", "End voice before changing the selected Agent or context.", 409);
       }
     }
-    const prepared = await buildConversationVoiceInstructions({ context, conversationId: conversation.id, commandContext });
+    const prepared = await buildConversationVoiceInstructions({ context, conversationId: conversation.id, commandContext,
+      companionPersonality: input.reconnectAttempt ? languageStyle?.personality : input.companionPersonality,
+      languageStyle });
     const credential = await voiceRuntime.withApiKey(apiKey => issueConversationVoiceSecret({ model, instructions: prepared.instructions,
       language: input.language, correlationId: `voice:${sessionId}`, apiKey }));
     const expiresAt = new Date(Date.now() + VOICE_CONVERSATION_MAX_AGE_MS).toISOString();
@@ -97,6 +103,9 @@ async function POSTHandler(request: Request) {
         model, provider: "openai", credentialSource: voiceRuntime.credentialSource, commandContext,
         expiresAt, language: input.language || "auto", reconnectAttempt: input.reconnectAttempt,
         contextReceiptSha256: prepared.contextReceiptSha256,
+        companionLanguageStyle: prepared.companionLanguageStyle,
+        ...(prepared.companionLanguageStyle?.personality ? { personalityVersion: COMPANION_PERSONALITY_VERSION } : {}),
+        instructionsSha256: createHash("sha256").update(prepared.instructions).digest("hex"),
         audioRetention: "not_stored_by_asael", transcriptRetention: "conversation_history",
         continuousConsent: true, forceApprovalAboveRisk: 0,
       },
@@ -105,6 +114,7 @@ async function POSTHandler(request: Request) {
       schemaVersion: 2, sessionId, conversationId: conversation.id, ...credential,
       transportUrl: REALTIME_TRANSPORT_URL, provider: "openai", model,
       agentName: prepared.agentName, language: input.language || "auto", voice: "cedar",
+      companionPersonality: prepared.companionLanguageStyle?.personality,
       turnDetection: "server_vad", audioRetention: "not_stored_by_asael",
       transcriptRetention: "conversation_history", reconnectAttempt: input.reconnectAttempt,
       expiresAt, commandContext,
