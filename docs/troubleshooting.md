@@ -208,6 +208,17 @@ Unread telemetry, changed objectives, missing gates, wrong revisions, expiry,
 and any additional failure still stop deployment. Ordinary checks without the
 pin keep their existing behavior.
 
+For the prior-release check only, this pin can accompany an independently
+validated `OMNIAGENT_RELEASE_FORWARD_SCHEMA_RECOVERY` pin for the same exact
+previous/candidate pair. The ordinary smoke still fails and preserves the
+blocked report, including its measured budget proof. The paired runner then
+requires exactly the pinned unclassified-table gap and the separately
+authorized budget failure, exact reason/count agreement, no warnings, and a
+fresh successful candidate database verification. Its admission artifact records
+both authorizations and the original blocked-report digest. A third failure,
+wrong table, unread budget or mismatched/expired pin still stops deployment.
+Staged and canonical checks retain the ordinary sole-budget-failure rule.
+
 The local release artifact preserves the server's original blocked report and
 adds `ownerErrorBudgetOverride` with the bounded reason, revision pair, expiry,
 and measured proof. It never rewrites failure history or claims that the

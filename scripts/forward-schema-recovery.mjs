@@ -2,6 +2,10 @@ import { createHash } from "node:crypto";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { isSafeErrorBudgetProof } from "./release-error-budget-scope.mjs";
+import {
+  isMeasuredOwnerBudgetProof, OWNER_BUDGET_OVERRIDE_ENV,
+  OWNER_BUDGET_REQUIRED_GATES, readOwnerBudgetOverride,
+} from "./release-owner-budget-override.mjs";
 
 const REVISION = /^[a-f0-9]{40}$/;
 const CHECKSUM = /^[a-f0-9]{64}$/;
@@ -98,16 +102,30 @@ export function parseForwardSchemaRecovery(raw, { candidateRevision, manifestPat
 }
 
 /**
- * Admit only the old build's exact known table-classification gap. The original
- * report stays blocked and is never rewritten into a passing release report.
+ * Admit the old build's exact table-classification gap. A separately validated
+ * owner pin may also cover only its measured historical error budget. The
+ * original report stays blocked and is never rewritten into a passing report.
  * @param {unknown} artifact
  * @param {ForwardSchemaRecoveryPin} pin
- * @param {{baseUrl:string, previousRevision:string, errorBudgetException?:string, now?:Date|number}} options
- * @returns {{priorExpectedTables:number}}
+ * @param {{baseUrl:string, previousRevision:string, errorBudgetException?:string, ownerBudgetOverride?:{previousRevision:string,candidateRevision:string,reason:string,expiresAt:string}, now?:Date|number}} options
  */
-export function validateForwardSchemaPriorArtifact(artifact, pin, { baseUrl, previousRevision, errorBudgetException, now = Date.now() }) {
+export function validateForwardSchemaPriorArtifact(artifact, pin, { baseUrl, previousRevision, errorBudgetException, ownerBudgetOverride, now = Date.now() }) {
   validatePin(pin);
   const time = currentTime(now);
+  let ownerPin;
+  if (ownerBudgetOverride !== undefined) {
+    try {
+      // Revalidate at admission time, independently of the runner's earlier
+      // configuration check. Neither pin can authorize a different pair.
+      ownerPin = readOwnerBudgetOverride({
+        [OWNER_BUDGET_OVERRIDE_ENV]: JSON.stringify(ownerBudgetOverride),
+        OMNIAGENT_RELEASE_ERROR_BUDGET_EXCEPTION: errorBudgetException,
+      }, time);
+    } catch { reject("owner budget pin is invalid, expired or conflicts with another exception mode"); }
+    requireThat(ownerPin && ownerPin.previousRevision === pin.previousRevision &&
+      ownerPin.candidateRevision === pin.candidateRevision,
+    "owner budget and schema pins must identify the same exact release pair");
+  }
   requireThat(record(artifact) && artifact.httpStatus === 200 && artifact.baseUrl === baseUrl &&
     typeof baseUrl === "string" && baseUrl.length > 0 && baseUrl.length <= 2048,
   "prior evidence must be a successful report from the pinned origin");
@@ -125,35 +143,53 @@ export function validateForwardSchemaPriorArtifact(artifact, pin, { baseUrl, pre
   for (const gate of artifact.gates) {
     requireThat(record(gate) && typeof gate.id === "string" && /^[a-z][a-z0-9_]{0,99}$/.test(gate.id) &&
       !gates.has(gate.id), "prior evidence has an invalid or duplicate gate");
-    requireThat(gate.status === (gate.id === "tenant_isolation_database" ? "fail" : "pass"),
-      "only the prior database isolation gate may fail");
     gates.set(gate.id, gate);
   }
   requireThat(CORE_GATES.every((id) => gates.has(id)), "prior evidence is missing a required core gate");
+  let ownerBudgetEvidence;
+  if (ownerPin) {
+    requireThat(OWNER_BUDGET_REQUIRED_GATES.every((id) => gates.has(id)) &&
+      isMeasuredOwnerBudgetProof(artifact.errorBudgetProof),
+    "owner budget exception requires every release gate and exact measured objective evidence");
+    const exhausted = artifact.errorBudgetProof.objectives.some((objective) => objective.verdict === "exhausted");
+    requireThat(gates.get("agent_error_budget").status === (exhausted ? "fail" : "pass"),
+      "owner budget gate must match its measured objective verdicts");
+    ownerBudgetEvidence = { ...ownerPin, observedRevision: previousRevision,
+      applied: exhausted, proof: artifact.errorBudgetProof };
+  }
+  for (const gate of gates.values()) {
+    const expectedFailure = gate.id === "tenant_isolation_database" ||
+      gate.id === "agent_error_budget" && ownerBudgetEvidence?.applied === true;
+    requireThat(gate.status === (expectedFailure ? "fail" : "pass"), ownerPin
+      ? "only the exact prior isolation gap and separately authorized measured budget may fail"
+      : "only the prior database isolation gate may fail");
+  }
   const absence = artifact.previousReleaseCompatibility;
   requireThat(gates.has("agent_error_budget") ? absence === undefined
     : exactKeys(absence, ["missingAgentErrorBudget"]) && absence.missingAgentErrorBudget === true,
   "budget absence requires the existing previous-release compatibility evidence");
-  requireThat(errorBudgetException
+  requireThat(ownerPin ? !errorBudgetException : errorBudgetException
     ? gates.has("agent_error_budget") &&
       isSafeErrorBudgetProof(artifact.errorBudgetProof, errorBudgetException)
     : artifact.errorBudgetProof === undefined,
   "prior budget exception must prove measured agent-run-only or recovered scope");
-  const isolation = gates.get("tenant_isolation_database");
-  requireThat(boundedText(isolation.name, 200) && boundedText(isolation.summary, 2000),
-    "prior isolation gate must have bounded explanatory evidence");
+  const failingGates = [...gates.values()].filter((gate) => gate.status === "fail");
+  requireThat(failingGates.every((gate) => boundedText(gate.name, 200) && boundedText(gate.summary, 2000)),
+    "prior failed gates must have bounded explanatory evidence");
+  const reasons = failingGates.map((gate) => `${gate.name}: ${gate.summary}`);
   const gate = artifact.releaseGate;
   requireThat(record(gate) && gate.approved === false && gate.status === "blocked" &&
-    Array.isArray(gate.reasons) && gate.reasons.length === 1 &&
-    gate.reasons[0] === `${isolation.name}: ${isolation.summary}` &&
+    Array.isArray(gate.reasons) && sameStrings(gate.reasons, reasons) &&
     Array.isArray(gate.warnings) && gate.warnings.length === 0,
-  "prior release must be blocked solely by the matched isolation reason");
+  "prior release must be blocked solely by its exactly matched authorized reasons");
   if (gate.summary !== undefined) {
     requireThat(exactKeys(gate.summary, ["total", "passed", "warnings", "failures"]) &&
-      gate.summary.total === gates.size && gate.summary.passed === gates.size - 1 &&
-      gate.summary.warnings === 0 && gate.summary.failures === 1,
+      gate.summary.total === gates.size && gate.summary.passed === gates.size - failingGates.length &&
+      gate.summary.warnings === 0 && gate.summary.failures === failingGates.length,
     "prior release gate counts must agree with its exact gate list");
   }
+  requireThat(!ownerPin || gate.summary !== undefined,
+    "owner budget exception requires complete release gate counts");
   const summary = artifact.tenantIsolation;
   requireThat(artifact.tenantIsolationStatus === "degraded" && record(summary) &&
     positiveInteger(summary.expectedTables) && summary.protectedTables === summary.expectedTables &&
@@ -164,7 +200,8 @@ export function validateForwardSchemaPriorArtifact(artifact, pin, { baseUrl, pre
     sameStrings(summary.unclassifiedTables, pin.unclassifiedTables) &&
     EMPTY_ISOLATION_ARRAYS.every((field) => Array.isArray(summary[field]) && summary[field].length === 0),
   "prior isolation discrepancy must be exactly the pinned unclassified tables");
-  return { priorExpectedTables: summary.expectedTables };
+  return { priorExpectedTables: summary.expectedTables,
+    ...(ownerBudgetEvidence ? { ownerErrorBudgetOverride: ownerBudgetEvidence } : {}) };
 }
 
 /**

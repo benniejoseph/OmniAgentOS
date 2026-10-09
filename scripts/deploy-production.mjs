@@ -1622,7 +1622,7 @@ async function getCurrentHealthRevision(baseUrl) {
 
 /**
  * A previous binary may not classify a newly migrated, fully protected table.
- * Preserve its blocked report, prove that this is its only defect, and verify
+ * Preserve its blocked report, prove the exact separately authorized defects, and verify
  * the candidate's exact schema against the live migration connection before
  * either platform changes. Candidate smokes still use their ordinary gates.
  */
@@ -1665,6 +1665,7 @@ async function runForwardSchemaPriorCheck(pin, baseUrl, previousRevision, migrat
       baseUrl,
       previousRevision,
       errorBudgetException: process.env.OMNIAGENT_RELEASE_ERROR_BUDGET_EXCEPTION?.trim(),
+      ownerBudgetOverride: readOwnerBudgetOverride(),
       now: Date.now(),
     });
   } catch (error) {
@@ -1705,12 +1706,14 @@ async function runForwardSchemaPriorCheck(pin, baseUrl, previousRevision, migrat
     unclassifiedTables: pin.unclassifiedTables,
     priorExpectedTables: prior.priorExpectedTables,
     priorEvidenceSha256: sha256(priorEvidenceRaw),
+    ...(prior.ownerErrorBudgetOverride ? { ownerErrorBudgetOverride: prior.ownerErrorBudgetOverride } : {}),
     databaseVerification: database,
     databaseVerificationOutputSha256: sha256(verificationOutput),
   }, null, 2)}\n`, { mode: 0o600 });
   console.log(
     `Forward-schema recovery admitted the prior inventory delta at revision ${previousRevision}; ` +
-    `fresh candidate database verification covers ${database.migrations} migrations and ${database.tenantTables} tenant tables.`,
+    `fresh candidate database verification covers ${database.migrations} migrations and ${database.tenantTables} tenant tables.` +
+    (prior.ownerErrorBudgetOverride?.applied ? " The separate exact-pair owner pin covers only the measured historical error budget; the original report remains blocked." : ""),
   );
 }
 
