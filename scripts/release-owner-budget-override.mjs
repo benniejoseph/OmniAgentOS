@@ -3,12 +3,31 @@ import { selectedErrorBudgetProof } from "./release-error-budget-scope.mjs";
 export const OWNER_BUDGET_OVERRIDE_ENV = "OMNIAGENT_RELEASE_OWNER_ERROR_BUDGET_OVERRIDE";
 const VERDICTS = new Set(["insufficient", "within", "recovering", "exhausted"]);
 const REVISION = /^[a-f0-9]{40}$/;
-const REQUIRED_GATES = [
+export const OWNER_BUDGET_REQUIRED_GATES = Object.freeze([
   "deployment_environment", "internal_smoke_auth", "openai_us_egress_gateway",
   "openai_provider", "cron_auth", "runtime_database_role", "maintenance_database_role",
   "dedicated_worker", "tenant_isolation_database", "latest_tenant_isolation_eval",
   "observability_slo", "agent_error_budget", "eval_report_signing",
-];
+]);
+
+/** The bounded proof alone grants no admission. Callers must separately verify
+ * the exact owner pin, release identity, freshness and every other gate. */
+export function isMeasuredOwnerBudgetProof(proof) {
+  const exact = (value, keys) => value !== null && typeof value === "object" && !Array.isArray(value) &&
+    Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
+  if (!exact(proof, ["measured", "exception", "objectives"]) || proof.measured !== true ||
+    !exact(proof.exception, ["applied", "reason"]) ||
+    proof.exception.applied !== null || proof.exception.reason !== null ||
+    !Array.isArray(proof.objectives) || proof.objectives.length !== 2) return false;
+  const objectives = new Map();
+  for (const objective of proof.objectives) {
+    if (!exact(objective, ["id", "objective", "verdict"]) ||
+      !["agent_runs", "tool_calls"].includes(objective.id) || objectives.has(objective.id) ||
+      !VERDICTS.has(objective.verdict)) return false;
+    objectives.set(objective.id, objective);
+  }
+  return objectives.get("agent_runs")?.objective === 0.95 && objectives.get("tool_calls")?.objective === 0.9;
+}
 
 // Deployment authorization only: never persisted as an application setting or
 // used to grant a tool, tenant, actor, or provider permission.
@@ -45,15 +64,11 @@ export function ownerBudgetOverrideEvidence(report, pin, previousRelease = false
   const release = report?.releaseGate;
   if (Date.parse(pin.expiresAt) <= now || report?.deployment?.commitSha !== expectedRevision ||
     !Number.isFinite(checkedAt) || checkedAt > now + 30_000 || checkedAt < now - 600_000 ||
-    !Array.isArray(gates) || gates.length < REQUIRED_GATES.length || gates.length > 50 ||
-    REQUIRED_GATES.some((id) => !gates.some((item) => item.id === id)) ||
+    !Array.isArray(gates) || gates.length < OWNER_BUDGET_REQUIRED_GATES.length || gates.length > 50 ||
+    OWNER_BUDGET_REQUIRED_GATES.some((id) => !gates.some((item) => item.id === id)) ||
     new Set(gates.map((item) => item.id)).size !== gates.length ||
     gates.some((item) => item.id !== "agent_error_budget" && item.status !== "pass") ||
-    proof.measured !== true || proof.exception.applied !== null || proof.exception.reason !== null ||
-    !Array.isArray(objectives) || objectives.length !== 2 ||
-    objectives.find((item) => item.id === "agent_runs")?.objective !== 0.95 ||
-    objectives.find((item) => item.id === "tool_calls")?.objective !== 0.9 ||
-    objectives.some((item) => !VERDICTS.has(item.verdict)) ||
+    !isMeasuredOwnerBudgetProof(proof) ||
     !Array.isArray(release?.warnings) || release.warnings.length !== 0 ||
     !Array.isArray(release?.reasons) ||
     release.summary?.total !== gates.length || release.summary?.warnings !== 0) return undefined;

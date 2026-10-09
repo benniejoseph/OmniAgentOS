@@ -197,7 +197,10 @@ async function writeReleaseEvidenceArtifact(report, httpStatus) {
     ...(previousReleaseWithoutErrorBudget
       ? { previousReleaseCompatibility: { missingAgentErrorBudget: true } }
       : {}),
-    ...(errorBudgetException
+    // Preserve measured evidence even when this owner pin cannot independently
+    // admit the blocked report. The paired runner may validate a separate,
+    // exact forward-schema gap; this smoke still fails and never waives it.
+    ...(errorBudgetException || ownerBudgetPin
       ? { errorBudgetProof: selectedErrorBudgetProof(gateById.get("agent_error_budget")) }
       : {}),
     ...(ownerBudgetEvidence ? { ownerErrorBudgetOverride: ownerBudgetEvidence } : {}),
