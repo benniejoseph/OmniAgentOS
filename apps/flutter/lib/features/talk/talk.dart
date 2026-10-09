@@ -1054,6 +1054,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   final int runRecoveryPollLimit;
   final messages = <TalkMessage>[];
   final activities = <TalkActivity>[];
+  int _nextToolActivityId = 0;
   final artifacts = <TalkMediaArtifactSummary>[];
   final _localPreviewArtifacts = <TalkMediaArtifactSummary>[];
   final _localPreviewContents = <String, TalkArtifactContent>{};
@@ -2421,9 +2422,9 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
                 event.data['toolName'] as String? ??
                 event.data['toolId'] as String? ??
                 'Tool';
-            _recordActivity(
-              key:
-                  'tool:${event.data['executionId'] ?? event.data['toolId'] ?? toolName}',
+            _recordToolActivity(
+              toolId: toolId,
+              executionId: executionId,
               title: toolName,
               detail:
                   event.data['summary'] as String? ??
@@ -3551,8 +3552,42 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     return '${(value / (1024 * 1024)).toStringAsFixed(1)} MB';
   }
 
+  void _recordToolActivity({
+    required String toolId,
+    required String executionId,
+    required String title,
+    required String detail,
+    required TalkActivityState state,
+  }) {
+    final identity = Uri.encodeComponent(toolId.isEmpty ? title : toolId);
+    final pendingPrefix = 'tool:pending:$identity:';
+    // Starts arrive before the governed executor assigns an execution ID.
+    // Parallel batches emit their results in start order, so reconcile the
+    // oldest pending call of this tool and retain each repeated call separately.
+    final pending = state == TalkActivityState.active
+        ? null
+        : activities
+              .where(
+                (activity) =>
+                    activity.key.startsWith(pendingPrefix) &&
+                    activity.state == TalkActivityState.active,
+              )
+              .firstOrNull;
+    final key = executionId.isNotEmpty
+        ? 'tool:$executionId'
+        : pending?.key ?? '$pendingPrefix${_nextToolActivityId++}';
+    _recordActivity(
+      key: key,
+      replacingKey: pending?.key,
+      title: title,
+      detail: detail,
+      state: state,
+    );
+  }
+
   void _recordActivity({
     required String key,
+    String? replacingKey,
     required String title,
     required String detail,
     required TalkActivityState state,
@@ -3569,7 +3604,10 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       actionRoute: actionRoute,
       externalUri: externalUri,
     );
-    final existing = activities.indexWhere((item) => item.key == key);
+    var existing = activities.indexWhere((item) => item.key == key);
+    if (existing < 0 && replacingKey != null) {
+      existing = activities.indexWhere((item) => item.key == replacingKey);
+    }
     if (existing >= 0) {
       activities[existing] = activity;
     } else {

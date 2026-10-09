@@ -5,6 +5,7 @@ import { authorizeAppServiceCall, completeAppServiceCall, type AppServiceCaller 
 import { getAppServiceOperationContract } from "@/lib/app-services/registry";
 import { WORKFLOW_RUN_BUDGET_LIMITS } from "@/lib/config";
 import { listStreamEvents } from "@/lib/events/store";
+import { createMission, ensureMissionTask, getMission, getMissionTask, transitionMission } from "@/lib/missions/store";
 import { isResearchWebExplicitlyDisabled } from "@/lib/orchestration/research";
 import { RESEARCH_WORKFLOW_METADATA_KEY, researchOptionsSchema } from "@/lib/research/contracts";
 import { getAgentRun, getAgentRunIdentityPin } from "@/lib/runs/store";
@@ -14,7 +15,7 @@ import { deriveExecutionScope } from "@/lib/security/execution-scope";
 import { getOwnedThread } from "@/lib/threads/store";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import { enqueueWorkflowRunTick, scheduleWorkflowQueueDrain } from "@/lib/workflows/queue";
-import { createWorkflowRun } from "@/lib/workflows/store";
+import { createWorkflowRun, deterministicWorkflowRunId, getWorkflowRunDetail } from "@/lib/workflows/store";
 
 const inputSchema = z.object({ goal: z.string().trim().min(1).max(4_000), ...researchOptionsSchema.shape }).strict();
 const webTools = ["web.search", "web.read"] as const;
@@ -68,11 +69,61 @@ export async function startResearchService(caller: AppServiceCaller, input: unkn
       webTools.some(tool => !identity.principal.toolGrantIds.includes(tool)))) {
     throw new Error("The Agent's research permissions changed. Start a fresh conversation request.");
   }
-  const workflowScope = deriveExecutionScope(scope, {
-    purpose: "workflow.run", contextGrantIds: [], workspaceId: null, projectId: null, missionId: null,
-  });
   const requestSha256 = canonicalJsonSha256({ goal, options, parentRunId: parent.id, threadId: parent.threadId,
     identityPinSha256: identityPin.pinSha256, context: "public_web" });
+  const workflowId = deterministicWorkflowRunId(owner.tenantId, caller.idempotencyKey!);
+  const sourceKey = `conversation-research:${workflowId}`;
+  const existing = await getWorkflowRunDetail(workflowId, owner);
+  if (existing && (existing.run.goal !== goal ||
+    existing.run.input.metadata?.researchStartRequestSha256 !== requestSha256 ||
+    existing.run.input.metadata?.source !== "conversation_research")) {
+    throw new Error("This research request was already used for a different brief. Start a new request.");
+  }
+  const existingMissionId = existing?.run.input.metadata?.missionId;
+  const existingTaskId = existing?.run.input.metadata?.missionTaskId;
+  if (existing && (typeof existingMissionId !== "string" || typeof existingTaskId !== "string")) {
+    // Root workflow authority is immutable. Reusing a pre-fix job must neither
+    // rebind it nor create orphan missions while returning its old broken run.
+    throw new Error("This saved research request has an incomplete work binding. Cancel it and start a new research request.");
+  }
+  const missionOwner = {
+    ...owner, idempotencyKey: sourceKey,
+    executionScope: deriveExecutionScope(scope, {
+      purpose: "mission.orchestrate", contextGrantIds: [], workspaceId: null, projectId: null, missionId: null,
+    }),
+  };
+  // Source keys are stable per governed execution, so a retry after any partial
+  // initialization reuses the same owner-scoped mission, task and workflow.
+  const mission = typeof existingMissionId === "string"
+    ? await getMission(existingMissionId, missionOwner)
+    : await createMission({
+        ...missionOwner, title: goal.slice(0, 180), objective: goal, priority: "high", source: "talk", sourceKey,
+        metadata: { threadId: parent.threadId, parentRunId: parent.id, route: "durable_workflow",
+          source: "conversation_research", researchStartRequestSha256: requestSha256 },
+      });
+  if (!mission || mission.sourceKey !== sourceKey || mission.objective !== goal ||
+    mission.metadata.researchStartRequestSha256 !== requestSha256) {
+    throw new Error("The research mission no longer matches this request. Start a new research request.");
+  }
+  const taskOwner = { ...missionOwner,
+    executionScope: deriveExecutionScope(missionOwner.executionScope, { purpose: "mission.orchestrate", missionId: mission.id }),
+  };
+  const missionTask = typeof existingTaskId === "string"
+    ? await getMissionTask(existingTaskId, taskOwner)
+    : await ensureMissionTask(mission.id, {
+        sourceKey, title: goal.slice(0, 180), instructions: goal, priority: mission.priority, position: 1,
+        definitionOfDone: "Deliver the requested research report in the conversation, cite public sources, and state evidence gaps honestly.",
+        input: { threadId: parent.threadId, parentRunId: parent.id, route: "durable_workflow",
+          workflowRunId: workflowId, researchStartRequestSha256: requestSha256 },
+      }, taskOwner);
+  if (!missionTask || missionTask.missionId !== mission.id || missionTask.sourceKey !== sourceKey ||
+    missionTask.instructions !== goal || missionTask.input.researchStartRequestSha256 !== requestSha256) {
+    throw new Error("The research task no longer matches this request. Start a new research request.");
+  }
+  const workflowScope = deriveExecutionScope(scope, {
+    purpose: "workflow.run", contextGrantIds: [], workspaceId: null, projectId: null,
+    missionId: mission.id, causationId: missionTask.id,
+  });
   const detail = await createWorkflowRun({
     tenantId: owner.tenantId, idempotencyKey: caller.idempotencyKey, goal, mode: "research",
     requireApproval: identity.principal.approvalPolicy === "always", maxAttempts: 3,
@@ -81,6 +132,7 @@ export async function startResearchService(caller: AppServiceCaller, input: unkn
     metadata: {
       source: "conversation_research", actorId: owner.actorId, threadId: parent.threadId,
       parentRunId: parent.id, primaryAgentId: identity.definition.logicalAgentId,
+      missionId: mission.id, missionTaskId: missionTask.id,
       contextScope: "none", researchStartRequestSha256: requestSha256,
       [RESEARCH_WORKFLOW_METADATA_KEY]: options,
       agentProfile: {
@@ -91,11 +143,13 @@ export async function startResearchService(caller: AppServiceCaller, input: unkn
       },
     },
   });
-  if (detail.run.input.metadata?.researchStartRequestSha256 !== requestSha256 || detail.run.goal !== goal) {
+  if (detail.run.input.metadata?.researchStartRequestSha256 !== requestSha256 || detail.run.goal !== goal ||
+    detail.run.input.metadata.missionId !== mission.id || detail.run.input.metadata.missionTaskId !== missionTask.id) {
     throw new Error("This research request was already used for a different brief. Start a new request.");
   }
   // An idempotent retry returns terminal or paused work without restarting it.
   if (detail.run.status === "queued" || detail.run.status === "running") {
+    if (mission.status === "draft") await transitionMission(mission.id, "queued", taskOwner);
     await enqueueWorkflowRunTick(detail.run.id, "conversation_research_created", undefined, owner.tenantId);
     scheduleWorkflowQueueDrain(undefined, owner.tenantId);
   }
