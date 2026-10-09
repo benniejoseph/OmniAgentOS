@@ -67,6 +67,7 @@ import { dispatchMobilePushDeliveries } from "@/lib/mobile/push-store";
 import { processDomainMobilePushProducers } from "@/lib/mobile/push-producers";
 import { processActiveProjectExecutions } from "@/lib/projects/execution";
 import { syncDuePersonalProviders } from "@/lib/connectors/personal-sync";
+import { listDuePersonalSyncTenantIds } from "@/lib/connectors/oauth-store";
 import {
   processAllTenantDurableSpecialistQueues,
   processDurableSpecialistQueue,
@@ -956,6 +957,35 @@ async function runAllTenantScheduledWork({
   let memoryDeletionScrubs:
     Awaited<ReturnType<typeof processPendingMemoryDeletionScrubs>> | undefined;
   let page: string[] = [];
+  const connectedSourceSyncs: Array<{
+    tenantId: string; results: Awaited<ReturnType<typeof syncDuePersonalProviders>>;
+    error?: string;
+  }> = [];
+  // Connected accounts must not wait behind old evaluation tenants in the
+  // general maintenance cursor. Reserve at most a minute for a due-source
+  // pass, preserving the rest of the maintenance budget and all sync leases.
+  if (runMaintenance && deadlineAt - Date.now() > 10_000) {
+    const syncDeadlineAt = Math.min(deadlineAt - 5_000, Date.now() + 60_000);
+    try {
+      const sourceTenants = await listDuePersonalSyncTenantIds(2);
+      for (const tenantId of sourceTenants) {
+        if (syncDeadlineAt - Date.now() < 5_000) break;
+        try {
+          const results = await runWithDatabaseTenantScope(tenantId, () =>
+            syncDuePersonalProviders({ tenantId, limit: 1,
+              abortSignal: AbortSignal.timeout(Math.max(1, syncDeadlineAt - Date.now())),
+            }),
+          );
+          connectedSourceSyncs.push({ tenantId, results });
+        } catch (error) {
+          connectedSourceSyncs.push({ tenantId, results: [], error: safeTenantMaintenanceError(error) });
+        }
+      }
+    } catch (error) {
+      console.error(JSON.stringify({ level: "error", msg: "connected_source_scheduling_failed",
+        error: safeTenantMaintenanceError(error) }));
+    }
+  }
   // System-scope work shares a deliberately small maintenance pool. Keep
   // these operations ordered so a graph rebuild cannot make the other jobs
   // wait for a connection they cannot acquire.
@@ -1074,6 +1104,7 @@ async function runAllTenantScheduledWork({
   return {
     scope: "all_tenants" as const,
     lane,
+    connectedSourceSyncs,
     localComputerObservationScrub,
     queue,
     agentResumes,
@@ -1361,14 +1392,6 @@ async function runTenantMaintenance({
         tenantId,
       }));
     }
-  }
-  if (deadlineAt - Date.now() > 5_000) {
-    const abortSignal = AbortSignal.timeout(
-      Math.max(1, deadlineAt - Date.now() - 5_000),
-    );
-    result.connectedSourcesSynced = (
-      await syncDuePersonalProviders({ tenantId, limit: 1, abortSignal })
-    ).filter((item) => item.status === "healthy").length;
   }
   if (Date.now() < deadlineAt) {
     result.moltbookHeartbeatsProcessed = (

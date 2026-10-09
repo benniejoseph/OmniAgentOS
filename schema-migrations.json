@@ -1521,5 +1521,12 @@
     "checksum": "f4f1712090f74fbb0beab44c4014d4542ed15d6c651984f83f395e75c8507a4e",
     "file": "20261008110000_thread_turn_workflow_run_binding.sql",
     "sha256": "f4f1712090f74fbb0beab44c4014d4542ed15d6c651984f83f395e75c8507a4e"
+  },
+  {
+    "version": 248,
+    "name": "personal_profiles_v1",
+    "checksum": "032b554dec2e7f1e7d811180e9e74aa5170ec1418b79136a3f152cf84ffa2cdd",
+    "file": "20261009203000_personal_profiles.sql",
+    "sha256": "032b554dec2e7f1e7d811180e9e74aa5170ec1418b79136a3f152cf84ffa2cdd"
   }
 ]

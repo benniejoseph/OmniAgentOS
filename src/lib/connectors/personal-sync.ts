@@ -221,7 +221,7 @@ export async function syncDuePersonalProviders(options: {
       (!grant.syncRetryAt || Date.parse(grant.syncRetryAt) <= now)
     )
     .slice(0, limit);
-  const results: Array<{ provider: OAuthProvider; status: "healthy" | "error"; imported?: number; error?: string }> = [];
+  const results: Array<{ provider: OAuthProvider; status: "healthy" | "partial" | "error"; imported?: number; error?: string }> = [];
   for (const grant of grants) {
     if (options.abortSignal?.aborted) break;
     try {
@@ -234,7 +234,7 @@ export async function syncDuePersonalProviders(options: {
       });
       results.push({
         provider: grant.provider,
-        status: synced.status === "healthy" ? "healthy" : "error",
+        status: synced.status,
         imported: synced.imported,
         ...(synced.error ? { error: synced.error } : {}),
       });

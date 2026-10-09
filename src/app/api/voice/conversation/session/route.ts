@@ -104,6 +104,7 @@ async function POSTHandler(request: Request) {
         expiresAt, language: input.language || "auto", reconnectAttempt: input.reconnectAttempt,
         contextReceiptSha256: prepared.contextReceiptSha256,
         companionLanguageStyle: prepared.companionLanguageStyle,
+        personalProfile: prepared.personalProfile,
         ...(prepared.companionLanguageStyle?.personality ? { personalityVersion: COMPANION_PERSONALITY_VERSION } : {}),
         instructionsSha256: createHash("sha256").update(prepared.instructions).digest("hex"),
         audioRetention: "not_stored_by_asael", transcriptRetention: "conversation_history",

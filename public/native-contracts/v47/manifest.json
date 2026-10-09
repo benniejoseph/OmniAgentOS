@@ -4,12 +4,12 @@
   "version": 47,
   "state": "previous",
   "compatibility": {
-    "currentVersion": 50,
-    "previousVersion": 49,
+    "currentVersion": 51,
+    "previousVersion": 50,
     "supportedVersions": [
+      51,
       50,
-      49,
-      48
+      49
     ]
   },
   "retirement": {
