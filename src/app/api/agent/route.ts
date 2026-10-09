@@ -767,12 +767,14 @@ async function POSTHandler(request: Request) {
   let budgetLimits;
   let workflowBudgetLimits;
   try {
-    const agentBudgetAuthority =
-      computerUseTarget === "local_macos"
+    const requestBudgetAuthority =
+      deepResearch
+        ? WORKFLOW_RUN_BUDGET_LIMITS
+        : computerUseTarget === "local_macos"
         ? LOCAL_COMPUTER_RUN_BUDGET_LIMITS
         : AGENT_RUN_BUDGET_LIMITS;
     budgetLimits = narrowRunBudgetLimits(
-      agentBudgetAuthority,
+      requestBudgetAuthority,
       parsed.data.budgets,
     );
     workflowBudgetLimits = narrowRunBudgetLimits(
