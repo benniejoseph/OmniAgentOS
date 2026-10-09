@@ -9,16 +9,20 @@ import { AtlasLottie, atlasEnvironmentAllowsMotion, atlasThemeSnapshot, subscrib
 
 /** The mounted owner/conversation owns the reaction ledger. Hidden, historical,
  * reduced-motion and unavailable observations are consumed without playback. */
-export function useCompanionAtlasPlayer({ scope, conversationId, presentation, greeting = false }: {
+export function useCompanionAtlasPlayer({ scope, conversationId, presentation, greeting = false, voice = false, reaction = 0 }: {
   scope?: string;
   conversationId?: string;
   presentation: ReturnType<typeof companionPresentation>;
   greeting?: boolean;
+  /** Explicit live voice may react in Balanced, while normal app presence stays finite. */
+  voice?: boolean;
+  reaction?: number;
 }) {
   const read = useCompanionPreferences(scope);
   const [assetFailed, setAssetFailed] = useState(false);
   const [playbackKey, setPlaybackKey] = useState<object>();
   const [gate] = useState(createAtlasPlaybackGate);
+  const voiceObservation = useRef<{ state: typeof presentation.state; reaction: number } | undefined>(undefined);
   const observationRef = useRef<HTMLElement>(null);
   const [onScreen, setOnScreen] = useState(false);
   const environmentAllowsMotion = useSyncExternalStore(subscribeAtlasEnvironment, atlasEnvironmentAllowsMotion, () => false);
@@ -28,7 +32,7 @@ export function useCompanionAtlasPlayer({ scope, conversationId, presentation, g
   const motion = effectiveCompanionMotion(preferences?.motion ?? "off", reduced);
   const intensity = preferences?.intensity ?? "quiet";
   const showPortrait = Boolean(read.state === "ready" && preferences?.visible && !assetFailed);
-  const eligible = Boolean(!greeting && scope && showPortrait && onScreen && environmentAllowsMotion && motion === "full" && atlasMotionAllowed(intensity, presentation.state));
+  const eligible = Boolean(!greeting && scope && showPortrait && onScreen && environmentAllowsMotion && motion === "full" && (voice ? intensity === "balanced" || intensity === "expressive" : atlasMotionAllowed(intensity, presentation.state)));
   const preferenceIdentity = JSON.stringify([read.state, read.response?.snapshot.revision, preferences]);
   const { state, work: { state: workState, runId, completionIdentity } } = presentation;
 
@@ -41,13 +45,22 @@ export function useCompanionAtlasPlayer({ scope, conversationId, presentation, g
   }, []);
 
   useLayoutEffect(() => {
+    if (voice) {
+      const previous = voiceObservation.current;
+      voiceObservation.current = { state, reaction };
+      // Consume hidden/reduced observations too. Returning to a tab never
+      // replays an old speech turn or invents activity.
+      const fresh = Boolean(previous && (previous.state !== state || previous.reaction !== reaction));
+      setPlaybackKey(fresh && eligible ? {} : undefined);
+      return;
+    }
     const admitted = gate.observe({ state, work: { state: workState, runId, completionIdentity, label: "", detail: "" }, eligible, hasConversation: Boolean(conversationId) });
     setPlaybackKey(admitted ? {} : undefined);
-  }, [completionIdentity, conversationId, eligible, gate, preferenceIdentity, runId, state, theme, workState]);
+  }, [completionIdentity, conversationId, eligible, gate, preferenceIdentity, runId, state, theme, workState, voice, reaction]);
 
   return {
     read, motion, intensity, assetFailed, showPortrait, observationRef,
-    portrait: { state, theme, playbackKey, motionAllowed: eligible, showPortrait, onUnavailable: () => setAssetFailed(true) },
+    portrait: { state, theme, playbackKey, motionAllowed: eligible, repeatWhileActive: voice && state === "responding", showPortrait, onUnavailable: () => setAssetFailed(true) },
   };
 }
 

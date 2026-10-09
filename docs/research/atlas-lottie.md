@@ -6,6 +6,14 @@ for a **new recognizable animated mascot**, informed by LottieFiles, also
 supersedes the first compass/orbit design. `DESIGN.md` and the existing shared
 theme remain the design authority.
 
+On 9 October 2026, the owner approved both the **Companion** dock and **Perch**
+character treatments from the voice-presence study. The original vector rig was
+reauthored for those surfaces as `atlas-scout-20261009-voice`: a larger charcoal
+face, a sculpted ivory head, a fine bent gold crest, visible torso and articulated
+hands. The motion study and this vector authoring are original work, separate
+from the Stitch visual boards. No Stitch image, stock animation or generated
+raster art is embedded in these files.
+
 ## Format research
 
 Lottie describes animation as JSON and renders it at runtime. The official web
@@ -57,11 +65,13 @@ interactive playback on LottieFiles was unavailable in this tool session.
 
 ## Original ATLAS Scout artwork and state vocabulary
 
-ATLAS Scout has an ivory shell, a large charcoal face with expressive eyes and
-mouth, articulated hands, a compact body, and a small gold crest. The face is the
-primary identifying feature at small sizes. A listening tilt, raised hand,
-focused glance and open speaking expression communicate state through the
-character. The retired compass is absent from current artwork and fallbacks.
+ATLAS Scout has an ivory shell, a large charcoal face with separately animated
+eyes, eyelids and mouth, articulated hands with readable finger joints, a compact
+charcoal chest inset, and a fine gold crest. The larger face is the identifying
+feature in Companion; the open hands and torso remain visible in Perch. Eye focus
+leads the listening tilt, a short sideways glance communicates thinking, and
+small mouth changes accompany open-handed speaking. The retired compass is
+absent from current artwork and fallbacks.
 
 The parented rig moves the head, face, eyes and crest together. Hands rotate from
 shoulders, and completion lifts the whole character before settling. Shapes use
@@ -74,19 +84,28 @@ theme colors requires regenerating the exports from their authoring palette.
 |---|---|---|
 | Available / idle | Open eyes, small smile, relaxed hands | Welcome wave is authored; normal idle/greeting policy remains still |
 | Listening | Head tilted, hand near head | Attentive tilt and hand-to-ear gesture |
-| Working | Focused downward glance | A short look between work areas and coordinated hand movement |
-| Responding | Open speaking expression, hands outward | Three small mouth changes and an open-hand gesture |
+| Working | Focused sideways glance, asymmetric eyelids | A short look between work areas and coordinated hand movement |
+| Responding | Open speaking expression, hands outward | Three mouth articulations, a small head nod and open-hand gestures; matching first/last transforms |
 | Needs you | Raised hand and attention badge | A deliberate raised-hand gesture; existing policy keeps it still |
 | Blocked | Concerned eye shape, level mouth, attention badge | Restrained head tilt; existing policy keeps it still |
 | Completed | Both hands raised, check on chest | One lift and acknowledgment after the receipt gate |
-| Paused | Resting eyes and pause badge | Still |
+| Paused | Calm, open eyes and pause badge | Still; no blink keyframes |
 
-Each animation is 256 × 256 at 30 fps for 1.2 seconds, with no loop. There are
-eight state files for each theme. The generator writes byte-identical JSON to
-web and Flutter and produces SVG stills from the same geometry and final rig
-transforms. The completion still keeps its check with motion disabled. Original
-art was manually inspected in light/dark contact sheets at large and compact
-sizes; no device or runtime performance result is inferred from those sheets.
+Each asset is a finite 256 × 256 clip at 30 fps for 1.2 seconds. There are eight
+state files for each theme. No asset starts its own loop. The responding clip has
+matching first and last transforms so its host may repeat it only while actual
+output speech remains active, and stop immediately when speech ends or the user
+interrupts. Listening and thinking remain finite state-entry reactions. No
+animation infers microphone activity or audio amplitude.
+
+The generator writes byte-identical JSON to web and Flutter and produces SVG
+stills from the same geometry, resolving each transform’s final keyframe. This
+keeps reduced-motion and loading fallbacks aligned with the animation’s held
+pose. The completion still keeps its check. All compositions have empty asset
+lists, at most 17 shape layers, and stay within the existing 128 KiB admission
+limit. The generator enforces the layer and byte budgets during authoring. The
+new still poses were manually inspected in a light/dark contact sheet; no device
+or runtime performance result is inferred from that sheet.
 
 Authoring source:
 `.design/asael-ace-revamp/atlas-lottie/source/generate.mjs`.
@@ -104,7 +123,9 @@ assets; it is not a test or application build.
   viewport/scroll and explicit macOS low-power-state checks. Reduced motion and
   accessible navigation keep a still pose. A theme-aware Scout vector painter is the
   loading/failure fallback. The former brand mascot uses this same player.
-- No clip loops. Idle has no running animation controller. Offscreen, hidden,
+- Idle has no running animation controller. All clips are finite; the responding
+  clip may be replayed by the host only while real output speech is active.
+  Offscreen, hidden,
   low-power, reduced-motion, disabled-motion and unavailable reactions remain
   consumed; restoring visibility does not celebrate historical work. The web
   waits for the inner element's first visibility observation before deciding
@@ -127,8 +148,9 @@ as part of this release.
 
 ## Validation boundary
 
-This change was prepared through primary-source research, source inspection,
-deterministic asset authoring and visual inspection of exported still poses. No test suite, audit, application build or deployment was run by this
+The original format research used primary sources. The 9 October artwork revision
+used source inspection, deterministic asset authoring, and visual inspection of
+the exported light/dark still poses. No test suite, audit, application build or deployment was run by this
 implementation lane. The release owner is responsible for the authorized build
 and live verification. No performance measurement or device validation is
 claimed by this document.

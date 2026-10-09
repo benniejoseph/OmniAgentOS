@@ -2,7 +2,7 @@ import type { CompanionState } from "./presentation";
 import type { AtlasTheme } from "./atlas-assets";
 
 export const ATLAS_LOTTIE_ROOT = "/companion/atlas-lottie";
-export const ATLAS_CREATIVE_REVISION = "atlas-scout-20261007";
+export const ATLAS_CREATIVE_REVISION = "atlas-scout-20261009-voice";
 
 export function atlasLottieAsset(state: CompanionState, theme: AtlasTheme, format: "json" | "svg") {
   return `${ATLAS_LOTTIE_ROOT}/${state}-${theme}.${format}?v=${ATLAS_CREATIVE_REVISION}`;

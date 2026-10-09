@@ -59,7 +59,8 @@ class MacosPowerStateMonitor extends ChangeNotifier
     binding.addObserver(this);
     _foreground =
         binding.lifecycleState == null ||
-        binding.lifecycleState == AppLifecycleState.resumed;
+        binding.lifecycleState == AppLifecycleState.resumed ||
+        binding.lifecycleState == AppLifecycleState.inactive;
     _replaceSubscription();
   }
 
@@ -75,7 +76,11 @@ class MacosPowerStateMonitor extends ChangeNotifier
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    final foreground = state == AppLifecycleState.resumed;
+    // An unfocused macOS window can still be visible, including the floating
+    // voice companion. Continue observing actual Low Power Mode in that state.
+    final foreground =
+        state == AppLifecycleState.resumed ||
+        state == AppLifecycleState.inactive;
     if (_foreground == foreground) {
       return;
     }

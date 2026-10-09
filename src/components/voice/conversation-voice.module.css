@@ -7,3 +7,93 @@
 .caption > span { color: var(--muted); font-size: .75rem; font-weight: 500; }
 .caption > p { margin-block-start: .25rem; color: var(--foreground); font-size: clamp(1rem, 1.8vw, 1.25rem); line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 .caption[data-speaker="user"] { padding-inline-start: 1rem; border-inline-start: 2px solid var(--line-strong); }
+
+/* The active call occupies only its own footprint; the workspace remains usable. */
+.presenceLayer { position: fixed; z-index: 130; inset-inline-end: 1.5rem; inset-block-end: 1.5rem; max-inline-size: calc(100vw - 2rem); pointer-events: none; }
+.presence { --focus-surface: var(--surface); position: relative; display: flex; flex-direction: column; align-items: stretch; inline-size: 23.75rem; max-inline-size: 100%; max-block-size: calc(100dvh - 3rem); color: var(--foreground); pointer-events: auto; }
+.presence :is(button, summary, a):focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; box-shadow: 0 0 0 3px var(--focus-surface); }
+.presenceToolbar { display: flex; justify-content: end; align-items: center; gap: .25rem; margin-block-end: .25rem; }
+.presenceToolbar > button, .appearanceMenu > summary { display: grid; place-items: center; inline-size: 2.25rem; block-size: 2.25rem; padding: 0; border: 0; border-radius: var(--radius-control); background: var(--surface); color: var(--muted); cursor: pointer; list-style: none; }
+.appearanceMenu > summary::-webkit-details-marker { display: none; }
+.presenceToolbar > button:hover, .appearanceMenu > summary:hover { background: var(--surface-raised); color: var(--foreground); }
+.presenceToolbar > button[aria-pressed="true"] { background: var(--accent-surface); color: var(--accent); }
+.appearanceMenu { position: relative; }
+.appearanceOptions { position: absolute; inset-inline-end: 0; inset-block-end: calc(100% + .5rem); z-index: 2; inline-size: 12rem; padding: .625rem; border-radius: var(--radius-surface); background: var(--surface-overlay); box-shadow: var(--shadow-floating); }
+.appearanceOptions > p { margin: .25rem .375rem .5rem; color: var(--muted); font-size: .75rem; }
+.appearanceOptions > button { display: flex; align-items: center; justify-content: space-between; gap: .5rem; inline-size: 100%; min-block-size: 2.75rem; padding: .5rem .625rem; border-radius: var(--radius-control); color: var(--foreground); background: transparent; font-size: .875rem; text-align: start; }
+.appearanceOptions > button:hover { background: var(--surface-raised); }
+.appearanceOptions > button[aria-pressed="true"] { background: var(--accent-surface); }
+.appearanceOptions > button svg { color: var(--accent); }
+.appearanceOptions > span { display: block; margin: .625rem .375rem .25rem; font-size: .6875rem; color: var(--muted); }
+.presenceBody { display: grid; grid-template-columns: 5.25rem minmax(0, 1fr) auto; align-items: center; gap: .5rem; min-block-size: 6.75rem; padding: .625rem .75rem .625rem .5rem; border-radius: var(--radius-sheet); background: var(--surface); box-shadow: var(--shadow-floating); }
+.presenceBody:has(.presenceMascot[hidden]) { grid-template-columns: minmax(0, 1fr) auto; padding-inline-start: 1rem; }
+.presenceMascot { inline-size: 5.25rem; block-size: 5.25rem; }
+.presenceMascot[hidden] { display: none; }
+.presencePortrait { display: block; inline-size: 100%; block-size: 100%; }
+.presenceCopy { min-inline-size: 0; }
+.presenceIdentity { display: flex; align-items: center; justify-content: space-between; gap: .375rem; color: var(--muted); font-size: .625rem; line-height: 1.4; }
+.presenceIdentity > span:first-child { min-inline-size: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.microphoneBadge { display: inline-flex; align-items: center; gap: .125rem; flex-shrink: 0; font-size: .5625rem; }
+.microphoneBadge[data-microphone-open="true"] { color: var(--accent); }
+.presenceStatus { margin-block-start: .25rem; color: var(--foreground); font-size: .875rem; line-height: 1.3; font-weight: 600; overflow-wrap: anywhere; }
+.presenceCaption { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; margin-block-start: .25rem; color: var(--muted); font-size: .75rem; line-height: 1.45; overflow-wrap: anywhere; }
+.presenceControls { display: flex; align-items: center; gap: .25rem; }
+.voiceControl { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: .375rem; inline-size: 2.75rem; min-block-size: 3.5rem; padding: .375rem .125rem; border: 0; border-radius: var(--radius-control); background: var(--surface-raised); color: var(--foreground); cursor: pointer; transition: background-color var(--duration-control) var(--ease-standard), color var(--duration-control) var(--ease-standard); }
+.voiceControl > span { font-size: .625rem; line-height: 1.2; }
+.voiceControl:hover { background: var(--surface-overlay); }
+.voiceControl[aria-pressed="true"] { background: var(--accent-surface); color: var(--accent); }
+.voiceControl:disabled { color: var(--muted); cursor: default; }
+.endControl { background: transparent; color: var(--danger); }
+.endControl:hover { background: var(--danger-surface); }
+.presenceNotice { display: grid; gap: .375rem; margin-block-start: .5rem; padding: .75rem 1rem; border-radius: var(--radius-surface); background: var(--surface); color: var(--muted); box-shadow: var(--shadow-floating); font-size: .75rem; line-height: 1.5; overflow-wrap: anywhere; max-block-size: 10rem; overflow-y: auto; }
+.presenceNotice a { color: var(--foreground); text-decoration: underline; text-underline-offset: .15em; }
+.presenceNotice button { display: inline-flex; gap: .5rem; align-items: center; justify-content: center; min-block-size: 2.75rem; border: 1px solid var(--line-strong); border-radius: var(--radius-control); background: var(--surface-raised); color: var(--foreground); font-size: .8125rem; }
+.captionPanel { display: flex; flex-direction: column; min-block-size: 0; margin-block-end: .5rem; border-radius: var(--radius-sheet); background: var(--surface); box-shadow: var(--shadow-floating); overflow: hidden; }
+.captionPanel > header { display: flex; justify-content: space-between; align-items: center; gap: .75rem; padding: .5rem .75rem .5rem 1rem; border-block-end: 1px solid var(--line); }
+.captionPanel h3 { font-size: .8125rem; font-weight: 600; }
+.captionPanel > header > button { display: grid; place-items: center; inline-size: 2.25rem; block-size: 2.25rem; border-radius: var(--radius-control); background: transparent; color: var(--muted); }
+.captionPanel > header > button:hover { background: var(--surface-raised); color: var(--foreground); }
+.captionScroll { display: grid; gap: 1rem; min-block-size: 0; max-block-size: min(22rem, 45dvh); padding: 1rem; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
+.captionScroll .caption > p { font-size: .875rem; line-height: 1.6; }
+.captionEmpty { color: var(--muted); font-size: .8125rem; line-height: 1.5; }
+
+.presence[data-voice-appearance="perch"] { inline-size: 18rem; }
+.presence[data-voice-appearance="perch"] .presenceBody { display: flex; flex-direction: column; align-items: center; gap: 0; min-block-size: 0; padding: 0; background: transparent; box-shadow: none; }
+.presence[data-voice-appearance="perch"] .presenceCopy { order: -1; align-self: stretch; margin-inline: .75rem; padding: .875rem 1rem; border-radius: var(--radius-sheet) var(--radius-sheet) .25rem var(--radius-sheet); background: var(--surface); box-shadow: var(--shadow-floating); }
+.presence[data-voice-appearance="perch"] .presenceIdentity { font-size: .6875rem; }
+.presence[data-voice-appearance="perch"] .presenceStatus { margin-block-start: .375rem; font-size: 1rem; }
+.presence[data-voice-appearance="perch"] .presenceCaption { -webkit-line-clamp: 3; font-size: .8125rem; }
+.presence[data-voice-appearance="perch"] .presenceMascot { inline-size: 8rem; block-size: 8rem; margin-block: -.25rem -.125rem; }
+.presence[data-voice-appearance="perch"] .presenceControls { gap: .5rem; padding: .375rem .5rem; border-radius: var(--radius-surface); background: var(--surface); box-shadow: var(--shadow-floating); }
+.presence[data-voice-appearance="perch"] .voiceControl { flex-direction: row; gap: .5rem; inline-size: auto; min-inline-size: 5rem; min-block-size: 2.75rem; padding: .5rem .625rem; }
+.presence[data-voice-appearance="perch"] .voiceControl > span { font-size: .75rem; }
+.presence[data-voice-appearance="perch"] .presenceBody:has(.presenceMascot[hidden]) .presenceCopy { margin-block-end: .75rem; }
+
+@media (max-width: 767px) {
+  .presenceLayer { inset-inline-end: .75rem; inset-block-end: max(5.25rem, calc(env(safe-area-inset-bottom) + 4.5rem)); max-inline-size: calc(100vw - 1.5rem); }
+  .presence { inline-size: min(23.75rem, calc(100vw - 1.5rem)); max-block-size: calc(100dvh - 7rem); }
+  .presenceBody { grid-template-columns: 4.5rem minmax(0, 1fr) auto; gap: .375rem; padding-inline: .375rem .5rem; }
+  .presenceMascot { inline-size: 4.5rem; block-size: 4.5rem; }
+  .presence[data-voice-appearance="perch"] { inline-size: min(18rem, calc(100vw - 1.5rem)); }
+  .captionScroll { max-block-size: 35dvh; }
+}
+@media (pointer: coarse) {
+  .presenceToolbar > button, .appearanceMenu > summary { inline-size: 3rem; block-size: 3rem; }
+  .voiceControl { inline-size: 3rem; min-block-size: 3.5rem; }
+  .presence[data-voice-appearance="perch"] .voiceControl { min-block-size: 3rem; }
+  .appearanceOptions > button, .captionPanel > header > button { min-block-size: 3rem; }
+}
+@media (max-height: 600px) {
+  .presenceLayer { inset-block-end: .5rem; }
+  .presence { max-block-size: calc(100dvh - 1rem); }
+  .presence[data-voice-appearance="perch"] .presenceMascot { inline-size: 6rem; block-size: 6rem; }
+  .captionScroll { max-block-size: 24dvh; }
+}
+@media (prefers-reduced-motion: reduce) { .voiceControl { transition: none; } }
+@media (forced-colors: active) {
+  .presenceBody, .appearanceOptions, .captionPanel, .presenceNotice,
+  .presence[data-voice-appearance="perch"] .presenceCopy, .presence[data-voice-appearance="perch"] .presenceControls { outline: 1px solid CanvasText; }
+  .presence[data-voice-appearance="perch"] .presenceBody { outline: 0; }
+  .voiceControl { border: 1px solid ButtonText; }
+  .voiceControl[aria-pressed="true"], .appearanceOptions > button[aria-pressed="true"] { outline: 2px solid Highlight; }
+}

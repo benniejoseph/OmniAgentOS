@@ -632,9 +632,8 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         builder: (context, _) => ProviderBoundTalkRoute(
           quickEntry: true,
           ambientVoice: true,
-          onQuickEntryReady: () {
-            unawaited(appDesktopHostBridge.showAmbientVoicePresentation());
-          },
+          // The native voice surface sizes its window after layout using this
+          // owner's device appearance and effective text size.
           onExitQuickEntry: () {
             final router = GoRouter.of(context);
             if (router.canPop()) {

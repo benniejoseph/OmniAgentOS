@@ -12,11 +12,13 @@ const LottiePlayer = dynamic<LottieComponentProps>(() => import("lottie-react").
 
 /** A decorative, finite reaction. Still SVGs do not load the Lottie runtime.
  * Consumed reactions never replay after visibility or motion settings change. */
-export function AtlasLottie({ state, theme, playbackKey, motionAllowed, size = "100%", onUnavailable }: {
+export function AtlasLottie({ state, theme, playbackKey, motionAllowed, repeatWhileActive = false, size = "100%", onUnavailable }: {
   state: CompanionState;
   theme: AtlasTheme;
   playbackKey?: object;
   motionAllowed: boolean;
+  /** Only actual output playback may repeat a speaking gesture. */
+  repeatWhileActive?: boolean;
   size?: string;
   onUnavailable?: () => void;
 }) {
@@ -66,14 +68,14 @@ export function AtlasLottie({ state, theme, playbackKey, motionAllowed, size = "
     <Image src={atlasLottieAsset(state, theme, "svg")} alt="" width={256} height={256} unoptimized loading="lazy"
       onError={onUnavailable} style={{ display: "block", width: "100%", height: "100%", opacity: active && playing === playbackKey ? 0 : 1 }} />
     {active && clip ? <span style={{ position: "absolute", inset: 0, opacity: playing === playbackKey ? 1 : 0 }}>
-      <LottiePlayer key={`${state}-${theme}`} lottieRef={player} animationData={clip.data} autoplay={false} loop={false} renderer="svg"
+      <LottiePlayer key={`${state}-${theme}`} lottieRef={player} animationData={clip.data} autoplay={false} loop={repeatWhileActive} renderer="svg"
         onDOMLoaded={() => {
           if (!currentRequest.current.allowed || currentRequest.current.playbackKey !== clip.key) return;
           player.current?.animationItem?.setSubframe(false);
           player.current?.goToAndPlay(0, true);
           setPlaying(clip.key);
         }}
-        onComplete={() => { player.current?.pause(); setPlaying(undefined); }}
+        onComplete={() => { if (!repeatWhileActive) { player.current?.pause(); setPlaying(undefined); } }}
         onDataFailed={() => setPlaying(undefined)}
         rendererSettings={{ preserveAspectRatio: "xMidYMid meet", progressiveLoad: false }} style={{ width: "100%", height: "100%" }} />
     </span> : null}
