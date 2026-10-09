@@ -650,12 +650,12 @@ async function tickWorkflowRunWithAuthority(
       }, {
         tenantId: detail.run.tenantId, expectedRunUpdatedAt: runFence,
         executionAuthority,
-        events: [{ type: "step.interrupted", payload: { stepKey, reason: "research_model_receipt_missing" } }],
+        events: [{ type: "step.interrupted", payload: { stepKey, reason: "research_model_receipt_missing", ...(error.failure ? { modelFailure: error.failure } : {}) } }],
       });
       if (!retainedStep) return current;
       await transitionWorkflowRunWithEvents(detail.run.id, ["running"], {
         status: "paused", currentStep: stepKey, pausedAt: new Date().toISOString(), error: error.message,
-      }, [{ type: "workflow.paused", payload: { reason: "research_model_receipt_missing", requiresExplicitResume: true } }], {
+      }, [{ type: "workflow.paused", payload: { reason: "research_model_receipt_missing", requiresExplicitResume: true, ...(error.failure ? { modelFailure: error.failure } : {}) } }], {
         tenantId: detail.run.tenantId, expectedUpdatedAt: runFence, executionAuthority,
       });
       return getWorkflowRunDetail(runId, { tenantId: options.tenantId }) as Promise<WorkflowRunDetail>;

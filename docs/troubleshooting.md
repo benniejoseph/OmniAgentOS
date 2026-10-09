@@ -367,6 +367,28 @@ runtime back to the repository.
 
 ## Live web search and Research
 
+Deep Research can retain a complete draft while its claim-review step is
+paused. Inspect the newest saved `researchProgress` from `persist_report`,
+`verify`, `execute`, then `plan`; the elapsed UI timer includes paused time.
+An absent final result does not mean the collected evidence or draft was lost.
+
+Report synthesis and claim review have a bounded 180-second model deadline,
+separate from the overall research budget. The queue reserves at least 185
+seconds of delivery time, including five seconds to save the result; the
+planner keeps its shorter deadline. Keep these limits aligned with the worker
+delivery, request and gateway ceilings when changing them. On 9 October 2026,
+the Winter '27 research review stopped twice at the former 90-second limit.
+Increasing only the overall run budget did not change that per-call limit.
+
+Research interruption events retain a bounded `modelFailure` classification,
+elapsed time, applicable timeout and provider status where available. They do
+not retain raw provider error messages, credentials, prompts or answers.
+Distinguish a model timeout from authentication, rate limits, provider failure
+or a result-save failure before recovering the run. A started model call
+without a saved completion still requires an explicit Resume; never replay it
+automatically on worker redelivery. Timeout-only changes preserve the saved
+request digest so an existing draft can resume without repeating discovery.
+
 General Research uses the normal bounded Agent loop, with Scout and the
 Evidence research Skill exposing `web.search`, knowledge retrieval, and memory
 retrieval where authorized. Markets/Meridian is a separate market-data workspace.
