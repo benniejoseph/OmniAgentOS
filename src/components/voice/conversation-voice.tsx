@@ -9,6 +9,8 @@ import { useWorkspaceSession } from "@/components/app-shell/session-context";
 import { CompanionAtlasPortrait, useCompanionAtlasPlayer } from "@/components/companion-atlas-player";
 import type { CompanionState } from "@/lib/companion/presentation";
 import { useVoiceAppearance } from "./use-voice-appearance";
+import { useCompanionPersonality } from "@/components/use-companion-personality";
+import type { CompanionPersonality } from "@/lib/companion/personality";
 import { classifyRealtimeError, RealtimeConnectionError, realtimeConnectionFailure } from "@/lib/voice/realtime-error";
 import {
   voiceConversationStartResponseSchema,
@@ -27,6 +29,7 @@ export type ConversationVoiceRequest = Readonly<{
   request: string;
   voiceInput: VoiceConversationInput;
   commandContext: VoiceConversationCommandContext;
+  companionPersonality: CompanionPersonality;
 }>;
 type Caption = { itemId: string; role: "user" | "assistant"; text: string; interrupted?: boolean };
 type Phase = "notice" | "requesting" | "connecting" | "listening" | "thinking" | "speaking" | "reconnecting" | "error";
@@ -35,6 +38,7 @@ type Call = {
   scope: string;
   configurationKey: string;
   configuration: ConversationVoiceConfiguration;
+  companionPersonality: CompanionPersonality;
   session?: VoiceConversationStartResponse;
   stream?: MediaStream;
   peer?: RTCPeerConnection;
@@ -101,6 +105,7 @@ export function ConversationVoice(props: Props) {
     && (!workspace.authEnabled || workspace.authenticated) && props.isAuthorityCurrent()
     ? { tenantId: workspace.context.tenantId, actorId: workspace.context.actorId } : undefined;
   const { appearance, setAppearance, persistenceNotice, available: appearanceAvailable } = useVoiceAppearance(owner);
+  const { personality } = useCompanionPersonality(owner);
   const [phase, setPhase] = useState<Phase>("notice");
   const [muted, setMuted] = useState(false);
   const [microphoneOpen, setMicrophoneOpen] = useState(false);
@@ -308,6 +313,7 @@ export function ConversationVoice(props: Props) {
             voiceInput: { schemaVersion: 2, source: "realtime_voice", sessionId: call.session.sessionId,
               conversationId: call.session.conversationId, provider: "openai", turnId: callId },
             commandContext: call.session.commandContext,
+            companionPersonality: call.companionPersonality,
           });
           if (!reply) {
             call.blockedWork = true;
@@ -401,7 +407,7 @@ export function ConversationVoice(props: Props) {
     const session = await bounded(async (signal) => {
       const response = await fetch("/api/voice/conversation/session", {
         method: "POST", headers: { "content-type": "application/json" }, signal,
-        body: JSON.stringify({ schemaVersion: 2, ...call.configuration,
+        body: JSON.stringify({ schemaVersion: 2, ...call.configuration, companionPersonality: call.companionPersonality,
           conversationId: previous?.conversationId || latest.current.conversationId,
           ...(reconnectAttempt && previous ? { sessionId: previous.sessionId } : {}), reconnectAttempt,
           providerConsent: true, continuousConsent: true, audioRetention: "not_stored_by_asael", transcriptRetention: "conversation_history" }),
@@ -412,6 +418,7 @@ export function ConversationVoice(props: Props) {
     }, 45_000, call.controller.signal, "Voice setup took too long. Check your connection and try again.");
     if (!current(call)) throw canceled();
     call.session = session;
+    call.companionPersonality = session.companionPersonality ?? call.companionPersonality;
     setAgentName(session.agentName);
     latest.current.onConversationBound(session.conversationId);
     const peer = new RTCPeerConnection();
@@ -507,7 +514,7 @@ export function ConversationVoice(props: Props) {
       setPhase("error"); setError("Choose conversation, project, workspace, or current-turn context before starting voice. The current context needs a separate review."); return;
     }
     const call: Call = { controller: new AbortController(), scope: props.authorityScope, configurationKey,
-      configuration: structuredClone(props.configuration), ended: false, muted: false, startedAt: Date.now(), reconnectCount: 0,
+      configuration: structuredClone(props.configuration), companionPersonality: personality, ended: false, muted: false, startedAt: Date.now(), reconnectCount: 0,
       reconnecting: false, transportVersion: 0, toolIds: new Set(), tools: Promise.resolve(), blockedWork: false,
       responseActive: false, responsePending: false, userSpeaking: false, outputBlocked: false, interruptedResponses: new Set(), drainedResponses: new Set(),
       assistantCaptions: new Map(), historyIds: new Set(), historyQueue: [], historyFailed: false, turnCount: 0 };

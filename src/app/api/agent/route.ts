@@ -188,6 +188,7 @@ import {
 } from "@/lib/workflows/personal-context";
 import { resolveVoiceCommandGate, type VoiceCommandGate } from "@/lib/voice/command-gate";
 import { voiceCommandInputSchema } from "@/lib/voice/command-input";
+import { COMPANION_PERSONALITIES } from "@/lib/companion/personality";
 import {
   conversationVoiceContextMatches, conversationVoiceRequestId,
   requireActiveConversationVoiceSession, VoiceConversationError,
@@ -230,6 +231,7 @@ const requestSchema = z.object({
   modelSelection: commandModelSelectionRequestSchema.optional(),
   budgets: runBudgetCountersV1Schema.partial().optional(),
   voiceInput: voiceCommandInputSchema.optional(),
+  companionPersonality: z.enum(COMPANION_PERSONALITIES).optional(),
 }).strict()
   .refine((value) => !value.research || value.mode === "research", {
     message: "Research options require Research mode.", path: ["research"],
@@ -381,12 +383,16 @@ async function POSTHandler(request: Request) {
   }
   const requestActorBinding =
     canonicalRequestActorBindingFromSecurityContext(context);
+  let companionPersonality = parsed.data.companionPersonality;
   if (parsed.data.voiceInput?.schemaVersion === 2) {
     try {
       const voiceInput = parsed.data.voiceInput;
       const active = await requireActiveConversationVoiceSession({
         context, sessionId: voiceInput.sessionId, conversationId: voiceInput.conversationId,
       });
+      // A spoken task keeps the delivery chosen when its live session began.
+      // The client cannot hot-swap that session by changing a later request.
+      companionPersonality = active.companionLanguageStyle?.personality;
       if (!conversationVoiceContextMatches(active.commandContext, {
         agentId: parsed.data.agentId || "atlas", projectId: parsed.data.projectId,
         mode: parsed.data.mode || "orchestrate", contextScope: parsed.data.contextScope || "session",
@@ -2154,6 +2160,7 @@ async function POSTHandler(request: Request) {
                 threadId,
                 messages: safeMessages,
                 research: parsed.data.research,
+                companionPersonality,
                 computerUseTarget,
                 localComputerWorkspaces,
                 securityContext: context,

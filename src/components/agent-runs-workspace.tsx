@@ -65,6 +65,8 @@ import { ConversationVoice, type ConversationVoiceRequest } from "@/components/v
 import type { VoiceConversationInput } from "@/lib/voice/command-input";
 import type { VoiceConversationCommandContext } from "@/lib/voice/conversation-contracts";
 import { CompanionPresence } from "@/components/companion-presence";
+import { useCompanionPersonality } from "@/components/use-companion-personality";
+import type { CompanionPersonality } from "@/lib/companion/personality";
 import { companionRunSnapshot, companionPendingWork, companionWork, createCompanionHomeGate, type CompanionWork } from "@/lib/companion/presentation";
 import {
   CommandComposerField,
@@ -515,6 +517,9 @@ function OwnedAgentRunsWorkspace({
     refresh: refreshAccountAccess,
   } = useWorkspaceSession();
   const companionOwnerScope = ownerScope;
+  const personalityOwner = scopeAvailable && session?.context?.tenantId && session.context.actorId
+    ? { tenantId: session.context.tenantId, actorId: session.context.actorId } : undefined;
+  const { personality } = useCompanionPersonality(personalityOwner);
   const [requestScope] = useState(() => new CommandWorkspaceScope(scopeAvailable));
   const [activityRead] = useState(() => new CommandSelectionRead());
   const readJson = useCallback((path: string, init?: RequestInit) => requestScope.run(
@@ -668,6 +673,7 @@ function OwnedAgentRunsWorkspace({
   const responseSpeechPlayerRef = useRef<StreamingPcmPlayer | null>(null);
   const agentRequestIdRef = useRef<string>("");
   const agentRequestGoalRef = useRef<string>("");
+  const agentRequestPersonalityRef = useRef<CompanionPersonality>("butler");
   const directRunStatusRef = useRef("");
   const currentRunIdRef = useRef("");
   // The run a send started, named by the response before its first event.
@@ -2476,6 +2482,7 @@ function OwnedAgentRunsWorkspace({
     prepareContextAutomatically?: boolean;
     voiceReview?: VoiceCommandReview | VoiceConversationInput;
     voiceContext?: VoiceConversationCommandContext;
+    companionPersonality?: CompanionPersonality;
     queueItem?: PromptQueueItem;
     queueForce?: boolean;
   }): Promise<VoiceCommandReply | undefined> {
@@ -2601,7 +2608,10 @@ function OwnedAgentRunsWorkspace({
     setRunAnnouncement("Agent run started.");
     // Sending the same message again after an interrupted attempt keeps its
     // requestId, so the server returns that attempt's outcome instead of
-    // running it twice. An edited message is a new request.
+    // running it twice. Personality is part of that same pinned request, even
+    // if Settings changed meanwhile. An edited message is a new request.
+    const retryingMessage = Boolean(agentRequestIdRef.current && agentRequestGoalRef.current === submittedGoal);
+    const submittedPersonality = options?.companionPersonality ?? (retryingMessage ? agentRequestPersonalityRef.current : personality);
     const requestId = options?.voiceReview?.schemaVersion === 2
       ? `v:${options.voiceReview.sessionId}:${options.voiceReview.turnId}`
       : agentRequestIdRef.current &&
@@ -2616,6 +2626,7 @@ function OwnedAgentRunsWorkspace({
     let waitingApprovalEvent: Extract<StreamEvent, { type: "waiting_approval" }> | undefined;
     agentRequestIdRef.current = requestId;
     agentRequestGoalRef.current = submittedGoal;
+    agentRequestPersonalityRef.current = submittedPersonality;
     setTurns((current) => [
       ...current,
       { id: `pending-user-${Date.now()}`, role: "user", content: submittedGoal, createdAt: new Date().toISOString() },
@@ -2659,6 +2670,7 @@ function OwnedAgentRunsWorkspace({
               projectId: submittedProjectId || undefined,
               message: submittedGoal,
               requestId,
+              companionPersonality: submittedPersonality,
               strategy: "auto",
               agentId: submittedAgentId,
               contextScope: resumeRunId ? undefined : submittedContextScope,
@@ -2920,6 +2932,7 @@ function OwnedAgentRunsWorkspace({
         threadId: threadId || undefined,
         runId: currentRunIdRef.current || undefined,
         agentId: preferredAgentId,
+        companionPersonality: personality,
       }, {
         player,
         signal: controller.signal,
@@ -4143,7 +4156,7 @@ function OwnedAgentRunsWorkspace({
                 void refreshThreadTurns(id);
                 void refreshThreads();
               }}
-              onVoiceRequest={async ({ request, voiceInput, commandContext }) => {
+              onVoiceRequest={async ({ request, voiceInput, commandContext, companionPersonality }) => {
                 if (!requestScope.current() || (selectedThreadRef.current && selectedThreadRef.current !== voiceInput.conversationId)) return;
                 setThreadId(voiceInput.conversationId);
                 return await runAgent({
@@ -4152,6 +4165,7 @@ function OwnedAgentRunsWorkspace({
                   prepareContextAutomatically: true,
                   voiceReview: voiceInput,
                   voiceContext: commandContext,
+                  companionPersonality,
                 });
               }}
               onStop={stopAgent}

@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import '../ambient_voice/realtime_voice_controller.dart';
+import '../companion/companion_personality.dart';
 
 final _voiceUuidPattern = RegExp(
   r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
@@ -27,6 +28,7 @@ class TalkVoiceInput {
     this.confidenceMinimum,
     this.turnId,
     this.commandContext,
+    this.companionPersonality,
   });
 
   final String sessionId;
@@ -40,6 +42,9 @@ class TalkVoiceInput {
   final bool reviewRequired;
   final String? turnId;
   final Map<String, dynamic>? commandContext;
+  // Travels beside voice provenance on /api/agent, never inside its strict
+  // declaration or the server-pinned command context.
+  final CompanionPersonality? companionPersonality;
   bool get continuous => turnId != null;
 
   /// A provider function call carries continuous-consent provenance, never a
@@ -49,6 +54,7 @@ class TalkVoiceInput {
     required String conversationId,
     required String turnId,
     required Map<String, dynamic> commandContext,
+    CompanionPersonality? companionPersonality,
   }) {
     if (!_voiceUuidPattern.hasMatch(sessionId) ||
         !_voiceUuidPattern.hasMatch(conversationId) ||
@@ -60,6 +66,7 @@ class TalkVoiceInput {
       conversationId: conversationId,
       turnId: turnId,
       commandContext: Map.unmodifiable(commandContext),
+      companionPersonality: companionPersonality,
       confidenceBand: AmbientVoiceConfidenceBand.unavailable,
       confidenceSampleCount: 0,
       reviewRequired: false,

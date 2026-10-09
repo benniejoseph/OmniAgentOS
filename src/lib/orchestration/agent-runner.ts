@@ -1912,6 +1912,7 @@ async function* runAgentUntilStopped(
         .sort((left, right) => left.localeCompare(right)),
       toolboxSha256: stableToolboxFingerprint(toolbox.tools),
       instructionsSha256: createHash("sha256").update(instructions).digest("hex"),
+      companionLanguageStyle,
       maxToolSteps,
       maxToolCallsPerTurn,
       maxToolResultChars: MAX_TOOL_RESULT_CHARS,

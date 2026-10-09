@@ -2,6 +2,7 @@ import { z } from "zod";
 import { commandContextReferencesSchema } from "@/lib/command/composer-context-contract";
 import { CONTEXT_SCOPE_IDS } from "@/lib/rag/context-scope";
 import { REALTIME_PROVIDER_ERROR_CODE_PATTERN } from "@/lib/voice/realtime-error";
+import { COMPANION_PERSONALITIES } from "@/lib/companion/personality";
 
 const opaqueId = z.string().trim().min(1).max(200).regex(/^[A-Za-z0-9_.:-]+$/);
 const mode = z.enum(["orchestrate", "research", "execute", "learn"]);
@@ -33,6 +34,7 @@ export const voiceConversationStartRequestSchema = z.object({
   contextReferences: commandContextReferencesSchema.default([]),
   contextSelection: contextSelectionRequestSchema.optional(),
   language: z.string().trim().toLowerCase().regex(/^[a-z]{2}$/).optional(),
+  companionPersonality: z.enum(COMPANION_PERSONALITIES).optional(),
   providerConsent: z.literal(true),
   continuousConsent: z.literal(true),
   audioRetention: z.literal("not_stored_by_asael"),
@@ -58,6 +60,7 @@ export const voiceConversationStartResponseSchema = z.object({
   language: z.string().min(2).max(4),
   agentName: z.string().min(1).max(120),
   voice: z.literal("cedar"),
+  companionPersonality: z.enum(COMPANION_PERSONALITIES).optional(),
   turnDetection: z.literal("server_vad"),
   audioRetention: z.literal("not_stored_by_asael"),
   transcriptRetention: z.literal("conversation_history"),

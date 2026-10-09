@@ -8,6 +8,7 @@ import 'package:flutter_webrtc/flutter_webrtc.dart';
 import '../../core/network/api_client.dart';
 import '../../core/network/api_exception.dart';
 import '../../generated/native_contract.g.dart';
+import '../companion/companion_personality.dart';
 import 'realtime_voice_controller.dart' show AmbientVoiceException;
 
 enum VoiceConversationPhase {
@@ -31,11 +32,15 @@ typedef VoiceConversationDelegate = Future<Map<String, dynamic>> Function(
 /// One continuous, owner-bound speech conversation. Audio stays on WebRTC;
 /// only final captions and governed tool requests pass through Asael's API.
 class VoiceConversationController extends ChangeNotifier {
-  VoiceConversationController({required ApiClient api, Dio? providerDio})
-    : _api = api,
-      _provider =
-          providerDio ??
-          Dio(BaseOptions(connectTimeout: const Duration(seconds: 12)));
+  VoiceConversationController({
+    required ApiClient api,
+    Dio? providerDio,
+    CompanionPersonalityReader? readCompanionPersonality,
+  }) : _api = api,
+       _readCompanionPersonality = readCompanionPersonality,
+       _provider =
+           providerDio ??
+           Dio(BaseOptions(connectTimeout: const Duration(seconds: 12)));
 
   static const _sessionPath = NativePaths.voiceConversationSessionStart;
   static const _turnsPath = NativePaths.voiceConversationTurns;
@@ -47,6 +52,7 @@ class VoiceConversationController extends ChangeNotifier {
   static final _itemId = RegExp(r'^[A-Za-z0-9_-]{1,160}$');
   final ApiClient _api;
   final Dio _provider;
+  final CompanionPersonalityReader? _readCompanionPersonality;
   RTCPeerConnection? _peer;
   RTCDataChannel? _channel;
   MediaStream? _microphone;
@@ -79,6 +85,7 @@ class VoiceConversationController extends ChangeNotifier {
   String? conversationId;
   String agentName = 'ATLAS';
   Map<String, dynamic>? commandContext;
+  CompanionPersonality? companionPersonality;
   String caption = '';
   String? errorMessage;
   String? historyNotice;
@@ -129,6 +136,7 @@ class VoiceConversationController extends ChangeNotifier {
     sessionId = null;
     conversationId = null;
     commandContext = null;
+    companionPersonality = null;
     _responseActive = false;
     _userSpeaking = false;
     _needsResponse = false;
@@ -144,6 +152,8 @@ class VoiceConversationController extends ChangeNotifier {
     _startedAt = DateTime.now();
     _changed();
     try {
+      final selectedPersonality = await _readCompanionPersonality?.call();
+      if (!_current(generation)) return;
       final stream = await navigator.mediaDevices.getUserMedia({
         'audio': {
           'channelCount': 1,
@@ -164,6 +174,8 @@ class VoiceConversationController extends ChangeNotifier {
             data: {
               ...context,
               'schemaVersion': 2,
+              if (selectedPersonality != null)
+                'companionPersonality': selectedPersonality.name,
               if (existingConversationId != null &&
                   _uuid.hasMatch(existingConversationId))
                 'conversationId': existingConversationId,
@@ -176,6 +188,11 @@ class VoiceConversationController extends ChangeNotifier {
           .timeout(const Duration(seconds: 30));
       if (!_current(generation)) return;
       _validateCredential(credential);
+      companionPersonality = switch (credential['companionPersonality']) {
+        'butler' => CompanionPersonality.butler,
+        'playful' => CompanionPersonality.playful,
+        _ => selectedPersonality,
+      };
       sessionId = credential['sessionId'] as String;
       conversationId = credential['conversationId'] as String;
       agentName = credential['agentName'] as String;
@@ -221,6 +238,9 @@ class VoiceConversationController extends ChangeNotifier {
         value['turnDetection'] != 'server_vad' ||
         value['audioRetention'] != 'not_stored_by_asael' ||
         value['transcriptRetention'] != 'conversation_history' ||
+        (value['companionPersonality'] != null &&
+            value['companionPersonality'] != 'butler' &&
+            value['companionPersonality'] != 'playful') ||
         !_uuid.hasMatch(value['sessionId']?.toString() ?? '') ||
         !_uuid.hasMatch(value['conversationId']?.toString() ?? '') ||
         !RegExp(r'^ek_[A-Za-z0-9._:@/+~-]+$')

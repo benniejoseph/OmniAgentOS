@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'companion_controller.dart';
 import 'companion_models.dart';
+import 'companion_personality_settings.dart';
 import 'companion_presence.dart';
 import 'companion_presentation.dart';
 import 'companion_providers.dart';
@@ -159,6 +160,8 @@ class _CompanionSettingsEditorState extends State<CompanionSettingsEditor> {
             ),
             const SizedBox(height: 12),
             const VoiceAppearanceSettings(),
+            const SizedBox(height: 24),
+            const CompanionPersonalitySettings(),
             const SizedBox(height: 24),
             Text(
               current == null

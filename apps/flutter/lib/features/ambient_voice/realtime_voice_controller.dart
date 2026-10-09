@@ -16,6 +16,7 @@ import '../../core/network/api_client.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/storage/secure_session_store.dart';
 import '../../generated/native_contract.g.dart';
+import '../companion/companion_personality.dart';
 import '../companion/microphone_observation.dart';
 
 const _audioRetention = 'not_stored_by_asael';
@@ -155,6 +156,7 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
     Dio? speechDio,
     AudioPlayer? audioPlayer,
     ValueChanged<String>? onConversationBound,
+    CompanionPersonalityReader? readCompanionPersonality,
   }) {
     final resolvedPlayer = audioPlayer ?? AudioPlayer();
     return AmbientRealtimeVoiceController._(
@@ -175,6 +177,7 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
       audioPlayer: resolvedPlayer,
       ownsAudioPlayer: audioPlayer == null,
       onConversationBound: onConversationBound,
+      readCompanionPersonality: readCompanionPersonality,
     );
   }
 
@@ -186,7 +189,8 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
     required this._audioPlayer,
     required this._ownsAudioPlayer,
     this.onConversationBound,
-  });
+    CompanionPersonalityReader? readCompanionPersonality,
+  }) : _readCompanionPersonality = readCompanionPersonality;
 
   final ApiClient _api;
   final SecureSessionStore _sessionStore;
@@ -195,6 +199,7 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
   final AudioPlayer _audioPlayer;
   final bool _ownsAudioPlayer;
   final ValueChanged<String>? onConversationBound;
+  final CompanionPersonalityReader? _readCompanionPersonality;
 
   AmbientRealtimeVoicePhase _phase = AmbientRealtimeVoicePhase.idle;
   AmbientRealtimeVoicePhase _phaseBeforeSpeech = AmbientRealtimeVoicePhase.idle;
@@ -549,17 +554,22 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
       AmbientRealtimeVoicePhase.playingSpeech,
       'Speaking the configured Agent response. Stop interrupts immediately.',
     );
-    final chunks = _speechChunks(_speechExcerpt(text)).toList();
-    Future<Uint8List> fetch(String chunk) => _prefetched(
-      _requestSpeechPcm(
-        chunk,
-        threadId: threadId,
-        runId: runId,
-        agentId: agentId,
-        cancelToken: cancel,
-      ),
-    );
     try {
+      // One delivery style for the entire reply, including authentication
+      // retries and prefetched chunks, even if Settings changes mid-playback.
+      final personality = await _readCompanionPersonality?.call();
+      if (!_isCurrentSpeech(speechGeneration)) return;
+      final chunks = _speechChunks(_speechExcerpt(text)).toList();
+      Future<Uint8List> fetch(String chunk) => _prefetched(
+        _requestSpeechPcm(
+          chunk,
+          threadId: threadId,
+          runId: runId,
+          agentId: agentId,
+          personality: personality,
+          cancelToken: cancel,
+        ),
+      );
       var next = fetch(chunks.first);
       for (var index = 0; index < chunks.length; index += 1) {
         final pcm = await next;
@@ -1084,6 +1094,7 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
     required String? threadId,
     required String? runId,
     required String? agentId,
+    required CompanionPersonality? personality,
     required CancelToken cancelToken,
   }) async {
     for (var attempt = 0; attempt < 2; attempt += 1) {
@@ -1106,6 +1117,7 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
             'agentId': ?agentId,
             'threadId': ?threadId,
             'runId': ?runId,
+            if (personality != null) 'companionPersonality': personality.name,
             'voiceProfileVersion': _voiceProfileVersion,
             'audioRetention': _audioRetention,
           },

@@ -6,6 +6,7 @@ import 'package:dio/dio.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/network/api_client.dart';
 import '../../generated/native_contract.g.dart';
+import '../companion/companion_personality.dart';
 import 'talk.dart';
 import 'talk_history_api_repository.dart';
 
@@ -22,9 +23,11 @@ class ApiTalkRepository
   ApiTalkRepository(
     this.api, {
     TalkHistoryRepository? history,
+    CompanionPersonalityReader? readCompanionPersonality,
     Duration recoveryPollInterval = const Duration(seconds: 3),
     int recoveryPollLimit = 600,
   }) : _history = history ?? ApiTalkHistoryRepository(api),
+       _readCompanionPersonality = readCompanionPersonality,
        _recoveryPollInterval = recoveryPollInterval.isNegative
            ? Duration.zero
            : recoveryPollInterval,
@@ -32,6 +35,7 @@ class ApiTalkRepository
   static const agentStreamReceiveTimeout = Duration(minutes: 10);
   final ApiClient api;
   final TalkHistoryRepository _history;
+  final CompanionPersonalityReader? _readCompanionPersonality;
   final Duration _recoveryPollInterval;
   final int _recoveryPollLimit;
   static const _promptQueuePath = '/api/command/prompt-queue';
@@ -628,6 +632,11 @@ class ApiTalkRepository
         !RegExp(r'^[a-zA-Z0-9_.:-]{1,120}$').hasMatch(exactAgentId)) {
       throw ArgumentError.value(agentId, 'agentId');
     }
+    // Resolve once before admission. Transport retries use this same payload;
+    // continuous voice turns keep their session's confirmed personality.
+    final personality =
+        voiceInput?.companionPersonality ??
+        (await _readCompanionPersonality?.call());
     final recoveryAnchor = _captureRecoveryAnchor(threadId);
     String? observedThreadId = threadId;
     String? observedRunId;
@@ -656,6 +665,7 @@ class ApiTalkRepository
           // Continuous calls replay the server's exact pinned context. The
           // voice gate validates it and assigns a stable session/turn key.
           if (voiceInput?.continuous == true) ...voiceInput!.commandContext!,
+          if (personality != null) 'companionPersonality': personality.name,
         },
         headers: const {'Accept': 'text/event-stream'},
         // Computer-use and delegated tool turns can legitimately spend longer

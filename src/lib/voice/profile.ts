@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { companionPersonalityInstructions, COMPANION_PERSONALITY_VERSION, type CompanionPersonality } from "@/lib/companion/personality";
+import type { CompanionLanguageStyle } from "@/lib/companion/language-style";
 
 export const ASAEL_VOICE_PROFILE_VERSION = "asael-voice:1" as const;
 export const ASAEL_VOICE_NAME = "cedar" as const;
@@ -23,12 +25,15 @@ export type VersionedVoiceProfile = Readonly<{
   agentId: string;
   agentDefinitionVersion: number;
   instructions: string;
+  companionPersonality?: CompanionPersonality;
+  personalityVersion?: typeof COMPANION_PERSONALITY_VERSION;
   sha256: string;
 }>;
 
 export function versionedVoiceProfile(
   identity: AgentSpeechIdentity,
   runtime: Readonly<{ provider: "openai"; model: string }>,
+  languageStyle?: CompanionLanguageStyle,
 ): VersionedVoiceProfile {
   const agentId = boundedToken(identity.id, "asael");
   const name = boundedText(identity.name, 120) || "Asael";
@@ -50,9 +55,14 @@ export function versionedVoiceProfile(
     encoding: ASAEL_VOICE_ENCODING,
     agentId,
     agentDefinitionVersion,
+    ...(languageStyle?.personality ? {
+      companionPersonality: languageStyle.personality,
+      personalityVersion: COMPANION_PERSONALITY_VERSION,
+    } : {}),
     instructions:
       `Read the supplied text exactly as written. Do not add, omit, summarize, or answer it. ` +
-      `Use ${name}'s delivery: ${delivery}`,
+      `Use ${name}'s delivery: ${delivery}` +
+      companionPersonalityInstructions(languageStyle?.personality, languageStyle?.intensity ?? null, "read_aloud"),
   };
   return {
     ...profile,

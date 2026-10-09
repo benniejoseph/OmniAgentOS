@@ -20,6 +20,8 @@ import type {
 import type { ModelRouteDegradation } from "@/lib/settings/runtime-models";
 import type { VoiceCommandInput } from "@/lib/voice/command-input";
 import type { ResearchOptions, ResearchProgress } from "@/lib/research/contracts";
+import type { CompanionPersonality } from "@/lib/companion/personality";
+import type { CompanionLanguageStyle } from "@/lib/companion/language-style";
 
 export type ChatRole = "user" | "assistant";
 
@@ -113,6 +115,8 @@ export type AgentHarnessEvent = {
   skillIds: string[];
   toolboxSha256: string;
   instructionsSha256: string;
+  /** Content-free delivery receipt; the compiled instruction digest remains the replay pin. */
+  companionLanguageStyle?: CompanionLanguageStyle;
   maxToolSteps: number;
   maxToolCallsPerTurn: number;
   maxToolResultChars: number;
@@ -192,6 +196,8 @@ export type AgentEvent =
 
 export type AgentRunRequest = {
   messages: ChatMessage[];
+  /** Fixed delivery choice, applied only after live direct-conversation admission. */
+  companionPersonality?: CompanionPersonality;
   research?: ResearchOptions;
   /** Trusted server-owned identity for a new root run. */
   runId?: string;

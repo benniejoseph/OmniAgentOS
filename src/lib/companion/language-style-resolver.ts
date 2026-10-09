@@ -7,13 +7,15 @@ import {
 } from "@/lib/companion/language-style";
 import { companionOwnerCoordinates, storedCompanionSchema } from "@/lib/companion/state";
 import type { CompanionStore } from "@/lib/companion/store";
+import { COMPANION_PERSONALITY_VERSION, isCompanionPersonality, type CompanionPersonality } from "@/lib/companion/personality";
 import type { AgentRunRequest } from "@/lib/orchestration/types";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { canPerform } from "@/lib/security/context";
+import type { SecurityContext } from "@/lib/security/types";
 
 type DirectRequest = Pick<AgentRunRequest,
   "runId" | "preclaimedRunId" | "tenantId" | "actorId" | "role" |
-  "securityContext" | "executionScope" | "moltbookAutonomy"
+  "securityContext" | "executionScope" | "moltbookAutonomy" | "companionPersonality"
 >;
 type Dependencies = Pick<CompanionStore, "read">;
 const defaults: Dependencies = {
@@ -46,8 +48,29 @@ export async function resolveDirectConversationLanguageStyle(
     scope.correlationId !== request.runId || scope.purpose !== "agent.run"
   ) return undefined;
 
+  return resolveAuthenticatedCompanionLanguageStyle(context, request.companionPersonality, dependencies);
+}
+
+/**
+ * Live speech has an authenticated owner but no Agent run. Resolve its saved
+ * delivery preference directly; never manufacture an execution scope or run.
+ * Callers must still establish their own session/Agent/context authority.
+ */
+export async function resolveAuthenticatedCompanionLanguageStyle(
+  context: SecurityContext,
+  personality?: CompanionPersonality,
+  dependencies: Dependencies = defaults,
+): Promise<CompanionLanguageStyle | undefined> {
+  if ((context.source !== "session" && context.source !== "mobile") || !canPerform(context.role, "read")) {
+    return undefined;
+  }
   const requestActorBinding = canonicalRequestActorBindingFromSecurityContext(context);
   if (!requestActorBinding) return undefined;
+  const selected = isCompanionPersonality(personality)
+    ? { personality, personalityVersion: COMPANION_PERSONALITY_VERSION } : {};
+  const unavailable: CompanionLanguageStyle = selected.personality
+    ? Object.freeze({ ...UNAVAILABLE_COMPANION_LANGUAGE_STYLE, ...selected })
+    : UNAVAILABLE_COMPANION_LANGUAGE_STYLE;
   const owner = { tenantId: context.tenantId, actorId: context.actorId, requestActorBinding };
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -59,27 +82,29 @@ export async function resolveDirectConversationLanguageStyle(
         timer = setTimeout(() => resolve(null), PREFERENCE_READ_TIMEOUT_MS);
       }),
     ]);
-    if (result === null) return UNAVAILABLE_COMPANION_LANGUAGE_STYLE;
+    if (result === null) return unavailable;
     if (result.current === undefined) return Object.freeze({
       version: COMPANION_LANGUAGE_STYLE_VERSION,
       source: "default",
       intensity: "balanced",
       preferenceRevision: 0,
+      ...selected,
     });
     const parsed = storedCompanionSchema.safeParse(result.current);
     if (!parsed.success || parsed.data.tenantId !== coordinates.tenantId ||
       !coordinates.readableActorIds.includes(parsed.data.actorId)) {
-      return UNAVAILABLE_COMPANION_LANGUAGE_STYLE;
+      return unavailable;
     }
     return Object.freeze({
       version: COMPANION_LANGUAGE_STYLE_VERSION,
       source: "saved",
       intensity: parsed.data.preferences.intensity,
       preferenceRevision: parsed.data.revision,
+      ...selected,
     });
   } catch {
     // Presentation uncertainty must neither fail the task nor expose store errors.
-    return UNAVAILABLE_COMPANION_LANGUAGE_STYLE;
+    return unavailable;
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
