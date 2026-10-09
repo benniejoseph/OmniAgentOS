@@ -489,6 +489,12 @@ class ProviderBoundTalkRoute extends ConsumerWidget {
   static AmbientVoiceConsent? _ambientConsent(WidgetRef ref) {
     final owner = ref.watch(sessionOwnerKeyProvider);
     if (owner == null) return null;
+    if (appDesktopHostBridge.supported) {
+      return MacOsAmbientVoiceConsent(
+        tenantId: owner.tenantId,
+        actorId: owner.actorId,
+      );
+    }
     return SecureAmbientVoiceConsent(
       ref.read(secureSessionStoreProvider),
       tenantId: owner.tenantId,

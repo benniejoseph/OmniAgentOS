@@ -2135,6 +2135,8 @@ private final class DesktopHostController: NSObject {
   private static let quickEntryHotKeyID: UInt32 = 1
   private static let quickEntryShortcutDefaultsKey = "AsaelQuickEntryShortcutV1"
   private static let ambientVoiceAvailabilityDefaultsKey = "AsaelAmbientVoiceAvailableV1"
+  private static let ambientVoiceConsentDefaultsPrefix = "AsaelAmbientVoiceConsentV1."
+  private static let ambientVoiceConsentTerms = "openai:audio_not_stored_by_asael"
   private static let desktopChannelName = "app.omniagent.omniagent/desktop"
   private static let regularWindowMinimumSize = NSSize(width: 1_024, height: 700)
   private static let quickEntryWindowMinimumSize = NSSize(width: 680, height: 320)
@@ -2437,6 +2439,33 @@ private final class DesktopHostController: NSObject {
     result: @escaping FlutterResult
   ) -> Bool {
     switch call.method {
+    case "getAmbientVoiceConsent", "acceptAmbientVoiceConsent":
+      guard let values = call.arguments as? [String: Any],
+            values.count == 2,
+            let ownerDigest = values["ownerDigest"] as? String,
+            ownerDigest.count == 43,
+            ownerDigest.range(of: "^[A-Za-z0-9_-]{43}$", options: .regularExpression) != nil,
+            let terms = values["terms"] as? String,
+            terms == Self.ambientVoiceConsentTerms
+      else {
+        result(FlutterError(
+          code: "invalid_ambient_voice_consent",
+          message: "The voice agreement request is invalid.",
+          details: nil
+        ))
+        return true
+      }
+      DispatchQueue.main.async {
+        let key = Self.ambientVoiceConsentDefaultsPrefix + ownerDigest
+        if call.method == "acceptAmbientVoiceConsent" {
+          // Only the explicit agreement action writes these exact terms. This
+          // preference grants no microphone, credential, or command authority.
+          UserDefaults.standard.set(terms, forKey: key)
+        }
+        result(UserDefaults.standard.string(forKey: key) == terms)
+      }
+      return true
+
     case "getAmbientVoiceAvailability":
       guard call.arguments == nil else {
         result(FlutterError(

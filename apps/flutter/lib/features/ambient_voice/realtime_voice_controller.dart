@@ -49,6 +49,23 @@ final _providerErrorCodePattern = RegExp(r'^[a-z0-9][a-z0-9_.-]{0,63}$');
 /// is handled by reconnection.
 const _fatalProviderErrorCodes = {'session_expired'};
 
+/// Only known diagnostic codes may survive an unsuccessful SDP exchange.
+const _connectionProviderErrorCodes = {
+  'invalid_api_key',
+  'invalid_client_secret',
+  'client_secret_expired',
+  'session_expired',
+  'insufficient_quota',
+  'rate_limit_exceeded',
+  'model_not_found',
+  'model_not_supported',
+  'unsupported_country_region_territory',
+  'invalid_request_error',
+  'invalid_value',
+  'unknown_parameter',
+  'server_error',
+};
+
 /// The client's commit found the audio buffer empty, because turn detection
 /// had already committed the last turn.
 const _emptyCommitErrorCode = 'input_audio_buffer_commit_empty';
@@ -113,6 +130,18 @@ class AmbientVoiceException implements Exception {
   String toString() => message;
 }
 
+class _VoiceConnectionException extends AmbientVoiceException {
+  const _VoiceConnectionException(
+    super.code,
+    super.message, {
+    this.statusCode,
+    this.providerCode,
+  });
+
+  final int? statusCode;
+  final String? providerCode;
+}
+
 /// Owns an ephemeral, transcription-only WebRTC session for Ambient Command.
 ///
 /// Audio is sent directly to the provider with a short-lived credential. Asael
@@ -131,7 +160,9 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
     return AmbientRealtimeVoiceController._(
       api: api,
       sessionStore: sessionStore,
-      providerDio: providerDio ?? Dio(),
+      providerDio:
+          providerDio ??
+          Dio(BaseOptions(connectTimeout: const Duration(seconds: 12))),
       speechDio:
           speechDio ??
           Dio(
@@ -182,6 +213,7 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
   bool _statsReadInFlight = false;
   bool _commitPending = false;
   String? _providerErrorCode;
+  int? _providerStatusCode;
   int _generation = 0;
   int _speechGeneration = 0;
   int _reconnectCount = 0;
@@ -207,6 +239,7 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
 
   /// The provider's most recent error code, never its message.
   String? get providerErrorCode => _providerErrorCode;
+  int? get providerStatusCode => _providerStatusCode;
   double get level => _level;
   bool get microphoneEnabled => _microphoneEnabled;
   bool get microphoneActive =>
@@ -318,9 +351,12 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
       );
     } catch (error) {
       if (!_isCurrent(generation) || _isCanceled(error)) return;
+      _rememberConnectionFailure(error);
       await _fail(
         _voiceStartMessage(error),
-        code: 'realtime_voice_start_failed',
+        code: error is AmbientVoiceException
+            ? error.code
+            : 'realtime_voice_start_failed',
       );
     }
   }
@@ -642,6 +678,7 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
       RTCDataChannelInit()..ordered = true,
     );
     _dataChannel = channel;
+    var connected = false;
     channel.onDataChannelState = (state) {
       if (!_isCurrent(generation) || !identical(_dataChannel, channel)) return;
       if (state == RTCDataChannelState.RTCDataChannelOpen) {
@@ -661,7 +698,9 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
       _applyProviderMessage(message.text, generation);
     };
     peer.onConnectionState = (state) {
-      if (!_isCurrent(generation) || !identical(_peer, peer)) return;
+      if (!connected || !_isCurrent(generation) || !identical(_peer, peer)) {
+        return;
+      }
       if (state == RTCPeerConnectionState.RTCPeerConnectionStateFailed ||
           state == RTCPeerConnectionState.RTCPeerConnectionStateDisconnected) {
         _scheduleReconnect(generation);
@@ -708,7 +747,8 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
         ),
       );
     } on DioException catch (error) {
-      throw ApiException.fromDio(error);
+      if (CancelToken.isCancel(error)) rethrow;
+      throw _connectionFailure(error);
     } finally {
       if (_providerCancel == cancel) _providerCancel = null;
     }
@@ -725,6 +765,10 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
     await peer.setRemoteDescription(RTCSessionDescription(answer, 'answer'));
     _startLevelSampling(peer, stream);
     await _waitForDataChannel(channel, generation);
+    connected =
+        _isCurrent(generation) &&
+        identical(_peer, peer) &&
+        channel.state == RTCDataChannelState.RTCDataChannelOpen;
   }
 
   Future<RTCSessionDescription?> _settledLocalDescription(
@@ -755,7 +799,7 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
     if (channel.state != RTCDataChannelState.RTCDataChannelOpen) {
       throw const AmbientVoiceException(
         'voice_connection_timeout',
-        'Realtime voice took too long to connect.',
+        'Voice took too long to connect. Check your connection, then try again.',
       );
     }
   }
@@ -792,7 +836,7 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
       if (_fatalProviderErrorCodes.contains(code)) {
         unawaited(
           _fail(
-            'The transcription provider ended the session. Your visible draft is preserved.',
+            'The voice session expired. Your visible draft is preserved. Start voice again to open a fresh session.',
             code: 'provider_session_ended',
           ),
         );
@@ -819,6 +863,77 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
 
     if (error is! Map) return 'unknown';
     return identifier(error['code']) ?? identifier(error['type']) ?? 'unknown';
+  }
+
+  static _VoiceConnectionException _connectionFailure(DioException error) {
+    if (const {
+      DioExceptionType.connectionTimeout,
+      DioExceptionType.sendTimeout,
+      DioExceptionType.receiveTimeout,
+    }.contains(error.type)) {
+      return const _VoiceConnectionException(
+        'voice_connection_timeout',
+        'Voice took too long to connect. Check your connection, then try again.',
+      );
+    }
+    final responseStatus = error.response?.statusCode;
+    final status =
+        responseStatus != null && responseStatus >= 100 && responseStatus <= 599
+        ? responseStatus
+        : null;
+    // ResponseType.plain is required for successful SDP, but errors are JSON.
+    // Retain only an allowlisted code, never the message, SDP, or credential.
+    Object? body = error.response?.data;
+    if (body is String) {
+      try {
+        body = body.length <= 16 * 1024 ? jsonDecode(body) : null;
+      } catch (_) {
+        body = null;
+      }
+    }
+    final candidate = _providerErrorCodeOf(body is Map ? body['error'] : null);
+    final code = _connectionProviderErrorCodes.contains(candidate)
+        ? candidate
+        : null;
+    var message =
+        'The audio connection could not open. Try again; if it keeps failing, check your network and Realtime transcription in Settings → Models.';
+    if (code == 'model_not_found' || code == 'model_not_supported') {
+      message = 'The voice model is unavailable. Open Settings → Models, check Realtime transcription, then try again.';
+    } else if (code == 'invalid_api_key') {
+      message = 'OpenAI refused the voice connection. Validate the OpenAI provider in Settings → Models, then try again.';
+    } else if (const {
+      'client_secret_expired',
+      'session_expired',
+      'invalid_client_secret',
+    }.contains(code)) {
+      message = 'The voice connection expired before it could start. Try again to open a fresh session.';
+    } else if (code == 'unsupported_country_region_territory') {
+      message = 'OpenAI could not provide voice from this network or region. Check OpenAI availability for your connection.';
+    } else if (code == 'insufficient_quota' || status == 402) {
+      message = 'The OpenAI account has no available voice quota. Check its usage and billing before trying again.';
+    } else if (status == 429 || code == 'rate_limit_exceeded') {
+      message = 'Too many voice connections were started. Wait a minute, then try again.';
+    } else if (status == 401 || status == 403) {
+      message = 'OpenAI refused the audio connection. Try again; if it continues, validate the OpenAI provider in Settings → Models.';
+    } else if (status == 408 || status == 504) {
+      message = 'Voice took too long to connect. Check your connection, then try again.';
+    } else if (status != null && status >= 500) {
+      message =
+          'The voice service is temporarily unavailable. Try again shortly.';
+    }
+    return _VoiceConnectionException(
+      'voice_provider_connection_failed',
+      message,
+      statusCode: status,
+      providerCode: code,
+    );
+  }
+
+  void _rememberConnectionFailure(Object error) {
+    if (error is _VoiceConnectionException) {
+      _providerStatusCode = error.statusCode;
+      _providerErrorCode = error.providerCode;
+    }
   }
 
   void _scheduleReconnect(int generation) {
@@ -863,6 +978,7 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
     } catch (error) {
       _reconnectInFlight = false;
       if (!_isCurrent(generation) || _isCanceled(error)) return;
+      _rememberConnectionFailure(error);
       _reconnectTimer = Timer(
         Duration(milliseconds: math.min(2000, attempt * 500)),
         () {
@@ -917,11 +1033,12 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
     if (existing != null) return existing;
     final receipt = _finishReceipt(outcome);
     if (receipt == null) return;
+    final session = _session;
     final request = _sendFinishReceipt(receipt);
     _sessionReportInFlight = request;
     try {
       await request;
-      _sessionReported = true;
+      if (identical(_session, session)) _sessionReported = true;
     } finally {
       if (identical(_sessionReportInFlight, request)) {
         _sessionReportInFlight = null;
@@ -1160,14 +1277,15 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
     if (_disposed) return;
     ++_generation;
     await _stopLocalTransport(stopMicrophone: true);
-    try {
-      await _reportSession(AmbientVoiceOutcome.failed);
-    } catch (_) {
-      // The visible failure remains actionable if the receipt is unavailable.
-    }
+    final report = _reportSession(AmbientVoiceOutcome.failed);
     _errorCode = code;
     _errorMessage = message;
     _setPhase(AmbientRealtimeVoicePhase.error, message);
+    try {
+      await report.timeout(const Duration(seconds: 5));
+    } catch (_) {
+      // The visible failure remains actionable if the receipt is unavailable.
+    }
   }
 
   Future<void> _stopLocalTransport({required bool stopMicrophone}) async {
@@ -1180,14 +1298,17 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
     _providerCancel?.cancel('voice_transport_stopped');
     _providerCancel = null;
     _reconnectInFlight = false;
-    await _closePeer();
     if (stopMicrophone) {
       final stream = _microphoneStream;
       _microphoneStream = null;
       _microphoneObservation.release();
-      if (stream != null) await _stopMediaStream(stream);
       _microphoneEnabled = false;
+      for (final track in stream?.getAudioTracks() ?? const []) {
+        track.enabled = false;
+      }
+      if (stream != null) await _stopMediaStream(stream);
     }
+    await _closePeer();
     _level = 0;
   }
 
@@ -1226,9 +1347,11 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
     _level = 0;
     _reviewAttested = false;
     _sessionReported = false;
+    _sessionReportInFlight = null;
     _reconnectCount = 0;
     _commitPending = false;
     _providerErrorCode = null;
+    _providerStatusCode = null;
     _sessionStartedAt = null;
     _session = null;
     _sessionMode = 'orchestrate';
