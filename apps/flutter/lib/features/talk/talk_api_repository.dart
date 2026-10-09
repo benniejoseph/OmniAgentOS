@@ -653,6 +653,9 @@ class ApiTalkRepository
           if (research != null) 'research': research.toRequestJson(),
           'computerUseTarget': ?executionTarget.apiValue,
           'requestId': 'flutter-${DateTime.now().microsecondsSinceEpoch}',
+          // Continuous calls replay the server's exact pinned context. The
+          // voice gate validates it and assigns a stable session/turn key.
+          if (voiceInput?.continuous == true) ...voiceInput!.commandContext!,
         },
         headers: const {'Accept': 'text/event-stream'},
         // Computer-use and delegated tool turns can legitimately spend longer
@@ -675,6 +678,7 @@ class ApiTalkRepository
             receivedTerminalEvent ||
             _terminalConversationEvents.contains(event.event);
         yield event;
+        if (voiceInput?.continuous == true && receivedTerminalEvent) return;
       }
       if (receivedTerminalEvent) return;
       throw const ApiException(

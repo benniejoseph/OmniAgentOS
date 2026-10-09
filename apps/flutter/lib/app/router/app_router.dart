@@ -12,6 +12,7 @@ import '../../core/storage/secure_session_store.dart';
 import '../../core/sync/reconnect_coordinator.dart';
 import '../../features/ambient_voice/ambient_voice_consent.dart';
 import '../../features/ambient_voice/realtime_voice_controller.dart';
+import '../../features/ambient_voice/voice_conversation_controller.dart';
 import '../../features/activity/activity_providers.dart';
 import '../../features/activity/activity_view.dart';
 import '../../features/history/history_workspace.dart';
@@ -453,7 +454,10 @@ class ProviderBoundTalkRoute extends ConsumerWidget {
     ),
     quickEntry: quickEntry,
     ambientVoice: ambientVoice,
-    ambientRealtimeFactory: ambientVoice
+    voiceConversationFactory: ambientVoice && appDesktopHostBridge.supported
+        ? () => VoiceConversationController(api: ref.read(apiClientProvider))
+        : null,
+    ambientRealtimeFactory: ambientVoice && !appDesktopHostBridge.supported
         ? () => AmbientRealtimeVoiceController(
             api: ref.read(apiClientProvider),
             sessionStore: ref.read(secureSessionStoreProvider),

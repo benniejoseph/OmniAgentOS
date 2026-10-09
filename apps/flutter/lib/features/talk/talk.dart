@@ -21,6 +21,8 @@ import '../../generated/native_contract.g.dart';
 import '../ambient_voice/ambient_voice_consent.dart';
 import '../ambient_voice/ambient_voice_view.dart';
 import '../ambient_voice/realtime_voice_controller.dart';
+import '../ambient_voice/voice_conversation_controller.dart';
+import '../ambient_voice/voice_conversation_view.dart';
 import '../computer_use/local_computer.dart';
 import '../companion/atlas_player.dart';
 import '../companion/companion_controller.dart';
@@ -1066,6 +1068,104 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   TalkArtifactContent? selectedArtifactContent;
   Object? voiceError;
   TalkAssignedAgent? assignedAgent;
+  Map<String, dynamic> voiceConversationContext = const {
+    'mode': 'orchestrate',
+    'contextScope': 'session',
+    'contextReferences': <Object>[],
+  };
+
+  void rememberVoiceContext(
+    String mode,
+    List<TalkCommandContextReference> references,
+  ) {
+    final project = references
+        .where((item) => item.kind == 'project')
+        .firstOrNull;
+    final next = <String, dynamic>{
+      'mode': mode,
+      'contextScope': project == null ? 'session' : 'project',
+      if (project != null) 'projectId': project.id,
+      'contextReferences': [
+        for (final reference in references) reference.toRequestJson(),
+      ],
+    };
+    if (jsonEncode(next) == jsonEncode(voiceConversationContext)) return;
+    voiceConversationContext = Map.unmodifiable(next);
+    notifyListeners();
+  }
+
+  /// Continuous voice has its own one-at-a-time entry: never put provenance
+  /// into the ordinary text queue, which intentionally drops voice metadata.
+  Future<Map<String, dynamic>> sendVoiceConversationTurn(
+    String request,
+    String turnId,
+    String sessionId,
+    String conversationId,
+    Map<String, dynamic> pinnedContext,
+  ) async {
+    if (_disposed)
+      return {
+        'status': 'unavailable',
+        'message': 'The conversation is no longer open.',
+      };
+    if (hasPendingConversationWork || researchConversationBusy) {
+      return {
+        'status': waitingForApproval ? 'waiting_approval' : 'busy',
+        'message': waitingForApproval
+            ? 'An earlier task needs review in Inbox. Voice cannot approve it.'
+            : 'An earlier task is still running. Do not resend it; follow it in History.',
+      };
+    }
+    final declaration = TalkVoiceInput.conversation(
+      sessionId: sessionId,
+      conversationId: conversationId,
+      turnId: turnId,
+      commandContext: pinnedContext,
+    );
+    final references = (pinnedContext['contextReferences'] as List)
+        .map(
+          (value) => TalkCommandContextReference.fromRequestJson(
+            Map<String, dynamic>.from(value as Map),
+          ),
+        )
+        .toList(growable: false);
+    final before = messages.length;
+    await _send(
+      request,
+      mode: pinnedContext['mode'] as String,
+      strategy: 'direct',
+      assignedAgent: TalkAssignedAgent(
+        id: pinnedContext['agentId'] as String,
+        name: assignedAgent?.name ?? 'ATLAS',
+      ),
+      contextReferences: references,
+      voiceInput: declaration,
+    );
+    if (waitingForApproval)
+      return {
+        'status': 'waiting_approval',
+        'message': 'This action needs approval. Ask the user to review it in Inbox; spoken agreement cannot approve it.',
+        'runId': ?runId,
+      };
+    if (hasPendingConversationWork)
+      return {
+        'status': 'pending',
+        'message': 'The task is continuing in History. Do not resend it.',
+        'runId': ?runId,
+      };
+    final reply = messages.length > before ? messages.last : null;
+    final text = reply?.role == TalkRole.assistant ? reply!.text : '';
+    return {
+      'status': reply?.failed == true ? 'failed' : 'completed',
+      'message': text.isEmpty
+          ? 'Check History for this task’s outcome.'
+          : text.length > 10000
+          ? text.substring(0, 10000)
+          : text,
+      'runId': ?runId,
+    };
+  }
+
   bool _disposed = false;
   bool _drainingQueue = false;
   int _promptSequence = 0;
@@ -3522,6 +3622,7 @@ class TalkView extends StatefulWidget {
     this.controllerResolver,
     this.voiceRecorder,
     this.ambientRealtimeFactory,
+    this.voiceConversationFactory,
     this.ambientConsent,
     this.workspaceLocked,
     this.quickEntry = false,
@@ -3539,6 +3640,7 @@ class TalkView extends StatefulWidget {
   final TalkController Function()? controllerResolver;
   final VoiceDraftRecorder? voiceRecorder;
   final AmbientRealtimeVoiceController Function()? ambientRealtimeFactory;
+  final VoiceConversationController Function()? voiceConversationFactory;
 
   /// The owner's agreement that live microphone audio goes to OpenAI. Ambient
   /// Command does not listen until it is recorded.
@@ -3566,6 +3668,11 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   final scroll = ScrollController();
   late final VoiceDraftRecorder recorder;
   AmbientRealtimeVoiceController? realtimeVoice;
+  VoiceConversationController? voiceConversation;
+  TalkController? _voiceBoundController;
+  String? _voiceBoundSelection;
+  String? _voiceBoundThread;
+  bool _startingConversation = false;
   bool ambientConsentAccepted = false;
   String strategy = 'auto';
   String commandMode = 'orchestrate';
@@ -3758,9 +3865,13 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     super.initState();
     recorder = widget.voiceRecorder ?? RecordVoiceDraftRecorder();
     if (widget.ambientVoice) {
+      voiceConversation = widget.voiceConversationFactory?.call()
+        ?..addListener(_handleVoiceConversationChanged);
       realtimeVoice = widget.ambientRealtimeFactory?.call()
         ?..addListener(_handleRealtimeVoiceChanged);
-      if (realtimeVoice != null) unawaited(_loadAmbientConsent());
+      if (realtimeVoice != null || voiceConversation != null)
+        unawaited(_loadAmbientConsent());
+      widget.controller.addListener(_handleVoiceSelectionChanged);
     }
     input.addListener(_handleComposerChanged);
     widget.workspaceLocked?.addListener(_handleWorkspaceLockChanged);
@@ -3790,6 +3901,10 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   void didUpdateWidget(covariant TalkView oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.controller != widget.controller) {
+      oldWidget.controller.removeListener(_handleVoiceSelectionChanged);
+      if (widget.ambientVoice)
+        widget.controller.addListener(_handleVoiceSelectionChanged);
+      unawaited(voiceConversation?.end() ?? Future<void>.value());
       composerOptionsExpanded = false;
     }
     if (oldWidget.companionController != widget.companionController) {
@@ -3810,8 +3925,10 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
       _handleWorkspaceLockChanged();
     }
     if (widget.ambientConsent != oldWidget.ambientConsent) {
+      unawaited(voiceConversation?.end() ?? Future<void>.value());
       ambientConsentAccepted = false;
-      if (realtimeVoice != null) unawaited(_loadAmbientConsent());
+      if (realtimeVoice != null || voiceConversation != null)
+        unawaited(_loadAmbientConsent());
     }
     if (widget.quickEntry && !oldWidget.quickEntry) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -3854,6 +3971,9 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    widget.controller.removeListener(_handleVoiceSelectionChanged);
+    voiceConversation?.removeListener(_handleVoiceConversationChanged);
+    voiceConversation?.dispose();
     companionHomeGate.invalidate();
     widget.companionController?.removeListener(_handleCompanionChanged);
     WidgetsBinding.instance.removeObserver(this);
@@ -4170,6 +4290,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
 
   Future<void> interruptVoiceDraft() async {
     voiceDraftGeneration += 1;
+    await voiceConversation?.end();
     final realtime = realtimeVoice;
     if (realtime != null) {
       if (realtime.isSpeechPlaying) await realtime.interruptSpeech();
@@ -4295,6 +4416,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
         (item) => item.kind != 'agent' && item.kind != 'project',
       );
     });
+    _rememberVoiceContext();
     if (widget.quickEntry && !widget.ambientVoice) {
       widget.onExitQuickEntry?.call();
     }
@@ -4313,6 +4435,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
       widget.controller.assignAgent(id: reference.id, name: reference.label);
       resetCommandModelCatalog();
     }
+    _rememberVoiceContext();
   }
 
   void removeCommandReference(TalkCommandContextReference reference) {
@@ -4324,6 +4447,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
       widget.controller.clearAssignedAgent();
       resetCommandModelCatalog();
     }
+    _rememberVoiceContext();
   }
 
   void clearAssignedAgent() {
@@ -4333,6 +4457,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
       commandReferences.removeWhere((item) => item.kind == 'agent');
     });
     resetCommandModelCatalog();
+    _rememberVoiceContext();
   }
 
   void selectExecutionTarget(TalkExecutionTarget value) {
@@ -4356,6 +4481,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
       return;
     }
     setState(() => commandMode = mode);
+    _rememberVoiceContext();
   }
 
   bool get _researchSendBlocked =>
@@ -4922,6 +5048,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
 
   Future<void> _openAmbientFromToolbar() async {
     _invalidateCompanionHome();
+    _rememberVoiceContext();
     if (openingAmbientWindow) return;
     setState(() => openingAmbientWindow = true);
     try {
@@ -4954,6 +5081,9 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   }
 
   Widget _buildAmbientVoice(BuildContext context) {
+    if (voiceConversation case final conversation?) {
+      return _buildVoiceConversation(context, conversation);
+    }
     final phase = _ambientVoicePhase;
     _publishAmbientVoiceState(phase);
     _scheduleAmbientSpeech(phase);
@@ -5056,6 +5186,175 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
       if (!mounted || !widget.ambientVoice) return;
       unawaited(appDesktopHostBridge.updateAmbientVoiceState(state));
     });
+  }
+
+  String _voiceSelection(TalkController controller) => jsonEncode({
+    'agentId': controller.assignedAgent?.id ?? 'atlas',
+    ...controller.voiceConversationContext,
+  });
+
+  void _rememberVoiceContext() {
+    if (!widget.ambientVoice)
+      widget.controller.rememberVoiceContext(commandMode, commandReferences);
+  }
+
+  void _handleVoiceSelectionChanged() {
+    final voice = voiceConversation;
+    if (voice == null || !voice.active || _voiceBoundController == null) return;
+    if (_voiceBoundController != widget.controller ||
+        _voiceBoundSelection != _voiceSelection(widget.controller) ||
+        (_voiceBoundThread != null &&
+            _voiceBoundThread != widget.controller.threadId)) {
+      unawaited(voice.end());
+      if (mounted)
+        setState(
+          () => recordingError = 'Your agent or context changed. Start a new call to use the new selection.',
+        );
+    }
+  }
+
+  void _handleVoiceConversationChanged() {
+    if (!mounted) return;
+    setState(() {});
+  }
+
+  Future<void> _startVoiceConversation() async {
+    final voice = voiceConversation;
+    if (voice == null ||
+        voice.active ||
+        _startingConversation ||
+        widget.workspaceLocked?.value == true)
+      return;
+    // When an error replaces the initial notice, show that notice again before
+    // another Start press can record new continuous-conversation consent.
+    if (!ambientConsentAccepted && recordingError != null) {
+      setState(() => recordingError = null);
+      return;
+    }
+    final consent = widget.ambientConsent;
+    final controller = widget.controllerResolver?.call() ?? widget.controller;
+    final selection = _voiceSelection(controller);
+    setState(() {
+      _startingConversation = true;
+      recordingError = null;
+    });
+    try {
+      final availability = await appDesktopHostBridge
+          .getAmbientVoiceAvailability();
+      if (!availability.available)
+        throw const AmbientVoiceException(
+          'voice_disabled',
+          'Voice is off. Turn it on in Settings → General.',
+        );
+      if (!ambientConsentAccepted) {
+        if (consent == null)
+          throw const AmbientVoiceException(
+            'voice_owner_missing',
+            'Sign in before starting a voice call.',
+          );
+        await consent.accept();
+        if (!mounted || widget.ambientConsent != consent) return;
+        setState(() => ambientConsentAccepted = true);
+      }
+      if (!mounted ||
+          widget.controller != controller ||
+          selection != _voiceSelection(controller) ||
+          widget.workspaceLocked?.value == true)
+        return;
+      _voiceBoundController = controller;
+      _voiceBoundSelection = selection;
+      _voiceBoundThread = controller.threadId;
+      final context = <String, dynamic>{
+        ...controller.voiceConversationContext,
+        'agentId': controller.assignedAgent?.id ?? 'atlas',
+      };
+      await voice.start(
+        consentAccepted: ambientConsentAccepted,
+        context: context,
+        existingConversationId: controller.threadId,
+        onConversationBound: (id) {
+          _voiceBoundThread = id;
+          controller.adoptConversationThreadId(id);
+        },
+        delegate:
+            (request, turnId, sessionId, conversationId, pinnedContext) async {
+              if (!mounted ||
+                  _voiceBoundController != controller ||
+                  widget.controller != controller ||
+                  _voiceBoundSelection != _voiceSelection(controller) ||
+                  controller.threadId != conversationId) {
+                return {
+                  'status': 'context_changed',
+                  'message': 'The selected agent or conversation changed. Start a new voice call before requesting work.',
+                };
+              }
+              return controller.sendVoiceConversationTurn(
+                request,
+                turnId,
+                sessionId,
+                conversationId,
+                pinnedContext,
+              );
+            },
+      );
+    } catch (error) {
+      if (mounted)
+        setState(
+          () =>
+              recordingError = error is AmbientVoiceException ? error.message : 'Asael could not save your agreement or start voice. The microphone stayed off. Try again.',
+        );
+    } finally {
+      if (mounted) setState(() => _startingConversation = false);
+    }
+  }
+
+  Widget _buildVoiceConversation(
+    BuildContext context,
+    VoiceConversationController voice,
+  ) {
+    final phase = switch (voice.phase) {
+      VoiceConversationPhase.idle ||
+      VoiceConversationPhase.ended => AmbientVoicePhase.asleep,
+      VoiceConversationPhase.connecting => AmbientVoicePhase.starting,
+      VoiceConversationPhase.listening => AmbientVoicePhase.listening,
+      VoiceConversationPhase.speaking => AmbientVoicePhase.speaking,
+      VoiceConversationPhase.working => AmbientVoicePhase.running,
+      VoiceConversationPhase.error => AmbientVoicePhase.error,
+    };
+    final state = switch (phase) {
+      AmbientVoicePhase.starting => DesktopAmbientVoiceState.starting,
+      AmbientVoicePhase.listening =>
+        voice.muted
+            ? DesktopAmbientVoiceState.asleep
+            : DesktopAmbientVoiceState.listening,
+      AmbientVoicePhase.speaking => DesktopAmbientVoiceState.speaking,
+      AmbientVoicePhase.running => DesktopAmbientVoiceState.running,
+      AmbientVoicePhase.error => DesktopAmbientVoiceState.error,
+      _ => DesktopAmbientVoiceState.asleep,
+    };
+    if (lastPublishedAmbientState != state) {
+      lastPublishedAmbientState = state;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted)
+          unawaited(appDesktopHostBridge.updateAmbientVoiceState(state));
+      });
+    }
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.escape): () =>
+            unawaited(_closeAmbientVoice()),
+      },
+      child: VoiceConversationSurface(
+        controller: voice,
+        consentRequired: !ambientConsentAccepted,
+        starting: _startingConversation,
+        startError: recordingError,
+        selectedAgentName: widget.controller.assignedAgent?.name ?? 'ATLAS',
+        companionPreferences: widget.companionController?.current?.preferences,
+        onStart: () => unawaited(_startVoiceConversation()),
+        onEnd: () => unawaited(_closeAmbientVoice()),
+      ),
+    );
   }
 
   Widget _buildQuickEntry(BuildContext context) {

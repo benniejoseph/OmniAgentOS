@@ -3,9 +3,9 @@
 
 abstract final class NativeContract {
   static const id = 'asael.native-api';
-  static const currentVersion = 49;
-  static const previousVersion = 48;
-  static const supportedVersions = <int>[49, 48];
+  static const currentVersion = 50;
+  static const previousVersion = 49;
+  static const supportedVersions = <int>[50, 49, 48];
   static const discoveryPath = '/api/mobile/contracts';
   static const operationIds = <String>{
     'auth.login',
@@ -264,6 +264,9 @@ abstract final class NativeContract {
     'connectors.native.githubUpgrades.read',
     'connectors.native.githubUpgrades.close',
     'research.control',
+    'voice.conversation.session.start',
+    'voice.conversation.session.finish',
+    'voice.conversation.turns',
   };
 
   static bool supports(int version) => supportedVersions.contains(version);
@@ -1042,6 +1045,9 @@ abstract final class NativePaths {
   static String connectorsNativeGithubUpgradesRead(String keySha256) => '/api/connectors/native/github-upgrades/${Uri.encodeComponent(keySha256)}';
   static String connectorsNativeGithubUpgradesClose(String keySha256) => '/api/connectors/native/github-upgrades/${Uri.encodeComponent(keySha256)}/close';
   static String researchControl(String id) => '/api/workflows/${Uri.encodeComponent(id)}/signal';
+  static const voiceConversationSessionStart = '/api/voice/conversation/session';
+  static const voiceConversationSessionFinish = '/api/voice/conversation/session';
+  static const voiceConversationTurns = '/api/voice/conversation/turns';
 }
 
 abstract final class NativeConversationEvents {
