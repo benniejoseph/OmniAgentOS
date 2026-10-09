@@ -2,7 +2,7 @@ import { z } from "zod";
 import { WEB_SEARCH_TIMEOUT_MS, WORKFLOW_PLANNER_TIMEOUT_MS } from "@/lib/config";
 import { runWithDatabaseActorScope } from "@/lib/db/client";
 import { generateModelStructured } from "@/lib/models/gateway";
-import type { ModelStructuredRequest } from "@/lib/models/types";
+import { ModelProviderError, type ModelFailureKind, type ModelStructuredRequest, type ProviderId } from "@/lib/models/types";
 import { buildAgentInstructions } from "@/lib/orchestration/prompts";
 import {
   formatResearchEvidence, isResearchWebExplicitlyDisabled, researchReportInstructions,
@@ -106,9 +106,21 @@ type ResearchWorkflowState = {
   claimReview?: ResearchClaimReviewReceipt;
 };
 
+type ResearchModelStep = "plan" | "report" | "review";
+
+export type ResearchModelFailure = Readonly<{
+  schemaVersion: 1;
+  modelStep: ResearchModelStep;
+  kind: ModelFailureKind | "completion_not_saved";
+  provider?: ProviderId;
+  providerStatus?: number;
+  timeoutMs: number;
+  elapsedMs: number;
+}>;
+
 export class ResearchWorkflowNeedsAttention extends Error {
-  constructor() {
-    super("Research stopped at a model boundary without a saved completion receipt. Resume explicitly to authorize a new attempt; completed evidence is retained.");
+  constructor(readonly failure?: ResearchModelFailure) {
+    super(researchModelFailureMessage(failure));
     this.name = "ResearchWorkflowNeedsAttention";
   }
 }
@@ -429,7 +441,7 @@ function settleTool(state: ResearchWorkflowState, entry: ToolJournalEntry, recor
 
 async function modelCall(context: ResearchStepContext, state: ResearchWorkflowState,
   persist: (stage: ResearchProgress["stage"], event?: string) => Promise<void>,
-  key: string, role: "planner" | "verifier", request: Pick<ModelStructuredRequest, "instructions" | "input" | "schema" | "name" | "maxOutputTokens">): Promise<string | undefined> {
+  key: ResearchModelStep, role: "planner" | "verifier", request: Pick<ModelStructuredRequest, "instructions" | "input" | "schema" | "name" | "maxOutputTokens">): Promise<string | undefined> {
   const prior = state.models[key];
   const requestSha256 = canonicalJsonSha256(request);
   if (prior && prior.requestSha256 !== requestSha256) {
@@ -463,7 +475,10 @@ async function modelCall(context: ResearchStepContext, state: ResearchWorkflowSt
   state.models[key] = journal;
   await persist(key === "plan" ? "planning" : key === "review" ? "reviewing" : "writing", "research.model.started");
   await assertActive(context);
-  const timeout = AbortSignal.timeout(modelTimeoutMs(key));
+  const timeoutMs = modelTimeoutMs(key);
+  const timeout = AbortSignal.timeout(timeoutMs);
+  const modelStartedAt = Date.now();
+  let savingCompletion = false;
   try {
     const usageScope = await context.usageScope(`workflow.research.${key}`, runtime);
     const generated = await generateModelStructured(runtime.bind({ ...request, tier: "reasoning", maxAttempts: 1,
@@ -472,13 +487,46 @@ async function modelCall(context: ResearchStepContext, state: ResearchWorkflowSt
     }));
     state.models[key] = { ...journal, status: "completed", text: generated.text, provider: generated.provider,
       model: generated.model, providerRequestId: generated.providerRequestId };
+    savingCompletion = true;
     await persist(key === "plan" ? "planning" : key === "review" ? "reviewing" : "writing", "research.model.completed");
     return generated.text;
-  } catch {
+  } catch (error) {
     // Provider rejection, disconnection and process loss have the same safe
     // redelivery rule: a started boundary is not permission for a paid replay.
-    throw new ResearchWorkflowNeedsAttention();
+    // Keep bounded diagnostics, never the provider's raw error or request text.
+    const providerFailure = error instanceof ModelProviderError ? error : undefined;
+    const providerStatus = providerFailure?.status;
+    const failure: ResearchModelFailure = {
+      schemaVersion: 1,
+      modelStep: key,
+      kind: savingCompletion ? "completion_not_saved"
+        : timeout.aborted || providerFailure?.kind === "timeout" ? "timeout"
+        : providerFailure?.kind || (context.abortSignal?.aborted ? "abort" : "unknown"),
+      ...(providerFailure?.provider || runtime.provider
+        ? { provider: providerFailure?.provider || runtime.provider }
+        : {}),
+      ...(typeof providerStatus === "number" && Number.isInteger(providerStatus) && providerStatus >= 400 && providerStatus <= 599
+        ? { providerStatus }
+        : {}),
+      timeoutMs,
+      elapsedMs: Math.max(0, Date.now() - modelStartedAt),
+    };
+    throw new ResearchWorkflowNeedsAttention(Object.freeze(failure));
   }
+}
+
+function researchModelFailureMessage(failure?: ResearchModelFailure) {
+  const retained = "Your sources and any saved draft are kept.";
+  if (!failure) return `Research was interrupted before its AI response was saved. ${retained} Resume to try this step again.`;
+  const step = failure.modelStep === "review" ? "Claim review" : failure.modelStep === "report" ? "Report writing" : "Research planning";
+  if (failure.kind === "timeout") return `${step} stopped because its AI response timed out after about ${Math.max(1, Math.round(failure.elapsedMs / 1_000))} seconds. ${retained} Resume to try this step again.`;
+  if (failure.kind === "authentication") return `${step} paused because the AI connection was rejected. ${retained} Check the model connection in Settings before resuming.`;
+  if (failure.kind === "rate_limit") return `${step} paused because the AI service reached its request limit. ${retained} Resume after the service is available again.`;
+  if (failure.kind === "overloaded" || failure.kind === "unavailable") return `${step} paused because the AI service was unavailable. ${retained} Resume to try this step again.`;
+  if (failure.kind === "context_length") return `${step} paused because the research context exceeded the model's limit. ${retained}`;
+  if (failure.kind === "invalid_request" || failure.kind === "safety") return `${step} paused because the AI service could not accept the research request. ${retained}`;
+  if (failure.kind === "completion_not_saved") return `${step} returned, but its result could not be saved. ${retained} Resume to recover the saved result or authorize another attempt.`;
+  return `${step} was interrupted before its AI response was saved. ${retained} Resume to try this step again.`;
 }
 
 function assertModelRetryAuthorized(detail: WorkflowRunDetail, prior: ModelJournalEntry | undefined) {
@@ -595,6 +643,6 @@ function fallbackReport(state: ResearchWorkflowState) {
 
 function parseJson(value?: string): unknown { try { return value ? JSON.parse(value) : undefined; } catch { return undefined; } }
 function collectionStage(state: ResearchWorkflowState): ResearchProgress["stage"] { return state.phase; }
-function modelTimeoutMs(key: string) { return key === "plan" ? Math.min(RESEARCH_MODEL_TIMEOUT_MS, WORKFLOW_PLANNER_TIMEOUT_MS) : RESEARCH_MODEL_TIMEOUT_MS; }
+function modelTimeoutMs(key: string) { return key === "plan" ? Math.min(90_000, WORKFLOW_PLANNER_TIMEOUT_MS) : RESEARCH_MODEL_TIMEOUT_MS; }
 function unique(values: string[], limit: number) { return [...new Set(values.map((value) => value.slice(0, 800)))].slice(0, limit); }
 function data(value: unknown) { return JSON.stringify(value).replace(/</gu, "\\u003c").replace(/>/gu, "\\u003e").replace(/&/gu, "\\u0026"); }
