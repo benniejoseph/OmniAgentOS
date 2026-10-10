@@ -86,7 +86,13 @@ import {
 import { resolveAgentToolPolicy } from "@/lib/orchestration/agent-tool-policy";
 import { workflowHandoffFromExecution, type WorkflowHandoff } from "@/lib/orchestration/workflow-handoff";
 import { assignedSkillsWithinRuntimeLimit } from "@/lib/skills/limits";
-import { modelAssignmentScopeForAgent } from "@/lib/orchestration/computer-use-routing";
+import {
+  modelAssignmentScopeForAgent,
+  isLocalComputerTarget,
+  localComputerTargetFrom,
+  isLocalComputerToolId,
+  isLocalComputerAppListTool,
+} from "@/lib/orchestration/computer-use-routing";
 import { runtimeModelRoutingPolicySha256 } from "@/lib/settings/runtime-model-routing-pin";
 import {
   formatCouncilContributions,
@@ -314,7 +320,7 @@ function transitionEphemeralLocalObservation(
       discardPriorLocalObservations: true,
     };
   }
-  if (toolId.startsWith("local.macos.") && execution.computerObservation) {
+  if (isLocalComputerToolId(toolId) && execution.computerObservation) {
     const fresh =
       execution.record.status === "executed" &&
         execution.computerObservation
@@ -333,7 +339,7 @@ function transitionEphemeralLocalObservation(
     };
   }
   if (
-    toolId === "local.macos.list_apps" &&
+    isLocalComputerAppListTool(toolId) &&
     soleToolInTurn &&
     execution.record.status === "executed" &&
     latest?.listAppsCarryAvailable
@@ -347,7 +353,7 @@ function transitionEphemeralLocalObservation(
       discardPriorLocalObservations: false,
     };
   }
-  if (toolId.startsWith("local.macos.")) {
+  if (isLocalComputerToolId(toolId)) {
     return { discardPriorLocalObservations: true };
   }
   return { discardPriorLocalObservations: true };
@@ -356,7 +362,7 @@ function transitionEphemeralLocalObservation(
 function toolCallsPerTurnForComputerUse(
   target?: ComputerUseTarget,
 ) {
-  return target === "local_macos"
+  return isLocalComputerTarget(target)
     ? LOCAL_COMPUTER_TOOL_CALLS_PER_TURN
     : MAX_TOOL_CALLS_PER_TURN;
 }
@@ -384,8 +390,7 @@ function isSoleLocalAppListCall(
   byFunctionName: ReadonlyMap<string, ToolboxEntry>,
 ) {
   return calls.length === 1 &&
-    byFunctionName.get(calls[0].name)?.definition.id ===
-      "local.macos.list_apps";
+    isLocalComputerAppListTool(byFunctionName.get(calls[0].name)?.definition.id);
 }
 
 type ContinuationQueueMarker = {
@@ -435,7 +440,7 @@ async function* runAgentUntilStopped(
   const maxOutputTokens = mode === "research"
     ? RESEARCH_MAX_OUTPUT_TOKENS
     : AGENT_MAX_OUTPUT_TOKENS;
-  const localComputerUseRequested = request.computerUseTarget === "local_macos";
+  const localComputerUseRequested = isLocalComputerTarget(request.computerUseTarget);
   const toolStepAuthority = localComputerUseRequested
     ? LOCAL_COMPUTER_MAX_TOOL_STEPS
     : AGENT_MAX_TOOL_STEPS;
@@ -638,7 +643,7 @@ async function* runAgentUntilStopped(
     minimumToolRoundWallTimeMs:
       request.invocation && !request.executionScope?.delegationId &&
         !request.preclaimedRunId && mode !== "research" &&
-        computerUseTarget !== "local_macos"
+        !isLocalComputerTarget(computerUseTarget)
         ? Math.min(
             90_000 + WEB_SEARCH_TIMEOUT_MS,
             Math.floor(budgetLimits.wallTimeMs * 2 / 3),
@@ -1126,10 +1131,10 @@ async function* runAgentUntilStopped(
         throw new ModelRouteUnavailableError(runtimeModel.degradation);
       }
     }
-    if (computerUseTarget === "local_macos") {
+    if (isLocalComputerTarget(computerUseTarget)) {
       yield await emit({
         type: "status",
-        label: "This Mac connected",
+        label: computerUseTarget === "local_android" ? "This phone connected" : "This Mac connected",
         detail:
           "Running this objective as one bounded see-and-act session. Sending, deleting, purchases, security changes, unknown effects, and terminal commands still pause for approval.",
       });
@@ -1263,7 +1268,7 @@ async function* runAgentUntilStopped(
       ...request.agentProfile.toolIds,
       ...runtimeAgentSkills.flatMap((skill) => skill.toolIds),
     ])] : undefined;
-    const localVisualToolIds = [
+    const macVisualToolIds = [
       "local.macos.observe",
       "local.macos.list_apps",
       "local.macos.activate_app",
@@ -1274,14 +1279,21 @@ async function* runAgentUntilStopped(
       "local.macos.key",
       "local.macos.scroll",
     ] as const;
-    const allLocalComputerToolIds = [...localVisualToolIds, "local.macos.command.run"];
+    const androidVisualToolIds = [
+      "local.android.observe", "local.android.list_apps", "local.android.open_app",
+      "local.android.press", "local.android.tap", "local.android.type",
+      "local.android.scroll", "local.android.swipe", "local.android.back", "local.android.home",
+    ] as const;
+    const localVisualToolIds = computerUseTarget === "local_android"
+      ? androidVisualToolIds : macVisualToolIds;
+    const allLocalComputerToolIds = [...macVisualToolIds, ...androidVisualToolIds, "local.macos.command.run"];
     const localComputerToolIds = localComputerUseRequested ? [
       ...(request.localComputerCapabilities?.visualControlReady !== false ? localVisualToolIds : []),
-      ...(request.localComputerWorkspaces?.length && request.localComputerCapabilities?.commandRunnerReady !== false
+      ...(computerUseTarget === "local_macos" && request.localComputerWorkspaces?.length && request.localComputerCapabilities?.commandRunnerReady !== false
         ? ["local.macos.command.run"] : []),
     ] : [];
     const unavailableLocalToolIds = allLocalComputerToolIds.filter(id => !localComputerToolIds.includes(id));
-    // This Mac adds a currently admitted device to the same governed app
+    // The explicit target adds one admitted device to the same governed app
     // toolbox. It never discards the Agent's app tools or expands its custom
     // allowlist; command access retains the existing explicit folder opt-in.
     const configuredToolIds = localComputerUseRequested
@@ -1981,7 +1993,7 @@ async function* runAgentUntilStopped(
     ) && toolbox.tools.some(
       (entry) => entry.definition.id === "app.agents.delegate",
     );
-    // Local Mac observations are deliberately disclosed to the assigned agent
+    // Local device observations are deliberately disclosed to the assigned agent
     // for one provider turn and are never added to durable council context.
     // A sibling critic therefore cannot independently inspect the evidence and
     // must not rewrite a completed Computer Use result as "unverified" after
@@ -2022,7 +2034,7 @@ async function* runAgentUntilStopped(
     if (councilRequested && localComputerUseRequested) {
       yield await emit({
         type: "status",
-        label: "This Mac evidence isolated",
+        label: computerUseTarget === "local_android" ? "Phone screen kept private" : "This Mac evidence isolated",
         detail:
           "The assigned agent may carry a fresh local observation across exactly one immediate app-list check in this in-memory run; sibling review cannot see or rewrite private screen evidence.",
       });
@@ -2336,7 +2348,7 @@ async function* runAgentUntilStopped(
           checkpointBeforeTool: checkpointBeforeGovernedTool,
           checkpointAfterTool: checkpointAfterGovernedTool,
           reserveTools: reserveToolBudget,
-          serializeToolCalls: computerUseTarget === "local_macos" ||
+          serializeToolCalls: isLocalComputerTarget(computerUseTarget) ||
             Boolean(request.moltbookAutonomy) ||
             isExpandedCheckpointShadowEnrollment(checkpointShadowEnrollment),
           maxToolSteps,
@@ -2759,7 +2771,7 @@ async function* runAgentUntilStopped(
               item.call.callId,
             ),
             agentRunId: run.id,
-            localComputerTaskAuthority: computerUseTarget === "local_macos"
+            localComputerTaskAuthority: isLocalComputerTarget(computerUseTarget)
               ? { objective: run.prompt }
               : undefined,
             checkpointBeforeEffect: checkpointBeforeGovernedTool,
@@ -2888,7 +2900,7 @@ async function* runAgentUntilStopped(
               mcpSessionScope: agentMcpSessionScope(run.id, securityContext),
               executionScope: toolExecutionScope,
               agentRunId: run.id,
-              localComputerTaskAuthority: computerUseTarget === "local_macos"
+              localComputerTaskAuthority: isLocalComputerTarget(computerUseTarget)
                 ? { objective: run.prompt }
                 : undefined,
               checkpointBeforeEffect: checkpointBeforeGovernedTool,
@@ -3693,7 +3705,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
             ),
             executionScope: toolExecutionScope,
             agentRunId: input.runId,
-            localComputerTaskAuthority: input.computerUseTarget === "local_macos"
+            localComputerTaskAuthority: isLocalComputerTarget(input.computerUseTarget)
               ? { objective: input.prompt }
               : undefined,
             checkpointBeforeEffect: input.checkpointBeforeTool,
@@ -3822,7 +3834,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
             ),
             executionScope: toolExecutionScope,
             agentRunId: input.runId,
-            localComputerTaskAuthority: input.computerUseTarget === "local_macos"
+            localComputerTaskAuthority: isLocalComputerTarget(input.computerUseTarget)
               ? { objective: input.prompt }
               : undefined,
             checkpointBeforeEffect: input.checkpointBeforeTool,
@@ -4069,7 +4081,7 @@ function agentTurnBudgetEstimate(input: {
     toolCallsPerTurnForComputerUse(input.computerUseTarget) *
       MAX_TOOL_RESULT_CHARS / 4,
   ) + (
-    input.computerUseTarget === "local_macos"
+    isLocalComputerTarget(input.computerUseTarget)
       ? ESTIMATED_IMAGE_INPUT_TOKENS
       : 0
   );
@@ -4275,9 +4287,7 @@ function restoreAgentRunBudgetState(
     startedAt: run.startedAt,
     toolSteps: continuation.toolSteps,
     toolCallsPerStep: toolCallsPerTurnForComputerUse(
-      continuation.computerUseTarget === "local_macos"
-        ? "local_macos"
-        : undefined,
+      localComputerTargetFrom(continuation.computerUseTarget),
     ),
   });
 }
@@ -4454,9 +4464,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
     AGENT_MAX_TOOL_STEPS,
   );
   const maxToolCallsPerTurn = toolCallsPerTurnForComputerUse(
-    continuation.computerUseTarget === "local_macos"
-      ? "local_macos"
-      : undefined,
+    localComputerTargetFrom(continuation.computerUseTarget),
   );
   const executionScope = await resolveContinuationExecutionScope(
     run,
@@ -4687,7 +4695,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
     : resumeDeploymentRoute.tier;
   const resumeModel = run.model || resumeDeploymentRoute.model;
   const resumeComputerUseRequested =
-    continuation.computerUseTarget === "local_macos";
+    isLocalComputerTarget(continuation.computerUseTarget);
   const resumeRuntimeModel = await resolveRuntimeModelAssignment({
     tenantId: normalizeTenantId(tenantId),
     actorId: continuation.context.actorId,
@@ -4920,7 +4928,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
           executionScope: toolExecutionScope,
           agentRunId: run.id,
           localComputerTaskAuthority:
-            continuation.computerUseTarget === "local_macos"
+            isLocalComputerTarget(continuation.computerUseTarget)
               ? { objective: run.prompt }
               : undefined,
           checkpointBeforeEffect: checkpointBeforeResumeTool,
@@ -5064,9 +5072,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
               turnInput,
               toolbox.openAITools,
             ]),
-            computerUseTarget: continuation.computerUseTarget === "local_macos"
-              ? "local_macos"
-              : undefined,
+            computerUseTarget: localComputerTargetFrom(continuation.computerUseTarget),
           }),
           toolsEnabled: toolSteps < maxToolSteps,
         },
@@ -5287,7 +5293,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
             executionScope: toolExecutionScope,
             agentRunId: run.id,
             localComputerTaskAuthority:
-              continuation.computerUseTarget === "local_macos"
+              isLocalComputerTarget(continuation.computerUseTarget)
                 ? { objective: run.prompt }
                 : undefined,
             checkpointBeforeEffect: checkpointBeforeResumeTool,
@@ -5732,7 +5738,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
     deploymentAdapter?.targets(providerState.tier)[0]?.model ||
     "provider-continuation";
   const resumeComputerUseRequested =
-    continuation.computerUseTarget === "local_macos";
+    isLocalComputerTarget(continuation.computerUseTarget);
   const resumeRuntimeModel = await resolveRuntimeModelAssignment({
     tenantId: normalizeTenantId(tenantId),
     actorId: continuation.context.actorId,
@@ -6053,7 +6059,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
           executionScope: toolExecutionScope,
           agentRunId: run.id,
           localComputerTaskAuthority:
-            continuation.computerUseTarget === "local_macos"
+            isLocalComputerTarget(continuation.computerUseTarget)
               ? { objective: run.prompt }
               : undefined,
           checkpointBeforeEffect: checkpointBeforeResumeTool,
@@ -6137,9 +6143,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
       runId: run.id,
       threadId: run.threadId,
       promptCacheScope: agentPromptCacheScope(run.agentId),
-      computerUseTarget: continuation.computerUseTarget === "local_macos"
-        ? "local_macos"
-        : undefined,
+      computerUseTarget: localComputerTargetFrom(continuation.computerUseTarget),
       usageReceipt: resumeUsageReceipt,
       abortSignal: resumeAbortSignal,
       forceApproval: continuation.toolPolicy?.forceApproval,
@@ -6172,9 +6176,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
               provider,
               model: resumeModel,
               inputTokens: estimatedInputTokens,
-              computerUseTarget: continuation.computerUseTarget === "local_macos"
-                ? "local_macos"
-                : undefined,
+              computerUseTarget: localComputerTargetFrom(continuation.computerUseTarget),
             }),
             toolsEnabled,
           },
@@ -6212,7 +6214,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
       checkpointAfterTool: checkpointAfterResumeTool,
       reserveTools: reserveResumeTools,
       serializeToolCalls:
-        continuation.computerUseTarget === "local_macos" ||
+        isLocalComputerTarget(continuation.computerUseTarget) ||
         isExpandedCheckpointShadowEnrollment(
           continuation.checkpointShadowEnrollment,
         ),

@@ -9,12 +9,15 @@ import 'theme/app_theme.dart';
 import 'theme/app_theme_mode_controller.dart';
 import 'theme/macos_app_theme.dart';
 import '../core/platform/desktop_host_bridge.dart';
+import '../core/platform/android_device_bridge.dart';
 import '../core/sync/reconnect_coordinator.dart';
 import '../features/auth/application/biometric_session_lock_controller.dart';
 import '../features/auth/application/session_controller.dart';
 import '../features/capture/capture_providers.dart';
 import '../features/capture/capture_drop_intake.dart';
 import '../features/computer_use/local_computer.dart';
+import '../features/computer_use/android_phone.dart';
+import '../features/ambient_voice/android_voice_session.dart';
 import '../features/push/mobile_push.dart';
 
 class AsaelApp extends ConsumerStatefulWidget {
@@ -31,6 +34,29 @@ class _AsaelAppState extends ConsumerState<AsaelApp>
   Future<bool>? _biometricLockTransition;
   bool _suspended = false;
   bool _captureLocked = false;
+  bool _phoneLeaseDeferredLock = false;
+
+  bool get _hasPhoneSessionLease =>
+      appAndroidDeviceBridge.supported &&
+      ref.read(sessionOwnerKeyProvider) != null &&
+      !ref
+          .read(biometricSessionLockControllerProvider)
+          .state
+          .blocksInteraction &&
+      (ref.read(androidVoiceSessionProvider).backgroundCallActive ||
+          ref.read(androidPhoneProvider).backgroundSessionActive);
+
+  void _phoneSessionChanged() {
+    if (!mounted ||
+        !_suspended ||
+        !_phoneLeaseDeferredLock ||
+        _hasPhoneSessionLease)
+      return;
+    _phoneLeaseDeferredLock = false;
+    final transition = _protectSuspendedWorkspace();
+    _biometricLockTransition = transition;
+    unawaited(transition);
+  }
 
   Future<void> _handleAmbientVoiceRequest(
     DesktopAmbientVoiceRequest request,
@@ -57,8 +83,15 @@ class _AsaelAppState extends ConsumerState<AsaelApp>
     if (!mounted || ref.read(sessionOwnerKeyProvider) == null || _suspended) {
       return;
     }
-    _suspended = true;
+    setState(() => _suspended = true);
     ref.read(reconnectCoordinatorProvider).suspend();
+    // Only an explicitly started, expiring native foreground session retains
+    // the current owner credentials while it works in another app. Screens
+    // stay hidden; manual/device lock and service loss keep the normal path.
+    if (_hasPhoneSessionLease) {
+      _phoneLeaseDeferredLock = true;
+      return;
+    }
     final transition = _protectSuspendedWorkspace();
     _biometricLockTransition = transition;
     unawaited(transition);
@@ -66,7 +99,8 @@ class _AsaelAppState extends ConsumerState<AsaelApp>
 
   Future<void> _restoreProtectedWorkspace() async {
     if (!mounted || !_suspended) return;
-    _suspended = false;
+    setState(() => _suspended = false);
+    _phoneLeaseDeferredLock = false;
     await _resumeSuspendedWorkspace();
   }
 
@@ -176,6 +210,12 @@ class _AsaelAppState extends ConsumerState<AsaelApp>
 
   @override
   Widget build(BuildContext context) {
+    if (appAndroidDeviceBridge.supported) {
+      ref.watch(androidPhoneProvider);
+      ref.watch(androidVoiceSessionProvider);
+      ref.listen(androidPhoneProvider, (_, _) => _phoneSessionChanged());
+      ref.listen(androidVoiceSessionProvider, (_, _) => _phoneSessionChanged());
+    }
     final primaryRuntime = ref.watch(primaryNativeRuntimeProvider);
     if (primaryRuntime) ref.watch(captureOutboxLifecycleProvider);
     ref.watch(reconnectCoordinatorProvider);
@@ -237,7 +277,28 @@ class _AsaelAppState extends ConsumerState<AsaelApp>
           coordinator: localComputer,
           child: _ReconnectStatusLayer(
             coordinator: reconnect,
-            child: child ?? const SizedBox.shrink(),
+            child: Stack(
+              children: [
+                Positioned.fill(
+                  child: ExcludeSemantics(
+                    excluding: _suspended,
+                    child: IgnorePointer(
+                      ignoring: _suspended,
+                      child: TickerMode(
+                        enabled: !_suspended,
+                        child: child ?? const SizedBox.shrink(),
+                      ),
+                    ),
+                  ),
+                ),
+                if (_suspended)
+                  Positioned.fill(
+                    child: ColoredBox(
+                      color: Theme.of(context).colorScheme.surface,
+                    ),
+                  ),
+              ],
+            ),
           ),
         ),
       ),

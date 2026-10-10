@@ -1,3 +1,4 @@
+import { localAndroidTools } from "@/lib/tools/android-registry";
 import type { ToolDefinition } from "@/lib/tools/types";
 import { FIRST_PARTY_APP_TOOLS } from "@/lib/tools/app-registry";
 import commandProgramPolicy from "@/lib/local-computer/command-program-policy.json";
@@ -6,6 +7,7 @@ import { LOCAL_COMPUTER_KEY_NAMES } from "@/lib/local-computer/keyboard-policy";
 export const governedTools: ToolDefinition[] = [
   ...FIRST_PARTY_APP_TOOLS,
   ...localMacComputerTools(),
+  ...localAndroidTools,
   ...moltbookTools(),
   {
     id: "calendar.create",

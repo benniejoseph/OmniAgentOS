@@ -1,3 +1,4 @@
+import { localAndroidDeviceUpdateSchema, localAndroidCommandSchema, localAndroidCompletionRequestSchema } from "@/lib/local-computer/android-contracts";
 import { z } from "zod";
 import { researchOptionsSchema, researchProgressSchema } from "@/lib/research/contracts";
 import { contentSearchResponseSchema } from "@/lib/content-search/contracts";
@@ -72,13 +73,13 @@ import {
 import { conversationVoiceTurnsRequestSchema, conversationVoiceTurnsResponseSchema } from "@/lib/voice/conversation-transcript";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 52 as const;
-// v52 adds conversation Mac targeting, keyboard/app discovery and longer commands.
-export const NATIVE_API_PREVIOUS_VERSION = 51 as const;
+export const NATIVE_API_CURRENT_VERSION = 53 as const;
+// v53 adds explicit device-bound Android phone control.
+export const NATIVE_API_PREVIOUS_VERSION = 52 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
-  50,
+  51,
 ] as const;
 
 const positiveDatabaseInteger = z.number().int().min(1).max(2_147_483_647);
@@ -311,7 +312,7 @@ export const nativeCompatibilitySchema = z.object({
   supportedContractVersions: z.tuple([
     z.literal(NATIVE_API_CURRENT_VERSION),
     z.literal(NATIVE_API_PREVIOUS_VERSION),
-    z.literal(50),
+    z.literal(51),
   ]),
   status: z.enum(["compatible", "upgrade_required", "unknown"]),
   agentCatalogEnrollment: z.object({
@@ -400,7 +401,7 @@ export const nativeBootstrapResponseSchema = nativePublicIdentitySchema.extend({
       supportedVersions: z.tuple([
         z.literal(NATIVE_API_CURRENT_VERSION),
         z.literal(NATIVE_API_PREVIOUS_VERSION),
-        z.literal(50),
+        z.literal(51),
       ]),
       discoveryPath: z.literal("/api/mobile/contracts"),
     }).strict(),
@@ -611,7 +612,7 @@ export const nativeConversationRequestSchema = z.object({
   research: researchOptionsSchema.optional(),
   strategy: z.enum(["auto", "direct", "durable"]).optional(),
   agentId: z.string().trim().min(1).max(120).regex(/^[a-zA-Z0-9_.:-]+$/).optional(),
-  computerUseTarget: z.literal("local_macos").optional(),
+  computerUseTarget: z.enum(["local_macos", "local_android"]).optional(),
   modelSelection: commandModelSelectionRequestSchema.optional(),
   /** v34: existing server-resolved source references; never inline source content. */
   contextReferences: commandContextReferencesSchema.optional(),
@@ -766,6 +767,13 @@ export const nativeLocalComputerStopResponseSchema = z.object({
   reason: z.enum(["user_stop", "app_exit", "sign_out", "permission_lost"]),
   canceledCommands: z.number().int().min(0).max(10_000),
 }).strict();
+
+export const nativeLocalAndroidDeviceResponseSchema = localAndroidDeviceUpdateSchema.extend({
+  deviceId: z.string().min(8).max(200).regex(/^[A-Za-z0-9._:-]+$/), online: z.boolean(),
+  lifecycleRevision: positiveDatabaseInteger, lastSeenAt: isoDateTime, leaseExpiresAt: isoDateTime,
+}).strict();
+export const nativeLocalAndroidDeviceReadResponseSchema = nativeLocalAndroidDeviceResponseSchema.nullable();
+export const nativeLocalAndroidClaimResponseSchema = z.object({ schemaVersion: z.literal(1), command: localAndroidCommandSchema.nullable(), pollAfterMs: z.number().int().min(0).max(5_000) }).strict();
 
 const agentEventSchemas = [
   z.object({ type: z.literal("run"), runId: opaqueId, threadId: opaqueId.optional(), missionId: opaqueId.optional() }).passthrough(),
@@ -2485,6 +2493,11 @@ export const nativeContractSchemas = Object.freeze({
   NativeSpeechStreamRequest: nativeSpeechStreamRequestSchema,
   NativeConversationRequest: nativeConversationRequestSchema,
   NativeConversationEvent: nativeConversationEventSchema,
+  NativeLocalAndroidDeviceUpdateRequest: localAndroidDeviceUpdateSchema,
+  NativeLocalAndroidDeviceResponse: nativeLocalAndroidDeviceResponseSchema,
+  NativeLocalAndroidDeviceReadResponse: nativeLocalAndroidDeviceReadResponseSchema,
+  NativeLocalAndroidClaimResponse: nativeLocalAndroidClaimResponseSchema,
+  NativeLocalAndroidCompletionRequest: localAndroidCompletionRequestSchema,
   NativeLocalComputerDeviceUpdateRequest: localComputerDeviceUpdateSchema,
   NativeLocalComputerDeviceResponse: nativeLocalComputerDeviceResponseSchema,
   NativeLocalComputerDeviceReadResponse: nativeLocalComputerDeviceReadResponseSchema,
@@ -2502,7 +2515,7 @@ export const nativeContractSchemas = Object.freeze({
     supportedVersions: z.tuple([
       z.literal(NATIVE_API_CURRENT_VERSION),
       z.literal(NATIVE_API_PREVIOUS_VERSION),
-      z.literal(50),
+      z.literal(51),
     ]),
     versions: z.array(z.object({
       version: z.number().int().positive(),
@@ -2570,6 +2583,13 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
     operation("voice.conversation.session.finish", "PATCH", "/api/voice/conversation/session", "End one continuous voice conversation without retaining audio.", "bearer", "NativeVoiceConversationFinishRequest", "NativeVoiceConversationFinishResponse", { requestBodyMaxBytes: 8000 }),
     operation("voice.conversation.turns", "POST", "/api/voice/conversation/turns", "Save bounded client-observed captions in the owned conversation.", "bearer", "NativeVoiceConversationTurnsRequest", "NativeVoiceConversationTurnsResponse", { requestBodyMaxBytes: 64_000 }),
   ];
+  if (version === 53) return [...nativeOperationsForVersion(52)!,
+    operation("localAndroid.device", "GET", "/api/mobile/android-control/device", "Read readiness of this authenticated Android phone.", "bearer", undefined, "NativeLocalAndroidDeviceReadResponse"),
+    operation("localAndroid.device.update", "PUT", "/api/mobile/android-control/device", "Renew this phone's explicit control readiness lease.", "bearer", "NativeLocalAndroidDeviceUpdateRequest", "NativeLocalAndroidDeviceResponse"),
+    operation("localAndroid.command.claim", "POST", "/api/mobile/android-control/commands/claim", "Claim one governed run-bound phone command.", "bearer", "NativeLocalComputerClaimRequest", "NativeLocalAndroidClaimResponse"),
+    operation("localAndroid.command.complete", "POST", "/api/mobile/android-control/commands/{id}/complete", "Acknowledge one exact leased phone command.", "bearer", "NativeLocalAndroidCompletionRequest", "NativeLocalComputerCompletionResponse", { requestBodyMaxBytes: 2_200_000 }),
+    operation("localAndroid.stop", "POST", "/api/mobile/android-control/stop", "Stop this phone's control sessions and pending commands.", "bearer", "NativeLocalComputerStopRequest", "NativeLocalComputerStopResponse"),
+  ];
   if (version === 52) return nativeOperationsForVersion(51)!.map(descriptor =>
     descriptor.id === "evidence.run"
       ? { ...descriptor, responseSchema: "NativeEvidenceRunResponse" }
@@ -2589,7 +2609,7 @@ export function nativeContractDiscovery() {
     previousVersion: NATIVE_API_PREVIOUS_VERSION,
     supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [
       typeof NATIVE_API_CURRENT_VERSION, typeof NATIVE_API_PREVIOUS_VERSION,
-      50,
+      51,
     ],
     versions: NATIVE_API_SUPPORTED_VERSIONS.map((version) => ({
       version,

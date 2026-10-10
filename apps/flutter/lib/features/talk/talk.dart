@@ -17,6 +17,7 @@ import '../../app/theme/macos_app_theme.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/platform/desktop_host_bridge.dart';
 import '../../core/platform/local_computer_bridge.dart';
+import '../../core/platform/android_device_bridge.dart';
 import '../../generated/native_contract.g.dart';
 import '../ambient_voice/ambient_voice_consent.dart';
 import '../ambient_voice/ambient_voice_view.dart';
@@ -24,6 +25,7 @@ import '../ambient_voice/realtime_voice_controller.dart';
 import '../ambient_voice/voice_conversation_controller.dart';
 import '../ambient_voice/voice_conversation_view.dart';
 import '../computer_use/local_computer.dart';
+import '../computer_use/android_phone.dart';
 import '../companion/atlas_player.dart';
 import '../companion/companion_controller.dart';
 import '../companion/companion_models.dart';
@@ -208,27 +210,31 @@ enum TalkRole { user, assistant }
 
 enum TalkActivityState { active, succeeded, waiting, failed, info }
 
-enum TalkExecutionTarget { agent, thisMac }
+enum TalkExecutionTarget { agent, thisMac, thisPhone }
 
 extension TalkExecutionTargetPresentation on TalkExecutionTarget {
   String get label => switch (this) {
     TalkExecutionTarget.agent => 'Asael only',
     TalkExecutionTarget.thisMac => 'This Mac',
+    TalkExecutionTarget.thisPhone => 'This phone',
   };
 
   String get detail => switch (this) {
     TalkExecutionTarget.agent => 'No computer control',
     TalkExecutionTarget.thisMac => 'Use this installed Mac',
+    TalkExecutionTarget.thisPhone => 'Use apps on this Android phone',
   };
 
   String? get apiValue => switch (this) {
     TalkExecutionTarget.agent => null,
     TalkExecutionTarget.thisMac => 'local_macos',
+    TalkExecutionTarget.thisPhone => 'local_android',
   };
 
   IconData get icon => switch (this) {
     TalkExecutionTarget.agent => Icons.auto_awesome_outlined,
     TalkExecutionTarget.thisMac => Icons.laptop_mac_rounded,
+    TalkExecutionTarget.thisPhone => Icons.phone_android_rounded,
   };
 }
 
@@ -1111,8 +1117,8 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
         .firstOrNull;
     final next = <String, dynamic>{
       'mode': mode,
-      if (executionTarget == TalkExecutionTarget.thisMac)
-        'computerUseTarget': 'local_macos',
+      if (executionTarget.apiValue != null)
+        'computerUseTarget': executionTarget.apiValue,
       'contextScope': project == null ? 'session' : 'project',
       if (project != null) 'projectId': project.id,
       'contextReferences': [
@@ -1168,9 +1174,11 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     await _send(
       request,
       mode: pinnedContext['mode'] as String,
-      executionTarget: pinnedContext['computerUseTarget'] == 'local_macos'
-          ? TalkExecutionTarget.thisMac
-          : TalkExecutionTarget.agent,
+      executionTarget: switch (pinnedContext['computerUseTarget']) {
+        'local_macos' => TalkExecutionTarget.thisMac,
+        'local_android' => TalkExecutionTarget.thisPhone,
+        _ => TalkExecutionTarget.agent,
+      },
       strategy: 'direct',
       assignedAgent: TalkAssignedAgent(
         id: pinnedContext['agentId'] as String,
@@ -3795,6 +3803,8 @@ class TalkView extends StatefulWidget {
     this.voiceRecorder,
     this.ambientRealtimeFactory,
     this.voiceConversationFactory,
+    this.backgroundVoiceController,
+    this.backgroundVoiceDelegate,
     this.ambientConsent,
     this.workspaceLocked,
     this.quickEntry = false,
@@ -3802,6 +3812,7 @@ class TalkView extends StatefulWidget {
     this.onQuickEntryReady,
     this.onExitQuickEntry,
     this.localComputer,
+    this.androidPhone,
     this.companionController,
     this.requestedThreadId,
     this.onThreadAdopted,
@@ -3813,6 +3824,8 @@ class TalkView extends StatefulWidget {
   final VoiceDraftRecorder? voiceRecorder;
   final AmbientRealtimeVoiceController Function()? ambientRealtimeFactory;
   final VoiceConversationController Function()? voiceConversationFactory;
+  final VoiceConversationController? backgroundVoiceController;
+  final VoiceConversationDelegate? backgroundVoiceDelegate;
 
   /// The owner's agreement that live microphone audio goes to OpenAI. Ambient
   /// Command does not listen until it is recorded.
@@ -3826,6 +3839,7 @@ class TalkView extends StatefulWidget {
   final VoidCallback? onQuickEntryReady;
   final VoidCallback? onExitQuickEntry;
   final LocalComputerCoordinator? localComputer;
+  final AndroidPhoneCoordinator? androidPhone;
   final CompanionController? companionController;
   final String? requestedThreadId;
   final ValueChanged<String>? onThreadAdopted;
@@ -4037,8 +4051,10 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     super.initState();
     recorder = widget.voiceRecorder ?? RecordVoiceDraftRecorder();
     if (widget.ambientVoice) {
-      voiceConversation = widget.voiceConversationFactory?.call()
-        ?..addListener(_handleVoiceConversationChanged);
+      voiceConversation =
+          (widget.backgroundVoiceController ??
+                widget.voiceConversationFactory?.call())
+            ?..addListener(_handleVoiceConversationChanged);
       realtimeVoice = widget.ambientRealtimeFactory?.call()
         ?..addListener(_handleRealtimeVoiceChanged);
       if (realtimeVoice != null || voiceConversation != null)
@@ -4121,6 +4137,10 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (appAndroidDeviceBridge.supported &&
+        ((voiceConversation?.backgroundCallActive == true) ||
+            (state == AppLifecycleState.inactive && _startingConversation)))
+      return;
     // The macOS Ambient Command panel floats over other apps, so it keeps
     // listening while another app has focus.
     if (state == AppLifecycleState.inactive &&
@@ -4145,7 +4165,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   void dispose() {
     widget.controller.removeListener(_handleVoiceSelectionChanged);
     voiceConversation?.removeListener(_handleVoiceConversationChanged);
-    voiceConversation?.dispose();
+    if (widget.backgroundVoiceController == null) voiceConversation?.dispose();
     companionHomeGate.invalidate();
     widget.companionController?.removeListener(_handleCompanionChanged);
     WidgetsBinding.instance.removeObserver(this);
@@ -4232,7 +4252,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
 
   String get commandModelScope => talkCommandModelScope(
     agentId: widget.controller.assignedAgent?.id,
-    computerUse: executionTarget == TalkExecutionTarget.thisMac,
+    computerUse: executionTarget != TalkExecutionTarget.agent,
   );
 
   bool get voiceDraftBusy =>
@@ -4525,11 +4545,24 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     }
   }
 
-  void submit({TalkVoiceInput? voiceInput}) {
+  Future<void> submit({TalkVoiceInput? voiceInput}) async {
     _invalidateCompanionHome();
     if (voiceDraftBusy) return;
     final value = input.text.trim();
     if (value.isEmpty) return;
+    if (executionTarget == TalkExecutionTarget.thisPhone &&
+        !(await widget.androidPhone?.prepare() ?? false)) {
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Enable This phone in Settings before asking ATLAS to use other apps.',
+            ),
+          ),
+        );
+      return;
+    }
+    if (!mounted) return;
     if (executionTarget == TalkExecutionTarget.thisMac &&
         !_thisMacReadyForCommand) {
       ScaffoldMessenger.of(context)
@@ -5225,6 +5258,10 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     if (openingAmbientWindow) return;
     setState(() => openingAmbientWindow = true);
     try {
+      if (appAndroidDeviceBridge.supported) {
+        unawaited(context.push('/ambient-voice'));
+        return;
+      }
       final availability = await appDesktopHostBridge
           .getAmbientVoiceAvailability();
       if (!mounted) return;
@@ -5376,6 +5413,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   }
 
   void _handleVoiceSelectionChanged() {
+    if (widget.backgroundVoiceController != null) return;
     final voice = voiceConversation;
     if (voice == null || !voice.active || _voiceBoundController == null) return;
     if (_voiceBoundController != widget.controller ||
@@ -5417,9 +5455,10 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
       recordingError = null;
     });
     try {
-      final availability = await appDesktopHostBridge
-          .getAmbientVoiceAvailability();
-      if (!availability.available)
+      final availability = appAndroidDeviceBridge.supported
+          ? null
+          : await appDesktopHostBridge.getAmbientVoiceAvailability();
+      if (availability != null && !availability.available)
         throw const AmbientVoiceException(
           'voice_disabled',
           'Voice is off. Turn it on in Settings → General.',
@@ -5462,6 +5501,13 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
             widget.workspaceLocked?.value == true)
           return;
       }
+      if (context['computerUseTarget'] == 'local_android' &&
+          !(await widget.androidPhone?.prepare() ?? false)) {
+        throw const AmbientVoiceException(
+          'this_phone_unavailable',
+          'This phone is not ready. Enable access in Settings → This phone, or choose Asael only.',
+        );
+      }
       await voice.start(
         consentAccepted: ambientConsentAccepted,
         context: context,
@@ -5477,6 +5523,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
           unawaited(controller.refreshVoiceHistoryAfter(id, captionsSettled));
         },
         delegate:
+            widget.backgroundVoiceDelegate ??
             (request, turnId, sessionId, conversationId, pinnedContext) async {
               if (!mounted ||
                   _voiceBoundController != controller ||
@@ -5674,6 +5721,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                                   value: executionTarget,
                                   compact: true,
                                   localComputer: widget.localComputer,
+                                  androidPhone: widget.androidPhone,
                                   onChanged: selectExecutionTarget,
                                 ),
                               ],
@@ -5779,9 +5827,10 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
           ),
         ),
         actions: [
-          if (appDesktopHostBridge.supported)
+          if (appDesktopHostBridge.supported ||
+              appAndroidDeviceBridge.supported)
             IconButton(
-              tooltip: 'Open Ambient Command',
+              tooltip: 'Talk to ATLAS',
               onPressed: () => unawaited(_openAmbientFromToolbar()),
               icon: const Icon(Icons.graphic_eq_rounded),
             ),
@@ -6296,6 +6345,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                                           _ExecutionTargetMenu(
                                             value: executionTarget,
                                             localComputer: widget.localComputer,
+                                            androidPhone: widget.androidPhone,
                                             onChanged: selectExecutionTarget,
                                           ),
                                         ],
@@ -7078,16 +7128,82 @@ class _ExecutionTargetMenu extends StatelessWidget {
     required this.value,
     required this.onChanged,
     this.localComputer,
+    this.androidPhone,
     this.compact = false,
   });
 
   final TalkExecutionTarget value;
   final ValueChanged<TalkExecutionTarget> onChanged;
   final LocalComputerCoordinator? localComputer;
+  final AndroidPhoneCoordinator? androidPhone;
   final bool compact;
 
   @override
   Widget build(BuildContext context) {
+    if (appAndroidDeviceBridge.supported) {
+      final phone = androidPhone;
+      if (phone == null) return const SizedBox.shrink();
+      return ListenableBuilder(
+        listenable: phone,
+        builder: (context, _) => PopupMenuButton<String>(
+          tooltip: 'Where ATLAS can help',
+          onSelected: (choice) {
+            if (choice == 'settings') {
+              context.push('/settings');
+              return;
+            }
+            onChanged(
+              choice == 'phone'
+                  ? TalkExecutionTarget.thisPhone
+                  : TalkExecutionTarget.agent,
+            );
+          },
+          itemBuilder: (_) => [
+            const PopupMenuItem(
+              value: 'agent',
+              child: ListTile(
+                leading: Icon(Icons.auto_awesome_outlined),
+                title: Text('Asael only'),
+                subtitle: Text('Work with your app and connected tools'),
+              ),
+            ),
+            PopupMenuItem(
+              value: 'phone',
+              enabled: phone.ready,
+              child: ListTile(
+                leading: const Icon(Icons.phone_android_rounded),
+                title: const Text('This phone'),
+                subtitle: Text(
+                  phone.ready
+                      ? 'Use apps on this phone'
+                      : 'Enable access in Settings first',
+                ),
+              ),
+            ),
+            const PopupMenuDivider(),
+            const PopupMenuItem(
+              value: 'settings',
+              child: ListTile(
+                leading: Icon(Icons.settings_outlined),
+                title: Text('Set up This phone'),
+              ),
+            ),
+          ],
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(value.icon, size: 18),
+                const SizedBox(width: 7),
+                Text(value.label),
+                const Icon(Icons.expand_more_rounded, size: 18),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
     final coordinator = localComputer;
     if (coordinator == null) return _menu(context, null);
     return ListenableBuilder(
@@ -7145,7 +7261,10 @@ class _ExecutionTargetMenu extends StatelessWidget {
             }
           },
           itemBuilder: (context) => [
-            for (final target in TalkExecutionTarget.values)
+            for (final target in const [
+              TalkExecutionTarget.agent,
+              TalkExecutionTarget.thisMac,
+            ])
               PopupMenuItem<String>(
                 value: 'target:${target.name}',
                 enabled:

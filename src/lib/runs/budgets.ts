@@ -472,6 +472,14 @@ export function settleModelTurnBudget(
 }
 
 const LOCAL_COMPUTER_VISUAL_ACTION_TOOL_IDS = new Set([
+  "local.android.open_app",
+  "local.android.press",
+  "local.android.tap",
+  "local.android.type",
+  "local.android.scroll",
+  "local.android.swipe",
+  "local.android.back",
+  "local.android.home",
   "local.macos.activate_app",
   "local.macos.open_url",
   "local.macos.press",

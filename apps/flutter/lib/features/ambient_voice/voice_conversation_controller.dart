@@ -7,6 +7,7 @@ import 'package:flutter_webrtc/flutter_webrtc.dart';
 
 import '../../core/network/api_client.dart';
 import '../../core/network/api_exception.dart';
+import '../../core/platform/android_device_bridge.dart';
 import '../../generated/native_contract.g.dart';
 import '../companion/companion_personality.dart';
 import 'realtime_voice_controller.dart' show AmbientVoiceException;
@@ -40,11 +41,26 @@ class VoiceConversationController extends ChangeNotifier {
     required ApiClient api,
     Dio? providerDio,
     CompanionPersonalityReader? readCompanionPersonality,
+    AndroidDeviceBridge? androidHost,
   }) : _api = api,
        _readCompanionPersonality = readCompanionPersonality,
+       _androidHost = androidHost,
        _provider =
            providerDio ??
-           Dio(BaseOptions(connectTimeout: const Duration(seconds: 12)));
+           Dio(BaseOptions(connectTimeout: const Duration(seconds: 12))) {
+    _androidEvents = _androidHost?.events.listen(
+      _androidEvent,
+      onError: (_) {
+        if (active)
+          unawaited(
+            _fail(
+              'The phone voice service stopped. Start voice again.',
+              'phone_service_unavailable',
+            ),
+          );
+      },
+    );
+  }
 
   static const _sessionPath = NativePaths.voiceConversationSessionStart;
   static const _turnsPath = NativePaths.voiceConversationTurns;
@@ -57,6 +73,27 @@ class VoiceConversationController extends ChangeNotifier {
   final ApiClient _api;
   final Dio _provider;
   final CompanionPersonalityReader? _readCompanionPersonality;
+  final AndroidDeviceBridge? _androidHost;
+  StreamSubscription<Map<String, dynamic>>? _androidEvents;
+  bool _foregroundService = false;
+  DateTime? _foregroundExpiresAt;
+  bool get backgroundCallActive =>
+      _androidHost != null &&
+      active &&
+      _foregroundService &&
+      _foregroundExpiresAt?.isAfter(DateTime.now()) == true;
+
+  void _androidEvent(Map<String, dynamic> event) {
+    if (!active) return;
+    if (event['type'] == 'voice_muted' && event['muted'] is bool) {
+      setMuted(event['muted'] as bool, notifyHost: false);
+    } else if (event['type'] == 'voice_ended' ||
+        (event['type'] == 'control_stopped' &&
+            commandContext?['computerUseTarget'] == 'local_android')) {
+      unawaited(end());
+    }
+  }
+
   RTCPeerConnection? _peer;
   RTCDataChannel? _channel;
   MediaStream? _microphone;
@@ -172,6 +209,15 @@ class VoiceConversationController extends ChangeNotifier {
     try {
       final selectedPersonality = await _readCompanionPersonality?.call();
       if (!_current(generation)) return;
+      if (_androidHost case final host?) {
+        final status = await host.requestNotifications();
+        if (!status.notificationsGranted)
+          throw const AmbientVoiceException(
+            'phone_notifications_required',
+            'Allow notifications so Mute and End stay available while you use other apps.',
+          );
+        if (!_current(generation)) return;
+      }
       final stream = await navigator.mediaDevices.getUserMedia({
         'audio': {
           'channelCount': 1,
@@ -186,6 +232,21 @@ class VoiceConversationController extends ChangeNotifier {
         return;
       }
       _microphone = stream;
+      if (_androidHost case final host?) {
+        final service = await host.startVoice();
+        if (!service.voiceActive || !service.serviceLeaseActive) {
+          throw const AmbientVoiceException(
+            'phone_voice_unavailable',
+            'Keep Asael open and unlock your phone before starting voice.',
+          );
+        }
+        _foregroundService = true;
+        _foregroundExpiresAt = service.serviceExpiresAt;
+        if (!_current(generation)) {
+          await host.stopVoice();
+          return;
+        }
+      }
       final credential = await _api
           .postJson(
             _sessionPath,
@@ -271,7 +332,10 @@ class VoiceConversationController extends ChangeNotifier {
         context['contextScope'] is! String ||
         context['contextReferences'] is! List ||
         (context['computerUseTarget'] != null &&
-            context['computerUseTarget'] != 'local_macos') ||
+            !const {
+              'local_macos',
+              'local_android',
+            }.contains(context['computerUseTarget'])) ||
         DateTime.tryParse(value['expiresAt']?.toString() ?? '') == null) {
       throw const AmbientVoiceException(
         'invalid_voice_session',
@@ -364,7 +428,7 @@ class VoiceConversationController extends ChangeNotifier {
     if (!sdp.startsWith('v=0') || sdp.length > 1048576)
       throw const AmbientVoiceException(
         'invalid_voice_offer',
-        'The Mac could not open its audio connection. Try again.',
+        'The app could not open its audio connection. Try again.',
       );
     final cancel = CancelToken();
     _exchange = cancel;
@@ -408,14 +472,27 @@ class VoiceConversationController extends ChangeNotifier {
     }
   }
 
-  void setMuted(bool value) {
-    if (!ready) return;
+  void setMuted(bool value, {bool notifyHost = true}) {
+    if (!active) return;
     muted = value;
     if (value) _userSpeaking = false;
     for (final track in _microphone?.getAudioTracks() ?? <MediaStreamTrack>[]) {
       track.enabled = !value;
     }
     _changed();
+    if (notifyHost && _androidHost != null) {
+      unawaited(
+        _androidHost.setVoiceMuted(value).catchError((Object _) {
+          if (active)
+            unawaited(
+              _fail(
+                'The microphone control could not be confirmed. Start voice again.',
+                'phone_mute_unavailable',
+              ),
+            );
+        }),
+      );
+    }
   }
 
   void _providerEvent(String raw, int generation) {
@@ -877,6 +954,8 @@ class VoiceConversationController extends ChangeNotifier {
     _channel = null;
     final peer = _peer;
     _peer = null;
+    _foregroundService = false;
+    _foregroundExpiresAt = null;
     // Disable capture immediately, before any network or history wait.
     for (final track in microphone?.getAudioTracks() ?? <MediaStreamTrack>[]) {
       track.enabled = false;
@@ -887,6 +966,13 @@ class VoiceConversationController extends ChangeNotifier {
       onConversationEnded?.call(conversation, savedCaptions);
     }
     if (microphone != null) await _releaseMicrophone(microphone);
+    if (_androidHost != null) {
+      try {
+        await _androidHost.stopVoice();
+      } catch (_) {
+        /* Audio tracks are already stopped. */
+      }
+    }
     try {
       await channel?.close();
     } catch (_) {
@@ -1006,7 +1092,7 @@ class VoiceConversationController extends ChangeNotifier {
     if (description.contains('permission') ||
         description.contains('notallowed') ||
         description.contains('denied'))
-      return 'Microphone access is off. Allow Asael in System Settings → Privacy & Security → Microphone, then try again.';
+      return 'Microphone access is off. Allow Asael’s microphone permission in your device settings, then try again.';
     if (error is TimeoutException)
       return 'Voice took too long to connect. Check your connection and try again.';
     return 'Asael could not start the voice call. Check microphone access and your connection, then try again.';
@@ -1025,6 +1111,7 @@ class VoiceConversationController extends ChangeNotifier {
   void dispose() {
     if (_disposed) return;
     unawaited(end());
+    unawaited(_androidEvents?.cancel());
     _disposed = true;
     super.dispose();
   }

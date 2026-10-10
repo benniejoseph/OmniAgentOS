@@ -3,9 +3,9 @@
 
 abstract final class NativeContract {
   static const id = 'asael.native-api';
-  static const currentVersion = 52;
-  static const previousVersion = 51;
-  static const supportedVersions = <int>[52, 51, 50];
+  static const currentVersion = 53;
+  static const previousVersion = 52;
+  static const supportedVersions = <int>[53, 52, 51];
   static const discoveryPath = '/api/mobile/contracts';
   static const operationIds = <String>{
     'auth.login',
@@ -269,6 +269,11 @@ abstract final class NativeContract {
     'voice.conversation.turns',
     'personal.profile.get',
     'personal.profile.update',
+    'localAndroid.device',
+    'localAndroid.device.update',
+    'localAndroid.command.claim',
+    'localAndroid.command.complete',
+    'localAndroid.stop',
   };
 
   static bool supports(int version) => supportedVersions.contains(version);
@@ -1052,6 +1057,11 @@ abstract final class NativePaths {
   static const voiceConversationTurns = '/api/voice/conversation/turns';
   static const personalProfileGet = '/api/personal-context/profile';
   static const personalProfileUpdate = '/api/personal-context/profile';
+  static const localAndroidDevice = '/api/mobile/android-control/device';
+  static const localAndroidDeviceUpdate = '/api/mobile/android-control/device';
+  static const localAndroidCommandClaim = '/api/mobile/android-control/commands/claim';
+  static String localAndroidCommandComplete(String id) => '/api/mobile/android-control/commands/${Uri.encodeComponent(id)}/complete';
+  static const localAndroidStop = '/api/mobile/android-control/stop';
 }
 
 abstract final class NativeConversationEvents {

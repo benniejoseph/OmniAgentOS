@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="asael_phone_control_name">ATLAS phone control</string>
+    <string name="asael_phone_control_description">When you turn on This phone in Asael, ATLAS can read the visible app screen and use its controls to carry out your requests. Screen content is sent to your configured AI service for that request. Password fields, secure screens, payment apps and permission prompts are excluded. Turn access off here at any time.</string>
+</resources>

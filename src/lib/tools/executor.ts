@@ -197,7 +197,8 @@ type LocalComputerToolResult = Readonly<{
     frontmostApplication?: Readonly<{
       name: string;
       bundleId?: string | null;
-      pid: number;
+      pid?: number;
+      packageName?: string;
     }>;
     accessibilitySnapshot?: string;
     screenshot?: Readonly<{
@@ -475,7 +476,7 @@ export class LocalComputerObservationExpiredError extends Error {
 
   constructor() {
     super(
-      "The local Mac observation was already consumed or did not include fresh visual evidence. Run local.macos.observe again with a new tool call.",
+      "The local device observation was already consumed or did not include fresh evidence. Observe the selected device again with a new tool call.",
     );
     this.name = "LocalComputerObservationExpiredError";
   }
@@ -636,10 +637,10 @@ export async function executeGovernedTool({
   // Task authority brings forward only an app the user named in their
   // request; switching to any other app goes to the user for review.
   const localComputerTaskAppReview =
-    registeredTool.id === "local.macos.activate_app" &&
+    ["local.macos.activate_app", "local.android.open_app"].includes(registeredTool.id) &&
     localComputerTaskAuthority !== undefined &&
     !localComputerTaskAppNamed(
-      input.bundleId,
+      input.bundleId || input.packageName,
       localComputerTaskAuthority.objective,
     );
   // A durable approval record is part of the execution identity even when the
@@ -1088,7 +1089,7 @@ export async function executeGovernedTool({
         }
         throw error;
       }
-      if (tool.id === "local.macos.observe") {
+      if (["local.macos.observe", "local.android.observe"].includes(tool.id)) {
         throw new LocalComputerObservationExpiredError();
       }
       const reconciled = (await reconcileExistingMemoryWriteEffect({
@@ -1344,7 +1345,7 @@ export async function executeGovernedTool({
   const effectiveApproved = authority.approved;
   const policyLeaseAuthority = authority.source === "policy_lease";
   // With no reviewed approval beside it, task authority alone lets this
-  // action run. The Mac must then check the real on-screen target itself;
+  // action run. The device must then check the real on-screen target itself;
   // when it cannot, the action goes to the user for review instead.
   const localComputerTaskAuthorityOnly =
     authority.source === "task_authority";
@@ -1360,7 +1361,7 @@ export async function executeGovernedTool({
   const approvalReviewReason =
     localComputerTaskAuthorityDecision.reviewReason ??
     (localComputerTaskAppReview
-      ? "This Mac task authority switches only to apps named in your request."
+      ? "ATLAS needs your approval to open an app that you did not name in this request."
       : taskAuthorityReviewReason);
   const baseRecord = {
     tenantId: existingRecord?.tenantId || context?.tenantId,
@@ -2052,7 +2053,7 @@ export async function executeGovernedTool({
     }
     const localComputerResult = asLocalComputerToolResult(result);
     if (
-      tool.id === "local.macos.observe" &&
+      ["local.macos.observe", "local.android.observe"].includes(tool.id) &&
       !localComputerResult?.observation
     ) {
       throw new LocalComputerObservationExpiredError();
@@ -3178,9 +3179,29 @@ const LOCAL_COMPUTER_TOOL_ACTIONS = {
   "local.macos.key": "key",
   "local.macos.scroll": "scroll",
   "local.macos.command.run": "run_command",
+  "local.android.observe": "observe",
+  "local.android.list_apps": "list_apps",
+  "local.android.open_app": "open_app",
+  "local.android.press": "press",
+  "local.android.tap": "tap",
+  "local.android.type": "type",
+  "local.android.scroll": "scroll",
+  "local.android.swipe": "swipe",
+  "local.android.back": "back",
+  "local.android.home": "home",
+
 } as const;
 
 const LOCAL_COMPUTER_TASK_AUTHORIZED_TOOL_IDS = new Set([
+  "local.android.open_app",
+  "local.android.press",
+  "local.android.tap",
+  "local.android.type",
+  "local.android.scroll",
+  "local.android.swipe",
+  "local.android.back",
+  "local.android.home",
+
   "local.macos.activate_app",
   "local.macos.open_url",
   "local.macos.press",
@@ -3401,13 +3422,15 @@ function decideLocalComputerTaskAuthority(input: {
     return { covered: false };
   }
 
-  if (input.toolId === "local.macos.type") {
+  if (input.toolId.startsWith("local.android.") && input.toolId !== "local.android.open_app" &&
+      (typeof input.preparedInput.interactionPurpose !== "string" || !LOCAL_COMPUTER_SAFE_INTERACTION_PURPOSES.has(input.preparedInput.interactionPurpose))) return { covered: false };
+  if (input.toolId === "local.macos.type" || input.toolId === "local.android.type") {
     return localComputerTaskTextCovered(input.preparedInput.text)
       ? { covered: true }
       : {
           covered: false,
           reviewReason:
-            `This Mac task authority types only short single-line text (up to ${LOCAL_COMPUTER_TASK_MAX_TYPED_CHARACTERS} characters); line breaks, tabs, and control characters can send a message or move focus.`,
+            `Device task authority types only short single-line text (up to ${LOCAL_COMPUTER_TASK_MAX_TYPED_CHARACTERS} characters); line breaks, tabs, and control characters can send a message or move focus.`,
         };
   }
 
@@ -3454,10 +3477,10 @@ function decideLocalComputerTaskAuthority(input: {
 function localComputerTaskAuthorityReviewReason(error: unknown) {
   if (!(error instanceof LocalComputerCommandError)) return undefined;
   if (error.code === LOCAL_COMPUTER_TASK_AUTHORITY_UNATTESTED_ERROR_CODE) {
-    return "This version of the Mac app cannot check what a task-authorized action would touch on screen, so this one needs your review.";
+    return "This app version cannot check what a task-authorized action would touch on screen, so this one needs your review.";
   }
   if (error.code === LOCAL_COMPUTER_TASK_AUTHORITY_REFUSED_ERROR_CODE) {
-    return "Your Mac could not confirm that what this action would touch on screen is covered by task authority, so this one needs your review.";
+    return "Your device could not confirm that what this action would touch on screen is covered by task authority, so this one needs your review.";
   }
   return undefined;
 }
@@ -3493,7 +3516,7 @@ function localComputerModelObservation(input: {
     canonicalJsonSha256(input.terminalOutput || {});
   return sanitizeModelComputerObservation({
     schemaVersion: 1,
-    source: "local_macos",
+    source: input.operation.startsWith("local.android.") ? "local_android" : "local_macos",
     trust: "untrusted_data",
     executionId: input.executionId,
     operation: input.operation,
@@ -3503,7 +3526,8 @@ function localComputerModelObservation(input: {
           applicationState: {
             name: application.name,
             ...(application.bundleId ? { bundleId: application.bundleId } : {}),
-            pid: application.pid,
+            ...(application.pid ? { pid: application.pid } : {}),
+            ...(application.packageName ? { packageName: application.packageName } : {}),
           },
         }
       : {}),
@@ -4260,6 +4284,7 @@ async function runTool(
     }
     const completed = await executeLocalComputerCommand({
       action: localComputerAction,
+      platform: tool.id.startsWith("local.android.") ? "android" : "macos",
       toolInput: parsed,
       executionId: idempotencyKey,
       runId: agentRunId,
@@ -5582,7 +5607,7 @@ function toolAppServiceCaller(
 }
 
 function parseInput(tool: ToolDefinition, input: Record<string, unknown>) {
-  if (tool.id === "local.macos.observe") {
+  if (["local.macos.observe", "local.android.observe"].includes(tool.id)) {
     return localMacObserveSchema.parse(input);
   }
 

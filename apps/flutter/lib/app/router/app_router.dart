@@ -8,11 +8,13 @@ import 'package:go_router/go_router.dart';
 import '../../core/network/api_client.dart';
 import '../../core/network/native_workspace_access.dart';
 import '../../core/platform/desktop_host_bridge.dart';
+import '../../core/platform/android_device_bridge.dart';
 import '../../core/storage/secure_session_store.dart';
 import '../../core/sync/reconnect_coordinator.dart';
 import '../../features/ambient_voice/ambient_voice_consent.dart';
 import '../../features/ambient_voice/realtime_voice_controller.dart';
 import '../../features/ambient_voice/voice_conversation_controller.dart';
+import '../../features/ambient_voice/android_voice_session.dart';
 import '../../features/activity/activity_providers.dart';
 import '../../features/activity/activity_view.dart';
 import '../../features/history/history_workspace.dart';
@@ -25,6 +27,7 @@ import '../../features/auth/presentation/session_bootstrap_screen.dart';
 import '../../features/capture/capture.dart';
 import '../../features/capture/capture_providers.dart';
 import '../../features/computer_use/local_computer.dart';
+import '../../features/computer_use/android_phone.dart';
 import '../../features/companion/companion_entry.dart';
 import '../../features/companion/companion_models.dart';
 import '../../features/companion/companion_personality.dart';
@@ -453,8 +456,17 @@ class ProviderBoundTalkRoute extends ConsumerWidget {
     localComputer: ref.watch(
       localComputerCoordinatorProvider.select((coordinator) => coordinator),
     ),
+    androidPhone: appAndroidDeviceBridge.supported
+        ? ref.watch(androidPhoneProvider.select((value) => value))
+        : null,
     quickEntry: quickEntry,
     ambientVoice: ambientVoice,
+    backgroundVoiceController: ambientVoice && appAndroidDeviceBridge.supported
+        ? ref.watch(androidVoiceSessionProvider.select((value) => value))
+        : null,
+    backgroundVoiceDelegate: ambientVoice && appAndroidDeviceBridge.supported
+        ? ref.watch(androidVoiceDelegateProvider)
+        : null,
     voiceConversationFactory: ambientVoice && appDesktopHostBridge.supported
         ? () => VoiceConversationController(
             api: ref.read(apiClientProvider),
@@ -463,7 +475,10 @@ class ProviderBoundTalkRoute extends ConsumerWidget {
                 .readSelection,
           )
         : null,
-    ambientRealtimeFactory: ambientVoice && !appDesktopHostBridge.supported
+    ambientRealtimeFactory:
+        ambientVoice &&
+            !appDesktopHostBridge.supported &&
+            !appAndroidDeviceBridge.supported
         ? () => AmbientRealtimeVoiceController(
             api: ref.read(apiClientProvider),
             sessionStore: ref.read(secureSessionStoreProvider),

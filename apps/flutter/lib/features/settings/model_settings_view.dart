@@ -9,11 +9,13 @@ import '../../core/network/api_client.dart';
 import '../../core/network/native_workspace_access.dart';
 import '../../core/platform/desktop_host_bridge.dart';
 import '../../core/platform/local_computer_bridge.dart';
+import '../../core/platform/android_device_bridge.dart';
 import '../../generated/native_contract.g.dart';
 import '../computer_use/local_computer.dart';
 import '../companion/companion_settings.dart';
 import 'personal_profile_settings.dart';
 import 'portable_archive_panel.dart';
+import 'android_phone_settings.dart';
 
 typedef Json = Map<String, dynamic>;
 
@@ -633,6 +635,10 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
                           ),
                           const SizedBox(height: 8),
                           _LocalComputerControl(coordinator: localComputer),
+                        ],
+                        if (appAndroidDeviceBridge.supported) ...[
+                          const SizedBox(height: 24),
+                          const AndroidPhoneSettings(),
                         ],
                         const SizedBox(height: 24),
                         Row(
