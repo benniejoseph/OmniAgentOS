@@ -4,6 +4,15 @@ Production uses Node.js 24.x and npm 11.x across local metadata, CI, and the wor
 
 ## Required production configuration
 
+Android app **1.28.2+91** fixes the retained Flutter engine's ownership when
+Asael is reopened. The engine is registered before Activity creation and the
+Activity uses a cached, non-destroying Flutter fragment; this prevents a second
+Activity from crashing the process and its phone-control Accessibility service.
+The Android-only patch retains contract **v53**, migration **249**, and the
+compatible deployed web/worker. Mac **1.28.1+90** remains current because its
+runtime is unchanged. Existing Android Accessibility permission is preserved;
+confirm the service reconnects before enabling This phone and checking a request.
+
 Native app **1.28.1+90** fixes sign-in after clearing or expiring a saved
 session when biometric protection is enabled. Credential requests do not read
 the previous session's protected bearer token, and biometric refusals remain

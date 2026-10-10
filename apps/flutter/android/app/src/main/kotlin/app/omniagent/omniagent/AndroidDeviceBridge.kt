@@ -12,6 +12,7 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.embedding.engine.FlutterEngineCache
 import io.flutter.embedding.engine.dart.DartExecutor
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
@@ -22,6 +23,7 @@ import java.time.Instant
 /** The in-process, credential-free device boundary. Flutter owns server authority. */
 object AndroidDeviceBridge {
     const val NOTIFICATION_PERMISSION_REQUEST = 4318
+    const val ENGINE_CACHE_ID = "asael_retained_engine"
     private const val CHANNEL = "app.omniagent.omniagent/android-device"
     private const val SESSION_MILLIS = 30 * 60 * 1000L
     private val handler = Handler(Looper.getMainLooper())
@@ -56,7 +58,10 @@ object AndroidDeviceBridge {
         private set
 
     fun engine(context: Context): FlutterEngine {
-        retainedEngine?.let { return it }
+        retainedEngine?.let {
+            FlutterEngineCache.getInstance().put(ENGINE_CACHE_ID, it)
+            return it
+        }
         val application = context.applicationContext
         app = application
         val created = FlutterEngine(application)
@@ -91,6 +96,7 @@ object AndroidDeviceBridge {
             @Suppress("DEPRECATION") application.registerReceiver(receiver, filter)
         }
         created.dartExecutor.executeDartEntrypoint(DartExecutor.DartEntrypoint.createDefault())
+        FlutterEngineCache.getInstance().put(ENGINE_CACHE_ID, created)
         return created
     }
 
