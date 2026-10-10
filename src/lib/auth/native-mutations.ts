@@ -63,6 +63,10 @@ export const NATIVE_MUTATION_CAPABILITIES = [
   "agents.tasks.cancel",
   "agents.release.manage",
   "agents.adaptations.manage",
+  "android.control.device.update",
+  "android.control.command.claim",
+  "android.control.command.complete",
+  "android.control.stop",
   "computer.use.device.update",
   "computer.use.command.claim",
   "computer.use.command.complete",
@@ -92,6 +96,7 @@ export function nativeMutationEnrollment(
     return held("An authenticated native session is required.");
   }
   const minimumContractVersion = minimumVersion(capability);
+  if (capability.startsWith("android.control.") && context.native.platform !== "android") return held("Phone control requires this authenticated Android installation.", minimumContractVersion);
   if (
     capability.startsWith("computer.use.") &&
     context.native.platform !== "macos"
@@ -166,6 +171,7 @@ function minimumVersion(capability: NativeMutationCapability) {
     capability === "agents.release.manage" ||
     capability === "agents.adaptations.manage"
   ) return 25;
+  if (capability.startsWith("android.control.")) return 53;
   if (capability.startsWith("computer.use.")) return 11;
   // Backtests were enrolled in v7. Keep that capability floor stable when the
   // current document advances; compatibility still independently limits calls

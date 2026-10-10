@@ -139,6 +139,7 @@ class _VoiceConversationSurfaceState
   }
 
   void _presentWindow(VoiceAppearance appearance, bool details, double scale) {
+    if (!appDesktopHostBridge.supported) return;
     final width = _reviewingApproval
         ? 560.0
         : (appearance == VoiceAppearance.perch
@@ -286,10 +287,15 @@ class _VoiceConversationSurfaceState
           ),
         ],
         if (expanded &&
-            voice.commandContext?['computerUseTarget'] == 'local_macos') ...[
+            const {
+              'local_macos',
+              'local_android',
+            }.contains(voice.commandContext?['computerUseTarget'])) ...[
           const SizedBox(height: 8),
           Text(
-            'Asael + This Mac · device actions remain reviewed',
+            voice.commandContext?['computerUseTarget'] == 'local_android'
+                ? 'Asael + This phone · Stop is always available in your notification'
+                : 'Asael + This Mac · device actions remain reviewed',
             style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
           ),
         ],
@@ -531,13 +537,50 @@ class _VoiceConversationSurfaceState
         scale <= 1.15;
     final details = _expanded || !canCollapse;
     _presentWindow(appearance.appearance, details, scale);
+    final presentation = appearance.appearance == VoiceAppearance.perch
+        ? _perch(appearance, details, canCollapse)
+        : _companion(appearance, details, canCollapse);
     return Scaffold(
       backgroundColor: Colors.transparent,
       body: Focus(
         autofocus: true,
-        child: appearance.appearance == VoiceAppearance.perch
-            ? _perch(appearance, details, canCollapse)
-            : _companion(appearance, details, canCollapse),
+        child: appDesktopHostBridge.supported
+            ? presentation
+            : SafeArea(
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 8),
+                        child: Row(
+                          children: [
+                            IconButton(
+                              tooltip: 'Back to Asael',
+                              onPressed: () => Navigator.of(context).maybePop(),
+                              icon: const Icon(Icons.arrow_back_rounded),
+                            ),
+                            Expanded(
+                              child: Text(
+                                'Talk to ATLAS',
+                                style: Theme.of(context).textTheme.titleLarge,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Expanded(child: presentation),
+                      const Padding(
+                        padding: EdgeInsets.only(top: 16, bottom: 8),
+                        child: Text(
+                          'You can use other apps while we talk. Mute or end the call from the notification.',
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
       ),
     );
   }

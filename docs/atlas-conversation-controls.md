@@ -3,7 +3,9 @@
 The shared agent loop exposes Asael operations in typed tools for text and live
 voice. Web, Mac and mobile use the same owner-scoped application services. The
 Mac client additionally carries an explicitly selected **This Mac** target;
-web and mobile do not remotely operate another device.
+the private Android v53 client adds **This phone** for its own phone.
+Web and native clients do not implicitly operate another device. See
+[phone control](atlas-phone-control.md) for its Android setup and boundaries.
 
 ## What conversations can do
 

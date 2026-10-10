@@ -972,6 +972,8 @@ TalkQueuedPrompt _promptQueueItem(Object? value) {
   }
   final executionTarget = targetMap['executionTarget'] == 'local_macos'
       ? TalkExecutionTarget.thisMac
+      : targetMap['executionTarget'] == 'local_android'
+      ? TalkExecutionTarget.thisPhone
       : targetMap['executionTarget'] == 'asael'
       ? TalkExecutionTarget.agent
       : throw const FormatException('The queue execution target is invalid.');
@@ -1032,9 +1034,7 @@ Json _promptQueueCreateRequest(TalkQueuedPrompt prompt) => {
         .where((reference) => reference.kind == 'project')
         .firstOrNull
         ?.id,
-    'executionTarget': prompt.executionTarget == TalkExecutionTarget.thisMac
-        ? 'local_macos'
-        : 'asael',
+    'executionTarget': prompt.executionTarget.apiValue ?? 'asael',
   },
 };
 
@@ -1097,6 +1097,8 @@ List<TalkQueuedPrompt> _applyPromptQueueOutbox(
           strategy: _queueText(values['strategy'], maximum: 20),
           executionTarget: target['executionTarget'] == 'local_macos'
               ? TalkExecutionTarget.thisMac
+              : target['executionTarget'] == 'local_android'
+              ? TalkExecutionTarget.thisPhone
               : TalkExecutionTarget.agent,
           assignedAgent: TalkAssignedAgent(
             id: agentId.isEmpty ? 'atlas' : agentId,

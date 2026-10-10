@@ -2954,7 +2954,8 @@ export function parseAgentRunContinuation(
   if (
     candidate.computerUseTarget !== undefined &&
     candidate.computerUseTarget !== "isolated_browser" &&
-    candidate.computerUseTarget !== "local_macos"
+    candidate.computerUseTarget !== "local_macos" &&
+    candidate.computerUseTarget !== "local_android"
   ) {
     return undefined;
   }

@@ -8,6 +8,7 @@ import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { checkSharedRateLimit, RateLimitStoreUnavailableError } from "@/lib/http/rate-limit";
 import { getOwnedProject } from "@/lib/projects/store";
 import { getLocalComputerDevice, LocalComputerUnavailableError } from "@/lib/local-computer/store";
+import { isLocalComputerTarget } from "@/lib/orchestration/computer-use-routing";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
@@ -52,19 +53,23 @@ async function POSTHandler(request: Request) {
       throw new VoiceConversationError("voice_context_needs_selection",
         "For live voice, choose conversation or project context. A reviewed one-task selection cannot be reused for changing spoken requests.", 409);
     }
-    if (input.computerUseTarget === "local_macos") {
-      if (context.source !== "mobile" || (context.native?.clientContractVersion || 0) < 52) {
-        throw new VoiceConversationError("voice_mac_update_required", "Update the Mac app before using This Mac in a live voice conversation.", 409);
+    if (isLocalComputerTarget(input.computerUseTarget)) {
+      const phone = input.computerUseTarget === "local_android";
+      const label = phone ? "This phone" : "This Mac";
+      const deviceName = phone ? "Android" : "Mac";
+      const errorPrefix = phone ? "voice_phone" : "voice_mac";
+      if (context.source !== "mobile" || (context.native?.clientContractVersion || 0) < (phone ? 53 : 52)) {
+        throw new VoiceConversationError(`${errorPrefix}_update_required`, `Update the ${deviceName} app before using ${label} in a live voice conversation.`, 409);
       }
-      // Only the authenticated native Mac can pin local authority. Selecting
+      // Only the authenticated native device can pin local authority. Selecting
       // the target still grants no action; every run rechecks current readiness.
       try {
-        const device = await getLocalComputerDevice(context);
-        if (!device?.enabled || !device.online) throw new VoiceConversationError("voice_mac_unavailable",
-          "This Mac is not ready. Enable it in Settings → This Mac before starting voice.", 409);
+        const device = await getLocalComputerDevice(context, input.computerUseTarget);
+        if (!device?.enabled || !device.online) throw new VoiceConversationError(`${errorPrefix}_unavailable`,
+          `${label} is not ready. Enable it in Settings → ${label} before starting voice.`, 409);
       } catch (error) {
-        if (error instanceof LocalComputerUnavailableError) throw new VoiceConversationError("voice_mac_unavailable",
-          "Start This Mac voice from the connected Mac app after enabling access in Settings.", 409);
+        if (error instanceof LocalComputerUnavailableError) throw new VoiceConversationError(`${errorPrefix}_unavailable`,
+          `Start ${label} voice from the connected ${deviceName} app after enabling access in Settings.`, 409);
         throw error;
       }
     }

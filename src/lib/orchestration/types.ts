@@ -33,7 +33,7 @@ export type ChatMessage = {
 
 export type AgentMode = "orchestrate" | "research" | "execute" | "learn";
 /** Active Computer Use surfaces. Local control is always owner-selected. */
-export type ComputerUseTarget = "local_macos";
+export type ComputerUseTarget = "local_macos" | "local_android";
 /**
  * Persisted runs can outlive a release. Keep the retired value readable so a
  * legacy continuation can be terminated explicitly instead of being dropped

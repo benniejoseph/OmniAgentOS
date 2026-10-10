@@ -25,7 +25,7 @@ export const promptQueueTargetV1Schema = z.object({
   threadId: z.string().uuid().nullable(),
   missionId: z.string().uuid().nullable(),
   projectId: governedProjectIdSchema.nullable(),
-  executionTarget: z.enum(["asael", "local_macos"]),
+  executionTarget: z.enum(["asael", "local_macos", "local_android"]),
 }).strict();
 
 export const promptQueueAgentPinV1Schema = z.object({

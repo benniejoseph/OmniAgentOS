@@ -65,6 +65,9 @@ export function conversationControlToolPreferences(query: string | undefined): s
   if (/\b(?:mac|desktop|screen|click|type|keyboard|shortcut|finder|safari|chrome|textedit|notes|pages)\b/.test(text)) {
     add("local.macos.list_apps", "local.macos.activate_app", "local.macos.observe", "local.macos.press", "local.macos.click", "local.macos.type", "local.macos.key", "local.macos.scroll", "local.macos.open_url");
   }
+  if (/\b(?:phone|android|mobile|tap|swipe|home screen)\b/.test(text)) {
+    add("local.android.list_apps", "local.android.open_app", "local.android.observe", "local.android.press", "local.android.tap", "local.android.type", "local.android.scroll", "local.android.swipe", "local.android.back", "local.android.home");
+  }
   if (/\b(?:terminal|command|repo(?:sitory)?|git|build|compile|folder|directory|files?|code)\b/.test(text)) add("local.macos.command.run");
   return [...ids];
 }

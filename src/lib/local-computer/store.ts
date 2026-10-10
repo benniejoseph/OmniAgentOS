@@ -32,6 +32,12 @@ import {
   type LocalComputerCompletionRequest,
   type LocalComputerDeviceUpdate,
 } from "@/lib/local-computer/contracts";
+import {
+  LOCAL_ANDROID_NATIVE_CONTRACT_VERSION, LOCAL_ANDROID_TASK_AUTHORITY_ACTIONS,
+  localAndroidActionSchema, localAndroidInputs, localAndroidResultSchema,
+  localAndroidDeviceUpdateSchema,
+  type LocalAndroidAction, type LocalAndroidCompletionRequest, type LocalAndroidDeviceUpdate,
+} from "@/lib/local-computer/android-contracts";
 import { localComputerKeyNeedsV52 } from "@/lib/local-computer/keyboard-policy";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
 import {
@@ -46,6 +52,10 @@ import {
   openToolExecutionInput,
 } from "@/lib/tools/audit-store";
 
+type NativeLocalAction = LocalComputerAction | LocalAndroidAction;
+type NativeLocalResult = Omit<ReturnType<typeof localComputerResultSchema.parse>, "observation"> & {
+  observation?: ReturnType<typeof localComputerResultSchema.parse>["observation"] | ReturnType<typeof localAndroidResultSchema.parse>["observation"];
+};
 type LocalComputerSql = ReturnType<typeof getSql>;
 const LOCAL_COMPUTER_EPHEMERAL_RESULT_TTL_SECONDS = 5 * 60;
 
@@ -68,22 +78,27 @@ export class LocalComputerCommandError extends Error {
 
 export async function updateLocalComputerDevice(
   context: SecurityContext,
-  input: LocalComputerDeviceUpdate,
+  input: LocalComputerDeviceUpdate | LocalAndroidDeviceUpdate,
 ) {
-  const native = exactMacContext(context);
+  const native = exactLocalContext(context);
   requireStorage();
   await ensureDatabaseSchema();
   const now = new Date();
   const leaseExpiresAt = new Date(
     now.getTime() + LOCAL_COMPUTER_DEVICE_LEASE_SECONDS * 1_000,
   ).toISOString();
-  const permissions = input.permissions;
-  const visualReady = permissions.accessibility === "granted" &&
-    permissions.screenRecording === "granted";
-  const commandReady = native.contractVersion >=
+  if (native.platform === "android") localAndroidDeviceUpdateSchema.parse(input);
+  else if ("androidApiLevel" in input) throw new LocalComputerUnavailableError("Android readiness cannot register a Mac.");
+  const android = "androidApiLevel" in input ? input : undefined;
+  const permissions = android ? { ...android.permissions, supported: android.supported, locked: android.locked, foregroundServiceReady: android.foregroundServiceReady, androidApiLevel: android.androidApiLevel } : input.permissions;
+  const visualReady = permissions.accessibility === "granted" && (android
+      ? android.permissions.screenCapture === "granted" && android.supported && !android.locked && android.foregroundServiceReady && android.androidApiLevel >= 34
+      : "screenRecording" in permissions && permissions.screenRecording === "granted");
+  const commandRunner = "commandRunner" in input ? input.commandRunner : undefined;
+  const commandReady = native.platform === "macos" && native.contractVersion >=
       LOCAL_COMPUTER_COMMAND_RUNNER_CONTRACT_VERSION &&
-    input.commandRunner?.helperInstalled === true &&
-    input.commandRunner.workspaces.length > 0;
+    commandRunner?.helperInstalled === true &&
+    commandRunner.workspaces.length > 0;
   const eligible = input.enabled && (visualReady || commandReady);
   const rows = await getSql()`
     INSERT INTO omni_local_computer_devices (
@@ -94,9 +109,9 @@ export async function updateLocalComputerDevice(
     )
     SELECT
       ${context.tenantId}, ${context.actorId}, ${native.userId}, session.id,
-      ${native.deviceId}, 'macos', ${native.contractVersion}, ${eligible},
+      ${native.deviceId}, ${native.platform}, ${native.contractVersion}, ${eligible},
       ${input.helperVersion}, ${permissions}::jsonb, ${input.activityState},
-      ${input.commandRunner || null}::jsonb, 1, ${now.toISOString()}, ${leaseExpiresAt},
+      ${commandRunner || null}::jsonb, 1, ${now.toISOString()}, ${leaseExpiresAt},
       ${eligible ? null : now.toISOString()}, ${now.toISOString()},
       ${now.toISOString()}
     FROM omni_mobile_sessions session
@@ -104,6 +119,9 @@ export async function updateLocalComputerDevice(
       AND session.tenant_id = ${context.tenantId}
       AND session.user_id = ${native.userId}
       AND session.device_id = ${native.deviceId}
+      AND session.platform = ${native.platform}
+      AND session.client_contract_version >= ${native.platform === "android" ? LOCAL_ANDROID_NATIVE_CONTRACT_VERSION : LOCAL_COMPUTER_NATIVE_CONTRACT_VERSION}
+      AND session.client_attested_at IS NOT NULL
       AND session.revoked_at IS NULL
       AND session.refresh_expires_at > NOW()
     ON CONFLICT (tenant_id, owner_actor_id, device_id) DO UPDATE SET
@@ -131,8 +149,8 @@ export async function updateLocalComputerDevice(
   return publicDevice(rows[0]);
 }
 
-export async function getLocalComputerDevice(context: SecurityContext) {
-  const native = exactMacContext(context);
+export async function getLocalComputerDevice(context: SecurityContext, expectedTarget?: "local_macos" | "local_android") {
+  const native = exactLocalContext(context, expectedTarget);
   requireStorage();
   await ensureDatabaseSchema();
   const rows = await getSql()`
@@ -149,8 +167,9 @@ export async function getLocalComputerDevice(context: SecurityContext) {
 export async function startLocalComputerSession(
   context: SecurityContext,
   correlationId: string,
+  expectedTarget?: "local_macos" | "local_android",
 ) {
-  const native = exactMacContext(context);
+  const native = exactLocalContext(context, expectedTarget);
   requireStorage();
   const normalizedCorrelationId = opaque(correlationId, "correlation id", 200);
   await ensureDatabaseSchema();
@@ -176,15 +195,24 @@ export async function startLocalComputerSession(
       AND device.owner_actor_id = ${context.actorId}
       AND device.device_id = ${native.deviceId}
       AND device.mobile_session_id = ${native.sessionId}
+      AND device.platform = ${native.platform}
       AND device.enabled
       AND device.lease_expires_at > NOW()
       AND (
         (
           device.permission_status ->> 'accessibility' = 'granted'
-          AND device.permission_status ->> 'screenRecording' = 'granted'
+          AND (
+            (device.platform = 'macos' AND device.permission_status ->> 'screenRecording' = 'granted')
+            OR (device.platform = 'android' AND device.permission_status ->> 'screenCapture' = 'granted'
+              AND device.permission_status ->> 'supported' = 'true'
+              AND device.permission_status ->> 'locked' = 'false'
+              AND device.permission_status ->> 'foregroundServiceReady' = 'true'
+              AND (device.permission_status ->> 'androidApiLevel')::integer >= 34)
+          )
         )
         OR (
-          device.native_contract_version >= ${LOCAL_COMPUTER_COMMAND_RUNNER_CONTRACT_VERSION}
+          device.platform = 'macos'
+          AND device.native_contract_version >= ${LOCAL_COMPUTER_COMMAND_RUNNER_CONTRACT_VERSION}
           AND device.command_runner ->> 'helperInstalled' = 'true'
           AND jsonb_array_length(COALESCE(
             device.command_runner -> 'workspaces',
@@ -203,7 +231,7 @@ export async function startLocalComputerSession(
   `;
   if (!rows[0]) {
     throw new LocalComputerUnavailableError(
-      "This Mac is not online with visual permissions or an installed command runner workspace.",
+      native.platform === "android" ? "This phone is not ready. Unlock it, enable phone control and start the active phone session in Asael." : "This Mac is not online with visual permissions or an installed command runner workspace.",
     );
   }
   await appendLocalComputerEvent({
@@ -245,9 +273,10 @@ export async function startLocalComputerSession(
   return {
     id, deviceId: native.deviceId, expiresAt, workspaces,
     capabilities: {
-      visualControlReady: permissions.accessibility === "granted" &&
-        permissions.screenRecording === "granted",
-      commandRunnerReady: native.contractVersion >= LOCAL_COMPUTER_COMMAND_RUNNER_CONTRACT_VERSION && workspaces.length > 0,
+      visualControlReady: permissions.accessibility === "granted" && (native.platform === "android"
+        ? permissions.screenCapture === "granted" && permissions.supported === true && permissions.locked === false && permissions.foregroundServiceReady === true && Number(permissions.androidApiLevel) >= 34
+        : permissions.screenRecording === "granted"),
+      commandRunnerReady: native.platform === "macos" && native.contractVersion >= LOCAL_COMPUTER_COMMAND_RUNNER_CONTRACT_VERSION && workspaces.length > 0,
     },
   };
 }
@@ -256,7 +285,7 @@ export async function stopLocalComputerDevice(
   context: SecurityContext,
   reason: string,
 ) {
-  const native = exactMacContext(context);
+  const native = exactLocalContext(context);
   requireStorage();
   await ensureDatabaseSchema();
   const now = new Date().toISOString();
@@ -299,7 +328,7 @@ export async function stopLocalComputerDevice(
 }
 
 export async function claimLocalComputerCommand(context: SecurityContext) {
-  const native = exactMacContext(context);
+  const native = exactLocalContext(context);
   requireStorage();
   await ensureDatabaseSchema();
   await getSql()`
@@ -357,8 +386,16 @@ export async function claimLocalComputerCommand(context: SecurityContext) {
         AND command.device_id = ${native.deviceId}
         AND session.mobile_session_id = ${native.sessionId}
         AND session.run_id IS NOT NULL
+        AND (${native.platform !== "android"} OR EXISTS (
+          SELECT 1 FROM omni_agent_runs active_run
+          WHERE active_run.tenant_id = command.tenant_id AND active_run.owner_actor_id = command.owner_actor_id
+            AND active_run.id = session.run_id
+            AND (active_run.status = 'running' OR (active_run.status IN ('waiting_approval', 'resuming')
+              AND active_run.continuation #>> '{pendingToolCall,executionId}' = command.execution_id))
+        ))
         AND session.state = 'active'
         AND session.expires_at > NOW()
+        AND device.platform = ${native.platform}
         AND device.enabled
         AND device.lease_expires_at > NOW()
         AND command.expires_at > NOW()
@@ -403,8 +440,9 @@ export async function claimLocalComputerCommand(context: SecurityContext) {
     });
     if (
       !execution ||
+      (native.platform === "android" && (execution.status !== "executing" || execution.dryRun)) ||
       execution.toolId !== toolIdForLocalComputerAction(
-        localComputerActionSchema.parse(row.action),
+        (native.platform === "android" ? localAndroidActionSchema : localComputerActionSchema).parse(row.action), native.platform,
       )
     ) {
       throw new Error("The governed tool execution binding is unavailable.");
@@ -414,7 +452,7 @@ export async function claimLocalComputerCommand(context: SecurityContext) {
       throw new Error("The governed tool input digest does not match.");
     }
     taskAuthority = isLocalComputerTaskAuthorityExecution(execution) &&
-      LOCAL_COMPUTER_TASK_AUTHORITY_ATTESTED_ACTIONS.has(String(row.action));
+      (native.platform === "android" ? LOCAL_ANDROID_TASK_AUTHORITY_ACTIONS : LOCAL_COMPUTER_TASK_AUTHORITY_ATTESTED_ACTIONS).has(String(row.action));
   } catch (error) {
     await getSql()`
       UPDATE omni_local_computer_commands
@@ -434,7 +472,7 @@ export async function claimLocalComputerCommand(context: SecurityContext) {
   }
   if (
     native.contractVersion < requiredNativeContractVersionForCommand(
-      localComputerActionSchema.parse(row.action), commandInput,
+      (native.platform === "android" ? localAndroidActionSchema : localComputerActionSchema).parse(row.action), commandInput, native.platform,
     )
   ) {
     // Recheck at dispatch: the app may have been replaced after the exact
@@ -480,9 +518,9 @@ export async function claimLocalComputerCommand(context: SecurityContext) {
       id: String(row.id),
       runId: opaque(String(row.run_id), "run id", 240),
       executionId: opaque(String(row.execution_id), "execution id", 240),
-      action: localComputerActionSchema.parse(row.action),
+      action: (native.platform === "android" ? localAndroidActionSchema : localComputerActionSchema).parse(row.action),
       input: localComputerHelperInput(
-        localComputerActionSchema.parse(row.action),
+        (native.platform === "android" ? localAndroidActionSchema : localComputerActionSchema).parse(row.action),
         commandInput,
       ),
       presentScreenshot:
@@ -500,7 +538,7 @@ export async function claimLocalComputerCommand(context: SecurityContext) {
 }
 
 function localComputerHelperInput(
-  action: LocalComputerAction,
+  action: NativeLocalAction,
   input: Record<string, unknown>,
 ) {
   const {
@@ -568,12 +606,12 @@ export async function scrubExpiredLocalComputerObservations(
 export async function completeLocalComputerCommand(
   context: SecurityContext,
   commandId: string,
-  completion: LocalComputerCompletionRequest,
+  completion: LocalComputerCompletionRequest | LocalAndroidCompletionRequest,
 ) {
-  const native = exactMacContext(context);
+  const native = exactLocalContext(context);
   requireStorage();
   const id = opaque(commandId, "command id", 80);
-  const result = completion.result || null;
+  const result: NativeLocalResult | null = completion.result || null;
   const hasTerminalOutput = Boolean(result?.terminalOutput);
   const resultSha256 = result ? canonicalJsonSha256(result) : null;
   await ensureDatabaseSchema();
@@ -587,6 +625,10 @@ export async function completeLocalComputerCommand(
       AND owner_actor_id = ${context.actorId}
       AND device_id = ${native.deviceId}
       AND id = ${id}
+      AND EXISTS (SELECT 1 FROM omni_local_computer_sessions session
+        JOIN omni_local_computer_devices device ON device.tenant_id = session.tenant_id AND device.owner_actor_id = session.owner_actor_id AND device.device_id = session.device_id
+        WHERE session.tenant_id = omni_local_computer_commands.tenant_id AND session.id = omni_local_computer_commands.session_id
+          AND session.mobile_session_id = ${native.sessionId} AND device.mobile_session_id = ${native.sessionId} AND device.platform = ${native.platform})
       AND state = 'claimed'
       AND (
         ${completion.outcome !== "succeeded"}
@@ -604,6 +646,9 @@ export async function completeLocalComputerCommand(
         AND owner_actor_id = ${context.actorId}
         AND device_id = ${native.deviceId}
         AND id = ${id}
+        AND EXISTS (SELECT 1 FROM omni_local_computer_sessions session
+          WHERE session.tenant_id = omni_local_computer_commands.tenant_id AND session.id = omni_local_computer_commands.session_id
+            AND session.mobile_session_id = ${native.sessionId})
       LIMIT 1
     `;
     const row = existing[0];
@@ -623,7 +668,8 @@ export async function completeLocalComputerCommand(
 }
 
 export async function executeLocalComputerCommand(input: {
-  action: LocalComputerAction;
+  action: NativeLocalAction;
+  platform?: "macos" | "android";
   toolInput: Record<string, unknown>;
   executionId: string;
   runId: string;
@@ -637,13 +683,16 @@ export async function executeLocalComputerCommand(input: {
 }
 
 async function enqueueLocalComputerCommand(input: {
-  action: LocalComputerAction;
+  action: NativeLocalAction;
+  platform?: "macos" | "android";
   toolInput: Record<string, unknown>;
   executionId: string;
   runId: string;
   executionScope: ExecutionScope;
 }) {
-  const action = localComputerActionSchema.parse(input.action);
+  const platform = input.platform || "macos";
+  const action = (platform === "android" ? localAndroidActionSchema : localComputerActionSchema).parse(input.action);
+  if (platform === "android") localAndroidInputs[localAndroidActionSchema.parse(action)].parse(input.toolInput);
   const clickInput = action === "click"
     ? localComputerClickInputSchema.safeParse(input.toolInput)
     : undefined;
@@ -686,7 +735,7 @@ async function enqueueLocalComputerCommand(input: {
   ).toISOString();
   const inputSha256 = canonicalJsonSha256(toolInput);
   const requiredNativeContractVersion =
-    requiredNativeContractVersionForCommand(action, toolInput);
+    requiredNativeContractVersionForCommand(action, toolInput, platform);
   // Approval resume deliberately carries no native-version authority. Resolve
   // compatibility from the exact v180 run-bound local session and its current
   // server-side device/native-login rows in the same transaction as enqueue.
@@ -725,7 +774,9 @@ async function enqueueLocalComputerCommand(input: {
           AND session.state = 'active'
           AND session.expires_at > NOW()
           AND (session.run_id IS NULL OR session.run_id = run.id)
-          AND device.platform = 'macos'
+          AND (${platform !== "android"} OR run.status = 'running' OR (run.status IN ('waiting_approval', 'resuming')
+            AND run.continuation #>> '{pendingToolCall,executionId}' = ${executionId}))
+          AND device.platform = ${platform}
           AND device.native_contract_version >= ${requiredNativeContractVersion}
           AND device.enabled
           AND device.lease_expires_at > NOW()
@@ -733,7 +784,14 @@ async function enqueueLocalComputerCommand(input: {
             ${action === "run_command"}
             OR (
               device.permission_status ->> 'accessibility' = 'granted'
-              AND device.permission_status ->> 'screenRecording' = 'granted'
+              AND (
+            (device.platform = 'macos' AND device.permission_status ->> 'screenRecording' = 'granted')
+            OR (device.platform = 'android' AND device.permission_status ->> 'screenCapture' = 'granted'
+              AND device.permission_status ->> 'supported' = 'true'
+              AND device.permission_status ->> 'locked' = 'false'
+              AND device.permission_status ->> 'foregroundServiceReady' = 'true'
+              AND (device.permission_status ->> 'androidApiLevel')::integer >= 34)
+          )
             )
           )
           AND (
@@ -752,7 +810,7 @@ async function enqueueLocalComputerCommand(input: {
               )
             )
           )
-          AND native_session.platform = 'macos'
+          AND native_session.platform = ${platform}
           AND native_session.client_contract_version >= ${requiredNativeContractVersion}
           AND native_session.client_attested_at IS NOT NULL
           AND native_session.revoked_at IS NULL
@@ -799,7 +857,7 @@ async function enqueueLocalComputerCommand(input: {
         AND session.run_id = ${runId}
         AND session.state = 'active'
         AND session.expires_at > NOW()
-        AND device.platform = 'macos'
+        AND device.platform = ${platform}
         AND device.native_contract_version >= ${requiredNativeContractVersion}
         AND device.enabled
         AND device.lease_expires_at > NOW()
@@ -807,7 +865,14 @@ async function enqueueLocalComputerCommand(input: {
           ${action === "run_command"}
           OR (
             device.permission_status ->> 'accessibility' = 'granted'
-            AND device.permission_status ->> 'screenRecording' = 'granted'
+            AND (
+            (device.platform = 'macos' AND device.permission_status ->> 'screenRecording' = 'granted')
+            OR (device.platform = 'android' AND device.permission_status ->> 'screenCapture' = 'granted'
+              AND device.permission_status ->> 'supported' = 'true'
+              AND device.permission_status ->> 'locked' = 'false'
+              AND device.permission_status ->> 'foregroundServiceReady' = 'true'
+              AND (device.permission_status ->> 'androidApiLevel')::integer >= 34)
+          )
           )
         )
         AND (
@@ -826,7 +891,7 @@ async function enqueueLocalComputerCommand(input: {
             )
           )
         )
-        AND native_session.platform = 'macos'
+        AND native_session.platform = ${platform}
         AND native_session.client_contract_version >= ${requiredNativeContractVersion}
         AND native_session.client_attested_at IS NOT NULL
         AND native_session.revoked_at IS NULL
@@ -844,7 +909,7 @@ async function enqueueLocalComputerCommand(input: {
   const rows = binding.rows;
   if (!rows[0]) {
     throw new LocalComputerUnavailableError(
-      "The exact local Mac session is offline, stopped, expired, incompatible with this action, or does not belong to this run.",
+      "The exact selected device session is offline, stopped, expired, incompatible with this action, or does not belong to this run.",
     );
   }
   const row = rows[0];
@@ -881,11 +946,11 @@ async function enqueueLocalComputerCommand(input: {
       expiresAt: dateText(row.expires_at),
     },
   });
-  return { id: commandId, expiresAt: dateText(row.expires_at) };
+  return { id: commandId, expiresAt: dateText(row.expires_at), platform };
 }
 
 async function waitForLocalComputerCommand(
-  command: { id: string; expiresAt: string },
+  command: { id: string; expiresAt: string; platform: "android" | "macos" },
   input: {
     executionScope: ExecutionScope;
     executionId: string;
@@ -953,14 +1018,14 @@ async function waitForLocalComputerCommand(
             : "The local Mac command output was already consumed and cannot be replayed.",
         );
       }
-      const parsed = localComputerResultSchema.safeParse(row.result);
+      const parsed = (command.platform === "android" ? localAndroidResultSchema : localComputerResultSchema).safeParse(row.result);
       if (!parsed.success) {
         throw new LocalComputerCommandError(
           "invalid_result",
-          "The installed Mac returned an invalid bounded observation.",
+          "The selected device returned an invalid bounded observation.",
         );
       }
-      const result = parsed.data;
+      const result: NativeLocalResult = parsed.data;
       if (row.action === "run_command" && !result.terminalOutput) {
         throw new LocalComputerCommandError(
           "terminal_output_missing",
@@ -1021,7 +1086,7 @@ async function waitForLocalComputerCommand(
     }
     if (["failed", "canceled", "expired"].includes(String(row.state))) {
       const code = String(row.error_code || row.state);
-      throw new LocalComputerCommandError(code, localComputerCommandFailureMessage(code));
+      throw new LocalComputerCommandError(code, localComputerCommandFailureMessage(code, command.platform));
     }
     await delay(350, input.abortSignal);
   }
@@ -1036,12 +1101,12 @@ async function waitForLocalComputerCommand(
   `;
   throw new LocalComputerCommandError(
     "command_timeout",
-    "The installed Mac did not acknowledge the governed action before its lease expired.",
+    "The selected device did not acknowledge the governed action before its lease expired. Observe before trying another action.",
   );
 }
 
 function stripEphemeralResult(
-  result: ReturnType<typeof localComputerResultSchema.parse>,
+  result: NativeLocalResult,
 ) {
   if (result.terminalOutput) {
     const output = result.terminalOutput;
@@ -1070,21 +1135,23 @@ function stripEphemeralResult(
   return publicResult;
 }
 
-function exactMacContext(context: SecurityContext) {
+function exactLocalContext(context: SecurityContext, expectedTarget?: "local_macos" | "local_android") {
   if (
     context.source !== "mobile" ||
     !context.native ||
-    context.native.platform !== "macos" ||
+    !["macos", "android"].includes(context.native.platform) ||
+    (expectedTarget !== undefined && expectedTarget !== `local_${context.native.platform}`) ||
     !context.auth?.userId ||
     !context.auth.sessionId ||
     (context.native.clientContractVersion || 0) <
-      LOCAL_COMPUTER_NATIVE_CONTRACT_VERSION
+      (context.native?.platform === "android" ? LOCAL_ANDROID_NATIVE_CONTRACT_VERSION : LOCAL_COMPUTER_NATIVE_CONTRACT_VERSION)
   ) {
     throw new LocalComputerUnavailableError(
-      "An authenticated macOS client on native contract v11 or later is required.",
+      "An authenticated, matching native Mac (v11+) or Android phone (v53+) session is required.",
     );
   }
   return {
+    platform: context.native.platform as "macos" | "android",
     deviceId: context.native.deviceId,
     userId: context.auth.userId,
     sessionId: context.auth.sessionId,
@@ -1112,10 +1179,13 @@ function publicDevice(row: Record<string, unknown>) {
     enabled: Boolean(row.enabled),
     online,
     helperVersion: String(row.helper_version),
-    permissions: {
-      accessibility: String(permissions.accessibility || "unknown"),
-      screenRecording: String(permissions.screenRecording || "unknown"),
-    },
+    ...(row.platform === "android" ? {
+      permissions: { accessibility: String(permissions.accessibility || "unknown"), screenCapture: String(permissions.screenCapture || "unknown") },
+      supported: permissions.supported === true, locked: permissions.locked !== false,
+      foregroundServiceReady: permissions.foregroundServiceReady === true, androidApiLevel: Number(permissions.androidApiLevel || 1),
+    } : { permissions: {
+      accessibility: String(permissions.accessibility || "unknown"), screenRecording: String(permissions.screenRecording || "unknown"),
+    } }),
     activityState: String(row.activity_state),
     ...(commandRunner.success ? { commandRunner: commandRunner.data } : {}),
     lifecycleRevision: Number(row.lifecycle_revision),
@@ -1155,16 +1225,19 @@ function digest(parts: readonly string[]) {
   return createHash("sha256").update(parts.join("\0"), "utf8").digest("hex");
 }
 
-function toolIdForLocalComputerAction(action: LocalComputerAction) {
+function toolIdForLocalComputerAction(action: NativeLocalAction, platform: "macos" | "android") {
+  if (platform === "android") return `local.android.${action}`;
   return action === "run_command"
     ? "local.macos.command.run"
     : `local.macos.${action}`;
 }
 
 function requiredNativeContractVersionForCommand(
-  action: LocalComputerAction,
+  action: NativeLocalAction,
   input: Record<string, unknown>,
+  platform: "macos" | "android" = "macos",
 ) {
+  if (platform === "android") return LOCAL_ANDROID_NATIVE_CONTRACT_VERSION;
   if (
     (action === "key" && localComputerKeyNeedsV52(input.key)) ||
     (action === "list_apps" && (input.includeInstalled !== undefined || input.query !== undefined)) ||

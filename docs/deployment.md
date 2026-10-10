@@ -4,6 +4,16 @@ Production uses Node.js 24.x and npm 11.x across local metadata, CI, and the wor
 
 ## Required production configuration
 
+Private Android phone control uses native contract **v53**, app **1.28.0+89**,
+and migration **249** (`android_local_control_v1`). The migration extends existing
+device/action constraints and binds queued actions to the correct platform; the
+tenant-table inventory remains 270. Apply it with the encrypted-backup and
+quiescence procedure, then deploy the paired server/worker before installing the
+Android update. Published v52/v51 artifacts stay byte-frozen and supported.
+Android actions require v53 and the current phone's explicit foreground control
+session. Mac clients retain their own target and grants. See
+[ATLAS phone control](atlas-phone-control.md).
+
 ATLAS conversation controls use native contract **v52** and app **1.27.0+86**.
 Deploy the paired server/worker before installing the updated Mac build. This
 release adds no database migration; migration 248 and the 270-table inventory

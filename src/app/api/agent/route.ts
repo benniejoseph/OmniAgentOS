@@ -101,6 +101,7 @@ import {
 import { firstOutputTimer } from "@/lib/observability/agent-quality";
 import { runAgent } from "@/lib/orchestration/agent-runner";
 import type { AgentEvent } from "@/lib/orchestration/types";
+import { isLocalComputerTarget, localComputerTargetFrom } from "@/lib/orchestration/computer-use-routing";
 import {
   admitAgentRequest,
   agentRequestDelegatedTurnId,
@@ -226,7 +227,7 @@ const requestSchema = z.object({
   requireReadOnlyAgent: z.boolean().optional(),
   specialistIds: z.array(z.enum(["atlas", "scout", "forge", "sentinel", "mnemosyne"])).max(5).optional(),
   strategy: z.enum(["auto", "direct", "durable"]).optional(),
-  computerUseTarget: z.enum(["local_macos", "isolated_browser"]).optional(),
+  computerUseTarget: z.enum(["local_macos", "local_android", "isolated_browser"]).optional(),
   contextScope: z.enum(CONTEXT_SCOPE_IDS).optional(),
   contextSelection: contextSelectionRequestSchema.optional(),
   contextReferences: commandContextReferencesSchema.optional(),
@@ -309,9 +310,7 @@ async function POSTHandler(request: Request) {
       headers: { "cache-control": "private, no-store" },
     });
   }
-  const computerUseTarget = parsed.data.computerUseTarget === "local_macos"
-    ? "local_macos" as const
-    : undefined;
+  const computerUseTarget = localComputerTargetFrom(parsed.data.computerUseTarget);
   const deepResearch = parsed.data.mode === "research" && parsed.data.research?.depth === "deep";
   if (deepResearch && (computerUseTarget || parsed.data.requireReadOnlyAgent || parsed.data.resumeRunId)) {
     return Response.json({
@@ -401,7 +400,7 @@ async function POSTHandler(request: Request) {
       if (!conversationVoiceContextMatches(active.commandContext, {
         agentId: parsed.data.agentId || "atlas", projectId: parsed.data.projectId,
         mode: parsed.data.mode || "orchestrate", contextScope: parsed.data.contextScope || "session",
-        computerUseTarget: parsed.data.computerUseTarget === "local_macos" ? "local_macos" : undefined,
+        computerUseTarget: localComputerTargetFrom(parsed.data.computerUseTarget),
         contextReferences: parsed.data.contextReferences || [], contextSelection: parsed.data.contextSelection,
       }) || parsed.data.missionId || parsed.data.messages || parsed.data.message!.length > 8000 ||
           request.headers.has(PROMPT_QUEUE_DISPATCH_ID_HEADER) ||
@@ -614,7 +613,7 @@ async function POSTHandler(request: Request) {
   // suppress saved-procedure matching or change the execution shape. Local
   // Computer Use remains a fixed direct harness because its governed tool set
   // and target are established before semantic routing.
-  const deterministicIntentInvariant = computerUseTarget === "local_macos";
+  const deterministicIntentInvariant = isLocalComputerTarget(computerUseTarget);
   let commandContext;
   try {
     commandContext = await resolveCommandContextReferences({
@@ -818,7 +817,7 @@ async function POSTHandler(request: Request) {
     const requestBudgetAuthority =
       deepResearch
         ? WORKFLOW_RUN_BUDGET_LIMITS
-        : computerUseTarget === "local_macos"
+        : isLocalComputerTarget(computerUseTarget)
         ? LOCAL_COMPUTER_RUN_BUDGET_LIMITS
         : AGENT_RUN_BUDGET_LIMITS;
     budgetLimits = narrowRunBudgetLimits(
@@ -974,18 +973,19 @@ async function POSTHandler(request: Request) {
     | readonly Readonly<{ id: string; name: string }>[]
     | undefined;
   let localComputerCapabilities: { visualControlReady: boolean; commandRunnerReady: boolean } | undefined;
-  if (computerUseTarget === "local_macos") {
+  if (isLocalComputerTarget(computerUseTarget)) {
     try {
       const localSession = await startLocalComputerSession(
         context,
         directRootRunId,
+        computerUseTarget,
       );
       localComputerWorkspaces = localSession.workspaces;
       localComputerCapabilities = localSession.capabilities;
     } catch (error) {
       if (!(error instanceof LocalComputerUnavailableError)) throw error;
       return Response.json({
-        error: "This Mac is unavailable",
+        error: computerUseTarget === "local_android" ? "This phone is unavailable" : "This Mac is unavailable",
         message: error.message,
       }, {
         status: error.status,
@@ -1154,7 +1154,7 @@ async function POSTHandler(request: Request) {
   const preliminaryDecision =
     deepResearch
       ? applySupervisorStrategy(semanticResolution.decision, "durable")
-      : parsed.data.requireReadOnlyAgent || computerUseTarget === "local_macos" || commandContext ||
+      : parsed.data.requireReadOnlyAgent || isLocalComputerTarget(computerUseTarget) || commandContext ||
       (scopeCarriesDurableContext && parsed.data.strategy !== "durable")
       ? requireDirectRoute(semanticResolution.decision)
       : applySupervisorStrategy(
@@ -2237,7 +2237,7 @@ async function POSTHandler(request: Request) {
                 ...(parsed.data.requireReadOnlyAgent ? { memoryFormation: "withheld" as const } : {}),
                 budgetLimits,
                 maxToolSteps:
-                  computerUseTarget === "local_macos"
+                  isLocalComputerTarget(computerUseTarget)
                     ? LOCAL_COMPUTER_MAX_TOOL_STEPS
                     : AGENT_MAX_TOOL_STEPS,
                 voiceInput: parsed.data.voiceInput,
