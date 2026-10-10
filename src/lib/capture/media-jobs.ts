@@ -9,7 +9,7 @@ import {
   type CaptureMediaProcessingRequest,
   type CaptureMediaTurn,
 } from "@/lib/capture/media-contracts";
-import { extractCaptureMediaInsights } from "@/lib/capture/media-extraction";
+import { extractCaptureMediaWindow, mergeCaptureMediaInsights, partitionCaptureMediaTurns, type CaptureMediaExtraction } from "@/lib/capture/media-extraction";
 import {
   commitCaptureMediaOutput,
   getCaptureMediaHead,
@@ -20,6 +20,7 @@ import {
   getCaptureRecording,
   getCaptureSegmentAudio,
   markCaptureRecordingIngestQueued,
+  markCaptureRecordingIndexed,
   purgeCaptureRecordingRawAudio,
   saveCaptureRecordingProcessedTranscript,
   updateCaptureSegmentTranscription,
@@ -32,6 +33,7 @@ import type {
 import {
   enqueueOperationJob,
   requeueOperationJobByDedupeKey,
+  updateOperationJobPayload,
   type OperationJobRecord,
 } from "@/lib/operations/job-queue";
 import {
@@ -86,6 +88,7 @@ export async function enqueueCaptureSegmentTranscriptionJob(input: {
   segment: CaptureSegment;
   languageHints: string[];
   executionScope: ExecutionScope;
+  retryFailed?: boolean;
 }) {
   return withCaptureNativeProcessingFence(input, async () => {
   requireExecutionOwner(input.tenantId, input.actorId, input.executionScope);
@@ -117,7 +120,7 @@ export async function enqueueCaptureSegmentTranscriptionJob(input: {
     dedupeMode: "idempotent",
   });
   assertQueuedRequest(job, requestHash);
-  if (job.status === "failed") {
+  if (job.status === "failed" && input.retryFailed !== false) {
     const [requeued] = await requeueOperationJobByDedupeKey(
       dedupeKey,
       "Retrying a durable media segment transcription.",
@@ -240,6 +243,7 @@ export async function executeCaptureMediaSegmentJob(
       executionScope,
       credentialSource: "deployment_environment",
     },
+    { allowNoSpeech: isListenProcessing(recording) },
   );
   const turns = transcription.segments.map((turn) => ({
     startMilliseconds: turn.startMilliseconds,
@@ -262,6 +266,7 @@ export async function executeCaptureMediaSegmentJob(
     languageTags: [...new Set(turns.map((turn) => turn.languageTag))]
       .sort((left, right) => left.localeCompare(right)),
     turns,
+    ...(transcription.noSpeech ? { noSpeech: true } : {}),
     transcribedAt: new Date().toISOString(),
   });
   const updated = await updateCaptureSegmentTranscription({
@@ -316,10 +321,15 @@ export async function executeCaptureMediaProcessingJob(
   if (!head || head.operationJobId !== job.id) {
     throw new Error("Capture media processing job is no longer current.");
   }
+  const listenProcessing = isListenProcessing(recording);
+  if (listenProcessing && head.processingStatus === "failed" && recording.status === "failed") {
+    throw new Error(typeof recording.metadata.ingestError === "string"
+      ? recording.metadata.ingestError : "Conversation processing stopped. Open the conversation for details.");
+  }
   const pending = recording.segments.filter((segment) => !segment.mediaTranscript);
   if (pending.length) {
     for (const segment of pending.slice(0, 50)) {
-      await enqueueCaptureSegmentTranscriptionJob({
+      const segmentJob = await enqueueCaptureSegmentTranscriptionJob({
         tenantId: job.tenantId,
         actorId: request.actorId,
         recordingId: recording.id,
@@ -328,7 +338,12 @@ export async function executeCaptureMediaProcessingJob(
           ? request.processing.languageHints
           : [recording.language],
         executionScope,
+        ...(listenProcessing ? { retryFailed: false } : {}),
       });
+      if (listenProcessing && segmentJob.status === "failed") {
+        await failListenProcessing(recording, job, executionScope,
+          `Part ${segment.segmentIndex + 1} could not be transcribed after several attempts. Check the transcription service in Settings. Your recording has been kept.`);
+      }
     }
     await markCaptureMediaProcessingStatus(
       recording.id,
@@ -343,14 +358,35 @@ export async function executeCaptureMediaProcessingJob(
     };
   }
 
+  if (listenProcessing && recording.segments.every((segment) => segment.mediaTranscript?.noSpeech)) {
+    await failListenProcessing(recording, job, executionScope,
+      "No clear speech was detected in this conversation. No notes or memories were created. Your recording has been kept.");
+  }
+
   await markCaptureMediaProcessingStatus(
     recording.id,
     { tenantId: job.tenantId, actorId: request.actorId, executionScope },
     { operationJobId: job.id, status: "processing" },
   );
   const turns = recordingTurns(recording, request.processing);
-  const extraction = await extractCaptureMediaInsights({
-    turns,
+  const windows = partitionCaptureMediaTurns(turns);
+  const windowInputSha256 = sha256Json({ turns, version: 2, listen: recording.metadata.listen === true });
+  const checkpoint = job.payload.insightWindows as { inputSha256?: string; results?: CaptureMediaExtraction[] } | undefined;
+  const results = checkpoint?.inputSha256 === windowInputSha256 && Array.isArray(checkpoint.results)
+    ? [...checkpoint.results] : [];
+  if (results.length > windows.length || results.some((result, index) =>
+    result.turns.length !== windows[index].length || result.turns.some((turn, turnIndex) => turn.turnId !== windows[index][turnIndex].turnId))) {
+    throw new Error("Conversation notes checkpoint does not match its transcript.");
+  }
+  // Durable windows keep long days within worker leases and avoid paying for
+  // the beginning again when a later window fails or the worker restarts.
+  const stopAt = Math.min(windows.length, results.length + 2);
+  for (let index = results.length; index < stopAt; index++) {
+    const part = await extractCaptureMediaWindow({
+    turns: windows[index],
+    includeConversationContext: recording.metadata.listen === true,
+    recordedAt: typeof recording.metadata.recordedAt === "string" ? recording.metadata.recordedAt : recording.startedAt,
+    timeZone: typeof recording.metadata.timeZone === "string" ? recording.metadata.timeZone : undefined,
     abortSignal,
     usageScope: {
       tenantId: job.tenantId,
@@ -363,7 +399,20 @@ export async function executeCaptureMediaProcessingJob(
       executionScope,
       credentialSource: "deployment_environment",
     },
-  });
+    });
+    results.push(part);
+    abortSignal.throwIfAborted();
+    const saved = await updateOperationJobPayload(job.id, job.leaseOwner || "", {
+      insightWindows: { inputSha256: windowInputSha256, results },
+      progress: { stage: "understanding_conversation", completedWindows: results.length, totalWindows: windows.length,
+        processedTurns: results.reduce((sum, result) => sum + result.turns.length, 0), totalTurns: turns.length },
+    }, { tenantId: job.tenantId });
+    if (!saved) throw new Error("Conversation processing lease expired before notes were saved.");
+  }
+  if (results.length < windows.length) return {
+    __deferOperation: true, delaySeconds: 1, reason: "Continuing from saved conversation notes.", resourceId: recording.id,
+  };
+  const extraction = mergeCaptureMediaInsights(results);
   abortSignal.throwIfAborted();
   const transcriptionModels = [...new Set(recording.segments.flatMap((segment) =>
     segment.mediaTranscript?.model ? [segment.mediaTranscript.model] : []
@@ -388,6 +437,7 @@ export async function executeCaptureMediaProcessingJob(
       summary: extraction.summary,
       actionItems: extraction.actionItems,
       decisions: extraction.decisions,
+      ...(extraction.conversation ? { conversation: extraction.conversation } : {}),
       warnings: extraction.warnings,
       rawAudioRetention: request.processing.rawAudioRetention,
     },
@@ -436,6 +486,25 @@ export async function executeCaptureMediaProcessingJob(
   };
 }
 
+function isListenProcessing(recording: CaptureRecordingDetail) {
+  return recording.metadata.listen === true && recording.metadata.processingTerms === "listen-processing:1";
+}
+
+async function failListenProcessing(
+  recording: CaptureRecordingDetail,
+  job: OperationJobRecord,
+  executionScope: ExecutionScope,
+  message: string,
+): Promise<never> {
+  const owner = { tenantId: job.tenantId, actorId: recording.actorId, executionScope };
+  await markCaptureMediaProcessingStatus(recording.id, owner,
+    { operationJobId: job.id, status: "failed", error: message });
+  await markCaptureRecordingIndexed(recording.id, owner, { error: message });
+  // The worker's normal bounded failure policy closes the finalizer. Subsequent
+  // attempts see the failed head above and cannot restart any paid child work.
+  throw new Error(message);
+}
+
 export function captureRecordingAudioManifestSha256(
   recording: CaptureRecordingDetail,
 ) {
@@ -452,16 +521,31 @@ export function renderCaptureMediaKnowledge(output: CaptureMediaOutput) {
   const lines = output.turns.map((turn) =>
     `[${formatTimestamp(turn.startMilliseconds)}–${formatTimestamp(turn.endMilliseconds)}] ${speakerName(turn)} (${turn.languageTag}): ${turn.text}`
   );
-  return [
+  const notes = [
     `Summary: ${output.summary.text}`,
+    ...(output.conversation ? [
+      `Topics: ${output.conversation.categories.join(", ")}`,
+      ...output.conversation.keyFacts.map((item) => `Stated context: ${item.text}`),
+      ...output.conversation.relationships.map((item) => `Relationship mentioned (not verified identity): ${item.text}`),
+      ...output.conversation.openQuestions.map((item) => `Open question: ${item.text}`),
+    ] : []),
     ...output.chapters.map((chapter) =>
       `Chapter ${formatTimestamp(chapter.startMilliseconds)}–${formatTimestamp(chapter.endMilliseconds)} — ${chapter.title}: ${chapter.text}`
     ),
-    ...output.actionItems.map((item) => `Action item: ${item.text}`),
+    ...output.actionItems.map((item) => `Suggested follow-up (${item.ownerParticipantId ? "confirmed speaker" : "owner to confirm"}${item.dueAt ? `; due ${item.dueAt}` : ""}): ${item.text}`),
     ...output.decisions.map((item) => `Decision: ${item.text}`),
-    "Transcript:",
-    ...lines,
-  ].join("\n\n").slice(0, 900_000);
+  ].join("\n\n");
+  const complete = `${notes}\n\nTranscript:\n\n${lines.join("\n\n")}`;
+  if (complete.length <= 890_000) return complete;
+  // Knowledge's ingestion contract is bounded. Very long conversations keep
+  // their full transcript in Capture and evenly distributed search excerpts,
+  // rather than silently dropping the end of the day at the ingestion limit.
+  const compactNotes = notes.length <= 350_000 ? notes : output.summary.text;
+  const budget = 880_000 - compactNotes.length;
+  const stride = Math.max(1, Math.ceil(lines.length / 5_000));
+  const selected = lines.filter((_, index) => index % stride === 0 || index === lines.length - 1);
+  const perLine = Math.max(20, Math.floor(budget / selected.length) - 3);
+  return `${compactNotes}\n\nSearch excerpts across the complete conversation. Open the conversation for the full transcript.\n\n${selected.map((line) => line.length > perLine ? `${line.slice(0, perLine - 1)}…` : line).join("\n\n")}`;
 }
 
 export function recordingTurns(
@@ -479,17 +563,20 @@ export function recordingTurns(
       throw new Error("Capture media segment checkpoint disappeared during finalization.");
     }
     for (const checkpointTurn of segment.mediaTranscript.turns) {
-      const mapping = speakerMappings.get(
-        checkpointTurn.speaker.label.toLocaleLowerCase("en-US"),
-      );
+      const segmentLabel = recording.segments.length > 1
+        ? `${checkpointTurn.speaker.label.slice(0, 54)} · part ${segment.segmentIndex + 1}`
+        : checkpointTurn.speaker.label;
+      // Diarisation labels restart in every independently transcribed file.
+      // Only a mapping to this exact segment label can establish identity.
+      const mapping = speakerMappings.get(segmentLabel.toLocaleLowerCase("en-US"));
       const speaker = mapping
         ? {
-            label: checkpointTurn.speaker.label,
+            label: segmentLabel,
             identity: "known" as const,
             participantId: mapping.participantId,
             displayName: mapping.displayName,
           }
-        : checkpointTurn.speaker;
+        : { ...checkpointTurn.speaker, label: segmentLabel };
       const turnInput = {
         segmentId: segment.id,
         segmentIndex: segment.segmentIndex,

@@ -24,6 +24,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { clsx } from "clsx";
 import { ConnectedSources, type OAuthGrantItem, type OAuthProviderItem } from "@/components/capture/connected-sources";
 import { LongRecordingStudio, type LongRecordingDraft } from "@/components/capture/long-recording-studio";
+import { ConversationNotes } from "@/components/capture/conversation-notes";
 import { VisualStudio } from "@/components/capture/visual-studio";
 import { permissionMessage, useWorkspaceSession } from "@/components/app-shell/session-context";
 import { WorkspaceLibrary } from "@/components/workspace-library";
@@ -811,6 +812,8 @@ export function CaptureWorkspace() {
       {loadingWorkspace ? <p role="status" className={styles.readStatus}>Refreshing Capture data…</p> : null}
       {loadError ? <p role="alert" className={clsx(styles.notice, styles.warning)}><CircleAlert size={16} aria-hidden="true" /><span>{loadError}</span></p> : null}
       {offlinePending ? <p role="status" className={clsx(styles.notice, styles.warning)}><HardDrive size={16} aria-hidden="true" /><span>{offlinePending} offline capture{offlinePending === 1 ? "" : "s"} waiting to sync</span></p> : null}
+
+      <ConversationNotes key={captureScope || "unavailable"} enabled={Boolean(captureScope)} />
 
       <section className={styles.intake} aria-labelledby="capture-composer-title">
         <form onSubmit={mode === "record" ? (event) => event.preventDefault() : submitCapture} className={styles.form}>

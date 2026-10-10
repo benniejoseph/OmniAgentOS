@@ -19,6 +19,13 @@ const checkOnly = process.argv.includes("--check");
 // Product retirement keeps these prior public artifacts byte-frozen. The v47
 // compatibility publication is withdrawn narrowly from its archived original.
 const frozenDocumentSha256ByVersion = Object.freeze({
+  53: Object.freeze({
+    "openapi.json": "441a3e1bc68ad9258245c02c5dd9bb6a6f5c4e3dc32c92822452e1d4492f2a14", // gitleaks:allow -- public artifact integrity digest
+    "events.schema.json": "86aa365fcc455ed5d8ca2e1861a646d614af6080cbbd743035ed0503ad71c0e7", // gitleaks:allow -- public artifact integrity digest
+    "fixtures.json": "645e3cc49be364fb894ab8683eb150b91d3b2a8b19ed8981bcb2932a7e44954b", // gitleaks:allow -- public artifact integrity digest
+    "manifest.json": "c241a4454c22b97103122248241587cdc76cdea237fe5155e6eb9614bb122b86", // gitleaks:allow -- public artifact integrity digest
+  }),
+
   52: Object.freeze({
     "openapi.json": "dd524fba01e935a8837cef430cc973a590340c0c41bdcb5fece2db9fc6e6b776", // gitleaks:allow -- public artifact integrity digest
     "events.schema.json": "86aa365fcc455ed5d8ca2e1861a646d614af6080cbbd743035ed0503ad71c0e7", // gitleaks:allow -- public artifact integrity digest
@@ -262,9 +269,11 @@ async function retainRetiredV47Compatibility(expected: Map<string, string>) {
     version: 47,
     state: "previous",
     compatibility: {
-      currentVersion: NATIVE_API_CURRENT_VERSION,
-      previousVersion: NATIVE_API_PREVIOUS_VERSION,
-      supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS],
+      // This retired publication retains its last published compatibility metadata.
+      // Current compatibility is discovered through /api/mobile/contracts.
+      currentVersion: 53,
+      previousVersion: 52,
+      supportedVersions: [53, 52, 51],
     },
     retirement: {
       reason: "crm_workspace_retired",
@@ -353,6 +362,9 @@ function openApiDocument(version: number, operations: readonly NativeOperation[]
             [mediaType === "text/event-stream" ? "application/json" : mediaType]: {
               schema: ref(operation.requestSchema),
             },
+            ...(operation.id === "listen.ingest" ? {
+              "multipart/form-data": { schema: ref("NativeListenSegmentRequest") },
+            } : {}),
           },
         }
       : undefined;
@@ -361,7 +373,7 @@ function openApiDocument(version: number, operations: readonly NativeOperation[]
       operationId: operation.id,
       summary: operation.summary,
       tags: [operation.id.split(".")[0]],
-      ...(operation.auth === "bearer" ? { security: [{ bearerAuth: [] }] } : {}),
+      ...(operation.auth === "bearer" ? { security: [{ bearerAuth: [] }] } : operation.auth === "listen" ? { security: [{ listenGrant: [] }] } : {}),
       ...(parameters.length ? { parameters } : {}),
       ...(requestBody ? { requestBody } : {}),
       ...(operation.queryPolicy === "exact" ? { "x-asael-query-policy": { unknownParameters: "reject", repeatedParameters: "reject" } } : {}),
@@ -404,6 +416,7 @@ function openApiDocument(version: number, operations: readonly NativeOperation[]
     components: {
       securitySchemes: {
         bearerAuth: { type: "http", scheme: "bearer", bearerFormat: "opaque" },
+        ...(version >= 54 ? { listenGrant: { type: "http", scheme: "Listen", description: "A device/session/origin-bound upload grant; never an ordinary bearer credential." } } : {}),
       },
       schemas: Object.fromEntries(schemaNamesForVersion(version).map((name) => [
         name,

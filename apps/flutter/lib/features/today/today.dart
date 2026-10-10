@@ -641,6 +641,11 @@ class _TodayHeader extends StatelessWidget {
                 icon: const Icon(Icons.auto_awesome_outlined, size: 17),
                 label: Text(hasBrief ? 'Refresh brief' : 'Create brief'),
               ),
+              TextButton.icon(
+                onPressed: () => context.go('/capture?section=listen'),
+                icon: const Icon(Icons.hearing_rounded, size: 18),
+                label: const Text('Listen'),
+              ),
             ],
           ),
         ],

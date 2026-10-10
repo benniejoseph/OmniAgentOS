@@ -6,6 +6,7 @@ import { NATIVE_API_CURRENT_VERSION } from "@/lib/mobile/contracts";
 import type { SecurityContext } from "@/lib/security/types";
 
 export const NATIVE_MUTATION_CAPABILITIES = [
+  "listen.configure",
   "conversation.send",
   "research.control",
   "prompt.queue.manage",
@@ -96,6 +97,7 @@ export function nativeMutationEnrollment(
     return held("An authenticated native session is required.");
   }
   const minimumContractVersion = minimumVersion(capability);
+  if (capability === "listen.configure" && context.native.platform !== "android") return held("Listening requires this authenticated Android installation.", minimumContractVersion);
   if (capability.startsWith("android.control.") && context.native.platform !== "android") return held("Phone control requires this authenticated Android installation.", minimumContractVersion);
   if (
     capability.startsWith("computer.use.") &&
@@ -136,6 +138,7 @@ export function nativeMutationCapabilityPolicy(
 }
 
 function minimumVersion(capability: NativeMutationCapability) {
+  if (capability === "listen.configure") return 54;
   if (capability === "personal.profile.update") return 51;
   if (capability === "research.control") return 49;
   if (capability === "connectors.github.upgrade") return 47;

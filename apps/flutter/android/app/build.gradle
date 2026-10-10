@@ -1,0 +1,58 @@
+plugins {
+    id 'com.android.application'
+    id 'com.google.gms.google-services'
+    // Keep Flutter after Android: it supplies the Flutter extension and Kotlin compatibility bridge.
+    id 'dev.flutter.flutter-gradle-plugin'
+}
+
+def releaseKeystorePath = providers.environmentVariable('ASAEL_ANDROID_KEYSTORE_PATH').orNull
+def releaseKeystorePassword = providers.environmentVariable('ASAEL_ANDROID_KEYSTORE_PASSWORD').orNull
+def releaseKeyAlias = providers.environmentVariable('ASAEL_ANDROID_KEY_ALIAS').orNull
+def releaseKeyPassword = providers.environmentVariable('ASAEL_ANDROID_KEY_PASSWORD').orNull
+def releaseBuildRequested = gradle.startParameter.taskNames.any { it.toLowerCase().contains('release') }
+if (releaseBuildRequested && [releaseKeystorePath, releaseKeystorePassword, releaseKeyAlias, releaseKeyPassword].any { !it?.trim() }) {
+    throw new GradleException('Release signing requires ASAEL_ANDROID_KEYSTORE_PATH, ASAEL_ANDROID_KEYSTORE_PASSWORD, ASAEL_ANDROID_KEY_ALIAS, and ASAEL_ANDROID_KEY_PASSWORD.')
+}
+
+// Equivalent Groovy configuration avoids the Kotlin DSL plugin-classpath
+// failure in this Flutter/AGP combination without changing runtime versions.
+android {
+    namespace 'app.omniagent.omniagent'
+    compileSdk flutter.compileSdkVersion
+    ndkVersion flutter.ndkVersion
+    compileOptions {
+        coreLibraryDesugaringEnabled true
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    defaultConfig {
+        applicationId 'app.omniagent.omniagent'
+        minSdk flutter.minSdkVersion
+        targetSdk flutter.targetSdkVersion
+        versionCode flutter.versionCode
+        versionName flutter.versionName
+    }
+    signingConfigs {
+        if (releaseKeystorePath != null) {
+            release {
+                storeFile file(releaseKeystorePath)
+                storePassword releaseKeystorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+            }
+        }
+    }
+    buildTypes {
+        release { signingConfig signingConfigs.findByName('release') }
+    }
+}
+
+kotlin {
+    compilerOptions { jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17 }
+}
+flutter { source '../..' }
+dependencies {
+    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.4'
+    implementation 'androidx.appcompat:appcompat:1.7.1'
+    implementation 'androidx.work:work-runtime-ktx:2.11.2'
+}
