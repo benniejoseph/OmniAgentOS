@@ -556,6 +556,7 @@ class _WorkspaceLocked implements ValueListenable<bool> {
 
 final appRouterProvider = Provider<GoRouter>((ref) {
   final session = ref.watch(sessionControllerProvider);
+  final showSignIn = ref.read(sessionControllerProvider.notifier).showSignIn;
   final initialLocation = ref.watch(appInitialLocationProvider);
   final explicitEntry = ref.watch(appExplicitInitialLocationProvider);
   final entryLocation = explicitEntry ? initialLocation : '/companion-entry';
@@ -585,6 +586,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       final atLogin = state.matchedLocation == '/login';
       final atBootstrap = state.matchedLocation == '/bootstrap';
       if (session.isLoading || session.hasError) {
+        if (showSignIn) return atLogin ? null : '/login';
         if (!entryIntent.hadSession) entryIntent.remember(state.uri.toString());
         return atBootstrap ? null : '/bootstrap';
       }

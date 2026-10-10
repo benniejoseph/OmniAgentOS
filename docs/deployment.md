@@ -4,6 +4,14 @@ Production uses Node.js 24.x and npm 11.x across local metadata, CI, and the wor
 
 ## Required production configuration
 
+Native app **1.28.1+90** fixes sign-in after clearing or expiring a saved
+session when biometric protection is enabled. Credential requests do not read
+the previous session's protected bearer token, and biometric refusals remain
+distinct from connection failures. Authenticated requests retain their existing
+biometric protection. This native-only patch keeps contract **v53**, migration
+**249**, and the already deployed web/worker unchanged; distribute the signed
+Android and Mac upgrades against that compatible backend.
+
 Private Android phone control uses native contract **v53**, app **1.28.0+89**,
 and migration **249** (`android_local_control_v1`). The migration extends existing
 device/action constraints and binds queued actions to the correct platform; the

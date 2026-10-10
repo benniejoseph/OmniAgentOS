@@ -30,11 +30,14 @@ class SessionRepository {
         return await _bindOfflineProjectionOwner(
           AppSession.fromJson(await _api.getJson(NativePaths.bootstrapGet)),
         );
+      } on NativeSessionExpiredException {
+        return null;
       } on ApiException catch (error) {
         if (error.statusCode != 401) rethrow;
       }
     }
     // The 401 above may have cleared a pair the service rejected.
+    if (!await _store.hasStoredCredentials()) return null;
     if (await _store.readRefreshToken() == null) {
       await _store.clear();
       return null;
@@ -53,6 +56,8 @@ class SessionRepository {
       return await _bindOfflineProjectionOwner(
         AppSession.fromJson(await _api.getJson(NativePaths.bootstrapGet)),
       );
+    } on NativeSessionExpiredException {
+      return null;
     } on ApiException catch (error) {
       if (error.statusCode != 401) rethrow;
       await _store.clear();
