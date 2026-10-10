@@ -12,7 +12,7 @@ new tenant/actor-scoped tables are `omni_listen_grants` and `omni_listen_sources
 the expected tenant-table inventory increases from **270 to 272**. They are
 classified as migration-scoped tables so their restrictive actor policies are
 preserved. Its narrow `omni_retire_listen_memories_v1` function also retires the
-canonical private source episode, graph references and retrieval traces when a
+canonical private source summary, graph references and retrieval traces when a
 recording's Knowledge source is deleted or replaced. Published v53/v52 contract
 documents remain byte-frozen and supported.
 The retired v47 publication now retains its already published compatibility

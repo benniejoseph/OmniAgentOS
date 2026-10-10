@@ -2,16 +2,16 @@ import { databaseMemoryAccessScopeFromExecutionScope } from "@/lib/db/memory-acc
 import { getSql, runWithDatabaseActorScope } from "@/lib/db/client";
 import { buildUserPrivateMemoryAccessBindingV1, MEMORY_PURPOSE_IDS } from "@/lib/memory/access-binding";
 import { indexUserPrivateMemoryGraphRecords } from "@/lib/memory/graph";
-import { saveMemories } from "@/lib/memory/store";
+import { saveMemoryWithCommitStatusInTransaction } from "@/lib/memory/store";
 import { embedTexts } from "@/lib/openai/client";
 import { createExecutionScope, type ExecutionScope } from "@/lib/security/execution-scope";
 import { getCaptureRecording } from "@/lib/capture/recordings";
 import { getCaptureMediaHead } from "@/lib/capture/media-store";
 import { sha256Json } from "@/lib/capture/media-contracts";
-import type { CaptureIngestGuard } from "@/lib/capture/ingest-guard";
+import { assertCaptureIngestSource, lockActiveCaptureIngest, type CaptureIngestGuard } from "@/lib/capture/ingest-guard";
 
 /**
- * The owner's Listen agreement authorizes one source-backed episode per
+ * The owner's Listen agreement authorizes one source-backed summary per
  * conversation. This never asserts an inferred preference as a user fact or
  * executes a transcript instruction. General Knowledge uploads cannot opt in
  * by setting metadata; the original scoped recording is checked again here.
@@ -45,6 +45,10 @@ async function rememberWithinOwnerScope(input: ConversationMemoryInput) {
   if (!output?.conversation || output.conversation.processedTurnCount !== output.turns.length) {
     throw new Error("The conversation's complete notes are not ready to remember.");
   }
+  const conversation = output.conversation;
+  if (!input.evidenceUnitIds.length) {
+    throw new Error("The conversation's source evidence is not ready to remember.");
+  }
   if (input.executionScope.tenantId !== tenantId || input.executionScope.initiatingActorId !== actorId) {
     throw new Error("Conversation memory does not match its owner.");
   }
@@ -56,7 +60,8 @@ async function rememberWithinOwnerScope(input: ConversationMemoryInput) {
     ${tenantId}, ${actorId}, ${canonicalActorId}, TRUE) AS allowed`;
   if (identity?.allowed !== true) throw new Error("The conversation owner no longer has permission to save memory.");
   const executionScope = createExecutionScope({ ...input.executionScope,
-    initiatingActorId: canonicalActorId, purpose: "capture.conversation.remember" });
+    initiatingActorId: canonicalActorId, executingPrincipalType: "user",
+    executingPrincipalId: canonicalActorId, purpose: "capture.conversation.remember" });
   const observedAt = typeof recording.metadata.recordedAt === "string"
     ? recording.metadata.recordedAt : recording.startedAt;
   const content = [
@@ -87,19 +92,32 @@ async function rememberWithinOwnerScope(input: ConversationMemoryInput) {
     purposeId: MEMORY_PURPOSE_IDS.write,
     auditPurpose: "Remember source notes from an explicitly enabled Listen conversation.",
   });
-  const records = await saveMemories([{
+  assertCaptureIngestSource(input.guard, tenantId, recording.source);
+  const saved = await getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+    // Lock the accepted source before entering the private-memory scope. The
+    // generic capture writer intentionally excludes private-memory writes.
+    await lockActiveCaptureIngest(sql, input.guard);
+    const [currentOwner] = await sql`SELECT 1 AS allowed FROM omni_listen_sources
+      WHERE tenant_id = ${tenantId} AND actor_id = ${actorId} AND recording_id = ${recordingId}
+        AND source_key_sha256 = ${String(recording.metadata.listenSourceKeySha256 || "")}
+        AND tombstoned_at IS NULL
+        AND public.omni_native_private_memory_owner_v1(${tenantId}, ${actorId}, ${canonicalActorId}, TRUE)`;
+    if (!currentOwner) throw new Error("The conversation is no longer available to remember.");
+    return saveMemoryWithCommitStatusInTransaction({
     id: `conversation-memory:${sha256Json({ tenantId, actorId, recordingId, documentId: input.documentId })}`,
-    tenantId, type: "episode", tier: "episodic", title: recording.title,
+    tenantId, type: "knowledge", tier: "summary", title: recording.title,
     content, source: recording.source, scope: "user", assertedBy: "import",
     formationOrigin: "source_observation", confidence: 0.75, importance: 0.7,
     validFrom: observedAt,
     tags: [...new Set(["conversation", recording.metadata.sourceKind === "call" ? "call notes" : "listening notes",
-      ...output.conversation.categories, ...recording.tags])].slice(0, 50),
+      ...conversation.categories, ...recording.tags])].slice(0, 50),
     evidenceRefs: [`knowledge:${input.documentId}`, output.mediaRevisionId,
       ...input.evidenceUnitIds.slice(0, 20).map((id) => `evidence:${id}`),
       ...output.summary.citations.map((citation) => citation.turnId)].slice(0, 50),
     embedding, accessBinding, databaseAccessScope, executionScope,
-  }], { captureIngestGuard: input.guard });
+    }, sql);
+  }) as Awaited<ReturnType<typeof saveMemoryWithCommitStatusInTransaction>>;
+  const records = [saved.record];
   input.abortSignal.throwIfAborted();
   await indexUserPrivateMemoryGraphRecords(records, "capture.conversation.remember", {
     tenantId, accessScope: databaseAccessScope,

@@ -21,7 +21,7 @@ not silently assign every speaker's promise to the user or send messages.
 
 Every transcript window is processed. Long sessions keep resumable extraction
 checkpoints rather than summarising only the opening minutes. Private Knowledge
-stores the conversation and a condensed, source-linked episode is saved in private
+stores the conversation and a condensed, source-linked summary is saved in private
 Memory for ATLAS retrieval. This does not turn quoted claims into verified personal
 preferences. A selected Work client receives the existing private Library source;
 failed client linking is shown in the notes without losing the conversation.
