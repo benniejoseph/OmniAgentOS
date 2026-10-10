@@ -7,6 +7,8 @@ import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 
 class MainActivity : FlutterFragmentActivity() {
+    override fun getCachedEngineId(): String = AndroidDeviceBridge.ENGINE_CACHE_ID
+
     override fun provideFlutterEngine(context: Context): FlutterEngine =
         AndroidDeviceBridge.engine(context)
 
@@ -15,6 +17,10 @@ class MainActivity : FlutterFragmentActivity() {
     override fun shouldDestroyEngineWithHost(): Boolean = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // The cached-fragment path explicitly preserves the shared engine. A
+        // new-engine fragment claims ownership even when provideFlutterEngine
+        // supplies this instance, and crashes when another Activity attaches.
+        AndroidDeviceBridge.engine(this)
         super.onCreate(savedInstanceState)
         // Keeps the workspace out of the recent-apps thumbnail, screenshots, and
         // screen recordings.
