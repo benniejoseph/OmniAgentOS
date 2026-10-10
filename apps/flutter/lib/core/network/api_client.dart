@@ -6,6 +6,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../auth/biometric_gate.dart';
 import '../auth/native_client_info.dart';
 import '../config/app_config.dart';
 import '../storage/offline_projection_store.dart';
@@ -258,7 +259,9 @@ ApiClient createApiClient(
                 type: DioExceptionType.cancel,
                 // Keep the transport cancellation/no-response shape so this
                 // pre-dispatch refusal cannot enter the HTTP 401 replay path.
-                error: authorityRefused
+                error: error is BiometricGateException
+                    ? error
+                    : authorityRefused
                     ? const NativeAuthorityVerificationException()
                     : const ApiException(
                         'The request owner could not be verified. The original request can be retried after reloading.',
@@ -268,11 +271,32 @@ ApiClient createApiClient(
           }
           return;
         }
+        if (options.method == 'POST' && _isCredentialRoute(options.path)) {
+          // These endpoints authenticate the supplied credentials themselves.
+          // Reading an old bearer here would require a biometric release even
+          // after Clear session removed the pair and kept that preference.
+          options.headers.removeWhere(
+            (name, _) => name.toLowerCase() == 'authorization',
+          );
+          handler.next(options);
+          return;
+        }
         if (!_isCredentialRoute(options.path) &&
             await store.accessTokenNeedsRefresh()) {
           try {
             await ensureRefreshed();
           } catch (_) {
+            if (!await store.hasStoredCredentials()) {
+              await reportIfSessionEnded();
+              handler.reject(
+                DioException(
+                  requestOptions: options,
+                  type: DioExceptionType.cancel,
+                  error: const NativeSessionExpiredException(),
+                ),
+              );
+              return;
+            }
             // Continue with any still-valid access token. A real 401 takes the
             // single-flight retry path below; transport failures remain visible.
           }
@@ -423,7 +447,7 @@ class ApiClient {
     try {
       await refreshSession(rejectedAccessToken: rejectedAccessToken);
     } on DioException catch (error) {
-      throw ApiException.fromDio(error);
+      throw _requestException(error);
     }
   }
 
@@ -891,7 +915,7 @@ class ApiClient {
       }
       // Error bodies are deliberately discarded by receiveDataWhenStatusError;
       // status and the trusted local authority marker remain distinguishable.
-      throw ApiException.fromDio(error);
+      throw _requestException(error);
     } finally {
       deadline.cancel();
       if (!completed && !cancelToken.isCancelled) {
@@ -956,16 +980,24 @@ class ApiClient {
       if (value is Map) return Map<String, dynamic>.from(value);
       throw const ApiException('The service returned an invalid response.');
     } on DioException catch (error) {
-      throw ApiException.fromDio(error);
+      throw _requestException(error);
     }
   }
 }
 
-Future<ApiException> _streamApiException(DioException error) async {
+Exception _requestException(DioException error) {
+  final localFailure = error.error;
+  if (error.response == null && localFailure is BiometricGateException) {
+    return localFailure;
+  }
+  return ApiException.fromDio(error);
+}
+
+Future<Exception> _streamApiException(DioException error) async {
   final statusCode = error.response?.statusCode;
   final body = error.response?.data;
   if (statusCode == null || body is! ResponseBody) {
-    return ApiException.fromDio(error);
+    return _requestException(error);
   }
   Map<String, dynamic>? payload;
   try {
@@ -1007,8 +1039,9 @@ Future<ApiException> _streamApiException(DioException error) async {
 }
 
 bool _canUseOfflineProjection(ApiException error) =>
-    error.statusCode == null ||
-    const {408, 429, 500, 502, 503, 504}.contains(error.statusCode);
+    error is! NativeSessionExpiredException &&
+    (error.statusCode == null ||
+        const {408, 429, 500, 502, 503, 504}.contains(error.statusCode));
 
 /// Offline fallback is deliberately allowlisted. Private control-plane reads
 /// (approvals, settings, device state, operations, push, payments, and agent
