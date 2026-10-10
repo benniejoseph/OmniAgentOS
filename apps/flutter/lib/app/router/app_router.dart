@@ -26,6 +26,7 @@ import '../../features/auth/presentation/login_screen.dart';
 import '../../features/auth/presentation/session_bootstrap_screen.dart';
 import '../../features/capture/capture.dart';
 import '../../features/capture/capture_providers.dart';
+import '../../features/listen/capture_listen_workspace.dart';
 import '../../features/computer_use/local_computer.dart';
 import '../../features/computer_use/android_phone.dart';
 import '../../features/companion/companion_entry.dart';
@@ -733,7 +734,12 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                                             'This Library link is invalid.',
                                           ),
                                         )
-                                : const ProviderBoundCaptureRoute(),
+                                : CaptureListenWorkspace(
+                                    listening:
+                                        state.uri.queryParameters['section'] ==
+                                        'listen',
+                                    capture: const ProviderBoundCaptureRoute(),
+                                  ),
                           '/projects' => const ProviderBoundProjectsRoute(),
                           '/meetings' => const ProviderBoundMeetingsRoute(),
                           '/results' => const ProviderBoundResultsRoute(),

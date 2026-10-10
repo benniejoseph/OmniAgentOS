@@ -96,7 +96,7 @@ export async function transcribeCaptureMediaDiarized(
   languageHints: readonly string[] = [],
   abortSignal?: AbortSignal,
   usageScope?: AiUsageScope,
-  options: { singleAttempt?: boolean; beforeProvider?: () => Promise<void> } = {},
+  options: { singleAttempt?: boolean; beforeProvider?: () => Promise<void>; allowNoSpeech?: boolean } = {},
 ) {
   const mimeType = media.type.split(";", 1)[0].toLowerCase();
   if (!CAPTURE_MEDIA_TYPES.has(mimeType)) {
@@ -117,6 +117,7 @@ export async function transcribeCaptureMediaDiarized(
       media,
       abortSignal,
       usageScope,
+      { allowNoSpeech: options.allowNoSpeech },
     );
     return {
       ...fallback,
@@ -185,7 +186,8 @@ export async function transcribeCaptureMediaDiarized(
         languageTag,
       }];
     }
-    if (!text || !segments.length) {
+    const noSpeech = !text && !segments.length;
+    if ((!text || !segments.length) && !(options.allowNoSpeech && noSpeech)) {
       throw new Error("No speech could be recognized in this recording.");
     }
     if (meteredUsageScope) {
@@ -207,6 +209,7 @@ export async function transcribeCaptureMediaDiarized(
       fallbackUsed: false,
       durationMs,
       segments,
+      ...(noSpeech ? { noSpeech: true as const } : {}),
     };
   } catch (error) {
     if (options.beforeProvider && !dispatched) throw error;
@@ -230,6 +233,7 @@ export async function transcribeCaptureMediaDiarized(
       media,
       abortSignal,
       usageScope,
+      { allowNoSpeech: options.allowNoSpeech },
     );
     return {
       ...fallback,
@@ -257,6 +261,7 @@ export async function transcribeCaptureMedia(
   media: File,
   abortSignal?: AbortSignal,
   usageScope?: AiUsageScope,
+  options: { allowNoSpeech?: boolean } = {},
 ) {
   const mimeType = media.type.split(";", 1)[0].toLowerCase();
   if (!CAPTURE_MEDIA_TYPES.has(mimeType)) throw new Error("Unsupported audio or video format.");
@@ -304,6 +309,13 @@ export async function transcribeCaptureMedia(
       segments = result.segments;
       durationMs = result.durationMs;
     } catch (error) {
+      // This exact error is emitted only after a successful Google response
+      // contains no recognized text. Silence must not buy another ASR call.
+      if (options.allowNoSpeech && !abortSignal?.aborted && error instanceof Error &&
+          error.message === "Google Speech could not recognize this recording.") {
+        return { text: "", model: runtimeModel.model, fallbackUsed: false,
+          durationMs: 1, segments: [] as CaptureTranscriptionSegment[], noSpeech: true as const };
+      }
       if (
         runtimeModel.source === "tenant_assignment" ||
         !hasOpenAIKey() ||
@@ -400,12 +412,14 @@ export async function transcribeCaptureMedia(
     }
   }
   text = text.trim().slice(0, 100_000);
-  if (!text) throw new Error("No speech could be recognized in this recording.");
+  const noSpeech = !text && !segments.length;
+  if (!text && !(options.allowNoSpeech && noSpeech)) throw new Error("No speech could be recognized in this recording.");
   return {
     text,
     model,
     fallbackUsed,
     durationMs: Math.max(1, durationMs),
+    ...(noSpeech ? { noSpeech: true as const } : {}),
     segments: segments.map((segment) => ({
       ...segment,
       text: segment.text.trim().slice(0, 24_000),

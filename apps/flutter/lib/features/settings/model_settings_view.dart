@@ -16,6 +16,7 @@ import '../companion/companion_settings.dart';
 import 'personal_profile_settings.dart';
 import 'portable_archive_panel.dart';
 import 'android_phone_settings.dart';
+import '../listen/listen_settings.dart';
 
 typedef Json = Map<String, dynamic>;
 
@@ -639,6 +640,8 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
                         if (appAndroidDeviceBridge.supported) ...[
                           const SizedBox(height: 24),
                           const AndroidPhoneSettings(),
+                          const SizedBox(height: 16),
+                          const ListenSettingsLink(),
                         ],
                         const SizedBox(height: 24),
                         Row(

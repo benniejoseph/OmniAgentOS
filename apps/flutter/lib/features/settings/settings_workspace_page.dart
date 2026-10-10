@@ -5,6 +5,7 @@ import '../../core/network/native_workspace_access.dart';
 import '../monitoring/monitoring_workspace_view.dart';
 import '../quality/quality_workspace_view.dart';
 import 'model_settings_view.dart';
+import '../listen/listen_settings.dart';
 
 /// Maintenance pages retain their own manager authorization and visibility
 /// lifecycle. Opening Settings does not mount either operational controller.
@@ -15,6 +16,9 @@ class SettingsWorkspacePage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (section == 'listening') {
+      return NativePrivateWorkspace(builder: (_) => const ListenSettingsPage());
+    }
     if (section != 'quality' && section != 'monitoring') {
       return NativePrivateWorkspace(
         ownNavigator: true,

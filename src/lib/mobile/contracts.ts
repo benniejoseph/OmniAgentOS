@@ -71,15 +71,16 @@ import {
   voiceConversationFinishRequestSchema, voiceConversationFinishResponseSchema,
 } from "@/lib/voice/conversation-contracts";
 import { conversationVoiceTurnsRequestSchema, conversationVoiceTurnsResponseSchema } from "@/lib/voice/conversation-transcript";
+import { nativeListenSchemas } from "@/lib/capture/listen-contracts";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 53 as const;
-// v53 adds explicit device-bound Android phone control.
-export const NATIVE_API_PREVIOUS_VERSION = 52 as const;
+export const NATIVE_API_CURRENT_VERSION = 54 as const;
+// v54 adds explicit phone listening and narrowly scoped background recording imports.
+export const NATIVE_API_PREVIOUS_VERSION = 53 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
-  51,
+  52,
 ] as const;
 
 const positiveDatabaseInteger = z.number().int().min(1).max(2_147_483_647);
@@ -312,7 +313,7 @@ export const nativeCompatibilitySchema = z.object({
   supportedContractVersions: z.tuple([
     z.literal(NATIVE_API_CURRENT_VERSION),
     z.literal(NATIVE_API_PREVIOUS_VERSION),
-    z.literal(51),
+    z.literal(52),
   ]),
   status: z.enum(["compatible", "upgrade_required", "unknown"]),
   agentCatalogEnrollment: z.object({
@@ -401,7 +402,7 @@ export const nativeBootstrapResponseSchema = nativePublicIdentitySchema.extend({
       supportedVersions: z.tuple([
         z.literal(NATIVE_API_CURRENT_VERSION),
         z.literal(NATIVE_API_PREVIOUS_VERSION),
-        z.literal(51),
+        z.literal(52),
       ]),
       discoveryPath: z.literal("/api/mobile/contracts"),
     }).strict(),
@@ -822,14 +823,14 @@ export type NativeOperation = Readonly<{
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   path: string;
   summary: string;
-  auth: "public" | "bearer";
+  auth: "public" | "bearer" | "listen";
   requestSchema?: string;
   responseSchema?: string;
   mediaType?: "application/json" | "text/event-stream" | "multipart/form-data";
   responseMediaType?: "application/json" | "text/event-stream" | "audio/pcm";
   responseHeaders?: readonly NativeResponseHeader[];
   successStatuses?: readonly (200 | 201 | 202)[];
-  errorStatuses?: readonly (400 | 401 | 403 | 404 | 409 | 413 | 415 | 428 | 500 | 503)[];
+  errorStatuses?: readonly (400 | 401 | 403 | 404 | 409 | 410 | 413 | 415 | 428 | 500 | 503)[];
   errorResponseSchema?: string;
   pathParameters?: readonly NativePathParameter[];
   queryParameters?: readonly NativeQueryParameter[];
@@ -2379,6 +2380,7 @@ const nativeCompanionPreferencesResponseSchema = z.object({
 }).strict();
 
 export const nativeContractSchemas = Object.freeze({
+  ...nativeListenSchemas,
   NativeEvidenceRunResponse: z.object({
     run: z.object({
       delegatedWork: z.object({
@@ -2515,7 +2517,7 @@ export const nativeContractSchemas = Object.freeze({
     supportedVersions: z.tuple([
       z.literal(NATIVE_API_CURRENT_VERSION),
       z.literal(NATIVE_API_PREVIOUS_VERSION),
-      z.literal(51),
+      z.literal(52),
     ]),
     versions: z.array(z.object({
       version: z.number().int().positive(),
@@ -2529,6 +2531,12 @@ export const nativeContractSchemas = Object.freeze({
 });
 
 export function nativeOperationsForVersion(version: number): readonly NativeOperation[] | undefined {
+  if (version === 54) return [...nativeOperationsForVersion(53)!,
+    operation("listen.grant", "POST", "/api/mobile/listen/grant", "Enable or revoke this phone's background transcript, source-memory and Knowledge processing. Captured instructions never authorize commands.", "bearer", "NativeListenGrantRequest", "NativeListenGrantResponse", { requestBodyMaxBytes: 4096 }),
+    operation("listen.ingest", "POST", "/api/mobile/listen/ingest", "Upload only owned recording chunks using a Listen grant. JSON start/complete/status or multipart segment; never returns transcript content. Audio is removed after processing.", "listen", "NativeListenIngestRequest", "NativeListenIngestResponse", { requestBodyMaxBytes: 3211264, successStatuses: [200, 202], errorStatuses: [400, 401, 403, 404, 409, 410, 413, 415, 503] }),
+    operation("listen.conversations.list", "GET", "/api/mobile/listen/conversations", "Read up to 50 of your recent phone conversations and call notes.", "bearer", undefined, "NativeListenConversationListResponse"),
+    operation("listen.conversations.get", "GET", "/api/mobile/listen/conversations/{id}", "Read a conversation's source transcript, summary, cited actions and relationship notes.", "bearer", undefined, "NativeListenConversationResponse"),
+  ];
   if (version === 1) return v1Operations;
   if (version === 2) return v2Operations;
   if (version === 3) return v3Operations;
@@ -2609,7 +2617,7 @@ export function nativeContractDiscovery() {
     previousVersion: NATIVE_API_PREVIOUS_VERSION,
     supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [
       typeof NATIVE_API_CURRENT_VERSION, typeof NATIVE_API_PREVIOUS_VERSION,
-      51,
+      52,
     ],
     versions: NATIVE_API_SUPPORTED_VERSIONS.map((version) => ({
       version,

@@ -15,6 +15,7 @@ import '../features/auth/application/biometric_session_lock_controller.dart';
 import '../features/auth/application/session_controller.dart';
 import '../features/capture/capture_providers.dart';
 import '../features/capture/capture_drop_intake.dart';
+import '../features/listen/listen_controller.dart';
 import '../features/computer_use/local_computer.dart';
 import '../features/computer_use/android_phone.dart';
 import '../features/ambient_voice/android_voice_session.dart';
@@ -211,6 +212,7 @@ class _AsaelAppState extends ConsumerState<AsaelApp>
   @override
   Widget build(BuildContext context) {
     if (appAndroidDeviceBridge.supported) {
+      ref.watch(listenLifecycleProvider);
       ref.watch(androidPhoneProvider);
       ref.watch(androidVoiceSessionProvider);
       ref.listen(androidPhoneProvider, (_, _) => _phoneSessionChanged());

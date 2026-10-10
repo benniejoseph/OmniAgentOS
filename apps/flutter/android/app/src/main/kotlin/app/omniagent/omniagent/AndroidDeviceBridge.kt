@@ -208,6 +208,8 @@ object AndroidDeviceBridge {
                     check(!locked()) { "device_locked" }
                     check(notificationsGranted()) { "notification_permission_required" }
                     check(app?.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) { "microphone_permission_required" }
+                    // Release the separate conversation recorder before live voice claims the microphone.
+                    ListenRecordingService.current?.pause("Paused for your ATLAS conversation. Tap Resume when you are ready.")
                     voiceActive = true
                     voiceExpiresAt = System.currentTimeMillis() + SESSION_MILLIS
                     voiceMuted = false

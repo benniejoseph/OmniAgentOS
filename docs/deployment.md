@@ -4,6 +4,38 @@ Production uses Node.js 24.x and npm 11.x across local metadata, CI, and the wor
 
 ## Required production configuration
 
+Phone Listen and nightly call notes introduce native contract **v54** and migration
+**250**, `20261010180000_listen_capture.sql` (`listen_capture_v1`). Apply the
+additive migration through the existing encrypted-backup/quiescence procedure,
+then deploy the paired web/worker before installing the Android build. The two
+new tenant/actor-scoped tables are `omni_listen_grants` and `omni_listen_sources`;
+the expected tenant-table inventory increases from **270 to 272**. They are
+classified as migration-scoped tables so their restrictive actor policies are
+preserved. Its narrow `omni_retire_listen_memories_v1` function also retires the
+canonical private source episode, graph references and retrieval traces when a
+recording's Knowledge source is deleted or replaced. Published v53/v52 contract
+documents remain byte-frozen and supported.
+The retired v47 publication now retains its already published compatibility
+metadata; `/api/mobile/contracts` is the current compatibility source.
+
+Listen uses the existing capture media jobs, configured diarized transcription,
+model routing, Knowledge indexing and durable workers. No additional provider
+credential or scheduler service is required. Android retains only the narrow,
+encrypted upload grant for background work; logout, device/session revocation,
+membership/role changes and expiry reject further uploads. Enable background
+processing from Listen while authenticated, grant the chosen calls folder through
+Android's picker, then enable the 23:30 India-time scan. A deferred or missed run
+catches up after Android allows execution and connectivity returns. Do not grant
+microphone or storage permissions with ADB, start recording during setup, or
+claim an exact 23:30 execution guarantee. Keep call originals on the phone;
+server raw audio is removed after successful processing.
+
+Rollback keeps the additive tables and tombstones. Revoke/disable Listen grants
+and disable the phone schedule before restoring a v53 server that lacks these
+routes. Do not delete source tombstones to “retry” imports: that would restore
+conversations the owner removed. Failed processing retains its saved chunks;
+status checks never silently restart a terminal failed provider operation.
+
 Android screen observation now uses its canonical Android input schema in the
 governed executor. The previous shared Mac parser added `includeScreenshot`,
 which Android correctly rejected before native dispatch. This server-only fix

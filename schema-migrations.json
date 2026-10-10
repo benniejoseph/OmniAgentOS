@@ -1535,5 +1535,12 @@
     "checksum": "0078bbaccb6ea94da05a158220ddcca027e83cca776bbfd1375732362c7bd168",
     "file": "20261010120000_android_local_control.sql",
     "sha256": "0078bbaccb6ea94da05a158220ddcca027e83cca776bbfd1375732362c7bd168"
+  },
+  {
+    "version": 250,
+    "name": "listen_capture_v1",
+    "checksum": "7bafada2e72418b3cdee84df711e76b42107025f1198322cc5cfa6fdd5c832dc",
+    "file": "20261010180000_listen_capture.sql",
+    "sha256": "7bafada2e72418b3cdee84df711e76b42107025f1198322cc5cfa6fdd5c832dc"
   }
 ]
