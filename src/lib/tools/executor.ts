@@ -72,6 +72,7 @@ import {
   holdMcpToolForReview,
 } from "@/lib/connectors/store";
 import { readResponseTextLimited } from "@/lib/http/body";
+import { localAndroidInputs } from "@/lib/local-computer/android-contracts";
 import {
   LOCAL_COMPUTER_TASK_AUTHORITY_REFUSED_ERROR_CODE,
   LOCAL_COMPUTER_TASK_AUTHORITY_UNATTESTED_ERROR_CODE,
@@ -5607,7 +5608,11 @@ function toolAppServiceCaller(
 }
 
 function parseInput(tool: ToolDefinition, input: Record<string, unknown>) {
-  if (["local.macos.observe", "local.android.observe"].includes(tool.id)) {
+  if (tool.id === "local.android.observe") {
+    return localAndroidInputs.observe.parse(input);
+  }
+
+  if (tool.id === "local.macos.observe") {
     return localMacObserveSchema.parse(input);
   }
 

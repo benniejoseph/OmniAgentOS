@@ -4,6 +4,14 @@ Production uses Node.js 24.x and npm 11.x across local metadata, CI, and the wor
 
 ## Required production configuration
 
+Android screen observation now uses its canonical Android input schema in the
+governed executor. The previous shared Mac parser added `includeScreenshot`,
+which Android correctly rejected before native dispatch. This server-only fix
+preserves native contract **v53**, migration **249**, and installed Android
+**1.28.2+91** / Mac **1.28.1+90**. Deploy the paired web/worker; no native rebuild
+or migration is needed. Validate with a multi-step This phone request that opens
+an app, observes its screen, and acts on the fresh observation.
+
 Android app **1.28.2+91** fixes the retained Flutter engine's ownership when
 Asael is reopened. The engine is registered before Activity creation and the
 Activity uses a cached, non-destroying Flutter fragment; this prevents a second
