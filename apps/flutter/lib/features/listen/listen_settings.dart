@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_page_scaffold.dart';
 
 import 'listen_bridge.dart';
 import 'listen_controller.dart';
@@ -12,14 +13,18 @@ class ListenSurface extends StatelessWidget {
   const ListenSurface({super.key, required this.child});
   final Widget child;
   @override
-  Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.all(20),
-    decoration: BoxDecoration(
-      borderRadius: BorderRadius.circular(12),
-      border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
-    ),
-    child: child,
-  );
+  Widget build(BuildContext context) => usesMobilePresentation()
+      ? MobileSurface(padding: const EdgeInsets.all(24), child: child)
+      : Container(
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: Theme.of(context).colorScheme.outlineVariant,
+            ),
+          ),
+          child: child,
+        );
 }
 
 class ListenSettingsLink extends StatelessWidget {
@@ -117,19 +122,57 @@ class _ListenSettingsPageState extends ConsumerState<ListenSettingsPage>
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   if (usesMobilePresentation()) ...[
-                    Text(
-                      enabled
-                          ? 'Your evening, taken care of'
-                          : 'Your calls, remembered',
-                      style: Theme.of(context).textTheme.titleLarge,
+                    MobileSurface(
+                      spotlight: true,
+                      padding: const EdgeInsets.all(28),
+                      child: Builder(
+                        builder: (context) {
+                          final theme = Theme.of(context);
+                          return Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Icon(
+                                    Icons.nights_stay_outlined,
+                                    color: theme.colorScheme.primary,
+                                    size: 28,
+                                  ),
+                                  const Spacer(),
+                                  MobileStatusPill(
+                                    label: enabled
+                                        ? 'Nightly notes on'
+                                        : 'Not enabled',
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 28),
+                              Text(
+                                'Your calls,\nremembered.',
+                                style: theme.textTheme.headlineSmall?.copyWith(
+                                  height: 1.2,
+                                ),
+                              ),
+                              const SizedBox(height: 24),
+                              Text(
+                                '11:30 PM',
+                                style: theme.textTheme.headlineLarge?.copyWith(
+                                  color: theme.colorScheme.primary,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                'Every evening · India time',
+                                style: theme.textTheme.bodySmall?.copyWith(
+                                  color: theme.colorScheme.onSurfaceVariant,
+                                ),
+                              ),
+                            ],
+                          );
+                        },
+                      ),
                     ),
-                    const SizedBox(height: 8),
-                    Text(
-                      '11:30 PM · India time',
-                      style: Theme.of(context).textTheme.titleMedium
-                          ?.copyWith(color: scheme.primary),
-                    ),
-                    const SizedBox(height: 8),
+                    const SizedBox(height: 16),
                     ExpansionTile(
                       tilePadding: EdgeInsets.zero,
                       title: const Text('How nightly notes work'),

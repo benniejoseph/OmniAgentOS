@@ -141,45 +141,111 @@ class _ResultsWorkspaceState extends State<ResultsWorkspace> {
               itemCount: items.length,
               itemBuilder: (context, index) {
                 final item = items[index];
+                final theme = Theme.of(context);
+                final date = item.timestamp == null
+                    ? 'Date unavailable'
+                    : MaterialLocalizations.of(context)
+                          .formatMediumDate(item.timestamp!.toLocal());
+                final priorDate =
+                    index == 0 || items[index - 1].timestamp == null
+                    ? null
+                    : MaterialLocalizations.of(
+                        context,
+                      ).formatMediumDate(items[index - 1].timestamp!.toLocal());
+                final preview =
+                    (item.body.length > 500
+                            ? item.body.substring(0, 500)
+                            : item.body)
+                        .replaceAll(RegExp(r'[#*_>`]'), '')
+                        .trim();
                 return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    ListTile(
-                      contentPadding: const EdgeInsets.symmetric(vertical: 10),
-                      leading: Icon(switch (item.kind) {
-                        ResultKind.agent => Icons.chat_bubble_outline_rounded,
-                        ResultKind.workflow => Icons.account_tree_outlined,
-                        ResultKind.approval => Icons.fact_check_outlined,
-                      }),
-                      title: Text(
-                        item.title,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
+                    if (date != priorDate)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 16, bottom: 12),
+                        child: Text(date, style: theme.textTheme.labelLarge),
                       ),
-                      subtitle: Padding(
-                        padding: const EdgeInsets.only(top: 6),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(item.statusLabel),
-                            if (item.timestamp != null)
-                              Text(
-                                MaterialLocalizations.of(
-                                  context,
-                                ).formatMediumDate(item.timestamp!.toLocal()),
-                                style: Theme.of(context).textTheme.bodySmall,
-                              ),
-                          ],
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: Material(
+                        color: theme.colorScheme.surface,
+                        borderRadius: BorderRadius.circular(18),
+                        clipBehavior: Clip.antiAlias,
+                        child: InkWell(
+                          onTap: controller.readable
+                              ? () {
+                                  controller.select(item.selectionIdentity);
+                                  widget.onOpen(item);
+                                }
+                              : null,
+                          child: Padding(
+                            padding: const EdgeInsets.all(18),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  children: [
+                                    Icon(
+                                      switch (item.kind) {
+                                        ResultKind.agent =>
+                                          Icons.chat_bubble_outline_rounded,
+                                        ResultKind.workflow =>
+                                          Icons.account_tree_outlined,
+                                        ResultKind.approval =>
+                                          Icons.fact_check_outlined,
+                                      },
+                                      size: 18,
+                                      color: theme.colorScheme.primary,
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      child: Text(switch (item.kind) {
+                                        ResultKind.agent => 'Assistant',
+                                        ResultKind.workflow => 'Workflow',
+                                        ResultKind.approval => 'Decision',
+                                      }, style: theme.textTheme.labelMedium),
+                                    ),
+                                    const Icon(
+                                      Icons.arrow_outward_rounded,
+                                      size: 18,
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 12),
+                                Text(
+                                  item.title,
+                                  maxLines: 3,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: theme.textTheme.titleMedium,
+                                ),
+                                if (preview.isNotEmpty) ...[
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    preview,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: theme.textTheme.bodyMedium?.copyWith(
+                                      color: theme.colorScheme.onSurfaceVariant,
+                                    ),
+                                  ),
+                                ],
+                                const SizedBox(height: 16),
+                                MobileStatusPill(
+                                  label: item.statusLabel,
+                                  icon: item.verifiedOutcome
+                                      ? Icons.check_circle_outline_rounded
+                                      : null,
+                                  color: item.tone == ResultTone.danger
+                                      ? theme.colorScheme.error
+                                      : null,
+                                ),
+                              ],
+                            ),
+                          ),
                         ),
                       ),
-                      trailing: const Icon(Icons.chevron_right_rounded),
-                      onTap: controller.readable
-                          ? () {
-                              controller.select(item.selectionIdentity);
-                              widget.onOpen(item);
-                            }
-                          : null,
                     ),
-                    const Divider(height: 1),
                   ],
                 );
               },

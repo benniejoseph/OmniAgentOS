@@ -32,6 +32,8 @@ class _ResponsibilityWorkspaceViewState
     extends State<ResponsibilityWorkspaceView> {
   ResponsibilityController get controller => widget.controller;
   bool _mobileShowDetail = false;
+  String _mobileQuery = '', _mobileFilter = 'all';
+  final _mobileSearch = TextEditingController();
   @override
   void initState() {
     super.initState();
@@ -53,8 +55,19 @@ class _ResponsibilityWorkspaceViewState
     if (!identical(oldWidget.controller, controller) ||
         oldWidget.focusId != widget.focusId) {
       _mobileShowDetail = widget.focusId != null;
+      if (!identical(oldWidget.controller, controller)) {
+        _mobileSearch.clear();
+        _mobileQuery = '';
+        _mobileFilter = 'all';
+      }
       _initialize();
     }
+  }
+
+  @override
+  void dispose() {
+    _mobileSearch.dispose();
+    super.dispose();
   }
 
   void _select(String id) {
@@ -169,131 +182,233 @@ class _ResponsibilityWorkspaceViewState
       );
     },
   );
-  Widget _mobileWorkspace() => Column(
-    children: [
-      MobilePageHeader(
-        title: 'Follow-ups',
-        subtitle: _mobileShowDetail
-            ? null
-            : 'Outcomes you want ATLAS to keep checking.',
-        leading: _mobileShowDetail
-            ? BackButton(
-                onPressed: () => setState(() => _mobileShowDetail = false),
-              )
-            : null,
-        actions: [
-          IconButton(
-            tooltip: 'Refresh follow-ups',
-            onPressed: controller.loading ? null : controller.refresh,
-            icon: const Icon(Icons.refresh_rounded),
-          ),
-          if (!_mobileShowDetail && controller.canManage)
-            IconButton.filledTonal(
-              tooltip: 'New follow-up',
-              onPressed: controller.busy ? null : _newDraft,
-              icon: const Icon(Icons.add_rounded),
+  Widget _mobileWorkspace() {
+    final records = controller.records
+        .where(
+          (record) =>
+              (_mobileFilter == 'all' || record.state == _mobileFilter) &&
+              record.title.toLowerCase().contains(_mobileQuery.toLowerCase()),
+        )
+        .toList();
+    return Column(
+      children: [
+        MobilePageHeader(
+          title: 'Follow-ups',
+          subtitle: _mobileShowDetail ? null : 'Keep the next step in sight.',
+          leading: _mobileShowDetail
+              ? BackButton(
+                  onPressed: () => setState(() => _mobileShowDetail = false),
+                )
+              : null,
+          actions: [
+            IconButton(
+              tooltip: 'Refresh follow-ups',
+              onPressed: controller.loading ? null : controller.refresh,
+              icon: const Icon(Icons.refresh_rounded),
             ),
-        ],
-      ),
-      Expanded(
-        child: _mobileShowDetail
-            ? ListView(
-                keyboardDismissBehavior:
-                    ScrollViewKeyboardDismissBehavior.onDrag,
-                padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
-                children: _detailChildren(),
-              )
-            : CustomScrollView(
-                slivers: [
-                  SliverPadding(
-                    padding: const EdgeInsets.symmetric(horizontal: 20),
-                    sliver: SliverToBoxAdapter(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          if (controller.dirty || controller.selectedId != null)
-                            OutlinedButton.icon(
-                              onPressed: () =>
-                                  setState(() => _mobileShowDetail = true),
-                              icon: const Icon(Icons.edit_note_rounded),
-                              label: Text(
-                                controller.dirty
-                                    ? 'Continue your draft'
-                                    : 'Return to selected follow-up',
+            if (!_mobileShowDetail && controller.canManage)
+              IconButton.filledTonal(
+                tooltip: 'New follow-up',
+                onPressed: controller.busy ? null : _newDraft,
+                icon: const Icon(Icons.add_rounded),
+              ),
+          ],
+        ),
+        Expanded(
+          child: _mobileShowDetail
+              ? ListView(
+                  keyboardDismissBehavior:
+                      ScrollViewKeyboardDismissBehavior.onDrag,
+                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+                  children: _detailChildren(),
+                )
+              : CustomScrollView(
+                  slivers: [
+                    SliverPadding(
+                      padding: const EdgeInsets.symmetric(horizontal: 20),
+                      sliver: SliverToBoxAdapter(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            TextField(
+                              controller: _mobileSearch,
+                              decoration: const InputDecoration(
+                                hintText: 'Find a follow-up',
+                                prefixIcon: Icon(Icons.search_rounded),
                               ),
+                              onChanged: (value) =>
+                                  setState(() => _mobileQuery = value),
                             ),
-                          if (controller.loading)
-                            const LinearProgressIndicator(),
-                          if (controller.readErrors[ResponsibilityRead.list] !=
-                              null)
-                            _Notice(
-                              controller.readErrors[ResponsibilityRead.list]!,
-                              error: true,
+                            const SizedBox(height: 16),
+                            MobileSegmentBar<String>(
+                              items: const [
+                                (value: 'all', label: 'All', icon: null),
+                                (value: 'draft', label: 'Drafts', icon: null),
+                                (
+                                  value: 'reviewed',
+                                  label: 'Reviewed',
+                                  icon: null,
+                                ),
+                              ],
+                              value: _mobileFilter,
+                              onChanged: (value) =>
+                                  setState(() => _mobileFilter = value),
                             ),
-                          if (controller.error != null)
-                            _Notice(controller.error!, error: true),
-                          if (controller.listing != null &&
-                              controller.records.isEmpty)
-                            Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 32),
-                              child: Column(
-                                children: [
-                                  Icon(
-                                    Icons.event_repeat_rounded,
-                                    size: 36,
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .primary,
-                                  ),
-                                  const SizedBox(height: 16),
-                                  Text(
-                                    'Give the next step a home',
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .titleMedium,
-                                  ),
-                                  const SizedBox(height: 8),
-                                  const Text(
-                                    'Choose an outcome and sources. Review the plan and limits before turning it on.',
-                                    textAlign: TextAlign.center,
-                                  ),
-                                ],
+                            const SizedBox(height: 20),
+                            if (controller.dirty ||
+                                controller.selectedId != null)
+                              OutlinedButton.icon(
+                                onPressed: () =>
+                                    setState(() => _mobileShowDetail = true),
+                                icon: const Icon(Icons.edit_note_rounded),
+                                label: Text(
+                                  controller.dirty
+                                      ? 'Continue your draft'
+                                      : 'Return to selected follow-up',
+                                ),
                               ),
-                            ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  SliverList.builder(
-                    itemCount: controller.records.length,
-                    itemBuilder: (context, index) {
-                      final record = controller.records[index];
-                      return MobileActionTile(
-                        key: ValueKey(record.id),
-                        icon: Icons.event_repeat_outlined,
-                        title: record.title,
-                        subtitle: _label(record.state),
-                        onTap: () => _select(record.id),
-                      );
-                    },
-                  ),
-                  if (controller.listing != null)
-                    SliverToBoxAdapter(
-                      child: Padding(
-                        padding: const EdgeInsets.all(20),
-                        child: Text(
-                          controller.listing?['hasMore'] == true
-                              ? 'Showing recent follow-ups. Older records can still be opened from their links.'
-                              : 'Showing your recently loaded follow-ups.',
-                          style: Theme.of(context).textTheme.bodySmall,
+                            if (controller.loading)
+                              const LinearProgressIndicator(),
+                            if (controller.readErrors[ResponsibilityRead
+                                    .list] !=
+                                null)
+                              _Notice(
+                                controller.readErrors[ResponsibilityRead.list]!,
+                                error: true,
+                              ),
+                            if (controller.error != null)
+                              _Notice(controller.error!, error: true),
+                            if (controller.listing != null && records.isEmpty)
+                              Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 32,
+                                ),
+                                child: Column(
+                                  children: [
+                                    Icon(
+                                      Icons.event_repeat_rounded,
+                                      size: 36,
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .primary,
+                                    ),
+                                    const SizedBox(height: 16),
+                                    Text(
+                                      'Give the next step a home',
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .titleMedium,
+                                    ),
+                                    const SizedBox(height: 8),
+                                    const Text(
+                                      'Choose an outcome and sources. Review the plan and limits before turning it on.',
+                                      textAlign: TextAlign.center,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                          ],
                         ),
                       ),
                     ),
-                ],
-              ),
-      ),
-    ],
-  );
+                    SliverList.builder(
+                      itemCount: records.length,
+                      itemBuilder: (context, index) {
+                        final record = records[index];
+                        final sourceCount =
+                            (record.draft['sources'] as List).length;
+                        return Padding(
+                          padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+                          child: Material(
+                            color: Theme.of(context).colorScheme.surface,
+                            borderRadius: BorderRadius.circular(18),
+                            clipBehavior: Clip.antiAlias,
+                            child: InkWell(
+                              onTap: () => _select(record.id),
+                              child: Padding(
+                                padding: const EdgeInsets.all(18),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      children: [
+                                        Icon(
+                                          Icons.event_repeat_outlined,
+                                          size: 20,
+                                          color: Theme.of(context)
+                                              .colorScheme
+                                              .primary,
+                                        ),
+                                        const SizedBox(width: 10),
+                                        Expanded(
+                                          child: Text(
+                                            _label(record.state),
+                                            style: Theme.of(context)
+                                                .textTheme
+                                                .labelMedium,
+                                          ),
+                                        ),
+                                        const Icon(
+                                          Icons.chevron_right_rounded,
+                                          size: 20,
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 14),
+                                    Text(
+                                      record.title,
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .titleMedium,
+                                    ),
+                                    if ((record.draft['desiredOutcome']
+                                            as String)
+                                        .isNotEmpty) ...[
+                                      const SizedBox(height: 8),
+                                      Text(
+                                        record.draft['desiredOutcome']
+                                            as String,
+                                        maxLines: 2,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .bodyMedium,
+                                      ),
+                                    ],
+                                    const SizedBox(height: 14),
+                                    Text(
+                                      '$sourceCount ${sourceCount == 1 ? 'source' : 'sources'} selected',
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .bodySmall,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                    if (controller.listing != null)
+                      SliverToBoxAdapter(
+                        child: Padding(
+                          padding: const EdgeInsets.all(20),
+                          child: Text(
+                            controller.listing?['hasMore'] == true
+                                ? 'Showing recent follow-ups. Older records can still be opened from their links.'
+                                : 'Your saved follow-ups.',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+        ),
+      ],
+    );
+  }
+
   Widget _catalogue({bool shrinkWrap = false}) => ListView(
     shrinkWrap: shrinkWrap,
     physics: shrinkWrap ? const NeverScrollableScrollPhysics() : null,
@@ -394,8 +509,10 @@ class _ResponsibilityWorkspaceViewState
             if (!usesMobilePresentation())
               SelectableText(controller.record!.id),
           ],
-          const Text(
-            'Describe a finite responsibility, choose exact references, then review its current pins. Saving and reviewing do not start checks or delivery.',
+          Text(
+            usesMobilePresentation()
+                ? 'Choose the outcome and sources. Review the plan before turning on scheduled checks.'
+                : 'Describe a finite responsibility, choose exact references, then review its current pins. Saving and reviewing do not start checks or delivery.',
           ),
           if (controller.canManage)
             _ResponsibilityDraftEditor(
@@ -443,6 +560,8 @@ class _ResponsibilityWorkspaceViewState
                   label: Text(
                     controller.selectedId == null
                         ? 'Save draft'
+                        : usesMobilePresentation()
+                        ? 'Save changes'
                         : 'Save exact revision',
                   ),
                 ),
@@ -456,7 +575,11 @@ class _ResponsibilityWorkspaceViewState
                             ResponsibilityRead.detail,
                           )
                         : null,
-                    child: const Text('Review current pins'),
+                    child: Text(
+                      usesMobilePresentation()
+                          ? 'Review this plan'
+                          : 'Review current pins',
+                    ),
                   ),
               ],
             ),
@@ -1119,7 +1242,9 @@ class _ResponsibilityDraftEditorState
       children: [
         _field(
           'purpose',
-          'Purpose',
+          usesMobilePresentation()
+              ? 'What should ATLAS keep an eye on?'
+              : 'Purpose',
           draft['purpose'] as String,
           (v) => _change('purpose', v.trim()),
           lines: 2,
@@ -1127,7 +1252,9 @@ class _ResponsibilityDraftEditorState
         ),
         _field(
           'outcome',
-          'Desired outcome',
+          usesMobilePresentation()
+              ? 'What would a good outcome look like?'
+              : 'Desired outcome',
           draft['desiredOutcome'] as String,
           (v) => _change('desiredOutcome', v.trim()),
           lines: 2,
@@ -1164,7 +1291,9 @@ class _ResponsibilityDraftEditorState
         _formGroup('Schedule', [
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
-            title: const Text('Finite cadence'),
+            title: Text(
+              usesMobilePresentation() ? 'Scheduled checks' : 'Finite cadence',
+            ),
             value: cadence != null,
             onChanged: enabled
                 ? (v) {

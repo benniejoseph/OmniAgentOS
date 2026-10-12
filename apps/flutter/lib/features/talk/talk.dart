@@ -3980,6 +3980,73 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     final preferences = widget.companionController?.current;
     final homeId = preferences?.availableThreadId;
     final blocked = _companionNavigationBlocked;
+    if (usesMobilePresentation()) {
+      final status = widget.controller.status;
+      final canReturnHome =
+          homeId != null && homeId != widget.controller.threadId;
+      if (status == null &&
+          !canReturnHome &&
+          companionHomeNotice == null &&
+          deferredCompanionThread == null) {
+        return const SizedBox.shrink();
+      }
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (status != null || canReturnHome)
+              Row(
+                children: [
+                  if (status != null) ...[
+                    Icon(
+                      Icons.auto_awesome_rounded,
+                      size: 15,
+                      color: Theme.of(context).colorScheme.primary,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        _humanCommandStatus(status),
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ),
+                  ] else
+                    const Spacer(),
+                  if (canReturnHome)
+                    TextButton.icon(
+                      onPressed: blocked == null && !openingCompanionHome
+                          ? () => unawaited(_openCompanionConversation(homeId!))
+                          : null,
+                      icon: const Icon(Icons.home_outlined, size: 17),
+                      label: Text(
+                        openingCompanionHome ? 'Opening…' : 'Home conversation',
+                      ),
+                    ),
+                ],
+              ),
+            if (companionHomeNotice != null)
+              Text(
+                companionHomeNotice!,
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            if (deferredCompanionThread != null)
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  onPressed: blocked == null && !openingCompanionHome
+                      ? () => unawaited(
+                          _openCompanionConversation(deferredCompanionThread!),
+                        )
+                      : null,
+                  icon: const Icon(Icons.forum_outlined, size: 18),
+                  label: const Text('Open requested conversation'),
+                ),
+              ),
+          ],
+        ),
+      );
+    }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -5968,15 +6035,54 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     final mobile = usesMobilePresentation();
     return Scaffold(
       appBar: AppBar(
-        toolbarHeight: mobile ? 60 : 56,
+        toolbarHeight: mobile ? 76 : 56,
         titleSpacing: 20,
         title: ListenableBuilder(
           listenable: widget.controller,
-          builder: (_, _) => Text(
-            widget.controller.selectedThread?.title ?? 'Assistant',
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
+          builder: (_, _) => mobile
+              ? Row(
+                  children: [
+                    AtlasPortrait(
+                      size: 42,
+                      preferences:
+                          widget.companionController?.current?.preferences,
+                      scopeKey: (widget.controller, widget.controller.threadId),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            widget.controller.assignedAgent?.name ?? 'ATLAS',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.titleLarge,
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            widget.controller.selectedThread?.title ??
+                                'Your companion',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.bodySmall
+                                ?.copyWith(
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .onSurfaceVariant,
+                                ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                )
+              : Text(
+                  widget.controller.selectedThread?.title ?? 'Assistant',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
         ),
         actions: [
           if (appDesktopHostBridge.supported ||
@@ -6123,6 +6229,13 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                 Expanded(
                   child: widget.controller.messages.isEmpty
                       ? _TalkEmpty(
+                          onSuggestion: (text) {
+                            input.text = text;
+                            input.selection = TextSelection.collapsed(
+                              offset: text.length,
+                            );
+                            inputFocus.requestFocus();
+                          },
                           selectedThread: widget.controller.hasSelectedThread,
                           greeting:
                               widget.controller.status == null &&
@@ -6176,10 +6289,17 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                                         : null,
                                     constraints: BoxConstraints(
                                       maxWidth: m.role == TalkRole.user
-                                          ? 580
+                                          ? mobile
+                                                ? math.min(
+                                                    580,
+                                                    constraints.maxWidth * .86,
+                                                  )
+                                                : 580
                                           : 700,
                                     ),
-                                    margin: const EdgeInsets.only(bottom: 28),
+                                    margin: EdgeInsets.only(
+                                      bottom: mobile ? 24 : 28,
+                                    ),
                                     padding: EdgeInsets.symmetric(
                                       horizontal: m.role == TalkRole.user
                                           ? 18
@@ -6190,11 +6310,17 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                                     ),
                                     decoration: BoxDecoration(
                                       color: m.role == TalkRole.user
-                                          ? Theme.of(context)
-                                                .colorScheme
-                                                .surfaceContainerHigh
+                                          ? mobile
+                                                ? Theme.of(context)
+                                                      .colorScheme
+                                                      .inverseSurface
+                                                : Theme.of(context)
+                                                      .colorScheme
+                                                      .surfaceContainerHigh
                                           : Colors.transparent,
-                                      borderRadius: BorderRadius.circular(16),
+                                      borderRadius: BorderRadius.circular(
+                                        mobile ? 24 : 16,
+                                      ),
                                       border: m.failed
                                           ? Border.all(
                                               color: Theme.of(context)
@@ -6236,6 +6362,11 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                                                       ?.copyWith(
                                                         fontSize: 16,
                                                         height: 1.55,
+                                                        color: mobile
+                                                            ? Theme.of(context)
+                                                                  .colorScheme
+                                                                  .onInverseSurface
+                                                            : null,
                                                       ),
                                                 ),
                                               if (showArtifact) ...[
@@ -6266,8 +6397,10 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                                                         Icons.copy_rounded,
                                                         size: 15,
                                                       ),
-                                                      label: const Text(
-                                                        'Copy answer',
+                                                      label: Text(
+                                                        mobile
+                                                            ? 'Copy'
+                                                            : 'Copy answer',
                                                       ),
                                                     ),
                                                     if (i ==
@@ -6353,7 +6486,12 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                   top: false,
                   child: Container(
                     constraints: const BoxConstraints(maxWidth: 732),
-                    margin: EdgeInsets.fromLTRB(12, 0, 12, macos ? 12 : 8),
+                    margin: EdgeInsets.fromLTRB(
+                      mobile ? 20 : 12,
+                      0,
+                      mobile ? 20 : 12,
+                      macos ? 12 : 10,
+                    ),
                     padding: const EdgeInsets.only(top: 4),
                     child: Center(
                       child: ConstrainedBox(
@@ -9148,6 +9286,7 @@ class _TalkEmpty extends StatelessWidget {
     required this.greeting,
     this.preferences,
     this.scopeKey,
+    this.onSuggestion,
   });
 
   final bool selectedThread;
@@ -9155,9 +9294,114 @@ class _TalkEmpty extends StatelessWidget {
   final bool greeting;
   final CompanionPreferences? preferences;
   final Object? scopeKey;
+  final ValueChanged<String>? onSuggestion;
 
   @override
   Widget build(BuildContext context) {
+    if (usesMobilePresentation()) {
+      final theme = Theme.of(context);
+      return LayoutBuilder(
+        builder: (context, constraints) => SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(28, 28, 28, 20),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              minHeight: math.max(0, constraints.maxHeight - 48),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                AtlasPortrait(
+                  state: loading ? 'working' : 'available',
+                  greeting: greeting && !loading,
+                  size: 96,
+                  preferences: preferences,
+                  scopeKey: scopeKey,
+                ),
+                const SizedBox(height: 28),
+                Text(
+                  loading
+                      ? 'Picking up\nour conversation.'
+                      : selectedThread
+                      ? 'A fresh thought?'
+                      : 'What’s on\nyour mind?',
+                  style: theme.textTheme.headlineLarge?.copyWith(height: 1.14),
+                ),
+                const SizedBox(height: 14),
+                Text(
+                  loading ? 'Bringing your latest messages into view.' : 'Think out loud. Make a plan.\nWe’ll take it from here.',
+                  style: theme.textTheme.bodyLarge?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                    height: 1.5,
+                  ),
+                ),
+                if (!loading && !selectedThread) ...[
+                  const SizedBox(height: 28),
+                  for (final suggestion in const [
+                    (
+                      icon: Icons.wb_sunny_outlined,
+                      title: 'Make room for what matters',
+                      prompt: 'Help me plan my day using my saved tasks and context.',
+                    ),
+                    (
+                      icon: Icons.travel_explore_rounded,
+                      title: 'Explore something new',
+                      prompt: 'Help me research ',
+                    ),
+                    (
+                      icon: Icons.work_outline_rounded,
+                      title: 'Move my work forward',
+                      prompt: 'Review my work and suggest the most useful next step.',
+                    ),
+                  ])
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Material(
+                        color: theme.colorScheme.surface,
+                        borderRadius: BorderRadius.circular(18),
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(18),
+                          onTap: onSuggestion == null
+                              ? null
+                              : () => onSuggestion!(suggestion.prompt),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 16,
+                            ),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  suggestion.icon,
+                                  size: 21,
+                                  color: theme.colorScheme.primary,
+                                ),
+                                const SizedBox(width: 14),
+                                Expanded(
+                                  child: Text(
+                                    suggestion.title,
+                                    style: theme.textTheme.bodyMedium,
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Icon(
+                                  Icons.north_west_rounded,
+                                  size: 16,
+                                  color: theme.colorScheme.onSurfaceVariant,
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+              ],
+            ),
+          ),
+        ),
+      );
+    }
     // Centred when it fits, and scrollable when the keyboard or a larger
     // text size leaves less room than it needs.
     return LayoutBuilder(

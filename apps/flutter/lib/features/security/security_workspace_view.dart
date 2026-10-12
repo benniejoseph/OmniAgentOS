@@ -280,61 +280,110 @@ class _SecurityWorkspaceViewState extends State<SecurityWorkspaceView> {
         Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              'Your workspace, under your control',
-              style: Theme.of(context).textTheme.titleLarge,
-            ),
-            const SizedBox(height: 6),
-            const Text(
-              'See what Asael can do and how your data is kept. Technical details are there when you need them.',
-            ),
-            const SizedBox(height: 16),
-            Wrap(
-              spacing: 10,
-              runSpacing: 10,
-              children: [
-                _Metric(
-                  'Current role',
-                  c.context.data == null
-                      ? _sourceLabel(c.context.state)
-                      : _label(c.context.data!.role.name),
-                  'Your signed-in account',
+            if (usesMobilePresentation())
+              MobileSurface(
+                padding: EdgeInsets.zero,
+                child: ExpansionTile(
+                  key: const PageStorageKey<String>('mobile-security-overview'),
+                  tilePadding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 4,
+                  ),
+                  leading: const Icon(Icons.shield_outlined),
+                  title: const Text('Security overview'),
+                  subtitle: Text(
+                    c.context.data == null
+                        ? 'Account status unavailable'
+                        : 'Signed in as ${_label(c.context.data!.role.name)}',
+                  ),
+                  childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                  children: [
+                    Wrap(
+                      spacing: 10,
+                      runSpacing: 10,
+                      children: [
+                        _Metric(
+                          'Current role',
+                          c.context.data == null
+                              ? _sourceLabel(c.context.state)
+                              : _label(c.context.data!.role.name),
+                          'Your signed-in account',
+                        ),
+                        _Metric(
+                          'Blocked requests',
+                          c.audits.data == null
+                              ? _sourceLabel(c.audits.state)
+                              : '${c.audits.data!.denied}',
+                          'In up to 200 recent decisions',
+                        ),
+                        _Metric(
+                          'Data protection',
+                          c.isolation.data == null
+                              ? _sourceLabel(c.isolation.state)
+                              : _assessment(c.isolation.data!.assessment),
+                          'Checks of known storage policies',
+                        ),
+                      ],
+                    ),
+                  ],
                 ),
-                _Metric(
-                  'Blocked requests',
-                  c.audits.data == null
-                      ? _sourceLabel(c.audits.state)
-                      : '${c.audits.data!.denied}',
-                  'In up to 200 recent decisions',
-                ),
-                _Metric(
-                  'Data protection',
-                  c.isolation.data == null
-                      ? _sourceLabel(c.isolation.state)
-                      : _assessment(c.isolation.data!.assessment),
-                  'Checks of known storage policies',
-                ),
-              ],
-            ),
+              )
+            else ...[
+              Text(
+                'Your workspace, under your control',
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+              const SizedBox(height: 6),
+              const Text(
+                'See what Asael can do and how your data is kept. Technical details are there when you need them.',
+              ),
+              const SizedBox(height: 16),
+              Wrap(
+                spacing: 10,
+                runSpacing: 10,
+                children: [
+                  _Metric(
+                    'Current role',
+                    c.context.data == null
+                        ? _sourceLabel(c.context.state)
+                        : _label(c.context.data!.role.name),
+                    'Your signed-in account',
+                  ),
+                  _Metric(
+                    'Blocked requests',
+                    c.audits.data == null
+                        ? _sourceLabel(c.audits.state)
+                        : '${c.audits.data!.denied}',
+                    'In up to 200 recent decisions',
+                  ),
+                  _Metric(
+                    'Data protection',
+                    c.isolation.data == null
+                        ? _sourceLabel(c.isolation.state)
+                        : _assessment(c.isolation.data!.assessment),
+                    'Checks of known storage policies',
+                  ),
+                ],
+              ),
+            ],
             const SizedBox(height: 20),
             if (usesMobilePresentation())
-              DropdownButtonFormField<SecuritySection>(
-                initialValue: c.section,
-                isExpanded: true,
-                decoration: const InputDecoration(
-                  labelText: 'View',
-                  prefixIcon: Icon(Icons.view_agenda_outlined),
-                ),
+              MobileSegmentBar<SecuritySection>(
                 items: [
                   for (final section in SecuritySection.values)
-                    DropdownMenuItem(
+                    (
                       value: section,
-                      child: Text(section.label),
+                      label: switch (section) {
+                        SecuritySection.access => 'Access',
+                        SecuritySection.retention => 'Data',
+                        SecuritySection.audits => 'Decisions',
+                        SecuritySection.isolation => 'Technical',
+                      },
+                      icon: null,
                     ),
                 ],
-                onChanged: (section) {
-                  if (section != null) _section(section);
-                },
+                value: c.section,
+                onChanged: _section,
               )
             else
               Wrap(

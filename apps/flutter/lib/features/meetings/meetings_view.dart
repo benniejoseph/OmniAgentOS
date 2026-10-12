@@ -417,6 +417,18 @@ class _MeetingsViewState extends State<MeetingsView>
   Widget _mobileAgenda(List<Meeting> rows) {
     final controller = widget.controller;
     final locale = MaterialLocalizations.of(context);
+    final agenda = [...rows]..sort((a, b) => a.startAt.compareTo(b.startAt));
+    final upcoming = controller.readable
+        ? agenda
+              .where(
+                (meeting) =>
+                    meeting.isActive && meeting.startAt.isAfter(DateTime.now()),
+              )
+              .firstOrNull
+        : null;
+    final remaining = agenda
+        .where((meeting) => meeting.id != upcoming?.id)
+        .toList();
     return RefreshIndicator(
       onRefresh: () async {
         await _refresh();
@@ -428,21 +440,17 @@ class _MeetingsViewState extends State<MeetingsView>
           SliverToBoxAdapter(
             child: MobilePageHeader(
               title: 'Meetings',
-              subtitle: 'Arrive prepared. Keep the next step clear.',
+              subtitle: 'Your day, in conversations.',
               actions: [
                 if (widget.calendar != null)
                   IconButton(
                     tooltip: 'Calendar connections',
                     onPressed: () =>
                         setState(() => _showCalendar = !_showCalendar),
-                    icon: Icon(
-                      _showCalendar
-                          ? Icons.calendar_today_rounded
-                          : Icons.calendar_month_outlined,
-                    ),
+                    icon: const Icon(Icons.calendar_month_outlined),
                   ),
                 if (widget.actions != null)
-                  IconButton.filledTonal(
+                  IconButton.filled(
                     tooltip: 'Create meeting',
                     onPressed:
                         !preparing &&
@@ -491,73 +499,178 @@ class _MeetingsViewState extends State<MeetingsView>
                     controller: searchController,
                     textInputAction: TextInputAction.search,
                     decoration: const InputDecoration(
-                      hintText: 'Find a meeting',
+                      hintText: 'Find a conversation',
                       prefixIcon: Icon(Icons.search_rounded),
                     ),
                     onChanged: (value) => setState(() => search = value),
                   ),
-                  const SizedBox(height: 12),
-                  SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    child: Row(
-                      children: [
-                        for (final value in [
-                          'active',
-                          'all',
-                          'completed',
-                          'cancelled',
-                        ])
-                          Padding(
-                            padding: const EdgeInsets.only(right: 8),
-                            child: ChoiceChip(
-                              label: Text(meetingLabel(value)),
-                              selected: filter == value,
-                              onSelected: (_) => setState(() => filter = value),
-                            ),
-                          ),
-                      ],
-                    ),
+                  const SizedBox(height: 16),
+                  MobileSegmentBar<String>(
+                    items: const [
+                      (value: 'active', label: 'Active', icon: null),
+                      (value: 'all', label: 'All', icon: null),
+                      (value: 'completed', label: 'Finished', icon: null),
+                      (value: 'cancelled', label: 'Cancelled', icon: null),
+                    ],
+                    value: filter,
+                    onChanged: (value) => setState(() => filter = value),
                   ),
                   if (controller.loading) const LinearProgressIndicator(),
-                  if (controller.hasLoaded)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 12),
+                  if (controller.atBound)
+                    const Padding(
+                      padding: EdgeInsets.only(top: 12),
                       child: Text(
-                        '${rows.length} matches in your loaded agenda${controller.atBound ? ' · more meetings may exist' : ''}',
-                        style: Theme.of(context).textTheme.bodySmall,
+                        'This is your recent agenda. More meetings may exist.',
                       ),
                     ),
                   if (controller.hasLoaded && rows.isEmpty)
-                    const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 32),
-                      child: Text(
-                        'No meetings here. Change the filter or create a meeting to start preparing.',
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 36),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Icon(Icons.event_note_outlined, size: 40),
+                          const SizedBox(height: 16),
+                          Text(
+                            'A clear space for the next conversation.',
+                            style: Theme.of(context).textTheme.titleLarge,
+                          ),
+                          const SizedBox(height: 8),
+                          const Text(
+                            'Create a meeting, or change your search to find a saved conversation.',
+                          ),
+                        ],
                       ),
                     ),
+                  if (upcoming != null) ...[
+                    const SizedBox(height: 24),
+                    MobileSurface(
+                      spotlight: true,
+                      padding: const EdgeInsets.all(22),
+                      child: Builder(
+                        builder: (context) {
+                          final start = upcoming.startAt.toLocal();
+                          return Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const MobileStatusPill(
+                                label: 'Up next',
+                                icon: Icons.schedule_rounded,
+                              ),
+                              const SizedBox(height: 18),
+                              Text(
+                                upcoming.title,
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .headlineSmall,
+                              ),
+                              const SizedBox(height: 10),
+                              Text(
+                                '${locale.formatMediumDate(start)} · ${locale.formatTimeOfDay(TimeOfDay.fromDateTime(start))}',
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                '${upcoming.participants.length} people${upcoming.location.isEmpty ? '' : ' · ${upcoming.location}'}',
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              const SizedBox(height: 20),
+                              FilledButton.icon(
+                                onPressed: () => widget.onOpen(upcoming),
+                                icon: const Icon(Icons.arrow_forward_rounded),
+                                label: const Text('Open meeting brief'),
+                              ),
+                            ],
+                          );
+                        },
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),
           ),
           SliverList.builder(
-            itemCount: controller.readable ? rows.length : 0,
+            itemCount: controller.readable ? remaining.length : 0,
             itemBuilder: (context, index) {
-              final meeting = rows[index], date = rows[index].startAt.toLocal();
+              final meeting = remaining[index],
+                  date = remaining[index].startAt.toLocal();
+              final theme = Theme.of(context);
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   if (index == 0 ||
                       !DateUtils.isSameDay(
-                        rows[index - 1].startAt.toLocal(),
+                        remaining[index - 1].startAt.toLocal(),
                         date,
                       ))
                     MobileSectionHeader(title: locale.formatFullDate(date)),
-                  MobileActionTile(
-                    key: ValueKey(meeting.id),
-                    icon: Icons.event_note_outlined,
-                    title: meeting.title,
-                    subtitle:
-                        '${locale.formatTimeOfDay(TimeOfDay.fromDateTime(date))} · ${meetingLabel(meeting.status)}\n${meeting.participants.length} people · ${meeting.evidence.length} saved sources${meeting.location.isEmpty ? '' : '\n${meeting.location}'}',
-                    onTap: () => widget.onOpen(meeting),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        SizedBox(
+                          width: 60,
+                          child: Padding(
+                            padding: const EdgeInsets.only(top: 18),
+                            child: Text(
+                              locale.formatTimeOfDay(
+                                TimeOfDay.fromDateTime(date),
+                              ),
+                              style: theme.textTheme.labelMedium,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Material(
+                            color: theme.colorScheme.surface,
+                            borderRadius: BorderRadius.circular(18),
+                            clipBehavior: Clip.antiAlias,
+                            child: InkWell(
+                              onTap: () => widget.onOpen(meeting),
+                              child: Padding(
+                                padding: const EdgeInsets.all(18),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      meeting.title,
+                                      style: theme.textTheme.titleMedium,
+                                    ),
+                                    const SizedBox(height: 8),
+                                    Text(
+                                      '${meeting.participants.length} people · ${meetingLabel(meeting.status)}',
+                                      style: theme.textTheme.bodySmall,
+                                    ),
+                                    if (meeting.location.isNotEmpty) ...[
+                                      const SizedBox(height: 5),
+                                      Text(
+                                        meeting.location,
+                                        maxLines: 2,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: theme.textTheme.bodySmall,
+                                      ),
+                                    ],
+                                    if (meeting.evidence.isNotEmpty) ...[
+                                      const SizedBox(height: 12),
+                                      Text(
+                                        '${meeting.evidence.length} saved sources',
+                                        style: theme.textTheme.labelSmall
+                                            ?.copyWith(
+                                              color: theme.colorScheme.primary,
+                                            ),
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ],
               );

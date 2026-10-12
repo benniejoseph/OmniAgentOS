@@ -15,6 +15,8 @@ import '../../core/platform/android_device_bridge.dart';
 import '../../generated/native_contract.g.dart';
 import '../computer_use/local_computer.dart';
 import '../companion/companion_settings.dart';
+import '../companion/atlas_player.dart';
+import '../companion/companion_models.dart';
 import 'personal_profile_settings.dart';
 import 'portable_archive_panel.dart';
 import 'android_phone_settings.dart';
@@ -890,89 +892,138 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
                       child: content,
                     )
                   else ...[
-                    const MobileSectionHeader(title: 'Your everyday companion'),
-                    if (appAndroidDeviceBridge.supported) ...[
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 20),
+                      child: MobileSurface(
+                        spotlight: true,
+                        child: Builder(
+                          builder: (context) => Row(
+                            children: [
+                              const ExcludeSemantics(
+                                child: AtlasPortrait(
+                                  size: 80,
+                                  preferences: CompanionPreferences(
+                                    intensity: 'quiet',
+                                    motion: 'off',
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 14),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'ATLAS, your way',
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .titleLarge,
+                                    ),
+                                    const SizedBox(height: 6),
+                                    const Text(
+                                      'A familiar voice. A little personality. Your preferences.',
+                                    ),
+                                    const SizedBox(height: 10),
+                                    TextButton.icon(
+                                      onPressed: () => open('companion'),
+                                      icon: const Icon(
+                                        Icons.tune_rounded,
+                                        size: 18,
+                                      ),
+                                      label: const Text('Make it yours'),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                    const MobileSectionHeader(title: 'Every day'),
+                    _mobileSettingsGroup([
                       MobileActionTile(
-                        icon: Icons.nightlight_outlined,
-                        title: 'Nightly call notes',
-                        subtitle:
-                            'Recorded calls, summaries and daily schedule',
-                        onTap: () => context.go('/settings?section=listening'),
+                        icon: Icons.face_retouching_natural_outlined,
+                        title: 'ATLAS & voice',
+                        subtitle: 'Appearance and personality',
+                        onTap: () => open('companion'),
                       ),
                       MobileActionTile(
-                        icon: Icons.phone_android_rounded,
-                        title: 'This phone',
-                        subtitle: 'Phone control and screen access',
-                        onTap: () => open('phone'),
+                        icon: Icons.person_outline_rounded,
+                        title: 'About me',
+                        subtitle: 'What you want ATLAS to know',
+                        onTap: () => open('profile'),
                       ),
-                    ],
-                    MobileActionTile(
-                      icon: Icons.face_retouching_natural_outlined,
-                      title: 'ATLAS & voice',
-                      subtitle: 'Personality, appearance and motion',
-                      onTap: () => open('companion'),
-                    ),
-                    MobileActionTile(
-                      icon: Icons.person_outline_rounded,
-                      title: 'About me',
-                      subtitle: 'The context you want ATLAS to remember',
-                      onTap: () => open('profile'),
-                    ),
-                    const MobileSectionHeader(title: 'Intelligence & privacy'),
-                    MobileActionTile(
-                      icon: Icons.auto_awesome_outlined,
-                      title: 'AI models',
-                      subtitle: 'Choose the right model for each task',
-                      onTap: () => open('models'),
-                    ),
-                    MobileActionTile(
-                      icon: Icons.hub_outlined,
-                      title: 'AI connections',
-                      subtitle: 'Services available to your agents',
-                      onTap: () => open('providers'),
-                    ),
-                    MobileActionTile(
-                      icon: Icons.inventory_2_outlined,
-                      title: 'Your data',
-                      subtitle: 'Archive and data portability',
-                      onTap: () => open('data'),
-                    ),
-                    MobileActionTile(
-                      icon: Icons.shield_outlined,
-                      title: 'Security',
-                      subtitle: 'Your access, data and recent decisions',
-                      onTap: () => context.go('/security'),
-                    ),
-                    MobileActionTile(
-                      icon: Icons.devices_rounded,
-                      title: 'Devices & app lock',
-                      subtitle:
-                          'Signed-in devices, notifications and local unlock',
-                      onTap: () => context.push('/devices'),
-                    ),
-                    const MobileSectionHeader(
-                      title: 'Workspace health',
-                      description:
-                          'These pages open only when you choose them.',
-                    ),
-                    MobileActionTile(
-                      icon: Icons.fact_check_outlined,
-                      title: 'Quality Checks',
-                      subtitle: 'Review existing evaluation results',
-                      onTap: () => context.go('/settings?section=quality'),
-                    ),
-                    MobileActionTile(
-                      icon: Icons.monitor_heart_outlined,
-                      title: 'Monitoring',
-                      subtitle: 'Service health and issues needing attention',
-                      onTap: () => context.go('/settings?section=monitoring'),
-                    ),
-                    MobileActionTile(
-                      icon: Icons.tune_rounded,
-                      title: 'Workspace details',
-                      subtitle: 'Storage, sign-in and advanced settings',
-                      onTap: () => open('advanced'),
-                    ),
+                      if (appAndroidDeviceBridge.supported) ...[
+                        MobileActionTile(
+                          icon: Icons.nightlight_outlined,
+                          title: 'Nightly call notes',
+                          subtitle: 'Recorded calls and daily schedule',
+                          onTap: () =>
+                              context.go('/settings?section=listening'),
+                        ),
+                        MobileActionTile(
+                          icon: Icons.phone_android_rounded,
+                          title: 'This phone',
+                          subtitle: 'Let ATLAS help in your apps',
+                          onTap: () => open('phone'),
+                        ),
+                      ],
+                    ]),
+                    const MobileSectionHeader(title: 'Intelligence'),
+                    _mobileSettingsGroup([
+                      MobileActionTile(
+                        icon: Icons.auto_awesome_outlined,
+                        title: 'AI models',
+                        subtitle: 'A model for each kind of work',
+                        onTap: () => open('models'),
+                      ),
+                      MobileActionTile(
+                        icon: Icons.hub_outlined,
+                        title: 'AI connections',
+                        subtitle: 'Connected AI services',
+                        onTap: () => open('providers'),
+                      ),
+                    ]),
+                    const MobileSectionHeader(title: 'Privacy & access'),
+                    _mobileSettingsGroup([
+                      MobileActionTile(
+                        icon: Icons.devices_rounded,
+                        title: 'Devices & app lock',
+                        subtitle: 'Sign-ins and local unlock',
+                        onTap: () => context.push('/devices'),
+                      ),
+                      MobileActionTile(
+                        icon: Icons.shield_outlined,
+                        title: 'Security',
+                        subtitle: 'Access, data and decisions',
+                        onTap: () => context.go('/security'),
+                      ),
+                      MobileActionTile(
+                        icon: Icons.inventory_2_outlined,
+                        title: 'Your data',
+                        subtitle: 'Export and portable archives',
+                        onTap: () => open('data'),
+                      ),
+                    ]),
+                    const MobileSectionHeader(title: 'Workspace health'),
+                    _mobileSettingsGroup([
+                      MobileActionTile(
+                        icon: Icons.fact_check_outlined,
+                        title: 'Quality Checks',
+                        onTap: () => context.go('/settings?section=quality'),
+                      ),
+                      MobileActionTile(
+                        icon: Icons.monitor_heart_outlined,
+                        title: 'Monitoring',
+                        onTap: () => context.go('/settings?section=monitoring'),
+                      ),
+                      MobileActionTile(
+                        icon: Icons.tune_rounded,
+                        title: 'Workspace details',
+                        onTap: () => open('advanced'),
+                      ),
+                    ]),
                   ],
                 ],
               ),
@@ -982,6 +1033,21 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
       ),
     );
   }
+
+  Widget _mobileSettingsGroup(List<Widget> rows) => Padding(
+    padding: const EdgeInsets.symmetric(horizontal: 20),
+    child: MobileSurface(
+      padding: EdgeInsets.zero,
+      child: Column(
+        children: [
+          for (final (index, row) in rows.indexed) ...[
+            if (index > 0) const Divider(height: 1, indent: 76, endIndent: 16),
+            row,
+          ],
+        ],
+      ),
+    ),
+  );
 
   Widget _buildMacosSettings(
     BuildContext context, {

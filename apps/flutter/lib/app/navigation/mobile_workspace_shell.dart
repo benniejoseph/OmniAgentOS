@@ -109,23 +109,90 @@ class MobileWorkspaceShell extends StatelessWidget {
                   color: scheme.surface,
                   border: Border(top: BorderSide(color: scheme.outlineVariant)),
                 ),
-                child: NavigationBar(
-                  height: scaledLabels ? 88 : 72,
-                  selectedIndex: selected,
-                  onDestinationSelected: _select,
-                  labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
-                  animationDuration: reducedMotion
-                      ? Duration.zero
-                      : const Duration(milliseconds: 180),
-                  destinations: [
-                    for (final item in _destinations)
-                      NavigationDestination(
-                        icon: Icon(item.icon, size: 23),
-                        selectedIcon: Icon(item.selected, size: 23),
-                        label: item.label,
-                        tooltip: item.label,
-                      ),
-                  ],
+                child: SafeArea(
+                  top: false,
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(8, 6, 8, 4),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        for (
+                          var index = 0;
+                          index < _destinations.length;
+                          index++
+                        )
+                          Expanded(
+                            child: Semantics(
+                              selected: index == selected,
+                              child: InkWell(
+                                borderRadius: BorderRadius.circular(14),
+                                onTap: () => _select(index),
+                                child: ConstrainedBox(
+                                  constraints: BoxConstraints(
+                                    minHeight: scaledLabels ? 82 : 64,
+                                  ),
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(
+                                      vertical: 5,
+                                      horizontal: 2,
+                                    ),
+                                    child: Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        AnimatedContainer(
+                                          duration: reducedMotion
+                                              ? Duration.zero
+                                              : const Duration(
+                                                  milliseconds: 180,
+                                                ),
+                                          curve: Curves.easeOutCubic,
+                                          width: 42,
+                                          height: 28,
+                                          decoration: BoxDecoration(
+                                            color: index == selected
+                                                ? scheme.secondaryContainer
+                                                : Colors.transparent,
+                                            borderRadius: BorderRadius.circular(
+                                              100,
+                                            ),
+                                          ),
+                                          child: Icon(
+                                            index == selected
+                                                ? _destinations[index].selected
+                                                : _destinations[index].icon,
+                                            size: 22,
+                                            color: index == selected
+                                                ? scheme.secondary
+                                                : scheme.onSurfaceVariant,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 5),
+                                        Text(
+                                          _destinations[index].label,
+                                          textAlign: TextAlign.center,
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .labelSmall
+                                              ?.copyWith(
+                                                fontSize: 11,
+                                                fontWeight: index == selected
+                                                    ? FontWeight.w700
+                                                    : FontWeight.w500,
+                                                color: index == selected
+                                                    ? scheme.onSurface
+                                                    : scheme.onSurfaceVariant,
+                                              ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
                 ),
               ),
       ),

@@ -27,23 +27,18 @@ class HistoryWorkspace extends StatelessWidget {
           ),
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
-            child: SegmentedButton<bool>(
-              segments: const [
-                ButtonSegment(
+            child: MobileSegmentBar<bool>(
+              items: const [
+                (
                   value: false,
-                  label: Text('Results'),
-                  icon: Icon(Icons.description_outlined),
+                  label: 'Results',
+                  icon: Icons.description_outlined,
                 ),
-                ButtonSegment(
-                  value: true,
-                  label: Text('Timeline'),
-                  icon: Icon(Icons.history_rounded),
-                ),
+                (value: true, label: 'Timeline', icon: Icons.history_rounded),
               ],
-              selected: {timeline},
-              showSelectedIcon: false,
-              onSelectionChanged: (selection) =>
-                  context.go(selection.first ? '/activity' : '/results'),
+              value: timeline,
+              onChanged: (value) =>
+                  context.go(value ? '/activity' : '/results'),
             ),
           ),
           Expanded(child: child),

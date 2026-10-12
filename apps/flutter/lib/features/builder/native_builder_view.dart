@@ -521,27 +521,21 @@ class _NativeBuilderWorkspaceState extends State<NativeBuilderWorkspace>
         ),
         if (c.loading) const LinearProgressIndicator(),
         if (session != null)
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            padding: const EdgeInsets.fromLTRB(20, 4, 20, 8),
-            child: Row(
-              children: [
-                for (final (index, label, icon) in [
-                  (0, 'Files', Icons.folder_open_outlined),
-                  (1, 'Preview & code', Icons.code_rounded),
-                  (2, 'Delivery', Icons.rocket_launch_outlined),
-                  (3, 'History', Icons.history_rounded),
-                ])
-                  Padding(
-                    padding: const EdgeInsets.only(right: 8),
-                    child: ChoiceChip(
-                      avatar: Icon(icon, size: 18),
-                      label: Text(label),
-                      selected: _mobilePane == index,
-                      onSelected: (_) => setState(() => _mobilePane = index),
-                    ),
-                  ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 4, 20, 16),
+            child: MobileSegmentBar<int>(
+              items: const [
+                (value: 0, label: 'Files', icon: Icons.folder_open_outlined),
+                (value: 1, label: 'Preview & code', icon: Icons.code_rounded),
+                (
+                  value: 2,
+                  label: 'Delivery',
+                  icon: Icons.rocket_launch_outlined,
+                ),
+                (value: 3, label: 'History', icon: Icons.history_rounded),
               ],
+              value: _mobilePane,
+              onChanged: (value) => setState(() => _mobilePane = value),
             ),
           ),
         Expanded(
@@ -575,26 +569,42 @@ class _NativeBuilderWorkspaceState extends State<NativeBuilderWorkspace>
                         const BuilderNotice(
                           'The workspace is unavailable. Refresh to try again.',
                         ),
-                      if (snapshot != null && session == null) ...[
-                        const SizedBox(height: 24),
-                        const Icon(Icons.code_rounded, size: 36),
-                        const SizedBox(height: 16),
-                        const Text(
-                          'Create a private workspace for this project. Review and edit files here, then open its live preview.',
-                        ),
-                        const SizedBox(height: 16),
-                        BuilderActionButton(
-                          'Create build workspace',
-                          c.writable
-                              ? () => _confirm(
+                      if (snapshot != null && session == null)
+                        MobileSurface(
+                          spotlight: true,
+                          padding: const EdgeInsets.all(24),
+                          child: Builder(
+                            builder: (context) => Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Icon(Icons.code_rounded, size: 36),
+                                const SizedBox(height: 24),
+                                Text(
+                                  'An idea. A place to build it.',
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .headlineSmall,
+                                ),
+                                const SizedBox(height: 12),
+                                const Text(
+                                  'Create a private workspace for this project. Browse files, make edits and open its live preview.',
+                                ),
+                                const SizedBox(height: 24),
+                                BuilderActionButton(
                                   'Create build workspace',
-                                  'Create an isolated sandbox for project ${c.projectId}?',
-                                  c.create,
-                                )
-                              : null,
-                          primary: true,
+                                  c.writable
+                                      ? () => _confirm(
+                                          'Create build workspace',
+                                          'Create an isolated sandbox for project ${c.projectId}?',
+                                          c.create,
+                                        )
+                                      : null,
+                                  primary: true,
+                                ),
+                              ],
+                            ),
+                          ),
                         ),
-                      ],
                       if (session != null && !session.running)
                         BuilderNotice(
                           'Workspace ${session.status}. Saved files and history remain available; restarting this workspace is not supported.',
@@ -652,8 +662,9 @@ class _NativeBuilderWorkspaceState extends State<NativeBuilderWorkspace>
                     final row = files[index];
                     return MobileActionTile(
                       icon: Icons.description_outlined,
-                      title: row.path,
-                      subtitle: row.size == null ? null : '${row.size} bytes',
+                      title: row.path.split('/').last,
+                      subtitle:
+                          '${row.path}${row.size == null ? '' : ' · ${row.size} bytes'}',
                       onTap: c.acting || !c.running
                           ? null
                           : () async {

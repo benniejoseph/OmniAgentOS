@@ -175,7 +175,9 @@ class _AgentControlSummary extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        'Agent Control',
+                        usesMobilePresentation()
+                            ? 'Your team at work'
+                            : 'Agent Control',
                         style: Theme.of(context).textTheme.titleLarge,
                       ),
                       Text(
@@ -360,7 +362,11 @@ class _MemberTile extends StatelessWidget {
                 key: Key('android-agent-control-authority-${member.taskId}'),
                 onPressed: () => _showAuthority(context),
                 icon: const Icon(Icons.key_outlined, size: 18),
-                label: const Text('Inspect authority'),
+                label: Text(
+                  usesMobilePresentation()
+                      ? 'View permissions'
+                      : 'Inspect authority',
+                ),
               ),
               if (controller.canCancel(member))
                 OutlinedButton.icon(

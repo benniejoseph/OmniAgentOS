@@ -835,32 +835,25 @@ class _MobileInboxState extends State<_MobileInbox> {
           if (review == null)
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: ChoiceChip(
-                      label: Text(
-                        c.queue == null
-                            ? 'Decisions'
-                            : 'Decisions · ${items.length}',
-                      ),
-                      selected: !_notifications,
-                      onSelected: (_) => setState(() => _notifications = false),
-                    ),
+              child: MobileSegmentBar<bool>(
+                items: [
+                  (
+                    value: false,
+                    label: c.queue == null
+                        ? 'Decisions'
+                        : 'Decisions · ${items.length}',
+                    icon: Icons.rule_rounded,
                   ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: ChoiceChip(
-                      label: Text(
-                        notifications == null
-                            ? 'Updates'
-                            : 'Updates · ${notifications.unreadCount}',
-                      ),
-                      selected: _notifications,
-                      onSelected: (_) => setState(() => _notifications = true),
-                    ),
+                  (
+                    value: true,
+                    label: notifications == null
+                        ? 'Updates'
+                        : 'Updates · ${notifications.unreadCount}',
+                    icon: Icons.notifications_none_rounded,
                   ),
                 ],
+                value: _notifications,
+                onChanged: (value) => setState(() => _notifications = value),
               ),
             ),
           Expanded(
@@ -924,9 +917,14 @@ class _MobileInboxState extends State<_MobileInbox> {
                                     'Approve only the request shown below. Its original values are preserved for your review.',
                                   ),
                                   const SizedBox(height: 12),
-                                  SelectableText(
-                                    const JsonEncoder.withIndent('  ')
-                                        .convert(review.input),
+                                  MobileSurface(
+                                    child: SizedBox(
+                                      width: double.infinity,
+                                      child: SelectableText(
+                                        const JsonEncoder.withIndent('  ')
+                                            .convert(review.input),
+                                      ),
+                                    ),
                                   ),
                                   const SizedBox(height: 24),
                                   FilledButton.icon(
@@ -1031,14 +1029,20 @@ class _MobileInboxState extends State<_MobileInbox> {
                       itemCount: items.length,
                       itemBuilder: (_, index) {
                         final item = items[index];
-                        return MobileActionTile(
-                          icon: item.riskLevel >= 3
-                              ? Icons.priority_high_rounded
-                              : Icons.rule_rounded,
-                          title: item.title,
-                          subtitle:
-                              '${item.reason ?? 'Review the exact action before deciding'}\nRisk level ${item.riskLevel}',
-                          onTap: () => setState(() => _review = item),
+                        return Padding(
+                          padding: const EdgeInsets.fromLTRB(20, 0, 20, 10),
+                          child: MobileSurface(
+                            padding: EdgeInsets.zero,
+                            child: MobileActionTile(
+                              icon: item.riskLevel >= 3
+                                  ? Icons.priority_high_rounded
+                                  : Icons.rule_rounded,
+                              title: item.title,
+                              subtitle:
+                                  '${item.reason ?? 'Review the exact action before deciding'}\nRisk level ${item.riskLevel}',
+                              onTap: () => setState(() => _review = item),
+                            ),
+                          ),
                         );
                       },
                     ),

@@ -256,19 +256,67 @@ class _ListenWorkspaceState extends ConsumerState<ListenWorkspace>
                         ),
                       ),
                     if (active != null)
-                      ListenSurface(
+                      MobileSurface(
+                        spotlight: true,
+                        padding: const EdgeInsets.all(24),
                         child: _ActiveRecording(
                           controller: controller,
                           session: active,
                         ),
                       )
                     else if (controller.supported)
-                      FilledButton.icon(
-                        onPressed: controller.busy || !controller.canManage
-                            ? null
-                            : () => _prepareListening(controller),
-                        icon: const Icon(Icons.mic_rounded),
-                        label: const Text('New conversation'),
+                      MobileSurface(
+                        spotlight: true,
+                        padding: const EdgeInsets.all(28),
+                        child: Builder(
+                          builder: (context) {
+                            final theme = Theme.of(context);
+                            return Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                Align(
+                                  alignment: Alignment.centerLeft,
+                                  child: Container(
+                                    padding: const EdgeInsets.all(16),
+                                    decoration: BoxDecoration(
+                                      color: theme.colorScheme.primary
+                                          .withValues(alpha: .12),
+                                      shape: BoxShape.circle,
+                                    ),
+                                    child: Icon(
+                                      Icons.mic_none_rounded,
+                                      size: 32,
+                                      color: theme.colorScheme.primary,
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(height: 24),
+                                Text(
+                                  'More presence.\nLess note-taking.',
+                                  style: theme.textTheme.headlineSmall
+                                      ?.copyWith(height: 1.2),
+                                ),
+                                const SizedBox(height: 12),
+                                Text(
+                                  'Keep the conversation. Find the meaning afterwards.',
+                                  style: theme.textTheme.bodyMedium?.copyWith(
+                                    color: theme.colorScheme.onSurfaceVariant,
+                                    height: 1.5,
+                                  ),
+                                ),
+                                const SizedBox(height: 24),
+                                FilledButton.icon(
+                                  onPressed:
+                                      controller.busy || !controller.canManage
+                                      ? null
+                                      : () => _prepareListening(controller),
+                                  icon: const Icon(Icons.mic_rounded),
+                                  label: const Text('New conversation'),
+                                ),
+                              ],
+                            );
+                          },
+                        ),
                       )
                     else
                       const Text(
@@ -322,8 +370,7 @@ class _ListenWorkspaceState extends ConsumerState<ListenWorkspace>
             ),
             SliverToBoxAdapter(
               child: MobileSectionHeader(
-                title: 'Conversation notes',
-                description: 'Summaries first. Every detail when you need it.',
+                title: 'Saved conversations',
                 trailing: IconButton(
                   tooltip: 'Refresh notes',
                   onPressed: controller.loading ? null : controller.refresh,
@@ -809,6 +856,63 @@ class _ActiveRecording extends StatelessWidget {
   Widget build(BuildContext context) {
     final listening = session['state'] == 'listening';
     final scheme = Theme.of(context).colorScheme;
+    if (usesMobilePresentation()) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Center(
+            child: MobileStatusPill(
+              label: listening ? 'Listening now' : 'Paused',
+              icon: listening ? Icons.mic_rounded : Icons.pause_rounded,
+              color: scheme.primary,
+            ),
+          ),
+          const SizedBox(height: 24),
+          Text(
+            listenDuration(session['elapsedMs']),
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.displaySmall
+                ?.copyWith(fontWeight: FontWeight.w500, letterSpacing: -1),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            listenText(session['title'], 'Your conversation'),
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.titleMedium,
+          ),
+          const SizedBox(height: 18),
+          Text(
+            listenText(
+              session['reason'],
+              listening
+                  ? 'Audio is saved as you go. Keep talking, even with your screen locked.'
+                  : 'The microphone is off. Continue when you’re ready.',
+            ),
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.bodyMedium
+                ?.copyWith(color: scheme.onSurfaceVariant, height: 1.5),
+          ),
+          const SizedBox(height: 28),
+          OutlinedButton.icon(
+            onPressed: controller.busy
+                ? null
+                : () => controller.action(
+                    listening ? 'pauseListen' : 'resumeListen',
+                  ),
+            icon: Icon(listening ? Icons.pause_rounded : Icons.mic_rounded),
+            label: Text(listening ? 'Pause listening' : 'Resume listening'),
+          ),
+          const SizedBox(height: 8),
+          FilledButton.icon(
+            onPressed: controller.busy
+                ? null
+                : () => controller.action('stopListen'),
+            icon: const Icon(Icons.stop_rounded),
+            label: const Text('Finish & make notes'),
+          ),
+        ],
+      );
+    }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -882,53 +986,136 @@ class _ConversationRow extends StatelessWidget {
   final ListenJson row;
   final VoidCallback onTap;
   @override
-  Widget build(BuildContext context) => Column(
-    children: [
-      ListTile(
-        contentPadding: const EdgeInsets.symmetric(vertical: 8),
-        leading: Icon(
-          row['sourceKind'] == 'call'
-              ? Icons.call_outlined
-              : Icons.forum_outlined,
-        ),
-        title: Text(
-          listenText(row['title'], 'Conversation'),
-          maxLines: 2,
-          overflow: TextOverflow.ellipsis,
-        ),
-        subtitle: Padding(
-          padding: const EdgeInsets.only(top: 6),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                '${listenDate(row['recordedAt'] ?? row['createdAt'])} · ${listenState(row['status'])}',
-              ),
-              if (listenText(row['summary']).isNotEmpty)
-                Padding(
-                  padding: const EdgeInsets.only(top: 6),
-                  child: Text(
-                    listenText(row['summary']),
+  Widget build(BuildContext context) {
+    if (usesMobilePresentation()) {
+      final theme = Theme.of(context);
+      final actions = listenInt(row['actionCount']);
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 12),
+        child: MobileSurface(
+          padding: EdgeInsets.zero,
+          child: InkWell(
+            onTap: onTap,
+            borderRadius: BorderRadius.circular(16),
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(
+                        row['sourceKind'] == 'call'
+                            ? Icons.call_outlined
+                            : Icons.forum_outlined,
+                        size: 18,
+                        color: theme.colorScheme.primary,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          listenDate(row['recordedAt'] ?? row['createdAt']),
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ),
+                      const Icon(Icons.arrow_outward_rounded, size: 18),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    listenText(row['title'], 'Conversation'),
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.titleMedium,
                   ),
-                ),
-              if (listenInt(row['actionCount']) > 0)
-                Padding(
-                  padding: const EdgeInsets.only(top: 6),
-                  child: Text(
-                    '${listenInt(row['actionCount'])} follow-ups to review',
+                  if (listenText(row['summary']).isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      listenText(row['summary']),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                        height: 1.5,
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 16),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      MobileStatusPill(
+                        label: listenState(row['status']),
+                        icon: row['status'] == 'ready'
+                            ? Icons.check_rounded
+                            : Icons.more_horiz_rounded,
+                      ),
+                      if (actions > 0)
+                        MobileStatusPill(
+                          label:
+                              '$actions ${actions == 1 ? 'follow-up' : 'follow-ups'}',
+                          icon: Icons.task_alt_rounded,
+                        ),
+                    ],
                   ),
-                ),
-            ],
+                ],
+              ),
+            ),
           ),
         ),
-        trailing: const Icon(Icons.chevron_right_rounded),
-        onTap: onTap,
-      ),
-      const Divider(height: 1),
-    ],
-  );
+      );
+    }
+    return Column(
+      children: [
+        ListTile(
+          contentPadding: const EdgeInsets.symmetric(vertical: 8),
+          leading: Icon(
+            row['sourceKind'] == 'call'
+                ? Icons.call_outlined
+                : Icons.forum_outlined,
+          ),
+          title: Text(
+            listenText(row['title'], 'Conversation'),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+          subtitle: Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '${listenDate(row['recordedAt'] ?? row['createdAt'])} · ${listenState(row['status'])}',
+                ),
+                if (listenText(row['summary']).isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Text(
+                      listenText(row['summary']),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                if (listenInt(row['actionCount']) > 0)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Text(
+                      '${listenInt(row['actionCount'])} follow-ups to review',
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          trailing: const Icon(Icons.chevron_right_rounded),
+          onTap: onTap,
+        ),
+        const Divider(height: 1),
+      ],
+    );
+  }
 }
 
 String listenState(Object? value) => switch (value) {

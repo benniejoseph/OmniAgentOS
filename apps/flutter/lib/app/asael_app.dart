@@ -9,6 +9,7 @@ import 'router/app_router.dart';
 import 'theme/app_theme.dart';
 import 'theme/app_theme_mode_controller.dart';
 import 'theme/macos_app_theme.dart';
+import 'theme/mobile_app_theme.dart';
 import '../core/platform/desktop_host_bridge.dart';
 import '../core/platform/android_device_bridge.dart';
 import '../core/sync/reconnect_coordinator.dart';
@@ -260,16 +261,29 @@ class _AsaelAppState extends ConsumerState<AsaelApp>
           : _handleSharedCapture,
     );
     final useMacosTheme = MacosAppTheme.shouldUse();
+    final useMobileTheme = usesMobilePresentation();
     return MaterialApp.router(
       title: 'Asael',
       debugShowCheckedModeBanner: false,
-      theme: useMacosTheme ? MacosAppTheme.light() : AppTheme.light(),
-      darkTheme: useMacosTheme ? MacosAppTheme.dark() : AppTheme.dark(),
+      theme: useMacosTheme
+          ? MacosAppTheme.light()
+          : useMobileTheme
+          ? MobileAppTheme.light()
+          : AppTheme.light(),
+      darkTheme: useMacosTheme
+          ? MacosAppTheme.dark()
+          : useMobileTheme
+          ? MobileAppTheme.dark()
+          : AppTheme.dark(),
       highContrastTheme: useMacosTheme
           ? MacosAppTheme.light(highContrast: true)
+          : useMobileTheme
+          ? MobileAppTheme.light(highContrast: true)
           : AppTheme.light(highContrast: true),
       highContrastDarkTheme: useMacosTheme
           ? MacosAppTheme.dark(highContrast: true)
+          : useMobileTheme
+          ? MobileAppTheme.dark(highContrast: true)
           : AppTheme.dark(highContrast: true),
       themeMode: themeMode,
       routerConfig: router,

@@ -5,6 +5,7 @@ import '../../app/platform/mobile_presentation.dart';
 import 'knowledge.dart';
 import 'knowledge_labels.dart';
 import 'knowledge_relationship_map.dart';
+import 'knowledge_landscape.dart';
 import 'knowledge_consent_view.dart';
 import 'knowledge_promotion_view.dart';
 import 'knowledge_source_map_view.dart';
@@ -277,31 +278,22 @@ class _KnowledgeViewState extends State<KnowledgeView>
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: SegmentedButton<int>(
-                    showSelectedIcon: false,
-                    segments: const [
-                      ButtonSegment(
-                        value: 0,
-                        icon: Icon(Icons.psychology_outlined),
-                        label: Text('Memory'),
-                      ),
-                      ButtonSegment(
-                        value: 1,
-                        icon: Icon(Icons.menu_book_outlined),
-                        label: Text('Sources'),
-                      ),
-                      ButtonSegment(
-                        value: 3,
-                        icon: Icon(Icons.hub_outlined),
-                        label: Text('Map'),
-                      ),
-                    ],
-                    selected: {_tabs.index},
-                    onSelectionChanged: (values) =>
-                        setState(() => _tabs.index = values.first),
-                  ),
+                MobileSegmentBar<int>(
+                  items: const [
+                    (
+                      value: 0,
+                      label: 'Memories',
+                      icon: Icons.bookmark_border_rounded,
+                    ),
+                    (
+                      value: 1,
+                      label: 'Sources',
+                      icon: Icons.menu_book_outlined,
+                    ),
+                    (value: 3, label: 'Map', icon: Icons.hub_outlined),
+                  ],
+                  value: _tabs.index,
+                  onChanged: (value) => setState(() => _tabs.index = value),
                 ),
                 if (_tabs.index < 2) ...[
                   const SizedBox(height: 16),
@@ -399,63 +391,101 @@ class _KnowledgeViewState extends State<KnowledgeView>
       keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
       slivers: [
         SliverToBoxAdapter(
-          child: Column(
-            children: [
-              KnowledgeCoverage(controller: widget.controller),
-              MemoryChangeStatus(controller: widget.controller),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 20),
-                child: ExpansionTile(
-                  title: const Text('Filter your memories'),
-                  leading: const Icon(Icons.tune_rounded, size: 20),
-                  tilePadding: EdgeInsets.zero,
-                  children: [
-                    KnowledgeMemoryFilters(controller: widget.controller),
-                    DropdownButtonFormField<String>(
-                      key: ValueKey(selectedType),
-                      initialValue: selectedType,
-                      isExpanded: true,
-                      decoration: const InputDecoration(labelText: 'Category'),
-                      items: [
-                        const DropdownMenuItem(
-                          value: 'all',
-                          child: Text('All categories'),
-                        ),
-                        for (final type in types)
-                          DropdownMenuItem(
-                            value: type,
-                            child: Text(memoryFriendlyLabel(type)),
-                          ),
-                      ],
-                      onChanged: (value) =>
-                          setState(() => _memoryType = value ?? 'all'),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (widget.controller.loading) const LinearProgressIndicator(),
+                if (widget.controller.error != null)
+                  const Padding(
+                    padding: EdgeInsets.only(bottom: 12),
+                    child: Text(
+                      'Memory could not refresh. Your last loaded collection is shown.',
                     ),
-                    const SizedBox(height: 16),
+                  ),
+                MemoryChangeStatus(controller: widget.controller),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'Your personal collection',
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: 'Memory filters',
+                      icon: const Icon(Icons.tune_rounded),
+                      onPressed: () => showMobileSheet<void>(
+                        context: context,
+                        title: 'Refine your memories',
+                        builder: (_) => ListenableBuilder(
+                          listenable: widget.controller,
+                          builder: (context, _) => KnowledgeMemoryFilters(
+                            controller: widget.controller,
+                          ),
+                        ),
+                      ),
+                    ),
                   ],
                 ),
-              ),
-              if (values.isEmpty)
-                const Padding(
-                  padding: EdgeInsets.all(32),
-                  child: Text(
-                    'No memories match. Try another search or category.',
-                  ),
+                const SizedBox(height: 4),
+                MobileSegmentBar<String>(
+                  items: [
+                    (value: 'all', label: 'All', icon: null),
+                    for (final type in types)
+                      (
+                        value: type,
+                        label: memoryFriendlyLabel(type),
+                        icon: null,
+                      ),
+                  ],
+                  value: selectedType,
+                  onChanged: (value) => setState(() => _memoryType = value),
                 ),
-            ],
+                if (values.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 36),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Icon(Icons.bookmark_border_rounded, size: 36),
+                        const SizedBox(height: 16),
+                        Text(
+                          'A little context goes a long way.',
+                          style: Theme.of(context).textTheme.titleLarge,
+                        ),
+                        const SizedBox(height: 8),
+                        const Text(
+                          'Add something worth remembering, or try a different search or category.',
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
           ),
         ),
-        SliverList.builder(
-          itemCount: values.length,
-          itemBuilder: (context, index) {
-            final memory = values[index];
-            return MobileActionTile(
-              icon: Icons.bookmark_border_rounded,
-              title: memoryDisplayTitle(memory.title, memory.updatedAt),
-              subtitle:
-                  '${memoryFriendlyLabel(memory.type)} · ${memoryFriendlyLabel(memory.claimStatus)} · ${memory.evidenceCount} sources',
-              onTap: () => setState(() => _selectedMemoryId = memory.id),
-            );
-          },
+        SliverPadding(
+          padding: const EdgeInsets.symmetric(horizontal: 20),
+          sliver: SliverList.builder(
+            itemCount: values.length,
+            itemBuilder: (context, index) {
+              final memory = values[index];
+              return _mobileCollectionRow(
+                icon: Icons.bookmark_border_rounded,
+                title: memoryDisplayTitle(memory.title, memory.updatedAt),
+                preview: memory.content,
+                category: memoryFriendlyLabel(memory.type),
+                detail:
+                    '${memory.evidenceCount} ${memory.evidenceCount == 1 ? 'source' : 'sources'} · ${memoryFriendlyDate(memory.updatedAt)}',
+                status: memory.claimStatus == 'active'
+                    ? null
+                    : memoryFriendlyLabel(memory.claimStatus),
+                onTap: () => setState(() => _selectedMemoryId = memory.id),
+              );
+            },
+          ),
         ),
         SliverToBoxAdapter(
           child: KnowledgePageControls(
@@ -468,11 +498,102 @@ class _KnowledgeViewState extends State<KnowledgeView>
     );
   }
 
+  Widget _mobileCollectionRow({
+    required IconData icon,
+    required String title,
+    required String preview,
+    required String category,
+    required String detail,
+    required VoidCallback onTap,
+    String? status,
+  }) {
+    final theme = Theme.of(context);
+    final excerpt = preview.length > 600 ? preview.substring(0, 600) : preview;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Material(
+        color: theme.colorScheme.surface,
+        borderRadius: BorderRadius.circular(18),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.all(18),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(icon, size: 18, color: theme.colorScheme.primary),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        category,
+                        style: theme.textTheme.labelMedium?.copyWith(
+                          color: theme.colorScheme.primary,
+                        ),
+                      ),
+                    ),
+                    const Icon(Icons.arrow_outward_rounded, size: 18),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  title,
+                  style: theme.textTheme.titleMedium,
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                if (excerpt.trim().isNotEmpty &&
+                    excerpt.trim() != title.trim()) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    excerpt.trim(),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                      height: 1.45,
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 16),
+                if (status != null) ...[
+                  MobileStatusPill(label: status),
+                  const SizedBox(height: 8),
+                ],
+                Text(detail, style: theme.textTheme.bodySmall),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _mobileSources(KnowledgeState state) => CustomScrollView(
     keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
     slivers: [
       SliverToBoxAdapter(
-        child: KnowledgeCoverage(controller: widget.controller),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (widget.controller.loading) const LinearProgressIndicator(),
+              if (widget.controller.error != null)
+                const Text(
+                  'Sources could not refresh. Your last loaded collection is shown.',
+                ),
+              Text(
+                'The story behind your knowledge',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              const SizedBox(height: 6),
+              const Text('Documents, conversations and saved references.'),
+            ],
+          ),
+        ),
       ),
       if (state.knowledge.isEmpty)
         const SliverToBoxAdapter(
@@ -481,18 +602,22 @@ class _KnowledgeViewState extends State<KnowledgeView>
             child: Text('No saved sources match this search.'),
           ),
         ),
-      SliverList.builder(
-        itemCount: state.knowledge.length,
-        itemBuilder: (context, index) {
-          final source = state.knowledge[index];
-          return MobileActionTile(
-            icon: Icons.description_outlined,
-            title: source.title,
-            subtitle:
-                '${memoryFriendlyLabel(source.category)} · ${source.chunkCount} indexed sections',
-            onTap: () => setState(() => _selectedSourceId = source.id),
-          );
-        },
+      SliverPadding(
+        padding: const EdgeInsets.symmetric(horizontal: 20),
+        sliver: SliverList.builder(
+          itemCount: state.knowledge.length,
+          itemBuilder: (context, index) {
+            final source = state.knowledge[index];
+            return _mobileCollectionRow(
+              icon: Icons.description_outlined,
+              title: source.title,
+              preview: source.content,
+              category: memoryFriendlyLabel(source.category),
+              detail: memoryFriendlyDate(source.indexedAt),
+              onTap: () => setState(() => _selectedSourceId = source.id),
+            );
+          },
+        ),
       ),
       SliverToBoxAdapter(
         child: KnowledgePageControls(
@@ -500,6 +625,7 @@ class _KnowledgeViewState extends State<KnowledgeView>
           memory: false,
         ),
       ),
+      const SliverPadding(padding: EdgeInsets.only(bottom: 24)),
     ],
   );
 
@@ -511,15 +637,19 @@ class _KnowledgeViewState extends State<KnowledgeView>
       Text(
         '${memoryFriendlyLabel(source.sourceType)} · ${memoryFriendlyLabel(source.category)}',
       ),
-      const SizedBox(height: 24),
-      Text(
-        '${source.chunkCount} searchable sections',
-        style: Theme.of(context).textTheme.titleMedium,
+      const SizedBox(height: 16),
+      MobileStatusPill(
+        label: memoryFriendlyDate(source.indexedAt),
+        icon: Icons.schedule_rounded,
       ),
-      const SizedBox(height: 8),
-      const Text(
-        'This is the saved source record. Its indexed content is available to context retrieval.',
-      ),
+      const SizedBox(height: 28),
+      if (source.content.trim().isNotEmpty)
+        _MobileSourceReader(key: ValueKey(source.id), content: source.content)
+      else
+        const Text(
+          'This source is saved for recall. A text preview is not available here.',
+        ),
+      const SizedBox(height: 20),
       if (source.source.isNotEmpty)
         Padding(
           padding: const EdgeInsets.symmetric(vertical: 16),
@@ -539,8 +669,10 @@ class _KnowledgeViewState extends State<KnowledgeView>
             ),
           ),
           ListTile(
-            title: const Text('Indexed characters'),
-            subtitle: Text('${source.totalCharacters}'),
+            title: const Text('Saved text size'),
+            subtitle: Text(
+              '${source.totalCharacters} characters · ${source.chunkCount} searchable sections',
+            ),
           ),
           SelectableText('Source reference: ${source.id}'),
           Text(
@@ -675,6 +807,20 @@ class _KnowledgeViewState extends State<KnowledgeView>
     ],
   );
   Widget _universe(KnowledgeState state) {
+    if (usesMobilePresentation() && !widget.controller.advancedGraphAvailable) {
+      return KnowledgeLandscape(
+        controller: widget.controller,
+        active: _tabs.index == 3,
+        onOpenMemory: (memory) => setState(() {
+          _selectedMemoryId = memory.id;
+          _tabs.index = 0;
+        }),
+        onOpenSource: (source) => setState(() {
+          _selectedSourceId = source.id;
+          _tabs.index = 1;
+        }),
+      );
+    }
     if (widget.controller.advancedGraphAvailable)
       return KnowledgeRelationshipMap(
         controller: widget.controller,
@@ -684,8 +830,15 @@ class _KnowledgeViewState extends State<KnowledgeView>
           _tabs.animateTo(0);
         },
         onOpenSource: (source) {
-          _tabs.animateTo(1);
-          widget.controller.search(source.title);
+          if (usesMobilePresentation()) {
+            setState(() {
+              _selectedSourceId = source.id;
+              _tabs.index = 1;
+            });
+          } else {
+            _tabs.animateTo(1);
+            widget.controller.search(source.title);
+          }
         },
       );
     GraphNode? selected;
@@ -758,6 +911,70 @@ class _KnowledgeViewState extends State<KnowledgeView>
             selected: node.id == selected?.id,
             onTap: () => setState(() => _selectedNodeId = node.id),
           ),
+      ],
+    );
+  }
+}
+
+/// Keeps long saved documents readable without laying out their full body per frame.
+class _MobileSourceReader extends StatefulWidget {
+  const _MobileSourceReader({super.key, required this.content});
+  final String content;
+  @override
+  State<_MobileSourceReader> createState() => _MobileSourceReaderState();
+}
+
+class _MobileSourceReaderState extends State<_MobileSourceReader> {
+  int _page = 0;
+  @override
+  Widget build(BuildContext context) {
+    const pageSize = 6000;
+    final pages = ((widget.content.length + pageSize - 1) ~/ pageSize)
+        .clamp(1, 1000000)
+        .toInt();
+    final page = _page.clamp(0, pages - 1).toInt();
+    var start = page * pageSize;
+    var end = ((page + 1) * pageSize).clamp(0, widget.content.length).toInt();
+    bool lowSurrogate(int offset) =>
+        offset < widget.content.length &&
+        widget.content.codeUnitAt(offset) >= 0xDC00 &&
+        widget.content.codeUnitAt(offset) <= 0xDFFF;
+    if (start > 0 && lowSurrogate(start)) start--;
+    if (end < widget.content.length && lowSurrogate(end)) end--;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (pages > 1) ...[
+          Row(
+            children: [
+              IconButton(
+                tooltip: 'Previous section',
+                onPressed: page > 0
+                    ? () => setState(() => _page = page - 1)
+                    : null,
+                icon: const Icon(Icons.chevron_left_rounded),
+              ),
+              Expanded(
+                child: Text(
+                  'Reading section ${page + 1} of $pages',
+                  textAlign: TextAlign.center,
+                ),
+              ),
+              IconButton(
+                tooltip: 'Next section',
+                onPressed: page + 1 < pages
+                    ? () => setState(() => _page = page + 1)
+                    : null,
+                icon: const Icon(Icons.chevron_right_rounded),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+        ],
+        SelectableText(
+          widget.content.substring(start, end),
+          style: Theme.of(context).textTheme.bodyLarge?.copyWith(height: 1.6),
+        ),
       ],
     );
   }

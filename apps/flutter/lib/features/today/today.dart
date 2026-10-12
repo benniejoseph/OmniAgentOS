@@ -462,6 +462,9 @@ class TodayView extends StatelessWidget {
       final items = todayOrderedItems(data.items, focusItemId: focusItemId);
       final open = items.where((item) => !item.isDone).toList();
       final completed = items.where((item) => item.isDone).toList();
+      if (usesMobilePresentation()) {
+        return _mobileToday(context, data, open, completed);
+      }
       return RefreshIndicator(
         onRefresh: controller.refresh,
         child: CustomScrollView(
@@ -514,8 +517,6 @@ class TodayView extends StatelessWidget {
                   ),
                 ),
               ),
-            if (usesMobilePresentation() && data.brief != null)
-              SliverToBoxAdapter(child: _DailyBriefPanel(brief: data.brief!)),
             if (open.length > 1)
               SliverToBoxAdapter(
                 child: _SectionHeading(
@@ -565,7 +566,7 @@ class TodayView extends StatelessWidget {
                   ),
                 ),
               ),
-            if (!usesMobilePresentation() && data.brief != null)
+            if (data.brief != null)
               SliverToBoxAdapter(
                 child: Padding(
                   padding: const EdgeInsets.only(top: 24),
@@ -573,15 +574,190 @@ class TodayView extends StatelessWidget {
                 ),
               ),
             SliverToBoxAdapter(child: _TodayContext(snapshot: data)),
-            SliverPadding(
-              padding: EdgeInsets.only(
-                bottom: usesMobilePresentation() ? 24 : 96,
-              ),
-            ),
+            SliverPadding(padding: EdgeInsets.only(bottom: 96)),
           ],
         ),
       );
     },
+  );
+
+  Widget _mobileToday(
+    BuildContext context,
+    TodaySnapshot data,
+    List<TodayItem> open,
+    List<TodayItem> completed,
+  ) => RefreshIndicator(
+    onRefresh: controller.refresh,
+    child: CustomScrollView(
+      physics: const AlwaysScrollableScrollPhysics(),
+      slivers: [
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(24, 18, 16, 24),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Expanded(child: TodayWelcome()),
+                IconButton.filledTonal(
+                  tooltip: 'Settings',
+                  onPressed: () => context.push('/settings'),
+                  icon: const Icon(Icons.settings_outlined, size: 21),
+                ),
+              ],
+            ),
+          ),
+        ),
+        if (controller.error != null)
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(24, 0, 24, 16),
+              child: MobileSurface(
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.cloud_off_outlined,
+                      color: Theme.of(context).colorScheme.error,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        controller.error is ApiConflictException
+                            ? 'Changed elsewhere. Your latest tasks are shown.'
+                            : 'Couldn’t refresh. Your last saved day is shown.',
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: controller.refresh,
+                      child: const Text('Retry'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24),
+            child: _MobileDailyBrief(
+              brief: data.brief,
+              busy: controller.acting,
+              onGenerate: controller.generateBrief,
+            ),
+          ),
+        ),
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(24, 16, 24, 8),
+            child: Row(
+              children: [
+                Expanded(
+                  child: _MobileTodayShortcut(
+                    icon: Icons.edit_note_rounded,
+                    label: 'Capture a thought',
+                    onTap: () => context.go('/capture'),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _MobileTodayShortcut(
+                    icon: Icons.graphic_eq_rounded,
+                    label: 'Talk to ATLAS',
+                    onTap: () => context.go('/talk'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        SliverToBoxAdapter(
+          child: MobileSectionHeader(
+            title: 'Your agenda',
+            description: open.isEmpty
+                ? 'Room for what matters next.'
+                : '${open.length} ${open.length == 1 ? 'task' : 'tasks'} to move forward',
+            trailing: IconButton.filledTonal(
+              tooltip: 'Add a task',
+              onPressed: controller.acting ? null : () => _addItem(context),
+              icon: const Icon(Icons.add_rounded),
+            ),
+          ),
+        ),
+        if (open.isEmpty)
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(24, 4, 24, 16),
+              child: MobileSurface(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(
+                      Icons.wb_sunny_outlined,
+                      color: Theme.of(context).colorScheme.primary,
+                      size: 28,
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      completed.isEmpty
+                          ? 'A little space for your day.'
+                          : 'You’re all caught up.',
+                      style: Theme.of(context).textTheme.titleLarge,
+                    ),
+                    const SizedBox(height: 8),
+                    const Text(
+                      'Add something you want to do, remember or follow up on.',
+                    ),
+                    const SizedBox(height: 12),
+                    TextButton.icon(
+                      onPressed: controller.acting
+                          ? null
+                          : () => _addItem(context),
+                      icon: const Icon(Icons.add_rounded),
+                      label: const Text('Add your next task'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          )
+        else
+          SliverPadding(
+            padding: const EdgeInsets.symmetric(horizontal: 24),
+            sliver: SliverList.builder(
+              itemCount: open.length,
+              itemBuilder: (context, index) => _MobileAgendaRow(
+                item: open[index],
+                busy: controller.updating.contains(open[index].id),
+                focused: open[index].id == focusItemId,
+                last: index == open.length - 1,
+                onToggle: () => controller.toggle(open[index]),
+              ),
+            ),
+          ),
+        if (completed.isNotEmpty)
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 24),
+              child: TodayCompletedDisclosure(
+                count: completed.length,
+                focused: completed.any((item) => item.id == focusItemId),
+                children: [
+                  for (final item in completed)
+                    _MobileAgendaRow(
+                      item: item,
+                      busy: controller.updating.contains(item.id),
+                      focused: item.id == focusItemId,
+                      last: true,
+                      onToggle: () => controller.toggle(item),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        SliverToBoxAdapter(child: _TodayContext(snapshot: data)),
+        const SliverPadding(padding: EdgeInsets.only(bottom: 28)),
+      ],
+    ),
   );
 
   Future<void> _addItem(BuildContext context) async {
@@ -649,6 +825,303 @@ class TodayView extends StatelessWidget {
   }
 }
 
+class _MobileDailyBrief extends StatelessWidget {
+  const _MobileDailyBrief({
+    required this.brief,
+    required this.busy,
+    required this.onGenerate,
+  });
+  final DailyBrief? brief;
+  final bool busy;
+  final VoidCallback onGenerate;
+
+  @override
+  Widget build(BuildContext context) => MobileSurface(
+    spotlight: true,
+    padding: const EdgeInsets.all(24),
+    child: Builder(
+      builder: (context) {
+        final theme = Theme.of(context);
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  Icons.auto_awesome_rounded,
+                  size: 18,
+                  color: theme.colorScheme.primary,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'ATLAS · DAILY BRIEF',
+                    style: theme.textTheme.labelMedium?.copyWith(
+                      letterSpacing: 1.5,
+                    ),
+                  ),
+                ),
+                if (brief?.generatedAt != null)
+                  Text(
+                    MaterialLocalizations.of(context)
+                        .formatShortDate(brief!.generatedAt!.toLocal()),
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 22),
+            Text(
+              brief == null
+                  ? 'A clearer view\nof what matters.'
+                  : 'Your day, in focus.',
+              style: theme.textTheme.headlineSmall?.copyWith(height: 1.18),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              brief?.summary.isNotEmpty == true ? brief!.summary : 'Bring your tasks and context together in one useful briefing.',
+              maxLines: 4,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodyMedium?.copyWith(
+                height: 1.55,
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 16),
+            if (brief == null)
+              Align(
+                alignment: Alignment.centerLeft,
+                child: FilledButton.icon(
+                  onPressed: busy ? null : onGenerate,
+                  icon: busy
+                      ? const SizedBox.square(
+                          dimension: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.arrow_forward_rounded, size: 18),
+                  label: Text(
+                    busy ? 'Preparing your brief…' : 'Create my brief',
+                  ),
+                ),
+              )
+            else
+              ExpansionTile(
+                tilePadding: EdgeInsets.zero,
+                childrenPadding: const EdgeInsets.only(top: 8),
+                shape: const Border(),
+                collapsedShape: const Border(),
+                title: Text(
+                  'View your brief',
+                  style: theme.textTheme.labelLarge?.copyWith(
+                    color: theme.colorScheme.primary,
+                  ),
+                ),
+                expansionAnimationStyle: MediaQuery.disableAnimationsOf(context)
+                    ? AnimationStyle.noAnimation
+                    : null,
+                children: [
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      brief!.summary,
+                      style: theme.textTheme.bodyLarge,
+                    ),
+                  ),
+                  for (final focus in brief!.focus) ...[
+                    const SizedBox(height: 18),
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        focus.title,
+                        style: theme.textTheme.titleMedium,
+                      ),
+                    ),
+                    if (focus.reason.isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text(focus.reason),
+                      ),
+                    ],
+                  ],
+                  if (brief!.watchouts.isNotEmpty) ...[
+                    const SizedBox(height: 20),
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        'Keep an eye on',
+                        style: theme.textTheme.titleMedium,
+                      ),
+                    ),
+                    for (final item in brief!.watchouts)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8),
+                        child: Align(
+                          alignment: Alignment.centerLeft,
+                          child: Text(item),
+                        ),
+                      ),
+                  ],
+                  const SizedBox(height: 12),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton.icon(
+                      onPressed: busy ? null : onGenerate,
+                      icon: const Icon(Icons.refresh_rounded, size: 18),
+                      label: Text(busy ? 'Updating…' : 'Refresh brief'),
+                    ),
+                  ),
+                ],
+              ),
+          ],
+        );
+      },
+    ),
+  );
+}
+
+class _MobileTodayShortcut extends StatelessWidget {
+  const _MobileTodayShortcut({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+  });
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+  @override
+  Widget build(BuildContext context) => MobileSurface(
+    padding: EdgeInsets.zero,
+    child: InkWell(
+      borderRadius: BorderRadius.circular(16),
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(icon, color: Theme.of(context).colorScheme.primary, size: 25),
+            const SizedBox(height: 16),
+            Text(label, style: Theme.of(context).textTheme.titleSmall),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+class _MobileAgendaRow extends StatelessWidget {
+  const _MobileAgendaRow({
+    required this.item,
+    required this.busy,
+    required this.focused,
+    required this.last,
+    required this.onToggle,
+  });
+  final TodayItem item;
+  final bool busy, focused, last;
+  final VoidCallback onToggle;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final due = item.dueAt?.toLocal();
+    final overdue = !item.isDone && due?.isBefore(DateTime.now()) == true;
+    final detail = [
+      if (overdue) 'Overdue',
+      if (due != null) MaterialLocalizations.of(context).formatShortDate(due),
+      if (item.priority == TodayPriority.high) 'Priority',
+      if (item.kind == 'reminder') 'Reminder',
+    ].join(' · ');
+    return Material(
+      color: focused ? theme.colorScheme.primaryContainer : Colors.transparent,
+      borderRadius: BorderRadius.circular(18),
+      child: InkWell(
+        onTap: busy ? null : onToggle,
+        borderRadius: BorderRadius.circular(18),
+        child: Stack(
+          children: [
+            if (!last)
+              Positioned(
+                left: 23.5,
+                top: 44,
+                bottom: 0,
+                child: Container(
+                  width: 1,
+                  color: theme.colorScheme.outlineVariant,
+                ),
+              ),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SizedBox(
+                  width: 48,
+                  child: Column(
+                    children: [
+                      if (busy)
+                        const Padding(
+                          padding: EdgeInsets.all(14),
+                          child: SizedBox.square(
+                            dimension: 20,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                        )
+                      else
+                        Checkbox(
+                          value: item.isDone,
+                          shape: const CircleBorder(),
+                          onChanged: (_) => onToggle(),
+                        ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.only(
+                      top: 12,
+                      bottom: 24,
+                      right: 8,
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          item.title,
+                          style: theme.textTheme.titleMedium?.copyWith(
+                            decoration: item.isDone
+                                ? TextDecoration.lineThrough
+                                : null,
+                            color: item.isDone
+                                ? theme.colorScheme.onSurfaceVariant
+                                : null,
+                          ),
+                        ),
+                        if (detail.isNotEmpty) ...[
+                          const SizedBox(height: 6),
+                          Text(
+                            detail,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: overdue
+                                  ? theme.colorScheme.error
+                                  : theme.colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _TodayHeader extends StatelessWidget {
   const _TodayHeader({
     required this.acting,
@@ -664,59 +1137,6 @@ class _TodayHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (usesMobilePresentation()) {
-      final now = DateTime.now();
-      return Padding(
-        padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    MaterialLocalizations.of(context).formatFullDate(now),
-                    style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    ),
-                  ),
-                ),
-                IconButton(
-                  tooltip: 'Settings',
-                  onPressed: () => context.go('/settings'),
-                  icon: const Icon(Icons.settings_outlined),
-                ),
-              ],
-            ),
-            const TodayWelcome(),
-            const SizedBox(height: 20),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                FilledButton.icon(
-                  onPressed: acting ? null : onAdd,
-                  icon: const Icon(Icons.add_rounded, size: 20),
-                  label: const Text('Add task'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: () => context.go('/capture?section=listen'),
-                  icon: const Icon(Icons.hearing_rounded, size: 20),
-                  label: const Text('Listen'),
-                ),
-                IconButton.filledTonal(
-                  tooltip: hasBrief
-                      ? 'Refresh daily brief'
-                      : 'Create daily brief',
-                  onPressed: acting ? null : onBrief,
-                  icon: const Icon(Icons.auto_awesome_outlined),
-                ),
-              ],
-            ),
-          ],
-        ),
-      );
-    }
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 24, 20, 24),
       child: Column(
