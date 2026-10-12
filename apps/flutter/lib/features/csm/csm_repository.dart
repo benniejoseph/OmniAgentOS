@@ -53,8 +53,9 @@ class CsmRepository {
   bool get current => !_disposed && access.current;
   bool get hasPending => _pending != null;
   void _check() {
-    if (!current)
+    if (!current) {
       throw const ApiException('Your workspace changed. Reopen Work.');
+    }
   }
 
   void dispose() {
@@ -272,10 +273,11 @@ class CsmRepository {
     if (_pending != null &&
         (_pending!.path != target ||
             _pending!.method != method ||
-            libraryCanonical(_pending!.body) != libraryCanonical(body)))
+            libraryCanonical(_pending!.body) != libraryCanonical(body))) {
       throw const ApiException(
         'Resolve the previous save before making another change.',
       );
+    }
     _pending ??= (
       path: target,
       method: method,
@@ -317,8 +319,9 @@ class CsmRepository {
       _pending = null;
       return snapshot;
     } on ApiException catch (error) {
-      if (const [400, 401, 403, 404, 409, 422].contains(error.statusCode))
+      if (const [400, 401, 403, 404, 409, 422].contains(error.statusCode)) {
         _pending = null;
+      }
       rethrow;
     }
   }
@@ -361,10 +364,11 @@ class CsmRepository {
     final agents = libraryArray(data['agents'], 1000, libraryMap);
     for (final agent in agents) {
       if (agent['name'] == 'Client Success Partner') {
-        if (agent['status'] != 'ready' || agent['selectable'] == false)
+        if (agent['status'] != 'ready' || agent['selectable'] == false) {
           throw const ApiException(
             'Client Success Partner is paused or unavailable. Open Agents to review it.',
           );
+        }
         return (id: libraryText(agent['id']), name: 'Client Success Partner');
       }
     }

@@ -88,8 +88,10 @@ class VoiceAppearanceController extends ChangeNotifier {
         if (!available) return;
         _watcher = file.parent.watch().listen(
           (event) {
-            if (!available || !event.path.contains(file.uri.pathSegments.last))
+            if (!available ||
+                !event.path.contains(file.uri.pathSegments.last)) {
               return;
+            }
             _reload?.cancel();
             _reload = Timer(const Duration(milliseconds: 180), () async {
               await _writes;

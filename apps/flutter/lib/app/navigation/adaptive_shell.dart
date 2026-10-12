@@ -60,7 +60,18 @@ class AdaptiveShell extends StatelessWidget {
       );
     }
     if (usesMobilePresentation()) {
-      return MobileWorkspaceShell(navigationShell: navigationShell);
+      return CallbackShortcuts(
+        bindings: {
+          const SingleActivator(LogicalKeyboardKey.keyK, control: true): () =>
+              _select(destinationIndex('/search')),
+          const SingleActivator(LogicalKeyboardKey.keyK, meta: true): () =>
+              _select(destinationIndex('/search')),
+        },
+        child: FocusScope(
+          autofocus: true,
+          child: MobileWorkspaceShell(navigationShell: navigationShell),
+        ),
+      );
     }
     final width = MediaQuery.sizeOf(context).width;
     return CallbackShortcuts(
@@ -557,7 +568,7 @@ class _DrawerGroup extends StatelessWidget {
           onTap: () => onSelect(index),
         ),
     ];
-    if (collapsible)
+    if (collapsible) {
       return ExpansionTile(
         key: PageStorageKey('navigation-$label'),
         initiallyExpanded: indices.contains(currentIndex),
@@ -574,6 +585,7 @@ class _DrawerGroup extends StatelessWidget {
         ),
         children: tiles,
       );
+    }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [

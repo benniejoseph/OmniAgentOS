@@ -64,7 +64,7 @@ class AdaptiveControlDialog extends StatelessWidget {
               heading,
               const SizedBox(height: 16),
             ],
-            if (content != null) content!,
+            ?content,
           ],
         ),
       ),

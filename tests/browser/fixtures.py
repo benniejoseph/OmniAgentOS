@@ -106,7 +106,7 @@ class Fixtures:
         if path == "/api/inbox":
             return self.fulfill(route, {"pending": 0 if self.decided else 1, "approvals": 0 if self.decided else 1})
         if path == "/api/command/prompt-queue":
-            return self.fulfill(route, {"items": [], "revision": 1})
+            return self.fulfill(route, {"schemaVersion": 1, "items": [], "serverTime": STAMP})
         # Optional sources are explicitly unavailable; this does not pretend to
         # exercise database-only queues, a provider, or an external connector.
         return self.fulfill(route, {"error": "Source unavailable in this bounded browser fixture."}, 503)
@@ -118,11 +118,13 @@ class Fixtures:
         except Exception:
             body = None
         if path == "/api/agent" and request.method == "POST" and not self.sent:
-            allowed = {"mode", "threadId", "message", "requestId", "strategy", "agentId",
-                       "contextScope", "contextSelection", "contextReferences"}
-            if (isinstance(body, dict) and set(body) <= allowed and body.get("message") == PROMPT
-                    and body.get("threadId") == THREAD_ID and body.get("mode") == "orchestrate"
-                    and body.get("strategy") == "auto"
+            expected = {"mode": "orchestrate", "threadId": THREAD_ID, "message": PROMPT,
+                        "strategy": "auto", "companionPersonality": "butler",
+                        "contextScope": "session", "contextReferences": []}
+            if (isinstance(body, dict) and {key: value for key, value in body.items() if key != "requestId"} == expected
+                    and not urlsplit(request.url).query
+                    and request.headers.get("content-type", "").startswith("application/json")
+                    and isinstance(body.get("requestId"), str)
                     and re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", body.get("requestId", ""))):
                 self.sent = True
                 self.writes.append({"path": path, "disposition": "synthetic_sse"})
@@ -138,7 +140,8 @@ class Fixtures:
             self.decided = True
             self.writes.append({"path": path, "disposition": "synthetic_decision"})
             return self.fulfill(route, {"record": {"id": APPROVAL_ID, "status": "executed"}})
-        self.unexpected.append({"kind": "write", "path": path, "method": request.method})
+        self.unexpected.append({"kind": "write", "path": path, "method": request.method,
+                                "bodyKeys": sorted(body) if isinstance(body, dict) else None})
         return self.fulfill(route, {"error": "Unexpected browser mutation blocked."}, 503)
 
 

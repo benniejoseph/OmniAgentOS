@@ -13,6 +13,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'knowledge_promotion_fixtures.dart';
+import 'knowledge_widget_helpers.dart';
 import 'knowledge_review_fixtures.dart' show reviewOwner;
 
 class PromotionApi extends Fake implements ApiClient {
@@ -23,6 +24,7 @@ class PromotionApi extends Fake implements ApiClient {
   @override
   Future<Json> getJsonAuthorized(
     String path, {
+    Map<String, dynamic>? headers,
     required NativeRequestAuthority authority,
     Json? query,
     CancelToken? cancelToken,
@@ -129,12 +131,16 @@ void main() {
           ),
         );
         await tester.pumpAndSettle();
-        final entry = find.text('Promotions');
-        await tester.ensureVisible(entry);
-        await tester.pumpAndSettle();
-        expect(entry.hitTestable(), findsOneWidget);
-        await tester.tap(entry);
-        await tester.pumpAndSettle();
+        if (phone) {
+          await openMemoryTool(tester, 'Promote knowledge');
+        } else {
+          final entry = find.text('Promotions');
+          await tester.ensureVisible(entry);
+          await tester.pumpAndSettle();
+          expect(entry.hitTestable(), findsOneWidget);
+          await tester.tap(entry);
+          await tester.pumpAndSettle();
+        }
         Future<void> reach(Finder target) async {
           final list = find
               .descendant(
@@ -183,7 +189,7 @@ void main() {
         await reach(content);
         final promote = find.widgetWithText(
           OutlinedButton,
-          'Promote to procedural memory',
+          'Save as how-to memory',
         );
         await reach(promote);
         await tester.tap(promote);
@@ -211,6 +217,9 @@ void main() {
         expect(repo.submissions, hasLength(1));
         expect(tester.takeException(), isNull);
       },
+      variant: TargetPlatformVariant.only(
+        phone ? TargetPlatform.android : TargetPlatform.macOS,
+      ),
     );
   }
 }

@@ -1101,8 +1101,9 @@ String _mobileEvidenceSubtitle(MarketJson row) {
     'status',
   ]) {
     final value = row[key];
-    if (value is String && value.trim().isNotEmpty)
+    if (value is String && value.trim().isNotEmpty) {
       parts.add(value.replaceAll('_', ' '));
+    }
     if (parts.length == 2) break;
   }
   return parts.isEmpty
@@ -1120,8 +1121,9 @@ class _MobileMarketEvidence extends StatelessWidget {
         : <String, dynamic>{};
     final sections = <Map<String, dynamic>>[root];
     for (final key in ['forecast', 'result', 'metrics', 'resolution']) {
-      if (root[key] is Map)
+      if (root[key] is Map) {
         sections.add(Map<String, dynamic>.from(root[key] as Map));
+      }
     }
     const labels = <String, String>{
       'name': 'Name',
@@ -1159,8 +1161,9 @@ class _MobileMarketEvidence extends StatelessWidget {
         final value = section[entry.key];
         if (value is String && value.trim().isNotEmpty ||
             value is num ||
-            value is bool)
+            value is bool) {
           fields.add((entry.value, '$value'));
+        }
       }
     }
     return Column(
@@ -1210,20 +1213,20 @@ Widget _marketReviewDialog({
   List<Widget> actions = const [],
   bool scrollable = false,
 }) {
-  if (!usesMobilePresentation())
+  if (!usesMobilePresentation()) {
     return AlertDialog(
       title: title,
       content: content,
       actions: actions,
       scrollable: scrollable,
     );
+  }
   final body = content is SingleChildScrollView
       ? content.child ?? const SizedBox.shrink()
       : content;
   return Dialog.fullscreen(
     child: MobileFlowScaffold(
       title: title.data ?? 'Review',
-      child: body,
       footer: actions.isEmpty
           ? null
           : Column(
@@ -1241,6 +1244,7 @@ Widget _marketReviewDialog({
                 actions.last,
               ],
             ),
+      child: body,
     ),
   );
 }

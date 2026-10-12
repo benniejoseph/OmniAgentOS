@@ -262,12 +262,13 @@ describe("signed release manifests", () => {
     const options = { publicKeys: [trusted.publicKey] };
 
     for (const [payload, error] of [
-      [releaseManifest({ version: 2 }), "is version 2, not 1"],
+      [releaseManifest({ version: 3 }), "is unsupported version 3"],
+      [releaseManifest({ version: 2 }), "is not a version 2 release manifest"],
       [
         Object.fromEntries(
           Object.entries(releaseManifest()).filter(([key]) => key !== "version"),
         ),
-        "is version missing, not 1",
+        "is unsupported version missing",
       ],
       [{ ...releaseManifest(), notes: "x" }, "is not a version 1 release manifest"],
       [

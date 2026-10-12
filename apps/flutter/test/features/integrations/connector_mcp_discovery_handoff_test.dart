@@ -19,6 +19,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'connector_credential_rotation_fixtures.dart';
 import 'connector_fixtures.dart';
+import 'connector_widget_helpers.dart';
 import 'connector_mcp_discovery_fixtures.dart';
 import 'connector_mcp_registration_fixtures.dart';
 
@@ -94,16 +95,8 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      final entry = find.text('MCP discovery recovery');
-      await tester.scrollUntilVisible(
-        entry,
-        180,
-        scrollable: find.byType(Scrollable).first,
-      );
-      await Scrollable.ensureVisible(tester.element(entry), alignment: 0.5);
-      await tester.pumpAndSettle();
-      await tester.tap(entry.hitTestable());
-      await tester.pumpAndSettle();
+      await openConnectorRecoveryControls(tester);
+      await tapVisibleConnectorAction(tester, 'MCP discovery recovery');
       final missing = find.text(
         'This exact connection is unavailable. Its original attempt can still be recovered or explicitly closed.',
       );
@@ -226,19 +219,13 @@ void main() {
           ),
         );
         await tester.pumpAndSettle();
-        final entry = find.text(
+        await openConnectorRecoveryControls(tester);
+        await tapVisibleConnectorAction(
+          tester,
           registration
               ? 'MCP registration recovery'
               : 'Credential preparation recovery',
         );
-        await tester.scrollUntilVisible(
-          entry,
-          180,
-          scrollable: find.byType(Scrollable).first,
-        );
-        await tester.pumpAndSettle();
-        await tester.tap(entry.hitTestable());
-        await tester.pumpAndSettle();
         final review = find.text('Open exact connection review');
         await tester.scrollUntilVisible(
           review,

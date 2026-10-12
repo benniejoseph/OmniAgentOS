@@ -173,6 +173,7 @@ class _AutomationStudioViewState extends ConsumerState<AutomationStudioView> {
                     : _PortableCapabilities(
                         key: const ValueKey('portable-capabilities'),
                         controller: controller,
+                        initialSection: widget.initialSection,
                       ),
               ),
             ),
@@ -511,15 +512,36 @@ class _PortableScheduleDetail extends StatelessWidget {
 }
 
 class _PortableCapabilities extends StatefulWidget {
-  const _PortableCapabilities({super.key, required this.controller});
+  const _PortableCapabilities({
+    super.key,
+    required this.controller,
+    this.initialSection,
+  });
 
   final AutomationController controller;
+  final String? initialSection;
   @override
   State<_PortableCapabilities> createState() => _PortableCapabilitiesState();
 }
 
 class _PortableCapabilitiesState extends State<_PortableCapabilities> {
-  int _category = 0;
+  late int _category = _categoryFor(widget.initialSection);
+
+  static int _categoryFor(String? section) => switch (section) {
+    'connections' => 1,
+    'tools' => 2,
+    'extensions' || 'plugins' => 3,
+    _ => 0,
+  };
+
+  @override
+  void didUpdateWidget(covariant _PortableCapabilities oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.initialSection != widget.initialSection) {
+      _category = _categoryFor(widget.initialSection);
+    }
+  }
+
   AutomationController get controller => widget.controller;
   @override
   Widget build(BuildContext context) {

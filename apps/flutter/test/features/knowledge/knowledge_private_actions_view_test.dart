@@ -70,7 +70,15 @@ void main() {
           await reach(inspect);
           await tester.tap(inspect);
           await tester.pumpAndSettle();
-          await reach(find.text('1 local documents'));
+          await reach(find.text('Saved sources'));
+          final sourceCount = find.ancestor(
+            of: find.text('Saved sources'),
+            matching: find.byType(Row),
+          );
+          expect(
+            find.descendant(of: sourceCount, matching: find.text('1')),
+            findsOneWidget,
+          );
           final consent = find.byType(CheckboxListTile);
           await reach(consent);
           await tester.tap(consent);

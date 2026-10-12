@@ -98,13 +98,14 @@ class _PaymentsViewState extends State<PaymentsView> {
             .whereType<Map>()
             .toList();
     final trustPolicy = reviews?['trustPolicy'] is Map;
-    if (usesMobilePresentation())
+    if (usesMobilePresentation()) {
       return _mobilePayments(
         reviewItems,
         credentials,
         transactionItems,
         trustPolicy,
       );
+    }
     return RefreshIndicator(
       onRefresh: _load,
       child: CustomScrollView(

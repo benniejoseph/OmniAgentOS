@@ -35,12 +35,14 @@ class _ResponsibilityWorkspaceViewState
     extends State<ResponsibilityWorkspaceView> {
   ResponsibilityController get controller => widget.controller;
   bool _mobileShowDetail = false;
+  String? _observedSelectedId;
   String _mobileQuery = '', _mobileFilter = 'all';
   final _mobileSearch = TextEditingController();
   @override
   void initState() {
     super.initState();
     _mobileShowDetail = widget.focusId != null;
+    _observedSelectedId = controller.selectedId;
     _initialize();
   }
 
@@ -57,8 +59,15 @@ class _ResponsibilityWorkspaceViewState
     super.didUpdateWidget(oldWidget);
     if (!identical(oldWidget.controller, controller) ||
         oldWidget.focusId != widget.focusId) {
-      _mobileShowDetail = widget.focusId != null;
+      final openingDraft =
+          identical(oldWidget.controller, controller) &&
+          _mobileShowDetail &&
+          oldWidget.focusId != null &&
+          widget.focusId == null &&
+          controller.selectedId == null;
+      _mobileShowDetail = widget.focusId != null || openingDraft;
       if (!identical(oldWidget.controller, controller)) {
+        _observedSelectedId = controller.selectedId;
         _mobileSearch.clear();
         _mobileQuery = '';
         _mobileFilter = 'all';
@@ -116,6 +125,14 @@ class _ResponsibilityWorkspaceViewState
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: controller,
     builder: (context, _) {
+      if (_observedSelectedId != controller.selectedId) {
+        // The root page remains mounted beneath a detail route. Follow the
+        // explicit new-draft selection when that detail route closes.
+        if (_observedSelectedId != null && controller.selectedId == null) {
+          _mobileShowDetail = true;
+        }
+        _observedSelectedId = controller.selectedId;
+      }
       if (!controller.available) {
         return const Center(
           child: Padding(
@@ -124,7 +141,12 @@ class _ResponsibilityWorkspaceViewState
           ),
         );
       }
-      if (usesMobilePresentation()) return _mobileWorkspace();
+      if (usesMobilePresentation()) {
+        return Material(
+          type: MaterialType.transparency,
+          child: _mobileWorkspace(),
+        );
+      }
       return CallbackShortcuts(
         bindings: {
           const SingleActivator(LogicalKeyboardKey.keyR, meta: true): () =>
@@ -209,8 +231,9 @@ class _ResponsibilityWorkspaceViewState
               onPressed: controller.loading ? null : controller.refresh,
               icon: const Icon(Icons.refresh_rounded),
             ),
-            if (!_mobileShowDetail && controller.canManage)
+            if (controller.canManage)
               IconButton.filledTonal(
+                key: const Key('responsibility-new'),
                 tooltip: 'New follow-up',
                 onPressed: controller.busy ? null : _newDraft,
                 icon: const Icon(Icons.add_rounded),
@@ -1972,20 +1995,20 @@ Widget _followupReviewDialog({
   List<Widget> actions = const [],
   bool scrollable = false,
 }) {
-  if (!usesMobilePresentation())
+  if (!usesMobilePresentation()) {
     return AlertDialog(
       title: title,
       content: content,
       actions: actions,
       scrollable: scrollable,
     );
+  }
   final body = content is SingleChildScrollView
       ? content.child ?? const SizedBox.shrink()
       : content;
   return Dialog.fullscreen(
     child: MobileFlowScaffold(
       title: title.data ?? 'Review',
-      child: body,
       footer: actions.isEmpty
           ? null
           : Column(
@@ -2003,6 +2026,7 @@ Widget _followupReviewDialog({
                 actions.last,
               ],
             ),
+      child: body,
     ),
   );
 }

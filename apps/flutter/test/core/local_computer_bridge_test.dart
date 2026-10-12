@@ -131,7 +131,13 @@ void main() {
         LocalComputerCommand(
           id: 'local_computer_command_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
           action: action,
-          input: const {'elementId': 'e:aaaaaaaaaaaa:3'},
+          input: action == 'key'
+              ? {
+                  'snapshotRevision': List.filled(64, 'a').join(),
+                  'key': 'return',
+                  'modifiers': <String>[],
+                }
+              : const {'elementId': 'e:aaaaaaaaaaaa:3'},
           expiresAt: DateTime.now().toUtc().add(const Duration(minutes: 1)),
           authority: authority,
         );

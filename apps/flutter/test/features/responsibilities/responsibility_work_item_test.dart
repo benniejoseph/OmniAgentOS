@@ -374,6 +374,8 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
+      await tester.tap(find.text('Continue your draft'));
+      await tester.pumpAndSettle();
       final work = find.byKey(const ValueKey('responsibility-quick-work-null'));
       await tester.ensureVisible(work);
       await tester.pumpAndSettle();

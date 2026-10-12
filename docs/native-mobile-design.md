@@ -48,7 +48,7 @@ The installed mobile boundary is `usesMobilePresentation()`, independent of the 
 
 Four labeled destinations stay in a stable order: Today, Assistant, My work and Library. Capture and Listen are direct entries in Library. The current destination remains obvious through icon, text and gold selection treatment. The existing lazy StatefulShellRoute retains branch state. Re-selecting a destination does not discard a draft or reset a nested page. Hide the dock while the keyboard is open. On wide tablets the same four destinations use a rail.
 
-Library is a lightweight grouped index of Memory, saved files, History, Markets, Inbox, Meetings, Follow-ups, Agents, Capabilities, Payments, Settings and Security. Its search filters this index locally. It does not fetch every workspace or start their controllers. Search your content is a separate explicit action. Connections stay inside Capabilities. Quality Checks and Monitoring stay inside Settings.
+Library is a lightweight grouped index of Capture, Listen, Memory, saved files, History, Markets, Inbox, Meetings, Follow-ups, Agents, Capabilities, Settings and Security. Its search filters this index locally. It does not fetch every workspace or start their controllers. Search your content is a separate explicit action. Connections stay inside Capabilities. Quality Checks and Monitoring stay inside Settings. Payments retains its direct route and history without a general navigation entry.
 
 The mobile shell does not add a duplicate page title above each feature. Features provide a single meaningful header. Use focused details with Back navigation; short filters and choices use keyboard-aware sheets. Longer reading and editing use full pages. Every gesture has a visible alternative.
 

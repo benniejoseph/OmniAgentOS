@@ -26,8 +26,9 @@ final personalProfileRepositoryProvider =
             owner?.tenantId != access.authority.tenantId ||
             owner?.actorId != access.authority.actorId ||
             owner?.userId != access.authority.canonicalUserId ||
-            owner?.role != access.authority.role)
+            owner?.role != access.authority.role) {
           repository.dispose();
+        }
       });
       ref.listen(biometricSessionLockControllerProvider, (_, next) {
         if (next.state.blocksInteraction) repository.dispose();
@@ -39,8 +40,9 @@ final personalProfileRepositoryProvider =
 final personalProfileControllerProvider =
     Provider.autoDispose<PersonalProfileController?>((ref) {
       final repository = ref.watch(personalProfileRepositoryProvider);
-      if (repository == null || !repository.current || !ref.mounted)
+      if (repository == null || !repository.current || !ref.mounted) {
         return null;
+      }
       final controller = PersonalProfileController(repository);
       ref.onDispose(controller.dispose);
       unawaited(Future<void>.microtask(controller.refresh));
@@ -100,8 +102,9 @@ class PersonalProfileController extends ChangeNotifier {
   }
 
   void update(String key, String value) {
-    if (!editable || !personalProfileFields.any((field) => field.key == key))
+    if (!editable || !personalProfileFields.any((field) => field.key == key)) {
       return;
+    }
     draft = {...draft, key: value};
     notice = null;
     _publish();

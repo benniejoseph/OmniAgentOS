@@ -196,6 +196,7 @@ class _Api extends ApiClient {
   @override
   Future<SpecialistJson> getJsonAuthorized(
     String path, {
+    Map<String, dynamic>? headers,
     required NativeRequestAuthority authority,
     SpecialistJson? query,
     CancelToken? cancelToken,

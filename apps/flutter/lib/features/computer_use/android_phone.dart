@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/legacy.dart';
 
 import '../../core/network/api_client.dart';
@@ -149,8 +148,9 @@ class AndroidPhoneCoordinator extends ChangeNotifier {
         'androidApiLevel': value.androidApiLevel,
       },
     );
-    if (result['schemaVersion'] != 1 || result['enabled'] != true)
+    if (result['schemaVersion'] != 1 || result['enabled'] != true) {
       throw StateError('The phone was not admitted.');
+    }
   }
 
   Future<void> _loop(int generation) async {
@@ -177,8 +177,9 @@ class AndroidPhoneCoordinator extends ChangeNotifier {
             await Future<void>.delayed(const Duration(milliseconds: 700));
             continue;
           }
-          if (raw is! Map)
+          if (raw is! Map) {
             throw const FormatException('Invalid phone command.');
+          }
           final claim = Map<String, dynamic>.from(raw);
           final expiration = DateTime.tryParse(
             claim['expiresAt']?.toString() ?? '',
@@ -287,8 +288,9 @@ class AndroidPhoneCoordinator extends ChangeNotifier {
             'phone-complete-${claim['id']}-${claim['claimGeneration']}',
       },
     );
-    if (result['accepted'] != true || result['commandId'] != claim['id'])
+    if (result['accepted'] != true || result['commandId'] != claim['id']) {
       throw const FormatException('The phone receipt was not accepted.');
+    }
   }
 
   @override
@@ -329,8 +331,9 @@ final androidPhoneProvider = ChangeNotifierProvider<AndroidPhoneCoordinator>((
             .blocksInteraction,
   );
   ref.listen(biometricSessionLockControllerProvider, (_, next) {
-    if (next.state.blocksInteraction)
+    if (next.state.blocksInteraction) {
       unawaited(coordinator.stop('permission_lost'));
+    }
   });
   return coordinator;
 });

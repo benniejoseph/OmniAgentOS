@@ -46,7 +46,10 @@ describe("dynamic delegation runtime policy", () => {
     const startedAt = "2026-09-23T00:00:00.000Z";
     const reservation = dynamicDelegationParentToolReservation();
     const once = reserveRunBudget(
-      createRunBudgetState(DEFAULT_AGENT_RUN_BUDGET_LIMITS, { startedAt }),
+      createRunBudgetState({
+        ...DEFAULT_AGENT_RUN_BUDGET_LIMITS,
+        wallTimeMs: 240_000,
+      }, { startedAt }),
       reservation,
       Date.parse(startedAt),
     );

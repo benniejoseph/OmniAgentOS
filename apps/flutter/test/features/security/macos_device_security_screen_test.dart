@@ -99,7 +99,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('Your installations and local unlock'), findsOneWidget);
+    expect(find.text('Devices & app lock'), findsOneWidget);
     expect(find.text('Protection on this Mac'), findsNothing);
     expect(tester.takeException(), isNull);
     debugDefaultTargetPlatformOverride = null;

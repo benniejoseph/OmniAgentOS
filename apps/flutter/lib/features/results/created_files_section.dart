@@ -47,11 +47,12 @@ class _CreatedFilesSectionState extends ConsumerState<CreatedFilesSection>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     _foreground = state == AppLifecycleState.resumed;
-    if (mounted)
+    if (mounted) {
       setState(() {
         _destinations.clear();
         _savingId = null;
       });
+    }
   }
 
   @override
@@ -77,8 +78,9 @@ class _CreatedFilesSectionState extends ConsumerState<CreatedFilesSection>
         !widget.controller.readable ||
         access?.tenantId != session.tenantId ||
         access?.actorId != session.actorId ||
-        access?.role != session.role)
+        access?.role != session.role) {
       return null;
+    }
     final controller = widget.controller;
     return NativeRequestAuthority(
       tenantId: session.tenantId,
@@ -95,8 +97,9 @@ class _CreatedFilesSectionState extends ConsumerState<CreatedFilesSection>
             ref
                 .read(biometricSessionLockControllerProvider)
                 .state
-                .blocksInteraction)
+                .blocksInteraction) {
           return false;
+        }
         final state = ref.read(sessionControllerProvider),
             current = state.value;
         return !state.isLoading &&
@@ -269,8 +272,9 @@ class _CreatedFilesSectionState extends ConsumerState<CreatedFilesSection>
 
   Widget _androidSaveControl(GeneratedArtifactSummary artifact) {
     final authority = _androidAuthority();
-    if (authority == null)
+    if (authority == null) {
       return const Text('Unlock and refresh to save this file.');
+    }
     if (artifact.byteCount != null && artifact.byteCount! > 32 * 1024 * 1024) {
       return const Text(
         'This file is larger than the phone save limit. Save it from the Mac app.',
@@ -339,8 +343,9 @@ class _CreatedFilesSectionState extends ConsumerState<CreatedFilesSection>
   ) async {
     if (_savingId != null ||
         !authority.isCurrent() ||
-        !widget.controller.fileCurrent(artifact))
+        !widget.controller.fileCurrent(artifact)) {
       return;
+    }
     setState(() {
       _savingId = artifact.id;
       _notice = null;
@@ -350,16 +355,18 @@ class _CreatedFilesSectionState extends ConsumerState<CreatedFilesSection>
       // separate explicit action from a fresh, normally unlocked workspace.
       await adapter.prepareDestination(filename: artifact.filename);
     } catch (_) {
-      if (authority.isCurrent())
+      if (authority.isCurrent()) {
         setState(
           () => _notice = 'The save location could not be opened. Try again.',
         );
+      }
     } finally {
-      if (authority.isCurrent())
+      if (authority.isCurrent()) {
         setState(() {
           _savingId = null;
           _destinations.remove(adapter.scopeKey);
         });
+      }
     }
   }
 
@@ -387,7 +394,7 @@ class _CreatedFilesSectionState extends ConsumerState<CreatedFilesSection>
         loadBytes: () => controller.downloadCreatedFile(artifact),
         isCurrent: current,
       );
-      if (current())
+      if (current()) {
         setState(
           () => _notice = switch (outcome) {
             CreatedFileExportOutcome.saved =>
@@ -399,18 +406,21 @@ class _CreatedFilesSectionState extends ConsumerState<CreatedFilesSection>
               'Saving is unavailable on this phone.',
           },
         );
+      }
     } catch (_) {
-      if (current())
+      if (current()) {
         setState(
           () => _notice =
               'The file could not be saved. Choose a location again and retry.',
         );
+      }
     } finally {
-      if (mounted && identical(controller, widget.controller))
+      if (mounted && identical(controller, widget.controller)) {
         setState(() {
           _savingId = null;
           _destinations.remove(adapter.scopeKey);
         });
+      }
     }
   }
 

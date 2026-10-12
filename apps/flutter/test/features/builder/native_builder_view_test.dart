@@ -59,12 +59,34 @@ void main() {
 
   Future<void> close(WidgetTester tester) async =>
       tester.pumpWidget(const SizedBox.shrink());
-  Finder scrollable() => find.byType(Scrollable).first;
+  Finder scrollable() => find
+      .byWidgetPredicate(
+        (widget) =>
+            widget is Scrollable && widget.axisDirection == AxisDirection.down,
+      )
+      .first;
+  Future<void> tap(WidgetTester tester, Finder target) async {
+    await tester.ensureVisible(target);
+    await tester.pumpAndSettle();
+    await tester.tap(target);
+    await tester.pumpAndSettle();
+  }
+
+  Future<void> disclose(WidgetTester tester, String title) async {
+    await tester.scrollUntilVisible(
+      find.text(title),
+      300,
+      scrollable: scrollable(),
+    );
+    await tap(tester, find.text(title));
+  }
 
   testWidgets(
     '320px at 200 percent text retains full identity and reachable controls without overflow',
     (tester) async {
       await show(tester, artifact: 'artifact:full/private/identity');
+      await disclose(tester, 'Workspace controls');
+      await disclose(tester, 'Technical details');
       expect(find.text(builderProject), findsOneWidget);
       expect(find.text('artifact:full/private/identity'), findsOneWidget);
       expect(
@@ -73,6 +95,8 @@ void main() {
         ),
         findsOneWidget,
       );
+      expect(find.text(buildId('session')), findsOneWidget);
+      await tap(tester, find.text('Preview & code'));
       await tester.scrollUntilVisible(
         find.text('Open exact preview'),
         300,
@@ -87,12 +111,14 @@ void main() {
         isNull,
       );
       expect(tester.takeException(), isNull);
+      await tap(tester, find.text('History'));
       await tester.scrollUntilVisible(
         find.text('Verification record'),
         300,
         scrollable: scrollable(),
       );
-      expect(find.text(buildId('session')), findsOneWidget);
+      expect(find.text('Verification record'), findsOneWidget);
+      expect(tester.takeException(), isNull);
       expect(repository.submissions, isEmpty);
       await close(tester);
     },
@@ -128,12 +154,14 @@ void main() {
       expect(find.text(builderProject), findsNothing);
       await close(tester);
     },
+    variant: TargetPlatformVariant.only(TargetPlatform.macOS),
   );
   testWidgets(
     'same-owner session loading hides source and restores the retained dirty draft',
     (tester) async {
       await show(tester, width: 800, scale: 1);
-      controller.choose(nextCanvas: 'code');
+      await tap(tester, find.text('Preview & code'));
+      await tap(tester, find.text('Code'));
       controller.editDraft('confidential local draft');
       await tester.pumpAndSettle();
       repository.access.update(null, available: false);
@@ -174,6 +202,7 @@ void main() {
       expect(tester.takeException(), isNull);
       await close(tester);
     },
+    variant: TargetPlatformVariant.only(TargetPlatform.macOS),
   );
   testWidgets(
     'receipt expansion and scroll position use independent exact scope storage',
@@ -217,6 +246,7 @@ void main() {
       expect(tester.takeException(), isNull);
       await close(tester);
     },
+    variant: TargetPlatformVariant.only(TargetPlatform.macOS),
   );
   testWidgets(
     'uncertain action retains full targets and has no immediate retry button',

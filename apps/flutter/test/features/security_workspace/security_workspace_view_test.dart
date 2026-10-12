@@ -7,20 +7,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../operational_widget_helpers.dart';
+
 import 'security_test_support.dart';
 
-Future<void> _reveal(WidgetTester tester, Finder target) async {
-  final scroll = find.byType(Scrollable).first;
-  tester.state<ScrollableState>(scroll).position.jumpTo(0);
-  await tester.pump();
-  await tester.scrollUntilVisible(
-    target,
-    240,
-    scrollable: scroll,
-    maxScrolls: 100,
-  );
-  await tester.pumpAndSettle();
-}
+Future<void> _reveal(WidgetTester tester, Finder target) =>
+    revealOperationalWidget(tester, target);
 
 Future<void> _tap(WidgetTester tester, Finder target) async {
   await _reveal(tester, target);
@@ -73,7 +65,12 @@ void main() {
         await tester.sendKeyEvent(LogicalKeyboardKey.escape);
         await tester.pumpAndSettle();
         expect(controller.selectedId, isNull);
-        await _tap(tester, find.byKey(const ValueKey('security-tab-audits')));
+        await selectOperationalSection(
+          tester,
+          desktop: desktop,
+          key: 'security-tab-audits',
+          mobileLabel: 'Decisions',
+        );
         await _tap(
           tester,
           find.byKey(const ValueKey('security-audit-audit-1')),
@@ -83,9 +80,11 @@ void main() {
           find.text('The requested scope is unavailable.'),
           findsOneWidget,
         );
-        await _tap(
+        await selectOperationalSection(
           tester,
-          find.byKey(const ValueKey('security-tab-isolation')),
+          desktop: desktop,
+          key: 'security-tab-isolation',
+          mobileLabel: 'Technical',
         );
         await _tap(
           tester,
@@ -95,14 +94,17 @@ void main() {
         expect(find.text('Case result'), findsOneWidget);
         expect(find.text('Completed'), findsWidgets);
         expect(find.text('Fail'), findsOneWidget);
+        if (!desktop) await closeOperationalDetail(tester);
         await _tap(
           tester,
           find.byKey(const ValueKey('security-table-omni_items')),
         );
         expect(find.text('Row security forced'), findsOneWidget);
-        await _tap(
+        await selectOperationalSection(
           tester,
-          find.byKey(const ValueKey('security-tab-retention')),
+          desktop: desktop,
+          key: 'security-tab-retention',
+          mobileLabel: 'Data',
         );
         await _tap(
           tester,
@@ -125,6 +127,7 @@ void main() {
         ]) {
           expect(find.textContaining(text), findsNothing);
         }
+        if (!desktop) await closeOperationalDetail(tester);
         await _tap(tester, find.text('Open security in browser'));
         expect(browserOpens, 1);
         expect(repo.contextRequests, hasLength(1));
@@ -176,7 +179,12 @@ void main() {
           ),
         );
         await tester.pumpAndSettle();
-        await _tap(tester, find.byKey(const ValueKey('security-tab-audits')));
+        await selectOperationalSection(
+          tester,
+          desktop: false,
+          key: 'security-tab-audits',
+          mobileLabel: 'Decisions',
+        );
         final lateRow = find.byKey(const ValueKey('security-audit-audit-19'));
         await _reveal(tester, lateRow);
         await tester.tap(lateRow);
@@ -227,8 +235,8 @@ void main() {
       await _reveal(tester, find.byType(TextFormField));
       await tester.enterText(find.byType(TextFormField), 'no-such-rule');
       await tester.pumpAndSettle();
-      await _reveal(tester, find.text('No role rules match this view.'));
-      expect(find.text('No role rules match this view.'), findsOneWidget);
+      await _reveal(tester, find.text('No permissions match this view.'));
+      expect(find.text('No permissions match this view.'), findsOneWidget);
       await tester.pumpWidget(app(second));
       await tester.pumpAndSettle();
       await _reveal(

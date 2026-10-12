@@ -142,8 +142,9 @@ class _MobileVoiceOptionsState extends ConsumerState<MobileVoiceOptions> {
                             : () async {
                                 if (!widget.current()) return;
                                 await widget.onEditContext!();
-                                if (mounted && widget.current())
+                                if (mounted && widget.current()) {
                                   setState(() {});
+                                }
                               },
                         icon: const Icon(Icons.layers_outlined, size: 19),
                         label: const Text('Choose context'),

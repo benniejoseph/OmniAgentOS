@@ -97,7 +97,7 @@ void main() {
         expect(
           desktop
               ? find.byKey(const ValueKey('automation-connections'))
-              : find.text('What Asael can use'),
+              : find.text('Connected services'),
           findsOneWidget,
         );
         expect(tester.takeException(), isNull);
@@ -119,7 +119,9 @@ void main() {
         await _selectAutomations(tester, desktop: desktop);
         await _openSchedule(tester, desktop: desktop);
         if (!desktop) {
-          await tester.tap(find.text(_occurrenceId));
+          await tester.tap(
+            find.widgetWithText(ExpansionTile, 'Completed · attempt 1').first,
+          );
           await tester.pumpAndSettle();
         }
         final open = find.widgetWithText(TextButton, 'Open run');
@@ -188,7 +190,9 @@ void main() {
 
         await _openSchedule(tester, desktop: desktop);
         if (!desktop) {
-          await tester.tap(find.text(_occurrenceId));
+          await tester.tap(
+            find.widgetWithText(ExpansionTile, 'Completed · attempt 1').first,
+          );
           await tester.pumpAndSettle();
         }
         expect(find.text('Open run'), findsNothing);

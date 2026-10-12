@@ -147,19 +147,32 @@ class _SecurityWorkspaceViewState extends State<SecurityWorkspaceView> {
         showDialog<void>(
           context: context,
           useRootNavigator: false,
-          builder: (_) => Dialog.fullscreen(
-            child: ListenableBuilder(
-              listenable: controller,
-              builder: (_, _) => MobileFlowScaffold(
-                title: 'Security detail',
-                child:
-                    controller.available &&
-                        controller.section == section &&
-                        controller.selectedId == id
-                    ? _SecurityInspector(controller: controller, embedded: true)
-                    : const Text(
-                        'This detail is no longer available. Close this view and refresh the current workspace.',
-                      ),
+          builder: (dialogContext) => CallbackShortcuts(
+            bindings: {
+              const SingleActivator(LogicalKeyboardKey.escape): () =>
+                  Navigator.of(dialogContext).pop(),
+            },
+            child: Dialog.fullscreen(
+              child: ListenableBuilder(
+                listenable: controller,
+                builder: (_, _) => MobileFlowScaffold(
+                  title: 'Security detail',
+                  child:
+                      controller.available &&
+                          controller.section == section &&
+                          controller.selectedId == id
+                      ? Focus(
+                          focusNode: _detailFocus,
+                          autofocus: true,
+                          child: _SecurityInspector(
+                            controller: controller,
+                            embedded: true,
+                          ),
+                        )
+                      : const Text(
+                          'This detail is no longer available. Close this view and refresh the current workspace.',
+                        ),
+                ),
               ),
             ),
           ),
@@ -167,8 +180,9 @@ class _SecurityWorkspaceViewState extends State<SecurityWorkspaceView> {
           if (mounted &&
               identical(c, controller) &&
               controller.available &&
-              navigation == _selectionNavigation)
+              navigation == _selectionNavigation) {
             controller.select(null);
+          }
         }),
       );
       return;
@@ -254,16 +268,19 @@ class _SecurityWorkspaceViewState extends State<SecurityWorkspaceView> {
                         body: _content(context, wide: wide),
                       )
                     : usesMobilePresentation()
-                    ? Column(
-                        children: [
-                          MobilePageHeader(
-                            title: 'Security',
-                            subtitle:
-                                'Your access, your data and your decisions.',
-                            actions: [refresh],
-                          ),
-                          Expanded(child: _content(context, wide: false)),
-                        ],
+                    ? Material(
+                        type: MaterialType.transparency,
+                        child: Column(
+                          children: [
+                            MobilePageHeader(
+                              title: 'Security',
+                              subtitle:
+                                  'Your access, your data and your decisions.',
+                              actions: [refresh],
+                            ),
+                            Expanded(child: _content(context, wide: false)),
+                          ],
+                        ),
                       )
                     : Scaffold(
                         appBar: AppBar(

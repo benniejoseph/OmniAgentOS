@@ -5,9 +5,9 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   tearDown(() => debugDefaultTargetPlatformOverride = null);
 
-  test('opens Command first on macOS', () {
+  test('opens Today first on macOS', () {
     debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
-    expect(appHomePath(), '/talk');
+    expect(appHomePath(), '/today');
   });
 
   test('keeps Today first on Android', () {

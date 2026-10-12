@@ -7,21 +7,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../operational_widget_helpers.dart';
+
 import 'quality_test_support.dart';
 import 'quality_test_fixtures.dart';
 
-Future<void> _reveal(WidgetTester tester, Finder target) async {
-  final scroll = find.byType(Scrollable).first;
-  tester.state<ScrollableState>(scroll).position.jumpTo(0);
-  await tester.pump();
-  await tester.scrollUntilVisible(
-    target,
-    220,
-    scrollable: scroll,
-    maxScrolls: 50,
-  );
-  await tester.pumpAndSettle();
-}
+Future<void> _reveal(WidgetTester tester, Finder target) =>
+    revealOperationalWidget(tester, target);
 
 void main() {
   for (final outcome in ['open', 'invalidated', 'disposed']) {
@@ -143,9 +135,12 @@ void main() {
         await tester.sendKeyEvent(LogicalKeyboardKey.escape);
         await tester.pumpAndSettle();
         expect(controller.selectedId, isNull);
-        await _reveal(tester, find.byKey(const ValueKey('quality-tab-jobs')));
-        await tester.tap(find.byKey(const ValueKey('quality-tab-jobs')));
-        await tester.pumpAndSettle();
+        await selectOperationalSection(
+          tester,
+          desktop: desktop,
+          key: 'quality-tab-jobs',
+          mobileLabel: 'Jobs',
+        );
         await _reveal(
           tester,
           find.byKey(const ValueKey('quality-job-evaluation-job-1')),
@@ -156,9 +151,12 @@ void main() {
         );
         await tester.pumpAndSettle();
         expect(find.text('Last error'), findsOneWidget);
-        await _reveal(tester, find.byKey(const ValueKey('quality-tab-cases')));
-        await tester.tap(find.byKey(const ValueKey('quality-tab-cases')));
-        await tester.pumpAndSettle();
+        await selectOperationalSection(
+          tester,
+          desktop: desktop,
+          key: 'quality-tab-cases',
+          mobileLabel: 'Cases',
+        );
         await _reveal(
           tester,
           find.byKey(const ValueKey('quality-case-system.health')),
@@ -169,12 +167,12 @@ void main() {
         await tester.pumpAndSettle();
         expect(find.text('Mutation approval required'), findsOneWidget);
         expect(find.text('privateInput'), findsNothing);
-        await _reveal(
+        await selectOperationalSection(
           tester,
-          find.byKey(const ValueKey('quality-tab-release')),
+          desktop: desktop,
+          key: 'quality-tab-release',
+          mobileLabel: 'Release',
         );
-        await tester.tap(find.byKey(const ValueKey('quality-tab-release')));
-        await tester.pumpAndSettle();
         await _reveal(
           tester,
           find.byKey(const ValueKey('quality-gate-report_signing')),
@@ -186,6 +184,7 @@ void main() {
         expect(find.text('Server approval'), findsOneWidget);
         expect(find.text('Approved'), findsOneWidget);
         expect(find.text('privateDetails'), findsNothing);
+        if (!desktop) await closeOperationalDetail(tester);
         await _reveal(tester, find.text('Open Quality in browser'));
         await tester.tap(find.text('Open Quality in browser'));
         expect(browserOpens, 1);
@@ -222,9 +221,12 @@ void main() {
         find.byKey(const ValueKey('quality-run-eval-run-1')),
       );
       expect(find.text('Core operations'), findsOneWidget);
-      await _reveal(tester, find.byKey(const ValueKey('quality-tab-release')));
-      await tester.tap(find.byKey(const ValueKey('quality-tab-release')));
-      await tester.pumpAndSettle();
+      await selectOperationalSection(
+        tester,
+        desktop: false,
+        key: 'quality-tab-release',
+        mobileLabel: 'Release',
+      );
       expect(
         find.text('Release evidence requires an administrator account.'),
         findsOneWidget,

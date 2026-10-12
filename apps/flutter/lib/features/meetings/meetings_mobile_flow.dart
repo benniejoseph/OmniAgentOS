@@ -9,20 +9,20 @@ Widget meetingReviewDialog({
   List<Widget> actions = const [],
   bool scrollable = false,
 }) {
-  if (!usesMobilePresentation())
+  if (!usesMobilePresentation()) {
     return AlertDialog(
       title: title,
       content: content,
       actions: actions,
       scrollable: scrollable,
     );
+  }
   final body = content is SingleChildScrollView
       ? content.child ?? const SizedBox.shrink()
       : content;
   return Dialog.fullscreen(
     child: MobileFlowScaffold(
       title: title.data ?? 'Review',
-      child: body,
       footer: actions.isEmpty
           ? null
           : Column(
@@ -40,6 +40,7 @@ Widget meetingReviewDialog({
                 actions.last,
               ],
             ),
+      child: body,
     ),
   );
 }
@@ -55,7 +56,7 @@ class MeetingEditorLayout extends StatelessWidget {
   final Widget child, footer;
   @override
   Widget build(BuildContext context) => usesMobilePresentation()
-      ? MobileFlowScaffold(title: title, child: child, footer: footer)
+      ? MobileFlowScaffold(title: title, footer: footer, child: child)
       : SingleChildScrollView(
           padding: const EdgeInsets.all(24),
           child: Column(

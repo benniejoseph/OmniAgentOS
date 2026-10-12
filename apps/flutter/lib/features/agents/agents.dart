@@ -1019,83 +1019,86 @@ class _AgentsViewState extends State<AgentsView>
                   ),
             )
             .toList();
-        return Column(
-          children: [
-            MobilePageHeader(
-              title: 'Your agents',
-              subtitle: 'A specialist for every kind of work.',
-              actions: [
-                if ((tabs.index == _agentsTab && c.canMutateAgents) ||
-                    (tabs.index == _skillsTab && c.canMutateSkills))
+        return Material(
+          type: MaterialType.transparency,
+          child: Column(
+            children: [
+              MobilePageHeader(
+                title: 'Your agents',
+                subtitle: 'A specialist for every kind of work.',
+                actions: [
+                  if ((tabs.index == _agentsTab && c.canMutateAgents) ||
+                      (tabs.index == _skillsTab && c.canMutateSkills))
+                    IconButton(
+                      tooltip: tabs.index == _skillsTab
+                          ? 'Create skill'
+                          : 'Create agent',
+                      onPressed: tabs.index == _skillsTab
+                          ? _editSkill
+                          : _editAgent,
+                      icon: const Icon(Icons.add_rounded),
+                    ),
                   IconButton(
-                    tooltip: tabs.index == _skillsTab
-                        ? 'Create skill'
-                        : 'Create agent',
-                    onPressed: tabs.index == _skillsTab
-                        ? _editSkill
-                        : _editAgent,
-                    icon: const Icon(Icons.add_rounded),
-                  ),
-                IconButton(
-                  tooltip: 'Refresh agents',
-                  onPressed: _showingLiveWork
-                      ? widget.onRefreshLiveWork
-                      : c.refresh,
-                  icon: const Icon(Icons.refresh_rounded),
-                ),
-              ],
-            ),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20),
-              child: MobileSegmentBar<int>(
-                items: [
-                  if (widget.liveWork != null)
-                    (value: 0, label: 'Live work', icon: Icons.bolt_rounded),
-                  (
-                    value: _agentsTab,
-                    label: 'Agents',
-                    icon: Icons.people_outline_rounded,
-                  ),
-                  (
-                    value: _skillsTab,
-                    label: 'Skills',
-                    icon: Icons.auto_awesome_outlined,
-                  ),
-                  (
-                    value: _skillsTab + 1,
-                    label: 'Performance',
-                    icon: Icons.insights_rounded,
+                    tooltip: 'Refresh agents',
+                    onPressed: _showingLiveWork
+                        ? widget.onRefreshLiveWork
+                        : c.refresh,
+                    icon: const Icon(Icons.refresh_rounded),
                   ),
                 ],
-                value: tabs.index,
-                onChanged: tabs.animateTo,
               ),
-            ),
-            if (tabs.index == _agentsTab)
               Padding(
-                padding: const EdgeInsets.fromLTRB(20, 16, 20, 4),
-                child: TextField(
-                  decoration: const InputDecoration(
-                    hintText: 'Find a specialist',
-                    prefixIcon: Icon(Icons.search_rounded),
-                  ),
-                  onChanged: (value) => setState(() => _mobileQuery = value),
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: MobileSegmentBar<int>(
+                  items: [
+                    if (widget.liveWork != null)
+                      (value: 0, label: 'Live work', icon: Icons.bolt_rounded),
+                    (
+                      value: _agentsTab,
+                      label: 'Agents',
+                      icon: Icons.people_outline_rounded,
+                    ),
+                    (
+                      value: _skillsTab,
+                      label: 'Skills',
+                      icon: Icons.auto_awesome_outlined,
+                    ),
+                    (
+                      value: _skillsTab + 1,
+                      label: 'Performance',
+                      icon: Icons.insights_rounded,
+                    ),
+                  ],
+                  value: tabs.index,
+                  onChanged: tabs.animateTo,
                 ),
               ),
-            Expanded(
-              child: !_showingLiveWork && c.loading && c.ledger == null
-                  ? const _AgentSkeleton()
-                  : !_showingLiveWork && c.error != null && c.ledger == null
-                  ? _Retry(onTap: c.refresh)
-                  : _showingLiveWork
-                  ? widget.liveWork!
-                  : tabs.index == _agentsTab
-                  ? _mobileAgents(filtered)
-                  : tabs.index == _skillsTab
-                  ? _skills(c.ledger?.skills ?? const [])
-                  : _performance(c.ledger?.performance ?? const []),
-            ),
-          ],
+              if (tabs.index == _agentsTab)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 16, 20, 4),
+                  child: TextField(
+                    decoration: const InputDecoration(
+                      hintText: 'Find a specialist',
+                      prefixIcon: Icon(Icons.search_rounded),
+                    ),
+                    onChanged: (value) => setState(() => _mobileQuery = value),
+                  ),
+                ),
+              Expanded(
+                child: !_showingLiveWork && c.loading && c.ledger == null
+                    ? const _AgentSkeleton()
+                    : !_showingLiveWork && c.error != null && c.ledger == null
+                    ? _Retry(onTap: c.refresh)
+                    : _showingLiveWork
+                    ? widget.liveWork!
+                    : tabs.index == _agentsTab
+                    ? _mobileAgents(filtered)
+                    : tabs.index == _skillsTab
+                    ? _skills(c.ledger?.skills ?? const [])
+                    : _performance(c.ledger?.performance ?? const []),
+              ),
+            ],
+          ),
         );
       }
       return Scaffold(

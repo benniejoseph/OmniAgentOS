@@ -96,8 +96,9 @@ class _ActivityViewState extends State<ActivityView> {
     await read();
     if (!mounted ||
         !identical(controller, widget.controller) ||
-        identical(before, controller.snapshot))
+        identical(before, controller.snapshot)) {
       return;
+    }
     final current = FocusManager.instance.primaryFocus;
     if (current == focused ||
         current == null ||
@@ -241,6 +242,7 @@ class _ActivityViewState extends State<ActivityView> {
                         ),
                       ),
                     InkWell(
+                      key: ValueKey('activity-record-${item.id}'),
                       onTap: () => widget.onOpen(item.nativeLocation),
                       borderRadius: BorderRadius.circular(16),
                       child: Stack(
@@ -424,7 +426,12 @@ class _ActivityViewState extends State<ActivityView> {
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: widget.controller,
     builder: (context, _) {
-      if (usesMobilePresentation()) return _mobileTimeline(context);
+      if (usesMobilePresentation()) {
+        return Material(
+          type: MaterialType.transparency,
+          child: _mobileTimeline(context),
+        );
+      }
       final controller = widget.controller;
       final snapshot = controller.snapshot;
       final known = snapshot?.known ?? false;
@@ -848,7 +855,7 @@ class _ActivityRow extends StatelessWidget {
                     ),
                   ],
                 ),
-                if (details != null) details!,
+                ?details,
                 if (showTechnical) _references(),
               ],
             ),
@@ -1009,10 +1016,12 @@ String _title(ActivityItem item) {
 }
 
 String _state(ActivityItem item) {
-  if (item.status == 'failed' || item.canonicalStatus == 'failed')
+  if (item.status == 'failed' || item.canonicalStatus == 'failed') {
     return 'Failed';
-  if (item.status == 'reconciliation_required')
+  }
+  if (item.status == 'reconciliation_required') {
     return 'Action outcome needs review';
+  }
   final canonical = switch (item.canonicalStatus) {
     'unverified' => 'Needs verification',
     'partial' => 'Partly complete',

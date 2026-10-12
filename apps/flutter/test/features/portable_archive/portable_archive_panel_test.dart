@@ -1,6 +1,7 @@
 import 'package:asael/app/theme/app_theme.dart';
 import 'package:asael/app/theme/macos_app_theme.dart';
 import 'package:asael/core/network/api_client.dart';
+import 'package:asael/core/network/native_workspace_access.dart';
 import 'package:asael/features/auth/application/biometric_session_lock_controller.dart';
 import 'package:asael/features/auth/application/session_controller.dart';
 import 'package:asael/features/results/created_file_export.dart';
@@ -12,6 +13,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'portable_archive_test_support.dart';
+import '../../native_workspace_fixture.dart';
 
 void main() {
   for (final spec in [
@@ -43,24 +45,26 @@ void main() {
         );
         var browser = 0;
         await tester.pumpWidget(
-          MaterialApp(
-            theme: desktop
-                ? spec.dark
-                      ? MacosAppTheme.dark()
-                      : MacosAppTheme.light()
-                : spec.dark
-                ? AppTheme.dark()
-                : AppTheme.light(),
-            builder: (context, child) => MediaQuery(
-              data: MediaQuery.of(context)
-                  .copyWith(textScaler: TextScaler.linear(spec.scale)),
-              child: child!,
-            ),
-            home: Scaffold(
-              body: SingleChildScrollView(
-                child: PortableArchivePanelView(
-                  controller: c,
-                  onOpenBrowser: () => browser++,
+          nativeWorkspaceFixture(
+            child: MaterialApp(
+              theme: desktop
+                  ? spec.dark
+                        ? MacosAppTheme.dark()
+                        : MacosAppTheme.light()
+                  : spec.dark
+                  ? AppTheme.dark()
+                  : AppTheme.light(),
+              builder: (context, child) => MediaQuery(
+                data: MediaQuery.of(context)
+                    .copyWith(textScaler: TextScaler.linear(spec.scale)),
+                child: child!,
+              ),
+              home: Scaffold(
+                body: SingleChildScrollView(
+                  child: PortableArchivePanelView(
+                    controller: c,
+                    onOpenBrowser: () => browser++,
+                  ),
                 ),
               ),
             ),
@@ -87,7 +91,7 @@ void main() {
           expect(find.byKey(const Key('portable-archive-save')), findsNothing);
           expect(
             find.textContaining(
-              'Saving archives is available in the desktop app.',
+              'Secure destination selection is not available on this device.',
             ),
             findsOneWidget,
           );
@@ -95,11 +99,26 @@ void main() {
           expect(adapter.writes, isEmpty);
         }
         expect(find.textContaining('PRIVATE_ARCHIVE_CONTENT'), findsNothing);
-        final handoff = find.text('Open archive controls in browser');
-        await tester.ensureVisible(handoff);
-        await tester.pumpAndSettle();
-        await tester.tap(handoff);
-        expect(browser, 1);
+        if (desktop) {
+          final handoff = find.text('Open archive controls in browser');
+          await tester.ensureVisible(handoff);
+          await tester.pumpAndSettle();
+          await tester.tap(handoff);
+          expect(browser, 1);
+        } else {
+          final restore = find.text('Import or restore an archive');
+          await tester.ensureVisible(restore);
+          await tester.pumpAndSettle();
+          await tester.tap(restore);
+          await tester.pumpAndSettle();
+          final handoff = tester.widget<NativeWorkspaceBrowserButton>(
+            find.byType(NativeWorkspaceBrowserButton),
+          );
+          expect(handoff.path, '/app/settings');
+          expect(handoff.label, 'Open restore controls');
+          expect(browser, 0);
+          expect(adapter.writes, isEmpty);
+        }
         expect(tester.takeException(), isNull);
         await tester.pumpWidget(const SizedBox.shrink());
         expect(c.receipt, isNull);

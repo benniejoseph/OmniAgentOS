@@ -69,15 +69,18 @@ class MobileDetailsDisclosure extends StatelessWidget {
   final bool initiallyExpanded;
 
   @override
-  Widget build(BuildContext context) => ExpansionTile(
-    title: Text(title),
-    initiallyExpanded: initiallyExpanded,
-    tilePadding: EdgeInsets.zero,
-    childrenPadding: const EdgeInsets.only(bottom: 16),
-    expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
-    expansionAnimationStyle: MediaQuery.disableAnimationsOf(context)
-        ? AnimationStyle.noAnimation
-        : null,
-    children: [child],
+  Widget build(BuildContext context) => Material(
+    type: MaterialType.transparency,
+    child: ExpansionTile(
+      title: Text(title),
+      initiallyExpanded: initiallyExpanded,
+      tilePadding: EdgeInsets.zero,
+      childrenPadding: const EdgeInsets.only(bottom: 16),
+      expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
+      expansionAnimationStyle: MediaQuery.disableAnimationsOf(context)
+          ? AnimationStyle.noAnimation
+          : null,
+      children: [child],
+    ),
   );
 }

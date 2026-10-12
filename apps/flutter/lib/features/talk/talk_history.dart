@@ -360,8 +360,9 @@ mixin TalkHistoryControllerMixin on ChangeNotifier {
   ) async {
     if (_historyDisposed ||
         threadId != conversationId ||
-        historyInteractionBusy)
+        historyInteractionBusy) {
       return;
+    }
     final generation = _threadLoadGeneration;
     await captionsSettled;
     bool canAdopt() =>

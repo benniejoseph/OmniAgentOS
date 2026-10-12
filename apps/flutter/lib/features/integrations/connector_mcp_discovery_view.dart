@@ -10,7 +10,6 @@ import '../settings/adaptive_control_dialog.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/network/native_workspace_access.dart';
-import '../../app/platform/mobile_presentation.dart';
 import 'connector_contracts.dart';
 import 'connector_control_contracts.dart';
 import 'connector_mcp_discovery_contracts.dart';

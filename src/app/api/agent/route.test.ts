@@ -22,6 +22,8 @@ const routeMocks = vi.hoisted(() => ({
   inspectPromptQueueDispatchReceipt: vi.fn(),
   resolveAgentIdentityForExecution: vi.fn(),
   listConversationSummaries: vi.fn(),
+  listProjectTasks: vi.fn(),
+  listProjectArtifacts: vi.fn(),
   listThreadTurns: vi.fn(),
   resolveLoopV2ContextTextEnrollment: vi.fn(),
   resolveLoopV2ModelTextEnrollment: vi.fn(),
@@ -82,6 +84,8 @@ vi.mock("@/lib/agents/identity-store", () => ({
 
 vi.mock("@/lib/projects/store", () => ({
   getOwnedProject: routeMocks.getOwnedProject,
+  listProjectTasks: routeMocks.listProjectTasks,
+  listProjectArtifacts: routeMocks.listProjectArtifacts,
 }));
 
 vi.mock("@/lib/missions/store", () => ({
@@ -197,7 +201,7 @@ vi.mock("@/lib/memory/personal-context-consent-store", async (importOriginal) =>
     routeMocks.requireActivePersonalContextConsent,
 }));
 
-import { POST } from "@/app/api/agent/route";
+import { POST, maxDuration } from "@/app/api/agent/route";
 import { buildAgentSkillPinV1, buildCustomAgentIdentityV1 } from "@/lib/agents/identity-contracts";
 import { resolveCommandContextReferences } from "@/lib/command/context-reference-runtime";
 import { resolveDirectConversationLanguageStyle } from "@/lib/companion/language-style-resolver";
@@ -288,6 +292,8 @@ beforeEach(() => {
     tenantId: context.tenantId,
     actorId: context.actorId,
   });
+  routeMocks.listProjectTasks.mockReset().mockResolvedValue([]);
+  routeMocks.listProjectArtifacts.mockReset().mockResolvedValue([]);
   routeMocks.getThread.mockReset().mockResolvedValue(null);
   routeMocks.resolveAgentIdentityForExecution.mockReset().mockResolvedValue({
     definition: {
@@ -647,7 +653,7 @@ describe("agent prompt queue lifecycle", () => {
     const { invocation } = routeMocks.runAgent.mock.calls[0]?.[0] ?? {};
     expect(invocation?.receivedAtMs).toBeGreaterThanOrEqual(before);
     expect(invocation?.receivedAtMs).toBeLessThanOrEqual(Date.now());
-    expect(invocation?.endsAtMs - invocation?.receivedAtMs).toBe(300_000);
+    expect(invocation?.endsAtMs - invocation?.receivedAtMs).toBe(maxDuration * 1_000);
   });
 
   it("withholds a terminal event and emits a generic error when its queue receipt fails", async () => {
@@ -1215,6 +1221,7 @@ describe("agent semantic intent routing", () => {
     expect(routeMocks.startLocalComputerSession).toHaveBeenCalledWith(
       macContext,
       runRequest.runId,
+      "local_macos",
     );
     expect(routeMocks.resolveLoopV2ReadOnlyCanaryEnrollment).not.toHaveBeenCalled();
     expect(routeMocks.resolveLoopV2ModelTextEnrollment).not.toHaveBeenCalled();
@@ -1230,7 +1237,7 @@ describe("agent semantic intent routing", () => {
           modelTurns: 14,
           tokens: 400_000,
           costMicrousd: 2_500_000,
-          wallTimeMs: 240_000,
+          wallTimeMs: AGENT_RUN_BUDGET_LIMITS.wallTimeMs,
           toolCalls: 30,
           browserActions: 12,
         }),
@@ -1747,6 +1754,14 @@ describe("agent semantic intent routing", () => {
     expect(response.status).toBe(200);
     await response.text();
     const runRequest = routeMocks.runAgent.mock.calls[0][0];
+    expect(routeMocks.listProjectTasks).toHaveBeenCalledWith("project-a", {
+      tenantId: context.tenantId,
+      limit: 1,
+    });
+    expect(routeMocks.listProjectArtifacts).toHaveBeenCalledWith("project-a", {
+      tenantId: context.tenantId,
+      limit: 1,
+    });
     expect(routeMocks.requestSharedMemoryAccessFromSecurityContext)
       .toHaveBeenCalledWith(context, {
         scope: "project",
@@ -3215,7 +3230,7 @@ describe("agent request replay protection", () => {
     expect(scheduleDurableSpecialistDrain).toHaveBeenCalledWith(
       context.tenantId,
       expect.any(Number),
-      { routeMaxDurationSeconds: 300 },
+      { routeMaxDurationSeconds: maxDuration },
     );
     expect(routeMocks.appendThreadTurn).toHaveBeenCalledWith(expect.objectContaining({
       id: agentRequestDelegatedTurnId(

@@ -662,7 +662,7 @@ class _RunProjectionApiClient extends ApiClient {
   final readPaths = <String>[];
 
   @override
-  Future<Map<String, dynamic>> getJson(
+  Future<Map<String, dynamic>> getJsonFresh(
     String path, {
     Map<String, dynamic>? query,
   }) async {

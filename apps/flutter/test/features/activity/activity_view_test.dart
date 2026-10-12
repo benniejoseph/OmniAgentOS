@@ -43,11 +43,11 @@ void main() {
       await tester.sendKeyEvent(LogicalKeyboardKey.space);
       await tester.pump();
       expect(repository.reads, hasLength(2));
-      final filter = find.byKey(const ValueKey('activity-filter-updates'));
+      final filter = find.byKey(const ValueKey('activity-filter-working'));
       await tester.ensureVisible(filter);
       final chosenFocus = Focus.of(
         tester.element(
-          find.descendant(of: filter, matching: find.text('Updates')),
+          find.descendant(of: filter, matching: find.textContaining('Working')),
         ),
       );
       chosenFocus.requestFocus();
@@ -57,12 +57,14 @@ void main() {
       expect(FocusManager.instance.primaryFocus, same(chosenFocus));
       expect(tester.takeException(), isNull);
     },
+
+    variant: TargetPlatformVariant.only(TargetPlatform.macOS),
   );
 
   for (final width in [320.0, 390.0, 1440.0]) {
     for (final dark in [false, true]) {
       testWidgets(
-        'full identities reflow at $width ${dark ? 'dark' : 'light'} with 200% text',
+        'exact activity links reflow at $width ${dark ? 'dark' : 'light'} with 200% text',
         (tester) async {
           tester.view.physicalSize = Size(width, 1000);
           tester.view.devicePixelRatio = 1;
@@ -89,23 +91,28 @@ void main() {
               home: ActivityView(controller: controller, onOpen: opened.add),
             ),
           );
+          final row = find.byKey(ValueKey('activity-record-run:$id'));
+          await tester.scrollUntilVisible(
+            row,
+            240,
+            scrollable: find.byType(Scrollable).first,
+          );
+          expect(tester.getSize(row).height, greaterThanOrEqualTo(44));
+          await tester.tap(row);
+          expect(opened, [ActivityItem.runLocation(id)]);
+          expect(repository.reads, isEmpty);
+          final coverage = find.text('About this timeline');
+          await tester.scrollUntilVisible(
+            coverage,
+            240,
+            scrollable: find.byType(Scrollable).first,
+          );
+          await tester.tap(coverage);
+          await tester.pumpAndSettle();
           expect(
             find.textContaining('up to 100 recent records per source'),
             findsOneWidget,
           );
-          final fullId = find.byWidgetPredicate(
-            (widget) => widget is SelectableText && widget.data == id,
-          );
-          await tester.ensureVisible(fullId);
-          await tester.pump();
-          expect(fullId, findsOneWidget);
-          final open = find.widgetWithText(OutlinedButton, 'Inspect run');
-          await tester.ensureVisible(open);
-          await tester.pump();
-          expect(tester.getSize(open).height, greaterThanOrEqualTo(44));
-          await tester.tap(open);
-          expect(opened, [ActivityItem.runLocation(id)]);
-          expect(repository.reads, isEmpty);
           expect(tester.takeException(), isNull);
         },
       );
@@ -124,10 +131,10 @@ void main() {
         home: ActivityView(controller: controller, onOpen: (_) {}),
       ),
     );
-    await tester.tap(find.widgetWithText(OutlinedButton, 'Refresh activity'));
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Refresh'));
     await tester.pump();
     expect(
-      find.textContaining('Last loaded records remain below.'),
+      find.textContaining('Your last loaded activity remains visible.'),
       findsOneWidget,
     );
     repository.reads.single.result.completeError(
@@ -135,21 +142,23 @@ void main() {
     );
     await tester.pump();
     expect(find.text('Synthetic source read failed'), findsOneWidget);
-    expect(find.textContaining('Last loaded rows and counts'), findsOneWidget);
+    expect(
+      find.textContaining('Your last loaded activity is shown.'),
+      findsOneWidget,
+    );
     expect(
       find.byKey(const ValueKey('activity-record-run:run-one')),
       findsOneWidget,
     );
-    await tester.ensureVisible(
-      find.widgetWithText(OutlinedButton, 'Retry activity'),
-    );
-    await tester.tap(find.widgetWithText(OutlinedButton, 'Retry activity'));
+    await tester.ensureVisible(find.widgetWithText(TextButton, 'Try again'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(TextButton, 'Try again'));
     repository.reads.last.result.complete(snapshot(items: []));
     await tester.pump();
-    expect(find.text('No activity in this window'), findsOneWidget);
+    expect(find.text('No recent activity'), findsOneWidget);
     expect(find.text('Synthetic source read failed'), findsNothing);
     expect(find.text('Activity is unavailable'), findsNothing);
-  });
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
   testWidgets('initial unavailable never becomes an empty-state success', (
     tester,
@@ -164,12 +173,13 @@ void main() {
       ),
     );
     expect(find.text('Activity is unavailable'), findsOneWidget);
-    expect(find.text('Count unavailable'), findsNWidgets(6));
-    expect(find.text('No activity in this window'), findsNothing);
-    await tester.ensureVisible(find.text('Source coverage · unavailable'));
-    await tester.tap(find.text('Source coverage · unavailable'));
+    expect(find.textContaining('recent updates'), findsNothing);
+    expect(find.text('No recent activity'), findsNothing);
+    await tester.ensureVisible(find.text('Some activity is unavailable'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Some activity is unavailable'));
     await tester.pumpAndSettle();
     expect(find.text('Source could not be checked'), findsNWidgets(3));
-    expect(find.text('Count unavailable.'), findsNWidgets(3));
-  });
+    expect(find.textContaining(RegExp(r'· \d+ recent records')), findsNothing);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 }

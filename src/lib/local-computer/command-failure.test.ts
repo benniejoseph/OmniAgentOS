@@ -30,13 +30,20 @@ describe("local computer command failures", () => {
     );
   });
 
+  it("tells a phone run to observe an indeterminate action without replaying it", () => {
+    const message = localComputerCommandFailureMessage("execution_indeterminate", "android");
+
+    expect(message).toBe("The phone action may already have happened. Observe the current screen; this action will not be replayed automatically.");
+    expect(message).not.toContain("Mac");
+  });
+
   it("is the message a failed command reports", async () => {
     const store = await readFile("src/lib/local-computer/store.ts", "utf8");
 
     expect(store).toContain(
       "const code = String(row.error_code || row.state);\n" +
         "      throw new LocalComputerCommandError(code, " +
-        "localComputerCommandFailureMessage(code));",
+        "localComputerCommandFailureMessage(code, command.platform));",
     );
     expect(store).not.toContain("did not complete the action");
   });

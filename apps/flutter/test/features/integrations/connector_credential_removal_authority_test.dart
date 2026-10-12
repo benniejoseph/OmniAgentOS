@@ -29,6 +29,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'connector_credential_removal_fixtures.dart';
 import 'connector_fixtures.dart';
+import 'connector_widget_helpers.dart';
 
 NativeWorkspaceAccess _access(_Api api, {bool Function()? current}) =>
     NativeWorkspaceAccess(
@@ -55,6 +56,7 @@ class _Api extends ApiClient {
   @override
   Future<ConnectorJson> getJsonAuthorized(
     String path, {
+    Map<String, dynamic>? headers,
     required NativeRequestAuthority authority,
     ConnectorJson? query,
     CancelToken? cancelToken,
@@ -663,8 +665,7 @@ void main() {
         find.text('No MCP or OpenAPI connections are visible.'),
         findsOneWidget,
       );
-      await tester.tap(find.text('Open an exact connection'));
-      await tester.pumpAndSettle();
+      await tapVisibleConnectorAction(tester, 'Find by connection ID');
       await tester.enterText(find.byType(TextField), 'mcp:one');
       // Settle the editor's focus scroll before positioning the action below it.
       FocusManager.instance.primaryFocus?.unfocus();

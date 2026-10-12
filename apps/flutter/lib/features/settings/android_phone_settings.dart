@@ -33,8 +33,9 @@ class _AndroidPhoneSettingsState extends ConsumerState<AndroidPhoneSettings>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed)
+    if (state == AppLifecycleState.resumed) {
       unawaited(ref.read(androidPhoneProvider).refresh());
+    }
   }
 
   @override
@@ -128,10 +129,11 @@ class _AndroidPhoneSettingsState extends ConsumerState<AndroidPhoneSettings>
                               await appAndroidDeviceBridge
                                   .openAccessibilitySettings();
                             } catch (_) {
-                              if (mounted)
+                              if (mounted) {
                                 setState(
                                   () => _notice = 'Open Android Settings → Accessibility → Installed apps → Asael.',
                                 );
+                              }
                             }
                           },
                     icon: const Icon(Icons.accessibility_new_rounded),
@@ -156,10 +158,11 @@ class _AndroidPhoneSettingsState extends ConsumerState<AndroidPhoneSettings>
                               }
                               await phone.enable();
                             } catch (_) {
-                              if (mounted)
+                              if (mounted) {
                                 setState(
                                   () => _notice = 'Phone access could not start. Check permissions and try again.',
                                 );
+                              }
                             }
                           },
                     icon: const Icon(Icons.play_arrow_rounded),

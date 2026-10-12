@@ -38,13 +38,18 @@ describe("public research source reading", () => {
     expect(Number.isFinite(Date.parse(result.fetchedAt))).toBe(true);
     expect(network.fetch).toHaveBeenCalledOnce();
     expect(network.fetch.mock.calls[0][1]).toMatchObject({ method: "GET", redirect: "manual", credentials: "omit", referrerPolicy: "no-referrer" });
-    expect(network.fetch.mock.calls[0][1].headers).toEqual([["accept", "text/html,application/xhtml+xml,text/plain,text/markdown;q=0.9"]]);
+    expect(network.fetch.mock.calls[0][1].headers).toEqual([["accept", "text/html,application/xhtml+xml,text/plain,text/markdown,application/pdf;q=0.9"]]);
   });
 
   it("returns a bounded excerpt and says when the source is truncated", async () => {
     network.fetch.mockResolvedValue(html(`<article><p>${paragraph.repeat(100)}</p></article>`));
     const result = await readPublicWebSource({ url: sourceUrl });
-    expect(result.content).toHaveLength(WEB_SOURCE_MAX_CHARACTERS);
+    expect(result.content.length).toBeGreaterThan(0);
+    expect(result.content.length).toBeLessThanOrEqual(WEB_SOURCE_MAX_CHARACTERS);
+    expect(result.content).toBe(result.passages?.map((passage) => passage.text).join("\n\n[…]\n\n"));
+    for (const passage of result.passages ?? []) {
+      expect(paragraph.repeat(100).slice(passage.startUtf16, passage.endUtf16Exclusive)).toBe(passage.text);
+    }
     expect(result.truncated).toBe(true);
   });
 
@@ -113,14 +118,19 @@ describe("public research source reading", () => {
     expect(cancel).toHaveBeenCalledOnce();
   });
 
-  it.each(["application/pdf", "image/png", "application/json"])("rejects unsupported %s without treating it as evidence", async (contentType) => {
+  it.each(["image/png", "application/json"])("rejects unsupported %s without treating it as evidence", async (contentType) => {
     network.fetch.mockResolvedValue(new Response(paragraph, { headers: { "content-type": contentType } }));
     await expect(readPublicWebSource({ url: sourceUrl })).rejects.toThrow(/not supported|not a supported/);
   });
 
-  it("rejects PDF bytes mislabeled as text and reads plain-text reports", async () => {
+  it("rejects a PDF declaration without PDF bytes", async () => {
+    network.fetch.mockResolvedValue(new Response(paragraph, { headers: { "content-type": "application/pdf" } }));
+    await expect(readPublicWebSource({ url: sourceUrl })).rejects.toThrow(/does not contain a readable PDF header/);
+  });
+
+  it("rejects malformed PDF bytes mislabeled as text and reads plain-text reports", async () => {
     network.fetch.mockResolvedValue(new Response("%PDF-1.7 binary", { headers: { "content-type": "text/plain" } }));
-    await expect(readPublicWebSource({ url: sourceUrl })).rejects.toThrow(/PDF/);
+    await expect(readPublicWebSource({ url: sourceUrl })).rejects.toThrow(/Document parser could not read this document/);
     network.fetch.mockResolvedValue(new Response(paragraph, { headers: { "content-type": "text/plain" } }));
     expect((await readPublicWebSource({ url: sourceUrl })).content).toBe(paragraph);
   });

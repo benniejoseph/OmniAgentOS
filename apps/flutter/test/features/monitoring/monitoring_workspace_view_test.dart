@@ -7,20 +7,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../operational_widget_helpers.dart';
+
 import 'monitoring_test_support.dart';
 
-Future<void> _reveal(WidgetTester tester, Finder target) async {
-  final scroll = find.byType(Scrollable).first;
-  tester.state<ScrollableState>(scroll).position.jumpTo(0);
-  await tester.pump();
-  await tester.scrollUntilVisible(
-    target,
-    240,
-    scrollable: scroll,
-    maxScrolls: 100,
-  );
-  await tester.pumpAndSettle();
-}
+Future<void> _reveal(WidgetTester tester, Finder target) =>
+    revealOperationalWidget(tester, target);
 
 void main() {
   for (final desktop in [false, true]) {
@@ -54,6 +46,10 @@ void main() {
         repo.completeAll();
         await tester.pumpAndSettle();
         expect(find.text('Healthy'), findsOneWidget);
+        if (!desktop) {
+          await tester.tap(find.text('Health overview'));
+          await tester.pumpAndSettle();
+        }
         expect(
           find.text(
             'Configuration indicators do not establish provider reachability.',
@@ -71,14 +67,12 @@ void main() {
         await tester.sendKeyEvent(LogicalKeyboardKey.escape);
         await tester.pumpAndSettle();
         expect(c.selectedId, isNull);
-        await _reveal(
+        await selectOperationalSection(
           tester,
-          find.byKey(const ValueKey('monitoring-tab-incidents')),
+          desktop: desktop,
+          key: 'monitoring-tab-incidents',
+          mobileLabel: 'Issues',
         );
-        await tester.tap(
-          find.byKey(const ValueKey('monitoring-tab-incidents')),
-        );
-        await tester.pumpAndSettle();
         await _reveal(
           tester,
           find.byKey(const ValueKey('monitoring-incident-incident-1')),
@@ -88,12 +82,12 @@ void main() {
         );
         await tester.pumpAndSettle();
         expect(find.text('Occurrences'), findsOneWidget);
-        await _reveal(
+        await selectOperationalSection(
           tester,
-          find.byKey(const ValueKey('monitoring-tab-alerts')),
+          desktop: desktop,
+          key: 'monitoring-tab-alerts',
+          mobileLabel: 'Deliveries',
         );
-        await tester.tap(find.byKey(const ValueKey('monitoring-tab-alerts')));
-        await tester.pumpAndSettle();
         await _reveal(
           tester,
           find.byKey(const ValueKey('monitoring-alert-delivery-1')),
@@ -108,12 +102,12 @@ void main() {
           ),
           findsOneWidget,
         );
-        await _reveal(
+        await selectOperationalSection(
           tester,
-          find.byKey(const ValueKey('monitoring-tab-timeline')),
+          desktop: desktop,
+          key: 'monitoring-tab-timeline',
+          mobileLabel: 'Timeline',
         );
-        await tester.tap(find.byKey(const ValueKey('monitoring-tab-timeline')));
-        await tester.pumpAndSettle();
         await _reveal(
           tester,
           find.byKey(const ValueKey('monitoring-event-event-1')),
@@ -132,6 +126,7 @@ void main() {
         ]) {
           expect(find.textContaining(text), findsNothing);
         }
+        if (!desktop) await closeOperationalDetail(tester);
         await _reveal(tester, find.text('Open monitoring in browser'));
         await tester.tap(find.text('Open monitoring in browser'));
         expect(browserOpens, 1);

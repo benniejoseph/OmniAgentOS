@@ -11,13 +11,16 @@ const context = {
 };
 
 describe("notification disposition application service", () => {
-  it.each([undefined, 30, 31, 32])("binds contract %s compatibility before the storage page limit", async (version) => {
+  it.each([undefined, 30, 31, 32, 48, 49])("binds contract %s compatibility before the storage page limit", async (version) => {
     const list = vi.fn(async () => [projection()]);
     await listNotificationDispositionsService(createAppServiceCaller({ context: {
       ...context, source: "mobile", native: { deviceId: "device", platform: "macos", clientContractVersion: version },
     } }), { limit: 1 }, { list });
     expect(list).toHaveBeenCalledWith({ tenantId: context.tenantId, ownerActorId: context.actorId,
-      limit: 1, before: undefined, ...((version ?? 0) < 32 ? { includeResponsibilityChanges: false } : {}) });
+      limit: 1, before: undefined,
+      ...((version ?? 0) < 32 ? { includeResponsibilityChanges: false } : {}),
+      ...((version ?? 0) < 49 ? { includeResearchWorkflows: false } : {}),
+    });
   });
   it("merges only the authenticated canonical/current-email pair before applying its result bound", async () => {
     const userId = "11111111-1111-4111-8111-111111111111"; const email = "owner@example.test";

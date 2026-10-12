@@ -182,21 +182,26 @@ class _MacosKnowledgeViewState extends State<MacosKnowledgeView> {
             _workspace == _KnowledgeWorkspace.relationships &&
                 controller.advancedGraphAvailable
             ? null
-            : _workspace == _KnowledgeWorkspace.memories &&
-                  _selectedMemoryId != null
-            ? KnowledgeMemoryInspector(
-                key: ValueKey(_selectedMemoryId),
-                controller: controller,
-                memoryId: _selectedMemoryId!,
-              )
-            : _KnowledgeInspector(
-                key: const Key('macos-knowledge-inspector'),
-                workspace: _workspace,
-                source: selectedSource,
-                node: selectedNode,
-                allNodes: state?.nodes ?? const [],
-                edges: state?.edges ?? const [],
-                onSelectNode: (id) => setState(() => _selectedNodeId = id),
+            : Material(
+                type: MaterialType.transparency,
+                child:
+                    _workspace == _KnowledgeWorkspace.memories &&
+                        _selectedMemoryId != null
+                    ? KnowledgeMemoryInspector(
+                        key: ValueKey(_selectedMemoryId),
+                        controller: controller,
+                        memoryId: _selectedMemoryId!,
+                      )
+                    : _KnowledgeInspector(
+                        key: const Key('macos-knowledge-inspector'),
+                        workspace: _workspace,
+                        source: selectedSource,
+                        node: selectedNode,
+                        allNodes: state?.nodes ?? const [],
+                        edges: state?.edges ?? const [],
+                        onSelectNode: (id) =>
+                            setState(() => _selectedNodeId = id),
+                      ),
               ),
         body: Column(
           children: [
@@ -256,7 +261,7 @@ class _MacosKnowledgeViewState extends State<MacosKnowledgeView> {
   }) {
     final controller = widget.controller;
     if (_workspace == _KnowledgeWorkspace.relationships &&
-        controller.advancedGraphAvailable)
+        controller.advancedGraphAvailable) {
       return KnowledgeRelationshipMap(
         controller: controller,
         onOpenMemory: (memory) => setState(() {
@@ -268,6 +273,7 @@ class _MacosKnowledgeViewState extends State<MacosKnowledgeView> {
           _selectedSourceId = source.id;
         }),
       );
+    }
     if (_workspace == _KnowledgeWorkspace.recall) {
       return KnowledgePersonalRecall(controller: controller);
     }
@@ -404,8 +410,9 @@ class _MacosKnowledgeViewState extends State<MacosKnowledgeView> {
     final query = _searchController.text.trim().toLowerCase();
     return source.where((item) {
       if (widget.controller.claimState == 'all' &&
-          memoryRetiredPlaceholder(item.title))
+          memoryRetiredPlaceholder(item.title)) {
         return false;
+      }
       final matchesCategory = _category == 'all' || item.category == _category;
       final matchesQuery =
           query.isEmpty ||

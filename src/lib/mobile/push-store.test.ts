@@ -388,6 +388,8 @@ describe("mobile push native contract compatibility", () => {
       "actor-one",
       false,
       23,
+      true,
+      49,
       null,
       null,
     ]);
@@ -396,9 +398,30 @@ describe("mobile push native contract compatibility", () => {
       "actor-one",
       true,
       23,
+      true,
+      49,
       null,
       null,
     ]);
+  });
+
+  it("requires the v49 research contract on the exact actor's active registration", async () => {
+    dbMocks.responses.push([]);
+
+    await expect(enqueueMobilePush({
+      tenantId: "tenant-one",
+      actorId: "actor-one",
+      target: { kind: "research", id: "research-one" },
+      occurrenceKey: "research-one",
+    })).resolves.toEqual([]);
+
+    expect(dbMocks.statements).toHaveLength(1);
+    expect(dbMocks.statements[0].params).toEqual([
+      "tenant-one", "actor-one", true, 23, false, 49, null, null,
+    ]);
+    expect(dbMocks.statements[0].text).toContain("session.revoked_at IS NULL");
+    expect(dbMocks.statements[0].text).toContain("registration.state = 'active'");
+    expect(dbMocks.statements[0].text).toContain("session.client_contract_version >=");
   });
 });
 

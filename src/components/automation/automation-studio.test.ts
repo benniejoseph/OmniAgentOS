@@ -186,12 +186,15 @@ describe("Automation Studio contracts", () => {
     expect(source).toContain("ArrowLeft");
   });
 
-  it("keeps Capabilities and its legacy destinations available in More", async () => {
+  it("keeps Capabilities in More and its detailed destinations reachable within it", async () => {
     const primaryGroup = appNavGroups.find((group) => group.label === "Workspace");
     expect(primaryGroup?.items.some((item) => item.href === "/app/automation")).toBe(false);
     expect(appNavGroups.find((group) => group.label === "More")?.items.map((item) => item.href)).toEqual(expect.arrayContaining([
-      "/app/automation", "/app/workflows", "/app/connectors",
+      "/app/automation",
     ]));
+    const capabilitySource = await readFile(path.join(process.cwd(), "src/components/automation/automation-studio.tsx"), "utf8");
+    expect(capabilitySource).toContain('"/app/workflows"');
+    expect(capabilitySource).toContain('"/app/connectors"');
     expect(appNav.some((item) => item.href === "/app/workflows")).toBe(true);
     expect(appNav.some((item) => item.href === "/app/connectors")).toBe(true);
     // Tools now live inside Capabilities; the legacy URL redirects there.

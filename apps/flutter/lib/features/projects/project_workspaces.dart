@@ -142,7 +142,9 @@ class _ProjectCollectionWorkspaceState
     listenable: widget.controller,
     builder: (context, _) {
       final c = widget.controller, values = _visible();
-      if (usesMobilePresentation()) return _mobileCollection(c, values);
+      if (usesMobilePresentation()) {
+        return Material(child: _mobileCollection(c, values));
+      }
       final index = _page
           .clamp(0, values.isEmpty ? 0 : (values.length - 1) ~/ 20)
           .toInt();
@@ -499,9 +501,8 @@ class _ProjectCollectionWorkspaceState
                                   value: focus.progress,
                                   minHeight: 4,
                                   borderRadius: BorderRadius.circular(4),
-                                  semanticsLabel: 'Task progress',
-                                  semanticsValue:
-                                      '${focus.completedTasks} of ${focus.tasks.length}',
+                                  semanticsLabel:
+                                      'Task progress, ${focus.completedTasks} of ${focus.tasks.length} tasks complete',
                                 ),
                                 const SizedBox(height: 8),
                                 Text(
@@ -1106,6 +1107,7 @@ class _ProjectDocumentWorkspaceState extends State<ProjectDocumentWorkspace> {
         ? Padding(
             padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
             child: MobileSegmentBar<int>(
+              key: const Key('mobile-project-detail-tabs'),
               items: const [
                 (value: 0, label: 'Plan', icon: null),
                 (value: 1, label: 'Tasks', icon: null),
@@ -1705,6 +1707,12 @@ class _ProjectDocumentWorkspaceState extends State<ProjectDocumentWorkspace> {
   Widget _execution(Project p) {
     final draft = c.execution, config = c.execution.config;
     return ListView(
+      key: PageStorageKey<Object>((
+        'project-execution-scroll',
+        c,
+        _scope,
+        p.id,
+      )),
       padding: const EdgeInsets.all(16),
       children: [
         _header(p, 'execution'),
@@ -1982,13 +1990,14 @@ class _ProjectDocumentWorkspaceState extends State<ProjectDocumentWorkspace> {
         padding: const EdgeInsets.fromLTRB(4, 0, 4, 24),
         itemCount: project.artifacts.length + 1,
         itemBuilder: (context, index) {
-          if (index == 0)
+          if (index == 0) {
             return MobileSectionHeader(
               title: 'Project files',
               description: project.artifacts.isEmpty
                   ? 'Files and results created for this project will appear here.'
                   : '${project.artifacts.length} saved results in this project',
             );
+          }
           final file = project.artifacts[index - 1];
           return MobileActionTile(
             icon: Icons.article_outlined,
@@ -2629,17 +2638,17 @@ Widget _projectDialog({
   List<Widget> actions = const [],
   bool scrollable = false,
 }) {
-  if (!usesMobilePresentation())
+  if (!usesMobilePresentation()) {
     return AlertDialog(
       title: title,
       content: content,
       actions: actions,
       scrollable: scrollable,
     );
+  }
   return Dialog.fullscreen(
     child: MobileFlowScaffold(
       title: title.data ?? 'Work',
-      child: content,
       footer: actions.isEmpty
           ? null
           : Column(
@@ -2657,6 +2666,7 @@ Widget _projectDialog({
                 actions.last,
               ],
             ),
+      child: content,
     ),
   );
 }

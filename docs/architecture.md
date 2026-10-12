@@ -2845,7 +2845,7 @@ existing `app.meetings.show` tool and goes through the governed executor; it
 cannot dispatch an arbitrary procedure, model, approval or external effect.
 
 
-The work-item lane added in migration 246 pins `app.work_items.show` and the
+The work-item lane added in migration 252 pins `app.work_items.show` and the
 built-in `responsibility.work_item.followthrough.v1` procedure. Its provenance
 is an explicit v3 built-in procedure snapshot, not a fabricated memory record.
 Activation pins the reviewed projection; later checks retain that configuration
@@ -2853,9 +2853,10 @@ while re-proving current ownership, membership and authoritative source hashes.
 Status, deadline, clock-derived overdue state, priority, owners, readable
 dependencies and output references are deterministic comparison fields. Expiry
 is the executable stop, so done/reopened transitions remain observable. Marked
-done is not independently verified. Web and native v48 support this lane; v47
-keeps meeting support and receives an explicit upgrade conflict for work-item
-records. A list containing such records is rejected rather than silently filtered.
+done is not independently verified. Web and native v56 support this lane;
+supported v55–v52 clients keep meeting support and receive an explicit upgrade
+conflict for work-item records. A list containing such records is rejected rather
+than silently filtered.
 
 A checked managed transaction in `src/lib/db/client.ts` allows the existing
 scoped stores to join the runtime transaction without acquiring another pool
@@ -2884,7 +2885,7 @@ current owner, membership and review pins are rechecked under their domain locks
 
 ## Measured text guidance comparisons
 
-Migration 247 adds the actor-private `omni_agent_adaptation_comparisons` ledger
+Migration 253 adds the actor-private `omni_agent_adaptation_comparisons` ledger
 and the current comparison pointer on adaptations. The compare action reserves
 an exact owner/key/request before model calls. A repeated key returns its pending
 or completed attempt. An expired reservation settles incomplete and cannot

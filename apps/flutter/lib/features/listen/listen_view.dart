@@ -469,7 +469,7 @@ class _ListenWorkspaceState extends ConsumerState<ListenWorkspace>
               .contains(_query.toLowerCase()),
         )
         .toList();
-    if (usesMobilePresentation())
+    if (usesMobilePresentation()) {
       return _mobileWorkspace(
         controller,
         local,
@@ -478,6 +478,7 @@ class _ListenWorkspaceState extends ConsumerState<ListenWorkspace>
         uploadState,
         uploadMessage,
       );
+    }
     return Scaffold(
       body: RefreshIndicator(
         onRefresh: controller.refresh,

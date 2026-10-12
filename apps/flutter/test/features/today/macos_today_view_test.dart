@@ -100,20 +100,20 @@ void main() {
     await tester.pumpWidget(_app(MacosTodayView(controller: controller)));
     await tester.pumpAndSettle();
 
-    expect(find.text('Focus list'), findsOneWidget);
+    expect(find.text('Next up'), findsOneWidget);
     expect(find.text('Daily brief'), findsOneWidget);
-    expect(find.text('Active projects'), findsOneWidget);
-    expect(find.text('Recent conversations'), findsOneWidget);
+    expect(find.text('Continue a project'), findsOneWidget);
+    expect(find.text('Resume a conversation'), findsOneWidget);
     expect(find.text('Review the release evidence'), findsOneWidget);
     expect(find.byKey(const Key('macos-today-inspector')), findsOneWidget);
 
-    await tester.tap(find.byType(Checkbox).first);
+    await tester.tap(find.text('Mark complete'));
     await tester.pumpAndSettle();
     expect(
       repository.items.firstWhere((item) => item.id == 'focus-1').isDone,
       isTrue,
     );
-  });
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
   testWidgets('adds focus through the shared Today controller', (tester) async {
     await _useDesktopViewport(tester);
@@ -134,7 +134,7 @@ void main() {
     expect(repository.createdTitle, 'Prepare the owner update');
     expect(repository.createdPriority, TodayPriority.medium);
     expect(find.text('Prepare the owner update'), findsOneWidget);
-  });
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 }
 
 Widget _app(Widget child) =>

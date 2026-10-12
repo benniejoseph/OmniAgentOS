@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const routeMocks = vi.hoisted(() => ({
+  after: vi.fn(),
   authorizeRequest: vi.fn(),
   processAllTenantAgentResumeQueues: vi.fn(),
   processAllTenantDurableSpecialistQueues: vi.fn(),
@@ -18,6 +19,7 @@ const routeMocks = vi.hoisted(() => ({
   scrubExpiredNativeOpenapiImportPreparations: vi.fn(),
   runTenantMemoryMaintenance: vi.fn(),
   listMaintenanceTenantIds: vi.fn(),
+  listDuePersonalSyncTenantIds: vi.fn(),
   recoverInterruptedLoopV2Runs: vi.fn(),
   repairStuckAgentRuns: vi.fn(),
   reconcileMissionProjections: vi.fn(),
@@ -41,6 +43,11 @@ const routeMocks = vi.hoisted(() => ({
   processAgentResumeQueue: vi.fn(),
   processDurableSpecialistQueue: vi.fn(),
   processBackgroundOperationQueue: vi.fn(),
+}));
+
+vi.mock("next/server", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("next/server")>()),
+  after: routeMocks.after,
 }));
 
 vi.mock("@/lib/responsibilities/scheduler", () => ({
@@ -195,6 +202,11 @@ vi.mock("@/lib/connectors/personal-sync", async (importOriginal) => ({
   syncDuePersonalProviders: routeMocks.syncDuePersonalProviders,
 }));
 
+vi.mock("@/lib/connectors/oauth-store", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/connectors/oauth-store")>()),
+  listDuePersonalSyncTenantIds: routeMocks.listDuePersonalSyncTenantIds,
+}));
+
 vi.mock("@/lib/moltbook/store", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/moltbook/store")>()),
   processDueMoltbookHeartbeats: routeMocks.processDueMoltbookHeartbeats,
@@ -283,6 +295,8 @@ const emptySpecialistQueue = {
 };
 
 beforeEach(() => {
+  routeMocks.after.mockReset();
+  routeMocks.listDuePersonalSyncTenantIds.mockReset().mockResolvedValue([]);
   routeMocks.scrubExpiredNativeMcpRegistrationPreparations.mockReset().mockResolvedValue({
     status: "complete", scrubbed: 0, moreAvailable: false, oldestExpiredAt: null,
   });
@@ -1081,11 +1095,12 @@ describe("dedicated worker heartbeat timing", () => {
           connectedSourcesSynced: 0,
         }],
       });
-      expect(routeMocks.syncDuePersonalProviders).toHaveBeenCalledWith({
+      expect(routeMocks.processDueMoltbookHeartbeats).toHaveBeenCalledWith({
         tenantId: "tenant-a",
-        limit: 1,
-        abortSignal: expect.any(AbortSignal),
+        limit: 2,
       });
+      expect(routeMocks.processDueMoltbookHeartbeats.mock.invocationCallOrder[0])
+        .toBeGreaterThan(routeMocks.processProactiveAgentAdaptationProposalsForTenant.mock.invocationCallOrder[0]);
       expect(errorLog).toHaveBeenCalledWith(JSON.stringify({
         level: "error",
         msg: "agent_adaptation_proposal_cycle_failed",
@@ -1430,10 +1445,10 @@ describe("dedicated worker heartbeat timing", () => {
       ],
     });
     expect(routeMocks.recoverInterruptedLoopV2Runs).toHaveBeenCalledTimes(2);
-    expect(routeMocks.syncDuePersonalProviders).toHaveBeenCalledWith({
+    expect(routeMocks.runTenantMemoryMaintenance).toHaveBeenCalledWith({
       tenantId: "tenant-personal",
-      limit: 1,
-      abortSignal: expect.any(AbortSignal),
+      executingPrincipalId: "dedicated-worker",
+      correlationId: "correlation-test:memory-maintenance",
     });
   });
 });
@@ -1464,6 +1479,8 @@ describe("operator workflow tick", () => {
       }));
 
       expect(response.status).toBe(200);
+      expect(routeMocks.after).toHaveBeenCalledOnce();
+      expect(routeMocks.processAgentResumeQueue).not.toHaveBeenCalled();
       expect(routeMocks.syncDuePersonalProviders).toHaveBeenCalledWith({
         tenantId: "tenant-personal",
         limit: 2,

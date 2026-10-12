@@ -102,7 +102,7 @@ vi.mock("@/lib/connectors/governed-tools", async (importOriginal) => ({
   getOpenApiGovernedTool: mocks.getOpenApiGovernedTool,
 }));
 
-import { GET, POST } from "@/app/api/approvals/[id]/route";
+import { GET, POST, maxDuration } from "@/app/api/approvals/[id]/route";
 
 const pendingRecord = {
   id: "execution-voice",
@@ -493,8 +493,9 @@ describe("This Mac approval continuation", () => {
 
   it("resumes with the observation under the resume job's lease after responding", async () => {
     const result = approveThisMacAction();
-
+    const requestStartedAt = Date.now();
     const response = await postApproval();
+    const responseAt = Date.now();
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
@@ -509,7 +510,13 @@ describe("This Mac approval continuation", () => {
       executionId: pendingRecord.id,
       toolExecution: result,
       tenantId: "tenant-a",
+      deadlineAt: expect.any(Number),
     });
+    const { deadlineAt } = mocks.resumeAgentRunInApprovalRequest.mock.calls[0][0];
+    // The callback carries the request's remaining budget, including its
+    // settlement margin, instead of receiving a fresh timeout after response.
+    expect(deadlineAt).toBeGreaterThanOrEqual(requestStartedAt + maxDuration * 1_000 - 10_000);
+    expect(deadlineAt).toBeLessThanOrEqual(responseAt + maxDuration * 1_000 - 10_000);
     expect(mocks.wakeOperationJobByDedupeKey).not.toHaveBeenCalled();
   });
 

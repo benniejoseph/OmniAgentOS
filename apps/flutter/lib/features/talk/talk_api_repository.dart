@@ -23,11 +23,10 @@ class ApiTalkRepository
   ApiTalkRepository(
     this.api, {
     TalkHistoryRepository? history,
-    CompanionPersonalityReader? readCompanionPersonality,
+    this._readCompanionPersonality,
     Duration recoveryPollInterval = const Duration(seconds: 3),
     int recoveryPollLimit = 600,
   }) : _history = history ?? ApiTalkHistoryRepository(api),
-       _readCompanionPersonality = readCompanionPersonality,
        _recoveryPollInterval = recoveryPollInterval.isNegative
            ? Duration.zero
            : recoveryPollInterval,
@@ -427,15 +426,17 @@ class ApiTalkRepository
     String workflowId,
     String signal,
   ) async {
-    if (!const {'pause', 'resume', 'cancel'}.contains(signal))
+    if (!const {'pause', 'resume', 'cancel'}.contains(signal)) {
       throw ArgumentError.value(signal, 'signal');
+    }
     final result = await api.postJson(
       NativePaths.researchControl(workflowId),
       data: {'signal': signal},
     );
     final snapshot = TalkWorkflowSnapshot.fromJson(result);
-    if (snapshot.id != workflowId || snapshot.research == null)
+    if (snapshot.id != workflowId || snapshot.research == null) {
       throw const FormatException('Research update did not match the request.');
+    }
     return snapshot;
   }
 

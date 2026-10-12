@@ -1,5 +1,6 @@
 import 'package:asael/app/navigation/adaptive_shell.dart';
 import 'package:asael/app/navigation/app_destination.dart';
+import 'package:asael/app/navigation/mobile_library_page.dart';
 import 'package:asael/app/router/app_router.dart';
 import 'package:asael/app/theme/app_theme.dart';
 import 'package:asael/core/platform/desktop_host_bridge.dart';
@@ -81,9 +82,7 @@ void main() {
   );
 
   for (final width in [320.0, 390.0]) {
-    testWidgets('adaptive narrow window and More fit $width at 200% text', (
-      tester,
-    ) async {
+    testWidgets('four phone places fit $width at 200% text', (tester) async {
       tester.view.physicalSize = Size(width, 1000);
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.resetPhysicalSize);
@@ -99,8 +98,9 @@ void main() {
                   routes: [
                     GoRoute(
                       path: destination.path,
-                      builder: (_, _) =>
-                          Center(child: Text('Body ${destination.label}')),
+                      builder: (_, _) => destination.path == '/library'
+                          ? const MobileLibraryPage()
+                          : Center(child: Text('Body ${destination.label}')),
                     ),
                   ],
                 ),
@@ -123,41 +123,36 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      for (final label in [
-        'Today',
-        'Assistant',
-        'My work',
-        'Library',
-        'More',
-      ]) {
-        final control = find.widgetWithText(TextButton, label);
+      for (final label in ['Today', 'Assistant', 'My work', 'Library']) {
+        final control = find
+            .ancestor(of: find.text(label), matching: find.byType(InkWell))
+            .first;
         expect(control, findsOneWidget);
         expect(tester.getSize(control).height, greaterThanOrEqualTo(48));
         expect(tester.getSize(control).width, greaterThanOrEqualTo(48));
       }
-      await tester.tap(find.widgetWithText(TextButton, 'More'));
+      await tester.tap(find.text('Library'));
       await tester.pumpAndSettle();
-      final capture = find.descendant(
-        of: find.byType(Drawer),
-        matching: find.text('Capture'),
-      );
       await tester.scrollUntilVisible(
-        capture,
+        find.byType(TextField),
         200,
-        scrollable: find.descendant(
-          of: find.byType(Drawer),
-          matching: find.byType(Scrollable),
-        ),
+        scrollable: find.byType(Scrollable).first,
       );
+      await tester.enterText(find.byType(TextField), 'Capture');
       await tester.pumpAndSettle();
-      await tester.tap(capture);
+      await tester.scrollUntilVisible(
+        find.text('Capture'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.tap(find.text('Capture'));
       await tester.pumpAndSettle();
       expect(find.text('Body Capture'), findsOneWidget);
-      await tester.tap(find.widgetWithText(TextButton, 'Today'));
+      await tester.tap(find.text('Today'));
       await tester.pumpAndSettle();
       expect(find.text('Body Today'), findsOneWidget);
       expect(tester.takeException(), isNull);
-    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+    }, variant: TargetPlatformVariant.only(TargetPlatform.android));
   }
 
   testWidgets(
@@ -266,13 +261,17 @@ void main() {
       final view = tester.widget<InboxView>(find.byType(InboxView));
       expect(view.focusApprovalId, id);
       expect(view.focusApprovalKind, 'workflow');
-      final focused = tester
-          .widgetList<ApprovalCard>(find.byType(ApprovalCard))
-          .where((card) => card.focused)
-          .toList();
-      expect(focused, hasLength(1));
-      expect(focused.single.item.kind, 'workflow');
-      expect(focused.single.item.id, id);
+      final workflow = find.text('Exact workflow proposal');
+      final tool = find.text('Exact tool proposal');
+      expect(
+        tester.getTopLeft(workflow).dy,
+        lessThan(tester.getTopLeft(tool).dy),
+      );
+      await tester.tap(workflow);
+      await tester.pumpAndSettle();
+      expect(find.text('Review action'), findsOneWidget);
+      expect(find.text('Risk level 1 · workflow'), findsOneWidget);
+      expect(find.text('Exact tool proposal'), findsNothing);
       expect(repository.mutations, isEmpty);
     },
     variant: TargetPlatformVariant.only(TargetPlatform.android),

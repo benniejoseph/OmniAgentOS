@@ -24,6 +24,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'connector_openapi_import_fixtures.dart';
 import 'connector_fixtures.dart';
+import 'connector_widget_helpers.dart';
 
 NativeWorkspaceAccess _access(_Api api, {bool Function()? current}) =>
     NativeWorkspaceAccess(
@@ -51,6 +52,7 @@ class _Api extends ApiClient {
   @override
   Future<ConnectorJson> getJsonAuthorized(
     String path, {
+    Map<String, dynamic>? headers,
     required NativeRequestAuthority authority,
     ConnectorJson? query,
     CancelToken? cancelToken,
@@ -146,14 +148,8 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      await tester.scrollUntilVisible(
-        find.text('OpenAPI import recovery'),
-        200,
-        scrollable: find.byType(Scrollable).first,
-      );
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('OpenAPI import recovery').hitTestable());
-      await tester.pumpAndSettle();
+      await openConnectorRecoveryControls(tester);
+      await tapVisibleConnectorAction(tester, 'OpenAPI import recovery');
       await tester.scrollUntilVisible(
         find.text('Review imported connection'),
         200,
@@ -221,18 +217,8 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      await tester.scrollUntilVisible(
-        find.text('OpenAPI import recovery'),
-        200,
-        scrollable: find.byType(Scrollable).first,
-      );
-      await tester.pumpAndSettle();
-      expect(
-        find.text('OpenAPI import recovery').hitTestable(),
-        findsOneWidget,
-      );
-      await tester.tap(find.text('OpenAPI import recovery').hitTestable());
-      await tester.pumpAndSettle();
+      await openConnectorRecoveryControls(tester);
+      await tapVisibleConnectorAction(tester, 'OpenAPI import recovery');
       await tester.scrollUntilVisible(
         find.text('Check exact preparation'),
         200,

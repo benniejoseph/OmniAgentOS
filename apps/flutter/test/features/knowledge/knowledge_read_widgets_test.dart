@@ -5,6 +5,8 @@ import 'package:asael/features/knowledge/knowledge_read_widgets.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'knowledge_widget_helpers.dart';
+
 class _Repository extends Fake implements KnowledgeRepository {
   final requests = <({String id, Completer<MemoryRecord> response})>[];
   @override
@@ -56,6 +58,16 @@ void main() {
             matching: find.byType(Scrollable),
           )
           .first;
+      await openMemoryDisclosure(
+        tester,
+        'Source details',
+        scrollable: inspectorScroll,
+      );
+      await openMemoryDisclosure(
+        tester,
+        'Source and technical details · 1 references',
+        scrollable: inspectorScroll,
+      );
       await tester.scrollUntilVisible(
         find.textContaining('user_legacy'),
         350,
@@ -77,7 +89,7 @@ void main() {
         find.textContaining('source:full-evidence-identity'),
         findsOneWidget,
       );
-      expect(find.text('Review forgetting impact'), findsNothing);
+      expect(find.text('Delete memory'), findsNothing);
     },
   );
   testWidgets(
@@ -93,7 +105,7 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(find.text('First owner secret'), findsOneWidget);
-      await tester.tap(find.text('Refresh exact memory'));
+      await tester.tap(find.text('Refresh memory'));
       await tester.pump();
       await tester.pumpWidget(
         _app(KnowledgeMemoryInspector(controller: b, memoryId: 'same-id')),
@@ -128,7 +140,9 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('Stale index content'), findsNothing);
       expect(
-        find.textContaining('No index content is substituted'),
+        find.textContaining(
+          'This memory is unavailable or no longer accessible.',
+        ),
         findsOneWidget,
       );
     },

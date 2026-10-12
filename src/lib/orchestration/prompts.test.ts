@@ -375,7 +375,8 @@ describe("agent prompt provenance", () => {
     });
 
     expect(instructions).toContain("Computer Use — This Mac:");
-    expect(instructions).toContain("where Asael is installed");
+    expect(instructions).toContain("on the explicitly selected Mac");
+    expect(instructions).toContain("Use only the exact capabilities provided for this turn");
     expect(instructions).toContain("local.macos.observe");
     expect(instructions).toContain(
       "Use local.macos.open_url only when the user asked to open or navigate to an http(s) page",
@@ -383,7 +384,7 @@ describe("agent prompt provenance", () => {
     expect(instructions).toContain("fresh post-action observation");
     expect(instructions).toContain("structured effect verdict");
     expect(instructions).toContain("rather than blindly replaying");
-    expect(instructions).toContain("never switch targets or fall back silently");
+    expect(instructions).toContain("never switch devices or fall back silently");
     expect(instructions).toContain(
       "Never infer permission to enter credentials or interact with secure fields",
     );

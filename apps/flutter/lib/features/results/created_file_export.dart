@@ -63,8 +63,9 @@ class AndroidCreatedFileExportAdapter implements CreatedFileExportAdapter {
       !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
 
   Future<void> prepareDestination({required String filename}) async {
-    if (!available)
+    if (!available) {
       throw UnsupportedError('Android file saving is unavailable.');
+    }
     await _channel.invokeMethod<void>('chooseDestination', {
       'scopeKey': scopeKey,
       'filename': filename,
@@ -82,8 +83,9 @@ class AndroidCreatedFileExportAdapter implements CreatedFileExportAdapter {
     if (filename is! String ||
         filename.isEmpty ||
         requestedFilename is! String ||
-        requestedFilename.isEmpty)
+        requestedFilename.isEmpty) {
       return null;
+    }
     return AndroidPreparedFileDestination(
       filename: filename,
       requestedFilename: requestedFilename,

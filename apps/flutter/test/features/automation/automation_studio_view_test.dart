@@ -54,18 +54,31 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(repository.scheduleLoads, ['trigger-one']);
-    expect(
-      find.text('Occurrences, receipts, and PolicyLease outcomes'),
-      findsOneWidget,
+    expect(find.text('Recent activity and saved evidence'), findsOneWidget);
+    final scheduleScroll = find
+        .descendant(
+          of: find.byType(BottomSheet),
+          matching: find.byType(Scrollable),
+        )
+        .first;
+    final permission = find.widgetWithText(ExpansionTile, 'Consumed');
+    await tester.scrollUntilVisible(
+      permission,
+      120,
+      scrollable: scheduleScroll,
     );
-    expect(find.text('PolicyLease outcomes'), findsOneWidget);
-    expect(
-      find.text(
-        'Content-free evidence only. A history record never grants authority.',
-      ),
-      findsOneWidget,
+    await tester.pumpAndSettle();
+    expect(find.text('Action permissions'), findsOneWidget);
+    await tester.tap(permission);
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('Not granted by this history record'),
+      120,
+      scrollable: scheduleScroll,
     );
     expect(find.text(_leaseId), findsOneWidget);
+    expect(find.text('Not granted by this history record'), findsOneWidget);
+    expect(find.text('Excluded'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -83,7 +96,7 @@ void main() {
           automationControllerProvider.overrideWith((ref) => controller),
         ],
         child: const MaterialApp(
-          home: AutomationStudioView(initialSection: 'tools'),
+          home: AutomationStudioView(initialSection: 'connections'),
         ),
       ),
     );

@@ -3,11 +3,13 @@ import type { AgentRunEventRecord, AgentRunRecord } from "@/lib/runs/types";
 
 const mocks = vi.hoisted(() => ({
   getAgentRun: vi.fn(),
+  getAgentRunWorkflowHandoff: vi.fn(),
   listAgentRunEventsAfter: vi.fn(),
 }));
 
 vi.mock("@/lib/runs/store", () => ({
   getAgentRun: mocks.getAgentRun,
+  getAgentRunWorkflowHandoff: mocks.getAgentRunWorkflowHandoff,
   listAgentRunEventsAfter: mocks.listAgentRunEventsAfter,
 }));
 
@@ -72,6 +74,7 @@ function tail(input: Partial<Parameters<typeof agentRunTailResponse>[0]> = {}) {
 
 beforeEach(() => {
   mocks.getAgentRun.mockReset();
+  mocks.getAgentRunWorkflowHandoff.mockReset().mockResolvedValue(undefined);
   mocks.listAgentRunEventsAfter.mockReset();
   mocks.listAgentRunEventsAfter.mockResolvedValue([]);
 });
@@ -135,10 +138,36 @@ describe("agentRunTailResponse", () => {
       { event: { type: "done", response: "Stored answer." } },
     ]);
     expect(mocks.getAgentRun).toHaveBeenCalledWith(RUN_ID, { tenantId: TENANT_ID });
+    expect(mocks.getAgentRunWorkflowHandoff).toHaveBeenCalledExactlyOnceWith(
+      RUN_ID, { tenantId: TENANT_ID, actorId: "actor-a" },
+    );
     expect(mocks.listAgentRunEventsAfter.mock.calls).toEqual([
       [RUN_ID, { tenantId: TENANT_ID, afterSeq: 4, limit: 200 }],
       [RUN_ID, { tenantId: TENANT_ID, afterSeq: 7, limit: 200 }],
     ]);
+  });
+
+  it("ends a completed run on its actor-scoped workflow handoff instead of a stale done record", async () => {
+    const handoff = {
+      type: "delegated",
+      threadId: "thread-tail",
+      workflowId: "workflow-tail",
+      acknowledgement: "The saved procedure is running.",
+      reason: "known_procedure",
+    };
+    mocks.getAgentRun.mockResolvedValue(run({ status: "completed", response: "Old response." }));
+    mocks.getAgentRunWorkflowHandoff.mockResolvedValue(handoff);
+    mocks.listAgentRunEventsAfter.mockResolvedValueOnce([
+      record(1, { type: "done", response: "Stale log response." }),
+    ]);
+
+    expect(blocks(await tail().text())).toEqual([
+      { event: { type: "run", runId: RUN_ID } },
+      { event: handoff },
+    ]);
+    expect(mocks.getAgentRunWorkflowHandoff).toHaveBeenCalledExactlyOnceWith(
+      RUN_ID, { tenantId: TENANT_ID, actorId: "actor-a" },
+    );
   });
 
   it("pages through a long log before it reports the outcome", async () => {

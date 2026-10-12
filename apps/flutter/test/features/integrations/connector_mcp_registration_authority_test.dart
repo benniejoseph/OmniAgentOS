@@ -24,6 +24,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'connector_mcp_registration_fixtures.dart';
 import 'connector_fixtures.dart';
+import 'connector_widget_helpers.dart';
 
 NativeWorkspaceAccess _access(_Api api, {bool Function()? current}) =>
     NativeWorkspaceAccess(
@@ -50,6 +51,7 @@ class _Api extends ApiClient {
   @override
   Future<ConnectorJson> getJsonAuthorized(
     String path, {
+    Map<String, dynamic>? headers,
     required NativeRequestAuthority authority,
     ConnectorJson? query,
     CancelToken? cancelToken,
@@ -136,13 +138,8 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      await tester.scrollUntilVisible(
-        find.text('MCP registration recovery'),
-        200,
-        scrollable: find.byType(Scrollable).first,
-      );
-      await tester.tap(find.text('MCP registration recovery'));
-      await tester.pumpAndSettle();
+      await openConnectorRecoveryControls(tester);
+      await tapVisibleConnectorAction(tester, 'MCP registration recovery');
       await tester.scrollUntilVisible(
         find.text('Check exact preparation'),
         200,
@@ -523,13 +520,7 @@ void main() {
           ),
         );
         await tester.pumpAndSettle();
-        await tester.scrollUntilVisible(
-          find.text('Review and confirm creation'),
-          200,
-          scrollable: find.byType(Scrollable).first,
-        );
-        await tester.tap(find.text('Review and confirm creation'));
-        await tester.pumpAndSettle();
+        await tapVisibleConnectorAction(tester, 'Review and confirm creation');
         expect(repo.preparationReads, 1);
         expect(repo.submits, 0);
         if (hide == 'ticker') {

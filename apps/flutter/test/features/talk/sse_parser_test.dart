@@ -1123,6 +1123,8 @@ void main() {
       expect(find.text('Legacy browser preview retired'), findsOneWidget);
       expect(repository.loadedAssetIds, isEmpty);
     },
+
+    variant: TargetPlatformVariant.only(TargetPlatform.macOS),
   );
 
   test(
@@ -1274,6 +1276,8 @@ void main() {
         isTrue,
       );
     },
+
+    variant: TargetPlatformVariant.only(TargetPlatform.macOS),
   );
 
   testWidgets('shows the live activity rail at a desktop width', (
@@ -1300,8 +1304,15 @@ void main() {
     expect(find.text('Scout'), findsOneWidget);
     expect(find.text('Approval required'), findsOneWidget);
     expect(find.text('Review approval'), findsOneWidget);
+    expect(find.textContaining('Protected run run-observab'), findsNothing);
+    final details = find.ancestor(
+      of: find.textContaining(RegExp(r'Details \(\d+\)')),
+      matching: find.byType(TextButton),
+    );
+    await tester.tap(details);
+    await tester.pump();
     expect(find.textContaining('Protected run run-observab'), findsOneWidget);
-  });
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
   testWidgets('shows the captured Agent on queued and retry work', (
     tester,
@@ -1329,7 +1340,7 @@ void main() {
     await tester.tap(find.byTooltip('Prompt queue'));
     await tester.pump();
     expect(find.text('Moltbook Steward · Direct · Asael only'), findsOneWidget);
-  });
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
   testWidgets('Conversation re-entry resumes an accepted exact run', (
     tester,
@@ -1416,6 +1427,8 @@ void main() {
       await tester.pump();
       expect(exits, 2);
     },
+
+    variant: TargetPlatformVariant.only(TargetPlatform.macOS),
   );
 
   testWidgets(

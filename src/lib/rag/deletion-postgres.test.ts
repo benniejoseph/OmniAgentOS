@@ -4,7 +4,8 @@ import { knowledgeDeletionTargetId } from "@/lib/rag/deletion-events";
 
 const dbMocks = vi.hoisted(() => {
   const statements: string[] = [];
-  const sql = vi.fn((strings: TemplateStringsArray) => {
+  const listenReceipt = vi.fn<() => Record<string, unknown>[]>();
+  const sql = vi.fn((strings: TemplateStringsArray, ..._params: unknown[]) => {
     const text = strings.join("?");
     statements.push(text);
     if (text.includes("FROM omni_capture_assets")) {
@@ -16,6 +17,9 @@ const dbMocks = vi.hoisted(() => {
         retrieval_trace_ids: ["trace-cognition-1"],
         canonical_owner_actor_id: "actor:canonical-owner",
       }]);
+    }
+    if (text.includes("omni_retire_listen_memories_v1")) {
+      return Promise.resolve(listenReceipt());
     }
     if (text.includes("SELECT document.source_item_id")) {
       return Promise.resolve([{
@@ -61,6 +65,7 @@ const dbMocks = vi.hoisted(() => {
     hasDatabaseUrl: vi.fn(() => true),
     sql,
     statements,
+    listenReceipt,
   };
 });
 
@@ -107,6 +112,11 @@ describe("Postgres knowledge deletion event boundary", () => {
     dbMocks.sql.mockClear();
     dbMocks.sql.transaction.mockClear();
     dbMocks.statements.splice(0);
+    dbMocks.listenReceipt.mockReset().mockReturnValue([{
+      retired_memory_ids: ["memory-listen-1"],
+      retrieval_trace_ids: ["trace-listen-1"],
+      canonical_owner_actor_id: "actor:canonical-owner",
+    }]);
     eventMocks.appendScopedDomainEvent.mockClear();
     lifecycleMocks.retireEvidence.mockClear();
     lifecycleMocks.retireMemory.mockClear();
@@ -132,12 +142,13 @@ describe("Postgres knowledge deletion event boundary", () => {
           purpose: "knowledge.delete_source",
         }),
       },
-    })).resolves.toEqual({ documents: 1, memories: 2 });
+    })).resolves.toEqual({ documents: 1, memories: 3 });
 
     expect(dbMocks.sql.transaction).toHaveBeenCalledTimes(1);
     expect(dbMocks.statements).toContainEqual(
       expect.stringContaining("omni_retire_knowledge_cognition_memories_v1"),
     );
+    expectListenRetirement(tenantId, actorId, ["document-1"]);
     expect(dbMocks.statements).toEqual(expect.arrayContaining([
       expect.stringContaining("DELETE FROM omni_knowledge_documents"),
       expect.stringContaining("UPDATE omni_memories"),
@@ -171,7 +182,7 @@ describe("Postgres knowledge deletion event boundary", () => {
       expect.objectContaining({
         tenantId,
         ownerActorId: "actor:canonical-owner",
-        memoryIds: ["memory-cognition-1"],
+        memoryIds: ["memory-cognition-1", "memory-listen-1"],
         executionScope: expect.objectContaining({
           initiatingActorId: actorId,
           executingPrincipalType: "user",
@@ -211,11 +222,12 @@ describe("Postgres knowledge deletion event boundary", () => {
       },
       executionScope,
       keepDocumentId: "document-current",
-    })).resolves.toEqual({ documents: 1, memories: 2 });
+    })).resolves.toEqual({ documents: 1, memories: 3 });
 
     expect(dbMocks.statements).toContainEqual(
       expect.stringContaining("omni_retire_knowledge_cognition_memories_v1"),
     );
+    expectListenRetirement(tenantId, actorId, ["document-old"]);
     expect(lifecycleMocks.retireMemory).toHaveBeenCalledWith(
       expect.objectContaining({
         tenantId,
@@ -232,7 +244,7 @@ describe("Postgres knowledge deletion event boundary", () => {
       expect.objectContaining({
         tenantId,
         ownerActorId: "actor:canonical-owner",
-        memoryIds: ["memory-cognition-1"],
+        memoryIds: ["memory-cognition-1", "memory-listen-1"],
         executionScope: expect.objectContaining({
           initiatingActorId: actorId,
           executingPrincipalType: "system",
@@ -267,14 +279,16 @@ describe("Postgres knowledge deletion event boundary", () => {
       "oauth:google:drive:file-1",
       { tenantId },
     )).rejects.toThrow("actor-bound execution scope");
-    await expect(deleteKnowledgeDocumentByIdempotencyKey(
+    const documentId = await deleteKnowledgeDocumentByIdempotencyKey(
       "oauth:google:drive:file-1",
       { tenantId, executionScope },
-    )).resolves.toEqual(expect.any(String));
+    );
+    expect(documentId).toEqual(expect.any(String));
 
     expect(dbMocks.statements).toContainEqual(
       expect.stringContaining("omni_retire_knowledge_cognition_memories_v1"),
     );
+    expectListenRetirement(tenantId, actorId, [documentId]);
     expect(lifecycleMocks.retireMemory).toHaveBeenCalledWith(
       expect.objectContaining({
         tenantId,
@@ -291,7 +305,7 @@ describe("Postgres knowledge deletion event boundary", () => {
       expect.objectContaining({
         tenantId,
         ownerActorId: "actor:canonical-owner",
-        memoryIds: ["memory-cognition-1"],
+        memoryIds: ["memory-cognition-1", "memory-listen-1"],
         executionScope: expect.objectContaining({
           executingPrincipalId: "connector.google.personal_sync",
           purpose: "memory.forget.v1",
@@ -300,4 +314,44 @@ describe("Postgres knowledge deletion event boundary", () => {
       }),
     );
   });
+
+  it.each([
+    { receipt: [], message: "Listen source lifecycle receipt is unavailable." },
+    {
+      receipt: [{ retired_memory_ids: [], retrieval_trace_ids: [], canonical_owner_actor_id: "actor:other-owner" }],
+      message: "Source memory retirement receipts disagree on their owner.",
+    },
+  ])("rejects a Listen lifecycle receipt before removing source lineage: $message", async ({ receipt, message }) => {
+    dbMocks.listenReceipt.mockReturnValueOnce(receipt);
+    const executionScope = createExecutionScope({
+      tenantId: "tenant-sync",
+      initiatingActorId: "sync-owner",
+      executingPrincipalType: "system",
+      executingPrincipalId: "connector.google.personal_sync",
+      correlationId: "personal-sync-delete",
+      purpose: "connector.google.personal_sync.ingest",
+    });
+
+    await expect(deleteKnowledgeDocumentByIdempotencyKey(
+      "oauth:google:drive:file-1",
+      { tenantId: "tenant-sync", executionScope },
+    )).rejects.toThrow(message);
+
+    expect(dbMocks.sql.transaction).toHaveBeenCalledOnce();
+    expect(dbMocks.statements.some((statement) => statement.includes("DELETE FROM omni_knowledge_documents"))).toBe(false);
+    expect(lifecycleMocks.retireMemory).not.toHaveBeenCalled();
+    expect(lifecycleMocks.retireEvidence).not.toHaveBeenCalled();
+    expect(eventMocks.appendScopedDomainEvent).not.toHaveBeenCalled();
+  });
 });
+
+function expectListenRetirement(tenantId: string, actorId: string, documentIds: string[]) {
+  const calls = dbMocks.sql.mock.calls.filter(([strings]) =>
+    strings.join("?").includes("omni_retire_listen_memories_v1"),
+  );
+  expect(calls).toHaveLength(1);
+  expect(calls[0].slice(1)).toEqual([tenantId, actorId, documentIds, expect.any(String)]);
+  const retirementIndex = dbMocks.statements.findIndex((statement) => statement.includes("omni_retire_listen_memories_v1"));
+  const deletionIndex = dbMocks.statements.findIndex((statement) => statement.includes("DELETE FROM omni_knowledge_documents"));
+  expect(deletionIndex).toBeGreaterThan(retirementIndex);
+}

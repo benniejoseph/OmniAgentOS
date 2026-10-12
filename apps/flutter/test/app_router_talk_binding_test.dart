@@ -211,7 +211,7 @@ void main() {
         ),
       );
       await tester.pump();
-      expect(find.text('Securing your private workspace…'), findsOneWidget);
+      expect(find.text('Opening your workspace'), findsOneWidget);
 
       bootstrap.complete(_ownerA);
       await tester.pump();

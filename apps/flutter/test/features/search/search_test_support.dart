@@ -126,6 +126,7 @@ class SearchTestApi extends ApiClient {
   @override
   Future<SearchJson> getJsonAuthorized(
     String path, {
+    Map<String, dynamic>? headers,
     required NativeRequestAuthority authority,
     Map<String, dynamic>? query,
     CancelToken? cancelToken,

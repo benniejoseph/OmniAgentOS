@@ -38,26 +38,24 @@ typedef VoiceWorkReader = Future<Map<String, dynamic>> Function(
 /// only final captions and governed tool requests pass through Asael's API.
 class VoiceConversationController extends ChangeNotifier {
   VoiceConversationController({
-    required ApiClient api,
+    required this._api,
     Dio? providerDio,
-    CompanionPersonalityReader? readCompanionPersonality,
-    AndroidDeviceBridge? androidHost,
-  }) : _api = api,
-       _readCompanionPersonality = readCompanionPersonality,
-       _androidHost = androidHost,
-       _provider =
+    this._readCompanionPersonality,
+    this._androidHost,
+  }) : _provider =
            providerDio ??
            Dio(BaseOptions(connectTimeout: const Duration(seconds: 12))) {
     _androidEvents = _androidHost?.events.listen(
       _androidEvent,
       onError: (_) {
-        if (active)
+        if (active) {
           unawaited(
             _fail(
               'The phone voice service stopped. Start voice again.',
               'phone_service_unavailable',
             ),
           );
+        }
       },
     );
   }
@@ -215,11 +213,12 @@ class VoiceConversationController extends ChangeNotifier {
       if (!_current(generation)) return;
       if (_androidHost case final host?) {
         final status = await host.requestNotifications();
-        if (!status.notificationsGranted)
+        if (!status.notificationsGranted) {
           throw const AmbientVoiceException(
             'phone_notifications_required',
             'Allow notifications so Mute and End stay available while you use other apps.',
           );
+        }
         if (!_current(generation)) return;
       }
       final stream = await navigator.mediaDevices.getUserMedia({
@@ -292,11 +291,12 @@ class VoiceConversationController extends ChangeNotifier {
       onConversationBound?.call(conversationId!);
       final expiresAt = DateTime.parse(credential['expiresAt'] as String);
       final remaining = expiresAt.difference(DateTime.now());
-      if (remaining <= Duration.zero)
+      if (remaining <= Duration.zero) {
         throw const AmbientVoiceException(
           'session_expired',
           'This call expired. Start a new call.',
         );
+      }
       _expiry = Timer(
         remaining,
         () => unawaited(
@@ -373,8 +373,9 @@ class VoiceConversationController extends ChangeNotifier {
     // flutter_webrtc's native receiver plays remote audio directly. It does
     // not need the legacy PCM download or a separate AudioPlayer.
     peer.onTrack = (event) {
-      if (_current(generation) && event.track.kind == 'audio')
+      if (_current(generation) && event.track.kind == 'audio') {
         event.track.enabled = true;
+      }
     };
     peer.onConnectionState = (state) {
       if (!_current(generation) || _peer != peer) return;
@@ -391,13 +392,14 @@ class VoiceConversationController extends ChangeNotifier {
           RTCPeerConnectionState.RTCPeerConnectionStateDisconnected) {
         _disconnectTimer?.cancel();
         _disconnectTimer = Timer(const Duration(seconds: 8), () {
-          if (_current(generation))
+          if (_current(generation)) {
             unawaited(
               _fail(
                 'The voice connection was lost. Check your connection and start again.',
                 'connection_lost',
               ),
             );
+          }
         });
       }
     };
@@ -407,8 +409,9 @@ class VoiceConversationController extends ChangeNotifier {
     );
     _channel = channel;
     channel.onMessage = (event) {
-      if (_current(generation) && !event.isBinary)
+      if (_current(generation) && !event.isBinary) {
         _providerEvent(event.text, generation);
+      }
     };
     channel.onDataChannelState = (state) {
       if (_current(generation) &&
@@ -436,11 +439,12 @@ class VoiceConversationController extends ChangeNotifier {
     }
     if (!_current(generation)) return;
     final sdp = (await peer.getLocalDescription())?.sdp ?? offer.sdp ?? '';
-    if (!sdp.startsWith('v=0') || sdp.length > 1048576)
+    if (!sdp.startsWith('v=0') || sdp.length > 1048576) {
       throw const AmbientVoiceException(
         'invalid_voice_offer',
         'The app could not open its audio connection. Try again.',
       );
+    }
     final cancel = CancelToken();
     _exchange = cancel;
     final response = await _provider.post<String>(
@@ -461,11 +465,12 @@ class VoiceConversationController extends ChangeNotifier {
     if (_exchange == cancel) _exchange = null;
     if (!_current(generation)) return;
     final answer = response.data ?? '';
-    if (!answer.startsWith('v=0') || answer.length > 1048576)
+    if (!answer.startsWith('v=0') || answer.length > 1048576) {
       throw const AmbientVoiceException(
         'invalid_voice_answer',
         'The voice provider could not open its audio connection. Try again.',
       );
+    }
     await peer.setRemoteDescription(RTCSessionDescription(answer, 'answer'));
     final deadline = DateTime.now().add(const Duration(seconds: 12));
     while (_current(generation) &&
@@ -494,13 +499,14 @@ class VoiceConversationController extends ChangeNotifier {
     if (notifyHost && _androidHost != null) {
       unawaited(
         _androidHost.setVoiceMuted(value).catchError((Object _) {
-          if (active)
+          if (active) {
             unawaited(
               _fail(
                 'The microphone control could not be confirmed. Start voice again.',
                 'phone_mute_unavailable',
               ),
             );
+          }
         }),
       );
     }
@@ -597,8 +603,9 @@ class VoiceConversationController extends ChangeNotifier {
           'response_cancel_not_active',
           'input_audio_buffer_commit_empty',
           'conversation_already_has_active_response',
-        }.contains(code))
+        }.contains(code)) {
           return;
+        }
         final safe = RegExp(r'^[a-z0-9_.-]{1,80}$').hasMatch(code)
             ? code
             : null;
@@ -622,13 +629,14 @@ class VoiceConversationController extends ChangeNotifier {
     if (responseId == null || _stoppedResponses.contains(responseId)) return;
     _interruptedResponses.add(responseId);
     final value = _assistantCaptions.remove(responseId);
-    if (value != null)
+    if (value != null) {
       _saveTurn(
         value['itemId'],
         'assistant',
         '[Reply interrupted]',
         interrupted: true,
       );
+    }
   }
 
   Future<void> _handleFunction(
@@ -700,8 +708,9 @@ class VoiceConversationController extends ChangeNotifier {
           unawaited(
             pending
                 .then((reply) async {
-                  if (!_current(generation) || workVersion != _workVersion)
+                  if (!_current(generation) || workVersion != _workVersion) {
                     return;
+                  }
                   _applyWorkResult(reply);
                   await _publishWorkUpdate(reply, generation);
                   unawaited(_followWork(reply, generation, workVersion));
@@ -815,8 +824,9 @@ class VoiceConversationController extends ChangeNotifier {
   ) async {
     if (_workSettled(initial) ||
         _readWork == null ||
-        (initial['runId'] == null && initial['workflowId'] == null))
+        (initial['runId'] == null && initial['workflowId'] == null)) {
       return;
+    }
     var result = initial;
     var announced = '${result['status']}:${result['approvalId']}';
     while (_current(generation) && workVersion == _workVersion) {
@@ -849,21 +859,23 @@ class VoiceConversationController extends ChangeNotifier {
     _responseActive = true;
     unawaited(
       _send({'type': 'response.create'}).catchError((Object _) {
-        if (active)
+        if (active) {
           unawaited(
             _fail(
               'The voice reply could not resume. Your task remains in History.',
               'response_resume_failed',
             ),
           );
+        }
       }),
     );
   }
 
   Future<void> _send(Map<String, dynamic> event) async {
     final channel = _channel;
-    if (channel?.state != RTCDataChannelState.RTCDataChannelOpen)
+    if (channel?.state != RTCDataChannelState.RTCDataChannelOpen) {
       throw StateError('The voice channel is closed.');
+    }
     await channel!.send(RTCDataChannelMessage(jsonEncode(event)));
   }
 
@@ -879,8 +891,9 @@ class VoiceConversationController extends ChangeNotifier {
     if (!_itemId.hasMatch(id) ||
         session == null ||
         conversation == null ||
-        _savedItems.contains(id))
+        _savedItems.contains(id)) {
       return;
+    }
     if (_pendingSaves >= 12) {
       historyNotice =
           'Some captions could not be saved. Your voice call can continue.';
@@ -1071,10 +1084,11 @@ class VoiceConversationController extends ChangeNotifier {
 
   static String _friendlyError(Object error) {
     if (error is AmbientVoiceException) return error.message;
-    if (error is ApiException)
+    if (error is ApiException) {
       return error.message.length <= 320
           ? error.message
           : 'Asael could not start this voice call. Check your connection and try again.';
+    }
     if (error is DioException) {
       final status = error.response?.statusCode;
       String? code;
@@ -1086,8 +1100,9 @@ class VoiceConversationController extends ChangeNotifier {
           if (details is Map) {
             final candidate = details['code']?.toString();
             if (candidate != null &&
-                RegExp(r'^[a-z0-9_.-]{1,80}$').hasMatch(candidate))
+                RegExp(r'^[a-z0-9_.-]{1,80}$').hasMatch(candidate)) {
               code = candidate;
+            }
           }
         } catch (_) {
           /* Do not expose raw provider bodies. */
@@ -1095,17 +1110,19 @@ class VoiceConversationController extends ChangeNotifier {
       }
       final suffix = [
         if (status != null && status >= 400 && status < 600) 'HTTP $status',
-        if (code != null) code,
+        ?code,
       ].join(' · ');
       return '${_providerErrorMessage(code)}${suffix.isEmpty ? '' : ' ($suffix)'}';
     }
     final description = error.toString().toLowerCase();
     if (description.contains('permission') ||
         description.contains('notallowed') ||
-        description.contains('denied'))
+        description.contains('denied')) {
       return 'Microphone access is off. Allow Asael’s microphone permission in your device settings, then try again.';
-    if (error is TimeoutException)
+    }
+    if (error is TimeoutException) {
       return 'Voice took too long to connect. Check your connection and try again.';
+    }
     return 'Asael could not start the voice call. Check microphone access and your connection, then try again.';
   }
 

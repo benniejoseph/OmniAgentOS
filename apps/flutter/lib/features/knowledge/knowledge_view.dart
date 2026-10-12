@@ -82,7 +82,9 @@ class _KnowledgeViewState extends State<KnowledgeView>
           body: Center(child: Text('Sign in to read memory and knowledge.')),
         );
       }
-      if (usesMobilePresentation()) return _mobileWorkspace(state);
+      if (usesMobilePresentation()) {
+        return Material(type: MaterialType.transparency, child: _mobileWorkspace(state));
+      }
       return Scaffold(
         appBar: AppBar(
           title: const Text(
@@ -821,7 +823,7 @@ class _KnowledgeViewState extends State<KnowledgeView>
         }),
       );
     }
-    if (widget.controller.advancedGraphAvailable)
+    if (widget.controller.advancedGraphAvailable) {
       return KnowledgeRelationshipMap(
         controller: widget.controller,
         active: _tabs.index == 3,
@@ -841,6 +843,7 @@ class _KnowledgeViewState extends State<KnowledgeView>
           }
         },
       );
+    }
     GraphNode? selected;
     for (final node in state.nodes) {
       if (node.id == _selectedNodeId) selected = node;

@@ -53,8 +53,9 @@ class _AsaelAppState extends ConsumerState<AsaelApp>
     if (!mounted ||
         !_suspended ||
         !_phoneLeaseDeferredLock ||
-        _hasPhoneSessionLease)
+        _hasPhoneSessionLease) {
       return;
+    }
     _phoneLeaseDeferredLock = false;
     final transition = _protectSuspendedWorkspace();
     _biometricLockTransition = transition;
