@@ -109,9 +109,9 @@ def pending_save(page, fixture, checks, label):
     checks.check(label + ": General opens without fetching advanced configuration", "/api/settings" not in fixture.reads)
     style(page, "Quiet").check()
     categories = page.get_by_role("navigation", name="Settings categories", exact=True)
-    categories.get_by_role("button", name=re.compile(r"^Workspace(?:\s|$)")).click()
+    categories.get_by_role("link", name=re.compile(r"^Workspace(?:\s|$)")).click()
     expect(root).to_be_hidden()
-    categories.get_by_role("button", name=re.compile(r"^General(?:\s|$)")).click()
+    categories.get_by_role("link", name=re.compile(r"^General(?:\s|$)")).click()
     expect(style(page, "Quiet")).to_be_checked()
     checks.check(label + ": General draft survives advanced section navigation", not fixture.writes)
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Read-only Activity navigation, window paging and resource-state checks.
 
-Uses the real isolated login and Assistant → Activity navigation. All browser
+Uses the real isolated login and Assistant → History → Timeline navigation. All browser
 application mutations and external requests are blocked by the fixture layer.
 """
 
@@ -35,14 +35,30 @@ def until(page, predicate, label, timeout=20):
 
 
 def enter_activity(page, coarse):
-    navigation(page, coarse).get_by_role("link", name="Activity", exact=True).click()
-    expect(page).to_have_url(re.compile(r"/app/activity$"), timeout=30_000)
+    if coarse:
+        page.get_by_role("button", name="Open workspace menu", exact=True).click()
+        menu = page.get_by_role("navigation", name="Complete workspace navigation", exact=True)
+        menu.get_by_role("link", name="History", exact=True).click()
+        expect(page).to_have_url(re.compile(r"/app/history$"), timeout=30_000)
+        page.get_by_role("button", name="Open workspace menu", exact=True).click()
+        expect(menu.get_by_role("link", name="History", exact=True)).to_have_attribute("aria-current", "page")
+        page.get_by_role("dialog", name="Asael", exact=True).get_by_role("button", name="Close workspace menu", exact=True).click()
+    else:
+        expand = page.get_by_role("button", name="Expand workspace navigation", exact=True)
+        if expand.is_visible():
+            expand.click()
+        history = navigation(page, False).get_by_role("link", name="History", exact=True)
+        history.click()
+        expect(history).to_have_attribute("aria-current", "page")
+    timeline = page.get_by_role("navigation", name="History views", exact=True).get_by_role("link", name="Timeline", exact=True)
+    timeline.click()
+    expect(page).to_have_url(re.compile(r"/app/history\?view=timeline$"), timeout=30_000)
+    expect(timeline).to_have_attribute("aria-current", "page")
     expect(workspace(page)).to_be_visible()
-    expect(navigation(page, coarse).get_by_role("link", name="Activity", exact=True)).to_have_attribute("aria-current", "page")
 
 
 def filter_button(page, group):
-    return workspace(page).get_by_role("group", name="Activity views", exact=True).get_by_role(
+    return workspace(page).get_by_role("group", name="Filter timeline", exact=True).get_by_role(
         "button", name=re.compile(r"^" + re.escape(LABELS[group]) + r"(?:\s|$)"))
 
 
@@ -51,7 +67,11 @@ def ready(page, group="all", count=25):
     expect(root.locator("#activity-results-title")).to_have_text(LABELS[group])
     expect(root.locator('section[aria-labelledby="activity-results-title"]')).to_have_attribute("aria-busy", "false")
     expect(root.get_by_role("article")).to_have_count(count)
-    expect(filter_button(page, group)).to_have_attribute("aria-pressed", "true")
+    filters = root.get_by_role("group", name="Filter timeline", exact=True)
+    if filters.count():
+        expect(filter_button(page, group)).to_have_attribute("aria-pressed", "true")
+    else:
+        assert group == "all" and count == 0, "Only the confirmed empty All view omits filters in this fixture"
 
 
 def select_group(page, group, count):
@@ -68,11 +88,24 @@ def range_label(page):
 
 
 def identities(page):
-    return workspace(page).get_by_role("article").evaluate_all("els=>els.map(el=>el.getAttribute('aria-label'))")
+    return workspace(page).get_by_role("article").evaluate_all("els=>els.map(el=>JSON.stringify([el.querySelector('time').dateTime,[...el.querySelectorAll('a')].map(a=>a.getAttribute('href'))]))")
+
+
+def row(page, item):
+    return workspace(page).get_by_role("article").filter(has=page.locator('time[datetime="' + item["timestamp"]["at"] + '"]'))
+
+
+def run_row(page, fixture, identity):
+    return row(page, next(item for item in rows(fixture.version) if item["sourceRef"]["id"] == identity))
+
+
+def unknown_counts(page):
+    filters = workspace(page).get_by_role("group", name="Filter timeline", exact=True)
+    return filters.get_by_role("button").evaluate_all("els=>els.length===5&&els.every(el=>el.lastElementChild.textContent==='—')")
 
 
 def coverage(page):
-    summary = workspace(page).locator("summary").filter(has_text=re.compile(r"^Source coverage ·"))
+    summary = workspace(page).locator("summary").filter(has_text=re.compile(r"^(About this activity list|Some activity is unavailable|Activity could not be checked)(?: · last checked)?$"))
     if not summary.evaluate("el=>el.parentElement.open"):
         summary.click()
     return summary.locator("xpath=..")
@@ -81,7 +114,7 @@ def coverage(page):
 def source_links(page, fixture, checks, label):
     root = workspace(page)
     for item in rows(fixture.version)[:25]:
-        article = root.get_by_role("article", name=f"{item['title']}: {item['sourceRef']['id']}", exact=True)
+        article = row(page, item)
         links = article.get_by_role("link").all()
         expected = urlsplit(item["href"])
         actual = urlsplit(links[0].get_attribute("href"))
@@ -93,25 +126,32 @@ def source_links(page, fixture, checks, label):
                          origin.path == "/app/command" and parse_qs(origin.query) == {"thread": ["own-origin-thread"], "run": ["own-origin-run"]})
         if item["source"] == "approvals":
             checks.check(label + ": approval retains Activity return destination", parse_qs(actual.query)["returnTo"] == ["/app/activity"])
-    long_row = root.get_by_role("article", name="Agent run: " + LONG_ID, exact=True)
+    long_row = run_row(page, fixture, LONG_ID)
+    checks.check(label + ": task content is not fetched before selection", not fixture.detail_reads)
+    long_row.get_by_role("button", name="View task", exact=True).click()
+    expect(long_row.get_by_role("region", name="Task details", exact=True).get_by_text("Synthetic exact task preview", exact=True)).to_be_visible()
+    long_row.locator("summary").get_by_text("Technical details", exact=True).click()
     expect(long_row.locator("code").filter(has_text=re.compile("^" + re.escape(LONG_ID) + "$" )).first).to_have_text(LONG_ID)
     checks.check(label + ": full long opaque identity remains selectable", long_row.locator("code").first.evaluate("el=>getComputedStyle(el).userSelect!=='none'"))
-    for identity, expected in (("legacy-completed", "Completed · Unverified outcome"),
-                               ("verified-completed", "Completed · Verified outcome"),
-                               ("partial-completed", "Completed · Partial outcome")):
-        expect(root.get_by_role("article", name="Agent run: " + identity, exact=True).get_by_text(expected, exact=True)).to_be_visible()
+    checks.check(label + ": only the explicitly selected task details were read", 1 <= len(fixture.detail_reads) <= 2 and set(fixture.detail_reads) == {LONG_ID})
+    long_row.get_by_role("button", name="Hide details", exact=True).click()
+    expect(long_row.get_by_role("region", name="Task details", exact=True)).to_have_count(0)
+    for identity, expected in (("legacy-completed", "Needs verification"),
+                               ("verified-completed", "Verified complete"),
+                               ("partial-completed", "Partly complete")):
+        expect(run_row(page, fixture, identity).get_by_text(expected, exact=True)).to_be_visible()
     checks.check(label + ": legacy completion stays distinct from verified and partial outcomes", True)
 
 
 def paging(page, fixture, checks, label):
     root = workspace(page)
-    expect(range_label(page)).to_have_text("1–25 of 30 in this window")
+    expect(range_label(page)).to_have_text("1–25 of 30 recent updates")
     first_ids = identities(page)
     first_cursor = fixture.response()["page"]["nextCursor"]
     pager(page, "Next").click()
     ready(page, count=5)
     expect(root.locator("#activity-results-title")).to_be_focused()
-    expect(range_label(page)).to_have_text("26–30 of 30 in this window")
+    expect(range_label(page)).to_have_text("26–30 of 30 recent updates")
     expect(pager(page, "Next")).to_be_disabled()
     checks.check(label + ": Next returns opaque cursor and focuses newly loaded rows",
                  fixture.requests[-1]["cursor"] == first_cursor and not set(first_ids).intersection(identities(page)))
@@ -125,7 +165,7 @@ def paging(page, fixture, checks, label):
     pager(page, "Next").click()
     ready(page)
     expect(root.get_by_text("Activity changed while you were paging. A new window is shown from its first page.", exact=True)).to_be_visible()
-    expect(range_label(page)).to_have_text("1–25 of 30 in this window")
+    expect(range_label(page)).to_have_text("1–25 of 30 recent updates")
     expect(pager(page, "Previous")).to_be_disabled()
     expect(root.locator("#activity-results-title")).to_be_focused()
     requests = fixture.requests[before:]
@@ -136,9 +176,9 @@ def paging(page, fixture, checks, label):
 def failed_read(page, fixture, checks, name, *, body, status=200, expected="Activity returned an incomplete response. Refresh to try again."):
     before = identities(page)
     fixture.plan(body=body, status=status)
-    workspace(page).get_by_role("button", name="Refresh activity", exact=True).click()
+    workspace(page).get_by_role("button", name="Refresh", exact=True).click()
     expect(workspace(page).get_by_text(expected, exact=True)).to_be_visible()
-    expect(range_label(page)).to_have_text("Last loaded: 1–25 of 30 in this window")
+    expect(range_label(page)).to_have_text("Last loaded · 1–25 of 30 recent updates")
     checks.check(name + ": failed read retains exact rows and last-loaded counts", identities(page) == before)
     workspace(page).get_by_role("button", name="Retry activity", exact=True).click()
     ready(page)
@@ -156,7 +196,7 @@ def read_states(page, fixture, checks):
     legacy = next(item for item in malformed["items"] if item["sourceRef"]["id"] == "legacy-completed")
     legacy["canonicalStatus"]["status"] = "succeeded"
     failed_read(page, fixture, checks, "Unsupported verified claim", body=malformed)
-    expect(workspace(page).get_by_role("article", name="Agent run: legacy-completed", exact=True).get_by_text("Completed · Unverified outcome", exact=True)).to_be_visible()
+    expect(run_row(page, fixture, "legacy-completed").get_by_text("Needs verification", exact=True)).to_be_visible()
     failed_read(page, fixture, checks, "All sources unavailable", body=fixture.response(mode="unavailable"),
                 expected="All Activity sources are unavailable. The last loaded rows and counts are retained.")
 
@@ -170,15 +210,20 @@ def read_states(page, fixture, checks):
     ready(page)
 
     fixture.mode = "partial"
-    workspace(page).get_by_role("button", name="Refresh activity", exact=True).click()
+    workspace(page).get_by_role("button", name="Refresh", exact=True).click()
     count = len(fixture.response()["items"])
     ready(page, count=count)
     source = coverage(page)
     expect(source.get_by_text("Access is restricted.", exact=True)).to_be_visible()
     expect(source.get_by_text("Source could not be checked.", exact=True)).to_be_visible()
     checks.check("Partial coverage keeps missing source counts unavailable", source.get_by_text("Count unavailable.", exact=True).count() == 2)
-    select_group(page, "updates", 0)
-    expect(workspace(page).get_by_text("No matching records were returned by the readable sources. Incomplete sources may contain other activity.", exact=True)).to_be_visible()
+    partial_empty = fixture.response("working", mode="empty")
+    partial_empty["state"] = "partial"
+    partial_empty["coverage"]["approvals"] = {"state": "restricted", "limit": 100, "visibleCount": None, "reason": "permission_required"}
+    partial_empty["coverage"]["notifications"] = {"state": "unavailable", "limit": 100, "visibleCount": None, "reason": "read_failed"}
+    fixture.plan("working", body=partial_empty)
+    select_group(page, "working", 0)
+    expect(workspace(page).get_by_text("Some activity could not be checked. Refresh to try again.", exact=True)).to_be_visible()
     fixture.mode = "ready"
     select_group(page, "all", 25)
 
@@ -250,15 +295,15 @@ def exercise(browser, origin, credentials, checks, coarse):
         expect(page.locator('textarea[role="combobox"]')).to_be_visible(timeout=30_000)
         enter_activity(page, coarse)
         until(page, lambda: "initial-read" in fixture.held, "Initial Activity read was not held")
-        checks.check(label + ": first pending read shows unavailable counts, not zero", workspace(page).get_by_text("Count unavailable", exact=True).count() >= 5 and "0–0" not in workspace(page).inner_text())
+        checks.check(label + ": first pending read shows unavailable counts, not zero", unknown_counts(page) and "0–0" not in workspace(page).inner_text())
         fixture.release("initial-read")
         expect(workspace(page).get_by_role("heading", name="Activity is unavailable", exact=True)).to_be_visible()
-        checks.check(label + ": failed/unavailable initial read stays distinct from empty", workspace(page).get_by_text("Count unavailable", exact=True).count() >= 5 and "No activity in this window" not in workspace(page).inner_text())
-        workspace(page).get_by_role("button", name="Refresh activity", exact=True).click()
+        checks.check(label + ": failed/unavailable initial read stays distinct from empty", unknown_counts(page) and "No recent activity" not in workspace(page).inner_text())
+        workspace(page).get_by_role("button", name="Refresh", exact=True).click()
         ready(page)
         source_links(page, fixture, checks, label)
         source = coverage(page)
-        checks.check(label + ": bounded source coverage names all three sources", all(source.get_by_text(name, exact=True).is_visible() for name in ("Your runs", "Authorized approvals", "Your reminders")))
+        checks.check(label + ": bounded source coverage names all three sources", all(source.get_by_text(name, exact=True).is_visible() for name in ("Assistant tasks", "Approvals", "Reminders and updates")))
         for group in GROUPS:
             expected = fixture.response(group)
             select_group(page, group, len(expected["items"]))
@@ -271,25 +316,28 @@ def exercise(browser, origin, credentials, checks, coarse):
         for theme in ("light", "dark"):
             select_theme(page, theme, coarse)
             checks.snapshot(page, f"activity-{label}-{theme}", coarse)
-        checks.check(label + ": Activity target-size floor", workspace(page).locator("button:visible,a:visible").evaluate_all(
+        checks.check(label + ": Activity target-size floor", workspace(page).locator("button:visible,a:visible,summary:visible").evaluate_all(
             "(els,minimum)=>els.every(el=>el.getBoundingClientRect().height>=minimum-1)", 48 if coarse else 44))
+        checks.check(label + ": History tabs target-size floor", page.get_by_role("navigation", name="History views", exact=True).get_by_role("link").evaluate_all(
+            "(els,minimum)=>els.length===2&&els.every(el=>el.getBoundingClientRect().height>=minimum-1)", 48 if coarse else 44))
         fixture.mode = "empty"
         navigation(page, coarse).get_by_role("link", name="Assistant", exact=True).click()
         expect(page.locator('textarea[role="combobox"]')).to_be_visible(timeout=30_000)
         enter_activity(page, coarse)
         ready(page, count=0)
-        expect(workspace(page).get_by_role("heading", name="No activity in this window", exact=True)).to_be_visible()
-        expect(range_label(page)).to_have_text("0–0 of 0 in this window")
-        checks.check(label + ": successful empty read establishes zero in the bounded window", workspace(page).get_by_text("Count unavailable", exact=True).count() == 0)
+        expect(workspace(page).get_by_role("heading", name="No recent activity", exact=True)).to_be_visible()
+        expect(range_label(page)).to_have_count(0)
+        expect(workspace(page).get_by_role("status")).to_have_text("0 recent updates shown.")
+        checks.check(label + ": successful empty read establishes zero in the bounded window", workspace(page).get_by_text("Count unavailable.", exact=True).count() == 0)
         checks.check(label + ": no application writes or unexpected requests", not fixture.writes and not fixture.unexpected, fixture.unexpected)
         checks.check(label + ": no uncaught browser errors", not errors, errors)
-        return {"viewport": label, "realRoute": actual, "requests": fixture.requests,
+        return {"viewport": label, "realRoute": actual, "requests": fixture.requests, "taskDetailReads": fixture.detail_reads,
                 "heldReleases": fixture.releases, "unexpected": fixture.unexpected, "errors": errors}
     except Exception:
         if page is not None and not page.is_closed():
             page.screenshot(path=str(checks.output / f"{label}-failure.png"), full_page=False)
             (checks.output / f"{label}-failure-dom.html").write_text(page.content())
-        (checks.output / f"{label}-failure-requests.json").write_text(json.dumps({"requests": fixture.requests,
+        (checks.output / f"{label}-failure-requests.json").write_text(json.dumps({"requests": fixture.requests, "taskDetailReads": fixture.detail_reads,
             "held": list(fixture.held), "unexpected": fixture.unexpected, "errors": errors}, indent=2))
         raise
     finally:
@@ -323,7 +371,7 @@ def main():
         print(f"Activity browser check failed: {failure}", flush=True)
     finally:
         (args.output / "report.json").write_text(json.dumps({"checks": checks.results, "contexts": contexts,
-            "failure": failure, "boundary": "Real isolated login and empty local GET route; actual Assistant→Activity navigation; synthetic bounded reads thereafter. No application effects. Source destinations are inspected as links; destination action controllers are outside this suite."}, indent=2))
+            "failure": failure, "boundary": "Real isolated login and empty local GET route; actual Assistant→History→Timeline navigation; synthetic bounded reads thereafter. One explicitly selected task per viewport permits at most two GET attempts for the development StrictMode remount; no task content is read before selection. No application effects. Source destinations are inspected as links; destination action controllers are outside this suite."}, indent=2))
     return 1 if failure else 0
 
 

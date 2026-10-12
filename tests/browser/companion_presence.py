@@ -65,19 +65,20 @@ def snapshot(page, checks, name, coarse, greeting=False):
     root.scroll_into_view_if_needed()
     geometry = root.evaluate("""(el,greeting) => { const slot=el.querySelector('summary > span[aria-hidden="true"]').getBoundingClientRect();const image=el.querySelector('img');const imageBox=image?.getBoundingClientRect(); return {
       viewport:innerWidth,document:document.documentElement.scrollWidth,client:el.clientWidth,scroll:el.scrollWidth,
-      portraitWidth:slot.width,portraitHeight:slot.height,
+      portraitWidth:slot.width,portraitHeight:slot.height,portraitLeft:slot.left,
       imageSource:image?new URL(image.currentSrc||image.src,location.href).pathname:null,
       sameOrigin:image?new URL(image.currentSrc||image.src,location.href).origin===location.origin:false,
       naturalWidth:image?.naturalWidth,naturalHeight:image?.naturalHeight,
-      imageWidth:imageBox?.width,imageHeight:imageBox?.height,
+      imageWidth:imageBox?.width,imageHeight:imageBox?.height,imageLeft:imageBox?.left,
       targets:[...el.querySelectorAll(greeting?'summary':'button,a,summary')].map(el=>el.getBoundingClientRect().height)}; }""", greeting)
     if greeting:
         expect(root).to_have_attribute("data-companion-layout", "greeting")
         expect(root).to_have_attribute("data-companion-artwork", "lottie")
         checks.check(name + ": bounded72px same-origin greeting vector", geometry["imageSource"].startswith(GREETING) and geometry["sameOrigin"] and
                      geometry["naturalWidth"] == 256 and geometry["naturalHeight"] == 256 and
-                     geometry["portraitWidth"] == 72 and geometry["portraitHeight"] == 72 and
-                     geometry["imageWidth"] == 72 and geometry["imageHeight"] == 72, geometry)
+                     geometry["portraitHeight"] == 72 and geometry["portraitWidth"] >= 72 and
+                     geometry["imageWidth"] == 72 and geometry["imageHeight"] == 72 and
+                     abs(geometry["imageLeft"] - geometry["portraitLeft"] - (geometry["portraitWidth"] - 72) / 2) <= 1, geometry)
     else:
         checks.check(name + ": stable36px portrait", geometry["portraitWidth"] == 36 and geometry["portraitHeight"] == 36, geometry)
     checks.check(name + ": no horizontal overflow", geometry["document"] <= geometry["viewport"] + 1 and geometry["scroll"] <= geometry["client"] + 1, geometry)

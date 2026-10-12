@@ -323,12 +323,15 @@
   .userBubble { max-inline-size: 90%; }
 }
 
-/* At normal phone sizes the transcript takes the remaining viewport and the
-   entire composer stays above the shell's reserved navigation dock. Options
-   and long drafts scroll locally; the rem floor permits document expansion
-   at large text sizes/short windows, with the shell's dock padding after it. */
+/* Keep a viewport floor while allowing wrapped controls to enlarge the flow
+   at large text sizes/short windows. A fixed height would leave those controls
+   beyond the shell's following dock padding. Drafts and the transcript still
+   scroll locally within the space the flex layout gives them. */
 @media (max-height: 44rem), (max-width: 47.999rem) {
-  .workspace { min-block-size: 28rem; }
+  .workspace {
+    block-size: auto;
+    min-block-size: max(28rem, calc(100dvh - var(--app-header-height, 4rem) - var(--app-dock-height, 0rem)));
+  }
   .topbar { max-block-size: 25dvh; overflow-y: auto; scroll-padding-block: .5rem; }
   .transcript { flex: 1 1 0; min-block-size: 6rem; max-block-size: none; }
   .composerDock { flex: 0 0 auto; min-block-size: 0; }
