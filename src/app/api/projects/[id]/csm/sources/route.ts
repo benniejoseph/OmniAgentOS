@@ -11,7 +11,7 @@ type Route = { params: Promise<{ id: string }> };
 async function mutate(request: Request, route: Route) {
   const { id } = await route.params;
   let context;
-  try { context = await authorizeRequest({ request, action: "write.memory", resourceType: "shared_memory", resourceId: id }); }
+  try { context = await authorizeRequest({ request, action: "write.memory", nativeMutationCapability: "csm.context.write", resourceType: "shared_memory", resourceId: id }); }
   catch (error) { return forbiddenResponse(error); }
   let body: unknown;
   try { body = await parseJsonBody(request, 4_000); }

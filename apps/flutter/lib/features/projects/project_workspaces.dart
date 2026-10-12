@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 
 import '../../app/macos/macos_page_scaffold.dart';
 import '../../app/mobile/mobile_page_scaffold.dart';
+import '../../app/mobile/mobile_flow_scaffold.dart';
 import '../../app/platform/mobile_presentation.dart';
 import '../../core/network/api_client.dart';
 import '../builder/native_builder_view.dart';
@@ -784,7 +785,7 @@ class _ProjectCollectionWorkspaceState
           c.access?.scope == scope &&
           c.access?.closed != true,
       builder: (dialogContext) => StatefulBuilder(
-        builder: (_, update) => AlertDialog(
+        builder: (_, update) => _projectDialog(
           title: const Text('New project'),
           scrollable: true,
           content: SizedBox(
@@ -2101,7 +2102,7 @@ class _ProjectDocumentWorkspaceState extends State<ProjectDocumentWorkspace> {
           c == controller &&
           controller.access?.scope == scope &&
           controller.access?.closed != true,
-      builder: (ctx) => AlertDialog(
+      builder: (ctx) => _projectDialog(
         title: const Text('Archive project'),
         scrollable: true,
         content: Column(
@@ -2281,7 +2282,7 @@ class _ProjectDocumentWorkspaceState extends State<ProjectDocumentWorkspace> {
               ),
             );
           }
-          return AlertDialog(
+          return _projectDialog(
             title: const Text('Add project task'),
             scrollable: true,
             content: SizedBox(width: 480, child: form),
@@ -2350,7 +2351,7 @@ class _ProjectDocumentWorkspaceState extends State<ProjectDocumentWorkspace> {
           controller.access?.scope == scope &&
           controller.access?.closed != true,
       builder: (ctx) => StatefulBuilder(
-        builder: (_, update) => AlertDialog(
+        builder: (_, update) => _projectDialog(
           title: const Text('Artifact feedback'),
           scrollable: true,
           content: SizedBox(
@@ -2358,7 +2359,15 @@ class _ProjectDocumentWorkspaceState extends State<ProjectDocumentWorkspace> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                SelectableText(artifact.id),
+                if (usesMobilePresentation()) ...[
+                  Text(
+                    artifact.title,
+                    style: Theme.of(context).textTheme.titleLarge,
+                  ),
+                  const SizedBox(height: 16),
+                  MobileDetailsDisclosure(child: SelectableText(artifact.id)),
+                ] else
+                  SelectableText(artifact.id),
                 DropdownButtonFormField<String>(
                   initialValue: draft.verdict,
                   isExpanded: true,
@@ -2463,7 +2472,7 @@ class _WorkDialogs {
         listenable: listenable,
         builder: (ctx, _) => valid && current()
             ? builder(ctx)
-            : AlertDialog(
+            : _projectDialog(
                 title: const Text('Work access changed'),
                 content: const Text(
                   'The previous form is no longer available in this session.',
@@ -2609,5 +2618,43 @@ class _Pager extends StatelessWidget {
         child: const Text('Next'),
       ),
     ],
+  );
+}
+
+Widget _projectDialog({
+  required Text title,
+  required Widget content,
+  List<Widget> actions = const [],
+  bool scrollable = false,
+}) {
+  if (!usesMobilePresentation())
+    return AlertDialog(
+      title: title,
+      content: content,
+      actions: actions,
+      scrollable: scrollable,
+    );
+  return Dialog.fullscreen(
+    child: MobileFlowScaffold(
+      title: title.data ?? 'Work',
+      child: content,
+      footer: actions.isEmpty
+          ? null
+          : Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (actions.length > 1)
+                  Wrap(
+                    alignment: WrapAlignment.center,
+                    spacing: 12,
+                    runSpacing: 8,
+                    children: actions.take(actions.length - 1).toList(),
+                  ),
+                if (actions.length > 1) const SizedBox(height: 8),
+                actions.last,
+              ],
+            ),
+    ),
   );
 }

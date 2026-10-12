@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 
 import '../../app/platform/mobile_presentation.dart';
 import '../../app/mobile/mobile_page_scaffold.dart';
+import '../../app/mobile/mobile_flow_scaffold.dart';
 import '../../app/theme/mobile_app_theme.dart';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -17,6 +18,7 @@ import '../companion/voice_appearance.dart';
 import '../inbox/inbox.dart' as approvals;
 import '../inbox/inbox_providers.dart';
 import 'voice_conversation_controller.dart';
+import 'voice_options_sheet.dart';
 
 class VoiceConversationSurface extends ConsumerStatefulWidget {
   const VoiceConversationSurface({
@@ -29,6 +31,10 @@ class VoiceConversationSurface extends ConsumerStatefulWidget {
     this.startError,
     this.selectedAgentName = 'ATLAS',
     this.companionPreferences,
+    this.contextSummary,
+    this.current,
+    this.onEditContext,
+    this.onModels,
   });
 
   final VoiceConversationController controller;
@@ -39,6 +45,10 @@ class VoiceConversationSurface extends ConsumerStatefulWidget {
   final VoidCallback onStart;
   final VoidCallback onEnd;
   final CompanionPreferences? companionPreferences;
+  final String Function()? contextSummary;
+  final bool Function()? current;
+  final Future<void> Function()? onEditContext;
+  final VoidCallback? onModels;
 
   @override
   ConsumerState<VoiceConversationSurface> createState() =>
@@ -583,20 +593,28 @@ class _VoiceConversationSurfaceState
                               ],
                             ),
                           ),
-                          PopupMenuButton<VoiceAppearance>(
-                            tooltip: 'Voice appearance',
-                            icon: const Icon(Icons.more_horiz_rounded),
-                            enabled: appearance.available,
-                            onSelected: (value) =>
-                                unawaited(appearance.setAppearance(value)),
-                            itemBuilder: (_) => [
-                              for (final option in VoiceAppearance.values)
-                                CheckedPopupMenuItem(
-                                  value: option,
-                                  checked: option == appearance.appearance,
-                                  child: Text(option.label),
-                                ),
-                            ],
+                          IconButton(
+                            tooltip: 'Voice options',
+                            icon: const Icon(Icons.tune_rounded),
+                            onPressed: () => showMobileSheet<void>(
+                              context: context,
+                              title: 'Voice options',
+                              builder: (sheetContext) => MobileVoiceOptions(
+                                voice: voice,
+                                contextSummary:
+                                    widget.contextSummary ??
+                                    () => 'This conversation',
+                                current: () =>
+                                    mounted && (widget.current?.call() ?? true),
+                                onEditContext: widget.onEditContext,
+                                onModels: widget.onModels == null
+                                    ? null
+                                    : () {
+                                        Navigator.of(sheetContext).pop();
+                                        widget.onModels!();
+                                      },
+                              ),
+                            ),
                           ),
                         ],
                       ),
@@ -967,6 +985,57 @@ class _VoiceApprovalDialogState extends State<_VoiceApprovalDialog> {
             )
             .toList() ??
         const <approvals.ApprovalItem>[];
+    if (usesMobilePresentation()) {
+      return Dialog.fullscreen(
+        child: MobileFlowScaffold(
+          title: 'Review action',
+          footer: TextButton.icon(
+            onPressed: !_current || _loading || _deciding != null
+                ? null
+                : () {
+                    setState(() => _loading = true);
+                    unawaited(_load());
+                  },
+            icon: const Icon(Icons.refresh_rounded),
+            label: const Text('Refresh action'),
+          ),
+          child: !_current
+              ? const Text(
+                  'This call has ended. Return to Assistant to review pending work.',
+                )
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    const Text(
+                      'Your call stays connected. Review the action and its consequences before deciding.',
+                    ),
+                    const SizedBox(height: 20),
+                    if (_loading)
+                      const Center(child: CircularProgressIndicator()),
+                    if (_notice != null)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 16),
+                        child: Text(_notice!),
+                      ),
+                    if (!_loading && items.isEmpty)
+                      const MobileSurface(
+                        child: Text(
+                          'There is no pending action here. ATLAS will pick up the latest task status.',
+                        ),
+                      ),
+                    for (final item in items)
+                      approvals.ApprovalCard(
+                        item: item,
+                        busy: _deciding != null,
+                        focused: true,
+                        onDecision: (approve) =>
+                            unawaited(_decide(item, approve)),
+                      ),
+                  ],
+                ),
+        ),
+      );
+    }
     return Dialog(
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 520, maxHeight: 600),

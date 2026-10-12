@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../app/platform/mobile_presentation.dart';
 import '../../app/mobile/mobile_page_scaffold.dart';
+import '../../app/mobile/mobile_flow_scaffold.dart';
 
 import 'created_files_section.dart';
 import 'result_contracts.dart';
@@ -1004,14 +1005,19 @@ class _ResultDetailWorkspaceState extends State<ResultDetailWorkspace> {
               generation == controller.generation &&
               controller.canCancel &&
               version == controller.version;
-          return AlertDialog(
+          return _resultReviewDialog(
             scrollable: true,
             title: Text(valid ? 'Cancel this agent run?' : 'Review expired'),
             content: valid
                 ? Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      SelectableText(controller.item!.key),
+                      if (usesMobilePresentation())
+                        MobileDetailsDisclosure(
+                          child: SelectableText(controller.item!.key),
+                        )
+                      else
+                        SelectableText(controller.item!.key),
                       Text(controller.item!.title),
                       const SizedBox(height: 12),
                       const Text(
@@ -1212,4 +1218,45 @@ class ResultDocument extends StatelessWidget {
       ],
     );
   }
+}
+
+Widget _resultReviewDialog({
+  required Text title,
+  required Widget content,
+  List<Widget> actions = const [],
+  bool scrollable = false,
+}) {
+  if (!usesMobilePresentation())
+    return AlertDialog(
+      title: title,
+      content: content,
+      actions: actions,
+      scrollable: scrollable,
+    );
+  final body = content is SingleChildScrollView
+      ? content.child ?? const SizedBox.shrink()
+      : content;
+  return Dialog.fullscreen(
+    child: MobileFlowScaffold(
+      title: title.data ?? 'Review',
+      child: body,
+      footer: actions.isEmpty
+          ? null
+          : Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (actions.length > 1)
+                  Wrap(
+                    alignment: WrapAlignment.center,
+                    spacing: 12,
+                    runSpacing: 8,
+                    children: actions.take(actions.length - 1).toList(),
+                  ),
+                if (actions.length > 1) const SizedBox(height: 8),
+                actions.last,
+              ],
+            ),
+    ),
+  );
 }

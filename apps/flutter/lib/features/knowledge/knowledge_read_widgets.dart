@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
 
+import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_flow_scaffold.dart';
+
 import 'knowledge.dart';
 import 'knowledge_labels.dart';
 import 'knowledge_mutations.dart';
@@ -345,7 +348,12 @@ class _KnowledgeMemoryInspectorState extends State<KnowledgeMemoryInspector> {
               style: Theme.of(context).textTheme.titleLarge,
             ),
             const SizedBox(height: 16),
-            SelectableText(memoryReadableContent(memory.content)),
+            SelectableText(
+              memoryReadableContent(memory.content),
+              style: usesMobilePresentation()
+                  ? Theme.of(context).textTheme.bodyLarge?.copyWith(height: 1.6)
+                  : null,
+            ),
             if (memoryRoleContext(memory.content) case final role?) ...[
               const SizedBox(height: 12),
               Text(
@@ -355,7 +363,12 @@ class _KnowledgeMemoryInspectorState extends State<KnowledgeMemoryInspector> {
               ),
             ],
             const SizedBox(height: 16),
-            MemoryEvidenceDetails(memory: memory),
+            if (usesMobilePresentation())
+              MobileDetailsDisclosure(
+                child: MemoryEvidenceDetails(memory: memory),
+              )
+            else
+              MemoryEvidenceDetails(memory: memory),
             const SizedBox(height: 16),
             if (widget.onOpenWorkspace != null)
               OutlinedButton(

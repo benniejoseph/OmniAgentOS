@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
 
+import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_page_scaffold.dart';
+
 import '../../core/network/api_exception.dart';
 import 'knowledge.dart';
 import 'knowledge_consent_contracts.dart';
@@ -176,7 +179,9 @@ class _KnowledgePersonalRecallState extends State<KnowledgePersonalRecall>
         padding: const EdgeInsets.all(20),
         children: [
           Text(
-            'Personal automatic recall',
+            usesMobilePresentation()
+                ? 'Personal recall'
+                : 'Personal automatic recall',
             style: Theme.of(context).textTheme.titleLarge,
           ),
           const SizedBox(height: 8),
@@ -203,13 +208,45 @@ class _KnowledgePersonalRecallState extends State<KnowledgePersonalRecall>
           MemoryChangeStatus(controller: controller),
           if (consent != null) ...[
             const SizedBox(height: 12),
-            Semantics(
-              liveRegion: true,
-              child: Text(
-                'Last verified read: personal automatic recall is ${consent.active ? 'on' : 'off'}.',
-                style: Theme.of(context).textTheme.titleMedium,
+            if (usesMobilePresentation())
+              MobileSurface(
+                child: Row(
+                  children: [
+                    Icon(
+                      consent.active
+                          ? Icons.psychology_alt_outlined
+                          : Icons.pause_circle_outline,
+                      size: 32,
+                    ),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            consent.active
+                                ? 'Personal recall is on'
+                                : 'Personal recall is off',
+                            style: Theme.of(context).textTheme.titleLarge,
+                          ),
+                          const SizedBox(height: 4),
+                          const Text(
+                            'Last verified setting. Changes require your confirmation below.',
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              )
+            else
+              Semantics(
+                liveRegion: true,
+                child: Text(
+                  'Last verified read: personal automatic recall is ${consent.active ? 'on' : 'off'}.',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
               ),
-            ),
             if (controller.pendingChange?.kind == MemoryChange.consent)
               const Text(
                 'A submitted decision is still unconfirmed. The setting above does not prove whether that request was accepted.',

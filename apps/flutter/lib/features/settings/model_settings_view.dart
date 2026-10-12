@@ -1,4 +1,7 @@
 import 'package:flutter/material.dart';
+
+import 'adaptive_control_dialog.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
@@ -67,9 +70,15 @@ const _assignmentDescriptions = <String, String>{
 };
 
 class ModelSettingsView extends ConsumerStatefulWidget {
-  const ModelSettingsView({super.key, required this.api, this.authority});
+  const ModelSettingsView({
+    super.key,
+    required this.api,
+    this.authority,
+    this.initialSection,
+  });
   final ApiClient api;
   final NativeRequestAuthority? authority;
+  final String? initialSection;
 
   @override
   ConsumerState<ModelSettingsView> createState() => _ModelSettingsViewState();
@@ -96,8 +105,30 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
   @override
   void initState() {
     super.initState();
+    _mobileSection = _validMobileSection(widget.initialSection);
     _load();
     if (appDesktopHostBridge.supported) _loadDesktopPreferences();
+  }
+
+  static String? _validMobileSection(String? value) =>
+      const {
+        'profile',
+        'companion',
+        'phone',
+        'models',
+        'providers',
+        'data',
+        'advanced',
+      }.contains(value)
+      ? value
+      : null;
+
+  @override
+  void didUpdateWidget(covariant ModelSettingsView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.initialSection != widget.initialSection) {
+      _mobileSection = _validMobileSection(widget.initialSection);
+    }
   }
 
   Future<void> _loadDesktopPreferences() async {
@@ -768,81 +799,88 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
       'profile' => const PersonalProfileSettings(),
       'companion' => const CompanionSettingsSection(),
       'phone' => const AndroidPhoneSettings(),
-      'models' => Column(
-        children: [
-          const Text(
-            'Choose the AI used for each kind of work. Changes apply across your workspace.',
-          ),
-          const SizedBox(height: 16),
-          for (final scope in _assignmentOrder) ...[
-            _AssignmentRow(
-              scope: scope,
-              assignment: assignments
-                  .where((item) => item['scope'] == scope)
-                  .firstOrNull,
-              saving: saving == scope,
-              onTap: () => _edit(scope),
+      'models' => MobileSurface(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text(
+              'Choose the AI used for each kind of work. Changes apply across your workspace.',
             ),
-            const Divider(height: 1),
+            const SizedBox(height: 16),
+            for (final scope in _assignmentOrder) ...[
+              _AssignmentRow(
+                scope: scope,
+                assignment: assignments
+                    .where((item) => item['scope'] == scope)
+                    .firstOrNull,
+                saving: saving == scope,
+                onTap: () => _edit(scope),
+              ),
+              const Divider(height: 1),
+            ],
           ],
-        ],
+        ),
       ),
-      'providers' => Column(
-        children: [
-          const Text('Available AI services and their connection status.'),
-          const SizedBox(height: 16),
-          if (providers.isEmpty && !loading)
-            const Text('No AI connections are available in this view.'),
-          for (final provider in providers) ...[
-            _ProviderRow(provider: provider),
-            const Divider(height: 1),
+      'providers' => MobileSurface(
+        child: Column(
+          children: [
+            const Text('Available AI services and their connection status.'),
+            const SizedBox(height: 16),
+            if (providers.isEmpty && !loading)
+              const Text('No AI connections are available in this view.'),
+            for (final provider in providers) ...[
+              _ProviderRow(provider: provider),
+              const Divider(height: 1),
+            ],
+            const SizedBox(height: 16),
+            const NativeWorkspaceBrowserButton(
+              path: '/app/settings',
+              label: 'Manage AI connections in browser',
+            ),
           ],
-          const SizedBox(height: 16),
-          const NativeWorkspaceBrowserButton(
-            path: '/app/settings',
-            label: 'Manage AI connections in browser',
-          ),
-        ],
+        ),
       ),
       'data' => const PortableArchivePanel(),
-      'advanced' => Column(
-        children: [
-          _StatusRow(
-            icon: Icons.lock_outline_rounded,
-            title: 'Sign-in protection',
-            value: snapshot == null
-                ? 'Not available'
-                : platform['authEnforced'] == true
-                ? 'Required'
-                : 'Development mode',
-            ok: platform['authEnforced'] == true,
-          ),
-          _StatusRow(
-            icon: Icons.storage_outlined,
-            title: 'Workspace storage',
-            value: snapshot == null
-                ? 'Not available'
-                : platform['databaseConfigured'] == true
-                ? 'Connected'
-                : 'Setup needed',
-            ok: platform['databaseConfigured'] == true,
-          ),
-          _StatusRow(
-            icon: Icons.key_outlined,
-            title: 'Credential vault',
-            value: snapshot == null
-                ? 'Not available'
-                : vault['configured'] == true
-                ? 'Ready'
-                : 'Setup needed',
-            ok: vault['configured'] == true,
-          ),
-          const SizedBox(height: 20),
-          const NativeWorkspaceBrowserButton(
-            path: '/app/settings',
-            label: 'Open advanced settings in browser',
-          ),
-        ],
+      'advanced' => MobileSurface(
+        child: Column(
+          children: [
+            _StatusRow(
+              icon: Icons.lock_outline_rounded,
+              title: 'Sign-in protection',
+              value: snapshot == null
+                  ? 'Not available'
+                  : platform['authEnforced'] == true
+                  ? 'Required'
+                  : 'Development mode',
+              ok: platform['authEnforced'] == true,
+            ),
+            _StatusRow(
+              icon: Icons.storage_outlined,
+              title: 'Workspace storage',
+              value: snapshot == null
+                  ? 'Not available'
+                  : platform['databaseConfigured'] == true
+                  ? 'Connected'
+                  : 'Setup needed',
+              ok: platform['databaseConfigured'] == true,
+            ),
+            _StatusRow(
+              icon: Icons.key_outlined,
+              title: 'Credential vault',
+              value: snapshot == null
+                  ? 'Not available'
+                  : vault['configured'] == true
+                  ? 'Ready'
+                  : 'Setup needed',
+              ok: vault['configured'] == true,
+            ),
+            const SizedBox(height: 20),
+            const NativeWorkspaceBrowserButton(
+              path: '/app/settings',
+              label: 'Open advanced settings in browser',
+            ),
+          ],
+        ),
       ),
       _ => null,
     };
@@ -2174,7 +2212,7 @@ class _AssignmentDialogState extends State<_AssignmentDialog> {
         (specialized ||
             (fallbackProvider.isEmpty == fallbackModelId.isEmpty)) &&
         (!crosses || consent);
-    return AlertDialog(
+    return AdaptiveControlDialog(
       title: Text(_humanize(widget.scope)),
       content: SizedBox(
         width: 520,
@@ -2183,6 +2221,7 @@ class _AssignmentDialogState extends State<_AssignmentDialog> {
             mainAxisSize: MainAxisSize.min,
             children: [
               DropdownButtonFormField<String>(
+                isExpanded: true,
                 initialValue: provider.isEmpty ? null : provider,
                 decoration: const InputDecoration(
                   labelText: 'Primary provider',
@@ -2201,6 +2240,7 @@ class _AssignmentDialogState extends State<_AssignmentDialog> {
               ),
               const SizedBox(height: 12),
               DropdownButtonFormField<String>(
+                isExpanded: true,
                 initialValue:
                     primaryModels.any((item) => item['modelId'] == modelId)
                     ? modelId
@@ -2222,6 +2262,7 @@ class _AssignmentDialogState extends State<_AssignmentDialog> {
               if (!specialized) ...[
                 const SizedBox(height: 12),
                 DropdownButtonFormField<String>(
+                  isExpanded: true,
                   initialValue: fallbackProvider.isEmpty
                       ? ''
                       : fallbackProvider,
@@ -2248,6 +2289,7 @@ class _AssignmentDialogState extends State<_AssignmentDialog> {
                 if (fallbackProvider.isNotEmpty) ...[
                   const SizedBox(height: 12),
                   DropdownButtonFormField<String>(
+                    isExpanded: true,
                     initialValue:
                         fallbackModels.any(
                           (item) => item['modelId'] == fallbackModelId,
@@ -2306,7 +2348,9 @@ class _AssignmentDialogState extends State<_AssignmentDialog> {
                     'crossProviderFallbackConsent': true,
                 })
               : null,
-          child: const Text('Save route'),
+          child: Text(
+            usesMobilePresentation() ? 'Save model choice' : 'Save route',
+          ),
         ),
       ],
     );
@@ -2371,7 +2415,9 @@ class _ProviderRow extends StatelessWidget {
           _humanize(provider['provider']?.toString() ?? 'provider'),
     ),
     subtitle: Text(
-      '${_humanize(provider['status']?.toString() ?? 'unknown')} · ${_humanize(provider['source']?.toString() ?? 'unknown')}',
+      usesMobilePresentation()
+          ? _humanize(provider['status']?.toString() ?? 'Status unavailable')
+          : '${_humanize(provider['status']?.toString() ?? 'unknown')} · ${_humanize(provider['source']?.toString() ?? 'unknown')}',
     ),
     trailing: provider['catalogRefreshedAt'] == null
         ? null

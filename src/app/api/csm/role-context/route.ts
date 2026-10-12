@@ -19,7 +19,7 @@ export const GET = withDatabaseRequestScope(async (request: Request) => {
 
 export const PUT = withDatabaseRequestScope(requireIdempotencyKey(async (request: Request) => {
   let context;
-  try { context = await authorizeRequest({ request, action: "write.memory", resourceType: "memory" }); }
+  try { context = await authorizeRequest({ request, action: "write.memory", nativeMutationCapability: "csm.role.write", resourceType: "memory" }); }
   catch (error) { return forbiddenResponse(error); }
   let body: unknown;
   try { body = await parseJsonBody(request, 100_000); }

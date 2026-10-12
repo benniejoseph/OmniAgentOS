@@ -4,6 +4,7 @@ import '../../core/network/api_client.dart';
 import '../../core/network/native_workspace_access.dart';
 import '../auth/application/biometric_session_lock_controller.dart';
 import '../auth/application/session_controller.dart';
+import '../results/created_file_export.dart';
 import 'portable_archive_controller.dart';
 import 'portable_archive_repository.dart';
 
@@ -38,7 +39,21 @@ final portableArchiveControllerProvider = Provider.autoDispose
       if (repository == null || !repository.current || !ref.mounted) {
         return null;
       }
-      final controller = PortableArchiveController(repository);
+      final access = ref.watch(nativeWorkspaceAccessProvider);
+      if (access == null || !access.current) return null;
+      final android = AndroidCreatedFileExportAdapter(
+        scopeKey: createdFileExportScopeKey(
+          access.authority,
+          purpose: 'portable-archive-v2',
+        ),
+      );
+      final controller = PortableArchiveController(
+        repository,
+        destinationAdapter: android.available ? android : null,
+        exporter: android.available
+            ? ScopedCreatedFileExporter(adapter: android)
+            : const ScopedCreatedFileExporter(),
+      );
       ref.onDispose(controller.dispose);
       return controller;
     });

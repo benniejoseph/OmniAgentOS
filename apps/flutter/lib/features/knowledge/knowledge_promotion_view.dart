@@ -1,5 +1,10 @@
 import 'package:flutter/material.dart';
 
+import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_flow_scaffold.dart';
+import '../../app/mobile/mobile_page_scaffold.dart';
+import 'knowledge_labels.dart';
+
 import '../../core/network/api_exception.dart';
 import 'knowledge.dart';
 import 'knowledge_mutations.dart';
@@ -236,7 +241,9 @@ class _KnowledgePromotionsState extends State<KnowledgePromotions>
         padding: const EdgeInsets.all(20),
         children: [
           Text(
-            'Your private Memory promotions',
+            usesMobilePresentation()
+                ? 'Reusable know-how'
+                : 'Your private Memory promotions',
             style: Theme.of(context).textTheme.titleLarge,
           ),
           const SizedBox(height: 8),
@@ -250,26 +257,47 @@ class _KnowledgePromotionsState extends State<KnowledgePromotions>
               'Showing up to 25 reviews; the full count is unavailable.',
             ),
             const SizedBox(height: 12),
-            DropdownButtonFormField<String>(
-              initialValue: _status,
-              isExpanded: true,
-              decoration: const InputDecoration(
-                labelText: 'Promotion review status',
+            if (usesMobilePresentation())
+              MobileSegmentBar<String>(
+                value: _status,
+                items: [
+                  for (final status in const ['pending', 'resolved', 'all'])
+                    (
+                      value: status,
+                      label: memoryFriendlyLabel(status),
+                      icon: null,
+                    ),
+                ],
+                onChanged: (value) {
+                  if (_loading) return;
+                  setState(() {
+                    _status = value;
+                    _rows = const [];
+                  });
+                  _load();
+                },
+              )
+            else
+              DropdownButtonFormField<String>(
+                initialValue: _status,
+                isExpanded: true,
+                decoration: const InputDecoration(
+                  labelText: 'Promotion review status',
+                ),
+                items: [
+                  for (final status in const ['pending', 'resolved', 'all'])
+                    DropdownMenuItem(value: status, child: Text(status)),
+                ],
+                onChanged: _loading
+                    ? null
+                    : (value) {
+                        setState(() {
+                          _status = value!;
+                          _rows = const [];
+                        });
+                        _load();
+                      },
               ),
-              items: [
-                for (final status in const ['pending', 'resolved', 'all'])
-                  DropdownMenuItem(value: status, child: Text(status)),
-              ],
-              onChanged: _loading
-                  ? null
-                  : (value) {
-                      setState(() {
-                        _status = value!;
-                        _rows = const [];
-                      });
-                      _load();
-                    },
-            ),
             Align(
               alignment: AlignmentDirectional.centerStart,
               child: OutlinedButton(
@@ -298,7 +326,9 @@ class _KnowledgePromotionsState extends State<KnowledgePromotions>
                         style: Theme.of(context).textTheme.titleMedium,
                       ),
                       Text(
-                        '${row.status} · ${row.sourceIds.length} source memories · procedural',
+                        usesMobilePresentation()
+                            ? '${memoryFriendlyLabel(row.status)} · ${row.sourceIds.length} supporting memories'
+                            : '${row.status} · ${row.sourceIds.length} source memories · procedural',
                       ),
                       OutlinedButton(
                         onPressed: () => _open(row.id),
@@ -309,20 +339,45 @@ class _KnowledgePromotionsState extends State<KnowledgePromotions>
                 ),
               ),
             const SizedBox(height: 16),
-            TextField(
-              controller: _exactId,
-              decoration: const InputDecoration(
-                labelText: 'Exact promotion review ID',
+            if (usesMobilePresentation())
+              MobileDetailsDisclosure(
+                title: 'Open by reference',
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    TextField(
+                      controller: _exactId,
+                      decoration: const InputDecoration(
+                        labelText: 'Exact promotion review ID',
+                      ),
+                      onSubmitted: (value) => _open(value.trim()),
+                    ),
+                    Align(
+                      alignment: AlignmentDirectional.centerStart,
+                      child: OutlinedButton(
+                        onPressed: () => _open(_exactId.text.trim()),
+                        child: const Text('Open exact promotion review'),
+                      ),
+                    ),
+                  ],
+                ),
+              )
+            else ...[
+              TextField(
+                controller: _exactId,
+                decoration: const InputDecoration(
+                  labelText: 'Exact promotion review ID',
+                ),
+                onSubmitted: (value) => _open(value.trim()),
               ),
-              onSubmitted: (value) => _open(value.trim()),
-            ),
-            Align(
-              alignment: AlignmentDirectional.centerStart,
-              child: OutlinedButton(
-                onPressed: () => _open(_exactId.text.trim()),
-                child: const Text('Open exact promotion review'),
+              Align(
+                alignment: AlignmentDirectional.centerStart,
+                child: OutlinedButton(
+                  onPressed: () => _open(_exactId.text.trim()),
+                  child: const Text('Open exact promotion review'),
+                ),
               ),
-            ),
+            ],
           ] else ...[
             Wrap(
               spacing: 12,
@@ -352,7 +407,11 @@ class _KnowledgePromotionsState extends State<KnowledgePromotions>
                 review.title.isEmpty ? 'Untitled memory' : review.title,
                 style: Theme.of(context).textTheme.titleLarge,
               ),
-              Text('${review.status} · target tier: procedural'),
+              Text(
+                usesMobilePresentation()
+                    ? '${memoryFriendlyLabel(review.status)} · How-to memory'
+                    : '${review.status} · target tier: procedural',
+              ),
               if (review.decision != null)
                 Text(
                   'Recorded decision: ${review.decision}. This read alone is not a receipt for a pending request.',
@@ -413,7 +472,7 @@ class _KnowledgePromotionsState extends State<KnowledgePromotions>
                           : null,
                       child: Text(
                         decision == 'promote'
-                            ? 'Promote to procedural memory'
+                            ? 'Save as how-to memory'
                             : 'Dismiss promotion review',
                       ),
                     ),

@@ -2,7 +2,10 @@ import 'dart:io';
 
 import 'package:file_selector_platform_interface/file_selector_platform_interface.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:path/path.dart' as path;
+
+import '../../core/network/api_client.dart';
 
 enum CreatedFileExportOutcome { saved, canceled, scopeChanged, unavailable }
 
@@ -23,10 +26,103 @@ abstract interface class CreatedFileExportAdapter {
   });
 }
 
+/// A local destination binding, never an authorization grant. Callers may add
+/// an exact file/version reference to prevent a different artifact reusing it.
+String createdFileExportScopeKey(
+  NativeRequestAuthority authority, {
+  String purpose = 'archive',
+}) => [
+  NativeRequestAuthority.normalizeApiBaseUrl(authority.apiBaseUrl),
+  authority.tenantId,
+  authority.actorId,
+  authority.canonicalUserId,
+  authority.role,
+  purpose,
+].map(Uri.encodeComponent).join('|');
+
+class AndroidPreparedFileDestination {
+  const AndroidPreparedFileDestination({
+    required this.filename,
+    required this.requestedFilename,
+  });
+  final String filename;
+  final String requestedFilename;
+}
+
+/// Android's document picker intentionally suspends the protected workspace.
+/// Choosing therefore receives NO private bytes. After the normal unlock, a
+/// fresh owner-scoped controller must explicitly start the save and download.
+/// The native handle is process-local, one-use, owner-bound and short-lived.
+class AndroidCreatedFileExportAdapter implements CreatedFileExportAdapter {
+  const AndroidCreatedFileExportAdapter({required this.scopeKey});
+  final String scopeKey;
+  static const _channel = MethodChannel('app.omniagent.omniagent/file_export');
+
+  @override
+  bool get available =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+
+  Future<void> prepareDestination({required String filename}) async {
+    if (!available)
+      throw UnsupportedError('Android file saving is unavailable.');
+    await _channel.invokeMethod<void>('chooseDestination', {
+      'scopeKey': scopeKey,
+      'filename': filename,
+    });
+  }
+
+  Future<AndroidPreparedFileDestination?> preparedDestination() async {
+    if (!available) return null;
+    final value = await _channel.invokeMapMethod<String, dynamic>(
+      'preparedDestination',
+      {'scopeKey': scopeKey},
+    );
+    final filename = value?['filename'];
+    final requestedFilename = value?['requestedFilename'];
+    if (filename is! String ||
+        filename.isEmpty ||
+        requestedFilename is! String ||
+        requestedFilename.isEmpty)
+      return null;
+    return AndroidPreparedFileDestination(
+      filename: filename,
+      requestedFilename: requestedFilename,
+    );
+  }
+
+  @override
+  Future<String?> selectDestination({required String filename}) async {
+    if (!available) return null;
+    final value = await _channel.invokeMapMethod<String, dynamic>(
+      'preparedDestination',
+      {'scopeKey': scopeKey},
+    );
+    return value?['requestedFilename'] == filename && value?['handle'] is String
+        ? value!['handle'] as String
+        : null;
+  }
+
+  @override
+  Future<void> writeBytes(
+    String destination,
+    Uint8List bytes, {
+    required bool Function() isCurrent,
+  }) async {
+    if (!available || !isCurrent()) throw const CreatedFileExportScopeChanged();
+    // No asynchronous preparation occurs between the scope check and native
+    // write admission. Android independently requires a resumed, unlocked host.
+    await _channel.invokeMethod<void>('writePrepared', {
+      'scopeKey': scopeKey,
+      'handle': destination,
+      'bytes': bytes,
+    });
+  }
+}
+
 /// The installed desktop file_selector implementations return a destination
 /// without writing a file. file_picker.saveFile instead accepts private bytes
 /// before its native dialog and cannot recheck scope after that dialog returns.
-/// iOS/Android/web need their own destination-then-write adapters before export
+/// iOS/web need their own destination-then-write adapters before export
 /// can be offered there; do not fall back to the eager file_picker API.
 class DesktopCreatedFileExportAdapter implements CreatedFileExportAdapter {
   const DesktopCreatedFileExportAdapter();

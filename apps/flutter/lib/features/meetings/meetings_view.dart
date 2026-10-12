@@ -1,4 +1,7 @@
 import 'package:flutter/material.dart';
+
+import 'meetings_mobile_flow.dart';
+
 import 'package:flutter/services.dart';
 
 import '../../app/mobile/mobile_page_scaffold.dart';
@@ -903,7 +906,7 @@ class _MeetingDetailViewState extends State<MeetingDetailView>
           listenable: actions,
           builder: (context, _) =>
               !actions.available || actions.owner?.key != frozen.ownerKey
-              ? AlertDialog(
+              ? meetingReviewDialog(
                   title: const Text('Review unavailable'),
                   content: const Text(
                     'Private evidence is hidden because Meeting access changed.',
@@ -915,7 +918,7 @@ class _MeetingDetailViewState extends State<MeetingDetailView>
                     ),
                   ],
                 )
-              : AlertDialog(
+              : meetingReviewDialog(
                   title: const Text('Create exact follow-up proposal'),
                   content: SingleChildScrollView(
                     child: Column(

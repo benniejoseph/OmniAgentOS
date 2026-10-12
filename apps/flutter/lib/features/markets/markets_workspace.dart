@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/network/api_client.dart';
 import '../../app/platform/mobile_presentation.dart';
 import '../../app/mobile/mobile_page_scaffold.dart';
+import '../../app/mobile/mobile_flow_scaffold.dart';
 import 'markets_contracts.dart';
 import 'markets_controller.dart';
 import 'markets_panels.dart';
@@ -144,7 +145,7 @@ class _MarketWorkspaceState extends State<_MarketWorkspace> {
                   identical(live, expected) &&
                   live.readable &&
                   live.repository.access.owner?.key == owner;
-          return AlertDialog(
+          return _marketReviewDialog(
             title: Text(title),
             scrollable: true,
             content: SizedBox(
@@ -183,7 +184,7 @@ class _MarketWorkspaceState extends State<_MarketWorkspace> {
                   live.readable &&
                   live.repository.access.owner?.key == owner &&
                   live.canSubmit(action);
-          return AlertDialog(
+          return _marketReviewDialog(
             title: Text(switch (action) {
               'backtest' => 'Run retrospective backtest?',
               'events' => 'Import official release history?',
@@ -206,9 +207,12 @@ class _MarketWorkspaceState extends State<_MarketWorkspace> {
                           'This starts governed server work. Provider requests and model usage may occur. The exact submitted decision is saved before dispatch. An uncertain response is held for inspection and is never automatically retried.',
                         ),
                         const SizedBox(height: 16),
-                        SelectableText(
-                          const JsonEncoder.withIndent('  ').convert(body),
-                        ),
+                        if (usesMobilePresentation())
+                          _MobileMarketEvidence(data: body)
+                        else
+                          SelectableText(
+                            const JsonEncoder.withIndent('  ').convert(body),
+                          ),
                       ],
                     ),
             ),
@@ -1198,4 +1202,45 @@ class _MobileMarketEvidence extends StatelessWidget {
       ],
     );
   }
+}
+
+Widget _marketReviewDialog({
+  required Text title,
+  required Widget content,
+  List<Widget> actions = const [],
+  bool scrollable = false,
+}) {
+  if (!usesMobilePresentation())
+    return AlertDialog(
+      title: title,
+      content: content,
+      actions: actions,
+      scrollable: scrollable,
+    );
+  final body = content is SingleChildScrollView
+      ? content.child ?? const SizedBox.shrink()
+      : content;
+  return Dialog.fullscreen(
+    child: MobileFlowScaffold(
+      title: title.data ?? 'Review',
+      child: body,
+      footer: actions.isEmpty
+          ? null
+          : Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (actions.length > 1)
+                  Wrap(
+                    alignment: WrapAlignment.center,
+                    spacing: 12,
+                    runSpacing: 8,
+                    children: actions.take(actions.length - 1).toList(),
+                  ),
+                if (actions.length > 1) const SizedBox(height: 8),
+                actions.last,
+              ],
+            ),
+    ),
+  );
 }

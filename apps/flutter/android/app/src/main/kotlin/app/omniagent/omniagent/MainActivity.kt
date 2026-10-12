@@ -31,23 +31,27 @@ class MainActivity : FlutterFragmentActivity() {
         )
         AndroidDeviceBridge.attachActivity(this)
         ListenBridge.attach(this, AndroidDeviceBridge.engine(this))
+        PrivateFileExportBridge.attach(this, AndroidDeviceBridge.engine(this))
     }
 
     override fun onResume() {
         super.onResume()
         AndroidDeviceBridge.activityResumed(this)
         ListenBridge.activityResumed(this)
+        PrivateFileExportBridge.activityResumed(this)
     }
 
     override fun onPause() {
         AndroidDeviceBridge.activityPaused(this)
         ListenBridge.activityPaused(this)
+        PrivateFileExportBridge.activityPaused(this)
         super.onPause()
     }
 
     override fun onDestroy() {
         AndroidDeviceBridge.detachActivity(this)
         ListenBridge.detach(this)
+        PrivateFileExportBridge.detach(this)
         super.onDestroy()
     }
 
@@ -65,5 +69,6 @@ class MainActivity : FlutterFragmentActivity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         ListenBridge.activityResult(requestCode, resultCode, data)
+        PrivateFileExportBridge.activityResult(requestCode, resultCode, data)
     }
 }

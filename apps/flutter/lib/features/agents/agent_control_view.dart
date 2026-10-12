@@ -1,5 +1,9 @@
 import 'package:flutter/material.dart';
 
+import '../../app/mobile/mobile_flow_scaffold.dart';
+
+import '../settings/adaptive_control_dialog.dart';
+
 import '../../app/platform/mobile_presentation.dart';
 
 import 'agent_council.dart';
@@ -95,7 +99,7 @@ class _AgentControlViewState extends State<AgentControlView> {
     final reason = await showDialog<String>(
       context: context,
       useRootNavigator: false,
-      builder: (dialogContext) => AlertDialog(
+      builder: (dialogContext) => AdaptiveControlDialog(
         title: Text('Cancel ${member.identity.name}\'s task?'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
@@ -387,36 +391,53 @@ class _MemberTile extends StatelessWidget {
     );
   }
 
-  Future<void> _showAuthority(BuildContext context) =>
-      showModalBottomSheet<void>(
+  Future<void> _showAuthority(BuildContext context) {
+    if (usesMobilePresentation()) {
+      return showDialog<void>(
         context: context,
-        showDragHandle: true,
-        isScrollControlled: true,
-        builder: (context) => SafeArea(
-          child: DraggableScrollableSheet(
-            expand: false,
-            initialChildSize: .78,
-            minChildSize: .42,
-            maxChildSize: .94,
-            builder: (context, scrollController) => ListView(
-              controller: scrollController,
-              padding: const EdgeInsets.fromLTRB(20, 0, 20, 28),
-              children: [
-                Text(
-                  '${member.identity.name} authority',
-                  style: Theme.of(context).textTheme.titleLarge,
-                ),
-                const SizedBox(height: 14),
-                AgentTaskAuthorityView(
-                  controller: controller,
-                  taskId: member.taskId,
-                  compact: true,
-                ),
-              ],
+        useRootNavigator: false,
+        builder: (_) => Dialog.fullscreen(
+          child: MobileFlowScaffold(
+            title: '${member.identity.name} permissions',
+            child: AgentTaskAuthorityView(
+              controller: controller,
+              taskId: member.taskId,
+              compact: true,
             ),
           ),
         ),
       );
+    }
+    return showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (context) => SafeArea(
+        child: DraggableScrollableSheet(
+          expand: false,
+          initialChildSize: .78,
+          minChildSize: .42,
+          maxChildSize: .94,
+          builder: (context, scrollController) => ListView(
+            controller: scrollController,
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 28),
+            children: [
+              Text(
+                '${member.identity.name} authority',
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+              const SizedBox(height: 14),
+              AgentTaskAuthorityView(
+                controller: controller,
+                taskId: member.taskId,
+                compact: true,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class _FactRow extends StatelessWidget {

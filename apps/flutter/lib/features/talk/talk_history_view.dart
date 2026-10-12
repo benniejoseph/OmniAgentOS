@@ -14,11 +14,13 @@ class TalkHistoryPane extends StatelessWidget {
     required this.controller,
     required this.onSelected,
     required this.onNew,
+    this.onClose,
   });
 
   final TalkHistoryControllerMixin controller;
   final ValueChanged<String> onSelected;
   final VoidCallback onNew;
+  final VoidCallback? onClose;
 
   @override
   Widget build(BuildContext context) {
@@ -28,7 +30,9 @@ class TalkHistoryPane extends StatelessWidget {
     return DecoratedBox(
       decoration: BoxDecoration(
         color: scheme.surface.withValues(alpha: .9),
-        border: Border(right: BorderSide(color: scheme.outlineVariant)),
+        border: usesMobilePresentation()
+            ? null
+            : Border(right: BorderSide(color: scheme.outlineVariant)),
       ),
       child: SafeArea(
         right: false,
@@ -55,7 +59,7 @@ class TalkHistoryPane extends StatelessWidget {
                               : 'Durable, private history',
                           style: TextStyle(
                             color: scheme.onSurfaceVariant,
-                            fontSize: 11.5,
+                            fontSize: usesMobilePresentation() ? 13 : 11.5,
                           ),
                         ),
                       ],
@@ -80,6 +84,12 @@ class TalkHistoryPane extends StatelessWidget {
                     onPressed: controller.historyInteractionBusy ? null : onNew,
                     icon: const Icon(Icons.add_rounded, size: 20),
                   ),
+                  if (onClose != null)
+                    IconButton(
+                      tooltip: 'Close conversations',
+                      onPressed: onClose,
+                      icon: const Icon(Icons.close_rounded),
+                    ),
                 ],
               ),
             ),
@@ -108,7 +118,7 @@ class TalkHistoryPane extends StatelessWidget {
       return const _HistoryCenteredState(
         icon: Icons.history_rounded,
         title: 'Loading conversations',
-        body: 'Reading your private conversation index.',
+        body: 'Finding where you left off.',
         progress: true,
       );
     }
@@ -117,7 +127,7 @@ class TalkHistoryPane extends StatelessWidget {
       return _HistoryCenteredState(
         icon: Icons.cloud_off_outlined,
         title: 'History is unavailable',
-        body: 'Your current draft is safe. Try the read again.',
+        body: 'Your current draft is safe. Try again when you are connected.',
         action: TextButton.icon(
           onPressed: () => unawaited(controller.loadRecentThreads(force: true)),
           icon: const Icon(Icons.refresh_rounded),
@@ -129,7 +139,7 @@ class TalkHistoryPane extends StatelessWidget {
       return const _HistoryCenteredState(
         icon: Icons.chat_bubble_outline_rounded,
         title: 'No conversations yet',
-        body: 'Your first message will start a durable conversation.',
+        body: 'Start a conversation with ATLAS. You can return to it here.',
       );
     }
     return ListView.separated(
@@ -237,7 +247,11 @@ class _HistoryNotice extends StatelessWidget {
         Expanded(
           child: Text(
             text,
-            style: TextStyle(color: color, fontSize: 11.5, height: 1.3),
+            style: TextStyle(
+              color: color,
+              fontSize: usesMobilePresentation() ? 13 : 11.5,
+              height: 1.4,
+            ),
           ),
         ),
       ],
@@ -288,7 +302,7 @@ class _HistoryCenteredState extends StatelessWidget {
               textAlign: TextAlign.center,
               style: TextStyle(
                 color: scheme.onSurfaceVariant,
-                fontSize: 11.5,
+                fontSize: usesMobilePresentation() ? 14 : 11.5,
                 height: 1.35,
               ),
             ),
@@ -350,8 +364,8 @@ class _MemoryContextSummary extends StatelessWidget {
               children: [
                 Text(
                   title,
-                  style: const TextStyle(
-                    fontSize: 11.5,
+                  style: TextStyle(
+                    fontSize: usesMobilePresentation() ? 13 : 11.5,
                     fontWeight: FontWeight.w700,
                   ),
                 ),
@@ -367,7 +381,7 @@ class _MemoryContextSummary extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
                       color: scheme.onSurfaceVariant,
-                      fontSize: 10.5,
+                      fontSize: usesMobilePresentation() ? 13 : 10.5,
                     ),
                   ),
                 ],

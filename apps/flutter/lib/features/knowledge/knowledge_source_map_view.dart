@@ -1,5 +1,10 @@
 import 'package:flutter/material.dart';
 
+import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_flow_scaffold.dart';
+import '../../app/mobile/mobile_page_scaffold.dart';
+import 'knowledge_labels.dart';
+
 import '../../core/network/api_exception.dart';
 import 'knowledge.dart';
 import 'knowledge_mutations.dart';
@@ -225,7 +230,9 @@ class _KnowledgeSourceMapsState extends State<KnowledgeSourceMaps>
         padding: const EdgeInsets.all(20),
         children: [
           Text(
-            'Review private source maps',
+            usesMobilePresentation()
+                ? 'Understand your sources'
+                : 'Review private source maps',
             style: Theme.of(context).textTheme.titleLarge,
           ),
           const SizedBox(height: 8),
@@ -237,27 +244,50 @@ class _KnowledgeSourceMapsState extends State<KnowledgeSourceMaps>
             const Text(
               'Showing up to 25 reviews; the full count is unavailable.',
             ),
-            DropdownButtonFormField<String>(
-              initialValue: _status,
-              isExpanded: true,
-              decoration: const InputDecoration(labelText: 'Source-map status'),
-              items: [
-                for (final status in sourceMapStatuses)
-                  DropdownMenuItem(
-                    value: status,
-                    child: Text(status.replaceAll('_', ' ')),
-                  ),
-              ],
-              onChanged: _loading
-                  ? null
-                  : (value) {
-                      setState(() {
-                        _status = value!;
-                        _rows = const [];
-                      });
-                      _load();
-                    },
-            ),
+            if (usesMobilePresentation())
+              MobileSegmentBar<String>(
+                value: _status,
+                items: [
+                  for (final status in sourceMapStatuses)
+                    (
+                      value: status,
+                      label: memoryFriendlyLabel(status),
+                      icon: null,
+                    ),
+                ],
+                onChanged: (value) {
+                  if (_loading) return;
+                  setState(() {
+                    _status = value;
+                    _rows = const [];
+                  });
+                  _load();
+                },
+              )
+            else
+              DropdownButtonFormField<String>(
+                initialValue: _status,
+                isExpanded: true,
+                decoration: const InputDecoration(
+                  labelText: 'Source-map status',
+                ),
+                items: [
+                  for (final status in sourceMapStatuses)
+                    DropdownMenuItem(
+                      value: status,
+                      child: Text(status.replaceAll('_', ' ')),
+                    ),
+                ],
+                onChanged: _loading
+                    ? null
+                    : (value) {
+                        setState(() {
+                          _status = value!;
+                          _rows = const [];
+                        });
+                        _load();
+                      },
+              ),
             Align(
               alignment: AlignmentDirectional.centerStart,
               child: OutlinedButton(
@@ -295,20 +325,45 @@ class _KnowledgeSourceMapsState extends State<KnowledgeSourceMaps>
                   ),
                 ),
               ),
-            TextField(
-              controller: _exact,
-              decoration: const InputDecoration(
-                labelText: 'Exact source-map review ID',
+            if (usesMobilePresentation())
+              MobileDetailsDisclosure(
+                title: 'Open by reference',
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    TextField(
+                      controller: _exact,
+                      decoration: const InputDecoration(
+                        labelText: 'Exact source-map review ID',
+                      ),
+                      onSubmitted: (value) => _open(value.trim()),
+                    ),
+                    Align(
+                      alignment: AlignmentDirectional.centerStart,
+                      child: OutlinedButton(
+                        onPressed: () => _open(_exact.text.trim()),
+                        child: const Text('Open exact source map'),
+                      ),
+                    ),
+                  ],
+                ),
+              )
+            else ...[
+              TextField(
+                controller: _exact,
+                decoration: const InputDecoration(
+                  labelText: 'Exact source-map review ID',
+                ),
+                onSubmitted: (value) => _open(value.trim()),
               ),
-              onSubmitted: (value) => _open(value.trim()),
-            ),
-            Align(
-              alignment: AlignmentDirectional.centerStart,
-              child: OutlinedButton(
-                onPressed: () => _open(_exact.text.trim()),
-                child: const Text('Open exact source map'),
+              Align(
+                alignment: AlignmentDirectional.centerStart,
+                child: OutlinedButton(
+                  onPressed: () => _open(_exact.text.trim()),
+                  child: const Text('Open exact source map'),
+                ),
               ),
-            ),
+            ],
           ] else ...[
             Wrap(
               spacing: 12,
@@ -346,7 +401,7 @@ class _KnowledgeSourceMapsState extends State<KnowledgeSourceMaps>
               const SizedBox(height: 12),
               SelectableText(review.summary),
               Text(
-                'Model confidence: ${(review.raw['summary'] as Map)['confidenceBasisPoints']} / 10000. This is not independent verification.',
+                'AI confidence: ${((review.raw['summary'] as Map)['confidenceBasisPoints'] as num) / 100}%. This is an estimate, not independent verification.',
               ),
               const SizedBox(height: 12),
               Text(

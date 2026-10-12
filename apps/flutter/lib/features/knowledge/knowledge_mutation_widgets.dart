@@ -2,6 +2,10 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 
+import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_flow_scaffold.dart';
+import 'knowledge_labels.dart';
+
 import 'knowledge.dart';
 import 'knowledge_mutations.dart';
 
@@ -230,12 +234,16 @@ Future<void> showMemoryEditor(
   MemoryRecord? memory,
 }) => showDialog<void>(
   context: context,
-  builder: (_) => Dialog(
-    child: ConstrainedBox(
-      constraints: const BoxConstraints(maxWidth: 640),
-      child: MemoryEditor(controller: controller, memory: memory),
-    ),
-  ),
+  builder: (_) => usesMobilePresentation()
+      ? Dialog.fullscreen(
+          child: MemoryEditor(controller: controller, memory: memory),
+        )
+      : Dialog(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 640),
+            child: MemoryEditor(controller: controller, memory: memory),
+          ),
+        ),
 );
 
 class MemoryEditor extends StatefulWidget {
@@ -292,106 +300,129 @@ class _MemoryEditorState extends State<MemoryEditor> {
     listenable: widget.controller,
     builder: (context, _) {
       final controller = widget.controller;
-      return SingleChildScrollView(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (!controller.available)
-              const Text(
-                'This Memory session ended. Close this editor and reopen it from the current account.',
-              )
-            else ...[
+      final submit = FilledButton(
+        onPressed:
+            controller.pendingChange != null ||
+                _submittedKey != null &&
+                    controller.acceptedChange?.submission.key ==
+                        _submittedKey ||
+                !controller.supportsChange(
+                  widget.memory == null
+                      ? MemoryChange.create
+                      : MemoryChange.correct,
+                )
+            ? null
+            : _save,
+        child: Text(
+          widget.memory == null
+              ? 'Record private memory'
+              : _contradiction
+              ? 'Submit review candidate'
+              : 'Record correction',
+        ),
+      );
+      final content = Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (!controller.available)
+            const Text(
+              'This Memory session ended. Close this editor and reopen it from the current account.',
+            )
+          else ...[
+            if (!usesMobilePresentation())
               Text(
                 widget.memory == null
                     ? 'Add private memory'
                     : 'Review a correction',
                 style: Theme.of(context).textTheme.titleLarge,
               ),
-              if (widget.memory != null)
-                SelectableText('Original identity: ${widget.memory!.id}'),
-              const Text(
-                'The server may redact sensitive text. The accepted record and its identity remain inspectable in the receipt.',
-              ),
-              TextField(
-                controller: _title,
-                maxLength: 240,
-                enabled: !controller.changing,
-                decoration: const InputDecoration(labelText: 'Title'),
-              ),
-              TextField(
-                controller: _content,
-                minLines: 4,
-                maxLines: 12,
-                maxLength: 200000,
-                enabled: !controller.changing,
-                decoration: const InputDecoration(labelText: 'Memory content'),
-              ),
-              if (widget.memory == null)
-                DropdownButtonFormField<String>(
-                  initialValue: _type,
-                  decoration: const InputDecoration(labelText: 'Memory type'),
-                  isExpanded: true,
-                  items: [
-                    for (final value in [
-                      'fact',
-                      'preference',
-                      'episode',
-                      'procedure',
-                      'knowledge',
-                      'decision',
-                      'task',
-                    ])
-                      DropdownMenuItem(value: value, child: Text(value)),
-                  ],
-                  onChanged: controller.changing
-                      ? null
-                      : (value) => setState(() => _type = value ?? 'fact'),
-                ),
-              if (widget.memory != null)
-                CheckboxListTile(
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('Propose a contradiction for review'),
-                  subtitle: const Text(
-                    'A contradiction remains a candidate until it is explicitly resolved. An ordinary correction creates a superseding memory.',
-                  ),
-                  value: _contradiction,
-                  onChanged: controller.changing
-                      ? null
-                      : (value) =>
-                            setState(() => _contradiction = value ?? false),
-                ),
-              if (_error != null) Text(_error!),
-              MemoryChangeStatus(controller: controller),
-              FilledButton(
-                onPressed:
-                    controller.pendingChange != null ||
-                        _submittedKey != null &&
-                            controller.acceptedChange?.submission.key ==
-                                _submittedKey ||
-                        !controller.supportsChange(
-                          widget.memory == null
-                              ? MemoryChange.create
-                              : MemoryChange.correct,
-                        )
+            if (widget.memory != null)
+              usesMobilePresentation()
+                  ? MobileDetailsDisclosure(
+                      child: SelectableText(
+                        'Original identity: ${widget.memory!.id}',
+                      ),
+                    )
+                  : SelectableText('Original identity: ${widget.memory!.id}'),
+            const Text(
+              'The server may redact sensitive text. The accepted record and its identity remain inspectable in the receipt.',
+            ),
+            TextField(
+              controller: _title,
+              maxLength: 240,
+              enabled: !controller.changing,
+              decoration: const InputDecoration(labelText: 'Title'),
+            ),
+            TextField(
+              controller: _content,
+              minLines: 4,
+              maxLines: 12,
+              maxLength: 200000,
+              enabled: !controller.changing,
+              decoration: const InputDecoration(labelText: 'Memory content'),
+            ),
+            if (widget.memory == null)
+              DropdownButtonFormField<String>(
+                initialValue: _type,
+                decoration: const InputDecoration(labelText: 'Memory type'),
+                isExpanded: true,
+                items: [
+                  for (final value in [
+                    'fact',
+                    'preference',
+                    'episode',
+                    'procedure',
+                    'knowledge',
+                    'decision',
+                    'task',
+                  ])
+                    DropdownMenuItem(
+                      value: value,
+                      child: Text(
+                        usesMobilePresentation()
+                            ? memoryFriendlyLabel(value)
+                            : value,
+                      ),
+                    ),
+                ],
+                onChanged: controller.changing
                     ? null
-                    : _save,
-                child: Text(
-                  widget.memory == null
-                      ? 'Record private memory'
-                      : _contradiction
-                      ? 'Submit review candidate'
-                      : 'Record correction',
-                ),
+                    : (value) => setState(() => _type = value ?? 'fact'),
               ),
-            ],
+            if (widget.memory != null)
+              CheckboxListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Propose a contradiction for review'),
+                subtitle: const Text(
+                  'A contradiction remains a candidate until it is explicitly resolved. An ordinary correction creates a superseding memory.',
+                ),
+                value: _contradiction,
+                onChanged: controller.changing
+                    ? null
+                    : (value) =>
+                          setState(() => _contradiction = value ?? false),
+              ),
+            if (_error != null) Text(_error!),
+            MemoryChangeStatus(controller: controller),
+            if (!usesMobilePresentation()) submit,
+          ],
+          if (!usesMobilePresentation())
             TextButton(
               onPressed: () => Navigator.of(context).pop(),
               child: const Text('Close editor'),
             ),
-          ],
-        ),
+        ],
+      );
+      if (usesMobilePresentation())
+        return MobileFlowScaffold(
+          title: widget.memory == null ? 'New memory' : 'Correct a memory',
+          child: content,
+          footer: controller.available ? submit : null,
+        );
+      return SingleChildScrollView(
+        padding: const EdgeInsets.all(20),
+        child: content,
       );
     },
   );

@@ -1,9 +1,16 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+
+import 'mobile_connection_presentation.dart';
+
+import '../settings/adaptive_control_dialog.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/network/native_workspace_access.dart';
+import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_page_scaffold.dart';
 import 'connector_contracts.dart';
 import 'connector_mcp_registration_contracts.dart';
 import 'connector_mcp_registration_controller.dart';
@@ -237,9 +244,10 @@ class _ConnectorMcpRegistrationPanelState
         key: PageStorageKey(('mcp-registration-list', c)),
         padding: const EdgeInsets.all(20),
         children: [
-          Text(
-            'New MCP connection',
-            style: Theme.of(context).textTheme.headlineSmall,
+          ConnectionFlowHeading(
+            title: 'New MCP connection',
+            mobileTitle: 'Set up a connection',
+            icon: Icons.hub_outlined,
           ),
           const SizedBox(height: 8),
           const Text(
@@ -269,7 +277,25 @@ class _ConnectorMcpRegistrationPanelState
               ),
             ),
           if (c.sequence != null) _recovery(),
-          if (c.canPrepare) ..._form(),
+          if (c.canPrepare)
+            if (usesMobilePresentation())
+              Padding(
+                padding: const EdgeInsets.only(top: 20),
+                child: MobileSurface(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      for (final field in _form().skip(1))
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 16),
+                          child: field,
+                        ),
+                    ],
+                  ),
+                ),
+              )
+            else
+              ..._form(),
         ],
       );
     },
@@ -306,6 +332,7 @@ class _ConnectorMcpRegistrationPanelState
       label: 'Open browser setup',
     ),
     DropdownButtonFormField<String>(
+      isExpanded: true,
       key: PageStorageKey(('mcp-registration-auth', c)),
       initialValue: _authType,
       decoration: const InputDecoration(labelText: 'Authentication'),
@@ -313,7 +340,7 @@ class _ConnectorMcpRegistrationPanelState
         DropdownMenuItem(value: 'none', child: Text('No authentication')),
         DropdownMenuItem(
           value: 'bearer_env',
-          child: Text('Deployer-bound environment handle'),
+          child: Text('Configured environment token'),
         ),
         DropdownMenuItem(
           value: 'bearer_vault',
@@ -334,7 +361,7 @@ class _ConnectorMcpRegistrationPanelState
         key: PageStorageKey(('mcp-registration-environment', c)),
         controller: _environment,
         decoration: const InputDecoration(
-          labelText: 'Environment handle',
+          labelText: 'Configured secret name',
           helperText: 'Enter the configured handle, never its secret value.',
         ),
         onChanged: (_) => setState(() {}),
@@ -363,6 +390,7 @@ class _ConnectorMcpRegistrationPanelState
       ),
     ],
     DropdownButtonFormField<int>(
+      isExpanded: true,
       key: PageStorageKey(('mcp-registration-risk', c)),
       initialValue: _risk,
       decoration: const InputDecoration(labelText: 'Default tool risk'),
@@ -554,7 +582,7 @@ class _ConnectorMcpRegistrationPanelState
       return await showDialog<bool>(
             context: context,
             useRootNavigator: false,
-            builder: (context) => AlertDialog(
+            builder: (context) => AdaptiveControlDialog(
               scrollable: true,
               title: Text(title),
               content: body,

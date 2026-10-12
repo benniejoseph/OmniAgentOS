@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../settings/adaptive_control_dialog.dart';
+
 import '../../app/platform/mobile_presentation.dart';
 import '../../app/mobile/mobile_page_scaffold.dart';
 
@@ -1610,7 +1612,7 @@ class _AgentsViewState extends State<AgentsView>
     final yes = await showDialog<bool>(
       context: context,
       useRootNavigator: false,
-      builder: (_) => AlertDialog(
+      builder: (_) => AdaptiveControlDialog(
         title: Text('Delete $name?'),
         content: const Text('This cannot be undone.'),
         actions: [
@@ -1773,7 +1775,7 @@ class _AgentDialogState extends State<_AgentDialog> {
   }
 
   @override
-  Widget build(BuildContext context) => AlertDialog(
+  Widget build(BuildContext context) => AdaptiveControlDialog(
     title: Text(widget.agent == null ? 'New agent' : 'Edit agent'),
     content: SizedBox(
       width: 560,
@@ -1944,7 +1946,7 @@ class _SkillDialogState extends State<_SkillDialog> {
   List<String> split(String v) =>
       v.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
   @override
-  Widget build(BuildContext context) => AlertDialog(
+  Widget build(BuildContext context) => AdaptiveControlDialog(
     title: Text(widget.skill == null ? 'New skill' : 'Edit skill'),
     content: SizedBox(
       width: 520,

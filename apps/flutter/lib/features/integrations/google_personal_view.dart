@@ -1,9 +1,15 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+
+import 'mobile_connection_presentation.dart';
+
+import '../settings/adaptive_control_dialog.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/network/native_workspace_access.dart';
+import '../../app/platform/mobile_presentation.dart';
 import 'connector_contracts.dart';
 import 'google_personal_contracts.dart';
 import 'google_personal_controller.dart';
@@ -162,9 +168,10 @@ class _GooglePersonalControlPanelState extends State<GooglePersonalControlPanel>
         key: PageStorageKey(('native-google-list', c, c.owner.key)),
         padding: const EdgeInsets.all(20),
         children: [
-          Text(
-            'Your Google account',
-            style: Theme.of(context).textTheme.headlineSmall,
+          ConnectionFlowHeading(
+            title: 'Your Google account',
+            mobileTitle: 'Manage Google access',
+            icon: Icons.account_circle_outlined,
           ),
           const SizedBox(height: 8),
           const Text(
@@ -441,7 +448,7 @@ class _GooglePersonalControlPanelState extends State<GooglePersonalControlPanel>
       confirmed = await showDialog<bool>(
         context: context,
         useRootNavigator: false,
-        builder: (dialogContext) => AlertDialog(
+        builder: (dialogContext) => AdaptiveControlDialog(
           scrollable: true,
           title: Text(googlePersonalActionLabel(action)),
           content: Column(

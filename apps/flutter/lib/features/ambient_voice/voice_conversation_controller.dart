@@ -132,6 +132,9 @@ class VoiceConversationController extends ChangeNotifier {
   String? sessionId;
   String? conversationId;
   String agentName = 'ATLAS';
+
+  /// Display metadata returned by the service; never used to choose transport.
+  String? modelName;
   Map<String, dynamic>? commandContext;
   CompanionPersonality? companionPersonality;
   String caption = '';
@@ -185,6 +188,7 @@ class VoiceConversationController extends ChangeNotifier {
     sessionId = null;
     conversationId = null;
     commandContext = null;
+    modelName = null;
     companionPersonality = null;
     _responseActive = false;
     _userSpeaking = false;
@@ -275,6 +279,13 @@ class VoiceConversationController extends ChangeNotifier {
       sessionId = credential['sessionId'] as String;
       conversationId = credential['conversationId'] as String;
       agentName = credential['agentName'] as String;
+      final responseModel = credential['model'];
+      modelName =
+          responseModel is String &&
+              responseModel.trim().isNotEmpty &&
+              responseModel.length <= 240
+          ? responseModel.trim()
+          : null;
       commandContext = Map<String, dynamic>.unmodifiable(
         credential['commandContext'] as Map,
       );

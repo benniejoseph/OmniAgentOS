@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
 
+import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_flow_scaffold.dart';
+
 import 'agent_council.dart';
 
 /// Shared macOS/Android inspector for the immutable authority actually bound
@@ -82,7 +85,9 @@ class _AgentTaskAuthorityViewState extends State<AgentTaskAuthorityView> {
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  'Signed grants · ${_label(validation.status)}',
+                  usesMobilePresentation()
+                      ? 'Task permissions · ${_label(validation.status)}'
+                      : 'Signed grants · ${_label(validation.status)}',
                   style: Theme.of(context).textTheme.titleSmall,
                 ),
               ),
@@ -106,15 +111,35 @@ class _AgentTaskAuthorityViewState extends State<AgentTaskAuthorityView> {
           ),
           const SizedBox(height: 7),
           Text(
-            'These pins are immutable for this task. Stop the task or manage the source capability; signed grants cannot be edited or revoked in place.',
+            usesMobilePresentation()
+                ? 'These permissions are fixed for this task. To change access, stop the task or manage the original capability. You cannot edit or revoke an existing signed grant here.'
+                : 'These pins are immutable for this task. Stop the task or manage the source capability; signed grants cannot be edited or revoked in place.',
             style: Theme.of(context).textTheme.bodySmall,
           ),
           const SizedBox(height: 12),
-          _DigestLine(label: 'Contract', value: authority.contractSha256),
-          _DigestLine(
-            label: 'Grant request',
-            value: authority.grantRequestSha256,
-          ),
+          if (usesMobilePresentation())
+            MobileDetailsDisclosure(
+              title: 'Verification fingerprints',
+              child: Column(
+                children: [
+                  _DigestLine(
+                    label: 'Contract',
+                    value: authority.contractSha256,
+                  ),
+                  _DigestLine(
+                    label: 'Grant request',
+                    value: authority.grantRequestSha256,
+                  ),
+                ],
+              ),
+            )
+          else ...[
+            _DigestLine(label: 'Contract', value: authority.contractSha256),
+            _DigestLine(
+              label: 'Grant request',
+              value: authority.grantRequestSha256,
+            ),
+          ],
           if (validation.category != null)
             _ValueLine(
               label: 'Validation',

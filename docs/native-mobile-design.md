@@ -1,6 +1,6 @@
 # Asael mobile experience
 
-12 October 2026. Android and iOS presentation, version 1.31.0.
+12 October 2026. Android and iOS presentation, version 1.32.0.
 
 ## Design revision after phone feedback
 
@@ -82,7 +82,13 @@ Gold identifies selected navigation, useful actions and ATLAS details. Lists use
 | Settings / Security | Grouped preferences with selected detail; clear access, data, device and decision information |
 | Search / Authentication | Focused search and keyboard-aware sign-in/recovery; existing scope and session protection |
 
-This is a presentation release. Native Work currently exposes projects, tasks and artifacts; the web CSM client/role-context workspace is not represented by the current native contract. A redesign must not imply that unavailable native functionality exists. Connection-management browser handoffs likewise remain explicit where required.
+Native contract v55 adds CSM client briefs, role notes, exact Library source links and a scoped Assistant draft handoff. Mobile Work now separates Clients, My role and Projects. Client creation reuses the created project if saving its initial brief is interrupted. The Assistant handoff selects Client Success Partner, confirms replacement of any existing draft, and never sends automatically. The server adds the latest role and client context when the selected client is used. Existing v54, v53 and v52 clients remain supported; the installed Mac is not forced into an incompatible upgrade.
+
+The completion pass also adds phone-sized nested forms, readers and reviews across Voice, Work, Memory, Meetings, Follow-ups, Results, Capabilities, Agents and Settings. `MobileFlowScaffold` provides keyboard-aware scrolling and a reachable action footer without owning feature authorization. Voice Options unifies model/context information, appearance, personality and behaviour; changes that affect a new call are labelled accordingly.
+
+Android file export uses a two-step destination flow. The Android picker receives no private bytes; normal app locking still applies. After unlocking, the user explicitly verifies and saves freshly downloaded content into the chosen destination. Owner/API binding and byte/hash validation remain mandatory. Private exports are not copied into a public Downloads path automatically.
+
+Browser handoffs remain explicit for external account consent and unsupported privileged operations; they do not transfer native credentials. Native source upload, client edits, role context, memory actions, connection registration/import/discovery/rotation/removal and normal app work use the phone UI.
 
 ## Performance and authority
 
@@ -112,3 +118,30 @@ compositions. It can be compiled with `flutter build web --release --no-pub
 This provides visual checks for light/dark and larger text without disabling
 Android's protected screenshot boundary. It does not validate live feature
 data, recording, authentication or the complete installed application.
+
+
+## 1.32 completion coverage
+
+| Area | Implemented phone flows |
+| --- | --- |
+| Work / CSM | Clients, role notes, briefs, source linking and removal, new client recovery, dedicated partner setup and owner-bound Assistant drafts |
+| Projects | Creation, tasks, plans, deliverables, artifact feedback, archive and active native Build workspace |
+| Assistant / Voice | History, progress, results, prompt queue, draft editing, context search and selection, approvals, unified Voice Options |
+| Capture / Listen | Recording stage, named person/project selection, processing receipt, conversation and cited-source reader |
+| Memory | Editing, provenance, source selection, Map filters, recall, promotion, maintenance and deletion-impact reviews |
+| Meetings / Follow-ups | Editors, local date/time selection, recording and calendar reviews, commitment/lifecycle confirmation |
+| History / Results / Markets | Existing phone readers plus full-screen action reviews and Android file destination/save flow |
+| Settings / About me | Grouped native profile editor, AI settings and workspace administration with focused details |
+| Capabilities / Agents | Native connection setup/import/discovery/rotation/removal/trash, specialist and skill editing, governance/permission review |
+| Security / Quality / Monitoring | Grouped entry points and guarded full-screen readers for the native-supported operations |
+| Navigation / Today / Library / Inbox / Payments / Search / Authentication | Dedicated phone compositions delivered in 1.31 retained and integrated with these child flows |
+
+Native write support is not claimed for browser-only provider credential changes,
+archive restoration, payment signing, evaluation/monitoring writes or signed
+retention/audit administration. External consent and OS permissions retain their
+normal destination. Android saving is bounded to 32 MiB with an expiring one-use
+destination; iOS file export is not enabled by this Android release. These are
+functional platform boundaries, not placeholder success states.
+
+Compilation and release checks are recorded separately from full interaction
+coverage. Test suites, analyzer and audits remain deferred by the owner.

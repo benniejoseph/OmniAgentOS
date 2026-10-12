@@ -15,8 +15,10 @@ import '../../app/brand/asael_mark.dart';
 import '../../app/platform/macos_presentation.dart';
 import '../../app/platform/mobile_presentation.dart';
 import '../../app/mobile/mobile_page_scaffold.dart';
+import '../../app/mobile/mobile_flow_scaffold.dart';
 import '../../app/theme/macos_app_theme.dart';
 import '../../core/network/api_exception.dart';
+import '../../core/network/api_client.dart' show NativeRequestAuthority;
 import '../../core/platform/desktop_host_bridge.dart';
 import '../../core/platform/local_computer_bridge.dart';
 import '../../core/platform/android_device_bridge.dart';
@@ -35,6 +37,7 @@ import '../companion/companion_personality.dart';
 import '../companion/companion_presence.dart';
 import '../companion/companion_presentation.dart';
 import 'talk_command_context.dart';
+import 'talk_voice_context_sheet.dart';
 import 'talk_history.dart';
 import 'talk_history_view.dart';
 import 'talk_model_selection.dart';
@@ -3797,6 +3800,21 @@ class RecordVoiceDraftRecorder
   Future<void> dispose() => _recorder.dispose();
 }
 
+class TalkDraftHandoff {
+  const TalkDraftHandoff({
+    required this.id,
+    required this.prompt,
+    required this.project,
+    required this.authority,
+    this.agentId,
+    this.agentName,
+  });
+  final String id, prompt;
+  final TalkCommandContextReference project;
+  final String? agentId, agentName;
+  final NativeRequestAuthority authority;
+}
+
 class TalkView extends StatefulWidget {
   const TalkView({
     super.key,
@@ -3819,6 +3837,8 @@ class TalkView extends StatefulWidget {
     this.requestedThreadId,
     this.onThreadAdopted,
     this.onOpenResponsibilities,
+    this.draftHandoff,
+    this.onDraftHandoffHandled,
   });
 
   final TalkController controller;
@@ -3846,6 +3866,8 @@ class TalkView extends StatefulWidget {
   final String? requestedThreadId;
   final ValueChanged<String>? onThreadAdopted;
   final VoidCallback? onOpenResponsibilities;
+  final TalkDraftHandoff? draftHandoff;
+  final ValueChanged<String>? onDraftHandoffHandled;
   @override
   State<TalkView> createState() => _TalkViewState();
 }
@@ -3861,6 +3883,8 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   String? _voiceBoundSelection;
   String? _voiceBoundThread;
   bool _startingConversation = false;
+  String? _handledDraftHandoff;
+  bool _reviewingDraftHandoff = false;
   bool ambientConsentAccepted = false;
   String strategy = 'auto';
   String commandMode = 'orchestrate';
@@ -4115,6 +4139,128 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     );
   }
 
+  bool get _draftHandoffBusy =>
+      widget.controller.sending ||
+      widget.controller.historyInteractionBusy ||
+      voiceDraftBusy ||
+      voiceConversation?.active == true ||
+      widget.backgroundVoiceController?.active == true;
+
+  bool _draftHandoffCurrent(
+    TalkDraftHandoff handoff,
+    TalkController controller,
+  ) =>
+      mounted &&
+      identical(widget.controller, controller) &&
+      identical(widget.controllerResolver?.call() ?? controller, controller) &&
+      widget.draftHandoff?.id == handoff.id &&
+      handoff.authority.isCurrent() &&
+      widget.workspaceLocked?.value != true &&
+      handoff.project.kind == 'project' &&
+      handoff.project.selectable &&
+      handoff.project.id.isNotEmpty &&
+      handoff.prompt.trim().isNotEmpty &&
+      handoff.prompt.length <= 20000;
+
+  Future<void> _acceptDraftHandoff() async {
+    final handoff = widget.draftHandoff;
+    final controller = widget.controller;
+    if (handoff == null ||
+        _handledDraftHandoff == handoff.id ||
+        _reviewingDraftHandoff ||
+        _draftHandoffBusy ||
+        !_draftHandoffCurrent(handoff, controller))
+      return;
+    final previous = input.text;
+    if (previous.trim().isNotEmpty) {
+      setState(() => _reviewingDraftHandoff = true);
+      final accepted = await showMobileSheet<bool>(
+        context: context,
+        title: 'Use the client draft?',
+        builder: (sheetContext) => ListenableBuilder(
+          listenable: Listenable.merge([
+            controller,
+            if (widget.workspaceLocked != null) widget.workspaceLocked!,
+          ]),
+          builder: (context, _) => !_draftHandoffCurrent(handoff, controller)
+              ? const Text(
+                  'Your workspace changed. Close and return to Assistant.',
+                )
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    const Text(
+                      'You already have an unsent message. Replace it with this client draft in a new conversation?',
+                    ),
+                    const SizedBox(height: 16),
+                    MobileSurface(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            handoff.project.label,
+                            style: Theme.of(context).textTheme.titleMedium,
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            handoff.prompt,
+                            maxLines: 8,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                    OutlinedButton(
+                      onPressed: () => Navigator.pop(sheetContext, false),
+                      child: const Text('Keep my current draft'),
+                    ),
+                    const SizedBox(height: 8),
+                    FilledButton(
+                      onPressed: () => Navigator.pop(sheetContext, true),
+                      child: const Text('Use client draft'),
+                    ),
+                  ],
+                ),
+        ),
+      );
+      if (mounted) setState(() => _reviewingDraftHandoff = false);
+      if (!_draftHandoffCurrent(handoff, controller)) return;
+      if (accepted != true) {
+        setState(() => _handledDraftHandoff = handoff.id);
+        widget.onDraftHandoffHandled?.call(handoff.id);
+        return;
+      }
+      if (input.text != previous || _draftHandoffBusy) return;
+    }
+    if (!_draftHandoffCurrent(handoff, controller) || _draftHandoffBusy) return;
+    controller.newConversation();
+    final agentId = handoff.agentId?.trim();
+    final agentName = handoff.agentName?.trim();
+    if (agentId != null &&
+        agentId.isNotEmpty &&
+        agentName != null &&
+        agentName.isNotEmpty) {
+      controller.assignAgent(id: agentId, name: agentName);
+    } else {
+      controller.clearAssignedAgent();
+    }
+    setState(() {
+      commandReferences
+        ..clear()
+        ..add(handoff.project);
+      commandMode = 'orchestrate';
+      executionTarget = TalkExecutionTarget.agent;
+      input.text = handoff.prompt;
+      input.selection = TextSelection.collapsed(offset: input.text.length);
+      _handledDraftHandoff = handoff.id;
+    });
+    resetCommandModelCatalog();
+    _rememberVoiceContext();
+    widget.onDraftHandoffHandled?.call(handoff.id);
+    inputFocus.requestFocus();
+  }
+
   @override
   void initState() {
     super.initState();
@@ -4136,6 +4282,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) unawaited(loadCommandModelCatalog());
+      if (mounted) unawaited(_acceptDraftHandoff());
     });
     if (widget.quickEntry) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -4157,6 +4304,11 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   @override
   void didUpdateWidget(covariant TalkView oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.draftHandoff?.id != widget.draftHandoff?.id) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) unawaited(_acceptDraftHandoff());
+      });
+    }
     if (oldWidget.controller != widget.controller) {
       oldWidget.controller.removeListener(_handleVoiceSelectionChanged);
       if (widget.ambientVoice)
@@ -4945,6 +5097,45 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
 
   Future<void> _openHistorySheet() async {
     _invalidateCompanionHome();
+    if (usesMobilePresentation()) {
+      final controller = widget.controller;
+      bool current() =>
+          mounted &&
+          identical(controller, widget.controller) &&
+          (widget.controllerResolver?.call() ?? controller) == controller &&
+          widget.workspaceLocked?.value != true;
+      await showDialog<void>(
+        context: context,
+        builder: (sheetContext) => Dialog.fullscreen(
+          child: ListenableBuilder(
+            listenable: Listenable.merge([
+              controller,
+              if (widget.workspaceLocked != null) widget.workspaceLocked!,
+            ]),
+            builder: (_, _) => !current()
+                ? const Center(
+                    child: Text('Unlock your workspace to open conversations.'),
+                  )
+                : TalkHistoryPane(
+                    controller: controller,
+                    onClose: () => Navigator.of(sheetContext).pop(),
+                    onNew: () {
+                      if (!current()) return;
+                      Navigator.of(sheetContext).pop();
+                      controller.newConversation();
+                      inputFocus.requestFocus();
+                    },
+                    onSelected: (id) {
+                      if (!current()) return;
+                      Navigator.of(sheetContext).pop();
+                      unawaited(controller.openThread(id));
+                    },
+                  ),
+          ),
+        ),
+      );
+      return;
+    }
     await showModalBottomSheet<void>(
       context: context,
       useSafeArea: true,
@@ -4972,6 +5163,47 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   }
 
   Future<void> _openRailSheet(_TalkRailSection initialSection) async {
+    if (usesMobilePresentation()) {
+      final controller = widget.controller;
+      bool current() =>
+          mounted &&
+          identical(controller, widget.controller) &&
+          (widget.controllerResolver?.call() ?? controller) == controller &&
+          widget.workspaceLocked?.value != true;
+      await showDialog<void>(
+        context: context,
+        builder: (sheetContext) => Dialog.fullscreen(
+          child: ListenableBuilder(
+            listenable: Listenable.merge([
+              controller,
+              if (widget.workspaceLocked != null) widget.workspaceLocked!,
+            ]),
+            builder: (_, _) => !current()
+                ? const Center(
+                    child: Text(
+                      'Unlock your workspace to view this conversation.',
+                    ),
+                  )
+                : _TalkActivityPane(
+                    controller: controller,
+                    initialSection: initialSection,
+                    current: current,
+                    guard: widget.workspaceLocked,
+                    onClose: () => Navigator.of(sheetContext).pop(),
+                    onOpenResponsibilities:
+                        widget.onOpenResponsibilities == null
+                        ? null
+                        : () {
+                            if (!current()) return;
+                            Navigator.of(sheetContext).pop();
+                            widget.onOpenResponsibilities?.call();
+                          },
+                  ),
+          ),
+        ),
+      );
+      return;
+    }
     await showModalBottomSheet<void>(
       context: context,
       useSafeArea: true,
@@ -5625,10 +5857,82 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     }
   }
 
+  String _mobileVoiceContextSummary() {
+    final value = voiceConversation?.active == true
+        ? voiceConversation!.commandContext ??
+              widget.controller.voiceConversationContext
+        : widget.controller.voiceConversationContext;
+    final count = value['contextReferences'] is List
+        ? (value['contextReferences'] as List).length
+        : 0;
+    return [
+      value['contextScope'] == 'project'
+          ? 'Project context'
+          : 'This conversation',
+      if (count > 0) '$count linked ${count == 1 ? 'source' : 'sources'}',
+      value['computerUseTarget'] == 'local_android'
+          ? 'This phone'
+          : 'Asael and connected tools',
+    ].join(' · ');
+  }
+
+  Future<void> _editMobileVoiceContext() async {
+    final controller = widget.controller;
+    bool current() =>
+        mounted &&
+        identical(widget.controller, controller) &&
+        identical(
+          widget.controllerResolver?.call() ?? controller,
+          controller,
+        ) &&
+        widget.workspaceLocked?.value != true &&
+        voiceConversation?.active != true &&
+        !_startingConversation;
+    if (!current()) return;
+    final existing = controller.voiceConversationContext;
+    final refs = <TalkCommandContextReference>[];
+    for (final value in (existing['contextReferences'] as List? ?? const [])) {
+      if (value is! Map) continue;
+      try {
+        refs.add(
+          TalkCommandContextReference.fromRequestJson(
+            Map<String, dynamic>.from(value),
+          ),
+        );
+      } on FormatException {
+        return;
+      }
+    }
+    final selection = await showDialog<MobileVoiceContextSelection>(
+      context: context,
+      builder: (_) => MobileVoiceContextEditor(
+        loadCatalog: controller.loadCommandContextCatalog,
+        selected: refs,
+        usePhone: existing['computerUseTarget'] == 'local_android',
+        phoneReady: widget.androidPhone?.ready == true,
+        current: current,
+        guard: Listenable.merge([
+          controller,
+          if (widget.workspaceLocked != null) widget.workspaceLocked!,
+        ]),
+      ),
+    );
+    if (selection == null || !current()) return;
+    controller.rememberVoiceContext(
+      existing['mode'] as String? ?? 'orchestrate',
+      selection.references,
+      executionTarget: selection.usePhone
+          ? TalkExecutionTarget.thisPhone
+          : TalkExecutionTarget.agent,
+    );
+    setState(() {});
+  }
+
   Widget _buildVoiceConversation(
     BuildContext context,
     VoiceConversationController voice,
   ) {
+    final expectedController = widget.controller;
     final phase = switch (voice.phase) {
       VoiceConversationPhase.idle ||
       VoiceConversationPhase.ended => AmbientVoicePhase.asleep,
@@ -5668,6 +5972,17 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
         startError: recordingError,
         selectedAgentName: widget.controller.assignedAgent?.name ?? 'ATLAS',
         companionPreferences: widget.companionController?.current?.preferences,
+        contextSummary: _mobileVoiceContextSummary,
+        current: () =>
+            mounted &&
+            identical(widget.controller, expectedController) &&
+            identical(
+              widget.controllerResolver?.call() ?? expectedController,
+              expectedController,
+            ) &&
+            widget.workspaceLocked?.value != true,
+        onEditContext: _editMobileVoiceContext,
+        onModels: () => context.push('/settings?section=models'),
         onStart: () => unawaited(_startVoiceConversation()),
         onEnd: () => unawaited(_closeAmbientVoice()),
       ),
@@ -6132,7 +6447,11 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                   child: ListTile(
                     contentPadding: EdgeInsets.zero,
                     leading: const Icon(Icons.auto_awesome_mosaic_outlined),
-                    title: const Text('Run artifacts'),
+                    title: Text(
+                      usesMobilePresentation()
+                          ? 'Created for you'
+                          : 'Run artifacts',
+                    ),
                     trailing: Text('${widget.controller.artifacts.length}'),
                   ),
                 ),
@@ -6141,7 +6460,9 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                   child: ListTile(
                     contentPadding: EdgeInsets.zero,
                     leading: const Icon(Icons.playlist_play_rounded),
-                    title: const Text('Prompt queue'),
+                    title: Text(
+                      usesMobilePresentation() ? 'Up next' : 'Prompt queue',
+                    ),
                     trailing: Text('${widget.controller.promptQueue.length}'),
                   ),
                 ),
@@ -6169,6 +6490,34 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                 recordingError ?? widget.controller.voiceErrorMessage;
             final conversation = Column(
               children: [
+                if (widget.draftHandoff case final handoff?)
+                  if (_handledDraftHandoff != handoff.id &&
+                      _draftHandoffCurrent(handoff, widget.controller))
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+                      child: MobileSurface(
+                        child: Row(
+                          children: [
+                            const Icon(Icons.edit_note_rounded),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Text(
+                                _draftHandoffBusy
+                                    ? '${handoff.project.label} · draft ready when your current work finishes'
+                                    : '${handoff.project.label} · client draft ready',
+                              ),
+                            ),
+                            TextButton(
+                              onPressed:
+                                  _draftHandoffBusy || _reviewingDraftHandoff
+                                  ? null
+                                  : () => unawaited(_acceptDraftHandoff()),
+                              child: const Text('Open draft'),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
                 if (widget.companionController != null ||
                     widget.requestedThreadId != null)
                   _buildCompanionPresence(),
@@ -7995,11 +8344,17 @@ class _TalkActivityPane extends StatefulWidget {
     required this.controller,
     this.initialSection = _TalkRailSection.activity,
     this.onOpenResponsibilities,
+    this.onClose,
+    this.current,
+    this.guard,
   });
 
   final TalkController controller;
   final _TalkRailSection initialSection;
   final VoidCallback? onOpenResponsibilities;
+  final VoidCallback? onClose;
+  final bool Function()? current;
+  final Listenable? guard;
 
   @override
   State<_TalkActivityPane> createState() => _TalkActivityPaneState();
@@ -8031,19 +8386,21 @@ class _TalkActivityPaneState extends State<_TalkActivityPane> {
       ),
       _TalkRailSection.artifacts => (
         Icons.auto_awesome_mosaic_outlined,
-        'Artifacts',
+        usesMobilePresentation() ? 'Created for you' : 'Artifacts',
         'Preview and save generated work',
       ),
       _TalkRailSection.queue => (
         Icons.playlist_play_rounded,
-        'Prompt queue',
+        usesMobilePresentation() ? 'Up next' : 'Prompt queue',
         'Shape what Asael does next',
       ),
     };
     return DecoratedBox(
       decoration: BoxDecoration(
         color: scheme.surface.withValues(alpha: .78),
-        border: Border(left: BorderSide(color: scheme.outlineVariant)),
+        border: usesMobilePresentation()
+            ? null
+            : Border(left: BorderSide(color: scheme.outlineVariant)),
       ),
       child: SafeArea(
         left: false,
@@ -8072,7 +8429,12 @@ class _TalkActivityPaneState extends State<_TalkActivityPane> {
                           title,
                           style: const TextStyle(fontWeight: FontWeight.w700),
                         ),
-                        Text(detail, style: const TextStyle(fontSize: 11.5)),
+                        Text(
+                          detail,
+                          style: TextStyle(
+                            fontSize: usesMobilePresentation() ? 13 : 11.5,
+                          ),
+                        ),
                       ],
                     ),
                   ),
@@ -8111,42 +8473,76 @@ class _TalkActivityPaneState extends State<_TalkActivityPane> {
                           : const Icon(Icons.stop_circle_outlined, size: 20),
                     ),
                   ],
+                  if (widget.onClose != null)
+                    IconButton(
+                      tooltip: 'Close conversation details',
+                      onPressed: widget.onClose,
+                      icon: const Icon(Icons.close_rounded),
+                    ),
                 ],
               ),
             ),
             Padding(
               padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-              child: SegmentedButton<_TalkRailSection>(
-                segments: [
-                  const ButtonSegment(
-                    value: _TalkRailSection.activity,
-                    icon: Icon(Icons.bolt_outlined, size: 16),
-                    tooltip: 'What Asael is doing',
-                  ),
-                  ButtonSegment(
-                    value: _TalkRailSection.artifacts,
-                    icon: const Icon(Icons.description_outlined, size: 16),
-                    label: controller.artifacts.isEmpty
-                        ? null
-                        : Text('${controller.artifacts.length}'),
-                    tooltip: 'Artifacts',
-                  ),
-                  ButtonSegment(
-                    value: _TalkRailSection.queue,
-                    icon: const Icon(Icons.playlist_play_rounded, size: 16),
-                    label: controller.promptQueue.isEmpty
-                        ? null
-                        : Text('${controller.promptQueue.length}'),
-                    tooltip: 'Prompt queue',
-                  ),
-                ],
-                selected: {section},
-                showSelectedIcon: false,
-                expandedInsets: EdgeInsets.zero,
-                onSelectionChanged: (value) {
-                  setState(() => section = value.first);
-                },
-              ),
+              child: usesMobilePresentation()
+                  ? MobileSegmentBar<_TalkRailSection>(
+                      items: const [
+                        (
+                          value: _TalkRailSection.activity,
+                          label: 'Progress',
+                          icon: Icons.bolt_outlined,
+                        ),
+                        (
+                          value: _TalkRailSection.artifacts,
+                          label: 'Results',
+                          icon: Icons.description_outlined,
+                        ),
+                        (
+                          value: _TalkRailSection.queue,
+                          label: 'Up next',
+                          icon: Icons.playlist_play_rounded,
+                        ),
+                      ],
+                      value: section,
+                      onChanged: (value) => setState(() => section = value),
+                    )
+                  : SegmentedButton<_TalkRailSection>(
+                      segments: [
+                        const ButtonSegment(
+                          value: _TalkRailSection.activity,
+                          icon: Icon(Icons.bolt_outlined, size: 16),
+                          tooltip: 'What Asael is doing',
+                        ),
+                        ButtonSegment(
+                          value: _TalkRailSection.artifacts,
+                          icon: const Icon(
+                            Icons.description_outlined,
+                            size: 16,
+                          ),
+                          label: controller.artifacts.isEmpty
+                              ? null
+                              : Text('${controller.artifacts.length}'),
+                          tooltip: 'Artifacts',
+                        ),
+                        ButtonSegment(
+                          value: _TalkRailSection.queue,
+                          icon: const Icon(
+                            Icons.playlist_play_rounded,
+                            size: 16,
+                          ),
+                          label: controller.promptQueue.isEmpty
+                              ? null
+                              : Text('${controller.promptQueue.length}'),
+                          tooltip: 'Prompt queue',
+                        ),
+                      ],
+                      selected: {section},
+                      showSelectedIcon: false,
+                      expandedInsets: EdgeInsets.zero,
+                      onSelectionChanged: (value) {
+                        setState(() => section = value.first);
+                      },
+                    ),
             ),
             if (widget.onOpenResponsibilities != null)
               Padding(
@@ -8167,7 +8563,8 @@ class _TalkActivityPaneState extends State<_TalkActivityPane> {
               },
             ),
             if (controller.runId != null &&
-                (!usesMacosPresentation() || showTechnicalDetails))
+                ((!usesMacosPresentation() && !usesMobilePresentation()) ||
+                    showTechnicalDetails))
               Container(
                 padding: const EdgeInsets.fromLTRB(18, 10, 18, 12),
                 decoration: BoxDecoration(
@@ -8205,7 +8602,7 @@ class _TalkActivityPaneState extends State<_TalkActivityPane> {
 
   Widget _activityBody(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final macos = usesMacosPresentation();
+    final macos = usesMacosPresentation() || usesMobilePresentation();
     if (controller.activities.isEmpty) {
       return _RailEmpty(
         icon: Icons.auto_awesome_outlined,
@@ -8310,8 +8707,10 @@ class _TalkActivityPaneState extends State<_TalkActivityPane> {
     if (controller.artifacts.isEmpty) {
       return _RailEmpty(
         icon: Icons.description_outlined,
-        title: 'No artifacts yet',
-        detail: 'Images, video, files, and Computer Use evidence from completed runs appear here.',
+        title: usesMobilePresentation()
+            ? 'Your results belong here'
+            : 'No artifacts yet',
+        detail: 'Images, videos, files and screenshots created during this conversation appear here.',
         color: scheme.onSurfaceVariant,
       );
     }
@@ -8597,6 +8996,9 @@ class _TalkActivityPaneState extends State<_TalkActivityPane> {
                   },
                   itemBuilder: (context, index) {
                     final prompt = controller.promptQueue[index];
+                    if (usesMobilePresentation()) {
+                      return _mobileQueuedPrompt(context, prompt, index);
+                    }
                     return Padding(
                       key: ValueKey(prompt.id),
                       padding: const EdgeInsets.only(bottom: 8),
@@ -8822,11 +9224,201 @@ class _TalkActivityPaneState extends State<_TalkActivityPane> {
   }
 
   Future<void> _editPrompt(TalkQueuedPrompt prompt) async {
+    final owner = controller;
+    bool current() =>
+        mounted &&
+        identical(controller, owner) &&
+        !owner._disposed &&
+        (widget.current?.call() ?? true);
+    if (!current()) return;
     final updated = await showDialog<String>(
       context: context,
-      builder: (_) => _EditQueuedPromptDialog(prompt: prompt.input),
+      builder: (_) => _EditQueuedPromptDialog(
+        prompt: prompt.input,
+        current: current,
+        guard: Listenable.merge([
+          owner,
+          if (widget.guard != null) widget.guard!,
+        ]),
+      ),
     );
-    if (updated != null) controller.updateQueuedPrompt(prompt.id, updated);
+    if (updated != null && current())
+      owner.updateQueuedPrompt(prompt.id, updated);
+  }
+
+  Widget _mobileQueuedPrompt(
+    BuildContext context,
+    TalkQueuedPrompt prompt,
+    int index,
+  ) {
+    final scheme = Theme.of(context).colorScheme;
+    final state = TalkController._sentenceCase(prompt.state);
+    final paused = prompt.state == 'paused' || prompt.state == 'failed';
+    return Padding(
+      key: ValueKey(prompt.id),
+      padding: const EdgeInsets.only(bottom: 12),
+      child: MobileSurface(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Text(
+                  '${index + 1}'.padLeft(2, '0'),
+                  style: Theme.of(context).textTheme.titleMedium
+                      ?.copyWith(color: scheme.primary),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    prompt.assignedAgent?.name ?? prompt.executionTarget.label,
+                    style: Theme.of(context).textTheme.labelLarge,
+                  ),
+                ),
+                PopupMenuButton<String>(
+                  tooltip: 'Message actions',
+                  onSelected: (value) {
+                    switch (value) {
+                      case 'edit':
+                        _editPrompt(prompt);
+                      case 'pause':
+                        controller.setQueuedPromptPaused(
+                          prompt.id,
+                          paused: prompt.state == 'queued',
+                        );
+                      case 'run':
+                        controller.runQueuedPrompt(prompt.id);
+                      case 'remove':
+                        controller.removeQueuedPrompt(prompt.id);
+                    }
+                  },
+                  itemBuilder: (_) => [
+                    PopupMenuItem(
+                      value: 'edit',
+                      enabled: prompt.editable,
+                      child: const ListTile(
+                        leading: Icon(Icons.edit_outlined),
+                        title: Text('Edit message'),
+                        contentPadding: EdgeInsets.zero,
+                      ),
+                    ),
+                    PopupMenuItem(
+                      value: 'pause',
+                      enabled: const {
+                        'queued',
+                        'paused',
+                        'failed',
+                      }.contains(prompt.state),
+                      child: ListTile(
+                        leading: Icon(
+                          paused
+                              ? Icons.play_circle_outline_rounded
+                              : Icons.pause_circle_outline_rounded,
+                        ),
+                        title: Text(
+                          paused ? 'Resume message' : 'Pause message',
+                        ),
+                        contentPadding: EdgeInsets.zero,
+                      ),
+                    ),
+                    PopupMenuItem(
+                      value: 'run',
+                      enabled: const {
+                        'queued',
+                        'paused',
+                      }.contains(prompt.state),
+                      child: ListTile(
+                        leading: const Icon(Icons.play_arrow_rounded),
+                        title: Text(
+                          controller.sending ? 'Make this next' : 'Run now',
+                        ),
+                        contentPadding: EdgeInsets.zero,
+                      ),
+                    ),
+                    PopupMenuItem(
+                      value: 'remove',
+                      enabled: prompt.state != 'dispatching',
+                      child: const ListTile(
+                        leading: Icon(Icons.delete_outline_rounded),
+                        title: Text('Remove from queue'),
+                        contentPadding: EdgeInsets.zero,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              prompt.input,
+              maxLines: 5,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.bodyLarge
+                  ?.copyWith(height: 1.5),
+            ),
+            const SizedBox(height: 16),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                MobileStatusPill(
+                  label: state,
+                  color: prompt.state == 'failed' ? scheme.error : null,
+                ),
+                if (prompt.syncState != TalkPromptQueueSyncState.synced)
+                  MobileStatusPill(
+                    label: prompt.syncState == TalkPromptQueueSyncState.conflict
+                        ? 'Needs review'
+                        : 'Sync pending',
+                    icon: Icons.sync_rounded,
+                  ),
+                if (prompt.contextReferences.isNotEmpty)
+                  MobileStatusPill(
+                    label: '${prompt.contextReferences.length} linked sources',
+                    icon: Icons.layers_outlined,
+                  ),
+              ],
+            ),
+            if (prompt.progressLabel != null || prompt.failureCode != null) ...[
+              const SizedBox(height: 12),
+              Text(
+                prompt.progressLabel ??
+                    'This message stopped. Review it before trying again.',
+                style: TextStyle(
+                  color: prompt.failureCode == null
+                      ? scheme.onSurfaceVariant
+                      : scheme.error,
+                ),
+              ),
+            ],
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Touch and hold to reorder',
+                    style: Theme.of(context).textTheme.bodySmall
+                        ?.copyWith(color: scheme.onSurfaceVariant),
+                  ),
+                ),
+                ReorderableDelayedDragStartListener(
+                  index: index,
+                  child: const SizedBox(
+                    width: 48,
+                    height: 48,
+                    child: Icon(Icons.drag_handle_rounded),
+                  ),
+                ),
+              ],
+            ),
+            if (prompt.failureCode != null)
+              MobileDetailsDisclosure(
+                title: 'Error details',
+                child: SelectableText(prompt.failureCode!),
+              ),
+          ],
+        ),
+      ),
+    );
   }
 }
 
@@ -8894,8 +9486,14 @@ class _QueueStatusChip extends StatelessWidget {
 }
 
 class _EditQueuedPromptDialog extends StatefulWidget {
-  const _EditQueuedPromptDialog({required this.prompt});
+  const _EditQueuedPromptDialog({
+    required this.prompt,
+    required this.current,
+    required this.guard,
+  });
   final String prompt;
+  final bool Function() current;
+  final Listenable guard;
 
   @override
   State<_EditQueuedPromptDialog> createState() =>
@@ -8914,32 +9512,74 @@ class _EditQueuedPromptDialogState extends State<_EditQueuedPromptDialog> {
   }
 
   @override
-  Widget build(BuildContext context) => AlertDialog(
-    title: const Text('Edit queued prompt'),
-    content: SizedBox(
-      width: 520,
-      child: TextField(
-        controller: controller,
-        autofocus: true,
-        minLines: 4,
-        maxLines: 12,
-        maxLength: 20000,
-      ),
-    ),
-    actions: [
-      TextButton(
-        onPressed: () => Navigator.of(context).pop(),
-        child: const Text('Cancel'),
-      ),
-      FilledButton(
-        onPressed: () {
-          final value = controller.text.trim();
-          if (value.isNotEmpty) Navigator.of(context).pop(value);
-        },
-        child: const Text('Save'),
-      ),
-    ],
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: widget.guard,
+    builder: (context, _) => _buildEditor(context),
   );
+
+  Widget _buildEditor(BuildContext context) {
+    if (!widget.current()) {
+      return Dialog.fullscreen(
+        child: MobileFlowScaffold(
+          title: 'Queued message',
+          child: const Text('Reopen this message from your current workspace.'),
+        ),
+      );
+    }
+    if (usesMobilePresentation()) {
+      return Dialog.fullscreen(
+        child: MobileFlowScaffold(
+          title: 'Edit queued message',
+          footer: FilledButton(
+            onPressed: () {
+              if (!widget.current()) return;
+              final value = controller.text.trim();
+              if (value.isNotEmpty) Navigator.of(context).pop(value);
+            },
+            child: const Text('Save message'),
+          ),
+          child: TextField(
+            controller: controller,
+            autofocus: true,
+            minLines: 10,
+            maxLines: null,
+            maxLength: 20000,
+            decoration: const InputDecoration(
+              hintText: 'What would you like ATLAS to do?',
+              alignLabelWithHint: true,
+            ),
+          ),
+        ),
+      );
+    }
+    return AlertDialog(
+      title: const Text('Edit queued prompt'),
+      content: SizedBox(
+        width: 520,
+        child: TextField(
+          controller: controller,
+          autofocus: true,
+          minLines: 4,
+          maxLines: 12,
+          maxLength: 20000,
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () {
+            if (!widget.current()) return;
+            final value = controller.text.trim();
+            if (value.isNotEmpty) Navigator.of(context).pop(value);
+          },
+          child: const Text('Save'),
+        ),
+      ],
+    );
+  }
 }
 
 bool _isTechnicalTalkActivity(TalkActivity activity) =>
@@ -9145,13 +9785,15 @@ class _TalkActivityCard extends StatelessWidget {
     final title = technical ? activity.title : _humanActivityTitle(activity);
     final detail = technical ? activity.detail : _humanActivityDetail(activity);
     return Container(
-      padding: const EdgeInsets.all(12),
+      padding: EdgeInsets.all(usesMobilePresentation() ? 16 : 12),
       decoration: BoxDecoration(
         color: technical
             ? scheme.surfaceContainerLowest.withValues(alpha: .7)
             : scheme.surfaceContainerLow.withValues(alpha: .9),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: scheme.outlineVariant.withValues(alpha: .8)),
+        borderRadius: BorderRadius.circular(usesMobilePresentation() ? 16 : 12),
+        border: usesMobilePresentation()
+            ? null
+            : Border.all(color: scheme.outlineVariant.withValues(alpha: .8)),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -9174,8 +9816,8 @@ class _TalkActivityCard extends StatelessWidget {
                     Expanded(
                       child: Text(
                         title,
-                        style: const TextStyle(
-                          fontSize: 12.5,
+                        style: TextStyle(
+                          fontSize: usesMobilePresentation() ? 15 : 12.5,
                           fontWeight: FontWeight.w700,
                         ),
                       ),
@@ -9205,7 +9847,7 @@ class _TalkActivityCard extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     color: scheme.onSurfaceVariant,
-                    fontSize: 11.5,
+                    fontSize: usesMobilePresentation() ? 14 : 11.5,
                     height: 1.35,
                   ),
                 ),
@@ -9229,8 +9871,12 @@ class _TalkActivityCard extends StatelessWidget {
                             horizontal: 8,
                             vertical: 5,
                           ),
-                          minimumSize: Size.zero,
-                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          minimumSize: usesMobilePresentation()
+                              ? const Size(48, 48)
+                              : Size.zero,
+                          tapTargetSize: usesMobilePresentation()
+                              ? MaterialTapTargetSize.padded
+                              : MaterialTapTargetSize.shrinkWrap,
                         ),
                       ),
                       if (activity.actionRoute != null &&

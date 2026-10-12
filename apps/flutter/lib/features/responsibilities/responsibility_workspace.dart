@@ -5,9 +5,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../app/mobile/mobile_page_scaffold.dart';
+import '../../app/mobile/mobile_flow_scaffold.dart';
 import '../../app/platform/mobile_presentation.dart';
 import 'responsibility_contracts.dart';
 import 'responsibility_controller.dart';
+import 'responsibility_date_time_field.dart';
 
 /// Shared native workspace. The host binds this controller through Riverpod and
 /// may route exact list selections through [onOpenResponsibility].
@@ -650,7 +652,7 @@ class _ResponsibilityWorkspaceViewState
         revision = controller.record?.revision;
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (context) => _followupReviewDialog(
         scrollable: true,
         title: const Text('Rebase your local draft?'),
         content: const Text(
@@ -1043,7 +1045,7 @@ class _ResponsibilityWorkspaceViewState
         head = controller.head(ResponsibilityRead.notifications);
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (context) => _followupReviewDialog(
         scrollable: true,
         title: const Text('Stop these in-app notices?'),
         content: const Text(
@@ -1120,94 +1122,123 @@ class _ResponsibilityDraftEditorState
     int lines = 1,
     int? maxLength,
     bool numeric = false,
-  }) => Padding(
-    padding: const EdgeInsets.symmetric(vertical: 6),
-    child: TextField(
-      key: ValueKey('responsibility-field-$key'),
-      controller: _text(key, value),
-      enabled: enabled,
-      maxLines: lines,
-      maxLength: maxLength,
-      keyboardType: numeric
-          ? TextInputType.number
-          : lines > 1
-          ? TextInputType.multiline
-          : TextInputType.text,
-      decoration: InputDecoration(
-        labelText: label,
-        border: const OutlineInputBorder(),
-        alignLabelWithHint: true,
-        errorText: controller.invalidDraftInputs.contains(key)
-            ? 'Enter a valid finite value.'
-            : null,
+  }) {
+    void changed(String text) {
+      var valid = !RegExp(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]').hasMatch(text);
+      if (numeric) {
+        final n = int.tryParse(text),
+            maximum = key == 'interval'
+                ? 24
+                : key == 'checks'
+                ? 10000
+                : key == 'notices'
+                ? 1000
+                : 1000000000000;
+        valid =
+            valid &&
+            n != null &&
+            n >= (key == 'interval' || key == 'checks' ? 1 : 0) &&
+            n <= maximum;
+      }
+      if (key == 'timezone') {
+        valid = valid && text.trim().isNotEmpty && text.trim().length <= 100;
+      }
+      if (key == 'stops') {
+        final lines = text
+            .split('\n')
+            .map((s) => s.trim())
+            .where((s) => s.isNotEmpty)
+            .toList();
+        valid =
+            valid && lines.length <= 8 && lines.every((s) => s.length <= 500);
+      }
+      if (key == 'starts' || key == 'expires') {
+        final startText = _fields['starts']?.text ?? '',
+            endText = _fields['expires']?.text ?? '';
+        final start = DateTime.tryParse(startText),
+            end = DateTime.tryParse(endText);
+        valid =
+            valid &&
+            start != null &&
+            end != null &&
+            start.toUtc().toIso8601String() == startText &&
+            end.toUtc().toIso8601String() == endText &&
+            startText.endsWith('Z') &&
+            endText.endsWith('Z') &&
+            end.isAfter(start) &&
+            end.difference(start) <= const Duration(days: 366);
+        controller.draftInputValidity('starts', valid);
+        controller.draftInputValidity('expires', valid);
+        if (valid) {
+          final cadence = responsibilityMap(controller.draft['cadence']);
+          _change('cadence', {
+            ...cadence,
+            'startsAt': DateTime.fromMillisecondsSinceEpoch(
+              start.millisecondsSinceEpoch,
+              isUtc: true,
+            ).toIso8601String(),
+            'expiresAt': DateTime.fromMillisecondsSinceEpoch(
+              end.millisecondsSinceEpoch,
+              isUtc: true,
+            ).toIso8601String(),
+          });
+        }
+        return;
+      }
+      controller.draftInputValidity(key, valid);
+      if (valid) onChanged(text);
+    }
+
+    if (usesMobilePresentation() && (key == 'starts' || key == 'expires')) {
+      final currentController = controller,
+          ownerKey = controller.repository.access.owner?.key;
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          ResponsibilityDateTimeField(
+            controller: _text(key, value),
+            label: key == 'starts' ? 'First check' : 'Stop checking',
+            isCurrent: () =>
+                mounted &&
+                enabled &&
+                identical(controller, currentController) &&
+                controller.repository.access.owner?.key == ownerKey,
+            onChanged: changed,
+          ),
+          if (controller.invalidDraftInputs.contains(key))
+            Text(
+              'Choose a stop date after the first check, within one year.',
+              style: TextStyle(color: Theme.of(context).colorScheme.error),
+            ),
+        ],
+      );
+    }
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: TextField(
+        key: ValueKey('responsibility-field-$key'),
+        controller: _text(key, value),
+        enabled: enabled,
+        maxLines: lines,
+        maxLength: maxLength,
+        keyboardType: numeric
+            ? TextInputType.number
+            : lines > 1
+            ? TextInputType.multiline
+            : TextInputType.text,
+        decoration: InputDecoration(
+          labelText: label,
+          border: const OutlineInputBorder(),
+          alignLabelWithHint: true,
+          errorText: controller.invalidDraftInputs.contains(key)
+              ? 'Enter a valid finite value.'
+              : null,
+        ),
+        onChanged: changed,
       ),
-      onChanged: (text) {
-        var valid = !RegExp(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]').hasMatch(text);
-        if (numeric) {
-          final n = int.tryParse(text),
-              maximum = key == 'interval'
-                  ? 24
-                  : key == 'checks'
-                  ? 10000
-                  : key == 'notices'
-                  ? 1000
-                  : 1000000000000;
-          valid =
-              valid &&
-              n != null &&
-              n >= (key == 'interval' || key == 'checks' ? 1 : 0) &&
-              n <= maximum;
-        }
-        if (key == 'timezone') {
-          valid = valid && text.trim().isNotEmpty && text.trim().length <= 100;
-        }
-        if (key == 'stops') {
-          final lines = text
-              .split('\n')
-              .map((s) => s.trim())
-              .where((s) => s.isNotEmpty)
-              .toList();
-          valid =
-              valid && lines.length <= 8 && lines.every((s) => s.length <= 500);
-        }
-        if (key == 'starts' || key == 'expires') {
-          final startText = _fields['starts']?.text ?? '',
-              endText = _fields['expires']?.text ?? '';
-          final start = DateTime.tryParse(startText),
-              end = DateTime.tryParse(endText);
-          valid =
-              valid &&
-              start != null &&
-              end != null &&
-              start.toUtc().toIso8601String() == startText &&
-              end.toUtc().toIso8601String() == endText &&
-              startText.endsWith('Z') &&
-              endText.endsWith('Z') &&
-              end.isAfter(start) &&
-              end.difference(start) <= const Duration(days: 366);
-          controller.draftInputValidity('starts', valid);
-          controller.draftInputValidity('expires', valid);
-          if (valid) {
-            final cadence = responsibilityMap(controller.draft['cadence']);
-            _change('cadence', {
-              ...cadence,
-              'startsAt': DateTime.fromMillisecondsSinceEpoch(
-                start.millisecondsSinceEpoch,
-                isUtc: true,
-              ).toIso8601String(),
-              'expiresAt': DateTime.fromMillisecondsSinceEpoch(
-                end.millisecondsSinceEpoch,
-                isUtc: true,
-              ).toIso8601String(),
-            });
-          }
-          return;
-        }
-        controller.draftInputValidity(key, valid);
-        if (valid) onChanged(text);
-      },
-    ),
-  );
+    );
+  }
+
   void _clearInputErrors(Iterable<String> keys) {
     for (final key in keys) {
       if (_fields.containsKey(key)) {
@@ -1351,13 +1382,16 @@ class _ResponsibilityDraftEditorState
                 _change('cadence', {...cadence, 'interval': n});
               }
             }, numeric: true),
-            _field('timezone', 'IANA timezone', cadence['timezone'] as String, (
-              v,
-            ) {
-              if (v.trim().isNotEmpty) {
-                _change('cadence', {...cadence, 'timezone': v.trim()});
-              }
-            }),
+            _field(
+              'timezone',
+              usesMobilePresentation() ? 'Schedule timezone' : 'IANA timezone',
+              cadence['timezone'] as String,
+              (v) {
+                if (v.trim().isNotEmpty) {
+                  _change('cadence', {...cadence, 'timezone': v.trim()});
+                }
+              },
+            ),
             _field(
               'starts',
               'Starts at (UTC ISO instant)',
@@ -1827,3 +1861,44 @@ class _Evidence extends StatelessWidget {
 String _label(Object? value) => (value?.toString() ?? 'Unknown')
     .replaceAll('responsibility_', '')
     .replaceAll('_', ' ');
+
+Widget _followupReviewDialog({
+  required Text title,
+  required Widget content,
+  List<Widget> actions = const [],
+  bool scrollable = false,
+}) {
+  if (!usesMobilePresentation())
+    return AlertDialog(
+      title: title,
+      content: content,
+      actions: actions,
+      scrollable: scrollable,
+    );
+  final body = content is SingleChildScrollView
+      ? content.child ?? const SizedBox.shrink()
+      : content;
+  return Dialog.fullscreen(
+    child: MobileFlowScaffold(
+      title: title.data ?? 'Review',
+      child: body,
+      footer: actions.isEmpty
+          ? null
+          : Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (actions.length > 1)
+                  Wrap(
+                    alignment: WrapAlignment.center,
+                    spacing: 12,
+                    runSpacing: 8,
+                    children: actions.take(actions.length - 1).toList(),
+                  ),
+                if (actions.length > 1) const SizedBox(height: 8),
+                actions.last,
+              ],
+            ),
+    ),
+  );
+}
