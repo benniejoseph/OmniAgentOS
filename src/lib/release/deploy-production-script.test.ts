@@ -1139,10 +1139,10 @@ describe("paired production deployment", () => {
     expect(workspaceSession).toContain('headerContext?.source === "headers"');
     expect(evaluationSmoke).toContain("response.status === 202");
     expect(evaluationSmoke).toContain("waitForEvaluationJob");
-    expect(evaluationSmoke).toContain("driveBackgroundQueueAttempt <= 3");
+    expect(evaluationSmoke).toContain('scope: "tenant"');
     expect(evaluationSmoke).toContain("/api/operations/jobs/");
     expect(evaluationSmoke).toContain('"x-omni-internal-auth"');
-    expect(evaluationSmoke).toContain('"x-omni-worker-protocol"');
+    expect(evaluationSmoke).not.toContain('scope: "all_tenants"');
     expect(evaluationSmoke).toContain('method: "POST"');
     expect(workerScript).toContain('recordLaneState(lane, "running"');
     expect(workerImage).toContain("['fast','background','maintenance'].every");

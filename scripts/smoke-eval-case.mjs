@@ -1,10 +1,14 @@
-import { failSmoke, getSmokeBaseUrl, smokeFetch } from "./smoke-helpers.mjs";
+import { randomUUID } from "node:crypto";
+import { failSmoke, getSmokeBaseUrl, positiveInteger, smokeFetch } from "./smoke-helpers.mjs";
 
 const baseUrl = getSmokeBaseUrl();
 const caseId = process.env.SMOKE_EVAL_CASE_ID || "security.tenant_isolation";
 const email = process.env.SMOKE_ADMIN_EMAIL || process.env.OMNIAGENT_BOOTSTRAP_EMAIL;
 const password = process.env.SMOKE_ADMIN_PASSWORD || process.env.OMNIAGENT_BOOTSTRAP_PASSWORD;
 const internalSecret = process.env.SMOKE_INTERNAL_AUTH_SECRET || process.env.OMNIAGENT_INTERNAL_AUTH_SECRET;
+const driveQueue = process.env.SMOKE_DRIVE_BACKGROUND_QUEUE === "true";
+const tenantId = process.env.SMOKE_TENANT_ID || `production_smoke_${randomUUID().replaceAll("-", "")}`;
+const actorId = process.env.SMOKE_ACTOR_ID || "production-smoke";
 const syntheticHeaders = createSyntheticHeaders("eval");
 const evaluationRequestId =
   process.env.SMOKE_RUN_ID ||
@@ -13,6 +17,18 @@ const evaluationTimeoutMs = Math.min(
   Math.max(Number(process.env.SMOKE_EVAL_TIMEOUT_MS) || 240_000, 10_000),
   300_000,
 );
+const deadline = Date.now() + evaluationTimeoutMs;
+const requestTimeoutMs = positiveInteger(process.env.SMOKE_REQUEST_TIMEOUT_MS, 15_000, 300_000);
+const maximumQueueTicks = 10;
+
+// A tenant tick also advances other work in that tenant. Never drive a signed-in
+// owner's tenant, and reserve explicit overrides for synthetic smoke tenants.
+if (driveQueue && !internalSecret) {
+  failSmoke("driving the evaluation queue requires SMOKE_INTERNAL_AUTH_SECRET; session authentication cannot drive a tenant queue.");
+}
+if (driveQueue && (tenantId.length > 120 || !/^production_smoke(?:_[A-Za-z0-9][A-Za-z0-9_-]*)?$/.test(tenantId))) {
+  failSmoke("SMOKE_TENANT_ID must be production_smoke or production_smoke_<safe suffix> (at most 120 characters) when driving the evaluation queue.");
+}
 
 const checks = [];
 const headers = await resolveAuthHeaders();
@@ -41,14 +57,10 @@ const response = await request("/api/evaluations", {
 const json = await readJson(response);
 checks.push(assert(response.status === 202, "evaluation run accepted", statusDetail(response.status, json)));
 const jobId = json?.job?.id;
-checks.push(assert(Boolean(jobId), "evaluation job returned", "missing evaluation job id"));
-if (jobId && process.env.SMOKE_DRIVE_BACKGROUND_QUEUE === "true") {
-  await driveBackgroundQueue();
-}
-const job = jobId
-  ? await waitForEvaluationJob(
-      response.headers.get("location") || `/api/operations/jobs/${jobId}`,
-    )
+const acceptedJob = response.status === 202 && typeof jobId === "string" && jobId.length > 0 && json?.job?.type === "evaluation.run";
+checks.push(assert(acceptedJob, "evaluation job returned", "missing accepted evaluation job identity"));
+const job = acceptedJob
+  ? await waitForEvaluationJob(jobId)
   : undefined;
 checks.push(assert(
   job?.status === "completed",
@@ -96,8 +108,8 @@ async function resolveAuthHeaders() {
     return {
       ...syntheticHeaders,
       "x-omni-internal-auth": internalSecret,
-      "x-omni-tenant-id": process.env.SMOKE_TENANT_ID || "production_smoke",
-      "x-omni-user-id": process.env.SMOKE_ACTOR_ID || "production-smoke",
+      "x-omni-tenant-id": tenantId,
+      "x-omni-user-id": actorId,
       "x-omni-user-role": "admin",
     };
   }
@@ -122,9 +134,14 @@ async function resolveAuthHeaders() {
 }
 
 async function request(path, init) {
+  const remainingMs = deadline - Date.now();
+  if (remainingMs <= 0) {
+    failSmoke(`evaluation smoke timed out after ${evaluationTimeoutMs}ms.`);
+  }
   try {
     return await smokeFetch(baseUrl, path, {
       ...init,
+      timeoutMs: Math.min(requestTimeoutMs, remainingMs),
       headers: {
         ...syntheticHeaders,
         ...(init?.headers || {}),
@@ -135,11 +152,11 @@ async function request(path, init) {
   }
 }
 
-async function waitForEvaluationJob(path) {
-  const deadline = Date.now() + evaluationTimeoutMs;
+async function waitForEvaluationJob(jobId) {
   let latest;
+  let queueTicks = 0;
   while (Date.now() < deadline) {
-    const response = await request(path, { headers });
+    const response = await request(`/api/operations/jobs/${encodeURIComponent(jobId)}`, { headers });
     const json = await readJson(response);
     if (response.status !== 200) {
       checks.push(
@@ -152,10 +169,29 @@ async function waitForEvaluationJob(path) {
       return undefined;
     }
     latest = json?.job;
-    if (["completed", "failed", "canceled"].includes(latest?.status)) {
+    if (latest?.id !== jobId || latest?.type !== "evaluation.run") {
+      checks.push(assert(false, "evaluation job identity matches", "status response did not identify the accepted evaluation job"));
+      return undefined;
+    }
+    if (["completed", "failed", "canceled", "quarantined"].includes(latest.status)) {
       return latest;
     }
-    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    if (!["queued", "running"].includes(latest.status)) {
+      checks.push(assert(false, "evaluation job status recognized", "unexpected evaluation job state"));
+      return undefined;
+    }
+    const runAt = Date.parse(latest.runAt);
+    if (driveQueue && latest.status === "queued" && (!Number.isFinite(runAt) || runAt <= Date.now())) {
+      if (queueTicks >= maximumQueueTicks) {
+        checks.push(assert(false, "evaluation queue drive stayed bounded", `job remained queued after ${maximumQueueTicks} tenant ticks`));
+        return latest;
+      }
+      queueTicks += 1;
+      if (!await driveBackgroundQueue()) return latest;
+      // A successful tick may have claimed an older job in an explicit smoke
+      // tenant. Only rereading this exact job can establish completion.
+    }
+    await new Promise((resolve) => setTimeout(resolve, Math.min(2_000, Math.max(0, deadline - Date.now()))));
   }
   checks.push(
     assert(
@@ -168,63 +204,20 @@ async function waitForEvaluationJob(path) {
 }
 
 async function driveBackgroundQueue() {
-  if (!internalSecret) {
-    checks.push(
-      assert(
-        false,
-        "staged background queue credentials available",
-        "SMOKE_INTERNAL_AUTH_SECRET is required",
-      ),
-    );
-    return;
-  }
-  let response;
-  let json;
-  let lastError;
-  for (let driveBackgroundQueueAttempt = 1; driveBackgroundQueueAttempt <= 3; driveBackgroundQueueAttempt += 1) {
-    try {
-      response = await smokeFetch(baseUrl, "/api/workflows/tick", {
-        method: "POST",
-        headers: {
-          ...syntheticHeaders,
-          "content-type": "application/json",
-          "x-omni-internal-auth": internalSecret,
-          "x-omni-tenant-id": "production_smoke",
-          "x-omni-user-id": "production-smoke",
-          "x-omni-user-role": "system",
-          "x-omni-worker-instance": "production-smoke",
-          "x-omni-worker-protocol":
-            process.env.OMNIAGENT_WORKER_PROTOCOL_VERSION || "1",
-          ...(process.env.SMOKE_EXPECTED_REVISION
-            ? { "x-omni-worker-revision": process.env.SMOKE_EXPECTED_REVISION }
-            : {}),
-        },
-        body: JSON.stringify({
-          scope: "all_tenants",
-          lane: "background",
-          limit: 1,
-          timeBudgetMs: 240_000,
-          slo: false,
-          alerts: false,
-        }),
-      });
-      json = await readJson(response);
-      if (response.status === 200) break;
-      lastError = statusDetail(response.status, json);
-      if (response.status < 500 || driveBackgroundQueueAttempt === 3) break;
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : "background queue request failed";
-      if (driveBackgroundQueueAttempt === 3) break;
-    }
-    await new Promise((resolve) => setTimeout(resolve, driveBackgroundQueueAttempt * 2_000));
-  }
+  const response = await request("/api/workflows/tick", {
+    method: "POST",
+    headers: { ...headers, "content-type": "application/json" },
+    body: JSON.stringify({ scope: "tenant", limit: 1, slo: false, alerts: false }),
+  });
+  const json = await readJson(response);
   checks.push(
     assert(
-      response?.status === 200,
-      "staged background queue processed",
-      lastError || (response ? statusDetail(response.status, json) : "no response"),
+      response.status === 200,
+      "isolated evaluation tenant tick accepted",
+      statusDetail(response.status, json),
     ),
   );
+  return response.status === 200;
 }
 
 async function readJson(response) {
