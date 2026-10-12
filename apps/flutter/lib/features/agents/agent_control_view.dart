@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../../app/platform/mobile_presentation.dart';
+
 import 'agent_council.dart';
 import 'task_authority_view.dart';
 
@@ -44,8 +46,8 @@ class _AgentControlViewState extends State<AgentControlView> {
       if (projection.state == 'unavailable') {
         return _AgentControlNotice(
           icon: Icons.sync_problem_outlined,
-          title: 'Delegation ledger is unavailable',
-          message: 'No task health or authority was inferred.',
+          title: 'Live work could not be loaded',
+          message: 'Refresh to check the current status of your agents.',
           onRetry: controller.refresh,
         );
       }
@@ -53,7 +55,7 @@ class _AgentControlViewState extends State<AgentControlView> {
         return _AgentControlNotice(
           icon: Icons.account_tree_outlined,
           title: 'No delegated work yet',
-          message: 'Bounded specialist tasks will appear here with their authority, runtime, cost, and verification.',
+          message: 'When ATLAS gives work to your specialists, their progress and results appear here.',
           onRetry: controller.refresh,
         );
       }
@@ -177,7 +179,9 @@ class _AgentControlSummary extends StatelessWidget {
                         style: Theme.of(context).textTheme.titleLarge,
                       ),
                       Text(
-                        'Canonical delegated work',
+                        usesMobilePresentation()
+                            ? 'Specialists working together'
+                            : 'Canonical delegated work',
                         style: Theme.of(context).textTheme.bodySmall,
                       ),
                     ],
@@ -238,7 +242,7 @@ class _ExecutionCard extends StatelessWidget {
     margin: EdgeInsets.zero,
     clipBehavior: Clip.antiAlias,
     child: ExpansionTile(
-      initiallyExpanded: true,
+      initiallyExpanded: !usesMobilePresentation(),
       leading: const Icon(Icons.hub_outlined),
       title: Text(
         execution.currentWork,

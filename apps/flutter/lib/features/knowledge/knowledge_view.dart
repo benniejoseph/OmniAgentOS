@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../../app/mobile/mobile_page_scaffold.dart';
+import '../../app/platform/mobile_presentation.dart';
 import 'knowledge.dart';
 import 'knowledge_labels.dart';
 import 'knowledge_relationship_map.dart';
@@ -31,7 +33,7 @@ class _KnowledgeViewState extends State<KnowledgeView>
     with SingleTickerProviderStateMixin {
   late final TabController _tabs;
   final _search = TextEditingController();
-  String? _selectedMemoryId, _selectedNodeId;
+  String? _selectedMemoryId, _selectedNodeId, _selectedSourceId;
   String _memoryType = 'all';
   @override
   void initState() {
@@ -54,6 +56,7 @@ class _KnowledgeViewState extends State<KnowledgeView>
         oldWidget.initialMemoryId != widget.initialMemoryId) {
       _selectedMemoryId = widget.initialMemoryId;
       _selectedNodeId = null;
+      _selectedSourceId = null;
       _memoryType = 'all';
       _search.text = widget.controller.query;
       _tabs.index = 0;
@@ -78,6 +81,7 @@ class _KnowledgeViewState extends State<KnowledgeView>
           body: Center(child: Text('Sign in to read memory and knowledge.')),
         );
       }
+      if (usesMobilePresentation()) return _mobileWorkspace(state);
       return Scaffold(
         appBar: AppBar(
           title: const Text(
@@ -189,6 +193,371 @@ class _KnowledgeViewState extends State<KnowledgeView>
               ),
       );
     },
+  );
+
+  Widget _mobileWorkspace(KnowledgeState? state) {
+    final controller = widget.controller;
+    final secondary = !const [0, 1, 3].contains(_tabs.index);
+    final title = switch (_tabs.index) {
+      2 => 'Review memories',
+      4 => 'Personal recall',
+      5 => 'Promote knowledge',
+      6 => 'Source maps',
+      7 => 'Source cleanup',
+      8 => 'Explore relationships',
+      9 => 'Knowledge maintenance',
+      _ => 'Memory',
+    };
+    final selectedSource = state?.knowledge
+        .where((item) => item.id == _selectedSourceId)
+        .firstOrNull;
+    final inspector = _selectedMemoryId != null && _tabs.index == 0;
+    return Column(
+      children: [
+        MobilePageHeader(
+          title: inspector
+              ? 'Saved memory'
+              : _selectedSourceId != null && _tabs.index == 1
+              ? 'Saved source'
+              : title,
+          subtitle: inspector || secondary || _selectedSourceId != null
+              ? null
+              : 'What you know. Where it comes from.',
+          leading: inspector || secondary || _selectedSourceId != null
+              ? BackButton(
+                  onPressed: () => setState(() {
+                    _selectedMemoryId = _selectedSourceId = null;
+                    if (secondary) _tabs.index = 0;
+                  }),
+                )
+              : null,
+          actions: [
+            if (!inspector &&
+                !secondary &&
+                controller.supportsChange(MemoryChange.create))
+              IconButton.filledTonal(
+                tooltip: 'Add memory',
+                onPressed: controller.pendingChange != null
+                    ? null
+                    : () => showMemoryEditor(context, controller),
+                icon: const Icon(Icons.add_rounded),
+              ),
+            PopupMenuButton<int>(
+              tooltip: 'Memory tools',
+              icon: const Icon(Icons.more_horiz_rounded),
+              onSelected: (value) {
+                if (value == -1) {
+                  controller.refresh();
+                } else {
+                  setState(() {
+                    _selectedMemoryId = _selectedSourceId = null;
+                    _tabs.index = value;
+                  });
+                }
+              },
+              itemBuilder: (_) => [
+                const PopupMenuItem(value: -1, child: Text('Refresh memory')),
+                for (final (index, name) in [
+                  (2, 'Review memories'),
+                  (4, 'Personal recall'),
+                  (5, 'Promote knowledge'),
+                  (6, 'Source maps'),
+                  (7, 'Source cleanup'),
+                  (8, 'Explore relationships'),
+                  (9, 'Maintenance'),
+                ])
+                  PopupMenuItem(value: index, child: Text(name)),
+              ],
+            ),
+          ],
+        ),
+        if (!secondary && !inspector && _selectedSourceId == null)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: SegmentedButton<int>(
+                    showSelectedIcon: false,
+                    segments: const [
+                      ButtonSegment(
+                        value: 0,
+                        icon: Icon(Icons.psychology_outlined),
+                        label: Text('Memory'),
+                      ),
+                      ButtonSegment(
+                        value: 1,
+                        icon: Icon(Icons.menu_book_outlined),
+                        label: Text('Sources'),
+                      ),
+                      ButtonSegment(
+                        value: 3,
+                        icon: Icon(Icons.hub_outlined),
+                        label: Text('Map'),
+                      ),
+                    ],
+                    selected: {_tabs.index},
+                    onSelectionChanged: (values) =>
+                        setState(() => _tabs.index = values.first),
+                  ),
+                ),
+                if (_tabs.index < 2) ...[
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: _search,
+                    textInputAction: TextInputAction.search,
+                    onSubmitted: controller.search,
+                    decoration: InputDecoration(
+                      hintText: _tabs.index == 0
+                          ? 'Find a memory'
+                          : 'Find a saved source',
+                      prefixIcon: const Icon(Icons.search_rounded),
+                      suffixIcon: IconButton(
+                        tooltip: 'Search',
+                        onPressed: () => controller.search(_search.text),
+                        icon: const Icon(Icons.arrow_forward_rounded),
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        Expanded(
+          child: inspector
+              ? KnowledgeMemoryInspector(
+                  key: ValueKey(_selectedMemoryId),
+                  controller: controller,
+                  memoryId: _selectedMemoryId!,
+                  onClose: () => setState(() => _selectedMemoryId = null),
+                )
+              : _tabs.index == 1 && _selectedSourceId != null
+              ? selectedSource == null
+                    ? const Center(
+                        child: Text(
+                          'This source is no longer in the current collection. Refresh or return to Sources.',
+                        ),
+                      )
+                    : _mobileSourceDetail(selectedSource)
+              : switch (_tabs.index) {
+                  0 =>
+                    state == null
+                        ? _catalogueUnavailable()
+                        : _mobileMemories(state),
+                  1 =>
+                    state == null
+                        ? _catalogueUnavailable()
+                        : _mobileSources(state),
+                  2 => KnowledgeReviews(controller: controller),
+                  3 =>
+                    state == null ? _catalogueUnavailable() : _universe(state),
+                  4 => KnowledgePersonalRecall(
+                    controller: controller,
+                    active: true,
+                  ),
+                  5 => KnowledgePromotions(
+                    controller: controller,
+                    active: true,
+                  ),
+                  6 => KnowledgeSourceMaps(
+                    controller: controller,
+                    active: true,
+                  ),
+                  7 => KnowledgeSourceCleanup(
+                    controller: controller,
+                    active: true,
+                  ),
+                  8 => KnowledgeGraphExplorer(
+                    controller: controller,
+                    active: true,
+                  ),
+                  _ => KnowledgeOperations(
+                    controller: controller,
+                    active: true,
+                  ),
+                },
+        ),
+      ],
+    );
+  }
+
+  Widget _mobileMemories(KnowledgeState state) {
+    final types = state.memories.map((item) => item.type).toSet().toList()
+      ..sort();
+    final selectedType = types.contains(_memoryType) ? _memoryType : 'all';
+    final values = state.memories
+        .where(
+          (item) =>
+              (selectedType == 'all' || item.type == selectedType) &&
+              (widget.controller.claimState != 'all' ||
+                  !memoryRetiredPlaceholder(item.title)),
+        )
+        .toList(growable: false);
+    return CustomScrollView(
+      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+      slivers: [
+        SliverToBoxAdapter(
+          child: Column(
+            children: [
+              KnowledgeCoverage(controller: widget.controller),
+              MemoryChangeStatus(controller: widget.controller),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: ExpansionTile(
+                  title: const Text('Filter your memories'),
+                  leading: const Icon(Icons.tune_rounded, size: 20),
+                  tilePadding: EdgeInsets.zero,
+                  children: [
+                    KnowledgeMemoryFilters(controller: widget.controller),
+                    DropdownButtonFormField<String>(
+                      key: ValueKey(selectedType),
+                      initialValue: selectedType,
+                      isExpanded: true,
+                      decoration: const InputDecoration(labelText: 'Category'),
+                      items: [
+                        const DropdownMenuItem(
+                          value: 'all',
+                          child: Text('All categories'),
+                        ),
+                        for (final type in types)
+                          DropdownMenuItem(
+                            value: type,
+                            child: Text(memoryFriendlyLabel(type)),
+                          ),
+                      ],
+                      onChanged: (value) =>
+                          setState(() => _memoryType = value ?? 'all'),
+                    ),
+                    const SizedBox(height: 16),
+                  ],
+                ),
+              ),
+              if (values.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.all(32),
+                  child: Text(
+                    'No memories match. Try another search or category.',
+                  ),
+                ),
+            ],
+          ),
+        ),
+        SliverList.builder(
+          itemCount: values.length,
+          itemBuilder: (context, index) {
+            final memory = values[index];
+            return MobileActionTile(
+              icon: Icons.bookmark_border_rounded,
+              title: memoryDisplayTitle(memory.title, memory.updatedAt),
+              subtitle:
+                  '${memoryFriendlyLabel(memory.type)} · ${memoryFriendlyLabel(memory.claimStatus)} · ${memory.evidenceCount} sources',
+              onTap: () => setState(() => _selectedMemoryId = memory.id),
+            );
+          },
+        ),
+        SliverToBoxAdapter(
+          child: KnowledgePageControls(
+            controller: widget.controller,
+            memory: true,
+          ),
+        ),
+        const SliverPadding(padding: EdgeInsets.only(bottom: 24)),
+      ],
+    );
+  }
+
+  Widget _mobileSources(KnowledgeState state) => CustomScrollView(
+    keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+    slivers: [
+      SliverToBoxAdapter(
+        child: KnowledgeCoverage(controller: widget.controller),
+      ),
+      if (state.knowledge.isEmpty)
+        const SliverToBoxAdapter(
+          child: Padding(
+            padding: EdgeInsets.all(32),
+            child: Text('No saved sources match this search.'),
+          ),
+        ),
+      SliverList.builder(
+        itemCount: state.knowledge.length,
+        itemBuilder: (context, index) {
+          final source = state.knowledge[index];
+          return MobileActionTile(
+            icon: Icons.description_outlined,
+            title: source.title,
+            subtitle:
+                '${memoryFriendlyLabel(source.category)} · ${source.chunkCount} indexed sections',
+            onTap: () => setState(() => _selectedSourceId = source.id),
+          );
+        },
+      ),
+      SliverToBoxAdapter(
+        child: KnowledgePageControls(
+          controller: widget.controller,
+          memory: false,
+        ),
+      ),
+    ],
+  );
+
+  Widget _mobileSourceDetail(KnowledgeItem source) => ListView(
+    padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+    children: [
+      Text(source.title, style: Theme.of(context).textTheme.headlineSmall),
+      const SizedBox(height: 12),
+      Text(
+        '${memoryFriendlyLabel(source.sourceType)} · ${memoryFriendlyLabel(source.category)}',
+      ),
+      const SizedBox(height: 24),
+      Text(
+        '${source.chunkCount} searchable sections',
+        style: Theme.of(context).textTheme.titleMedium,
+      ),
+      const SizedBox(height: 8),
+      const Text(
+        'This is the saved source record. Its indexed content is available to context retrieval.',
+      ),
+      if (source.source.isNotEmpty)
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 16),
+          child: SelectableText(source.source),
+        ),
+      ExpansionTile(
+        tilePadding: EdgeInsets.zero,
+        title: const Text('Source details'),
+        children: [
+          ListTile(
+            title: const Text('Last indexed'),
+            subtitle: Text(
+              source.indexedAt == null
+                  ? 'Not reported'
+                  : MaterialLocalizations.of(context)
+                        .formatFullDate(source.indexedAt!.toLocal()),
+            ),
+          ),
+          ListTile(
+            title: const Text('Indexed characters'),
+            subtitle: Text('${source.totalCharacters}'),
+          ),
+          SelectableText('Source reference: ${source.id}'),
+          Text(
+            'Original-source link: ${source.hasCanonicalLineage ? 'recorded' : 'not reported'}',
+          ),
+        ],
+      ),
+      const SizedBox(height: 12),
+      OutlinedButton.icon(
+        onPressed: () => setState(() {
+          _selectedSourceId = null;
+          _tabs.index = 7;
+        }),
+        icon: const Icon(Icons.cleaning_services_outlined),
+        label: const Text('Review source cleanup'),
+      ),
+    ],
   );
   Widget _catalogueUnavailable() => widget.controller.loading
       ? const Center(child: CircularProgressIndicator())

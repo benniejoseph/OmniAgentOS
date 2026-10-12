@@ -4,6 +4,8 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../app/mobile/mobile_page_scaffold.dart';
+import '../../app/platform/mobile_presentation.dart';
 import 'responsibility_contracts.dart';
 import 'responsibility_controller.dart';
 
@@ -29,9 +31,11 @@ class ResponsibilityWorkspaceView extends StatefulWidget {
 class _ResponsibilityWorkspaceViewState
     extends State<ResponsibilityWorkspaceView> {
   ResponsibilityController get controller => widget.controller;
+  bool _mobileShowDetail = false;
   @override
   void initState() {
     super.initState();
+    _mobileShowDetail = widget.focusId != null;
     _initialize();
   }
 
@@ -48,11 +52,13 @@ class _ResponsibilityWorkspaceViewState
     super.didUpdateWidget(oldWidget);
     if (!identical(oldWidget.controller, controller) ||
         oldWidget.focusId != widget.focusId) {
+      _mobileShowDetail = widget.focusId != null;
       _initialize();
     }
   }
 
   void _select(String id) {
+    if (usesMobilePresentation()) setState(() => _mobileShowDetail = true);
     final open = widget.onOpenResponsibility;
     if (open != null) {
       open(id);
@@ -68,6 +74,7 @@ class _ResponsibilityWorkspaceViewState
         identical(controller, origin) &&
         controller.authorityEpoch == epoch &&
         controller.available) {
+      if (usesMobilePresentation()) setState(() => _mobileShowDetail = true);
       widget.onNewDraft?.call();
     }
   }
@@ -101,6 +108,7 @@ class _ResponsibilityWorkspaceViewState
           ),
         );
       }
+      if (usesMobilePresentation()) return _mobileWorkspace();
       return CallbackShortcuts(
         bindings: {
           const SingleActivator(LogicalKeyboardKey.keyR, meta: true): () =>
@@ -160,6 +168,131 @@ class _ResponsibilityWorkspaceViewState
         ),
       );
     },
+  );
+  Widget _mobileWorkspace() => Column(
+    children: [
+      MobilePageHeader(
+        title: 'Follow-ups',
+        subtitle: _mobileShowDetail
+            ? null
+            : 'Outcomes you want ATLAS to keep checking.',
+        leading: _mobileShowDetail
+            ? BackButton(
+                onPressed: () => setState(() => _mobileShowDetail = false),
+              )
+            : null,
+        actions: [
+          IconButton(
+            tooltip: 'Refresh follow-ups',
+            onPressed: controller.loading ? null : controller.refresh,
+            icon: const Icon(Icons.refresh_rounded),
+          ),
+          if (!_mobileShowDetail && controller.canManage)
+            IconButton.filledTonal(
+              tooltip: 'New follow-up',
+              onPressed: controller.busy ? null : _newDraft,
+              icon: const Icon(Icons.add_rounded),
+            ),
+        ],
+      ),
+      Expanded(
+        child: _mobileShowDetail
+            ? ListView(
+                keyboardDismissBehavior:
+                    ScrollViewKeyboardDismissBehavior.onDrag,
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+                children: _detailChildren(),
+              )
+            : CustomScrollView(
+                slivers: [
+                  SliverPadding(
+                    padding: const EdgeInsets.symmetric(horizontal: 20),
+                    sliver: SliverToBoxAdapter(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          if (controller.dirty || controller.selectedId != null)
+                            OutlinedButton.icon(
+                              onPressed: () =>
+                                  setState(() => _mobileShowDetail = true),
+                              icon: const Icon(Icons.edit_note_rounded),
+                              label: Text(
+                                controller.dirty
+                                    ? 'Continue your draft'
+                                    : 'Return to selected follow-up',
+                              ),
+                            ),
+                          if (controller.loading)
+                            const LinearProgressIndicator(),
+                          if (controller.readErrors[ResponsibilityRead.list] !=
+                              null)
+                            _Notice(
+                              controller.readErrors[ResponsibilityRead.list]!,
+                              error: true,
+                            ),
+                          if (controller.error != null)
+                            _Notice(controller.error!, error: true),
+                          if (controller.listing != null &&
+                              controller.records.isEmpty)
+                            Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 32),
+                              child: Column(
+                                children: [
+                                  Icon(
+                                    Icons.event_repeat_rounded,
+                                    size: 36,
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .primary,
+                                  ),
+                                  const SizedBox(height: 16),
+                                  Text(
+                                    'Give the next step a home',
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .titleMedium,
+                                  ),
+                                  const SizedBox(height: 8),
+                                  const Text(
+                                    'Choose an outcome and sources. Review the plan and limits before turning it on.',
+                                    textAlign: TextAlign.center,
+                                  ),
+                                ],
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  SliverList.builder(
+                    itemCount: controller.records.length,
+                    itemBuilder: (context, index) {
+                      final record = controller.records[index];
+                      return MobileActionTile(
+                        key: ValueKey(record.id),
+                        icon: Icons.event_repeat_outlined,
+                        title: record.title,
+                        subtitle: _label(record.state),
+                        onTap: () => _select(record.id),
+                      );
+                    },
+                  ),
+                  if (controller.listing != null)
+                    SliverToBoxAdapter(
+                      child: Padding(
+                        padding: const EdgeInsets.all(20),
+                        child: Text(
+                          controller.listing?['hasMore'] == true
+                              ? 'Showing recent follow-ups. Older records can still be opened from their links.'
+                              : 'Showing your recently loaded follow-ups.',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+      ),
+    ],
   );
   Widget _catalogue({bool shrinkWrap = false}) => ListView(
     shrinkWrap: shrinkWrap,
@@ -248,13 +381,18 @@ class _ResponsibilityWorkspaceViewState
       ),
     if (controller.selectedId == null || controller.record != null) ...[
       _Section(
-        title: controller.record?.title ?? 'New Responsibility draft',
+        title:
+            controller.record?.title ??
+            (usesMobilePresentation()
+                ? 'New follow-up draft'
+                : 'New Responsibility draft'),
         children: [
           if (controller.record != null) ...[
             Text(
               '${_label(controller.record!.state)} · revision ${controller.record!.revision}',
             ),
-            SelectableText(controller.record!.id),
+            if (!usesMobilePresentation())
+              SelectableText(controller.record!.id),
           ],
           const Text(
             'Describe a finite responsibility, choose exact references, then review its current pins. Saving and reviewing do not start checks or delivery.',
@@ -995,196 +1133,205 @@ class _ResponsibilityDraftEditorState
           lines: 2,
           maxLength: 2000,
         ),
-        _choices(groups),
-        _field(
-          'success',
-          'Success condition (descriptive)',
-          draft['successCondition'] as String,
-          (v) => _change('successCondition', v.trim()),
-          lines: 2,
-          maxLength: 1000,
-        ),
-        _field(
-          'stops',
-          'Stop conditions (one per line, up to 8)',
-          (draft['stopConditions'] as List).join('\n'),
-          (v) => _change(
-            'stopConditions',
-            v
-                .split('\n')
-                .map((s) => s.trim())
-                .where((s) => s.isNotEmpty)
-                .toList(),
-          ),
-          lines: 3,
-        ),
-        const Text(
-          'The finite pilot enforces expiry and meeting start/cancellation. Free-text success and stop conditions remain descriptive.',
-        ),
-        SwitchListTile(
-          contentPadding: EdgeInsets.zero,
-          title: const Text('Finite cadence'),
-          value: cadence != null,
-          onChanged: enabled
-              ? (v) {
-                  final now = DateTime.fromMillisecondsSinceEpoch(
-                    DateTime.now().millisecondsSinceEpoch,
-                    isUtc: true,
-                  );
-                  _clearInputErrors([
-                    'starts',
-                    'expires',
-                    'timezone',
-                    'interval',
-                  ]);
-                  _change(
-                    'cadence',
-                    v
-                        ? {
-                            'frequency': 'daily',
-                            'interval': 1,
-                            'timezone': 'UTC',
-                            'startsAt': now
-                                .add(const Duration(minutes: 5))
-                                .toIso8601String(),
-                            'expiresAt': now
-                                .add(const Duration(days: 7))
-                                .toIso8601String(),
-                            'missedPolicy': 'skip',
-                          }
-                        : null,
-                  );
-                }
-              : null,
-        ),
-        if (cadence != null) ...[
-          DropdownButtonFormField<String>(
-            key: ValueKey('cadence-${cadence['frequency']}'),
-            initialValue: cadence['frequency'] as String,
-            isExpanded: true,
-            itemHeight: null,
-            isDense: false,
-            decoration: const InputDecoration(labelText: 'Frequency'),
-            items: [
-              for (final value in ['hourly', 'daily', 'weekly'])
-                DropdownMenuItem(value: value, child: Text(_label(value))),
-            ],
-            onChanged: enabled
-                ? (v) => _change('cadence', {...cadence, 'frequency': v})
-                : null,
-          ),
-          _field('interval', 'Interval (1–24)', '${cadence['interval']}', (v) {
-            final n = int.tryParse(v);
-            if (n != null && n >= 1 && n <= 24) {
-              _change('cadence', {...cadence, 'interval': n});
-            }
-          }, numeric: true),
-          _field('timezone', 'IANA timezone', cadence['timezone'] as String, (
-            v,
-          ) {
-            if (v.trim().isNotEmpty) {
-              _change('cadence', {...cadence, 'timezone': v.trim()});
-            }
-          }),
+        _formGroup('Sources and assistant', [_choices(groups)]),
+        _formGroup('Success and stop conditions', [
           _field(
-            'starts',
-            'Starts at (UTC ISO instant)',
-            cadence['startsAt'] as String,
-            (v) => _cadenceTime(cadence, 'startsAt', v),
+            'success',
+            'Success condition (descriptive)',
+            draft['successCondition'] as String,
+            (v) => _change('successCondition', v.trim()),
+            lines: 2,
+            maxLength: 1000,
           ),
           _field(
-            'expires',
-            'Expires at (UTC ISO instant)',
-            cadence['expiresAt'] as String,
-            (v) => _cadenceTime(cadence, 'expiresAt', v),
+            'stops',
+            'Stop conditions (one per line, up to 8)',
+            (draft['stopConditions'] as List).join('\n'),
+            (v) => _change(
+              'stopConditions',
+              v
+                  .split('\n')
+                  .map((s) => s.trim())
+                  .where((s) => s.isNotEmpty)
+                  .toList(),
+            ),
+            lines: 3,
           ),
           const Text(
-            'Missed checks are skipped. The current pilot supports daily or weekly cadence and a 15-minute due grace.',
+            'The finite pilot enforces expiry and meeting start/cancellation. Free-text success and stop conditions remain descriptive.',
           ),
-        ],
-        SwitchListTile(
-          contentPadding: EdgeInsets.zero,
-          title: const Text('Finite cumulative limits'),
-          value: limits != null,
-          onChanged: enabled
-              ? (v) {
-                  _clearInputErrors([
-                    'checks',
-                    'notices',
-                    ...responsibilityBudgetDimensions.map(
-                      (key) => 'budget-$key',
-                    ),
-                  ]);
-                  _change(
-                    'limits',
-                    v
-                        ? {
-                            'maxChecks': 7,
-                            'maxNotifications': 0,
-                            'cumulative': {
-                              for (final key in responsibilityBudgetDimensions)
-                                key: key == 'wallTimeMs'
-                                    ? 210000
-                                    : key == 'toolCalls' || key == 'agents'
-                                    ? 7
-                                    : 0,
-                            },
-                          }
-                        : null,
-                  );
+        ]),
+        _formGroup('Schedule', [
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Finite cadence'),
+            value: cadence != null,
+            onChanged: enabled
+                ? (v) {
+                    final now = DateTime.fromMillisecondsSinceEpoch(
+                      DateTime.now().millisecondsSinceEpoch,
+                      isUtc: true,
+                    );
+                    _clearInputErrors([
+                      'starts',
+                      'expires',
+                      'timezone',
+                      'interval',
+                    ]);
+                    _change(
+                      'cadence',
+                      v
+                          ? {
+                              'frequency': 'daily',
+                              'interval': 1,
+                              'timezone': 'UTC',
+                              'startsAt': now
+                                  .add(const Duration(minutes: 5))
+                                  .toIso8601String(),
+                              'expiresAt': now
+                                  .add(const Duration(days: 7))
+                                  .toIso8601String(),
+                              'missedPolicy': 'skip',
+                            }
+                          : null,
+                    );
+                  }
+                : null,
+          ),
+          if (cadence != null) ...[
+            DropdownButtonFormField<String>(
+              key: ValueKey('cadence-${cadence['frequency']}'),
+              initialValue: cadence['frequency'] as String,
+              isExpanded: true,
+              itemHeight: null,
+              isDense: false,
+              decoration: const InputDecoration(labelText: 'Frequency'),
+              items: [
+                for (final value in ['hourly', 'daily', 'weekly'])
+                  DropdownMenuItem(value: value, child: Text(_label(value))),
+              ],
+              onChanged: enabled
+                  ? (v) => _change('cadence', {...cadence, 'frequency': v})
+                  : null,
+            ),
+            _field('interval', 'Interval (1–24)', '${cadence['interval']}', (
+              v,
+            ) {
+              final n = int.tryParse(v);
+              if (n != null && n >= 1 && n <= 24) {
+                _change('cadence', {...cadence, 'interval': n});
+              }
+            }, numeric: true),
+            _field('timezone', 'IANA timezone', cadence['timezone'] as String, (
+              v,
+            ) {
+              if (v.trim().isNotEmpty) {
+                _change('cadence', {...cadence, 'timezone': v.trim()});
+              }
+            }),
+            _field(
+              'starts',
+              'Starts at (UTC ISO instant)',
+              cadence['startsAt'] as String,
+              (v) => _cadenceTime(cadence, 'startsAt', v),
+            ),
+            _field(
+              'expires',
+              'Expires at (UTC ISO instant)',
+              cadence['expiresAt'] as String,
+              (v) => _cadenceTime(cadence, 'expiresAt', v),
+            ),
+            const Text(
+              'Missed checks are skipped. The current pilot supports daily or weekly cadence and a 15-minute due grace.',
+            ),
+          ],
+        ]),
+        _formGroup('Usage limits', [
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Finite cumulative limits'),
+            value: limits != null,
+            onChanged: enabled
+                ? (v) {
+                    _clearInputErrors([
+                      'checks',
+                      'notices',
+                      ...responsibilityBudgetDimensions.map(
+                        (key) => 'budget-$key',
+                      ),
+                    ]);
+                    _change(
+                      'limits',
+                      v
+                          ? {
+                              'maxChecks': 7,
+                              'maxNotifications': 0,
+                              'cumulative': {
+                                for (final key
+                                    in responsibilityBudgetDimensions)
+                                  key: key == 'wallTimeMs'
+                                      ? 210000
+                                      : key == 'toolCalls' || key == 'agents'
+                                      ? 7
+                                      : 0,
+                              },
+                            }
+                          : null,
+                    );
+                  }
+                : null,
+          ),
+          if (limits != null) ...[
+            _field(
+              'checks',
+              'Maximum checks (1–10000)',
+              '${limits['maxChecks']}',
+              (v) {
+                final n = int.tryParse(v);
+                if (n != null && n > 0 && n <= 10000) {
+                  _change('limits', {...limits, 'maxChecks': n});
                 }
-              : null,
-        ),
-        if (limits != null) ...[
-          _field(
-            'checks',
-            'Maximum checks (1–10000)',
-            '${limits['maxChecks']}',
-            (v) {
-              final n = int.tryParse(v);
-              if (n != null && n > 0 && n <= 10000) {
-                _change('limits', {...limits, 'maxChecks': n});
-              }
-            },
-            numeric: true,
-          ),
-          _field(
-            'notices',
-            'Maximum in-app notices (0–1000)',
-            '${limits['maxNotifications']}',
-            (v) {
-              final n = int.tryParse(v);
-              if (n != null && n >= 0 && n <= 1000) {
-                _change('limits', {...limits, 'maxNotifications': n});
-              }
-            },
-            numeric: true,
-          ),
-          ExpansionTile(
-            title: const Text('Cumulative resource limits'),
-            children: [
-              for (final key in responsibilityBudgetDimensions)
-                _field(
-                  'budget-$key',
-                  key == 'costMicrousd' ? 'Cost (micro USD)' : key,
-                  '${responsibilityMap(limits['cumulative'])[key]}',
-                  (v) {
-                    final n = int.tryParse(v);
-                    if (n != null && n >= 0 && n <= 1000000000000) {
-                      _change('limits', {
-                        ...limits,
-                        'cumulative': {
-                          ...responsibilityMap(limits['cumulative']),
-                          key: n,
-                        },
-                      });
-                    }
-                  },
-                  numeric: true,
-                ),
-            ],
-          ),
-        ],
+              },
+              numeric: true,
+            ),
+            _field(
+              'notices',
+              'Maximum in-app notices (0–1000)',
+              '${limits['maxNotifications']}',
+              (v) {
+                final n = int.tryParse(v);
+                if (n != null && n >= 0 && n <= 1000) {
+                  _change('limits', {...limits, 'maxNotifications': n});
+                }
+              },
+              numeric: true,
+            ),
+            ExpansionTile(
+              title: const Text('Cumulative resource limits'),
+              children: [
+                for (final key in responsibilityBudgetDimensions)
+                  _field(
+                    'budget-$key',
+                    key == 'costMicrousd' ? 'Cost (micro USD)' : key,
+                    '${responsibilityMap(limits['cumulative'])[key]}',
+                    (v) {
+                      final n = int.tryParse(v);
+                      if (n != null && n >= 0 && n <= 1000000000000) {
+                        _change('limits', {
+                          ...limits,
+                          'cumulative': {
+                            ...responsibilityMap(limits['cumulative']),
+                            key: n,
+                          },
+                        });
+                      }
+                    },
+                    numeric: true,
+                  ),
+              ],
+            ),
+          ],
+        ]),
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
           title: const Text('Material changes only, in this account’s inbox'),
@@ -1208,6 +1355,27 @@ class _ResponsibilityDraftEditorState
       ],
     );
   }
+
+  Widget _formGroup(String title, List<Widget> children) =>
+      usesMobilePresentation()
+      ? ExpansionTile(
+          title: Text(title),
+          tilePadding: EdgeInsets.zero,
+          maintainState: true,
+          expansionAnimationStyle: MediaQuery.disableAnimationsOf(context)
+              ? AnimationStyle.noAnimation
+              : const AnimationStyle(duration: Duration(milliseconds: 180)),
+          children: [
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: children,
+            ),
+          ],
+        )
+      : Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: children,
+        );
 
   void _cadenceTime(ResponsibilityJson cadence, String key, String value) {
     final parsed = DateTime.tryParse(value.trim());
@@ -1416,21 +1584,71 @@ class _Section extends StatelessWidget {
   final String title;
   final List<Widget> children;
   @override
-  Widget build(BuildContext context) => Card(
-    margin: const EdgeInsets.symmetric(vertical: 10),
-    child: Padding(
-      padding: const EdgeInsets.all(16),
-      child: Column(
+  Widget build(BuildContext context) {
+    if (usesMobilePresentation()) {
+      final label = switch (title) {
+        'Exact Responsibility' => 'Follow-up unavailable',
+        'Exact draft review' => 'Review the plan',
+        'Finite checks' => 'Check schedule and progress',
+        'Accepted observations and baseline' => 'What ATLAS found',
+        'Separate in-app notification authority' => 'Notification settings',
+        'Accepted action receipts' => 'Saved changes',
+        _ => title,
+      };
+      final secondary = const {
+        'Exact draft review',
+        'Finite checks',
+        'Accepted observations and baseline',
+        'Separate in-app notification authority',
+        'Accepted action receipts',
+      }.contains(title);
+      final content = Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text(title, style: Theme.of(context).textTheme.titleLarge),
-          const SizedBox(height: 12),
           for (final child in children)
-            Padding(padding: const EdgeInsets.only(bottom: 10), child: child),
+            Padding(padding: const EdgeInsets.only(bottom: 12), child: child),
         ],
+      );
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: secondary
+            ? ExpansionTile(
+                title: Text(label),
+                tilePadding: EdgeInsets.zero,
+                maintainState: true,
+                expansionAnimationStyle: MediaQuery.disableAnimationsOf(context)
+                    ? AnimationStyle.noAnimation
+                    : const AnimationStyle(
+                        duration: Duration(milliseconds: 180),
+                      ),
+                children: [content],
+              )
+            : Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(label, style: Theme.of(context).textTheme.titleLarge),
+                  const SizedBox(height: 16),
+                  content,
+                ],
+              ),
+      );
+    }
+    return Card(
+      margin: const EdgeInsets.symmetric(vertical: 10),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(title, style: Theme.of(context).textTheme.titleLarge),
+            const SizedBox(height: 12),
+            for (final child in children)
+              Padding(padding: const EdgeInsets.only(bottom: 10), child: child),
+          ],
+        ),
       ),
-    ),
-  );
+    );
+  }
 }
 
 class _Notice extends StatelessWidget {

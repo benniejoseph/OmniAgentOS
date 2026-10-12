@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../app/platform/mobile_presentation.dart';
+
 import 'companion_controller.dart';
 import 'companion_models.dart';
 import 'companion_personality_settings.dart';
@@ -168,6 +170,10 @@ class _CompanionSettingsEditorState extends State<CompanionSettingsEditor> {
                   ? (c.loading
                         ? 'Loading saved preferences…'
                         : 'Saved preferences have not loaded.')
+                  : usesMobilePresentation()
+                  ? (current.persisted
+                        ? 'Preferences saved'
+                        : 'Default preferences · not yet saved')
                   : 'Saved revision ${current.revision}${current.persisted ? '' : ' · defaults, not yet saved'}',
               style: const TextStyle(fontSize: 13),
             ),
@@ -245,7 +251,19 @@ class _CompanionSettingsEditorState extends State<CompanionSettingsEditor> {
               style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
             ),
             SelectableText(
-              draft.preferredThreadId ?? 'No preferred home conversation.',
+              usesMobilePresentation()
+                  ? (draft.preferredThreadId == null
+                        ? 'No preferred home conversation.'
+                        : c.threads
+                                  ?.where(
+                                    (thread) =>
+                                        thread.id == draft.preferredThreadId,
+                                  )
+                                  .firstOrNull
+                                  ?.title ??
+                              'Your saved conversation')
+                  : draft.preferredThreadId ??
+                        'No preferred home conversation.',
               style: const TextStyle(fontSize: 14),
             ),
             if (current != null)
@@ -329,7 +347,11 @@ class _CompanionSettingsEditorState extends State<CompanionSettingsEditor> {
                             thread.title,
                             style: const TextStyle(fontSize: 16),
                           ),
-                          Text(thread.id, style: const TextStyle(fontSize: 13)),
+                          if (!usesMobilePresentation())
+                            Text(
+                              thread.id,
+                              style: const TextStyle(fontSize: 13),
+                            ),
                           Text(
                             '${thread.mode} · ${thread.updatedAt}',
                             style: const TextStyle(fontSize: 13),
@@ -359,7 +381,9 @@ class _CompanionSettingsEditorState extends State<CompanionSettingsEditor> {
             ),
             if (c.staleRevision) ...[
               Text(
-                'Your draft uses revision ${c.draftRevision}; the server is now at ${current!.revision}. Review before another save.',
+                usesMobilePresentation()
+                    ? 'Your saved preferences changed while you were editing. Review your draft before saving again.'
+                    : 'Your draft uses revision ${c.draftRevision}; the server is now at ${current!.revision}. Review before another save.',
               ),
               OutlinedButton(
                 onPressed: c.writing || c.submission != null
@@ -372,13 +396,22 @@ class _CompanionSettingsEditorState extends State<CompanionSettingsEditor> {
               Text(c.writeError!, style: const TextStyle(fontSize: 14)),
             if (c.receipt != null) ...[
               Text(
-                'Save confirmed · ${c.receipt!.outcome} revision ${c.receipt!.revision}',
+                usesMobilePresentation()
+                    ? 'Preferences saved · ${c.receipt!.outcome.replaceAll('_', ' ')}'
+                    : 'Save confirmed · ${c.receipt!.outcome} revision ${c.receipt!.revision}',
                 style: const TextStyle(fontSize: 14),
               ),
-              SelectableText(
-                c.receipt!.id,
-                style: const TextStyle(fontSize: 13),
-              ),
+              if (usesMobilePresentation())
+                ExpansionTile(
+                  tilePadding: EdgeInsets.zero,
+                  title: const Text('Save details'),
+                  children: [SelectableText(c.receipt!.id)],
+                )
+              else
+                SelectableText(
+                  c.receipt!.id,
+                  style: const TextStyle(fontSize: 13),
+                ),
               if (current != null && current.revision > c.receipt!.revision)
                 Text(
                   'The confirmed receipt predates current saved revision ${current.revision}.',

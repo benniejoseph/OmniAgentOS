@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../app/mobile/mobile_page_scaffold.dart';
+import '../../app/platform/mobile_presentation.dart';
 import 'builder_contracts.dart';
 import 'builder_controller.dart';
 import 'builder_providers.dart';
@@ -71,6 +73,7 @@ class _NativeBuilderWorkspaceState extends State<NativeBuilderWorkspace>
       _note = TextEditingController(),
       _confirmation = TextEditingController();
   String? _uiError;
+  int _mobilePane = 0;
   Timer? _expiryTimer;
   String? _expiryIdentity;
   BuilderController get c => widget.controller;
@@ -299,6 +302,7 @@ class _NativeBuilderWorkspaceState extends State<NativeBuilderWorkspace>
       );
     }
     final snapshot = c.snapshot, session = snapshot?.session;
+    if (usesMobilePresentation()) return _mobileWorkspace();
     return CallbackShortcuts(
       bindings: {
         const SingleActivator(LogicalKeyboardKey.keyS, meta: true): () {
@@ -483,6 +487,263 @@ class _NativeBuilderWorkspaceState extends State<NativeBuilderWorkspace>
           ),
         ),
       ),
+    );
+  }
+
+  Widget _mobileWorkspace() {
+    final snapshot = c.snapshot, session = snapshot?.session;
+    final files = c.tree
+        .where((row) => row.kind == 'file')
+        .toList(growable: false);
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  session == null
+                      ? 'Build workspace'
+                      : 'Build · ${session.status}',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+              ),
+              IconButton(
+                tooltip: 'Refresh build workspace',
+                onPressed: c.loading || c.acting
+                    ? null
+                    : () => _run(c.initialize),
+                icon: const Icon(Icons.refresh_rounded),
+              ),
+            ],
+          ),
+        ),
+        if (c.loading) const LinearProgressIndicator(),
+        if (session != null)
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.fromLTRB(20, 4, 20, 8),
+            child: Row(
+              children: [
+                for (final (index, label, icon) in [
+                  (0, 'Files', Icons.folder_open_outlined),
+                  (1, 'Preview & code', Icons.code_rounded),
+                  (2, 'Delivery', Icons.rocket_launch_outlined),
+                  (3, 'History', Icons.history_rounded),
+                ])
+                  Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: ChoiceChip(
+                      avatar: Icon(icon, size: 18),
+                      label: Text(label),
+                      selected: _mobilePane == index,
+                      onSelected: (_) => setState(() => _mobilePane = index),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        Expanded(
+          child: CustomScrollView(
+            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+            slivers: [
+              SliverPadding(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+                sliver: SliverToBoxAdapter(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      if (c.readError != null)
+                        BuilderNotice(
+                          'Could not refresh. ${c.readError}',
+                          error: true,
+                        ),
+                      if (c.recoveryError != null)
+                        BuilderNotice(c.recoveryError!, error: true),
+                      if (_uiError != null)
+                        BuilderNotice(_uiError!, error: true),
+                      if (c.actionError != null)
+                        BuilderNotice(c.actionError!, error: true),
+                      if (c.blocked.isNotEmpty) BuilderNotice(c.blocked),
+                      if (c.localRecoveryPending)
+                        const BuilderNotice(
+                          'You have edits waiting to be saved on this device.',
+                        ),
+                      BuilderOutcomePanel(controller: c),
+                      if (snapshot == null && !c.loading)
+                        const BuilderNotice(
+                          'The workspace is unavailable. Refresh to try again.',
+                        ),
+                      if (snapshot != null && session == null) ...[
+                        const SizedBox(height: 24),
+                        const Icon(Icons.code_rounded, size: 36),
+                        const SizedBox(height: 16),
+                        const Text(
+                          'Create a private workspace for this project. Review and edit files here, then open its live preview.',
+                        ),
+                        const SizedBox(height: 16),
+                        BuilderActionButton(
+                          'Create build workspace',
+                          c.writable
+                              ? () => _confirm(
+                                  'Create build workspace',
+                                  'Create an isolated sandbox for project ${c.projectId}?',
+                                  c.create,
+                                )
+                              : null,
+                          primary: true,
+                        ),
+                      ],
+                      if (session != null && !session.running)
+                        BuilderNotice(
+                          'Workspace ${session.status}. Saved files and history remain available; restarting this workspace is not supported.',
+                        ),
+                      if (session != null && _mobilePane == 0) ...[
+                        TextField(
+                          controller: _search,
+                          enabled: !c.acting && c.running,
+                          textInputAction: TextInputAction.search,
+                          decoration: InputDecoration(
+                            hintText: 'Find a source file',
+                            prefixIcon: const Icon(Icons.search_rounded),
+                            suffixIcon: IconButton(
+                              tooltip: 'Search files',
+                              onPressed: !c.acting && c.running
+                                  ? () =>
+                                        _run(() => c.searchFiles(_search.text))
+                                  : null,
+                              icon: const Icon(Icons.arrow_forward_rounded),
+                            ),
+                          ),
+                          onSubmitted: (value) =>
+                              _run(() => c.searchFiles(value)),
+                        ),
+                        const SizedBox(height: 8),
+                        const Text(
+                          'Search with two or more characters. Clear the search to browse the loaded files.',
+                        ),
+                        if (c.fileLoading) const LinearProgressIndicator(),
+                        if (c.fileError != null)
+                          BuilderNotice(c.fileError!, error: true),
+                        const SizedBox(height: 12),
+                        Text(
+                          '${files.length} loaded files',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ],
+                      if (session != null && _mobilePane == 1) _canvas(),
+                      if (session != null && _mobilePane == 2) _delivery(),
+                      if (session != null && _mobilePane == 3) ...[
+                        _checkpoints(),
+                        const SizedBox(height: 20),
+                        _activity(),
+                        _records(),
+                        BuilderEvidencePanel(controller: c),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+              if (session != null && _mobilePane == 0)
+                SliverList.builder(
+                  itemCount: files.length,
+                  itemBuilder: (context, index) {
+                    final row = files[index];
+                    return MobileActionTile(
+                      icon: Icons.description_outlined,
+                      title: row.path,
+                      subtitle: row.size == null ? null : '${row.size} bytes',
+                      onTap: c.acting || !c.running
+                          ? null
+                          : () async {
+                              if (c.dirty) {
+                                await _confirm(
+                                  'Discard this local edit',
+                                  'Opening ${row.path} replaces the unsaved draft for ${c.selectedFile?.path}.',
+                                  () =>
+                                      c.openFile(row.path, allowDiscard: true),
+                                );
+                              } else {
+                                await _run(() => c.openFile(row.path));
+                              }
+                              if (mounted &&
+                                  c.available &&
+                                  c.selectedFilePath == row.path) {
+                                c.choose(nextCanvas: 'code');
+                                setState(() => _mobilePane = 1);
+                              }
+                            },
+                    );
+                  },
+                ),
+              SliverPadding(
+                padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
+                sliver: SliverToBoxAdapter(
+                  child: ExpansionTile(
+                    title: const Text('Workspace controls'),
+                    tilePadding: EdgeInsets.zero,
+                    expansionAnimationStyle:
+                        MediaQuery.disableAnimationsOf(context)
+                        ? AnimationStyle.noAnimation
+                        : const AnimationStyle(
+                            duration: Duration(milliseconds: 180),
+                          ),
+                    children: [
+                      BuilderActionButton(
+                        'Save local recovery',
+                        c.recoveryReady && !c.acting
+                            ? () => _run(c.persist)
+                            : null,
+                      ),
+                      if (session != null) ...[
+                        BuilderActionButton(
+                          'Save checkpoint',
+                          c.canChangeWorkspace && !c.dirty
+                              ? () => _run(c.checkpoint)
+                              : null,
+                        ),
+                        BuilderActionButton(
+                          'Restart preview',
+                          c.canChangeWorkspace && !c.dirty
+                              ? () => _run(() => c.command('start_preview'))
+                              : null,
+                        ),
+                        BuilderActionButton(
+                          'Stop workspace',
+                          c.canChangeWorkspace && !c.dirty
+                              ? () => _confirm(
+                                  'Stop workspace',
+                                  'Stop sandbox ${session.id}? Running work and its live preview stop. Checkpoints and evidence remain recorded.',
+                                  c.stop,
+                                )
+                              : null,
+                        ),
+                      ],
+                      ExpansionTile(
+                        title: const Text('Technical details'),
+                        children: [
+                          BuilderIdentity('Project', c.projectId),
+                          if (session != null)
+                            BuilderIdentity('Workspace', session.id),
+                          if (widget.exactArtifactId != null)
+                            BuilderIdentity(
+                              'Requested artifact',
+                              widget.exactArtifactId!,
+                            ),
+                          const BuilderNotice(
+                            'Actions use the current verified workspace. Uncertain actions are not automatically retried.',
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 

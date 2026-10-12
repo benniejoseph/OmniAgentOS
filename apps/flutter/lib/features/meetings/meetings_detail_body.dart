@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../app/platform/mobile_presentation.dart';
 import 'meetings.dart';
 import 'meetings_commitments.dart';
 import 'meetings_snapshots.dart';
@@ -42,6 +43,7 @@ class MeetingDetailBody extends StatelessWidget {
         error: controller.detailError != null,
       );
     }
+    if (usesMobilePresentation()) return _MobileMeetingBody(view: this);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -236,6 +238,185 @@ class MeetingDetailBody extends StatelessWidget {
           const MeetingNotice(
             'View Calendar connection and sync status in Meetings. Recording review is unavailable in this presentation.',
           ),
+      ],
+    );
+  }
+}
+
+class _MobileMeetingBody extends StatefulWidget {
+  const _MobileMeetingBody({required this.view});
+  final MeetingDetailBody view;
+  @override
+  State<_MobileMeetingBody> createState() => _MobileMeetingBodyState();
+}
+
+class _MobileMeetingBodyState extends State<_MobileMeetingBody> {
+  int _section = 0;
+  @override
+  Widget build(BuildContext context) {
+    final view = widget.view, controller = view.controller;
+    final snapshot = controller.detail;
+    final meeting = snapshot?.meeting;
+    if (!controller.readable || meeting == null || snapshot == null)
+      return const SizedBox.shrink();
+    final locale = MaterialLocalizations.of(context),
+        start = meeting.startAt.toLocal();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (controller.detailError != null)
+          MeetingNotice(
+            'This is the last loaded meeting. Refresh before relying on its current state.',
+            action: 'Retry',
+            onAction: controller.detailLoading
+                ? null
+                : controller.refreshDetail,
+            error: true,
+          ),
+        if (controller.detailLoading) const LinearProgressIndicator(),
+        Text(meeting.title, style: Theme.of(context).textTheme.headlineSmall),
+        const SizedBox(height: 8),
+        Text(
+          '${locale.formatFullDate(start)} · ${locale.formatTimeOfDay(TimeOfDay.fromDateTime(start))}',
+        ),
+        if (meeting.location.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Text(meeting.location),
+          ),
+        const SizedBox(height: 8),
+        Text(
+          meetingLabel(meeting.status),
+          style: Theme.of(context).textTheme.labelLarge
+              ?.copyWith(color: Theme.of(context).colorScheme.primary),
+        ),
+        const SizedBox(height: 20),
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: SegmentedButton<int>(
+            showSelectedIcon: false,
+            segments: const [
+              ButtonSegment(value: 0, label: Text('Brief')),
+              ButtonSegment(value: 1, label: Text('Actions')),
+              ButtonSegment(value: 2, label: Text('Sources')),
+            ],
+            selected: {_section},
+            onSelectionChanged: (values) =>
+                setState(() => _section = values.first),
+          ),
+        ),
+        const SizedBox(height: 20),
+        if (_section == 0) ...[
+          SelectableText(
+            meeting.summary.isEmpty
+                ? 'No summary has been saved yet.'
+                : meeting.summary,
+            style: Theme.of(context).textTheme.bodyLarge?.copyWith(height: 1.5),
+          ),
+          if (meeting.decisions.isNotEmpty)
+            MeetingSection(
+              'Decisions',
+              child: _Notes(meeting.decisions, empty: 'No decisions saved.'),
+            ),
+          MeetingDisclosure(
+            'People & consent',
+            subtitle:
+                '${meeting.participants.length} people · attendance and recording consent are separate',
+            children: [
+              if (meeting.participants.isEmpty)
+                const Text(
+                  'No participants are saved. Recording consent is unconfirmed.',
+                ),
+              for (final person in meeting.participants)
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(person.name),
+                  subtitle: Text(
+                    '${meetingLabel(person.role)}\nAttendance: ${meetingLabel(person.attendeeConsent)}\nRecording: ${meetingLabel(person.recordingConsent)}',
+                  ),
+                ),
+            ],
+          ),
+          if (view.actions != null) view.actions!,
+          MeetingDisclosure(
+            'Meeting details',
+            children: [
+              MeetingValue('Time zone', meeting.timezone),
+              MeetingValue('Access', meetingLabel(meeting.accessClass)),
+              MeetingValue('Meeting reference', meeting.id),
+              MeetingValue('Workspace reference', meeting.workspaceId),
+              MeetingValue('Revision', '${meeting.revision}'),
+              MeetingValue('Revision fingerprint', meeting.sha256),
+              MeetingValue('Consent fingerprint', meeting.consentSha256),
+            ],
+          ),
+        ],
+        if (_section == 1) ...[
+          MeetingSection(
+            'Commitments',
+            child: _Notes(
+              meeting.commitments,
+              empty: 'No commitments have been saved.',
+            ),
+          ),
+          MeetingSection(
+            'Follow-ups',
+            child: _Notes(
+              meeting.followUps,
+              empty: 'No follow-ups have been saved.',
+            ),
+          ),
+          MeetingSection(
+            'Ready for your review',
+            subtitle: 'Accepting a proposal creates its work item. A communication draft is created only when you explicitly choose it.',
+            child: _Commitments(
+              controller,
+              onReview: view.onReview,
+              disabledReason: view.reviewDisabledReason,
+            ),
+          ),
+        ],
+        if (_section == 2) ...[
+          if (view.recordings != null && meeting.workspaceId != null)
+            MeetingRecordingPanel(
+              key: ObjectKey(view.recordings),
+              controller: view.recordings!,
+              meeting: meeting,
+              active: view.active,
+              isCurrent: () =>
+                  controller.readable &&
+                  controller.detailError == null &&
+                  !controller.detailLoading &&
+                  controller.detail?.meeting.versionKey == meeting.versionKey,
+            ),
+          MeetingSection(
+            'Saved sources',
+            subtitle: 'These are saved references. Their presence does not confirm a current upstream connection.',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (meeting.evidence.isEmpty)
+                  const Text('No source links have been saved.'),
+                if (view.proposeDisabledReason != null)
+                  MeetingNotice(view.proposeDisabledReason!),
+                for (final evidence in meeting.evidence)
+                  _Source(
+                    evidence,
+                    snapshot.sources
+                        .where((source) => source.id == evidence.id)
+                        .firstOrNull,
+                    onPropose:
+                        view.proposeDisabledReason == null &&
+                            controller.detailError == null &&
+                            snapshot.context?.canWrite == true &&
+                            meeting.projectId != null
+                        ? view.onPropose
+                        : null,
+                  ),
+              ],
+            ),
+          ),
+        ],
       ],
     );
   }

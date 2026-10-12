@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../app/platform/mobile_presentation.dart';
+
 import '../results/created_file_export.dart';
 import 'capture_controller.dart';
 import 'capture_projection.dart';
@@ -36,6 +38,8 @@ class _CaptureReceiptPanelState extends State<CaptureReceiptPanel> {
     final controller = widget.controller,
         receipt = controller.receipt,
         asset = controller.selectedAsset;
+    final mobile = usesMobilePresentation();
+    if (mobile && receipt == null) return const SizedBox.shrink();
     return Material(
       color: Theme.of(context).colorScheme.surfaceContainerLow,
       borderRadius: BorderRadius.circular(12),
@@ -45,7 +49,7 @@ class _CaptureReceiptPanelState extends State<CaptureReceiptPanel> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Text(
-              'Source and processing',
+              mobile ? 'Your saved capture' : 'Source and processing',
               style: Theme.of(context).textTheme.titleMedium,
             ),
             if (receipt == null)
@@ -55,10 +59,15 @@ class _CaptureReceiptPanelState extends State<CaptureReceiptPanel> {
             if (receipt != null) ...[
               const SizedBox(height: 8),
               Text(receipt.title),
-              const Text('Transfer accepted by the Capture service.'),
-              SelectableText(
-                'Job: ${receipt.jobId}\nStatus: ${controller.receiptJob?.status ?? receipt.jobStatus}${receipt.source == null ? '' : '\nSource: ${receipt.source}'}',
+              Text(
+                mobile
+                    ? 'Saved. Processing status is shown below.'
+                    : 'Transfer accepted by the Capture service.',
               ),
+              if (!mobile)
+                SelectableText(
+                  'Job: ${receipt.jobId}\nStatus: ${controller.receiptJob?.status ?? receipt.jobStatus}${receipt.source == null ? '' : '\nSource: ${receipt.source}'}',
+                ),
               Text(
                 captureProcessingDescription(
                   const {'completed', 'failed', 'canceled'}.contains(
@@ -71,9 +80,11 @@ class _CaptureReceiptPanelState extends State<CaptureReceiptPanel> {
               ),
               if (asset != null) ...[
                 const SizedBox(height: 8),
-                SelectableText(
-                  'Original: ${asset.filename}\nAsset: ${asset.id}\n${asset.byteCount} bytes · ${asset.mediaType}\nContent SHA-256: ${asset.contentSha256}',
-                ),
+                if (mobile) Text(asset.filename),
+                if (!mobile)
+                  SelectableText(
+                    'Original: ${asset.filename}\nAsset: ${asset.id}\n${asset.byteCount} bytes · ${asset.mediaType}\nContent SHA-256: ${asset.contentSha256}',
+                  ),
                 Text(asset.extractionLabel),
                 Text(asset.indexingLabel),
                 if (!controller.assetFresh)
@@ -94,6 +105,23 @@ class _CaptureReceiptPanelState extends State<CaptureReceiptPanel> {
                 ),
               if (_notice != null)
                 Semantics(liveRegion: true, child: Text(_notice!)),
+              if (mobile)
+                ExpansionTile(
+                  tilePadding: EdgeInsets.zero,
+                  title: const Text('Processing details'),
+                  expansionAnimationStyle:
+                      MediaQuery.disableAnimationsOf(context)
+                      ? AnimationStyle.noAnimation
+                      : null,
+                  children: [
+                    SelectableText('Job: ${receipt.jobId}'),
+                    if (receipt.source != null) SelectableText(receipt.source!),
+                    if (asset != null)
+                      SelectableText(
+                        'Asset: ${asset.id}\n${asset.byteCount} bytes · ${asset.mediaType}\nContent SHA-256: ${asset.contentSha256}',
+                      ),
+                  ],
+                ),
               const SizedBox(height: 12),
               Wrap(
                 spacing: 12,
@@ -157,8 +185,10 @@ class _CaptureReceiptPanelState extends State<CaptureReceiptPanel> {
                 const Text('Saving originals is available in the desktop app.'),
             ],
             const SizedBox(height: 12),
-            const Text(
-              'Capture history, historical versions and reindexing are not available in this native view. A completed processing job does not establish complete extraction.',
+            Text(
+              mobile
+                  ? 'Review extraction status before relying on the contents.'
+                  : 'Capture history, historical versions and reindexing are not available in this native view. A completed processing job does not establish complete extraction.',
             ),
             if (widget.onOpenKnowledge != null)
               Align(

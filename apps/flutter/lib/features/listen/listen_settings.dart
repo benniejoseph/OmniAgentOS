@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../app/platform/mobile_presentation.dart';
+
 import 'listen_bridge.dart';
 import 'listen_controller.dart';
 import 'listen_view.dart';
@@ -114,31 +116,63 @@ class _ListenSettingsPageState extends ConsumerState<ListenSettingsPage>
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Row(
-                    children: [
-                      Icon(
-                        Icons.nights_stay_outlined,
-                        size: 28,
-                        color: scheme.primary,
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Text(
-                          'A quieter end to your day',
-                          style: Theme.of(context).textTheme.headlineSmall,
+                  if (usesMobilePresentation()) ...[
+                    Text(
+                      enabled
+                          ? 'Your evening, taken care of'
+                          : 'Your calls, remembered',
+                      style: Theme.of(context).textTheme.titleLarge,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      '11:30 PM · India time',
+                      style: Theme.of(context).textTheme.titleMedium
+                          ?.copyWith(color: scheme.primary),
+                    ),
+                    const SizedBox(height: 8),
+                    ExpansionTile(
+                      tilePadding: EdgeInsets.zero,
+                      title: const Text('How nightly notes work'),
+                      expansionAnimationStyle:
+                          MediaQuery.disableAnimationsOf(context)
+                          ? AnimationStyle.noAnimation
+                          : null,
+                      children: const [
+                        Padding(
+                          padding: EdgeInsets.only(bottom: 16),
+                          child: Text(
+                            'Asael turns new recorded calls into transcripts, summaries, people, topics and follow-ups, with useful context saved to Memory and Knowledge. Android may delay background work; missed calls are picked up on the next check. Your original recordings stay in their folder.',
+                          ),
                         ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  const Text(
-                    'Asael checks your recorded calls at 11:30 PM India time and turns new recordings into transcripts, summaries, people and relationship context, topics and follow-ups. Useful context becomes available to ATLAS in Memory and Knowledge.',
-                  ),
-                  const SizedBox(height: 12),
-                  Text(
-                    'Android may delay background work. Missed calls and calls that finish after the evening check are picked up on the next run. Your phone’s original recordings stay in their folder.',
-                    style: TextStyle(color: scheme.onSurfaceVariant),
-                  ),
+                      ],
+                    ),
+                  ] else ...[
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.nights_stay_outlined,
+                          size: 28,
+                          color: scheme.primary,
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            'A quieter end to your day',
+                            style: Theme.of(context).textTheme.headlineSmall,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Asael checks your recorded calls at 11:30 PM India time and turns new recordings into transcripts, summaries, people and relationship context, topics and follow-ups. Useful context becomes available to ATLAS in Memory and Knowledge.',
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      'Android may delay background work. Missed calls and calls that finish after the evening check are picked up on the next run. Your phone’s original recordings stay in their folder.',
+                      style: TextStyle(color: scheme.onSurfaceVariant),
+                    ),
+                  ],
                   const SizedBox(height: 24),
                   if (!controller.supported)
                     const ListenSurface(

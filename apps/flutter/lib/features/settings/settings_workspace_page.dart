@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../core/network/native_workspace_access.dart';
+import '../../app/platform/mobile_presentation.dart';
 import '../monitoring/monitoring_workspace_view.dart';
 import '../quality/quality_workspace_view.dart';
 import 'model_settings_view.dart';
@@ -47,25 +48,27 @@ class SettingsWorkspacePage extends StatelessWidget {
                 icon: const Icon(Icons.arrow_back_rounded, size: 18),
                 label: const Text('Settings'),
               ),
-              for (final item in const [
-                (id: 'quality', label: 'Quality Checks'),
-                (id: 'monitoring', label: 'Monitoring'),
-              ])
-                Semantics(
-                  selected: section == item.id,
-                  child: TextButton(
-                    onPressed: () => context.go('/settings?section=${item.id}'),
-                    style: TextButton.styleFrom(
-                      backgroundColor: section == item.id
-                          ? scheme.secondaryContainer
-                          : null,
-                      foregroundColor: section == item.id
-                          ? scheme.onSecondaryContainer
-                          : null,
+              if (!usesMobilePresentation())
+                for (final item in const [
+                  (id: 'quality', label: 'Quality Checks'),
+                  (id: 'monitoring', label: 'Monitoring'),
+                ])
+                  Semantics(
+                    selected: section == item.id,
+                    child: TextButton(
+                      onPressed: () =>
+                          context.go('/settings?section=${item.id}'),
+                      style: TextButton.styleFrom(
+                        backgroundColor: section == item.id
+                            ? scheme.secondaryContainer
+                            : null,
+                        foregroundColor: section == item.id
+                            ? scheme.onSecondaryContainer
+                            : null,
+                      ),
+                      child: Text(item.label),
                     ),
-                    child: Text(item.label),
                   ),
-                ),
             ],
           ),
         ),

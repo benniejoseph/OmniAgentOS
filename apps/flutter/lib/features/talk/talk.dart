@@ -13,6 +13,8 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../app/brand/asael_mark.dart';
 import '../../app/platform/macos_presentation.dart';
+import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_page_scaffold.dart';
 import '../../app/theme/macos_app_theme.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/platform/desktop_host_bridge.dart';
@@ -5812,11 +5814,161 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     );
   }
 
+  Future<void> _openMobileOptions() async {
+    await showMobileSheet<void>(
+      context: context,
+      title: 'Conversation options',
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (context, updateSheet) {
+          void change(VoidCallback action) {
+            action();
+            if (context.mounted) updateSheet(() {});
+          }
+
+          return Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const MobileSectionHeader(title: 'How to help'),
+                TalkResearchOptionsBar(
+                  enabled: commandMode == 'research',
+                  options: researchOptions,
+                  onToggle: (enabled) => change(
+                    () => selectCommandApproach(
+                      enabled ? 'research' : 'orchestrate',
+                    ),
+                  ),
+                  onChanged: (value) =>
+                      change(() => setState(() => researchOptions = value)),
+                ),
+                SegmentedButton<String>(
+                  segments: const [
+                    ButtonSegment(
+                      value: 'auto',
+                      label: Text('Use a team'),
+                      icon: Icon(Icons.groups_2_outlined),
+                    ),
+                    ButtonSegment(
+                      value: 'direct',
+                      label: Text('Work alone'),
+                      icon: Icon(Icons.person_outline_rounded),
+                    ),
+                  ],
+                  selected: {
+                    widget.controller.assignedAgent == null
+                        ? strategy
+                        : 'direct',
+                  },
+                  showSelectedIcon: false,
+                  direction: MediaQuery.textScalerOf(context).scale(14) > 20
+                      ? Axis.vertical
+                      : Axis.horizontal,
+                  onSelectionChanged: widget.controller.assignedAgent != null
+                      ? null
+                      : (value) => change(
+                          () => setState(() => strategy = value.first),
+                        ),
+                ),
+                const SizedBox(height: 20),
+                const MobileSectionHeader(title: 'Intelligence'),
+                _ModelThinkingControls(
+                  catalog: commandModelCatalog,
+                  selectedChoiceId: commandModelChoiceId,
+                  reasoningLevel: commandReasoningLevel,
+                  loading: commandModelLoading,
+                  error: commandModelError,
+                  onModelChanged: (value) =>
+                      change(() => selectCommandModel(value)),
+                  onReasoningChanged: (value) =>
+                      change(() => selectCommandReasoning(value)),
+                  onRefresh: () async {
+                    await loadCommandModelCatalog();
+                    if (context.mounted) updateSheet(() {});
+                  },
+                ),
+                const SizedBox(height: 20),
+                const MobileSectionHeader(title: 'Where to work'),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: _ExecutionTargetMenu(
+                    value: executionTarget,
+                    localComputer: widget.localComputer,
+                    androidPhone: widget.androidPhone,
+                    onChanged: (value) =>
+                        change(() => selectExecutionTarget(value)),
+                  ),
+                ),
+                if (widget.controller.assignedAgent case final agent?)
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.smart_toy_outlined),
+                    title: Text(agent.name),
+                    subtitle: const Text('Selected assistant'),
+                    trailing: IconButton(
+                      tooltip: 'Use ATLAS instead',
+                      onPressed: widget.controller.sending
+                          ? null
+                          : () => change(clearAssignedAgent),
+                      icon: const Icon(Icons.close_rounded),
+                    ),
+                  ),
+                const SizedBox(height: 16),
+                Text(
+                  'Use @ in your message to add context, or + to attach a saved source.',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _mobileComposerTools() => Row(
+    children: [
+      Expanded(
+        child: Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton.icon(
+            onPressed: _openMobileOptions,
+            icon: const Icon(Icons.tune_rounded, size: 18),
+            label: Text(
+              selectedCommandModel?.displayName ?? 'Automatic',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ),
+      ),
+      if (commandMode == 'research')
+        TextButton.icon(
+          onPressed: _openMobileOptions,
+          icon: const Icon(Icons.travel_explore_rounded, size: 18),
+          label: Text(researchOptions.depth == 'deep' ? 'Deep' : 'Research'),
+        ),
+      if (commandReferences.isNotEmpty)
+        Padding(
+          padding: const EdgeInsets.only(left: 4),
+          child: Tooltip(
+            message: 'Context attached to this message',
+            child: Chip(
+              avatar: const Icon(Icons.layers_outlined, size: 16),
+              label: Text('${commandReferences.length}'),
+            ),
+          ),
+        ),
+    ],
+  );
+
   Widget _buildWorkspace(BuildContext context, {required bool railVisible}) {
     final macos = usesMacosPresentation();
+    final mobile = usesMobilePresentation();
     return Scaffold(
       appBar: AppBar(
-        toolbarHeight: 56,
+        toolbarHeight: mobile ? 60 : 56,
         titleSpacing: 20,
         title: ListenableBuilder(
           listenable: widget.controller,
@@ -6213,37 +6365,41 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                           child: Column(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              _researchOptionsBar(),
-                              Align(
-                                alignment: Alignment.centerLeft,
-                                child: Semantics(
-                                  expanded: composerOptionsExpanded,
-                                  child: TextButton.icon(
-                                    key: const ValueKey(
-                                      'talk-composer-options',
-                                    ),
-                                    onPressed: () => setState(
-                                      () => composerOptionsExpanded =
-                                          !composerOptionsExpanded,
-                                    ),
-                                    icon: Icon(
-                                      composerOptionsExpanded
-                                          ? Icons.expand_less_rounded
-                                          : Icons.tune_rounded,
-                                      size: 18,
-                                    ),
-                                    label: Text(
-                                      assignedAgent != null
-                                          ? '${assignedAgent.name} · Options and context'
-                                          : executionTarget ==
-                                                TalkExecutionTarget.thisMac
-                                          ? 'This Mac · Options and context'
-                                          : 'Options and context',
+                              if (mobile)
+                                _mobileComposerTools()
+                              else
+                                _researchOptionsBar(),
+                              if (!mobile)
+                                Align(
+                                  alignment: Alignment.centerLeft,
+                                  child: Semantics(
+                                    expanded: composerOptionsExpanded,
+                                    child: TextButton.icon(
+                                      key: const ValueKey(
+                                        'talk-composer-options',
+                                      ),
+                                      onPressed: () => setState(
+                                        () => composerOptionsExpanded =
+                                            !composerOptionsExpanded,
+                                      ),
+                                      icon: Icon(
+                                        composerOptionsExpanded
+                                            ? Icons.expand_less_rounded
+                                            : Icons.tune_rounded,
+                                        size: 18,
+                                      ),
+                                      label: Text(
+                                        assignedAgent != null
+                                            ? '${assignedAgent.name} · Options and context'
+                                            : executionTarget ==
+                                                  TalkExecutionTarget.thisMac
+                                            ? 'This Mac · Options and context'
+                                            : 'Options and context',
+                                      ),
                                     ),
                                   ),
                                 ),
-                              ),
-                              if (composerOptionsExpanded)
+                              if (!mobile && composerOptionsExpanded)
                                 ConstrainedBox(
                                   constraints: BoxConstraints(
                                     maxHeight: constraints.maxHeight * .3 > 240
@@ -6353,7 +6509,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                                     ),
                                   ),
                                 ),
-                              if (composerOptionsExpanded)
+                              if (!mobile && composerOptionsExpanded)
                                 const Padding(
                                   padding: EdgeInsets.symmetric(
                                     horizontal: 8,
@@ -6472,7 +6628,9 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                                     voiceDraftBusy || _researchSendBlocked
                                     ? null
                                     : (_) => submit(),
-                                hintText: 'Message Asael…',
+                                hintText: mobile
+                                    ? 'Ask ATLAS…'
+                                    : 'Message Asael…',
                                 suffixIcon: Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
@@ -6536,7 +6694,8 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                 ),
               ],
             );
-            if (constraints.maxWidth >= talkHistoryDesktopBreakpoint &&
+            if (!mobile &&
+                constraints.maxWidth >= talkHistoryDesktopBreakpoint &&
                 widget.controller.conversationHistorySupported) {
               return Row(
                 children: [
@@ -6563,7 +6722,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                 ],
               );
             }
-            if (!railVisible) return conversation;
+            if (mobile || !railVisible) return conversation;
             return Row(
               children: [
                 Expanded(child: conversation),
@@ -7087,7 +7246,11 @@ class _ModelThinkingControls extends StatelessWidget {
       child: Padding(
         padding: EdgeInsets.symmetric(
           horizontal: compact ? 9 : 11,
-          vertical: compact ? 6 : 7,
+          vertical: usesMobilePresentation()
+              ? 14
+              : compact
+              ? 6
+              : 7,
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -7096,7 +7259,9 @@ class _ModelThinkingControls extends StatelessWidget {
             const SizedBox(width: 7),
             Flexible(
               child: Text(
-                '$label · $value',
+                usesMobilePresentation() && label == 'Model'
+                    ? value
+                    : '$label · $value',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(

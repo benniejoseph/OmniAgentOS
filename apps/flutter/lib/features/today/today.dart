@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../core/network/api_exception.dart';
+import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_page_scaffold.dart';
 import '../auth/application/session_controller.dart';
 import '../companion/atlas_player.dart';
 import '../companion/companion_providers.dart';
@@ -463,6 +465,7 @@ class TodayView extends StatelessWidget {
       return RefreshIndicator(
         onRefresh: controller.refresh,
         child: CustomScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
           slivers: [
             SliverToBoxAdapter(
               child: _TodayHeader(
@@ -511,6 +514,8 @@ class TodayView extends StatelessWidget {
                   ),
                 ),
               ),
+            if (usesMobilePresentation() && data.brief != null)
+              SliverToBoxAdapter(child: _DailyBriefPanel(brief: data.brief!)),
             if (open.length > 1)
               SliverToBoxAdapter(
                 child: _SectionHeading(
@@ -560,15 +565,19 @@ class TodayView extends StatelessWidget {
                   ),
                 ),
               ),
-            if (data.brief case final brief?)
+            if (!usesMobilePresentation() && data.brief != null)
               SliverToBoxAdapter(
                 child: Padding(
                   padding: const EdgeInsets.only(top: 24),
-                  child: _DailyBriefPanel(brief: brief),
+                  child: _DailyBriefPanel(brief: data.brief!),
                 ),
               ),
             SliverToBoxAdapter(child: _TodayContext(snapshot: data)),
-            const SliverPadding(padding: EdgeInsets.only(bottom: 96)),
+            SliverPadding(
+              padding: EdgeInsets.only(
+                bottom: usesMobilePresentation() ? 24 : 96,
+              ),
+            ),
           ],
         ),
       );
@@ -577,28 +586,63 @@ class TodayView extends StatelessWidget {
 
   Future<void> _addItem(BuildContext context) async {
     final input = TextEditingController();
-    final submit = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Add task'),
-        content: TextField(
-          controller: input,
-          autofocus: true,
-          maxLength: 280,
-          decoration: const InputDecoration(labelText: 'What needs attention?'),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(dialogContext, true),
-            child: const Text('Add'),
-          ),
-        ],
-      ),
-    );
+    final submit = usesMobilePresentation()
+        ? await showMobileSheet<bool>(
+            context: context,
+            title: 'Add a task',
+            builder: (sheetContext) => Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  TextField(
+                    controller: input,
+                    autofocus: true,
+                    maxLength: 280,
+                    textInputAction: TextInputAction.done,
+                    onSubmitted: (value) {
+                      if (value.trim().isNotEmpty)
+                        Navigator.pop(sheetContext, true);
+                    },
+                    decoration: const InputDecoration(
+                      hintText: 'What needs attention?',
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  FilledButton.icon(
+                    onPressed: () => Navigator.pop(sheetContext, true),
+                    icon: const Icon(Icons.add_rounded),
+                    label: const Text('Add task'),
+                  ),
+                ],
+              ),
+            ),
+          )
+        : await showDialog<bool>(
+            context: context,
+            builder: (dialogContext) => AlertDialog(
+              title: const Text('Add task'),
+              content: TextField(
+                controller: input,
+                autofocus: true,
+                maxLength: 280,
+                decoration: const InputDecoration(
+                  labelText: 'What needs attention?',
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext, false),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.pop(dialogContext, true),
+                  child: const Text('Add'),
+                ),
+              ],
+            ),
+          );
     final title = input.text.trim();
     input.dispose();
     if (submit == true && title.isNotEmpty) await controller.add(title);
@@ -620,6 +664,59 @@ class _TodayHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (usesMobilePresentation()) {
+      final now = DateTime.now();
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    MaterialLocalizations.of(context).formatFullDate(now),
+                    style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Settings',
+                  onPressed: () => context.go('/settings'),
+                  icon: const Icon(Icons.settings_outlined),
+                ),
+              ],
+            ),
+            const TodayWelcome(),
+            const SizedBox(height: 20),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                FilledButton.icon(
+                  onPressed: acting ? null : onAdd,
+                  icon: const Icon(Icons.add_rounded, size: 20),
+                  label: const Text('Add task'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: () => context.go('/capture?section=listen'),
+                  icon: const Icon(Icons.hearing_rounded, size: 20),
+                  label: const Text('Listen'),
+                ),
+                IconButton.filledTonal(
+                  tooltip: hasBrief
+                      ? 'Refresh daily brief'
+                      : 'Create daily brief',
+                  onPressed: acting ? null : onBrief,
+                  icon: const Icon(Icons.auto_awesome_outlined),
+                ),
+              ],
+            ),
+          ],
+        ),
+      );
+    }
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 24, 20, 24),
       child: Column(

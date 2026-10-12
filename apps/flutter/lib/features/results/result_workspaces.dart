@@ -4,6 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_page_scaffold.dart';
+
 import 'created_files_section.dart';
 import 'result_contracts.dart';
 import 'result_detail_controller.dart';
@@ -58,11 +61,211 @@ class _ResultsWorkspaceState extends State<ResultsWorkspace> {
     super.dispose();
   }
 
+  Widget _mobileResults(BuildContext context) {
+    final controller = widget.controller;
+    final items = controller.pageItems;
+    return RefreshIndicator(
+      onRefresh: controller.refresh,
+      child: CustomScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        slivers: [
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 4, 20, 12),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _search,
+                      focusNode: _searchFocus,
+                      onChanged: (value) => controller.filter(search: value),
+                      decoration: const InputDecoration(
+                        prefixIcon: Icon(Icons.search_rounded),
+                        hintText: 'Find an answer or result',
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  IconButton.filledTonal(
+                    tooltip: 'Filter results',
+                    onPressed: () => showMobileSheet<void>(
+                      context: context,
+                      title: 'Find a result',
+                      builder: (_) => ListenableBuilder(
+                        listenable: controller,
+                        builder: (context, _) => _filters(context),
+                      ),
+                    ),
+                    icon: const Icon(Icons.tune_rounded),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+              child: Semantics(
+                liveRegion: true,
+                child: Text(
+                  !controller.readable
+                      ? 'Results access is unavailable.'
+                      : controller.loading
+                      ? 'Refreshing your results…'
+                      : controller.error != null
+                      ? 'Some results could not be refreshed.'
+                      : '${controller.filtered.length} results in your recent work${controller.workFresh ? '' : ' · last loaded'}',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ),
+            ),
+          ),
+          if (controller.loading)
+            const SliverToBoxAdapter(
+              child: LinearProgressIndicator(minHeight: 2),
+            ),
+          if (items.isEmpty)
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Text(
+                  !controller.workComplete
+                      ? 'Some sources are unavailable. Pull down to try again.'
+                      : 'No results match this view. Try another search or filter.',
+                ),
+              ),
+            ),
+          SliverPadding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            sliver: SliverList.builder(
+              itemCount: items.length,
+              itemBuilder: (context, index) {
+                final item = items[index];
+                return Column(
+                  children: [
+                    ListTile(
+                      contentPadding: const EdgeInsets.symmetric(vertical: 10),
+                      leading: Icon(switch (item.kind) {
+                        ResultKind.agent => Icons.chat_bubble_outline_rounded,
+                        ResultKind.workflow => Icons.account_tree_outlined,
+                        ResultKind.approval => Icons.fact_check_outlined,
+                      }),
+                      title: Text(
+                        item.title,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      subtitle: Padding(
+                        padding: const EdgeInsets.only(top: 6),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(item.statusLabel),
+                            if (item.timestamp != null)
+                              Text(
+                                MaterialLocalizations.of(
+                                  context,
+                                ).formatMediumDate(item.timestamp!.toLocal()),
+                                style: Theme.of(context).textTheme.bodySmall,
+                              ),
+                          ],
+                        ),
+                      ),
+                      trailing: const Icon(Icons.chevron_right_rounded),
+                      onTap: controller.readable
+                          ? () {
+                              controller.select(item.selectionIdentity);
+                              widget.onOpen(item);
+                            }
+                          : null,
+                    ),
+                    const Divider(height: 1),
+                  ],
+                );
+              },
+            ),
+          ),
+          if (controller.pageCount > 1)
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.all(20),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: controller.page > 0
+                            ? () => controller.movePage(controller.page - 1)
+                            : null,
+                        child: const Text('Previous'),
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      child: Text(
+                        '${controller.page + 1} / ${controller.pageCount}',
+                      ),
+                    ),
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: controller.page + 1 < controller.pageCount
+                            ? () => controller.movePage(controller.page + 1)
+                            : null,
+                        child: const Text('Next'),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: CreatedFilesSection(
+                key: ValueKey(
+                  controller.access?.scope ?? 'mobile-results-files',
+                ),
+                controller: controller,
+                files: controller.snapshot?.createdFiles ?? const [],
+              ),
+            ),
+          ),
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              child: ExpansionTile(
+                tilePadding: EdgeInsets.zero,
+                title: const Text('Sources and availability'),
+                expansionAnimationStyle: MediaQuery.disableAnimationsOf(context)
+                    ? AnimationStyle.noAnimation
+                    : null,
+                children: [
+                  for (final source in ResultsSource.values)
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: Text(resultsSourceLabel(source)),
+                      subtitle: Text(controller.readFor(source).label),
+                    ),
+                  const Padding(
+                    padding: EdgeInsets.only(bottom: 24),
+                    child: Text(
+                      'Search covers recently loaded work. Open a saved result link to read older work.',
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: widget.controller,
     builder: (context, _) {
       final controller = widget.controller;
+      if (usesMobilePresentation()) return _mobileResults(context);
       return CallbackShortcuts(
         bindings: {
           const SingleActivator(LogicalKeyboardKey.keyR, meta: true):
@@ -290,9 +493,11 @@ class _ResultsWorkspaceState extends State<ResultsWorkspace> {
           controller: _search,
           focusNode: _searchFocus,
           onChanged: (value) => controller.filter(search: value),
-          decoration: const InputDecoration(
+          decoration: InputDecoration(
             labelText: 'Search Results',
-            hintText: 'Title, full ID, output or evidence',
+            hintText: usesMobilePresentation()
+                ? 'Title, answer or evidence'
+                : 'Title, full ID, output or evidence',
           ),
         ),
         const SizedBox(height: 12),
@@ -309,7 +514,18 @@ class _ResultsWorkspaceState extends State<ResultsWorkspace> {
                   child: Text('Every kind'),
                 ),
                 for (final kind in ResultKind.values)
-                  DropdownMenuItem(value: kind, child: Text(kind.name)),
+                  DropdownMenuItem(
+                    value: kind,
+                    child: Text(
+                      usesMobilePresentation()
+                          ? switch (kind) {
+                              ResultKind.agent => 'Assistant',
+                              ResultKind.workflow => 'Workflow',
+                              ResultKind.approval => 'Decision',
+                            }
+                          : kind.name,
+                    ),
+                  ),
               ],
               onChanged: (value) => controller.filter(
                 resultKind: value,
@@ -320,7 +536,11 @@ class _ResultsWorkspaceState extends State<ResultsWorkspace> {
               key: ValueKey('status:${controller.access?.scope}'),
               initialValue: controller.status ?? '',
               isExpanded: true,
-              decoration: const InputDecoration(labelText: 'Stored status'),
+              decoration: InputDecoration(
+                labelText: usesMobilePresentation()
+                    ? 'Status'
+                    : 'Stored status',
+              ),
               items: [
                 const DropdownMenuItem(value: '', child: Text('Every status')),
                 for (final status in statuses)
@@ -576,7 +796,10 @@ class _ResultDetailWorkspaceState extends State<ResultDetailWorkspace> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(controller.receipt!.message),
-                        SelectableText('Run ID: ${controller.receipt!.runId}'),
+                        if (!usesMobilePresentation())
+                          SelectableText(
+                            'Run ID: ${controller.receipt!.runId}',
+                          ),
                         if (controller.receipt!.canceledJobs != null)
                           Text(
                             'Canceled jobs returned: ${controller.receipt!.canceledJobs}',
@@ -820,12 +1043,33 @@ class ResultDocument extends StatelessWidget {
         ),
         const SizedBox(height: 12),
         Text(item.statusLabel, style: Theme.of(context).textTheme.titleSmall),
-        SelectableText(item.key),
-        if (item.approvalKind != null)
-          Text('Approval kind: ${item.approvalKind}'),
-        SelectableText(item.meta),
-        if (item.timestamp != null)
-          Text('Recorded ${item.timestamp!.toIso8601String()}'),
+        if (usesMobilePresentation()) ...[
+          if (item.timestamp != null)
+            Text(
+              MaterialLocalizations.of(context)
+                  .formatMediumDate(item.timestamp!.toLocal()),
+            ),
+          ExpansionTile(
+            tilePadding: EdgeInsets.zero,
+            title: const Text('Record details'),
+            expansionAnimationStyle: MediaQuery.disableAnimationsOf(context)
+                ? AnimationStyle.noAnimation
+                : null,
+            children: [
+              SelectableText(item.key),
+              SelectableText(item.meta),
+              if (item.approvalKind != null)
+                Text('Approval kind: ${item.approvalKind}'),
+            ],
+          ),
+        ] else ...[
+          SelectableText(item.key),
+          if (item.approvalKind != null)
+            Text('Approval kind: ${item.approvalKind}'),
+          SelectableText(item.meta),
+          if (item.timestamp != null)
+            Text('Recorded ${item.timestamp!.toIso8601String()}'),
+        ],
         const SizedBox(height: 20),
         Text(
           item.kind == ResultKind.approval ? 'Review context' : 'Output',

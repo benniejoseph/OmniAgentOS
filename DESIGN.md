@@ -71,6 +71,27 @@ Use Geist Sans on web and the system sans on native. Headings and operational la
 - Assistant and Work use the available screen width with responsive controls.
   Other reading surfaces may cap content at 1440dp; long prose stays readable.
 
+## Installed mobile application
+
+Android and iOS use an explicit `usesMobilePresentation()` boundary and their
+own phone composition. The full rationale and platform research are in
+[the mobile design guide](docs/native-mobile-design.md). Preserve the web color
+contract while adapting navigation, density and interaction to touch.
+
+- Five labeled primary destinations: Today, Assistant, Capture, Work and Library.
+  Library groups all remaining features and preferences. It is a local navigation
+  index and must not eagerly mount or fetch every workspace.
+- One feature header per page, generous touch targets, focused detail views,
+  compact filter/choice sheets and a keyboard-aware bottom composer. Keep tab
+  navigation and drafts when switching; hide the bottom dock during text input.
+- Common collections are lazy rows/slivers. Use content height rather than
+  fixed desktop cards; preserve text scaling, reduced motion and safe areas.
+- Settings uses grouped preferences and a selected detail. Work and knowledge
+  use list-to-detail composition. Technical inputs remain available when required
+  for an exact approval, but are not the primary labels for everyday records.
+- On tablets at 840dp and wider, the same primary destinations use a rail.
+  Web breakpoints and installed Mac presentation retain their separate rules.
+
 ## Installed macOS application
 
 The installed application has its own presentation layer. It reuses the same

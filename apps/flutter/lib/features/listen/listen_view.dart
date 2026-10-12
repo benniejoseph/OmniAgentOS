@@ -5,6 +5,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../core/network/native_workspace_access.dart';
+import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_page_scaffold.dart';
 import '../capture/entity_options.dart';
 import 'listen_bridge.dart';
 import 'listen_controller.dart';
@@ -103,6 +105,287 @@ class _ListenWorkspaceState extends ConsumerState<ListenWorkspace>
     );
   }
 
+  void _openConversation(ListenJson row) {
+    final access = ref.read(nativeWorkspaceAccessProvider);
+    if (access == null || !access.current) return;
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => ListenDetail(access: access, id: listenText(row['id'])),
+      ),
+    );
+  }
+
+  Future<void> _prepareListening(
+    ListenController controller,
+  ) => showMobileSheet<void>(
+    context: context,
+    title: 'Listen to a conversation',
+    builder: (sheetContext) => StatefulBuilder(
+      builder: (context, updateSheet) => ListenableBuilder(
+        listenable: controller,
+        builder: (context, _) => Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text(
+              'Stay in the moment. ATLAS will prepare notes, people and follow-ups afterwards.',
+            ),
+            const SizedBox(height: 20),
+            TextField(
+              controller: _title,
+              maxLength: 160,
+              decoration: const InputDecoration(
+                labelText: 'Title (optional)',
+                hintText: 'Client catch-up',
+                counterText: '',
+              ),
+            ),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<String>(
+              initialValue: _category,
+              decoration: const InputDecoration(
+                labelText: 'Save with',
+                prefixIcon: Icon(Icons.folder_outlined),
+              ),
+              items: const [
+                DropdownMenuItem(value: 'unfiled', child: Text('Choose later')),
+                DropdownMenuItem(value: 'personal', child: Text('Personal')),
+                DropdownMenuItem(value: 'work', child: Text('Work')),
+              ],
+              onChanged: (value) {
+                setState(() {
+                  _category = value ?? 'unfiled';
+                  _client = null;
+                });
+                updateSheet(() {});
+              },
+            ),
+            if (_category == 'work')
+              Padding(
+                padding: const EdgeInsets.only(top: 12),
+                child: OutlinedButton.icon(
+                  onPressed: () async {
+                    await _chooseClient();
+                    if (context.mounted) updateSheet(() {});
+                  },
+                  icon: const Icon(Icons.business_outlined),
+                  label: Text(
+                    _client?.option.label ?? 'Add a client (optional)',
+                  ),
+                ),
+              ),
+            const SizedBox(height: 20),
+            const Text(
+              'Starting Listen allows Asael to process this audio in the cloud into notes, follow-ups and memory. Let people know you’re recording.',
+            ),
+            const SizedBox(height: 16),
+            if (controller.status?['microphoneGranted'] != true ||
+                controller.status?['notificationsGranted'] != true)
+              OutlinedButton.icon(
+                onPressed: controller.busy || !controller.canManage
+                    ? null
+                    : () => controller.action('requestPermissions'),
+                icon: const Icon(Icons.mic_none_rounded),
+                label: const Text('Allow microphone & recording controls'),
+              ),
+            FilledButton.icon(
+              onPressed:
+                  controller.busy ||
+                      !controller.canManage ||
+                      controller.status?['microphoneGranted'] != true ||
+                      controller.status?['notificationsGranted'] != true
+                  ? null
+                  : () {
+                      _start(controller);
+                      Navigator.of(sheetContext).pop();
+                    },
+              icon: const Icon(Icons.mic_rounded),
+              label: const Text('Start listening'),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+
+  Widget _mobileWorkspace(
+    ListenController controller,
+    List<ListenJson> local,
+    List<ListenJson> rows,
+    bool showSyncStatus,
+    String uploadState,
+    String uploadMessage,
+  ) {
+    final active = controller.activeSession;
+    return Scaffold(
+      body: RefreshIndicator(
+        onRefresh: controller.refresh,
+        child: CustomScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          slivers: [
+            SliverToBoxAdapter(
+              child: MobilePageHeader(
+                title: 'Listen',
+                subtitle: 'Be present. Keep what matters.',
+                leading: IconButton(
+                  tooltip: 'Back to Capture',
+                  onPressed: () => context.go('/capture'),
+                  icon: const Icon(Icons.arrow_back_rounded),
+                ),
+                actions: [
+                  IconButton(
+                    tooltip: 'Nightly call notes',
+                    onPressed: () => context.go('/settings?section=listening'),
+                    icon: const Icon(Icons.nights_stay_outlined),
+                  ),
+                ],
+              ),
+            ),
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    if (showSyncStatus)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 16),
+                        child: _ListenSyncStatus(
+                          state: uploadState,
+                          message: uploadMessage,
+                        ),
+                      ),
+                    if (active != null)
+                      ListenSurface(
+                        child: _ActiveRecording(
+                          controller: controller,
+                          session: active,
+                        ),
+                      )
+                    else if (controller.supported)
+                      FilledButton.icon(
+                        onPressed: controller.busy || !controller.canManage
+                            ? null
+                            : () => _prepareListening(controller),
+                        icon: const Icon(Icons.mic_rounded),
+                        label: const Text('New conversation'),
+                      )
+                    else
+                      const Text(
+                        'Start Listen on your Android phone. Your conversation notes appear here when ready.',
+                      ),
+                    if (controller.error != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 12),
+                        child: Text(
+                          controller.error!,
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.error,
+                          ),
+                        ),
+                      ),
+                    if (controller.loading)
+                      const Padding(
+                        padding: EdgeInsets.only(top: 12),
+                        child: LinearProgressIndicator(),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+            if (local.isNotEmpty)
+              SliverToBoxAdapter(
+                child: MobileSectionHeader(
+                  title: 'Syncing from this phone',
+                  trailing: TextButton(
+                    onPressed: controller.busy
+                        ? null
+                        : () => controller.action('uploadNow', grant: true),
+                    child: const Text('Sync now'),
+                  ),
+                ),
+              ),
+            SliverList.builder(
+              itemCount: local.length,
+              itemBuilder: (_, index) {
+                final row = local[index];
+                return MobileActionTile(
+                  icon: row['sourceKind'] == 'call'
+                      ? Icons.call_outlined
+                      : Icons.mic_none_rounded,
+                  title: listenText(row['title'], 'Conversation'),
+                  subtitle:
+                      '${listenState(row['state'])} · ${listenDuration(row['durationMs'])}'
+                      '${listenText(row['message']).isEmpty ? '' : '\n${listenText(row['message'])}'}',
+                );
+              },
+            ),
+            SliverToBoxAdapter(
+              child: MobileSectionHeader(
+                title: 'Conversation notes',
+                description: 'Summaries first. Every detail when you need it.',
+                trailing: IconButton(
+                  tooltip: 'Refresh notes',
+                  onPressed: controller.loading ? null : controller.refresh,
+                  icon: const Icon(Icons.refresh_rounded),
+                ),
+              ),
+            ),
+            if (controller.conversations.isNotEmpty)
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+                  child: TextField(
+                    onChanged: (value) => setState(() => _query = value),
+                    decoration: const InputDecoration(
+                      prefixIcon: Icon(Icons.search_rounded),
+                      hintText: 'Find a conversation',
+                    ),
+                  ),
+                ),
+              ),
+            if (rows.isEmpty && !controller.loading)
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Text(
+                    _query.isEmpty
+                        ? 'Record a conversation or enable Nightly call notes. Your summaries and follow-ups will appear here.'
+                        : 'No conversations match your search.',
+                  ),
+                ),
+              ),
+            SliverPadding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              sliver: SliverList.builder(
+                itemCount: rows.length,
+                itemBuilder: (_, index) => _ConversationRow(
+                  row: rows[index],
+                  onTap: () => _openConversation(rows[index]),
+                ),
+              ),
+            ),
+            if (controller.supported)
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.only(top: 20),
+                  child: MobileActionTile(
+                    icon: Icons.nights_stay_outlined,
+                    title: 'Nightly call notes',
+                    subtitle: controller.status?['callsEnabled'] == true
+                        ? 'Enabled · 11:30 PM India time'
+                        : 'Turn recorded calls into useful context',
+                    onTap: () => context.go('/settings?section=listening'),
+                  ),
+                ),
+              ),
+            const SliverPadding(padding: EdgeInsets.only(bottom: 24)),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final controller = ref.watch(listenControllerProvider);
@@ -139,6 +422,15 @@ class _ListenWorkspaceState extends ConsumerState<ListenWorkspace>
               .contains(_query.toLowerCase()),
         )
         .toList();
+    if (usesMobilePresentation())
+      return _mobileWorkspace(
+        controller,
+        local,
+        rows,
+        showSyncStatus,
+        uploadState,
+        uploadMessage,
+      );
     return Scaffold(
       body: RefreshIndicator(
         onRefresh: controller.refresh,

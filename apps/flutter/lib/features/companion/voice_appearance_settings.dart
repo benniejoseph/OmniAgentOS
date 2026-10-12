@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../app/platform/mobile_presentation.dart';
+
 import 'atlas_player.dart';
 import 'companion_models.dart';
 import 'voice_appearance.dart';
@@ -75,6 +77,65 @@ class _AppearanceChoice extends StatelessWidget {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final perch = appearance == VoiceAppearance.perch;
+    if (usesMobilePresentation()) {
+      return Semantics(
+        button: true,
+        selected: selected,
+        child: Material(
+          color: selected
+              ? scheme.secondaryContainer
+              : scheme.surfaceContainerLow,
+          borderRadius: BorderRadius.circular(12),
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            onTap: onTap,
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Row(
+                children: [
+                  ExcludeSemantics(
+                    child: AtlasPortrait(
+                      state: perch ? 'listening' : 'available',
+                      size: 64,
+                      preferences: const CompanionPreferences(
+                        intensity: 'quiet',
+                        motion: 'off',
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          appearance.label,
+                          style: theme.textTheme.titleMedium,
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          perch
+                              ? 'A little more character, with floating captions.'
+                              : 'A compact dock, always close at hand.',
+                          style: theme.textTheme.bodySmall,
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Icon(
+                    selected
+                        ? Icons.check_circle_rounded
+                        : Icons.circle_outlined,
+                    size: 22,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    }
     return Semantics(
       button: true,
       selected: selected,

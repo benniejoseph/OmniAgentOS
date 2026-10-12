@@ -7,7 +7,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../app/macos/macos_page_scaffold.dart';
+import '../../app/mobile/mobile_page_scaffold.dart';
 import '../../app/platform/macos_presentation.dart';
+import '../../app/platform/mobile_presentation.dart';
 import '../../core/network/native_workspace_access.dart';
 import '../capture/library_view.dart';
 import '../knowledge/knowledge.dart' show KnowledgeController, MemoryRecord;
@@ -62,6 +64,7 @@ class _ContentSearchViewState extends State<ContentSearchView>
   final _query = TextEditingController();
   final _focus = FocusNode(debugLabel: 'Search workspace content');
   String? _formError;
+  ContentSearchProvider? _mobileFilter;
   ContentSearchController get c => widget.controller;
   @override
   void initState() {
@@ -113,6 +116,7 @@ class _ContentSearchViewState extends State<ContentSearchView>
     try {
       final query = contentSearchQuery(_query.text);
       setState(() => _formError = null);
+      if (usesMobilePresentation()) _focus.unfocus();
       unawaited(c.submit(query));
     } on FormatException catch (error) {
       setState(() => _formError = error.message);
@@ -142,6 +146,7 @@ class _ContentSearchViewState extends State<ContentSearchView>
           child: ListenableBuilder(
             listenable: c,
             builder: (context, _) {
+              if (usesMobilePresentation()) return _mobileSearch();
               final scheme = Theme.of(context).colorScheme;
               return Align(
                 alignment: Alignment.topCenter,
@@ -271,6 +276,195 @@ class _ContentSearchViewState extends State<ContentSearchView>
             body: body,
           )
         : body;
+  }
+
+  Widget _mobileSearch() => CustomScrollView(
+    keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+    slivers: [
+      const SliverToBoxAdapter(
+        child: MobilePageHeader(
+          title: 'Search',
+          subtitle: 'Find a conversation, project or saved idea.',
+        ),
+      ),
+      SliverPadding(
+        padding: const EdgeInsets.symmetric(horizontal: 20),
+        sliver: SliverToBoxAdapter(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              TextField(
+                key: const Key('content-search-query'),
+                controller: _query,
+                focusNode: _focus,
+                textInputAction: TextInputAction.search,
+                maxLength: 240,
+                onChanged: (_) {
+                  c.edit();
+                  if (_formError != null) setState(() => _formError = null);
+                },
+                onSubmitted: (_) => _submit(),
+                decoration: InputDecoration(
+                  hintText: 'Name, topic or phrase',
+                  counterText: '',
+                  errorText: _formError,
+                  prefixIcon: const Icon(Icons.search_rounded),
+                  suffixIcon: IconButton(
+                    tooltip: 'Search',
+                    onPressed: _submit,
+                    icon: const Icon(Icons.arrow_forward_rounded),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: [
+                    ChoiceChip(
+                      label: const Text('All'),
+                      selected: _mobileFilter == null,
+                      onSelected: (_) => setState(() => _mobileFilter = null),
+                    ),
+                    for (final provider in ContentSearchProvider.values)
+                      Padding(
+                        padding: const EdgeInsets.only(left: 8),
+                        child: ChoiceChip(
+                          label: Text(provider.label),
+                          selected: _mobileFilter == provider,
+                          onSelected: (_) =>
+                              setState(() => _mobileFilter = provider),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+              if (c.loading)
+                const LinearProgressIndicator(
+                  semanticsLabel: 'Searching your workspace',
+                ),
+              if (c.error != null) ...[
+                Text(
+                  c.error!,
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: OutlinedButton(
+                    onPressed: _submit,
+                    child: const Text('Retry search'),
+                  ),
+                ),
+              ],
+              if (c.query.isEmpty && c.error == null)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 40),
+                  child: Column(
+                    children: [
+                      Icon(
+                        Icons.manage_search_rounded,
+                        size: 40,
+                        color: Theme.of(context).colorScheme.primary,
+                      ),
+                      const SizedBox(height: 16),
+                      Text(
+                        'Bring an idea back into focus',
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                      const SizedBox(height: 8),
+                      const Text(
+                        'Search across the content available to your current account.',
+                        textAlign: TextAlign.center,
+                      ),
+                    ],
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+      for (final provider in ContentSearchProvider.values)
+        if ((_mobileFilter == null || _mobileFilter == provider) &&
+            c.groups[provider] != null)
+          ..._mobileSearchGroup(provider, c.groups[provider]!),
+      const SliverPadding(padding: EdgeInsets.only(bottom: 24)),
+    ],
+  );
+
+  List<Widget> _mobileSearchGroup(
+    ContentSearchProvider provider,
+    ContentSearchLane lane,
+  ) {
+    final group = lane.group;
+    return [
+      SliverToBoxAdapter(
+        child: MobileSectionHeader(
+          title: provider.label,
+          description: group.ready
+              ? '${group.items.length} shown · ${group.coverage}'
+              : 'This source is unavailable; its results are unknown.',
+        ),
+      ),
+      if (group.ready && group.items.isEmpty)
+        const SliverToBoxAdapter(
+          child: Padding(
+            padding: EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+            child: Text('No matches in this source.'),
+          ),
+        ),
+      SliverList.builder(
+        itemCount: group.items.length,
+        itemBuilder: (context, index) {
+          final item = group.items[index];
+          return MobileActionTile(
+            key: ValueKey((provider, item.id)),
+            icon: _icon(provider),
+            title: item.title,
+            subtitle: item.detail.isEmpty ? null : item.detail,
+            onTap: c.available ? () => widget.onOpen(item.target) : null,
+          );
+        },
+      ),
+      SliverPadding(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+        sliver: SliverToBoxAdapter(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (lane.loading) const LinearProgressIndicator(),
+              if (lane.error != null)
+                Text(
+                  lane.error!,
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+              if (lane.atLimit)
+                const Text(
+                  'The first 100 matches are shown. Refine your search to narrow the results.',
+                ),
+              if (!group.ready ||
+                  lane.error != null ||
+                  group.nextCursor != null && !lane.atLimit)
+                OutlinedButton(
+                  onPressed: c.available && !lane.loading
+                      ? () => c.loadProvider(
+                          provider,
+                          restart: !group.ready || lane.restartRequired,
+                        )
+                      : null,
+                  child: Text(
+                    lane.restartRequired
+                        ? 'Refresh these results'
+                        : !group.ready || lane.error != null
+                        ? 'Retry this source'
+                        : 'Show more',
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    ];
   }
 
   Widget _group(

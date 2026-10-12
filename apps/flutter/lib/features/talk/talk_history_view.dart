@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../../app/platform/mobile_presentation.dart';
+
 import 'talk_history.dart';
 
 const double talkHistoryDesktopBreakpoint = 1280;
@@ -48,7 +50,9 @@ class TalkHistoryPane extends StatelessWidget {
                         ),
                         const SizedBox(height: 2),
                         Text(
-                          'Durable, private history',
+                          usesMobilePresentation()
+                              ? 'Pick up where you left off'
+                              : 'Durable, private history',
                           style: TextStyle(
                             color: scheme.onSurfaceVariant,
                             fontSize: 11.5,
@@ -129,7 +133,9 @@ class TalkHistoryPane extends StatelessWidget {
       );
     }
     return ListView.separated(
-      padding: const EdgeInsets.fromLTRB(10, 10, 10, 18),
+      padding: usesMobilePresentation()
+          ? const EdgeInsets.fromLTRB(16, 8, 16, 24)
+          : const EdgeInsets.fromLTRB(10, 10, 10, 18),
       itemCount: controller.recentThreads.length,
       separatorBuilder: (_, _) => const SizedBox(height: 3),
       itemBuilder: (context, index) {
@@ -148,7 +154,9 @@ class TalkHistoryPane extends StatelessWidget {
                 ? null
                 : () => onSelected(thread.id),
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(12, 11, 10, 10),
+              padding: usesMobilePresentation()
+                  ? const EdgeInsets.symmetric(horizontal: 14, vertical: 16)
+                  : const EdgeInsets.fromLTRB(12, 11, 10, 10),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -161,8 +169,8 @@ class TalkHistoryPane extends StatelessWidget {
                           maxLines: 2,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
-                            fontSize: 13,
-                            height: 1.25,
+                            fontSize: usesMobilePresentation() ? 16 : 13,
+                            height: 1.3,
                             fontWeight: selected
                                 ? FontWeight.w700
                                 : FontWeight.w600,
@@ -175,7 +183,7 @@ class TalkHistoryPane extends StatelessWidget {
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
                             color: scheme.onSurfaceVariant,
-                            fontSize: 10.5,
+                            fontSize: usesMobilePresentation() ? 13 : 10.5,
                           ),
                         ),
                       ],

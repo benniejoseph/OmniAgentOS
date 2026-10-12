@@ -6,6 +6,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/network/api_client.dart';
+import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_page_scaffold.dart';
 import 'markets_contracts.dart';
 import 'markets_controller.dart';
 import 'markets_panels.dart';
@@ -113,6 +115,26 @@ class _MarketWorkspaceState extends State<_MarketWorkspace> {
 
   Future<void> inspect(String title, Object? data) {
     final expected = c, owner = c.repository.access.owner?.key;
+    if (usesMobilePresentation()) {
+      return showMobileSheet<void>(
+        context: context,
+        title: title,
+        builder: (context) => Consumer(
+          builder: (context, ref, _) {
+            final live = ref.watch(marketsControllerProvider);
+            final allowed =
+                identical(live, expected) &&
+                live.readable &&
+                live.repository.access.owner?.key == owner;
+            return allowed
+                ? _MobileMarketEvidence(data: data)
+                : const Text(
+                    'Return to your unlocked workspace to read this evidence.',
+                  );
+          },
+        ),
+      );
+    }
     return showDialog<void>(
       context: context,
       builder: (context) => Consumer(
@@ -307,7 +329,7 @@ class _MarketWorkspaceState extends State<_MarketWorkspace> {
         child: Text(label, style: Theme.of(context).textTheme.titleLarge),
       ),
       if (detail != null) notice(detail),
-      if (items.isEmpty) notice('No records in this successful bounded read.'),
+      if (items.isEmpty) notice('No saved records in this view.'),
       for (final row in items)
         Padding(
           padding: const EdgeInsets.only(bottom: 8),
@@ -319,12 +341,14 @@ class _MarketWorkspaceState extends State<_MarketWorkspace> {
             ),
             title: Text(title(row)),
             subtitle: Text(
-              (row['id'] ??
-                      row['eventId'] ??
-                      row['eventKey'] ??
-                      row['snapshotId'] ??
-                      '')
-                  .toString(),
+              usesMobilePresentation()
+                  ? _mobileEvidenceSubtitle(row)
+                  : (row['id'] ??
+                            row['eventId'] ??
+                            row['eventKey'] ??
+                            row['snapshotId'] ??
+                            '')
+                        .toString(),
             ),
             onTap: () => inspect(label, row),
             trailing: const Icon(Icons.chevron_right),
@@ -351,7 +375,9 @@ class _MarketWorkspaceState extends State<_MarketWorkspace> {
               selected: selected == item['snapshotId'],
               title: Text('${item['asOf']} · ${item['barCount']} bars'),
               subtitle: Text(
-                '${item['providerSymbol']} · ${item['snapshotId']}',
+                usesMobilePresentation()
+                    ? '${item['providerSymbol']} · Saved price evidence'
+                    : '${item['providerSymbol']} · ${item['snapshotId']}',
               ),
               onTap: () => c.selectSnapshot(item),
               trailing: Icon(
@@ -374,7 +400,9 @@ class _MarketWorkspaceState extends State<_MarketWorkspace> {
           children: [
             marketEventsPanel(events: data),
             rows(
-              'Exact release evidence',
+              usesMobilePresentation()
+                  ? 'Release evidence'
+                  : 'Exact release evidence',
               marketRows(data['events'], 100),
               (row) =>
                   '${row['name']} · ${row['releaseDate']} · ${row['timestampPrecision']}',
@@ -501,7 +529,9 @@ class _MarketWorkspaceState extends State<_MarketWorkspace> {
                 features: features,
               ),
               rows(
-                'Exact detector evidence',
+                usesMobilePresentation()
+                    ? 'Pattern evidence'
+                    : 'Exact detector evidence',
                 marketRows(features['detections'], 240),
                 (row) =>
                     '${row['kind']} · ${row['reviewState']} · ${row['state']}',
@@ -539,8 +569,16 @@ class _MarketWorkspaceState extends State<_MarketWorkspace> {
             ListTile(
               contentPadding: EdgeInsets.zero,
               selected: item['id'] == c.selectedBacktestId,
-              title: Text('${item['createdAt']} · ${item['id']}'),
-              subtitle: Text('Snapshot ${item['snapshotId']}'),
+              title: Text(
+                usesMobilePresentation()
+                    ? 'Experiment · ${item['createdAt']}'
+                    : '${item['createdAt']} · ${item['id']}',
+              ),
+              subtitle: Text(
+                usesMobilePresentation()
+                    ? 'Historical simulation · tap to select'
+                    : 'Snapshot ${item['snapshotId']}',
+              ),
               onTap: () =>
                   setState(() => c.selectedBacktestId = item['id'] as String),
               trailing: IconButton(
@@ -587,8 +625,10 @@ class _MarketWorkspaceState extends State<_MarketWorkspace> {
         rows(
           'Forecast evidence and resolution',
           marketRows(data['entries'], 40),
-          (row) =>
-              '${marketMap(row['forecast'])['horizon']} · ${row['resolutionState']} · ${marketMap(row['forecast'])['id']}',
+          (row) => usesMobilePresentation()
+              ? '${marketMap(row['forecast'])['horizon']} outlook · ${row['resolutionState']}'
+                    .replaceAll('_', ' ')
+              : '${marketMap(row['forecast'])['horizon']} · ${row['resolutionState']} · ${marketMap(row['forecast'])['id']}',
         ),
       ],
     ),
@@ -617,10 +657,16 @@ class _MarketWorkspaceState extends State<_MarketWorkspace> {
                   '${intent['action']} · ${intent['state']}',
                   style: Theme.of(context).textTheme.titleMedium,
                 ),
-                SelectableText('${intent['createdAt']}\n${intent['key']}'),
+                SelectableText(
+                  usesMobilePresentation()
+                      ? '${intent['createdAt']}'
+                      : '${intent['createdAt']}\n${intent['key']}',
+                ),
                 if (intent['job'] != null)
                   notice(
-                    'Job ${marketMap(intent['job'])['id']} · ${marketMap(intent['job'])['status']}',
+                    usesMobilePresentation()
+                        ? 'Work status: ${marketMap(intent['job'])['status']}'
+                        : 'Job ${marketMap(intent['job'])['id']} · ${marketMap(intent['job'])['status']}',
                   ),
                 if (c.failures['job:${intent['key']}'] != null)
                   notice(c.failures['job:${intent['key']}']!),
@@ -660,12 +706,169 @@ class _MarketWorkspaceState extends State<_MarketWorkspace> {
         ),
     ],
   );
+  Widget _mobileWorkspace(List<MarketJson> instruments) {
+    final selected = instruments
+        .where((row) => row['instrumentId'] == c.instrumentId)
+        .firstOrNull;
+    final snapshot = c.data('snapshot');
+    const sections = ['Brief', 'Events', 'Structure', 'Simulations', 'Outlook'];
+    return Column(
+      children: [
+        MobilePageHeader(
+          title: 'Markets',
+          subtitle: 'Research, context and evidence.',
+          actions: [
+            IconButton(
+              tooltip: 'Refresh market evidence',
+              onPressed: c.refreshTab,
+              icon: const Icon(Icons.refresh_rounded),
+            ),
+          ],
+        ),
+        Expanded(
+          child: ListView(
+            key: const PageStorageKey('mobile-markets'),
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 32),
+            children: [
+              if (instruments.isNotEmpty)
+                DropdownButtonFormField<String>(
+                  initialValue: selected == null ? null : c.instrumentId,
+                  isExpanded: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Market',
+                    prefixIcon: Icon(Icons.public_rounded),
+                  ),
+                  items: [
+                    for (final row in instruments)
+                      DropdownMenuItem(
+                        value: row['instrumentId'] as String,
+                        child: Text(row['label'] as String),
+                      ),
+                  ],
+                  onChanged: (value) {
+                    if (value != null) c.selectMarket(value, c.interval);
+                  },
+                ),
+              if (selected?['identityWarning'] case final String warning)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Text(
+                    warning,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ),
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final interval in ['5min', '15min', '1h'])
+                    ChoiceChip(
+                      label: Text(switch (interval) {
+                        '5min' => '5 min',
+                        '15min' => '15 min',
+                        _ => '1 hour',
+                      }),
+                      selected: c.interval == interval,
+                      onSelected: (_) =>
+                          c.selectMarket(c.instrumentId, interval),
+                    ),
+                  OutlinedButton.icon(
+                    onPressed: c.loading.contains('bars')
+                        ? null
+                        : c.providerRefresh,
+                    icon: const Icon(Icons.cloud_download_outlined, size: 18),
+                    label: const Text('Update prices'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Text(
+                snapshot == null
+                    ? 'Choose or fetch saved price evidence below.'
+                    : 'Evidence as of ${snapshot['asOf']}',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              const SizedBox(height: 4),
+              const Text(
+                'Stored evidence, not a live price feed. Research does not execute trades.',
+                style: TextStyle(fontSize: 12),
+              ),
+              if (c.failures['bars'] != null) notice(c.failures['bars']!),
+              if (c.loading.contains('bars')) const LinearProgressIndicator(),
+              const SizedBox(height: 20),
+              DropdownButtonFormField<int>(
+                key: ValueKey(('mobile-market-section', c.tab)),
+                initialValue: c.tab,
+                isExpanded: true,
+                decoration: const InputDecoration(labelText: 'Explore'),
+                items: [
+                  for (final (index, label) in sections.indexed)
+                    DropdownMenuItem(value: index, child: Text(label)),
+                ],
+                onChanged: (value) {
+                  if (value != null) c.selectTab(value);
+                },
+              ),
+              const SizedBox(height: 20),
+              switch (c.tab) {
+                1 => events(),
+                2 => technical(),
+                3 => backtests(),
+                4 => journal(),
+                _ => Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    state(
+                      'overview',
+                      ready: (data) =>
+                          marketOverviewPanel(overview: data, bars: snapshot),
+                    ),
+                    const SizedBox(height: 12),
+                    if (snapshot != null)
+                      TextButton.icon(
+                        onPressed: () => inspect('Price evidence', snapshot),
+                        icon: const Icon(Icons.fact_check_outlined),
+                        label: const Text('See price source'),
+                      ),
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: const Icon(Icons.explore_outlined),
+                      title: const Text('Daily & weekly outlook'),
+                      subtitle: const Text(
+                        'Saved scenarios, evidence and outcomes',
+                      ),
+                      trailing: const Icon(Icons.chevron_right_rounded),
+                      onTap: () => c.selectTab(4),
+                    ),
+                    ExpansionTile(
+                      tilePadding: EdgeInsets.zero,
+                      title: const Text('Saved price history'),
+                      children: [snapshots()],
+                    ),
+                  ],
+                ),
+              },
+              if (c.intents.isNotEmpty ||
+                  c.recoveryError != null ||
+                  !c.recoveryReady) ...[
+                const SizedBox(height: 20),
+                receipts(),
+              ],
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final overview = c.data('overview'),
         instruments = overview == null
             ? <MarketJson>[]
             : marketRows(overview['instruments'], 20);
+    if (usesMobilePresentation()) return _mobileWorkspace(instruments);
     return CallbackShortcuts(
       bindings: {
         const SingleActivator(LogicalKeyboardKey.keyR, meta: true): () =>
@@ -697,7 +900,11 @@ class _MarketWorkspaceState extends State<_MarketWorkspace> {
                 OutlinedButton.icon(
                   onPressed: c.refreshTab,
                   icon: const Icon(Icons.refresh),
-                  label: const Text('Refresh stored reads'),
+                  label: Text(
+                    usesMobilePresentation()
+                        ? 'Refresh'
+                        : 'Refresh stored reads',
+                  ),
                 ),
               ],
             ),
@@ -717,8 +924,10 @@ class _MarketWorkspaceState extends State<_MarketWorkspace> {
                           ? c.instrumentId
                           : null,
                       isExpanded: true,
-                      decoration: const InputDecoration(
-                        labelText: 'Exact instrument',
+                      decoration: InputDecoration(
+                        labelText: usesMobilePresentation()
+                            ? 'Market'
+                            : 'Exact instrument',
                       ),
                       items: [
                         for (final item in instruments)
@@ -755,7 +964,11 @@ class _MarketWorkspaceState extends State<_MarketWorkspace> {
                       ? null
                       : c.providerRefresh,
                   icon: const Icon(Icons.cloud_download_outlined),
-                  label: const Text('Fetch provider snapshot'),
+                  label: Text(
+                    usesMobilePresentation()
+                        ? 'Update prices'
+                        : 'Fetch provider snapshot',
+                  ),
                 ),
               ],
             ),
@@ -831,6 +1044,120 @@ class _MarketWorkspaceState extends State<_MarketWorkspace> {
           ],
         ),
       ),
+    );
+  }
+}
+
+String _mobileEvidenceSubtitle(MarketJson row) {
+  final parts = <String>[];
+  for (final key in [
+    'summary',
+    'note',
+    'asOf',
+    'createdAt',
+    'source',
+    'status',
+  ]) {
+    final value = row[key];
+    if (value is String && value.trim().isNotEmpty)
+      parts.add(value.replaceAll('_', ' '));
+    if (parts.length == 2) break;
+  }
+  return parts.isEmpty
+      ? 'Open source details and saved evidence'
+      : parts.join(' · ');
+}
+
+class _MobileMarketEvidence extends StatelessWidget {
+  const _MobileMarketEvidence({required this.data});
+  final Object? data;
+  @override
+  Widget build(BuildContext context) {
+    final root = data is Map
+        ? Map<String, dynamic>.from(data as Map)
+        : <String, dynamic>{};
+    final sections = <Map<String, dynamic>>[root];
+    for (final key in ['forecast', 'result', 'metrics', 'resolution']) {
+      if (root[key] is Map)
+        sections.add(Map<String, dynamic>.from(root[key] as Map));
+    }
+    const labels = <String, String>{
+      'name': 'Name',
+      'label': 'Name',
+      'title': 'Title',
+      'summary': 'Summary',
+      'explanation': 'Explanation',
+      'rationale': 'Reasoning',
+      'note': 'Context',
+      'direction': 'Direction',
+      'bias': 'Research bias',
+      'horizon': 'Time horizon',
+      'resolutionState': 'Outcome',
+      'reviewState': 'Review status',
+      'status': 'Status',
+      'state': 'State',
+      'asOf': 'Evidence time',
+      'createdAt': 'Saved',
+      'occurredAt': 'Event time',
+      'releaseDate': 'Release date',
+      'source': 'Source',
+      'sourceUrl': 'Source link',
+      'provider': 'Provider',
+      'providerSymbol': 'Market symbol',
+      'barCount': 'Price observations',
+      'sampleSize': 'Sample size',
+      'confidence': 'Reported confidence',
+      'tradeCount': 'Simulated trades',
+      'winRate': 'Historical win rate',
+      'maxDrawdown': 'Historical drawdown',
+    };
+    final fields = <(String, String)>[];
+    for (final section in sections) {
+      for (final entry in labels.entries) {
+        final value = section[entry.key];
+        if (value is String && value.trim().isNotEmpty ||
+            value is num ||
+            value is bool)
+          fields.add((entry.value, '$value'));
+      }
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Saved research evidence. Historical results and reported confidence are not a calibrated probability of a future trade.',
+        ),
+        const SizedBox(height: 16),
+        if (fields.isEmpty)
+          const Text(
+            'This record contains structured evidence. Open technical details to inspect its exact stored values.',
+          ),
+        for (final (label, value) in fields)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(label, style: Theme.of(context).textTheme.labelLarge),
+                const SizedBox(height: 4),
+                SelectableText(value),
+              ],
+            ),
+          ),
+        ExpansionTile(
+          tilePadding: EdgeInsets.zero,
+          title: const Text('Technical details'),
+          subtitle: const Text('Exact saved record'),
+          children: [
+            Align(
+              alignment: Alignment.centerLeft,
+              child: SelectableText(
+                const JsonEncoder.withIndent('  ').convert(data),
+              ),
+            ),
+          ],
+        ),
+      ],
     );
   }
 }
