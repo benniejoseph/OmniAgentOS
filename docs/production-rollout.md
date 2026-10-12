@@ -92,6 +92,19 @@ row counts by hand.
 - [ ] Run `Production Smoke` through its protected `production` environment with the canary SHA supplied as `expected_revision`; confirm its configured URL and expected revision identify this canary. Scheduled monitoring discovers the currently healthy production SHA instead.
 - [ ] Download the non-empty release-evidence artifact and confirm the gate is passed/approved.
 
+The staged evaluation smoke defaults to a fresh `production_smoke_<UUID>` tenant
+for every invocation. With `SMOKE_DRIVE_BACKGROUND_QUEUE=true`, it requires
+internal authentication before admission and drives only that same tenant while
+polling the accepted evaluation job. At most ten single-job ticks and all HTTP
+requests share the evaluation deadline. A successful tick is not completion
+evidence: the exact job, linked evaluation run, and requested case must pass.
+An explicit `SMOKE_TENANT_ID` must be `production_smoke` or start with
+`production_smoke_` followed by a bounded safe suffix. Reserve those tenants for
+synthetic work: a tenant tick can advance other due work in the same tenant.
+Session-only authentication cannot drive a queue, and failed tick requests are
+not replayed automatically. The default `security.tenant_isolation` case performs
+governed synthetic storage checks without a model call.
+
 ## Promote
 
 - [ ] Shift traffic gradually while watching health, auth failures, route failures, latency, connector failures, incidents, and queue depth.
