@@ -199,24 +199,28 @@ async function measureDashboardDocument() {
 }
 
 function validateServerRenderedDashboard(document) {
-  if (
-    !hasReadyWorkspaceOpeningTag(document) ||
-    !/<h1(?:\s[^>]*)?>Today<\/h1>/.test(document)
-  ) {
+  if (!hasReadyServerRenderedWorkspace(document)) {
     throw new Error(
       "dashboard document did not contain the ready server-rendered Today workspace.",
     );
   }
 }
 
-function hasReadyWorkspaceOpeningTag(document) {
-  const openingTags = document.matchAll(
-    /<[A-Za-z][A-Za-z0-9:-]*(?:\s[^<>]*?)?>/g,
+function hasReadyServerRenderedWorkspace(document) {
+  const workspaces = document.matchAll(
+    /(<main(?:\s[^<>]*?)?>)([\s\S]*?)<\/main>/gi,
   );
-  for (const [tag] of openingTags) {
+  for (const [, tag, content] of workspaces) {
+    const header = content.match(/<header(?:\s[^<>]*?)?>([\s\S]*?)<\/header>/i)?.[1];
+    // React inserts text separators between the greeting, optional name, and
+    // punctuation. The server has no client clock, so it says Welcome back.
+    const heading = header?.match(/<h1(?:\s[^<>]*?)?>([\s\S]*?)<\/h1>/i)?.[1]
+      .replace(/<!-- -->/g, "");
     if (
       /\bdata-testid\s*=\s*(["'])activity-workspace\1/i.test(tag) &&
-      /\baria-busy\s*=\s*(["'])false\1/i.test(tag)
+      /\baria-busy\s*=\s*(["'])false\1/i.test(tag) &&
+      /^Welcome back(?:, [^<>]+)?\.$/.test(heading || "") &&
+      /<p(?:\s[^<>]*?)?>Today<\/p>/.test(header || "")
     ) {
       return true;
     }

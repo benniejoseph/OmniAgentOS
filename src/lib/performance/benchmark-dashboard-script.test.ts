@@ -5,12 +5,58 @@ import {
   type ServerResponse,
 } from "node:http";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { createElement } from "react";
+import { renderToString } from "react-dom/server";
+import { describe, expect, it, vi } from "vitest";
+import type { CohesiveTodayProjection } from "@/lib/today/cohesive-projection";
+
+const fixtureSession = vi.hoisted(() => ({ name: undefined as string | undefined }));
+vi.mock("@/components/app-shell/session-context", () => ({
+  useWorkspaceSession: () => ({
+    session: { authEnabled: true, authenticated: true, user: { name: fixtureSession.name } },
+    status: "ready",
+  }),
+}));
+vi.mock("@/components/source-coverage/source-coverage-panel", () => ({
+  SourceCoveragePanel: () => null,
+}));
+vi.mock("@/components/use-live-refresh", () => ({ useLiveRefresh: () => undefined }));
+
+const { TodayWorkspace } = await import("@/components/today-workspace");
+const timestamp = "2026-10-13T12:00:00.000Z";
+const initialProjection: CohesiveTodayProjection = {
+  policyVersion: "p11.1-cohesive-today:1", generatedAt: timestamp, timezone: "UTC",
+  visibleSections: ["focus"],
+  today: {
+    generatedAt: timestamp, items: [], threads: [], memories: [], projects: [],
+    brief: undefined, briefLocalDate: "2026-10-13", briefGenerationDue: false,
+    preferences: {
+      briefEnabled: false, briefTime: "08:00", timezone: "UTC", reminderLeadMinutes: 30,
+      notificationsEnabled: false, quietHoursEnabled: true,
+      quietHoursStart: "22:00", quietHoursEnd: "07:00", visibleSections: ["focus"],
+    },
+  },
+  workspaceSummary: null, meetings: [], usage: null, agenda: [], sources: [],
+  counts: { needsAttention: 0, meetingsToday: 0, openCommitments: 0, approvals: 0,
+    activeAgents: 0, activeWork: 0, unknownSources: 0 },
+  projectionSha256: "synthetic-benchmark-projection",
+};
+
+function dashboardDocument({ ready = true, name }: { ready?: boolean; name?: string } = {}) {
+  fixtureSession.name = name;
+  return '<!doctype html><div hidden><main><h1>Loading workspace</h1></main></div>' +
+    renderToString(createElement(TodayWorkspace, { initialProjection: ready ? initialProjection : undefined }));
+}
 
 describe("server-rendered dashboard benchmark", () => {
-  it("measures an authenticated ready document without a browser runtime", async () => {
+  it.each([undefined, "A<& Test"])("measures the actual server-rendered Today component with name %s", async (name) => {
     let requestCount = 0;
     const observedHeaders: Array<Record<string, string | undefined>> = [];
+    const document = dashboardDocument({ name });
+    expect(document).toContain('data-testid="activity-workspace"');
+    expect(document).toContain('aria-busy="false"');
+    expect(document).toContain("Welcome back");
+    expect(document).toContain("<!-- -->");
     await withDashboardServer((request, response) => {
       requestCount += 1;
       observedHeaders.push({
@@ -28,9 +74,7 @@ describe("server-rendered dashboard benchmark", () => {
         "content-type": "text/html; charset=utf-8",
         "server-timing": "total;dur=3",
       });
-      response.end(
-        '<!doctype html><main aria-busy="false" data-testid="activity-workspace"><h1>Today</h1></main>',
-      );
+      response.end(document);
     }, async (baseUrl) => {
       const result = await runBenchmark(baseUrl);
 
@@ -56,9 +100,7 @@ describe("server-rendered dashboard benchmark", () => {
       response.writeHead(200, {
         "content-type": "text/html; charset=utf-8",
       });
-      response.end(
-        '<main data-testid="activity-workspace" aria-busy="true"><h1>Today</h1><p>PRIVATE_FIXTURE</p></main>',
-      );
+      response.end(dashboardDocument({ ready: false }) + "<p>PRIVATE_FIXTURE</p>");
     }, async (baseUrl) => {
       const result = await runBenchmark(baseUrl);
 
@@ -78,7 +120,7 @@ describe("server-rendered dashboard benchmark", () => {
         "content-type": "text/html; charset=utf-8",
       });
       response.end(
-        '<main aria-busy="true" data-testid="activity-workspace"><h1>Today</h1><p>PRIVATE_MIXED_FIXTURE</p></main><aside aria-busy="false">Ready</aside>',
+        '<main aria-busy="true" data-testid="activity-workspace"><header><p>Today</p><h1>Welcome back<!-- -->.</h1></header><p>PRIVATE_MIXED_FIXTURE</p></main><aside aria-busy="false">Ready</aside>',
       );
     }, async (baseUrl) => {
       const result = await runBenchmark(baseUrl);
@@ -90,6 +132,24 @@ describe("server-rendered dashboard benchmark", () => {
       expect(`${result.stdout}\n${result.stderr}`).not.toContain(
         "PRIVATE_MIXED_FIXTURE",
       );
+    });
+  });
+
+  it.each(["missing heading", "missing Today kicker", "unrelated heading"])("rejects a ready main with %s", async (missing) => {
+    let document = dashboardDocument();
+    if (missing === "missing Today kicker") {
+      document = document.replace(/<p(?:\s[^>]*)?>Today<\/p>/, "");
+    } else {
+      document = document.replace(/<h1>Welcome back[\s\S]*?<\/h1>/, "");
+      if (missing === "unrelated heading") document += "<aside><h1>Welcome back.</h1></aside>";
+    }
+    await withDashboardServer((_request, response) => {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.end(document);
+    }, async (baseUrl) => {
+      const result = await runBenchmark(baseUrl);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("did not contain the ready server-rendered Today workspace");
     });
   });
 });
