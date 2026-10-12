@@ -125,7 +125,7 @@ data, recording, authentication or the complete installed application.
 | Area | Implemented phone flows |
 | --- | --- |
 | Work / CSM | Clients, role notes, briefs, source linking and removal, new client recovery, dedicated partner setup and owner-bound Assistant drafts |
-| Projects | Creation, tasks, plans, deliverables, artifact feedback, archive and active native Build workspace |
+| Projects | Creation, tasks, plans, deliverables, artifact feedback, archive and active native Build workspace with persistent code actions, focused confirmations and grouped delivery controls |
 | Assistant / Voice | History, progress, results, prompt queue, draft editing, context search and selection, approvals, unified Voice Options |
 | Capture / Listen | Recording stage, named person/project selection, processing receipt, conversation and cited-source reader |
 | Memory | Editing, provenance, source selection, Map filters, recall, promotion, maintenance and deletion-impact reviews |
