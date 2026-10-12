@@ -114,7 +114,15 @@ class _ListenWorkspaceState extends ConsumerState<ListenWorkspace>
         controller.supported &&
         {'idle', 'uploading', 'needs_access', 'error'}.contains(uploadState) &&
         (uploadState != 'idle' || uploadMessage.isNotEmpty);
+    final readyRecordingIds = controller.conversations
+        .where((row) => row['status'] == 'ready')
+        .map((row) => listenText(row['id']))
+        .where((id) => id.isNotEmpty)
+        .toSet();
     final local = listenRows(controller.status?['sessions'])
+        .where(
+          (row) => !readyRecordingIds.contains(listenText(row['recordingId'])),
+        )
         .where(
           (row) => !{
             'ready',
