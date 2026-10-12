@@ -239,9 +239,9 @@ export async function enqueueCaptureMediaProcessingJob(input: {
       const recoveredAt = new Date().toISOString();
       const restored = await sql`
         UPDATE omni_operation_jobs job
-        SET payload = job.payload || ${JSON.stringify({ request,
+        SET payload = job.payload || ${{ request,
           listenAdmissionRecovery: { restoredAt: recoveredAt, previousAttempt: job.attempt, reason: "missing_media_head" },
-        })}::jsonb,
+        }}::jsonb,
           updated_at = ${recoveredAt}
         WHERE job.id = ${job.id} AND job.tenant_id = ${input.tenantId}
           AND job.type = 'capture.media.recording.process' AND job.status = ${job.status}
@@ -249,15 +249,23 @@ export async function enqueueCaptureMediaProcessingJob(input: {
           AND job.dedupe_key = ${storageDedupeKey(input.tenantId, `capture.media.recording:${input.recording.id}:${requestHash}`)}
           AND job.payload ->> 'actorId' = ${input.actorId}
           AND job.payload ->> 'requestHash' = ${requestHash}
+          AND jsonb_typeof(job.payload) = 'object'
           AND public.omni_listen_media_owner_v1(${input.tenantId}, ${input.actorId}, ${input.recording.id}, TRUE)
           AND NOT EXISTS (
             SELECT 1 FROM omni_capture_media_heads head
             WHERE head.tenant_id = ${input.tenantId} AND head.owner_actor_id = ${input.actorId}
               AND head.recording_id = ${input.recording.id}
           )
-        RETURNING job.id
+        RETURNING job.id,
+          jsonb_typeof(job.payload) = 'object'
+            AND job.payload ->> 'actorId' = ${input.actorId}
+            AND job.payload ->> 'requestHash' = ${requestHash}
+            AND jsonb_typeof(job.payload -> 'request') = 'object'
+            AND jsonb_typeof(job.payload -> 'executionScope') = 'object' AS identity_preserved
       `;
-      if (restored.length !== 1) throw new Error("Listen processing admission changed before its exact retry could be restored.");
+      if (restored.length !== 1 || restored[0].identity_preserved !== true) {
+        throw new Error("Listen processing admission changed before its exact retry could be restored.");
+      }
       await appendScopedDomainEvent({
         id: `listen_media_recovery_${sha256Json({ jobId: job.id, requestHash, attempt: job.attempt })}`,
         streamId: `capture-media:${input.recording.id}`,

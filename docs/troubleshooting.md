@@ -6,6 +6,29 @@
 - Run `npm ci` from a clean checkout. If the lockfile and manifest disagree, do not hand-edit the lockfile; run `npm install` with the reviewed package versions.
 - `npm run audit:production` gates high/critical production advisories. A development-only advisory must still be reported, but it does not represent the deployed dependency graph.
 
+## Listen call processing stopped after upload
+
+For a saved Listen call, check its current media head and exact operation job under
+the authenticated owner scope. A parent transcript can remain empty while segment
+transcription is already complete and the summary is processing. A blank generated
+summary now falls back to labeled, cited transcript excerpts; it does not trigger
+another paid generation of the same window.
+
+The former missing-head recovery incorrectly bound a JSON-encoded string into a
+JSONB merge. The resulting malformed payload could later lose its actor binding
+and fail with `Owner-bound background job is missing its actor binding.` The
+corrected recovery binds an object and checks the preserved identity before
+committing. Do not patch an owner into the historical job or reset its attempts.
+
+After deploying the correction, an authorized browser owner can use the existing
+`POST /api/capture/recordings/:id/complete` action for that same recording, omitting
+`meetingId` and specifying `rawAudioRetention: { mode: "delete_after_processing" }`.
+Its recorded-language request creates a fresh finalizer while retaining the old
+failed job as evidence. It reuses the same recording, source mapping, segment
+deduplication and transcription checkpoints; it does not reset failed segment
+attempts. Confirm the accepted response and that the media head references the
+new operation job. Phone status polling does not silently retry terminal work.
+
 ## Production shows “database required”
 
 `DATABASE_URL` is missing or blank. Set a TLS Postgres URL and redeploy. `OMNIAGENT_ALLOW_DEMO_STORAGE=true` bypasses the guard only for disposable demos and must not be used as a production recovery measure.
