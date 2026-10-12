@@ -49,6 +49,7 @@ def enter_activity(page, coarse):
             expand.click()
         history = navigation(page, False).get_by_role("link", name="History", exact=True)
         history.click()
+        expect(page).to_have_url(re.compile(r"/app/history$"), timeout=30_000)
         expect(history).to_have_attribute("aria-current", "page")
     timeline = page.get_by_role("navigation", name="History views", exact=True).get_by_role("link", name="Timeline", exact=True)
     timeline.click()
