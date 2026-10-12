@@ -206,14 +206,8 @@ describe("frontend performance budgets", () => {
       "const warmup = await measureDashboardDocument()",
     );
     expect(dashboardBenchmark).toContain("recoveryLoad = warmup");
-    expect(dashboardBenchmark).toContain(
-      "hasReadyWorkspaceOpeningTag(document)",
-    );
-    expect(dashboardBenchmark).toContain(
-      "for (const [tag] of openingTags)",
-    );
-    expect(dashboardBenchmark).toContain("activity-workspace\\1/i.test(tag)");
-    expect(dashboardBenchmark).toContain("false\\1/i.test(tag)");
+    // Readiness is exercised against the real component's rendered markup in
+    // benchmark-dashboard-script.test.ts, without coupling to private helpers.
     expect(dashboardBenchmark).toContain("documentResponseMs");
     expect(dashboardBenchmark).toContain("hotMeasurements: measurements");
     expect(dashboardBenchmark).toContain(
