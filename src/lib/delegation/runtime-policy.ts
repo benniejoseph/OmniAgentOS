@@ -67,6 +67,7 @@ export const DYNAMIC_DELEGATION_READ_TOOL_IDS = Object.freeze([
   "memory.search",
   "knowledge.search",
   "web.search",
+  "web.read",
   "runs.list",
 ] as const);
 
@@ -77,6 +78,7 @@ const dynamicDelegationReadToolAliases = Object.freeze({
   "memory.search": ["Search Memory"],
   "knowledge.search": ["Search Knowledge"],
   "web.search": ["Live Web Search", "Search Web", "Web Search"],
+  "web.read": ["Read Web Source"],
   "runs.list": ["List Runs"],
 } satisfies Record<DynamicDelegationReadToolId, readonly string[]>);
 

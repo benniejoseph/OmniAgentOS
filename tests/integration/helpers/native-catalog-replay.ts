@@ -28,7 +28,7 @@ export async function removeEmptyAgentTextComparisonsForReplay(sql: postgres.Tra
   await sql`DROP TABLE public.omni_agent_adaptation_comparisons`;
   await sql`DROP FUNCTION public.omni_protect_adaptation_comparison_v1()`;
   await sql`ALTER TABLE public.omni_agent_adaptations DROP COLUMN comparison`;
-  await sql`DELETE FROM omni_schema_version WHERE version=247`;
+  await sql`DELETE FROM omni_schema_version WHERE version=253`;
 }
 
 async function readReplayMigration(version: number, file: string) {
@@ -37,7 +37,7 @@ async function readReplayMigration(version: number, file: string) {
   return { row, migration: await readSqlMigrationFile({ file, sha256: row.checksum, migrations: [row] }) };
 }
 
-/** Restore the exact245 boundary on an empty, disposable personal-partner lane. */
+/** Restore the exact 251 boundary on an empty, disposable personal-partner lane. */
 export async function removeEmptyPersonalPartnerMigrationsForReplay(sql: postgres.TransactionSql) {
   await removeEmptyAgentTextComparisonsForReplay(sql);
   expect(await sql`SELECT
@@ -53,11 +53,99 @@ export async function removeEmptyPersonalPartnerMigrationsForReplay(sql: postgre
     expect(statements).toHaveLength(1);
     await sql.unsafe(statements[0].replace("CREATE FUNCTION", "CREATE OR REPLACE FUNCTION"));
   }
-  await sql`DELETE FROM omni_schema_version WHERE version=246`;
+  await sql`DELETE FROM omni_schema_version WHERE version=252`;
 }
 
-/** Reinstall246/247 after a historical connector replay has reached245. */
-export async function replayPersonalPartnerMigrations(sql: postgres.TransactionSql) {
+/** Disposable historical fixtures must remove the real 246–251 additions before
+ * replaying their unchanged SQL. Reject feature evidence instead of discarding it. */
+export async function removeEmptyPost245MigrationsForReplay(sql: postgres.TransactionSql) {
+  expect(await sql`SELECT
+    (SELECT count(*)::int FROM public.omni_listen_grants) AS listen_grants,
+    (SELECT count(*)::int FROM public.omni_listen_sources) AS listen_sources,
+    (SELECT count(*)::int FROM public.omni_capture_segments WHERE media_transcript->'noSpeech'='true'::jsonb) AS silent_segments,
+    (SELECT count(*)::int FROM public.omni_personal_profiles) AS profiles,
+    (SELECT count(*)::int FROM public.omni_personal_profile_mutations) AS profile_mutations,
+    (SELECT count(*)::int FROM public.omni_local_computer_devices WHERE platform='android') AS android_devices,
+    (SELECT count(*)::int FROM public.omni_prompt_queue_items WHERE target->>'executionTarget'='local_android') AS android_prompts,
+    (SELECT count(*)::int FROM public.omni_local_computer_commands WHERE action IN ('open_app','tap','swipe','back','home')) AS android_commands,
+    (SELECT count(*)::int FROM public.omni_thread_turns WHERE workflow_run_id IS NOT NULL) AS workflow_turns,
+    (SELECT count(*)::int FROM public.omni_mobile_push_deliveries WHERE cause_kind='research') AS research_pushes,
+    (SELECT count(*)::int FROM public.omni_notification_dispositions WHERE source_kind='research_workflow' OR reason='research_ready') AS research_dispositions
+  `).toEqual([{
+    listen_grants: 0, listen_sources: 0, silent_segments: 0, profiles: 0,
+    profile_mutations: 0, android_devices: 0, android_prompts: 0,
+    android_commands: 0, workflow_turns: 0, research_pushes: 0, research_dispositions: 0,
+  }]);
+
+  // Version 251 broadens only these restrictive media-owner policies.
+  for (const table of ["omni_capture_media_heads", "omni_capture_media_revisions"]) {
+    await sql.unsafe(`ALTER POLICY ${table}_actor_scope ON public.${table}
+      USING ((SELECT public.omni_system_scope_enabled()) OR public.omni_actor_scope_v1_allows_canonical(tenant_id, owner_actor_id))
+      WITH CHECK ((SELECT public.omni_system_scope_enabled()) OR public.omni_actor_scope_v1_allows_canonical(tenant_id, owner_actor_id))`);
+  }
+  await sql`DROP FUNCTION public.omni_listen_media_owner_v1(TEXT,TEXT,TEXT,BOOLEAN)`;
+  await sql`DROP TRIGGER omni_listen_recording_deleted ON public.omni_capture_recordings`;
+  await sql`DROP TRIGGER omni_listen_no_speech_checkpoint ON public.omni_capture_segments`;
+  await sql`DROP FUNCTION public.omni_listen_recording_deleted_v1()`;
+  await sql`DROP FUNCTION public.omni_listen_no_speech_checkpoint_v1()`;
+  await sql`DROP FUNCTION public.omni_retire_listen_memories_v1(TEXT,TEXT,TEXT[],TIMESTAMPTZ)`;
+  await sql`DROP TABLE public.omni_listen_sources, public.omni_listen_grants`;
+  await sql`ALTER TABLE public.omni_capture_segments DROP CONSTRAINT omni_capture_segments_media_transcript_check`;
+  const media = await readReplayMigration(135, "20260908004500_p10_7_resumable_media_processing.sql");
+  const mediaChecks = media.migration.statements.filter((statement) =>
+    /^ALTER TABLE omni_capture_segments\s+ADD CONSTRAINT omni_capture_segments_media_transcript_check/.test(statement));
+  expect(mediaChecks).toHaveLength(1);
+  // The same historical statement also adds the unchanged raw-audio check.
+  expect(mediaChecks[0]).toContain("ADD CONSTRAINT omni_capture_segments_raw_audio_check");
+  await sql.unsafe(mediaChecks[0].replace(/,\s+ADD CONSTRAINT omni_capture_segments_raw_audio_check[\s\S]*$/, ""));
+
+  await sql`DROP TRIGGER omni_local_computer_platform_action ON public.omni_local_computer_commands`;
+  await sql`DROP FUNCTION public.omni_local_computer_platform_action_v1()`;
+  await sql`ALTER TABLE public.omni_local_computer_devices DROP CONSTRAINT omni_local_computer_devices_row_check`;
+  const devices = await readReplayMigration(179, "20260917110000_p13_3_local_computer_runtime.sql");
+  const deviceTables = devices.migration.statements.filter((statement) =>
+    statement.startsWith("CREATE TABLE public.omni_local_computer_devices ("));
+  expect(deviceTables).toHaveLength(1);
+  const deviceConstraint = deviceTables[0].match(/CONSTRAINT omni_local_computer_devices_row_check CHECK \([\s\S]*\)\s*\)/)?.[0];
+  expect(deviceConstraint).toBeDefined();
+  if (!deviceConstraint) throw new Error("The historical device constraint is missing.");
+  await sql.unsafe(`ALTER TABLE public.omni_local_computer_devices ADD ${deviceConstraint.replace(/\)\s*$/, "")}`);
+  await sql`ALTER TABLE public.omni_local_computer_commands DROP CONSTRAINT omni_local_computer_commands_row_check`;
+  const commands = await readReplayMigration(205, "20260924110000_governed_local_command_runner.sql");
+  const commandChecks = commands.migration.statements.filter((statement) =>
+    /^ALTER TABLE public.omni_local_computer_commands\s+(ADD CONSTRAINT|VALIDATE CONSTRAINT) omni_local_computer_commands_row_check/.test(statement));
+  expect(commandChecks).toHaveLength(2);
+  for (const statement of commandChecks) await sql.unsafe(statement);
+  await sql`ALTER TABLE public.omni_prompt_queue_items
+    DROP CONSTRAINT omni_prompt_queue_items_execution_target_v53,
+    ADD CHECK (target->>'executionTarget' IN ('asael','local_macos'))`;
+
+  await sql`DROP TABLE public.omni_personal_profile_mutations, public.omni_personal_profiles`;
+  await sql`DROP FUNCTION public.omni_personal_profile_revision_v1()`;
+  await sql`DROP FUNCTION public.omni_thread_workflow_canonical_actor_v1(TEXT,TEXT)`;
+  await sql`ALTER TABLE public.omni_thread_turns DROP COLUMN workflow_run_id`;
+  await sql`ALTER TABLE public.omni_workflow_runs DROP CONSTRAINT omni_workflow_runs_tenant_id_key`;
+  await sql`DROP INDEX public.omni_workflow_runs_research_notification_idx`;
+  await sql`ALTER TABLE public.omni_mobile_push_deliveries DROP CONSTRAINT omni_mobile_push_deliveries_cause_kind_check_v4`;
+  const dispositions = await readReplayMigration(200, "20260922163000_notification_disposition_runtime.sql");
+  const pushChecks = dispositions.migration.statements.filter((statement) =>
+    /^ALTER TABLE public.omni_mobile_push_deliveries\s+(ADD CONSTRAINT|VALIDATE CONSTRAINT) omni_mobile_push_deliveries_cause_kind_check_v3/.test(statement));
+  expect(pushChecks).toHaveLength(2);
+  for (const statement of pushChecks) await sql.unsafe(statement);
+  await sql`ALTER TABLE public.omni_notification_dispositions
+    DROP CONSTRAINT omni_notification_dispositions_research_policy,
+    DROP CONSTRAINT omni_notification_dispositions_source_kind_check,
+    DROP CONSTRAINT omni_notification_dispositions_reason_check`;
+  const notifications = await readReplayMigration(219, "20261004113000_responsibility_notifications.sql");
+  const notificationChecks = notifications.migration.statements.filter((statement) =>
+    /^ALTER TABLE public.omni_notification_dispositions ADD CONSTRAINT omni_notification_dispositions_(source_kind|reason)_check/.test(statement));
+  expect(notificationChecks).toHaveLength(2);
+  for (const statement of notificationChecks) await sql.unsafe(statement);
+  await sql`DELETE FROM omni_schema_version WHERE version BETWEEN 246 AND 251`;
+}
+
+/** Reinstall every additive release after a historical connector replay has reached 245. */
+export async function replayPost245Migrations(sql: postgres.TransactionSql) {
   const adapter: Parameters<typeof applySqlMigrationFile>[0] = { unsafe: async (statement, params) => {
     const values = (params ?? []).map((value) => {
       if (typeof value !== "string") throw new Error("Migration settings must be strings.");
@@ -66,8 +154,14 @@ export async function replayPersonalPartnerMigrations(sql: postgres.TransactionS
     return sql.unsafe<Record<string, unknown>[]>(statement, values);
   } };
   for (const [version, file] of [
-    [246, "20261012110000_responsibility_work_item_followthrough.sql"],
-    [247, "20261012113000_agent_text_comparisons.sql"],
+    [246, "20261008100000_research_workflow_notifications.sql"],
+    [247, "20261008110000_thread_turn_workflow_run_binding.sql"],
+    [248, "20261009203000_personal_profiles.sql"],
+    [249, "20261010120000_android_local_control.sql"],
+    [250, "20261010180000_listen_capture.sql"],
+    [251, "20261012123000_listen_media_owner_scope.sql"],
+    [252, "20261013090000_responsibility_work_item_followthrough.sql"],
+    [253, "20261013093000_agent_text_comparisons.sql"],
   ] as const) {
     const { row, migration } = await readReplayMigration(version, file);
     await applySqlMigrationFile(adapter, migration, [row], []);

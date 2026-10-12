@@ -1,5 +1,10 @@
 import 'package:flutter/material.dart';
 
+import '../settings/adaptive_control_dialog.dart';
+
+import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_page_scaffold.dart';
+
 import 'agent_governance.dart';
 import 'agent_governance_view.dart';
 import 'agent_learning.dart';
@@ -946,9 +951,11 @@ class AgentsView extends StatefulWidget {
     this.liveWork,
     this.onRefreshLiveWork,
     this.onCatalogDecision,
+    this.onAssignWork,
   });
   final AgentsController controller;
   final Widget? liveWork;
+  final ValueChanged<AgentProfile>? onAssignWork;
   final Future<void> Function()? onRefreshLiveWork;
   final Future<void> Function(String operation, String? id)? onCatalogDecision;
   @override
@@ -958,12 +965,17 @@ class AgentsView extends StatefulWidget {
 class _AgentsViewState extends State<AgentsView>
     with SingleTickerProviderStateMixin {
   late final TabController tabs;
+  String _mobileQuery = '';
   @override
   void initState() {
     super.initState();
-    tabs = TabController(length: widget.liveWork == null ? 3 : 4, vsync: this)
-      ..addListener(_onTabChanged);
-    if (widget.liveWork == null && widget.controller.ledger == null) {
+    tabs = TabController(
+      length: widget.liveWork == null ? 3 : 4,
+      initialIndex: usesMobilePresentation() && widget.liveWork != null ? 1 : 0,
+      vsync: this,
+    )..addListener(_onTabChanged);
+    if ((widget.liveWork == null || usesMobilePresentation()) &&
+        widget.controller.ledger == null) {
       widget.controller.refresh();
     }
   }
@@ -995,6 +1007,97 @@ class _AgentsViewState extends State<AgentsView>
     listenable: widget.controller,
     builder: (_, _) {
       final c = widget.controller;
+      if (usesMobilePresentation()) {
+        final all = c.ledger?.agents ?? const <AgentProfile>[];
+        final query = _mobileQuery.trim().toLowerCase();
+        final filtered = all
+            .where(
+              (a) =>
+                  query.isEmpty ||
+                  '${a.name} ${a.role} ${a.description}'.toLowerCase().contains(
+                    query,
+                  ),
+            )
+            .toList();
+        return Column(
+          children: [
+            MobilePageHeader(
+              title: 'Your agents',
+              subtitle: 'A specialist for every kind of work.',
+              actions: [
+                if ((tabs.index == _agentsTab && c.canMutateAgents) ||
+                    (tabs.index == _skillsTab && c.canMutateSkills))
+                  IconButton(
+                    tooltip: tabs.index == _skillsTab
+                        ? 'Create skill'
+                        : 'Create agent',
+                    onPressed: tabs.index == _skillsTab
+                        ? _editSkill
+                        : _editAgent,
+                    icon: const Icon(Icons.add_rounded),
+                  ),
+                IconButton(
+                  tooltip: 'Refresh agents',
+                  onPressed: _showingLiveWork
+                      ? widget.onRefreshLiveWork
+                      : c.refresh,
+                  icon: const Icon(Icons.refresh_rounded),
+                ),
+              ],
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              child: MobileSegmentBar<int>(
+                items: [
+                  if (widget.liveWork != null)
+                    (value: 0, label: 'Live work', icon: Icons.bolt_rounded),
+                  (
+                    value: _agentsTab,
+                    label: 'Agents',
+                    icon: Icons.people_outline_rounded,
+                  ),
+                  (
+                    value: _skillsTab,
+                    label: 'Skills',
+                    icon: Icons.auto_awesome_outlined,
+                  ),
+                  (
+                    value: _skillsTab + 1,
+                    label: 'Performance',
+                    icon: Icons.insights_rounded,
+                  ),
+                ],
+                value: tabs.index,
+                onChanged: tabs.animateTo,
+              ),
+            ),
+            if (tabs.index == _agentsTab)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 16, 20, 4),
+                child: TextField(
+                  decoration: const InputDecoration(
+                    hintText: 'Find a specialist',
+                    prefixIcon: Icon(Icons.search_rounded),
+                  ),
+                  onChanged: (value) => setState(() => _mobileQuery = value),
+                ),
+              ),
+            Expanded(
+              child: !_showingLiveWork && c.loading && c.ledger == null
+                  ? const _AgentSkeleton()
+                  : !_showingLiveWork && c.error != null && c.ledger == null
+                  ? _Retry(onTap: c.refresh)
+                  : _showingLiveWork
+                  ? widget.liveWork!
+                  : tabs.index == _agentsTab
+                  ? _mobileAgents(filtered)
+                  : tabs.index == _skillsTab
+                  ? _skills(c.ledger?.skills ?? const [])
+                  : _performance(c.ledger?.performance ?? const []),
+            ),
+          ],
+        );
+      }
       return Scaffold(
         appBar: AppBar(
           title: Text(
@@ -1050,6 +1153,110 @@ class _AgentsViewState extends State<AgentsView>
       );
     },
   );
+  Widget _mobileAgents(List<AgentProfile> values) => values.isEmpty
+      ? const _Empty(
+          icon: Icons.person_search_outlined,
+          text: 'No agents match this view',
+        )
+      : ListView.separated(
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+          itemCount: values.length,
+          separatorBuilder: (_, _) => const SizedBox(height: 10),
+          itemBuilder: (context, index) {
+            final a = values[index];
+            return MobileSurface(
+              padding: EdgeInsets.zero,
+              child: InkWell(
+                onTap: () => _showAgent(a),
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          _AgentAvatar(agent: a),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  a.name,
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .titleMedium,
+                                ),
+                                const SizedBox(height: 3),
+                                Text(
+                                  a.role,
+                                  style: Theme.of(context).textTheme.bodySmall,
+                                ),
+                              ],
+                            ),
+                          ),
+                          if (a.manageable && widget.controller.canMutateAgents)
+                            PopupMenuButton<String>(
+                              tooltip: 'Manage ${a.name}',
+                              onSelected: (value) => value == 'edit'
+                                  ? _editAgent(a)
+                                  : widget.onCatalogDecision != null
+                                  ? widget.onCatalogDecision!(
+                                      'agent.delete',
+                                      a.id,
+                                    )
+                                  : _confirmDelete(
+                                      a.name,
+                                      () => widget.controller.removeAgent(a.id),
+                                    ),
+                              itemBuilder: (_) => [
+                                const PopupMenuItem(
+                                  value: 'edit',
+                                  child: Text('Edit agent'),
+                                ),
+                                if (widget.controller.canDeleteAgents)
+                                  const PopupMenuItem(
+                                    value: 'delete',
+                                    child: Text('Delete agent'),
+                                  ),
+                              ],
+                            )
+                          else
+                            const Icon(Icons.chevron_right_rounded, size: 20),
+                        ],
+                      ),
+                      if (a.description.isNotEmpty) ...[
+                        const SizedBox(height: 12),
+                        Text(
+                          a.description,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
+                      const SizedBox(height: 14),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          MobileStatusPill(
+                            label: a.status.replaceAll('_', ' '),
+                            icon: Icons.circle,
+                            color: Theme.of(context).colorScheme.primary,
+                          ),
+                          MobileStatusPill(
+                            label: '${a.skillIds.length} skills',
+                            icon: Icons.auto_awesome_outlined,
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+
   Widget _agents(List<AgentProfile> values) => values.isEmpty
       ? const _Empty(icon: Icons.hub_outlined, text: 'No agents configured')
       : LayoutBuilder(
@@ -1250,25 +1457,101 @@ class _AgentsViewState extends State<AgentsView>
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(a.name, style: Theme.of(context).textTheme.headlineSmall),
-            Text(a.role),
+            if (usesMobilePresentation()) ...[
+              Center(child: _AgentAvatar(agent: a)),
+              const SizedBox(height: 12),
+              Center(
+                child: Text(
+                  a.name,
+                  style: Theme.of(context).textTheme.headlineSmall,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Center(child: Text(a.role)),
+            ] else ...[
+              Text(a.name, style: Theme.of(context).textTheme.headlineSmall),
+              Text(a.role),
+            ],
             const SizedBox(height: 20),
             Text(a.description),
+            if (usesMobilePresentation() &&
+                a.selectable &&
+                widget.onAssignWork != null) ...[
+              const SizedBox(height: 16),
+              FilledButton.icon(
+                onPressed: () {
+                  Navigator.of(context).pop();
+                  widget.onAssignWork!(a);
+                },
+                icon: const Icon(Icons.chat_bubble_outline_rounded),
+                label: Text('Work with ${a.name}'),
+              ),
+            ],
             const SizedBox(height: 16),
-            Text('Policy', style: Theme.of(context).textTheme.titleMedium),
-            Text(
-              '${a.modelPolicy} · ${a.autonomy} · ${a.approvalPolicy} approvals · ${a.memoryScope} memory',
-            ),
-            const SizedBox(height: 16),
-            Text(
-              'Instructions',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-            Text(a.instructions),
+            if (usesMobilePresentation())
+              MobileSurface(
+                padding: EdgeInsets.zero,
+                child: Column(
+                  children: [
+                    ExpansionTile(
+                      key: PageStorageKey<String>(
+                        'mobile-agent-policy:${a.id}',
+                      ),
+                      title: const Text('How this agent works'),
+                      leading: const Icon(Icons.shield_outlined),
+                      childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                      children: [
+                        Text(
+                          '${a.modelPolicy.replaceAll('_', ' ')} · ${a.autonomy.replaceAll('_', ' ')} · ${a.approvalPolicy.replaceAll('_', ' ')} approvals · ${a.memoryScope.replaceAll('_', ' ')} memory',
+                        ),
+                      ],
+                    ),
+                    const Divider(height: 1, indent: 16, endIndent: 16),
+                    ExpansionTile(
+                      key: PageStorageKey<String>(
+                        'mobile-agent-instructions:${a.id}',
+                      ),
+                      title: const Text('Instructions'),
+                      leading: const Icon(Icons.notes_rounded),
+                      childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                      children: [
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: Text(a.instructions),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              )
+            else ...[
+              Text('Policy', style: Theme.of(context).textTheme.titleMedium),
+              Text(
+                '${a.modelPolicy.replaceAll('_', ' ')} · ${a.autonomy.replaceAll('_', ' ')} · ${a.approvalPolicy.replaceAll('_', ' ')} approvals · ${a.memoryScope.replaceAll('_', ' ')} memory',
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'Instructions',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              Text(a.instructions),
+            ],
             const SizedBox(height: 16),
             Wrap(
               spacing: 8,
-              children: a.skillIds.map((s) => Chip(label: Text(s))).toList(),
+              children: a.skillIds
+                  .map(
+                    (s) => Chip(
+                      label: Text(
+                        widget.controller.ledger?.skills
+                                .where((skill) => skill.id == s)
+                                .firstOrNull
+                                ?.name ??
+                            'Assigned skill',
+                      ),
+                    ),
+                  )
+                  .toList(),
             ),
             const SizedBox(height: 20),
             Text(
@@ -1329,7 +1612,7 @@ class _AgentsViewState extends State<AgentsView>
     final yes = await showDialog<bool>(
       context: context,
       useRootNavigator: false,
-      builder: (_) => AlertDialog(
+      builder: (_) => AdaptiveControlDialog(
         title: Text('Delete $name?'),
         content: const Text('This cannot be undone.'),
         actions: [
@@ -1492,7 +1775,7 @@ class _AgentDialogState extends State<_AgentDialog> {
   }
 
   @override
-  Widget build(BuildContext context) => AlertDialog(
+  Widget build(BuildContext context) => AdaptiveControlDialog(
     title: Text(widget.agent == null ? 'New agent' : 'Edit agent'),
     content: SizedBox(
       width: 560,
@@ -1663,7 +1946,7 @@ class _SkillDialogState extends State<_SkillDialog> {
   List<String> split(String v) =>
       v.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
   @override
-  Widget build(BuildContext context) => AlertDialog(
+  Widget build(BuildContext context) => AdaptiveControlDialog(
     title: Text(widget.skill == null ? 'New skill' : 'Edit skill'),
     content: SizedBox(
       width: 520,

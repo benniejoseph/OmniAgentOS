@@ -62,7 +62,7 @@ function projection(meetingStatus: TodayProjectionSourceState["status"] = "ready
         visibleSections: ["focus", "agenda", "approvals", "consumption"],
       },
     },
-    workspaceSummary: null, meetings: [], customerPortfolio: null,
+    workspaceSummary: null, meetings: [],
     usage: usageWithTokens(), agenda: [], sources,
     counts: { needsAttention: 0, meetingsToday: 0, openCommitments: 0, approvals: 0,
       activeAgents: 0, activeWork: 0, unknownSources: meetingStatus === "ready" ? 0 : 2 },
@@ -75,20 +75,15 @@ function render(initialProjection: CohesiveTodayProjection) {
 }
 
 describe("cohesive Today workspace", () => {
-  it("uses one canonical projection while preserving suggestion and unknown-state boundaries", async () => {
+  it("uses one canonical projection while preserving unknown-state boundaries", async () => {
     const source = await readFile(
       path.join(process.cwd(), "src/components/today-workspace.tsx"),
       "utf8",
     );
 
-    expect(source).toContain("/api/today/agenda?workLimit=16&approvalLimit=12&meetingLimit=50&accountLimit=50");
+    expect(source).toContain("/api/today/agenda?workLimit=16&approvalLimit=12&meetingLimit=50");
     expect(source).not.toContain("/api/workspace-summary?limit");
     expect(source).not.toContain("/api/usage/summary");
-    expect(source).toContain("Customer attention");
-    expect(source).toContain("Evidence-bound next actions");
-    expect(source).toContain("confidence · suggested");
-    expect(source).toContain("pendingApprovals");
-    expect(source).toContain("overdueCommitments");
     expect(source).toContain("Meetings, confirmed commitments, and personal reminders");
     expect(source).toContain("Trusted status");
     expect(source).toContain("Data confidence");

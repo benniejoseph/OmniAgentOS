@@ -167,7 +167,7 @@ async function main() {
           expectedManifestSha256,
         });
       console.log(
-        `PASS release manifest: key ${keyId} signed ${manifest.revision} at ${manifest.signedAt} after ${attempts} canonical observations (${consecutiveMatches} consecutive); green checks ${manifest.checks.join(", ")}.`,
+        `PASS release manifest: key ${keyId} signed ${manifest.revision} at ${manifest.signedAt} after ${attempts} canonical observations (${consecutiveMatches} consecutive); ${manifestValidationDescription(manifest)}.`,
       );
     } catch (error) {
       failSmoke(error instanceof Error ? error.message : String(error));
@@ -191,11 +191,17 @@ async function main() {
       expectedManifestSha256,
     });
     console.log(
-      `PASS release manifest: key ${keyId} signed ${manifest.revision} at ${manifest.signedAt} with green checks ${manifest.checks.join(", ")}.`,
+      `PASS release manifest: key ${keyId} signed ${manifest.revision} at ${manifest.signedAt}; ${manifestValidationDescription(manifest)}.`,
     );
   } catch (error) {
     failSmoke(error instanceof Error ? error.message : String(error));
   }
+}
+
+function manifestValidationDescription(manifest) {
+  return manifest.verification
+    ? `owner-authorized live release with completed local ${manifest.verification.localValidation.commands.join(", ")}; hosted CI deferred`
+    : `green checks ${manifest.checks.join(", ")}`;
 }
 
 if (

@@ -6,6 +6,7 @@ import 'package:dio/dio.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/network/api_client.dart';
 import '../../generated/native_contract.g.dart';
+import '../companion/companion_personality.dart';
 import 'talk.dart';
 import 'talk_history_api_repository.dart';
 
@@ -14,6 +15,7 @@ class ApiTalkRepository
         TalkRepository,
         TalkCommandContextRepository,
         TalkVoiceCommandRepository,
+        TalkResearchRepository,
         TalkCommandModelSelectionRepository,
         TalkHistoryRepository,
         TalkArtifactRepository,
@@ -21,16 +23,19 @@ class ApiTalkRepository
   ApiTalkRepository(
     this.api, {
     TalkHistoryRepository? history,
+    CompanionPersonalityReader? readCompanionPersonality,
     Duration recoveryPollInterval = const Duration(seconds: 3),
-    int recoveryPollLimit = 200,
+    int recoveryPollLimit = 600,
   }) : _history = history ?? ApiTalkHistoryRepository(api),
+       _readCompanionPersonality = readCompanionPersonality,
        _recoveryPollInterval = recoveryPollInterval.isNegative
            ? Duration.zero
            : recoveryPollInterval,
-       _recoveryPollLimit = recoveryPollLimit.clamp(0, 200);
+       _recoveryPollLimit = recoveryPollLimit.clamp(0, 600);
   static const agentStreamReceiveTimeout = Duration(minutes: 10);
   final ApiClient api;
   final TalkHistoryRepository _history;
+  final CompanionPersonalityReader? _readCompanionPersonality;
   final Duration _recoveryPollInterval;
   final int _recoveryPollLimit;
   static const _promptQueuePath = '/api/command/prompt-queue';
@@ -407,9 +412,8 @@ class ApiTalkRepository
 
   @override
   Future<TalkWorkflowSnapshot> inspectWorkflow(String workflowId) async {
-    final json = await api.getJson(
+    final json = await api.getJsonFresh(
       NativePaths.evidenceWorkflow(workflowId),
-      query: const {'view': 'status'},
     );
     final snapshot = TalkWorkflowSnapshot.fromJson(json);
     if (snapshot.id != workflowId) {
@@ -419,9 +423,26 @@ class ApiTalkRepository
   }
 
   @override
+  Future<TalkWorkflowSnapshot> controlResearch(
+    String workflowId,
+    String signal,
+  ) async {
+    if (!const {'pause', 'resume', 'cancel'}.contains(signal))
+      throw ArgumentError.value(signal, 'signal');
+    final result = await api.postJson(
+      NativePaths.researchControl(workflowId),
+      data: {'signal': signal},
+    );
+    final snapshot = TalkWorkflowSnapshot.fromJson(result);
+    if (snapshot.id != workflowId || snapshot.research == null)
+      throw const FormatException('Research update did not match the request.');
+    return snapshot;
+  }
+
+  @override
   Future<TalkRunInspection> inspectRun(String runId) async {
     final inspection = TalkRunInspection.fromJson(
-      await api.getJson(NativePaths.evidenceRun(runId)),
+      await api.getJsonFresh(NativePaths.evidenceRun(runId)),
     );
     if (inspection.runId != runId) {
       throw StateError('The run projection did not match the request.');
@@ -550,6 +571,30 @@ class ApiTalkRepository
     voiceInput: voiceInput,
   );
 
+  @override
+  Stream<SseEvent> sendResearch({
+    required String message,
+    required TalkResearchOptions research,
+    String? threadId,
+    String strategy = 'auto',
+    TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
+    String? agentId,
+    List<TalkCommandContextReference> contextReferences = const [],
+    TalkCommandModelSelection? modelSelection,
+    TalkVoiceInput? voiceInput,
+  }) => _sendAgent(
+    message: message,
+    research: research,
+    threadId: voiceInput?.conversationId ?? threadId,
+    mode: 'research',
+    strategy: strategy,
+    executionTarget: executionTarget,
+    agentId: agentId,
+    contextReferences: contextReferences,
+    modelSelection: modelSelection,
+    voiceInput: voiceInput,
+  );
+
   Stream<SseEvent> _sendAgent({
     required String message,
     required List<TalkCommandContextReference> contextReferences,
@@ -560,6 +605,7 @@ class ApiTalkRepository
     String? agentId,
     TalkCommandModelSelection? modelSelection,
     TalkVoiceInput? voiceInput,
+    TalkResearchOptions? research,
   }) async* {
     final selectedAgents = contextReferences
         .where((item) => item.kind == 'agent')
@@ -586,6 +632,11 @@ class ApiTalkRepository
         !RegExp(r'^[a-zA-Z0-9_.:-]{1,120}$').hasMatch(exactAgentId)) {
       throw ArgumentError.value(agentId, 'agentId');
     }
+    // Resolve once before admission. Transport retries use this same payload;
+    // continuous voice turns keep their session's confirmed personality.
+    final personality =
+        voiceInput?.companionPersonality ??
+        (await _readCompanionPersonality?.call());
     final recoveryAnchor = _captureRecoveryAnchor(threadId);
     String? observedThreadId = threadId;
     String? observedRunId;
@@ -608,8 +659,13 @@ class ApiTalkRepository
           if (modelSelection != null)
             'modelSelection': modelSelection.toRequestJson(),
           if (voiceInput != null) 'voiceInput': voiceInput.toRequestJson(),
+          if (research != null) 'research': research.toRequestJson(),
           'computerUseTarget': ?executionTarget.apiValue,
           'requestId': 'flutter-${DateTime.now().microsecondsSinceEpoch}',
+          // Continuous calls replay the server's exact pinned context. The
+          // voice gate validates it and assigns a stable session/turn key.
+          if (voiceInput?.continuous == true) ...voiceInput!.commandContext!,
+          if (personality != null) 'companionPersonality': personality.name,
         },
         headers: const {'Accept': 'text/event-stream'},
         // Computer-use and delegated tool turns can legitimately spend longer
@@ -632,6 +688,7 @@ class ApiTalkRepository
             receivedTerminalEvent ||
             _terminalConversationEvents.contains(event.event);
         yield event;
+        if (voiceInput?.continuous == true && receivedTerminalEvent) return;
       }
       if (receivedTerminalEvent) return;
       throw const ApiException(
@@ -915,6 +972,8 @@ TalkQueuedPrompt _promptQueueItem(Object? value) {
   }
   final executionTarget = targetMap['executionTarget'] == 'local_macos'
       ? TalkExecutionTarget.thisMac
+      : targetMap['executionTarget'] == 'local_android'
+      ? TalkExecutionTarget.thisPhone
       : targetMap['executionTarget'] == 'asael'
       ? TalkExecutionTarget.agent
       : throw const FormatException('The queue execution target is invalid.');
@@ -975,9 +1034,7 @@ Json _promptQueueCreateRequest(TalkQueuedPrompt prompt) => {
         .where((reference) => reference.kind == 'project')
         .firstOrNull
         ?.id,
-    'executionTarget': prompt.executionTarget == TalkExecutionTarget.thisMac
-        ? 'local_macos'
-        : 'asael',
+    'executionTarget': prompt.executionTarget.apiValue ?? 'asael',
   },
 };
 
@@ -1040,6 +1097,8 @@ List<TalkQueuedPrompt> _applyPromptQueueOutbox(
           strategy: _queueText(values['strategy'], maximum: 20),
           executionTarget: target['executionTarget'] == 'local_macos'
               ? TalkExecutionTarget.thisMac
+              : target['executionTarget'] == 'local_android'
+              ? TalkExecutionTarget.thisPhone
               : TalkExecutionTarget.agent,
           assignedAgent: TalkAssignedAgent(
             id: agentId.isEmpty ? 'atlas' : agentId,

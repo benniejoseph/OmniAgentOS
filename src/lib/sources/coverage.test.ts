@@ -208,7 +208,7 @@ function overview(installed: TruthfulIntegrationsOverview["installed"]): Truthfu
       suggestions: 0,
     },
     inventory: Object.fromEntries(
-      ["oauth", "mcp", "openapi", "salesforce", "usage"].map((key) => [
+      ["oauth", "mcp", "openapi", "usage"].map((key) => [
         key,
         { state: "ready", detail: `${key} ready` },
       ]),

@@ -894,7 +894,7 @@ private final class LocalComputerController: NSObject {
           let expiresAt = values["expiresAt"] as? String,
           let expiration = Self.parseDate(expiresAt),
           expiration > Date(),
-          expiration.timeIntervalSinceNow <= 300,
+          expiration.timeIntervalSinceNow <= (action == "run_command" ? 345 : 300),
           JSONSerialization.isValidJSONObject(input),
           let inputData = try? JSONSerialization.data(withJSONObject: input),
           inputData.count <= 64 * 1_024
@@ -956,7 +956,7 @@ private final class LocalComputerController: NSObject {
           let relativeDirectory = input["relativeDirectory"] as? String,
           Self.isSafeRelativeDirectory(relativeDirectory),
           let timeoutSeconds = input["timeoutSeconds"] as? Int,
-          (1...30).contains(timeoutSeconds),
+          (1...300).contains(timeoutSeconds),
           let workspace = resolveCommandWorkspace(workspaceId),
           let workingDirectory = Self.resolveCommandWorkingDirectory(
             root: workspace.root,
@@ -1084,7 +1084,7 @@ private final class LocalComputerController: NSObject {
     }
     commandTimeoutWorkItem = timeout
     DispatchQueue.main.asyncAfter(
-      deadline: .now() + min(max(expiresIn, 0.25), 122),
+      deadline: .now() + min(max(expiresIn, 0.25), 302),
       execute: timeout
     )
 
@@ -2135,12 +2135,13 @@ private final class DesktopHostController: NSObject {
   private static let quickEntryHotKeyID: UInt32 = 1
   private static let quickEntryShortcutDefaultsKey = "AsaelQuickEntryShortcutV1"
   private static let ambientVoiceAvailabilityDefaultsKey = "AsaelAmbientVoiceAvailableV1"
+  private static let ambientVoiceConsentDefaultsPrefix = "AsaelAmbientVoiceConsentV2."
+  private static let ambientVoiceConsentTerms = "openai:continuous_conversation:audio_not_stored_by_asael:conversation_history:v2"
   private static let desktopChannelName = "app.omniagent.omniagent/desktop"
   private static let regularWindowMinimumSize = NSSize(width: 1_024, height: 700)
   private static let quickEntryWindowMinimumSize = NSSize(width: 680, height: 320)
   private static let quickEntryWindowSize = NSSize(width: 760, height: 400)
-  private static let ambientVoiceWindowMinimumSize = NSSize(width: 500, height: 112)
-  private static let ambientVoiceWindowSize = NSSize(width: 600, height: 126)
+  private static let ambientVoiceWindowSize = NSSize(width: 400, height: 280)
   private static let appGroupIdentifier = "group.app.omniagent.omniagent"
   private static let sharedCaptureInbox = "ShareInbox"
   private static let sharedCaptureManifest = "manifest.json"
@@ -2154,7 +2155,7 @@ private final class DesktopHostController: NSObject {
     pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
   )
   private static let workspaceRoutePattern = try! NSRegularExpression(
-    pattern: "^/(?:(talk|today|capture|inbox|knowledge|projects|meetings|results|automation|activity)(/[A-Za-z0-9._~%:-]{1,500})?|results/approval(?::|%3[Aa])[A-Za-z0-9._~%:-]{1,480}\\?kind=(tool|workflow|slo_policy)|projects/[A-Za-z0-9._~%:-]{1,240}\\?workItemId=[A-Za-z0-9._~%:-]{1,240}|projects/[A-Za-z0-9._~%:-]{1,240}\\?view=build(?:&artifact=[A-Za-z0-9._~%:-]{1,240})?(?:&workItemId=[A-Za-z0-9._~%:-]{1,240})?|responsibilities(?:/responsibility(?::|%3[Aa])[a-f0-9]{64})?|accounts|(?:accounts|customers)/customer-account(?::|%3[Aa])[a-f0-9]{64}|knowledge\\?memory=[A-Za-z0-9._~%:-]{1,240})$"
+    pattern: "^/(?:(talk|today|capture|inbox|knowledge|projects|meetings|results|automation|activity)(/[A-Za-z0-9._~%:-]{1,500})?|results/approval(?::|%3[Aa])[A-Za-z0-9._~%:-]{1,480}\\?kind=(tool|workflow|slo_policy)|projects/[A-Za-z0-9._~%:-]{1,240}\\?workItemId=[A-Za-z0-9._~%:-]{1,240}|projects/[A-Za-z0-9._~%:-]{1,240}\\?view=build(?:&artifact=[A-Za-z0-9._~%:-]{1,240})?(?:&workItemId=[A-Za-z0-9._~%:-]{1,240})?|responsibilities(?:/responsibility(?::|%3[Aa])[a-f0-9]{64})?|knowledge\\?memory=[A-Za-z0-9._~%:-]{1,240})$"
   )
 
   private weak var window: NSWindow?
@@ -2325,8 +2326,23 @@ private final class DesktopHostController: NSObject {
         }
         result(nil)
       case "showAmbientVoicePresentation":
+        let options = call.arguments as? [String: Any]
+        let appearance = options?["appearance"] as? String ?? "companion"
+        let width = (options?["width"] as? NSNumber)?.doubleValue ?? Double(Self.ambientVoiceWindowSize.width)
+        let height = (options?["height"] as? NSNumber)?.doubleValue ?? Double(Self.ambientVoiceWindowSize.height)
+        let reduceMotion = options?["reduceMotion"] as? Bool ?? false
+        guard ["companion", "perch"].contains(appearance),
+              width.isFinite, height.isFinite,
+              (300...620).contains(width), (108...760).contains(height) else {
+          result(FlutterError(code: "invalid_voice_presentation", message: "The voice window appearance is unavailable.", details: nil))
+          return
+        }
         DispatchQueue.main.async {
-          self.showAmbientVoiceWindow()
+          self.showAmbientVoiceWindow(
+            appearance: appearance,
+            size: NSSize(width: width, height: height),
+            reduceMotion: reduceMotion
+          )
         }
         result(nil)
       case "requestRemoteNotifications":
@@ -2437,6 +2453,33 @@ private final class DesktopHostController: NSObject {
     result: @escaping FlutterResult
   ) -> Bool {
     switch call.method {
+    case "getAmbientVoiceConsent", "acceptAmbientVoiceConsent":
+      guard let values = call.arguments as? [String: Any],
+            values.count == 2,
+            let ownerDigest = values["ownerDigest"] as? String,
+            ownerDigest.count == 43,
+            ownerDigest.range(of: "^[A-Za-z0-9_-]{43}$", options: .regularExpression) != nil,
+            let terms = values["terms"] as? String,
+            terms == Self.ambientVoiceConsentTerms
+      else {
+        result(FlutterError(
+          code: "invalid_ambient_voice_consent",
+          message: "The voice agreement request is invalid.",
+          details: nil
+        ))
+        return true
+      }
+      DispatchQueue.main.async {
+        let key = Self.ambientVoiceConsentDefaultsPrefix + ownerDigest
+        if call.method == "acceptAmbientVoiceConsent" {
+          // Only the explicit agreement action writes these exact terms. This
+          // preference grants no microphone, credential, or command authority.
+          UserDefaults.standard.set(terms, forKey: key)
+        }
+        result(UserDefaults.standard.string(forKey: key) == terms)
+      }
+      return true
+
     case "getAmbientVoiceAvailability":
       guard call.arguments == nil else {
         result(FlutterError(
@@ -3289,7 +3332,7 @@ private final class DesktopHostController: NSObject {
     focus(window)
   }
 
-  private func showAmbientVoiceWindow() {
+  private func showAmbientVoiceWindow(appearance: String, size: NSSize, reduceMotion: Bool) {
     dispatchPrecondition(condition: .onQueue(.main))
 
     guard let window = window ?? NSApp.windows.first(where: { $0 is MainFlutterWindow }) else {
@@ -3298,42 +3341,56 @@ private final class DesktopHostController: NSObject {
     }
 
     self.window = window
+    let wasPresented = isAmbientVoicePresented
+    let previousFrame = window.frame
     if !isQuickEntryPresented {
       regularWindowFrame = window.frame
     }
     isQuickEntryPresented = true
     isAmbientVoicePresented = true
-    window.minSize = Self.ambientVoiceWindowMinimumSize
+    window.minSize = size
     window.level = .floating
     window.collectionBehavior.insert(.fullScreenAuxiliary)
     window.styleMask.insert(.fullSizeContentView)
+    window.styleMask.remove(.resizable)
     window.titleVisibility = .hidden
     window.titlebarAppearsTransparent = true
     window.isMovableByWindowBackground = true
     window.isOpaque = false
     window.backgroundColor = .clear
-    window.hasShadow = true
+    (window.contentViewController as? FlutterViewController)?.backgroundColor = .clear
+    let isPerch = appearance == "perch"
+    window.hasShadow = !isPerch
     window.contentView?.wantsLayer = true
-    window.contentView?.layer?.cornerRadius = 30
-    window.contentView?.layer?.masksToBounds = true
+    window.contentView?.layer?.cornerRadius = isPerch ? 0 : 20
+    window.contentView?.layer?.masksToBounds = !isPerch
     for type in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
       window.standardWindowButton(type)?.isHidden = true
     }
 
     let visibleFrame = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame
     if let visibleFrame {
-      let x = visibleFrame.maxX - Self.ambientVoiceWindowSize.width - 28
-      let y = visibleFrame.minY + 28
-      window.setFrame(
-        NSRect(origin: NSPoint(x: x, y: y), size: Self.ambientVoiceWindowSize),
-        display: true,
-        animate: window.isVisible
-      )
+      // Preserve the lower-right anchor after a drag, caption expansion or
+      // appearance change. Only initial presentation chooses a screen corner.
+      let desiredX = wasPresented ? previousFrame.maxX - size.width : visibleFrame.maxX - size.width - 28
+      let desiredY = wasPresented ? previousFrame.minY : visibleFrame.minY + 28
+      let x = max(visibleFrame.minX, min(desiredX, visibleFrame.maxX - size.width))
+      let y = max(visibleFrame.minY, min(desiredY, visibleFrame.maxY - size.height))
+      let frame = NSRect(origin: NSPoint(x: x, y: y), size: size)
+      if wasPresented && window.isVisible && !reduceMotion && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+        NSAnimationContext.runAnimationGroup { context in
+          context.duration = 0.24
+          window.animator().setFrame(frame, display: true)
+        }
+      } else {
+        window.setFrame(frame, display: true)
+      }
     } else {
-      window.setContentSize(Self.ambientVoiceWindowSize)
-      window.center()
+      window.setContentSize(size)
+      if !wasPresented { window.center() }
     }
-    focus(window)
+    // A live status or settings change must not steal focus from the user's work.
+    if !wasPresented { focus(window) }
   }
 
   private func restoreAmbientWindowChrome(_ window: NSWindow) {
@@ -3342,6 +3399,7 @@ private final class DesktopHostController: NSObject {
     // Restore the shared Asael chrome instead of inventing a second "normal"
     // titlebar state when the HUD closes or hands off to Quick Entry.
     configureAsaelWindowChrome(window, role: .main)
+    (window.contentViewController as? FlutterViewController)?.backgroundColor = .windowBackgroundColor
     window.isMovableByWindowBackground = false
     window.contentView?.layer?.cornerRadius = 0
     window.contentView?.layer?.masksToBounds = false

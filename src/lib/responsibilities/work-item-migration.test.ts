@@ -1,15 +1,15 @@
 import fs from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parseSqlMigrationFile, sqlMigrationFileDigest } from "@/lib/db/sql-migration-files";
-const file = "20261012110000_responsibility_work_item_followthrough.sql";
+const file = "20261013090000_responsibility_work_item_followthrough.sql";
 const source = fs.readFileSync(`supabase/migrations/${file}`, "utf8");
 describe("Work-item follow-through migration", () => {
   it("replaces only existing guards and pins its predecessor and normalized digest", () => {
     const ledger = parseSqlMigrationFile(file, source).ledger;
     expect(ledger).toHaveLength(1);
-    expect(ledger[0]).toMatchObject({ version: 246, name: "responsibility_work_item_followthrough_v1" });
+    expect(ledger[0]).toMatchObject({ version: 252, name: "responsibility_work_item_followthrough_v1" });
     expect(sqlMigrationFileDigest(source, [ledger[0].checksum])).toBe(ledger[0].checksum);
-    expect(source).toContain("IS DISTINCT FROM 245");
+    expect(source).toContain("IS DISTINCT FROM 251");
     expect(source).toContain("CREATE OR REPLACE FUNCTION public.omni_protect_responsibility_runtime_head_v1()");
     expect(source).toContain("CREATE OR REPLACE FUNCTION public.omni_protect_responsibility_notification_head_v1()");
     expect(source).not.toMatch(/CREATE TABLE|CREATE POLICY|GRANT |DROP /);

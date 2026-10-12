@@ -2102,6 +2102,16 @@ function graphAccessBindingFromRow(
   row: Record<string, unknown>,
 ): MemoryAccessBindingV1 | undefined {
   if (Number(row.access_contract_version || 0) === 0) return undefined;
+  // JSON-projected SQL rows return timestamp strings, while direct rows return
+  // Dates. Restore the canonical ISO representation used by the binding digest.
+  const accessBoundAt = row.access_bound_at instanceof Date
+    ? row.access_bound_at
+    : typeof row.access_bound_at === "string" && row.access_bound_at.trim()
+      ? new Date(row.access_bound_at)
+      : undefined;
+  if (!accessBoundAt || !Number.isFinite(accessBoundAt.getTime())) {
+    throw new Error("Memory graph access binding timestamp is invalid.");
+  }
   return memoryAccessBindingV1Schema.parse({
     version: 1,
     state: row.access_state,
@@ -2116,7 +2126,7 @@ function graphAccessBindingFromRow(
     originPurpose: row.origin_purpose,
     allowedPurposeIds: row.allowed_purpose_ids,
     accessScopeSha256: row.access_scope_sha256,
-    accessBoundAt: normalizeDate(row.access_bound_at),
+    accessBoundAt: accessBoundAt.toISOString(),
   });
 }
 

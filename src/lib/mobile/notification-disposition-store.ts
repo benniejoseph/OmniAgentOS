@@ -19,6 +19,7 @@ import {
   notificationDispositionId,
   notificationDispositionPublicProjection,
   notificationDispositionRecordV1Schema,
+  notificationDispositionSourceKindSchema,
   type NotificationDigestDeliveryV1,
   type NotificationDispositionCoordinates,
   type NotificationDispositionDeliveryKind,
@@ -66,6 +67,7 @@ export async function listNotificationDispositions(input: {
   limit?: number;
   before?: string;
   includeResponsibilityChanges?: boolean;
+  includeResearchWorkflows?: boolean;
 }) {
   if (!hasDatabaseUrl()) throw new NotificationDispositionUnavailableError();
   const tenantId = requiredText(input.tenantId, 240, "tenant");
@@ -73,6 +75,7 @@ export async function listNotificationDispositions(input: {
   const limit = Math.min(Math.max(Math.trunc(input.limit || 50), 1), 200);
   const before = input.before ? timestamp(input.before) : undefined;
   const includeResponsibilityChanges = input.includeResponsibilityChanges !== false;
+  const includeResearchWorkflows = input.includeResearchWorkflows !== false;
   return runWithDatabaseActorScope(tenantId, [ownerActorId], async () => {
     await ensureDatabaseSchema();
     const rows = before
@@ -80,7 +83,9 @@ export async function listNotificationDispositions(input: {
           SELECT * FROM omni_notification_dispositions
           WHERE tenant_id = ${tenantId}
             AND owner_actor_id = ${ownerActorId}
+            AND source_kind = ANY(${notificationDispositionSourceKindSchema.options}::TEXT[])
             AND (${includeResponsibilityChanges} OR source_kind <> 'responsibility_change')
+            AND (${includeResearchWorkflows} OR source_kind <> 'research_workflow')
             AND updated_at < ${before}
           ORDER BY updated_at DESC, id COLLATE "C" DESC
           LIMIT ${limit}
@@ -89,7 +94,9 @@ export async function listNotificationDispositions(input: {
           SELECT * FROM omni_notification_dispositions
           WHERE tenant_id = ${tenantId}
             AND owner_actor_id = ${ownerActorId}
+            AND source_kind = ANY(${notificationDispositionSourceKindSchema.options}::TEXT[])
             AND (${includeResponsibilityChanges} OR source_kind <> 'responsibility_change')
+            AND (${includeResearchWorkflows} OR source_kind <> 'research_workflow')
           ORDER BY updated_at DESC, id COLLATE "C" DESC
           LIMIT ${limit}
         `;
@@ -144,6 +151,7 @@ export async function listDueNotificationDigestActors(input: {
     SELECT owner_actor_id, MIN(evaluated_at) AS first_evaluated_at
     FROM omni_notification_dispositions
     WHERE tenant_id = ${tenantId}
+      AND source_kind = ANY(${notificationDispositionSourceKindSchema.options}::TEXT[])
       AND outcome = 'digest'
       AND state = 'pending'
       AND evaluated_at <= ${cutoff}
@@ -291,6 +299,7 @@ async function flushDigestInTransaction(input: {
     FROM omni_notification_dispositions
     WHERE tenant_id = ${tenantId}
       AND owner_actor_id = ${ownerActorId}
+      AND source_kind = ANY(${notificationDispositionSourceKindSchema.options}::TEXT[])
       AND outcome = 'digest'
       AND state = 'pending'
       AND evaluated_at <= ${cutoff}

@@ -6,7 +6,11 @@ import { NATIVE_API_CURRENT_VERSION } from "@/lib/mobile/contracts";
 import type { SecurityContext } from "@/lib/security/types";
 
 export const NATIVE_MUTATION_CAPABILITIES = [
+  "csm.context.write",
+  "csm.role.write",
+  "listen.configure",
   "conversation.send",
+  "research.control",
   "prompt.queue.manage",
   "notifications.update",
   "capture.submit",
@@ -18,22 +22,17 @@ export const NATIVE_MUTATION_CAPABILITIES = [
   "markets.backtest.run",
   "settings.update",
   "companion.preferences.update",
+  "personal.profile.update",
   "responsibilities.drafts.manage",
   "responsibilities.lifecycle.manage",
   "responsibilities.notifications.manage",
   "meetings.records.manage",
-  "customers.records.manage",
-  "customers.health.evaluate",
-  "customers.facts.mutate",
-  "customers.salesforce.manage",
   "knowledge.cognification.decide",
   "knowledge.cognification.build",
   "knowledge.sources.delete",
   "memory.maintenance.run",
   "memory.graph.rebuild",
   "meetings.recordings.process",
-  "customers.workflows.start",
-  "customers.workflows.outcomes.manage",
   "memory.records.write",
   "memory.lifecycle.write",
   "memory.reconciliation.resolve",
@@ -67,6 +66,10 @@ export const NATIVE_MUTATION_CAPABILITIES = [
   "agents.tasks.cancel",
   "agents.release.manage",
   "agents.adaptations.manage",
+  "android.control.device.update",
+  "android.control.command.claim",
+  "android.control.command.complete",
+  "android.control.stop",
   "computer.use.device.update",
   "computer.use.command.claim",
   "computer.use.command.complete",
@@ -96,6 +99,8 @@ export function nativeMutationEnrollment(
     return held("An authenticated native session is required.");
   }
   const minimumContractVersion = minimumVersion(capability);
+  if (capability === "listen.configure" && context.native.platform !== "android") return held("Listening requires this authenticated Android installation.", minimumContractVersion);
+  if (capability.startsWith("android.control.") && context.native.platform !== "android") return held("Phone control requires this authenticated Android installation.", minimumContractVersion);
   if (
     capability.startsWith("computer.use.") &&
     context.native.platform !== "macos"
@@ -135,6 +140,10 @@ export function nativeMutationCapabilityPolicy(
 }
 
 function minimumVersion(capability: NativeMutationCapability) {
+  if (capability === "csm.context.write" || capability === "csm.role.write") return 55;
+  if (capability === "listen.configure") return 54;
+  if (capability === "personal.profile.update") return 51;
+  if (capability === "research.control") return 49;
   if (capability === "connectors.github.upgrade") return 47;
   if (capability === "connectors.mcp.discover") return 46;
   if (capability === "connectors.openapi.import") return 45;
@@ -146,16 +155,13 @@ function minimumVersion(capability: NativeMutationCapability) {
   if (capability === "memory.maintenance.run" || capability === "memory.graph.rebuild") return 38;
   if (capability === "knowledge.sources.delete") return 38;
   if (capability === "knowledge.cognification.decide" || capability === "knowledge.cognification.build") return 38;
-  if (capability === "customers.salesforce.manage") return 38;
-  if (capability === "customers.facts.mutate" || capability === "meetings.recordings.process") return 38;
+  if (capability === "meetings.recordings.process") return 38;
   if (capability === "agents.delete" || capability === "skills.create" ||
     capability === "skills.update" || capability === "skills.delete") return 38;
-  if (capability === "customers.workflows.start" || capability === "customers.workflows.outcomes.manage") return 38;
   if (capability === "memory.promotions.decide") return 38;
-  if (capability === "customers.health.evaluate") return 37;
   if (capability === "memory.personal-context-consent.manage" || capability === "meetings.calendar.sync") return 36;
   if (capability === "memory.reconciliation.resolve") return 35;
-  if (capability === "customers.records.manage" || capability === "memory.records.write" ||
+  if (capability === "memory.records.write" ||
     capability === "memory.lifecycle.write") return 34;
   if (capability === "meetings.records.manage" || capability === "meetings.commitments.propose" ||
     capability === "meetings.commitments.resolve") return 33;
@@ -171,6 +177,7 @@ function minimumVersion(capability: NativeMutationCapability) {
     capability === "agents.release.manage" ||
     capability === "agents.adaptations.manage"
   ) return 25;
+  if (capability.startsWith("android.control.")) return 53;
   if (capability.startsWith("computer.use.")) return 11;
   // Backtests were enrolled in v7. Keep that capability floor stable when the
   // current document advances; compatibility still independently limits calls

@@ -87,8 +87,8 @@ const userSurfaces = [
   ["/app/workflows", "Durable workflows, queues, approvals, and recovery"],
   ["/app/connectors", "MCP and OpenAPI connector management"],
   ["/app/automation", "Capabilities: Skills, Extensions, Connections, and tool risk audit"],
-  ["/app/evaluations", "Regression runs, signed reports, and release gates"],
-  ["/app/observability", "Runtime events, SLOs, incidents, and alerts"],
+  ["/app/settings?section=quality", "Regression runs, signed reports, and release gates"],
+  ["/app/settings?section=monitoring", "Runtime events, SLOs, incidents, and alerts"],
   ["/app/security", "Tenant isolation, auth posture, and audit controls"],
   ["/app/settings", "Runtime, environment, tenant, and model posture"],
 ];

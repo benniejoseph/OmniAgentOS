@@ -550,7 +550,7 @@ export async function generateDailyBrief(options: {
     listMemories({ tenantId: options.tenantId, limit: 12 }),
     listThreads(8, ownerScope),
     listAgentRunSummaries(8, { tenantId: options.tenantId }),
-    listWorkflowRunSummaries(8, { tenantId: options.tenantId }),
+    listWorkflowRunSummaries(8, ownerScope),
     listProjects(8, ownerScope),
   ]);
   const openItems = items.filter((item) => item.status === "open");

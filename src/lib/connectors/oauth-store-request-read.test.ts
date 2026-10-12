@@ -37,6 +37,7 @@ vi.mock("@/lib/storage/json", async (importOriginal) => ({
 
 import {
   OAuthGrantReadConflictError,
+  listOAuthGrants,
   listOAuthGrantsForRequest,
 } from "@/lib/connectors/oauth-store";
 
@@ -66,6 +67,25 @@ beforeEach(() => {
 });
 
 describe("request-bound OAuth connection metadata", () => {
+  it("excludes retired provider grants without opening or modifying their tokens", async () => {
+    mocks.state.databaseEnabled = false;
+    const current = fileGrant("11111111-1111-4111-8111-111111111111", actorId);
+    const retired = {
+      ...fileGrant("22222222-2222-4222-8222-222222222222", actorId),
+      provider: "salesforce",
+      sealedTokens: { ciphertext: "retired-token-must-stay-sealed" },
+    };
+    mocks.readJsonFile.mockResolvedValue({ grants: [current, retired] });
+
+    const exact = await listOAuthGrants(tenantId, actorId);
+    const readable = await listOAuthGrantsForRequest({ tenantId, actorId, requestActorBinding: binding });
+
+    expect(exact.map((grant) => grant.id)).toEqual([current.id]);
+    expect(readable.map((grant) => grant.id)).toEqual([current.id]);
+    expect(retired.sealedTokens.ciphertext).toBe("retired-token-must-stay-sealed");
+    expect(mocks.sql).not.toHaveBeenCalled();
+  });
+
   it("selects only public metadata and derives management from physical ownership", async () => {
     mocks.rows.push(
       {

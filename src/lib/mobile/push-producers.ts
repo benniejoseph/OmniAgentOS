@@ -13,6 +13,7 @@ import {
   domainNotificationCandidate,
   MOBILE_PUSH_COOLDOWN_MINUTES,
   notificationDispositionCoordinates,
+  researchWorkflowNotificationCandidate,
   scheduledRoutineNotificationCandidate,
   securityIncidentNotificationCandidate,
   type DomainNotificationProducerKind,
@@ -38,14 +39,14 @@ import { findTodayNotificationPreferencesWithSql } from "@/lib/today/briefs";
 import type { TodayPreferences } from "@/lib/today/types";
 import { isQuietHoursActive } from "@/lib/today/notifications";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
+import { getWorkflowRunExecutionAuthority } from "@/lib/workflows/store";
 
 type ProducerKind = DomainNotificationProducerKind;
 const MAX_DIGEST_BATCHES_PER_ACTOR = 5;
-type ProactiveProducerKind = ProducerKind | "delegation" | "routine" | "security";
+type ProactiveProducerKind = ProducerKind | "delegation" | "routine" | "security" | "research";
 type CandidateState =
   | "approval_required"
   | "scheduled"
-  | "at_risk"
   | "completed"
   | "failed"
   | "canceled"
@@ -90,18 +91,18 @@ export async function processDomainMobilePushProducers(options: {
       const queuedByKind: Record<ProducerKind, number> = {
         approval: 0,
         meeting: 0,
-        customer: 0,
         run: 0,
       };
       const queuedProactiveByKind = {
+        research: 0,
         delegation: 0,
         routine: 0,
         security: 0,
       };
       const processedByKind: Record<ProactiveProducerKind, number> = {
+        research: 0,
         approval: 0,
         meeting: 0,
-        customer: 0,
         run: 0,
         delegation: 0,
         routine: 0,
@@ -133,6 +134,7 @@ export async function processDomainMobilePushProducers(options: {
         if (candidates.length) cursor = producerCursor(candidates.at(-1)!);
         for (const candidate of candidates) {
           const evaluated = await getSql().transaction(async (sql: SqlClient) => {
+            if (candidate.kind === "research" && !await researchCandidateCurrent(sql, options.tenantId, candidate)) return;
             const preference = await findCandidateNotificationPreferences(
               sql,
               options.tenantId,
@@ -302,6 +304,28 @@ async function findCandidateNotificationPreferences(
   });
 }
 
+async function researchCandidateCurrent(sql: SqlClient, tenantId: string, candidate: ProducerCandidate) {
+  const rows = await sql`
+    SELECT id FROM omni_workflow_runs
+    WHERE tenant_id = ${tenantId} AND id = ${candidate.sourceId}
+      AND input ->> 'mode' = 'research'
+      AND input -> 'metadata' -> 'researchOptionsV1' ->> 'depth' = 'deep'
+      AND input -> 'metadata' ->> 'actorId' = ${candidate.actorId}
+      AND status = ${candidate.sourceState}
+      AND status || ':' || COALESCE(completed_at, updated_at)::TEXT = ${candidate.occurrenceKey}
+      AND (status = 'failed' OR (
+        result -> 'researchReportV1' ->> 'schemaVersion' = '1'
+        AND result -> 'researchReportV1' ->> 'status' IN ('ready', 'partial')
+      ))
+    FOR SHARE
+  `;
+  if (rows.length !== 1) return false;
+  try {
+    const authority = await getWorkflowRunExecutionAuthority(candidate.sourceId, { tenantId });
+    return authority?.executionScope.initiatingActorId === candidate.actorId;
+  } catch { return false; }
+}
+
 async function readCandidatePage(
   tenantId: string,
   pageSize: number,
@@ -358,21 +382,6 @@ async function readCandidatePage(
           AND meeting.scheduled_start_at >= ${nowIso}
           AND meeting.scheduled_start_at <= ${meetingHorizon}
       ) UNION ALL (
-        SELECT 'customer', 'customer_risk', health.owner_actor_id,
-          health.account_id, health.current_revision_id, health.evaluated_at,
-          'at_risk', 'customer', health.account_id,
-          EXISTS (
-            SELECT 1 FROM omni_mobile_push_deliveries delivery
-            WHERE delivery.tenant_id = ${tenantId}
-              AND delivery.owner_actor_id = health.owner_actor_id
-              AND delivery.status IN ('queued', 'running', 'delivered', 'acknowledged')
-              AND delivery.created_at >= ${cooldownFloor}
-          )
-        FROM omni_customer_health_scores health
-        WHERE health.tenant_id = ${tenantId}
-          AND health.health_status = 'at_risk'
-          AND health.evaluated_at >= ${recentThirtyDays}
-      ) UNION ALL (
         SELECT 'run', 'agent_run', run.owner_actor_id, run.id,
           run.status || ':' || run.completed_at::TEXT, run.completed_at,
           run.status::TEXT, 'run', run.id,
@@ -388,6 +397,28 @@ async function readCandidatePage(
           AND run.owner_actor_id IS NOT NULL
           AND run.status IN ('completed', 'failed', 'canceled')
           AND run.completed_at >= ${recentDay}
+      ) UNION ALL (
+        SELECT 'research', 'research_workflow', run.input -> 'metadata' ->> 'actorId', run.id,
+          run.status || ':' || COALESCE(run.completed_at, run.updated_at)::TEXT,
+          COALESCE(run.completed_at, run.updated_at), run.status::TEXT, 'research', run.id,
+          EXISTS (
+            SELECT 1 FROM omni_mobile_push_deliveries delivery
+            WHERE delivery.tenant_id = ${tenantId}
+              AND delivery.owner_actor_id = run.input -> 'metadata' ->> 'actorId'
+              AND delivery.status IN ('queued', 'running', 'delivered', 'acknowledged')
+              AND delivery.created_at >= ${cooldownFloor}
+          )
+        FROM omni_workflow_runs run
+        WHERE run.tenant_id = ${tenantId}
+          AND run.input ->> 'mode' = 'research'
+          AND run.input -> 'metadata' -> 'researchOptionsV1' ->> 'depth' = 'deep'
+          AND NULLIF(run.input -> 'metadata' ->> 'actorId', '') IS NOT NULL
+          AND run.status IN ('completed', 'failed')
+          AND (run.status = 'failed' OR (
+            run.result -> 'researchReportV1' ->> 'schemaVersion' = '1'
+            AND run.result -> 'researchReportV1' ->> 'status' IN ('ready', 'partial')
+          ))
+          AND COALESCE(run.completed_at, run.updated_at) >= ${recentThirtyDays}
       ) UNION ALL (
         SELECT 'delegation', 'delegated_task', execution.owner_actor_id,
           execution.execution_id,
@@ -596,6 +627,10 @@ function candidateForSource(
       sourceState: candidate.sourceState,
     });
   }
+  if (candidate.kind === "research") {
+    if (candidate.sourceState !== "completed" && candidate.sourceState !== "failed") throw new Error("Research notification state is invalid.");
+    return researchWorkflowNotificationCandidate({ ...coordinates, sourceKind: "research_workflow", state: candidate.sourceState });
+  }
   if (candidate.kind === "delegation") {
     if (
       candidate.sourceState !== "waiting" &&
@@ -669,16 +704,16 @@ function isLegacyProducerKind(
   value: ProactiveProducerKind,
 ): value is ProducerKind {
   return value === "approval" || value === "meeting" ||
-    value === "customer" || value === "run";
+    value === "run";
 }
 
 function proactiveProducerKind(
   value: unknown,
 ): ProactiveProducerKind | undefined {
   const kind = String(value || "");
-  return kind === "approval" || kind === "meeting" || kind === "customer" ||
+  return kind === "approval" || kind === "meeting" ||
       kind === "run" || kind === "delegation" || kind === "routine" ||
-      kind === "security"
+      kind === "security" || kind === "research"
     ? kind
     : undefined;
 }
@@ -688,9 +723,9 @@ function dispositionSourceKind(
 ): NotificationDispositionSourceKind | undefined {
   const kind = String(value || "");
   return kind === "tool_approval" || kind === "meeting" ||
-      kind === "customer_risk" || kind === "agent_run" ||
+      kind === "agent_run" ||
       kind === "delegated_task" || kind === "scheduled_routine" ||
-      kind === "security_incident"
+      kind === "security_incident" || kind === "research_workflow"
     ? kind
     : undefined;
 }
@@ -702,7 +737,7 @@ function candidateState(
   const state = String(value || "") as CandidateState;
   if (kind === "approval" && state === "approval_required") return state;
   if (kind === "meeting" && state === "scheduled") return state;
-  if (kind === "customer" && state === "at_risk") return state;
+  if (kind === "research" && (state === "completed" || state === "failed")) return state;
   if (kind === "run" && ["completed", "failed", "canceled"].includes(state)) {
     return state;
   }
@@ -730,11 +765,10 @@ function candidateState(
 function isLegacyState(
   kind: ProducerKind,
   state: CandidateState,
-): state is "approval_required" | "scheduled" | "at_risk" |
+): state is "approval_required" | "scheduled" |
   "completed" | "failed" | "canceled" {
   return (kind === "approval" && state === "approval_required") ||
     (kind === "meeting" && state === "scheduled") ||
-    (kind === "customer" && state === "at_risk") ||
     (kind === "run" && ["completed", "failed", "canceled"].includes(state));
 }
 

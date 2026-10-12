@@ -26,6 +26,12 @@ import {
 } from "@/lib/rag/context-engine";
 import { parseContextSelectionLockBinding } from "@/lib/rag/context-selection-lock";
 import {
+  executeResearchWorkflowStep,
+  isResearchWorkflow,
+  isResearchWorkflowStep,
+  ResearchWorkflowNeedsAttention,
+} from "@/lib/research/workflow";
+import {
   deriveExecutionScope,
   type ExecutionScope,
 } from "@/lib/security/execution-scope";
@@ -34,7 +40,7 @@ import {
   type RuntimeModelResolution,
 } from "@/lib/settings/runtime-models";
 import type { ModelAssignmentScope } from "@/lib/settings/types";
-import { appendThreadTurn } from "@/lib/threads/store";
+import { appendThreadTurn, workflowThreadActorReadOrder } from "@/lib/threads/store";
 import { getToolExecutionsByIds } from "@/lib/tools/audit-store";
 import { EffectReceiptFinalizationError } from "@/lib/tools/executor";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
@@ -104,6 +110,7 @@ import {
   updateWorkflowStep,
   updateWorkflowStepForRunFence,
   workflowStepDefinitions,
+  type WorkflowExecutionAuthority,
 } from "@/lib/workflows/store";
 import type {
   WorkflowDynamicPlan,
@@ -132,14 +139,16 @@ export class WorkflowSignalConflictError extends Error {
   }
 }
 
+type WorkflowTickOptions = {
+  tenantId?: string;
+  abortSignal?: AbortSignal;
+  /** Epoch ms at which abortSignal stops this tick. */
+  deadlineAt?: number;
+};
+
 export async function tickWorkflowRun(
   runId: string,
-  options: {
-    tenantId?: string;
-    abortSignal?: AbortSignal;
-    /** Epoch ms at which abortSignal stops this tick. */
-    deadlineAt?: number;
-  } = {},
+  options: WorkflowTickOptions = {},
 ) {
   throwIfAborted(options.abortSignal);
   const detail = await getWorkflowRunDetail(runId, { tenantId: options.tenantId });
@@ -159,6 +168,37 @@ export async function tickWorkflowRun(
     throw new Error("Workflow execution authority is missing.");
   }
 
+  const actorId = executionAuthority?.executionScope.initiatingActorId;
+  const metadataActorId = typeof detail.run.input.metadata?.actorId === "string"
+    ? detail.run.input.metadata.actorId.trim()
+    : "";
+  if (actorId && metadataActorId && actorId !== metadataActorId) {
+    throw new Error("Workflow metadata actor does not match its immutable execution scope.");
+  }
+  if (isResearchWorkflow(detail) && !actorId) {
+    throw new Error("Research workflow requires its bound initiating actor.");
+  }
+  // Discovery reads run in tenant scope. All delivery work, including mission
+  // projections and report persistence, must restore the validated run owner.
+  // Keep the bound workspace/project scope unchanged; metadata is not authority.
+  return executionAuthority && actorId
+    ? runWithDatabaseActorScope(executionAuthority.executionScope.tenantId, [actorId], async () => {
+        const actorIds = isResearchWorkflow(detail)
+          ? await workflowThreadActorReadOrder(executionAuthority.executionScope.tenantId, actorId)
+          : [actorId];
+        return runWithDatabaseActorScope(executionAuthority.executionScope.tenantId, actorIds, () =>
+          tickWorkflowRunWithAuthority(detail, executionAuthority, options),
+        );
+      })
+    : tickWorkflowRunWithAuthority(detail, executionAuthority, options);
+}
+
+async function tickWorkflowRunWithAuthority(
+  detail: WorkflowRunDetail,
+  executionAuthority: WorkflowExecutionAuthority | undefined,
+  options: WorkflowTickOptions,
+) {
+  const runId = detail.run.id;
   if (detail.run.status === "paused" || detail.run.status === "waiting_approval" || detail.run.status === "running") {
     await appendWorkflowEvent(detail.run.id, "workflow.tick.noop", { status: detail.run.status });
     return getWorkflowRunDetail(runId, { tenantId: options.tenantId }) as Promise<WorkflowRunDetail>;
@@ -181,7 +221,7 @@ export async function tickWorkflowRun(
       return detail;
     }
     if (specialistGate.state === "failed") {
-      await failSpecialistParentMissionTask(
+      await failWorkflowParentMissionTask(
         detail,
         executionAuthority?.executionScope,
       );
@@ -203,7 +243,7 @@ export async function tickWorkflowRun(
         tenantId: options.tenantId,
       }) as Promise<WorkflowRunDetail>;
     }
-    await attachSpecialistParentMissionExecutor(
+    await attachWorkflowParentMissionExecutor(
       detail,
       executionAuthority?.executionScope,
     );
@@ -302,7 +342,7 @@ export async function tickWorkflowRun(
     runBudget.snapshot();
     throwIfAborted(options.abortSignal);
     if (
-      stepKey === "execute" &&
+      (stepKey === "execute" || (isResearchWorkflow(freshDetail) && isResearchWorkflowStep(stepKey))) &&
       output &&
       typeof output === "object" &&
       "executionPending" in output &&
@@ -602,6 +642,24 @@ export async function tickWorkflowRun(
     if (!current) {
       throw error;
     }
+    if (error instanceof ResearchWorkflowNeedsAttention) {
+      if (current.run.status !== "running") return current;
+      const retainedStep = await updateWorkflowStepForRunFence(detail.run.id, stepKey, {
+        status: "pending", attempt: step.attempt, startedAt: undefined,
+        completedAt: undefined, error: error.message,
+      }, {
+        tenantId: detail.run.tenantId, expectedRunUpdatedAt: runFence,
+        executionAuthority,
+        events: [{ type: "step.interrupted", payload: { stepKey, reason: "research_model_receipt_missing", ...(error.failure ? { modelFailure: error.failure } : {}) } }],
+      });
+      if (!retainedStep) return current;
+      await transitionWorkflowRunWithEvents(detail.run.id, ["running"], {
+        status: "paused", currentStep: stepKey, pausedAt: new Date().toISOString(), error: error.message,
+      }, [{ type: "workflow.paused", payload: { reason: "research_model_receipt_missing", requiresExplicitResume: true, ...(error.failure ? { modelFailure: error.failure } : {}) } }], {
+        tenantId: detail.run.tenantId, expectedUpdatedAt: runFence, executionAuthority,
+      });
+      return getWorkflowRunDetail(runId, { tenantId: options.tenantId }) as Promise<WorkflowRunDetail>;
+    }
     if (isAbortError(error, options.abortSignal)) {
       if (current.run.status !== "running") {
         return current;
@@ -812,11 +870,11 @@ export async function tickWorkflowRun(
   return getWorkflowRunDetail(runId, { tenantId: options.tenantId }) as Promise<WorkflowRunDetail>;
 }
 
-async function attachSpecialistParentMissionExecutor(
+async function attachWorkflowParentMissionExecutor(
   detail: WorkflowRunDetail,
   executionScope?: ExecutionScope,
 ) {
-  const binding = specialistParentMissionBinding(detail);
+  const binding = workflowParentMissionBinding(detail);
   if (!binding) return;
   await attachMissionExecutor({
     taskId: binding.taskId,
@@ -832,11 +890,11 @@ async function attachSpecialistParentMissionExecutor(
   });
 }
 
-async function failSpecialistParentMissionTask(
+async function failWorkflowParentMissionTask(
   detail: WorkflowRunDetail,
   executionScope?: ExecutionScope,
 ) {
-  const binding = specialistParentMissionBinding(detail);
+  const binding = workflowParentMissionBinding(detail);
   if (!binding) return;
   const owner = {
     tenantId: detail.run.tenantId,
@@ -851,10 +909,13 @@ async function failSpecialistParentMissionTask(
   }
 }
 
-function specialistParentMissionBinding(detail: WorkflowRunDetail) {
+function workflowParentMissionBinding(detail: WorkflowRunDetail) {
   const metadata = detail.run.input.metadata;
   const specialistTaskIds = metadata?.specialistTaskIds;
-  if (!Array.isArray(specialistTaskIds) || specialistTaskIds.length === 0) {
+  if (
+    !isResearchWorkflow(detail) &&
+    (!Array.isArray(specialistTaskIds) || specialistTaskIds.length === 0)
+  ) {
     return undefined;
   }
   const actorId = typeof metadata?.actorId === "string" ? metadata.actorId : "";
@@ -863,7 +924,7 @@ function specialistParentMissionBinding(detail: WorkflowRunDetail) {
     : "";
   if (!actorId || !taskId) {
     throw new Error(
-      "Durable specialist workflow is missing its parent mission binding.",
+      "Durable workflow is missing its parent mission binding.",
     );
   }
   return { actorId, taskId };
@@ -890,6 +951,10 @@ export async function signalWorkflowRun(
 ) {
   const detail = await getWorkflowRunDetail(runId, options);
   if (!detail) {
+    throw new WorkflowNotFoundError();
+  }
+
+  if (isResearchWorkflow(detail) && options.actorId && detail.run.input.metadata?.actorId !== options.actorId) {
     throw new WorkflowNotFoundError();
   }
 
@@ -1198,6 +1263,32 @@ async function executeStep(
         specialistContext.contextBlock,
       ].filter(Boolean).join("\n\n").slice(0, 20_000),
     };
+  }
+
+  if (isResearchWorkflow(detail) && isResearchWorkflowStep(stepKey)) {
+    const authority = await getWorkflowRunExecutionAuthority(detail.run.id, {
+      tenantId: detail.run.tenantId,
+    });
+    if (!authority) throw new Error("Research workflow execution authority is missing.");
+    const profile = workflowAgentProfile(detail);
+    if (detail.run.input.metadata?.agentProfile && !profile) {
+      throw new Error("Research workflow Agent policy is invalid.");
+    }
+    const durableContext = await workflowDurableContextForRun(detail);
+    const commandContext = await workflowCommandContextForRun(detail);
+    const commandModel = await workflowCommandModelForRun(detail);
+    return executeResearchWorkflowStep({
+      stepKey, detail, budget: runBudget, authority, profile, abortSignal, deadlineAt,
+      commandContext: commandContext?.contextBlock,
+      boundarySha256: canonicalJsonSha256({
+        context: durableContext?.contextBoundary || null,
+        commandContext: commandContext?.boundary || null,
+        commandModel: commandModel?.boundary || null,
+        profile: profile || null,
+      }),
+      resolveModel: async (role) => commandModel?.runtime || resolveWorkflowRuntimeModel(detail, role),
+      usageScope: (purpose, runtime) => workflowUsageScope(detail, "structured_generation", purpose, runtime),
+    });
   }
 
   if (stepKey === "plan") {
@@ -1862,6 +1953,10 @@ async function completeWorkflow(
     memoryId: reportOutput?.memoryId,
     dynamicPlanId: reportOutput?.dynamicPlanId,
     planExecutionStatus: reportOutput?.planExecutionStatus,
+    ...(reportOutput?.researchReportV1 ? {
+      researchReportV1: reportOutput.researchReportV1,
+      researchProgress: reportOutput.researchProgress,
+    } : {}),
   };
   let outcomeEventPayload: Record<string, unknown> | undefined;
   let authoritativeToolExecutions: ToolExecutionRecord[] = [];
@@ -1958,17 +2053,29 @@ async function completeWorkflow(
           throw new Error("Workflow thread result has no owner actor binding.");
         }
         await runWithDatabaseActorScope(threadTenantId, [actorId], async () => {
-          await appendThreadTurn({
-            tenantId: threadTenantId,
-            threadId,
-            role: "user",
-            content: detail.run.goal,
-          });
-          await appendThreadTurn({
-            tenantId: threadTenantId,
-            threadId,
-            role: "assistant",
-            content: String(reportOutput?.report || "Workflow completed."),
+          const research = isResearchWorkflow(detail);
+          const actorIds = research
+            ? await workflowThreadActorReadOrder(threadTenantId, actorId)
+            : [actorId];
+          await runWithDatabaseActorScope(threadTenantId, actorIds, async () => {
+            if (!research) {
+              await appendThreadTurn({
+                tenantId: threadTenantId,
+                threadId,
+                role: "user",
+                content: detail.run.goal,
+              });
+            }
+            await appendThreadTurn({
+              ...(research ? {
+                id: `workflow:${detail.run.id}:research-report:v1`,
+                workflowRunId: detail.run.id,
+              } : {}),
+              tenantId: threadTenantId,
+              threadId,
+              role: "assistant",
+              content: String(reportOutput?.report || "Workflow completed."),
+            });
           });
         });
       } catch (error) {

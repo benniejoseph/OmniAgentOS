@@ -2,7 +2,6 @@ export const TODAY_SECTION_KEYS = Object.freeze([
   "focus",
   "agenda",
   "approvals",
-  "customers",
   "active_agents",
   "work",
   "memory",

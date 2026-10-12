@@ -2,9 +2,14 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+
+import '../settings/adaptive_control_dialog.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/network/native_workspace_access.dart';
+import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_page_scaffold.dart';
 import 'connector_contracts.dart';
 import 'connector_control_contracts.dart';
 import 'connector_controller.dart';
@@ -20,10 +25,13 @@ import 'connector_providers.dart';
 import 'connector_trash_view.dart';
 
 class NativeConnectorWorkspace extends StatelessWidget {
-  const NativeConnectorWorkspace({super.key});
+  const NativeConnectorWorkspace({super.key, this.showBackButton = false});
+  final bool showBackButton;
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('Connector controls')),
+    appBar: usesMobilePresentation() && !showBackButton
+        ? null
+        : AppBar(title: const Text('Connector controls')),
     body: NativePrivateWorkspace(
       ownNavigator: true,
       builder: (_) => Consumer(
@@ -125,10 +133,16 @@ class _ConnectorControlPanelState extends State<ConnectorControlPanel>
         key: PageStorageKey(('native-connector-list', c, c.owner.key)),
         padding: const EdgeInsets.all(20),
         children: [
-          Text(
-            'MCP and OpenAPI connections',
-            style: Theme.of(context).textTheme.headlineSmall,
-          ),
+          if (usesMobilePresentation())
+            const MobilePageHeader(
+              title: 'Connections',
+              subtitle: 'Access your agents can use.',
+            )
+          else
+            Text(
+              'MCP and OpenAPI connections',
+              style: Theme.of(context).textTheme.headlineSmall,
+            ),
           const SizedBox(height: 8),
           const Text(
             'Inspect the current contracts and explicitly approve or change a connection. Approving contracts does not execute their tools.',
@@ -138,62 +152,151 @@ class _ConnectorControlPanelState extends State<ConnectorControlPanel>
             const Text(
               'Your current access permits reading and receipt recovery. An administrator must approve contracts or change connector state.',
             ),
-          Wrap(
-            spacing: 12,
-            runSpacing: 8,
-            children: [
-              if (c.mayManage)
-                FilledButton.icon(
-                  onPressed: c.busy ? null : _openMcpRegistration,
-                  icon: const Icon(Icons.add),
-                  label: const Text('New MCP connection'),
+          if (usesMobilePresentation()) ...[
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                if (c.mayManage)
+                  FilledButton.icon(
+                    onPressed: c.busy ? null : _openMcpRegistration,
+                    icon: const Icon(Icons.add_rounded),
+                    label: const Text('New connection'),
+                  ),
+                OutlinedButton.icon(
+                  onPressed: c.listing ? null : c.refresh,
+                  icon: const Icon(Icons.refresh_rounded),
+                  label: const Text('Refresh'),
                 ),
-              OutlinedButton(
-                onPressed: c.busy ? null : _openMcpRegistration,
-                child: const Text('MCP registration recovery'),
+              ],
+            ),
+            const SizedBox(height: 8),
+            ExpansionTile(
+              tilePadding: EdgeInsets.zero,
+              title: const Text('Manage & recover connections'),
+              subtitle: const Text(
+                'Imports, credentials and unfinished changes',
               ),
-              OutlinedButton(
-                onPressed: c.busy ? null : () => _openMcpDiscovery(),
-                child: const Text('MCP discovery recovery'),
-              ),
-              OutlinedButton(
-                onPressed: c.busy ? null : () => _openGithubUpgrade(),
-                child: const Text('GitHub upgrade recovery'),
-              ),
-              if (c.mayManage)
-                FilledButton.icon(
-                  onPressed: c.busy ? null : _openOpenApiImport,
-                  icon: const Icon(Icons.add),
-                  label: const Text('New OpenAPI import'),
+              children: [
+                Wrap(
+                  spacing: 12,
+                  runSpacing: 8,
+                  children: [
+                    if (c.mayManage)
+                      FilledButton.icon(
+                        onPressed: c.busy ? null : _openMcpRegistration,
+                        icon: const Icon(Icons.add),
+                        label: const Text('New MCP connection'),
+                      ),
+                    OutlinedButton(
+                      onPressed: c.busy ? null : _openMcpRegistration,
+                      child: const Text('MCP registration recovery'),
+                    ),
+                    OutlinedButton(
+                      onPressed: c.busy ? null : () => _openMcpDiscovery(),
+                      child: const Text('MCP discovery recovery'),
+                    ),
+                    OutlinedButton(
+                      onPressed: c.busy ? null : () => _openGithubUpgrade(),
+                      child: const Text('GitHub upgrade recovery'),
+                    ),
+                    if (c.mayManage)
+                      FilledButton.icon(
+                        onPressed: c.busy ? null : _openOpenApiImport,
+                        icon: const Icon(Icons.add),
+                        label: const Text('New OpenAPI import'),
+                      ),
+                    OutlinedButton(
+                      onPressed: c.busy ? null : _openOpenApiImport,
+                      child: const Text('OpenAPI import recovery'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: c.listing ? null : c.refresh,
+                      icon: const Icon(Icons.refresh),
+                      label: Text(
+                        c.listing
+                            ? 'Reading connections…'
+                            : 'Refresh connections',
+                      ),
+                    ),
+                    if (!c.loaded || c.storageUnconfirmed)
+                      OutlinedButton(
+                        onPressed: c.busy ? null : c.reloadProtected,
+                        child: const Text('Reload protected recovery'),
+                      ),
+                    OutlinedButton.icon(
+                      onPressed: c.busy ? null : () => _openTrash(),
+                      icon: const Icon(Icons.restore_from_trash_outlined),
+                      label: const Text('Connector Trash recovery'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: c.busy
+                          ? null
+                          : () => _openCredentialRotation(),
+                      icon: const Icon(Icons.key_outlined),
+                      label: const Text('Credential preparation recovery'),
+                    ),
+                  ],
                 ),
-              OutlinedButton(
-                onPressed: c.busy ? null : _openOpenApiImport,
-                child: const Text('OpenAPI import recovery'),
-              ),
-              OutlinedButton.icon(
-                onPressed: c.listing ? null : c.refresh,
-                icon: const Icon(Icons.refresh),
-                label: Text(
-                  c.listing ? 'Reading connections…' : 'Refresh connections',
-                ),
-              ),
-              if (!c.loaded || c.storageUnconfirmed)
+              ],
+            ),
+          ] else
+            Wrap(
+              spacing: 12,
+              runSpacing: 8,
+              children: [
+                if (c.mayManage)
+                  FilledButton.icon(
+                    onPressed: c.busy ? null : _openMcpRegistration,
+                    icon: const Icon(Icons.add),
+                    label: const Text('New MCP connection'),
+                  ),
                 OutlinedButton(
-                  onPressed: c.busy ? null : c.reloadProtected,
-                  child: const Text('Reload protected recovery'),
+                  onPressed: c.busy ? null : _openMcpRegistration,
+                  child: const Text('MCP registration recovery'),
                 ),
-              OutlinedButton.icon(
-                onPressed: c.busy ? null : () => _openTrash(),
-                icon: const Icon(Icons.restore_from_trash_outlined),
-                label: const Text('Connector Trash recovery'),
-              ),
-              OutlinedButton.icon(
-                onPressed: c.busy ? null : () => _openCredentialRotation(),
-                icon: const Icon(Icons.key_outlined),
-                label: const Text('Credential preparation recovery'),
-              ),
-            ],
-          ),
+                OutlinedButton(
+                  onPressed: c.busy ? null : () => _openMcpDiscovery(),
+                  child: const Text('MCP discovery recovery'),
+                ),
+                OutlinedButton(
+                  onPressed: c.busy ? null : () => _openGithubUpgrade(),
+                  child: const Text('GitHub upgrade recovery'),
+                ),
+                if (c.mayManage)
+                  FilledButton.icon(
+                    onPressed: c.busy ? null : _openOpenApiImport,
+                    icon: const Icon(Icons.add),
+                    label: const Text('New OpenAPI import'),
+                  ),
+                OutlinedButton(
+                  onPressed: c.busy ? null : _openOpenApiImport,
+                  child: const Text('OpenAPI import recovery'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: c.listing ? null : c.refresh,
+                  icon: const Icon(Icons.refresh),
+                  label: Text(
+                    c.listing ? 'Reading connections…' : 'Refresh connections',
+                  ),
+                ),
+                if (!c.loaded || c.storageUnconfirmed)
+                  OutlinedButton(
+                    onPressed: c.busy ? null : c.reloadProtected,
+                    child: const Text('Reload protected recovery'),
+                  ),
+                OutlinedButton.icon(
+                  onPressed: c.busy ? null : () => _openTrash(),
+                  icon: const Icon(Icons.restore_from_trash_outlined),
+                  label: const Text('Connector Trash recovery'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: c.busy ? null : () => _openCredentialRotation(),
+                  icon: const Icon(Icons.key_outlined),
+                  label: const Text('Credential preparation recovery'),
+                ),
+              ],
+            ),
           if (c.readError != null)
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 8),
@@ -231,7 +334,10 @@ class _ConnectorControlPanelState extends State<ConnectorControlPanel>
                 child: ListTile(
                   title: Text(row['name'] as String),
                   subtitle: Text(
-                    '${(row['kind'] as String).toUpperCase()} · ${row['status']} · ${row['contractCount']} contracts\n${row['id']}',
+                    usesMobilePresentation()
+                        ? '${row['status']} · ${row['contractCount']} available tool contracts'
+                              .replaceAll('_', ' ')
+                        : '${(row['kind'] as String).toUpperCase()} · ${row['status']} · ${row['contractCount']} contracts\n${row['id']}',
                   ),
                   selected:
                       c.selectedKind == row['kind'] &&
@@ -246,7 +352,11 @@ class _ConnectorControlPanelState extends State<ConnectorControlPanel>
           ],
           ExpansionTile(
             key: PageStorageKey(('connector-exact-picker', c, c.owner.key)),
-            title: const Text('Open an exact connection'),
+            title: Text(
+              usesMobilePresentation()
+                  ? 'Find by connection ID'
+                  : 'Open an exact connection',
+            ),
             children: [
               DropdownButtonFormField<String>(
                 initialValue: _kind,
@@ -696,7 +806,7 @@ class _ConnectorControlPanelState extends State<ConnectorControlPanel>
     final confirmed = await showDialog<bool>(
       context: context,
       useRootNavigator: false,
-      builder: (dialogContext) => AlertDialog(
+      builder: (dialogContext) => AdaptiveControlDialog(
         scrollable: true,
         title: Text(connectorActionLabel(action)),
         content: Column(

@@ -2,9 +2,15 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+
+import 'mobile_connection_presentation.dart';
+
+import '../settings/adaptive_control_dialog.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/network/native_workspace_access.dart';
+import '../../app/platform/mobile_presentation.dart';
 import 'connector_contracts.dart';
 import 'connector_control_contracts.dart';
 import 'connector_mcp_discovery_contracts.dart';
@@ -195,9 +201,10 @@ class _ConnectorMcpDiscoveryPanelState extends State<ConnectorMcpDiscoveryPanel>
         key: PageStorageKey(('mcp-discovery-list', c)),
         padding: const EdgeInsets.all(20),
         children: [
-          Text(
-            'Discover MCP tools',
-            style: Theme.of(context).textTheme.headlineSmall,
+          ConnectionFlowHeading(
+            title: 'Discover MCP tools',
+            mobileTitle: 'Find available tools',
+            icon: Icons.travel_explore_rounded,
           ),
           const SizedBox(height: 8),
           const Text(
@@ -436,7 +443,7 @@ class _ConnectorMcpDiscoveryPanelState extends State<ConnectorMcpDiscoveryPanel>
                     widget.routeCurrent &&
                     _viewEpoch == epoch &&
                     _workspaceWasVisible;
-                return AlertDialog(
+                return AdaptiveControlDialog(
                   scrollable: true,
                   title: Text(title),
                   content: live

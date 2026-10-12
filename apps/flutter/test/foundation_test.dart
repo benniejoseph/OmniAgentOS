@@ -59,7 +59,7 @@ void main() {
     expect(
       destinationIndices(group: AppDestinationGroup.system)
           .map((index) => appDestinations[index].path),
-      ['/monitoring', '/security', '/settings'],
+      ['/security', '/settings'],
     );
     expect(
       destinationIndices(
@@ -73,7 +73,7 @@ void main() {
         group: AppDestinationGroup.automation,
         adaptiveVisible: true,
       ).map((index) => appDestinations[index].path),
-      ['/automation', '/workflows', '/integrations'],
+      ['/automation'],
     );
     expect(destinationIndex('/inbox'), isNonNegative);
   });

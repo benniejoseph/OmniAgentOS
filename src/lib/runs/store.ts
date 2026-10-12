@@ -29,12 +29,14 @@ import {
   type ExecutionScope,
 } from "@/lib/security/execution-scope";
 import type { AgentEvent, AgentMode, ChatMessage } from "@/lib/orchestration/types";
+import { workflowHandoffEventSchema, type WorkflowHandoff } from "@/lib/orchestration/workflow-handoff";
 import {
   parseLoopV2ContextBindingV1,
   type LoopV2ContextBindingV1,
 } from "@/lib/orchestration/loop-v2-context-contract";
 import { loopV2ExecutionScopeSha256 } from "@/lib/orchestration/loop-v2";
 import type { CitationSource, GroundingReport } from "@/lib/rag/citations";
+import { researchProgressSchema, type ResearchProgress } from "@/lib/research/contracts";
 import { parseRuntimeClaimEvidenceV1 } from "@/lib/rag/claim-evidence-runtime";
 import {
   parseContextCompilerV2AutomaticReceipt,
@@ -59,7 +61,10 @@ import {
   type RunContractEnvelopeV1,
   type RunContractEventPayloadV1,
 } from "@/lib/runs/contracts";
-import { parsePersistedRunBudgetStateV1 } from "@/lib/runs/budgets";
+import {
+  parsePersistedRunBudgetStateV1,
+  runBudgetCountersV1Schema,
+} from "@/lib/runs/budgets";
 import {
   parseApprovalCheckpointShadowEnrollment,
   recordApprovalWaitingCheckpointShadow,
@@ -963,6 +968,7 @@ async function appendLegacyRunTerminalReceiptSafely(
     !runContractEnvelope ||
     event.type !== "waiting_approval" &&
       event.type !== "done" &&
+      event.type !== "delegated" &&
       event.type !== "error" &&
       event.type !== "canceled"
   ) {
@@ -976,7 +982,7 @@ async function appendLegacyRunTerminalReceiptSafely(
     const currentRun = await getAgentRun(runId, { tenantId });
     const expectedStatus: RunStatus = event.type === "waiting_approval"
       ? "waiting_approval"
-      : event.type === "done"
+      : event.type === "done" || event.type === "delegated"
         ? "completed"
         : event.type === "canceled"
           ? "canceled"
@@ -984,7 +990,7 @@ async function appendLegacyRunTerminalReceiptSafely(
     if (currentRun?.status !== expectedStatus) return;
     const legacyStatus = event.type === "waiting_approval"
       ? "waiting_approval" as const
-      : event.type === "done"
+      : event.type === "done" || event.type === "delegated"
         ? "completed" as const
         : event.type === "canceled"
           ? "canceled" as const
@@ -992,8 +998,8 @@ async function appendLegacyRunTerminalReceiptSafely(
     const pendingApprovalIds = event.type === "waiting_approval"
       ? [runContractReferenceId("approval", event.executionId)]
       : [];
-    const outputSha256 = event.type === "done"
-      ? createHash("sha256").update(event.response).digest("hex")
+    const outputSha256 = event.type === "done" || event.type === "delegated"
+      ? createHash("sha256").update(event.type === "done" ? event.response : event.acknowledgement).digest("hex")
       : null;
     const receipt = buildLegacyTerminalReceiptV1({
       terminalReceiptId: runContractReferenceId(
@@ -1078,6 +1084,16 @@ function domainEventPayload(event: AgentEvent): Record<string, unknown> {
         reasonCode: event.reasonCode,
         ...hashedTextFields("message", event.message),
       };
+    case "research_progress":
+      return {
+        schemaVersion, type: event.type,
+        depth: event.progress.depth, stage: event.progress.stage,
+        searches: event.progress.searches, sourcesRead: event.progress.sourcesRead,
+        questionCount: event.progress.questions.length,
+        gapCount: event.progress.gaps.length,
+        limitationCount: event.progress.limitations.length,
+        reportStatus: event.progress.reportStatus,
+      };
     case "status":
       return {
         schemaVersion,
@@ -1108,6 +1124,8 @@ function domainEventPayload(event: AgentEvent): Record<string, unknown> {
         skillIds: event.skillIds,
         toolboxSha256: event.toolboxSha256,
         instructionsSha256: event.instructionsSha256,
+        companionLanguageStyle: event.companionLanguageStyle,
+        personalProfile: event.personalProfile,
         maxToolSteps: event.maxToolSteps,
         maxToolCallsPerTurn: event.maxToolCallsPerTurn,
         maxToolResultChars: event.maxToolResultChars,
@@ -1454,9 +1472,12 @@ export async function completeAgentRun(
   runId: string,
   response: string,
   grounding?: GroundingReport,
-  options: AgentRunTerminalOptions = {},
+  options: AgentRunTerminalOptions & { workflowHandoff?: WorkflowHandoff } = {},
 ) {
-  return setRunStatus(runId, "completed", { response, grounding }, options);
+  return setRunStatus(runId, "completed", {
+    response, grounding,
+    ...(options.workflowHandoff ? { workflowHandoff: workflowHandoffEventSchema.parse(options.workflowHandoff) } : {}),
+  }, options);
 }
 
 export async function failAgentRun(
@@ -1475,6 +1496,46 @@ export async function cancelAgentRun(
   return setRunStatus(runId, "canceled", { error: reason }, options);
 }
 
+const AGENT_STALE_COMPLETION_GRACE_MS = 2 * 60_000;
+const recordedWallBudgetSchema = runBudgetCountersV1Schema
+  .pick({ wallTimeMs: true }).strip();
+
+/** Cleanup observes recorded authority; a changed default cannot extend old runs. */
+function agentRunIsStaleForRepair(input: {
+  status: string;
+  startedAt: string;
+  continuation?: unknown;
+  budgetLimits?: unknown;
+}, now: number, staleAfterMs: number) {
+  const continuation = input.continuation &&
+      typeof input.continuation === "object" &&
+      !Array.isArray(input.continuation)
+    ? input.continuation as Record<string, unknown>
+    : undefined;
+  const resumedBudget = input.status === "resuming"
+    ? parsePersistedRunBudgetStateV1(continuation?.budgetState)
+    : undefined;
+  // Only the recorded wall counter is needed; older harness events can have
+  // a redacted token counter. This grants no execution or retry authority.
+  const admittedBudget = recordedWallBudgetSchema.safeParse(input.budgetLimits);
+  const remainingWallTimeMs = resumedBudget
+    ? Math.max(0, resumedBudget.limits.wallTimeMs - resumedBudget.used.wallTimeMs)
+    : input.status === "running" && admittedBudget.success
+      ? admittedBudget.data.wallTimeMs
+      : 0;
+  const activeSince = input.status === "resuming" &&
+      typeof continuation?.resumeClaimedAt === "string"
+    ? continuation.resumeClaimedAt
+    : input.startedAt;
+  const activeSinceMs = Date.parse(activeSince);
+  return Number.isFinite(activeSinceMs) && now - activeSinceMs >= Math.max(
+    staleAfterMs,
+    remainingWallTimeMs > 0
+      ? remainingWallTimeMs + AGENT_STALE_COMPLETION_GRACE_MS
+      : 0,
+  );
+}
+
 /** Fail stale initial runs and interrupted resume claims without replaying work. */
 export async function repairStuckAgentRuns({
   staleAfterMs = 7 * 60 * 1000,
@@ -1484,14 +1545,24 @@ export async function repairStuckAgentRuns({
   tenantId?: string;
 } = {}) {
   const tenantId = normalizeTenantId(requestedTenantId);
-  const staleBeforeEpoch = new Date(Date.now() - staleAfterMs).toISOString();
+  const now = Date.now();
+  const staleBeforeEpoch = new Date(now - staleAfterMs).toISOString();
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const repaired = await runWithDatabaseSystemScope(
       `Repair stale agent runs for tenant ${tenantId}.`,
       () => getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
         const candidates = await sql`
-          SELECT id, owner_actor_id, status
+          SELECT id, owner_actor_id, status, started_at, continuation,
+            (
+              SELECT event.payload->'budgetLimits'
+              FROM omni_agent_events AS event
+              WHERE event.tenant_id = run.tenant_id
+                AND event.run_id = run.id
+                AND event.type = 'harness'
+              ORDER BY event.created_at ASC, event.id ASC
+              LIMIT 1
+            ) AS budget_limits
           FROM omni_agent_runs AS run
           WHERE tenant_id = ${tenantId}
             AND (
@@ -1528,6 +1599,12 @@ export async function repairStuckAgentRuns({
           const runId = String(candidate.id);
           const actorId = requiredOwnerActorId(String(candidate.owner_actor_id));
           const priorStatus = String(candidate.status);
+          if (!agentRunIsStaleForRepair({
+            status: priorStatus,
+            startedAt: String(candidate.started_at),
+            continuation: candidate.continuation,
+            budgetLimits: candidate.budget_limits,
+          }, now, staleAfterMs)) continue;
           const message = priorStatus === "resuming"
             ? "Approved run resume was interrupted; side effects were not replayed."
             : priorStatus === "queued"
@@ -1574,26 +1651,33 @@ export async function repairStuckAgentRuns({
   let repaired = 0;
   const repairedRuns: Array<{ runId: string; message: string }> = [];
   await updateRunLedger((ledger) => {
-    const staleBefore = Date.parse(staleBeforeEpoch);
     for (const run of ledger.runs) {
       if (normalizeTenantId(run.tenantId) !== tenantId) {
         continue;
       }
-      const staleInitial =
-        (run.status === "queued" || run.status === "running") &&
-        Date.parse(run.startedAt) <= staleBefore;
-      const resumeClaimedAt =
-        run.continuation?.resumeClaimedAt || run.startedAt;
-      const staleResuming =
-        run.status === "resuming" &&
-        Date.parse(resumeClaimedAt) <= staleBefore;
-      if (!staleInitial && !staleResuming) {
+      if (!["queued", "running", "resuming"].includes(run.status)) {
         continue;
       }
+      const harness = ledger.events.find((event) =>
+        event.runId === run.id &&
+        normalizeTenantId(event.tenantId) === tenantId &&
+        event.type === "harness"
+      );
+      const harnessPayload = harness?.payload;
+      if (!agentRunIsStaleForRepair({
+        status: run.status,
+        startedAt: run.startedAt,
+        continuation: run.continuation,
+        budgetLimits: harnessPayload && typeof harnessPayload === "object" &&
+            !Array.isArray(harnessPayload) && "budgetLimits" in harnessPayload
+          ? harnessPayload.budgetLimits
+          : undefined,
+      }, now, staleAfterMs)) continue;
       repaired += 1;
       const wasQueued = run.status === "queued";
+      const wasResuming = run.status === "resuming";
       run.status = "failed";
-      run.error = staleResuming
+      run.error = wasResuming
         ? "Approved run resume was interrupted; side effects were not replayed."
         : wasQueued
           ? "Queued durable agent run expired before dispatch."
@@ -1905,8 +1989,83 @@ export async function getAgentRun(runId: string, options: { tenantId?: string } 
   return ledger.runs.find((run) => run.id === runId && (!options.tenantId || normalizeTenantId(run.tenantId) === normalizeTenantId(options.tenantId)));
 }
 
+/** Latest saved research progress, bound to the same run owner as its report. */
+export async function getAgentRunResearchProgress(
+  runId: string,
+  options: { tenantId: string; actorId: string },
+): Promise<ResearchProgress | undefined> {
+  const tenantId = normalizeTenantId(options.tenantId);
+  let payload: unknown;
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT record.payload
+      FROM omni_agent_events record
+      JOIN omni_agent_runs run
+        ON run.id = record.run_id AND run.tenant_id = record.tenant_id
+      JOIN omni_events event
+        ON event.id = record.id AND event.tenant_id = record.tenant_id
+      WHERE run.id = ${runId} AND run.tenant_id = ${tenantId}
+        AND run.owner_actor_id = ${options.actorId} AND run.mode = 'research'
+        AND event.stream_id = ${`run:${runId}`} AND record.type = 'research_progress'
+      ORDER BY event.seq DESC
+      LIMIT 1
+    `;
+    payload = rows[0]?.payload;
+  } else {
+    const ledger = await readRunLedger();
+    const ownedRun = ledger.runs.some((run) => run.id === runId &&
+      normalizeTenantId(run.tenantId) === tenantId &&
+      run.ownerActorId === options.actorId && run.mode === "research");
+    if (!ownedRun) return undefined;
+    payload = ledger.events.findLast((event) => event.runId === runId &&
+      normalizeTenantId(event.tenantId) === tenantId &&
+      event.type === "research_progress")?.payload;
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
+  const parsed = researchProgressSchema.safeParse((payload as { progress?: unknown }).progress);
+  return parsed.success ? parsed.data : undefined;
+}
+
 const RUN_EVENT_PAGE_DEFAULT = 200;
 const RUN_EVENT_PAGE_MAX = 500;
+
+/** A terminal handoff is read from its committed event, never inferred from answer text. */
+export async function getAgentRunWorkflowHandoff(
+  runId: string,
+  options: { tenantId?: string; actorId?: string },
+): Promise<WorkflowHandoff | undefined> {
+  if (!options.actorId) return undefined;
+  const tenantId = normalizeTenantId(options.tenantId);
+  let payload: unknown;
+  let threadId: unknown;
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT event.payload, run.thread_id
+      FROM omni_agent_events event
+      JOIN omni_agent_runs run ON run.id = event.run_id AND run.tenant_id = event.tenant_id
+      WHERE run.id = ${runId} AND run.tenant_id = ${tenantId}
+        AND run.owner_actor_id = ${options.actorId} AND run.status = 'completed'
+        AND event.type = 'delegated'
+      ORDER BY event.created_at DESC LIMIT 1
+    `;
+    payload = rows[0]?.payload;
+    threadId = rows[0]?.thread_id;
+  } else {
+    const ledger = await readRunLedger();
+    const run = ledger.runs.find(candidate => candidate.id === runId &&
+      normalizeTenantId(candidate.tenantId) === tenantId &&
+      candidate.ownerActorId === options.actorId && candidate.status === "completed");
+    if (!run) return undefined;
+    threadId = run.threadId;
+    payload = ledger.events.filter(event => event.runId === runId &&
+      normalizeTenantId(event.tenantId) === tenantId && event.type === "delegated")
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0]?.payload;
+  }
+  const parsed = workflowHandoffEventSchema.safeParse(payload);
+  return parsed.success && parsed.data.threadId === threadId ? parsed.data : undefined;
+}
 
 /**
  * Lists a run's persisted events after a stream position, oldest first, for
@@ -2208,7 +2367,7 @@ export async function getRunStats(options: { tenantId?: string } = {}) {
 async function setRunStatus(
   runId: string,
   status: RunStatus,
-  values: { response?: string; error?: string; grounding?: GroundingReport },
+  values: { response?: string; error?: string; grounding?: GroundingReport; workflowHandoff?: WorkflowHandoff },
   options: AgentRunTerminalOptions = {},
 ) {
   const completedAt = new Date().toISOString();
@@ -2218,7 +2377,7 @@ async function setRunStatus(
   const safeError = values.error ? safeRunText(values.error, 2_000) : undefined;
   const terminalEvent = redactSensitive(
     status === "completed"
-      ? { type: "done", response: safeResponse || "", grounding: values.grounding }
+      ? values.workflowHandoff || { type: "done", response: safeResponse || "", grounding: values.grounding }
       : status === "canceled"
         ? { type: "canceled", message: safeError || "Canceled." }
         : { type: "error", message: safeError || "Agent run failed." },
@@ -2778,6 +2937,11 @@ export function parseAgentRunContinuation(
     ? undefined
     : parsePersistedRunBudgetStateV1(candidate.budgetState);
   if (candidate.budgetState !== undefined && !budgetState) return undefined;
+  if (candidate.maxOutputTokens !== undefined && (
+    !Number.isSafeInteger(candidate.maxOutputTokens) ||
+    Number(candidate.maxOutputTokens) < 1 ||
+    Number(candidate.maxOutputTokens) > 65_536
+  )) return undefined;
   if (
     candidate.maxToolSteps !== undefined &&
     (
@@ -2790,7 +2954,8 @@ export function parseAgentRunContinuation(
   if (
     candidate.computerUseTarget !== undefined &&
     candidate.computerUseTarget !== "isolated_browser" &&
-    candidate.computerUseTarget !== "local_macos"
+    candidate.computerUseTarget !== "local_macos" &&
+    candidate.computerUseTarget !== "local_android"
   ) {
     return undefined;
   }
@@ -2832,6 +2997,9 @@ export function parseAgentRunContinuation(
     instructions: candidate.instructions,
     response: typeof candidate.response === "string" ? candidate.response : "",
     toolSteps: Number.isInteger(candidate.toolSteps) ? (candidate.toolSteps as number) : 0,
+    maxOutputTokens: candidate.maxOutputTokens === undefined
+      ? undefined
+      : Number(candidate.maxOutputTokens),
     maxToolSteps: candidate.maxToolSteps === undefined
       ? undefined
       : Number(candidate.maxToolSteps),

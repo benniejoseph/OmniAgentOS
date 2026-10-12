@@ -41,7 +41,6 @@ void main() {
         '/knowledge',
         '/agents',
         '/meetings',
-        '/accounts',
         '/markets',
         '/automation',
         '/workflows',
@@ -54,6 +53,7 @@ void main() {
         '/security',
         '/settings',
         '/search',
+        '/library',
       });
       for (final visible in [
         destinationIndices(adaptiveVisible: true),
@@ -81,7 +81,7 @@ void main() {
   );
 
   for (final width in [320.0, 390.0]) {
-    testWidgets('four primary destinations and More fit $width at 200% text', (
+    testWidgets('adaptive narrow window and More fit $width at 200% text', (
       tester,
     ) async {
       tester.view.physicalSize = Size(width, 1000);
@@ -157,7 +157,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('Body Today'), findsOneWidget);
       expect(tester.takeException(), isNull);
-    }, variant: TargetPlatformVariant.only(TargetPlatform.android));
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
   }
 
   testWidgets(

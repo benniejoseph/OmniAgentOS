@@ -3,9 +3,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/macos/macos_page_scaffold.dart';
 import '../../app/platform/macos_presentation.dart';
+import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_page_scaffold.dart';
 import '../../app/theme/macos_app_theme.dart';
 import '../../core/network/native_workspace_access.dart';
 import '../push/mobile_push.dart';
+import '../settings/adaptive_control_dialog.dart';
 import 'device_security.dart';
 import 'device_security_providers.dart';
 
@@ -28,6 +31,84 @@ class DeviceSecurityScreen extends ConsumerWidget {
         push: push,
         onChange: (device, action) =>
             _confirmDeviceChange(context, controller, device, action),
+      );
+    }
+    if (usesMobilePresentation()) {
+      return Column(
+        children: [
+          MobilePageHeader(
+            title: 'Devices & app lock',
+            leading: Navigator.of(context).canPop()
+                ? IconButton(
+                    tooltip: 'Back',
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.arrow_back_rounded),
+                  )
+                : null,
+            actions: [
+              IconButton(
+                tooltip: 'Refresh devices',
+                onPressed: controller.loading ? null : controller.refresh,
+                icon: const Icon(Icons.refresh_rounded),
+              ),
+            ],
+          ),
+          Expanded(
+            child: RefreshIndicator(
+              onRefresh: controller.refresh,
+              child: ListView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 32),
+                children: [
+                  _BiometricCard(controller: controller),
+                  if (push != null) ...[
+                    const SizedBox(height: 12),
+                    _PushNotificationCard(coordinator: push),
+                  ],
+                  const SizedBox(height: 24),
+                  Text(
+                    'Your devices',
+                    style: Theme.of(context).textTheme.titleLarge,
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Manage where your workspace is signed in.',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                  const SizedBox(height: 16),
+                  if (controller.error != null)
+                    _ErrorCard(error: controller.error!),
+                  if (controller.loading && controller.devices.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.all(32),
+                      child: Center(child: CircularProgressIndicator()),
+                    )
+                  else if (controller.devices.isEmpty)
+                    const MobileSurface(
+                      child: Text(
+                        'No signed-in devices are available in this view.',
+                      ),
+                    )
+                  else
+                    for (final device in controller.devices)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 10),
+                        child: _DeviceCard(
+                          device: device,
+                          busy: controller.changingDevices.contains(device.id),
+                          onChange: (action) => _confirmDeviceChange(
+                            context,
+                            controller,
+                            device,
+                            action,
+                          ),
+                        ),
+                      ),
+                ],
+              ),
+            ),
+          ),
+        ],
       );
     }
     return Scaffold(
@@ -137,15 +218,32 @@ class DeviceSecurityScreen extends ConsumerWidget {
     final confirmed = await showDialog<bool>(
       context: context,
       useRootNavigator: false,
-      builder: (dialogContext) => AlertDialog(
+      builder: (dialogContext) => AdaptiveControlDialog(
         icon: Icon(
           wiping ? Icons.phonelink_erase_rounded : Icons.logout_rounded,
         ),
         title: Text(wiping ? 'Wipe ${device.name}?' : 'Revoke ${device.name}?'),
-        content: Text(
-          wiping
-              ? 'The session will be revoked now. When that installation next connects, Asael will erase its local credentials and acknowledge completion.'
-              : 'This installation must sign in again before it can access the workspace.',
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (usesMobilePresentation()) ...[
+              Text('${device.platform} · ${device.versionLabel}'),
+              const SizedBox(height: 8),
+              Text('Last seen ${device.lastSeenAt.toLocal()}'),
+              const SizedBox(height: 16),
+            ],
+            Text(
+              wiping
+                  ? 'The session will be revoked now. When that installation next connects, Asael will erase its local credentials and acknowledge completion.'
+                  : 'This installation must sign in again before it can access the workspace.',
+            ),
+            if (usesMobilePresentation()) ...[
+              const SizedBox(height: 16),
+              const Text('Exact device session'),
+              SelectableText(device.id),
+            ],
+          ],
         ),
         actions: [
           TextButton(
@@ -1063,7 +1161,9 @@ class _BiometricCard extends StatelessWidget {
       title: const Text('Biometric unlock'),
       subtitle: Text(
         controller.biometricAvailable
-            ? 'Require an enrolled biometric before local credentials are released.'
+            ? usesMobilePresentation()
+                  ? 'Use your fingerprint or face to open Asael.'
+                  : 'Require an enrolled biometric before local credentials are released.'
             : 'No enrolled biometric is available on this device.',
       ),
       value: controller.biometricEnabled,

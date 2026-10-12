@@ -336,7 +336,7 @@ class DesktopHostBridge {
   };
 
   static final _workspaceRoute = RegExp(
-    r'^/(?:(talk|today|capture|inbox|knowledge|projects|meetings|results|automation|activity)(/[A-Za-z0-9._~%:-]{1,500})?|results/approval(?::|%3[Aa])[A-Za-z0-9._~%:-]{1,480}\?kind=(tool|workflow|slo_policy)|projects/[A-Za-z0-9._~%:-]{1,240}\?workItemId=[A-Za-z0-9._~%:-]{1,240}|projects/[A-Za-z0-9._~%:-]{1,240}\?view=build(?:&artifact=[A-Za-z0-9._~%:-]{1,240})?(?:&workItemId=[A-Za-z0-9._~%:-]{1,240})?|responsibilities(?:/responsibility(?::|%3[Aa])[a-f0-9]{64})?|accounts|(?:accounts|customers)/customer-account(?::|%3[Aa])[a-f0-9]{64}|knowledge\?memory=[A-Za-z0-9._~%:-]{1,240})$',
+    r'^/(?:(talk|today|capture|inbox|knowledge|projects|meetings|results|automation|activity)(/[A-Za-z0-9._~%:-]{1,500})?|results/approval(?::|%3[Aa])[A-Za-z0-9._~%:-]{1,480}\?kind=(tool|workflow|slo_policy)|projects/[A-Za-z0-9._~%:-]{1,240}\?workItemId=[A-Za-z0-9._~%:-]{1,240}|projects/[A-Za-z0-9._~%:-]{1,240}\?view=build(?:&artifact=[A-Za-z0-9._~%:-]{1,240})?(?:&workItemId=[A-Za-z0-9._~%:-]{1,240})?|responsibilities(?:/responsibility(?::|%3[Aa])[a-f0-9]{64})?|knowledge\?memory=[A-Za-z0-9._~%:-]{1,240})$',
   );
 
   static bool isWorkspaceRoute(String route) =>
@@ -848,14 +848,27 @@ class DesktopHostBridge {
   /// Presents the voice-only HUD independently from the larger Quick Entry
   /// composer. No transcript, destination, command, or authority crosses this
   /// presentation-only bridge.
-  Future<void> showAmbientVoicePresentation() async {
+  Future<void> showAmbientVoicePresentation({
+    String appearance = 'companion',
+    double width = 400,
+    double height = 280,
+    bool reduceMotion = false,
+  }) async {
     if (!_enabled) return;
-    await _invokePresentationMethod('showAmbientVoicePresentation');
+    await _invokePresentationMethod('showAmbientVoicePresentation', {
+      'appearance': appearance,
+      'width': width,
+      'height': height,
+      'reduceMotion': reduceMotion,
+    });
   }
 
-  Future<void> _invokePresentationMethod(String method) async {
+  Future<void> _invokePresentationMethod(
+    String method, [
+    Map<String, Object?>? arguments,
+  ]) async {
     try {
-      await _channel.invokeMethod<void>(method);
+      await _channel.invokeMethod<void>(method, arguments);
     } on MissingPluginException {
       // Tests and development runners may not have the AppKit host attached.
     } on PlatformException {

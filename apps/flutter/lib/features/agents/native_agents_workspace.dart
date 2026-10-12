@@ -46,6 +46,7 @@ class NativeAgentsWorkspace extends StatelessWidget {
                       controller: controller,
                       liveWork: AgentControlView(controller: council),
                       onRefreshLiveWork: council.refresh,
+                      onAssignWork: onAssignWork,
                       onCatalogDecision: decide,
                     ),
             ),

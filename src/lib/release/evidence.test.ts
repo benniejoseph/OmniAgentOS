@@ -10,7 +10,8 @@ const mocks = vi.hoisted(() => ({
   getReleaseErrorBudget: vi.fn(),
 }));
 
-vi.mock("@/lib/config", () => ({
+vi.mock("@/lib/config", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/config")>()),
   hasOpenAIKey: () => true,
 }));
 vi.mock("@/lib/security/isolation-report", () => ({
@@ -45,6 +46,37 @@ afterEach(() => {
 });
 
 describe("release evidence", () => {
+  it("probes the selected recovery token without exposing either token in evidence", async () => {
+    configurePassingEvidence("recovery-selection", []);
+    const primaryToken = process.env.OMNIAGENT_OPENAI_GATEWAY_TOKEN!;
+    const recoveryToken = "recovery_token_abcdefghijklmnopqrstuvwxyz123456";
+    vi.stubEnv("OMNIAGENT_OPENAI_GATEWAY_USE_RECOVERY_TOKEN", "true");
+    vi.stubEnv("OMNIAGENT_OPENAI_GATEWAY_RECOVERY_TOKEN", recoveryToken);
+
+    const report = await getReleaseEvidenceReport("recovery-selection");
+
+    const request = vi.mocked(fetch).mock.calls[0];
+    expect(new Headers(request[1]?.headers).get("x-asael-gateway-token"))
+      .toBe(recoveryToken);
+    expect(report.gates.find((gate) => gate.id === "openai_us_egress_gateway"))
+      .toMatchObject({ status: "pass", details: { safeConfiguration: true, ready: true } });
+    expect(JSON.stringify(report)).not.toContain(primaryToken);
+    expect(JSON.stringify(report)).not.toContain(recoveryToken);
+  });
+
+  it("blocks evidence without probing the primary token when the selected recovery alias is absent", async () => {
+    configurePassingEvidence("recovery-missing", []);
+    vi.stubEnv("OMNIAGENT_OPENAI_GATEWAY_USE_RECOVERY_TOKEN", "true");
+    vi.stubEnv("OMNIAGENT_OPENAI_GATEWAY_RECOVERY_TOKEN", undefined);
+
+    const report = await getReleaseEvidenceReport("recovery-missing");
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(report.releaseGate.approved).toBe(false);
+    expect(report.gates.find((gate) => gate.id === "openai_us_egress_gateway"))
+      .toMatchObject({ status: "fail", details: { safeConfiguration: false, ready: false } });
+  });
+
   it("serializes collectors to keep shared database pool pressure bounded", async () => {
     const revision = "release-revision";
     const workerRevision = revision;

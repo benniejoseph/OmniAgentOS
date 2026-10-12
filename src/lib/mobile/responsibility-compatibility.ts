@@ -4,9 +4,9 @@ import { getResponsibilityDraft } from "@/lib/responsibilities/service";
 import { getResponsibilityLifecycle } from "@/lib/responsibilities/lifecycle-service";
 import { getResponsibilityNotifications } from "@/lib/responsibilities/notification-service";
 
-/** v47 has a closed meeting-only decoder. Never send it a work-item shape. */
+/** v55 has a closed meeting-only decoder. Never send it a work-item shape. */
 export function needsLegacyResponsibilityContract(context: SecurityContext) {
-  return context.source === "mobile" && (context.native?.clientContractVersion ?? 0) < 48;
+  return context.source === "mobile" && (context.native?.clientContractVersion ?? 0) < 56;
 }
 
 function containsWorkItemTracking(value: unknown): boolean {

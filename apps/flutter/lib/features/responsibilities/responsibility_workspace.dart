@@ -4,9 +4,13 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../app/mobile/mobile_page_scaffold.dart';
+import '../../app/mobile/mobile_flow_scaffold.dart';
+import '../../app/platform/mobile_presentation.dart';
 import 'responsibility_contracts.dart';
 import 'responsibility_controller.dart';
 import 'responsibility_work_item_setup.dart';
+import 'responsibility_date_time_field.dart';
 
 /// Shared native workspace. The host binds this controller through Riverpod and
 /// may route exact list selections through [onOpenResponsibility].
@@ -30,9 +34,13 @@ class ResponsibilityWorkspaceView extends StatefulWidget {
 class _ResponsibilityWorkspaceViewState
     extends State<ResponsibilityWorkspaceView> {
   ResponsibilityController get controller => widget.controller;
+  bool _mobileShowDetail = false;
+  String _mobileQuery = '', _mobileFilter = 'all';
+  final _mobileSearch = TextEditingController();
   @override
   void initState() {
     super.initState();
+    _mobileShowDetail = widget.focusId != null;
     _initialize();
   }
 
@@ -49,11 +57,24 @@ class _ResponsibilityWorkspaceViewState
     super.didUpdateWidget(oldWidget);
     if (!identical(oldWidget.controller, controller) ||
         oldWidget.focusId != widget.focusId) {
+      _mobileShowDetail = widget.focusId != null;
+      if (!identical(oldWidget.controller, controller)) {
+        _mobileSearch.clear();
+        _mobileQuery = '';
+        _mobileFilter = 'all';
+      }
       _initialize();
     }
   }
 
+  @override
+  void dispose() {
+    _mobileSearch.dispose();
+    super.dispose();
+  }
+
   void _select(String id) {
+    if (usesMobilePresentation()) setState(() => _mobileShowDetail = true);
     final open = widget.onOpenResponsibility;
     if (open != null) {
       open(id);
@@ -69,6 +90,7 @@ class _ResponsibilityWorkspaceViewState
         identical(controller, origin) &&
         controller.authorityEpoch == epoch &&
         controller.available) {
+      if (usesMobilePresentation()) setState(() => _mobileShowDetail = true);
       widget.onNewDraft?.call();
     }
   }
@@ -98,12 +120,11 @@ class _ResponsibilityWorkspaceViewState
         return const Center(
           child: Padding(
             padding: EdgeInsets.all(24),
-            child: Text(
-              'Unlock your current account to read Responsibilities.',
-            ),
+            child: Text('Unlock your current account to read follow-ups.'),
           ),
         );
       }
+      if (usesMobilePresentation()) return _mobileWorkspace();
       return CallbackShortcuts(
         bindings: {
           const SingleActivator(LogicalKeyboardKey.keyR, meta: true): () =>
@@ -118,10 +139,10 @@ class _ResponsibilityWorkspaceViewState
         child: Focus(
           child: Scaffold(
             appBar: AppBar(
-              title: const Text('Responsibilities'),
+              title: const Text('Follow-ups'),
               actions: [
                 IconButton(
-                  tooltip: 'Refresh Responsibilities',
+                  tooltip: 'Refresh follow-ups',
                   onPressed: controller.loading ? null : controller.refresh,
                   icon: const Icon(Icons.refresh),
                 ),
@@ -150,7 +171,7 @@ class _ResponsibilityWorkspaceViewState
                       key: const Key('responsibility-catalogue'),
                       initiallyExpanded: controller.selectedId == null,
                       title: Text(
-                        'Recent responsibilities · ${controller.records.length}',
+                        'Your follow-ups · ${controller.records.length}',
                       ),
                       children: [_catalogue(shrinkWrap: true)],
                     ),
@@ -164,6 +185,233 @@ class _ResponsibilityWorkspaceViewState
       );
     },
   );
+  Widget _mobileWorkspace() {
+    final records = controller.records
+        .where(
+          (record) =>
+              (_mobileFilter == 'all' || record.state == _mobileFilter) &&
+              record.title.toLowerCase().contains(_mobileQuery.toLowerCase()),
+        )
+        .toList();
+    return Column(
+      children: [
+        MobilePageHeader(
+          title: 'Follow-ups',
+          subtitle: _mobileShowDetail ? null : 'Keep the next step in sight.',
+          leading: _mobileShowDetail
+              ? BackButton(
+                  onPressed: () => setState(() => _mobileShowDetail = false),
+                )
+              : null,
+          actions: [
+            IconButton(
+              tooltip: 'Refresh follow-ups',
+              onPressed: controller.loading ? null : controller.refresh,
+              icon: const Icon(Icons.refresh_rounded),
+            ),
+            if (!_mobileShowDetail && controller.canManage)
+              IconButton.filledTonal(
+                tooltip: 'New follow-up',
+                onPressed: controller.busy ? null : _newDraft,
+                icon: const Icon(Icons.add_rounded),
+              ),
+          ],
+        ),
+        Expanded(
+          child: _mobileShowDetail
+              ? ListView(
+                  keyboardDismissBehavior:
+                      ScrollViewKeyboardDismissBehavior.onDrag,
+                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+                  children: _detailChildren(),
+                )
+              : CustomScrollView(
+                  slivers: [
+                    SliverPadding(
+                      padding: const EdgeInsets.symmetric(horizontal: 20),
+                      sliver: SliverToBoxAdapter(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            TextField(
+                              controller: _mobileSearch,
+                              decoration: const InputDecoration(
+                                hintText: 'Find a follow-up',
+                                prefixIcon: Icon(Icons.search_rounded),
+                              ),
+                              onChanged: (value) =>
+                                  setState(() => _mobileQuery = value),
+                            ),
+                            const SizedBox(height: 16),
+                            MobileSegmentBar<String>(
+                              items: const [
+                                (value: 'all', label: 'All', icon: null),
+                                (value: 'draft', label: 'Drafts', icon: null),
+                                (
+                                  value: 'reviewed',
+                                  label: 'Reviewed',
+                                  icon: null,
+                                ),
+                              ],
+                              value: _mobileFilter,
+                              onChanged: (value) =>
+                                  setState(() => _mobileFilter = value),
+                            ),
+                            const SizedBox(height: 20),
+                            if (controller.dirty ||
+                                controller.selectedId != null)
+                              OutlinedButton.icon(
+                                onPressed: () =>
+                                    setState(() => _mobileShowDetail = true),
+                                icon: const Icon(Icons.edit_note_rounded),
+                                label: Text(
+                                  controller.dirty
+                                      ? 'Continue your draft'
+                                      : 'Return to selected follow-up',
+                                ),
+                              ),
+                            if (controller.loading)
+                              const LinearProgressIndicator(),
+                            if (controller.readErrors[ResponsibilityRead
+                                    .list] !=
+                                null)
+                              _Notice(
+                                controller.readErrors[ResponsibilityRead.list]!,
+                                error: true,
+                              ),
+                            if (controller.error != null)
+                              _Notice(controller.error!, error: true),
+                            if (controller.listing != null && records.isEmpty)
+                              Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 32,
+                                ),
+                                child: Column(
+                                  children: [
+                                    Icon(
+                                      Icons.event_repeat_rounded,
+                                      size: 36,
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .primary,
+                                    ),
+                                    const SizedBox(height: 16),
+                                    Text(
+                                      'Give the next step a home',
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .titleMedium,
+                                    ),
+                                    const SizedBox(height: 8),
+                                    const Text(
+                                      'Choose an outcome and sources. Review the plan and limits before turning it on.',
+                                      textAlign: TextAlign.center,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    SliverList.builder(
+                      itemCount: records.length,
+                      itemBuilder: (context, index) {
+                        final record = records[index];
+                        final sourceCount =
+                            (record.draft['sources'] as List).length;
+                        return Padding(
+                          padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+                          child: Material(
+                            color: Theme.of(context).colorScheme.surface,
+                            borderRadius: BorderRadius.circular(18),
+                            clipBehavior: Clip.antiAlias,
+                            child: InkWell(
+                              onTap: () => _select(record.id),
+                              child: Padding(
+                                padding: const EdgeInsets.all(18),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      children: [
+                                        Icon(
+                                          Icons.event_repeat_outlined,
+                                          size: 20,
+                                          color: Theme.of(context)
+                                              .colorScheme
+                                              .primary,
+                                        ),
+                                        const SizedBox(width: 10),
+                                        Expanded(
+                                          child: Text(
+                                            _label(record.state),
+                                            style: Theme.of(context)
+                                                .textTheme
+                                                .labelMedium,
+                                          ),
+                                        ),
+                                        const Icon(
+                                          Icons.chevron_right_rounded,
+                                          size: 20,
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 14),
+                                    Text(
+                                      record.title,
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .titleMedium,
+                                    ),
+                                    if ((record.draft['desiredOutcome']
+                                            as String)
+                                        .isNotEmpty) ...[
+                                      const SizedBox(height: 8),
+                                      Text(
+                                        record.draft['desiredOutcome']
+                                            as String,
+                                        maxLines: 2,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .bodyMedium,
+                                      ),
+                                    ],
+                                    const SizedBox(height: 14),
+                                    Text(
+                                      '$sourceCount ${sourceCount == 1 ? 'source' : 'sources'} selected',
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .bodySmall,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                    if (controller.listing != null)
+                      SliverToBoxAdapter(
+                        child: Padding(
+                          padding: const EdgeInsets.all(20),
+                          child: Text(
+                            controller.listing?['hasMore'] == true
+                                ? 'Showing recent follow-ups. Older records can still be opened from their links.'
+                                : 'Your saved follow-ups.',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+        ),
+      ],
+    );
+  }
+
   Widget _catalogue({bool shrinkWrap = false}) => ListView(
     shrinkWrap: shrinkWrap,
     physics: shrinkWrap ? const NeverScrollableScrollPhysics() : null,
@@ -187,7 +435,7 @@ class _ResponsibilityWorkspaceViewState
       if (controller.listing != null && controller.records.isEmpty)
         const Padding(
           padding: EdgeInsets.all(12),
-          child: Text('No responsibilities were returned for this account.'),
+          child: Text('No follow-ups yet for this account.'),
         ),
       for (final record in controller.records)
         ListTile(
@@ -198,9 +446,7 @@ class _ResponsibilityWorkspaceViewState
             maxLines: 3,
             overflow: TextOverflow.ellipsis,
           ),
-          subtitle: Text(
-            '${_label(record.state)} · revision ${record.revision}',
-          ),
+          subtitle: Text(_label(record.state)),
           onTap: () => _select(record.id),
         ),
       if (controller.listing?['hasMore'] == true)
@@ -212,6 +458,10 @@ class _ResponsibilityWorkspaceViewState
   Widget _detail() =>
       ListView(padding: const EdgeInsets.all(24), children: _detailChildren());
   List<Widget> _detailChildren() => [
+    const Text(
+      'Give Asael an outcome to keep checking, using sources you choose and limits you set. Review the plan before turning it on; reminders are optional.',
+    ),
+    const SizedBox(height: 16),
     if (!controller.canManage)
       const _Notice(
         'This account can read Responsibilities. A workflow manager is required to edit, review, activate, or enable in-app notices.',
@@ -249,7 +499,11 @@ class _ResponsibilityWorkspaceViewState
       ),
     if (controller.selectedId == null || controller.record != null) ...[
       _Section(
-        title: controller.record?.title ?? 'New Responsibility draft',
+        title:
+            controller.record?.title ??
+            (usesMobilePresentation()
+                ? 'New follow-up draft'
+                : 'New Responsibility draft'),
         children: [
           if (controller.record != null) ...[
             Text(
@@ -312,6 +566,8 @@ class _ResponsibilityWorkspaceViewState
                   label: Text(
                     controller.selectedId == null
                         ? 'Save draft'
+                        : usesMobilePresentation()
+                        ? 'Save changes'
                         : 'Save exact revision',
                   ),
                 ),
@@ -325,7 +581,11 @@ class _ResponsibilityWorkspaceViewState
                             ResponsibilityRead.detail,
                           )
                         : null,
-                    child: const Text('Review current pins'),
+                    child: Text(
+                      usesMobilePresentation()
+                          ? 'Review this plan'
+                          : 'Review current pins',
+                    ),
                   ),
               ],
             ),
@@ -396,7 +656,7 @@ class _ResponsibilityWorkspaceViewState
         revision = controller.record?.revision;
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (context) => _followupReviewDialog(
         scrollable: true,
         title: const Text('Rebase your local draft?'),
         content: const Text(
@@ -789,7 +1049,7 @@ class _ResponsibilityWorkspaceViewState
         head = controller.head(ResponsibilityRead.notifications);
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (context) => _followupReviewDialog(
         scrollable: true,
         title: const Text('Stop these in-app notices?'),
         content: const Text(
@@ -867,94 +1127,123 @@ class _ResponsibilityDraftEditorState
     int lines = 1,
     int? maxLength,
     bool numeric = false,
-  }) => Padding(
-    padding: const EdgeInsets.symmetric(vertical: 6),
-    child: TextField(
-      key: ValueKey('responsibility-field-$key'),
-      controller: _text(key, value),
-      enabled: enabled,
-      maxLines: lines,
-      maxLength: maxLength,
-      keyboardType: numeric
-          ? TextInputType.number
-          : lines > 1
-          ? TextInputType.multiline
-          : TextInputType.text,
-      decoration: InputDecoration(
-        labelText: label,
-        border: const OutlineInputBorder(),
-        alignLabelWithHint: true,
-        errorText: controller.invalidDraftInputs.contains(key)
-            ? 'Enter a valid finite value.'
-            : null,
+  }) {
+    void changed(String text) {
+      var valid = !RegExp(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]').hasMatch(text);
+      if (numeric) {
+        final n = int.tryParse(text),
+            maximum = key == 'interval'
+                ? 24
+                : key == 'checks'
+                ? 10000
+                : key == 'notices'
+                ? 1000
+                : 1000000000000;
+        valid =
+            valid &&
+            n != null &&
+            n >= (key == 'interval' || key == 'checks' ? 1 : 0) &&
+            n <= maximum;
+      }
+      if (key == 'timezone') {
+        valid = valid && text.trim().isNotEmpty && text.trim().length <= 100;
+      }
+      if (key == 'stops') {
+        final lines = text
+            .split('\n')
+            .map((s) => s.trim())
+            .where((s) => s.isNotEmpty)
+            .toList();
+        valid =
+            valid && lines.length <= 8 && lines.every((s) => s.length <= 500);
+      }
+      if (key == 'starts' || key == 'expires') {
+        final startText = _fields['starts']?.text ?? '',
+            endText = _fields['expires']?.text ?? '';
+        final start = DateTime.tryParse(startText),
+            end = DateTime.tryParse(endText);
+        valid =
+            valid &&
+            start != null &&
+            end != null &&
+            start.toUtc().toIso8601String() == startText &&
+            end.toUtc().toIso8601String() == endText &&
+            startText.endsWith('Z') &&
+            endText.endsWith('Z') &&
+            end.isAfter(start) &&
+            end.difference(start) <= const Duration(days: 366);
+        controller.draftInputValidity('starts', valid);
+        controller.draftInputValidity('expires', valid);
+        if (valid) {
+          final cadence = responsibilityMap(controller.draft['cadence']);
+          _change('cadence', {
+            ...cadence,
+            'startsAt': DateTime.fromMillisecondsSinceEpoch(
+              start.millisecondsSinceEpoch,
+              isUtc: true,
+            ).toIso8601String(),
+            'expiresAt': DateTime.fromMillisecondsSinceEpoch(
+              end.millisecondsSinceEpoch,
+              isUtc: true,
+            ).toIso8601String(),
+          });
+        }
+        return;
+      }
+      controller.draftInputValidity(key, valid);
+      if (valid) onChanged(text);
+    }
+
+    if (usesMobilePresentation() && (key == 'starts' || key == 'expires')) {
+      final currentController = controller,
+          ownerKey = controller.repository.access.owner?.key;
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          ResponsibilityDateTimeField(
+            controller: _text(key, value),
+            label: key == 'starts' ? 'First check' : 'Stop checking',
+            isCurrent: () =>
+                mounted &&
+                enabled &&
+                identical(controller, currentController) &&
+                controller.repository.access.owner?.key == ownerKey,
+            onChanged: changed,
+          ),
+          if (controller.invalidDraftInputs.contains(key))
+            Text(
+              'Choose a stop date after the first check, within one year.',
+              style: TextStyle(color: Theme.of(context).colorScheme.error),
+            ),
+        ],
+      );
+    }
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: TextField(
+        key: ValueKey('responsibility-field-$key'),
+        controller: _text(key, value),
+        enabled: enabled,
+        maxLines: lines,
+        maxLength: maxLength,
+        keyboardType: numeric
+            ? TextInputType.number
+            : lines > 1
+            ? TextInputType.multiline
+            : TextInputType.text,
+        decoration: InputDecoration(
+          labelText: label,
+          border: const OutlineInputBorder(),
+          alignLabelWithHint: true,
+          errorText: controller.invalidDraftInputs.contains(key)
+              ? 'Enter a valid finite value.'
+              : null,
+        ),
+        onChanged: changed,
       ),
-      onChanged: (text) {
-        var valid = !RegExp(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]').hasMatch(text);
-        if (numeric) {
-          final n = int.tryParse(text),
-              maximum = key == 'interval'
-                  ? 24
-                  : key == 'checks'
-                  ? 10000
-                  : key == 'notices'
-                  ? 1000
-                  : 1000000000000;
-          valid =
-              valid &&
-              n != null &&
-              n >= (key == 'interval' || key == 'checks' ? 1 : 0) &&
-              n <= maximum;
-        }
-        if (key == 'timezone') {
-          valid = valid && text.trim().isNotEmpty && text.trim().length <= 100;
-        }
-        if (key == 'stops') {
-          final lines = text
-              .split('\n')
-              .map((s) => s.trim())
-              .where((s) => s.isNotEmpty)
-              .toList();
-          valid =
-              valid && lines.length <= 8 && lines.every((s) => s.length <= 500);
-        }
-        if (key == 'starts' || key == 'expires') {
-          final startText = _fields['starts']?.text ?? '',
-              endText = _fields['expires']?.text ?? '';
-          final start = DateTime.tryParse(startText),
-              end = DateTime.tryParse(endText);
-          valid =
-              valid &&
-              start != null &&
-              end != null &&
-              start.toUtc().toIso8601String() == startText &&
-              end.toUtc().toIso8601String() == endText &&
-              startText.endsWith('Z') &&
-              endText.endsWith('Z') &&
-              end.isAfter(start) &&
-              end.difference(start) <= const Duration(days: 366);
-          controller.draftInputValidity('starts', valid);
-          controller.draftInputValidity('expires', valid);
-          if (valid) {
-            final cadence = responsibilityMap(controller.draft['cadence']);
-            _change('cadence', {
-              ...cadence,
-              'startsAt': DateTime.fromMillisecondsSinceEpoch(
-                start.millisecondsSinceEpoch,
-                isUtc: true,
-              ).toIso8601String(),
-              'expiresAt': DateTime.fromMillisecondsSinceEpoch(
-                end.millisecondsSinceEpoch,
-                isUtc: true,
-              ).toIso8601String(),
-            });
-          }
-          return;
-        }
-        controller.draftInputValidity(key, valid);
-        if (valid) onChanged(text);
-      },
-    ),
-  );
+    );
+  }
+
   void _clearInputErrors(Iterable<String> keys) {
     for (final key in keys) {
       if (_fields.containsKey(key)) {
@@ -990,7 +1279,9 @@ class _ResponsibilityDraftEditorState
         _quickSetup(groups),
         _field(
           'purpose',
-          'Purpose',
+          usesMobilePresentation()
+              ? 'What should ATLAS keep an eye on?'
+              : 'Purpose',
           draft['purpose'] as String,
           (v) => _change('purpose', v.trim()),
           lines: 2,
@@ -998,206 +1289,222 @@ class _ResponsibilityDraftEditorState
         ),
         _field(
           'outcome',
-          'Desired outcome',
+          usesMobilePresentation()
+              ? 'What would a good outcome look like?'
+              : 'Desired outcome',
           draft['desiredOutcome'] as String,
           (v) => _change('desiredOutcome', v.trim()),
           lines: 2,
           maxLength: 2000,
         ),
-        _choices(groups),
-        _field(
-          'success',
-          'Success condition (descriptive)',
-          draft['successCondition'] as String,
-          (v) => _change('successCondition', v.trim()),
-          lines: 2,
-          maxLength: 1000,
-        ),
-        _field(
-          'stops',
-          'Stop conditions (one per line, up to 8)',
-          (draft['stopConditions'] as List).join('\n'),
-          (v) => _change(
-            'stopConditions',
-            v
-                .split('\n')
-                .map((s) => s.trim())
-                .where((s) => s.isNotEmpty)
-                .toList(),
+        _formGroup('Sources and assistant', [_choices(groups)]),
+        _formGroup('Success and stop conditions', [
+          _field(
+            'success',
+            'Success condition (descriptive)',
+            draft['successCondition'] as String,
+            (v) => _change('successCondition', v.trim()),
+            lines: 2,
+            maxLength: 1000,
           ),
-          lines: 3,
-        ),
-        Text(
-          (draft['sources'] as List).any(
-                (source) => responsibilityMap(source)['kind'] == 'work_item',
-              )
-              ? 'Work follow-through ends at the reviewed expiry. Marked done is a status change, not independent verification. Written success and stop conditions are guidance.'
-              : 'Meeting checks end at expiry, meeting start, or cancellation. Written success and stop conditions are guidance.',
-        ),
-        SwitchListTile(
-          contentPadding: EdgeInsets.zero,
-          title: const Text('Finite cadence'),
-          value: cadence != null,
-          onChanged: enabled
-              ? (v) {
-                  final now = DateTime.fromMillisecondsSinceEpoch(
-                    DateTime.now().millisecondsSinceEpoch,
-                    isUtc: true,
-                  );
-                  _clearInputErrors([
-                    'starts',
-                    'expires',
-                    'timezone',
-                    'interval',
-                  ]);
-                  _change(
-                    'cadence',
-                    v
-                        ? {
-                            'frequency': 'daily',
-                            'interval': 1,
-                            'timezone': 'UTC',
-                            'startsAt': now
-                                .add(const Duration(minutes: 5))
-                                .toIso8601String(),
-                            'expiresAt': now
-                                .add(const Duration(days: 7))
-                                .toIso8601String(),
-                            'missedPolicy': 'skip',
-                          }
-                        : null,
-                  );
-                }
-              : null,
-        ),
-        if (cadence != null) ...[
-          DropdownButtonFormField<String>(
-            key: ValueKey('cadence-${cadence['frequency']}'),
-            initialValue: cadence['frequency'] as String,
-            isExpanded: true,
-            itemHeight: null,
-            isDense: false,
-            decoration: const InputDecoration(labelText: 'Frequency'),
-            items: [
-              for (final value in ['hourly', 'daily', 'weekly'])
-                DropdownMenuItem(value: value, child: Text(_label(value))),
-            ],
+          _field(
+            'stops',
+            'Stop conditions (one per line, up to 8)',
+            (draft['stopConditions'] as List).join('\n'),
+            (v) => _change(
+              'stopConditions',
+              v
+                  .split('\n')
+                  .map((s) => s.trim())
+                  .where((s) => s.isNotEmpty)
+                  .toList(),
+            ),
+            lines: 3,
+          ),
+          Text(
+            (draft['sources'] as List).any(
+                  (source) => responsibilityMap(source)['kind'] == 'work_item',
+                )
+                ? 'Work follow-through ends at the reviewed expiry. Marked done is a status change, not independent verification. Written success and stop conditions are guidance.'
+                : 'Meeting checks end at expiry, meeting start, or cancellation. Written success and stop conditions are guidance.',
+          ),
+        ]),
+        _formGroup('Schedule', [
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: Text(
+              usesMobilePresentation() ? 'Scheduled checks' : 'Finite cadence',
+            ),
+            value: cadence != null,
             onChanged: enabled
-                ? (v) => _change('cadence', {...cadence, 'frequency': v})
+                ? (v) {
+                    final now = DateTime.fromMillisecondsSinceEpoch(
+                      DateTime.now().millisecondsSinceEpoch,
+                      isUtc: true,
+                    );
+                    _clearInputErrors([
+                      'starts',
+                      'expires',
+                      'timezone',
+                      'interval',
+                    ]);
+                    _change(
+                      'cadence',
+                      v
+                          ? {
+                              'frequency': 'daily',
+                              'interval': 1,
+                              'timezone': 'UTC',
+                              'startsAt': now
+                                  .add(const Duration(minutes: 5))
+                                  .toIso8601String(),
+                              'expiresAt': now
+                                  .add(const Duration(days: 7))
+                                  .toIso8601String(),
+                              'missedPolicy': 'skip',
+                            }
+                          : null,
+                    );
+                  }
                 : null,
           ),
-          _field('interval', 'Interval (1–24)', '${cadence['interval']}', (v) {
-            final n = int.tryParse(v);
-            if (n != null && n >= 1 && n <= 24) {
-              _change('cadence', {...cadence, 'interval': n});
-            }
-          }, numeric: true),
-          _field('timezone', 'IANA timezone', cadence['timezone'] as String, (
-            v,
-          ) {
-            if (v.trim().isNotEmpty) {
-              _change('cadence', {...cadence, 'timezone': v.trim()});
-            }
-          }),
-          _field(
-            'starts',
-            'Starts at (UTC ISO instant)',
-            cadence['startsAt'] as String,
-            (v) => _cadenceTime(cadence, 'startsAt', v),
-          ),
-          _field(
-            'expires',
-            'Expires at (UTC ISO instant)',
-            cadence['expiresAt'] as String,
-            (v) => _cadenceTime(cadence, 'expiresAt', v),
-          ),
-          const Text(
-            'Missed checks are skipped. The current pilot supports daily or weekly cadence and a 15-minute due grace.',
-          ),
-        ],
-        SwitchListTile(
-          contentPadding: EdgeInsets.zero,
-          title: const Text('Finite cumulative limits'),
-          value: limits != null,
-          onChanged: enabled
-              ? (v) {
-                  _clearInputErrors([
-                    'checks',
-                    'notices',
-                    ...responsibilityBudgetDimensions.map(
-                      (key) => 'budget-$key',
-                    ),
-                  ]);
-                  _change(
-                    'limits',
-                    v
-                        ? {
-                            'maxChecks': 7,
-                            'maxNotifications': 0,
-                            'cumulative': {
-                              for (final key in responsibilityBudgetDimensions)
-                                key: key == 'wallTimeMs'
-                                    ? 210000
-                                    : key == 'toolCalls' || key == 'agents'
-                                    ? 7
-                                    : 0,
-                            },
-                          }
-                        : null,
-                  );
+          if (cadence != null) ...[
+            DropdownButtonFormField<String>(
+              key: ValueKey('cadence-${cadence['frequency']}'),
+              initialValue: cadence['frequency'] as String,
+              isExpanded: true,
+              itemHeight: null,
+              isDense: false,
+              decoration: const InputDecoration(labelText: 'Frequency'),
+              items: [
+                for (final value in ['hourly', 'daily', 'weekly'])
+                  DropdownMenuItem(value: value, child: Text(_label(value))),
+              ],
+              onChanged: enabled
+                  ? (v) => _change('cadence', {...cadence, 'frequency': v})
+                  : null,
+            ),
+            _field('interval', 'Interval (1–24)', '${cadence['interval']}', (
+              v,
+            ) {
+              final n = int.tryParse(v);
+              if (n != null && n >= 1 && n <= 24) {
+                _change('cadence', {...cadence, 'interval': n});
+              }
+            }, numeric: true),
+            _field(
+              'timezone',
+              usesMobilePresentation() ? 'Schedule timezone' : 'IANA timezone',
+              cadence['timezone'] as String,
+              (v) {
+                if (v.trim().isNotEmpty) {
+                  _change('cadence', {...cadence, 'timezone': v.trim()});
                 }
-              : null,
-        ),
-        if (limits != null) ...[
-          _field(
-            'checks',
-            'Maximum checks (1–10000)',
-            '${limits['maxChecks']}',
-            (v) {
-              final n = int.tryParse(v);
-              if (n != null && n > 0 && n <= 10000) {
-                _change('limits', {...limits, 'maxChecks': n});
-              }
-            },
-            numeric: true,
+              },
+            ),
+            _field(
+              'starts',
+              'Starts at (UTC ISO instant)',
+              cadence['startsAt'] as String,
+              (v) => _cadenceTime(cadence, 'startsAt', v),
+            ),
+            _field(
+              'expires',
+              'Expires at (UTC ISO instant)',
+              cadence['expiresAt'] as String,
+              (v) => _cadenceTime(cadence, 'expiresAt', v),
+            ),
+            const Text(
+              'Missed checks are skipped. The current pilot supports daily or weekly cadence and a 15-minute due grace.',
+            ),
+          ],
+        ]),
+        _formGroup('Usage limits', [
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Finite cumulative limits'),
+            value: limits != null,
+            onChanged: enabled
+                ? (v) {
+                    _clearInputErrors([
+                      'checks',
+                      'notices',
+                      ...responsibilityBudgetDimensions.map(
+                        (key) => 'budget-$key',
+                      ),
+                    ]);
+                    _change(
+                      'limits',
+                      v
+                          ? {
+                              'maxChecks': 7,
+                              'maxNotifications': 0,
+                              'cumulative': {
+                                for (final key
+                                    in responsibilityBudgetDimensions)
+                                  key: key == 'wallTimeMs'
+                                      ? 210000
+                                      : key == 'toolCalls' || key == 'agents'
+                                      ? 7
+                                      : 0,
+                              },
+                            }
+                          : null,
+                    );
+                  }
+                : null,
           ),
-          _field(
-            'notices',
-            'Maximum in-app notices (0–1000)',
-            '${limits['maxNotifications']}',
-            (v) {
-              final n = int.tryParse(v);
-              if (n != null && n >= 0 && n <= 1000) {
-                _change('limits', {...limits, 'maxNotifications': n});
-              }
-            },
-            numeric: true,
-          ),
-          ExpansionTile(
-            title: const Text('Cumulative resource limits'),
-            children: [
-              for (final key in responsibilityBudgetDimensions)
-                _field(
-                  'budget-$key',
-                  key == 'costMicrousd' ? 'Cost (micro USD)' : key,
-                  '${responsibilityMap(limits['cumulative'])[key]}',
-                  (v) {
-                    final n = int.tryParse(v);
-                    if (n != null && n >= 0 && n <= 1000000000000) {
-                      _change('limits', {
-                        ...limits,
-                        'cumulative': {
-                          ...responsibilityMap(limits['cumulative']),
-                          key: n,
-                        },
-                      });
-                    }
-                  },
-                  numeric: true,
-                ),
-            ],
-          ),
-        ],
+          if (limits != null) ...[
+            _field(
+              'checks',
+              'Maximum checks (1–10000)',
+              '${limits['maxChecks']}',
+              (v) {
+                final n = int.tryParse(v);
+                if (n != null && n > 0 && n <= 10000) {
+                  _change('limits', {...limits, 'maxChecks': n});
+                }
+              },
+              numeric: true,
+            ),
+            _field(
+              'notices',
+              'Maximum in-app notices (0–1000)',
+              '${limits['maxNotifications']}',
+              (v) {
+                final n = int.tryParse(v);
+                if (n != null && n >= 0 && n <= 1000) {
+                  _change('limits', {...limits, 'maxNotifications': n});
+                }
+              },
+              numeric: true,
+            ),
+            ExpansionTile(
+              title: const Text('Cumulative resource limits'),
+              children: [
+                for (final key in responsibilityBudgetDimensions)
+                  _field(
+                    'budget-$key',
+                    key == 'costMicrousd' ? 'Cost (micro USD)' : key,
+                    '${responsibilityMap(limits['cumulative'])[key]}',
+                    (v) {
+                      final n = int.tryParse(v);
+                      if (n != null && n >= 0 && n <= 1000000000000) {
+                        _change('limits', {
+                          ...limits,
+                          'cumulative': {
+                            ...responsibilityMap(limits['cumulative']),
+                            key: n,
+                          },
+                        });
+                      }
+                    },
+                    numeric: true,
+                  ),
+              ],
+            ),
+          ],
+        ]),
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
           title: const Text('Material changes only, in this account’s inbox'),
@@ -1305,6 +1612,27 @@ class _ResponsibilityDraftEditorState
       ),
     );
   }
+
+  Widget _formGroup(String title, List<Widget> children) =>
+      usesMobilePresentation()
+      ? ExpansionTile(
+          title: Text(title),
+          tilePadding: EdgeInsets.zero,
+          maintainState: true,
+          expansionAnimationStyle: MediaQuery.disableAnimationsOf(context)
+              ? AnimationStyle.noAnimation
+              : const AnimationStyle(duration: Duration(milliseconds: 180)),
+          children: [
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: children,
+            ),
+          ],
+        )
+      : Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: children,
+        );
 
   void _cadenceTime(ResponsibilityJson cadence, String key, String value) {
     final parsed = DateTime.tryParse(value.trim());
@@ -1513,21 +1841,71 @@ class _Section extends StatelessWidget {
   final String title;
   final List<Widget> children;
   @override
-  Widget build(BuildContext context) => Card(
-    margin: const EdgeInsets.symmetric(vertical: 10),
-    child: Padding(
-      padding: const EdgeInsets.all(16),
-      child: Column(
+  Widget build(BuildContext context) {
+    if (usesMobilePresentation()) {
+      final label = switch (title) {
+        'Exact Responsibility' => 'Follow-up unavailable',
+        'Exact draft review' => 'Review the plan',
+        'Finite checks' => 'Check schedule and progress',
+        'Accepted observations and baseline' => 'What ATLAS found',
+        'Separate in-app notification authority' => 'Notification settings',
+        'Accepted action receipts' => 'Saved changes',
+        _ => title,
+      };
+      final secondary = const {
+        'Exact draft review',
+        'Finite checks',
+        'Accepted observations and baseline',
+        'Separate in-app notification authority',
+        'Accepted action receipts',
+      }.contains(title);
+      final content = Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text(title, style: Theme.of(context).textTheme.titleLarge),
-          const SizedBox(height: 12),
           for (final child in children)
-            Padding(padding: const EdgeInsets.only(bottom: 10), child: child),
+            Padding(padding: const EdgeInsets.only(bottom: 12), child: child),
         ],
+      );
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: secondary
+            ? ExpansionTile(
+                title: Text(label),
+                tilePadding: EdgeInsets.zero,
+                maintainState: true,
+                expansionAnimationStyle: MediaQuery.disableAnimationsOf(context)
+                    ? AnimationStyle.noAnimation
+                    : const AnimationStyle(
+                        duration: Duration(milliseconds: 180),
+                      ),
+                children: [content],
+              )
+            : Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(label, style: Theme.of(context).textTheme.titleLarge),
+                  const SizedBox(height: 16),
+                  content,
+                ],
+              ),
+      );
+    }
+    return Card(
+      margin: const EdgeInsets.symmetric(vertical: 10),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(title, style: Theme.of(context).textTheme.titleLarge),
+            const SizedBox(height: 12),
+            for (final child in children)
+              Padding(padding: const EdgeInsets.only(bottom: 10), child: child),
+          ],
+        ),
       ),
-    ),
-  );
+    );
+  }
 }
 
 class _Notice extends StatelessWidget {
@@ -1588,3 +1966,43 @@ String _label(Object? value) => switch (value) {
         .replaceAll('responsibility_', '')
         .replaceAll('_', ' '),
 };
+Widget _followupReviewDialog({
+  required Text title,
+  required Widget content,
+  List<Widget> actions = const [],
+  bool scrollable = false,
+}) {
+  if (!usesMobilePresentation())
+    return AlertDialog(
+      title: title,
+      content: content,
+      actions: actions,
+      scrollable: scrollable,
+    );
+  final body = content is SingleChildScrollView
+      ? content.child ?? const SizedBox.shrink()
+      : content;
+  return Dialog.fullscreen(
+    child: MobileFlowScaffold(
+      title: title.data ?? 'Review',
+      child: body,
+      footer: actions.isEmpty
+          ? null
+          : Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (actions.length > 1)
+                  Wrap(
+                    alignment: WrapAlignment.center,
+                    spacing: 12,
+                    runSpacing: 8,
+                    children: actions.take(actions.length - 1).toList(),
+                  ),
+                if (actions.length > 1) const SizedBox(height: 8),
+                actions.last,
+              ],
+            ),
+    ),
+  );
+}

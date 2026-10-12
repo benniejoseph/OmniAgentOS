@@ -81,7 +81,7 @@ async function POSTHandler(
   }
   let body: unknown;
   try {
-    body = await parseJsonBody(request, 48_000);
+    body = await parseJsonBody(request, 49_152);
   } catch (error) {
     return jsonBodyErrorResponse(error);
   }
@@ -92,7 +92,7 @@ async function POSTHandler(
       details: parsed.error.flatten(),
     }, { status: 400, headers: privateNoStoreHeaders });
   }
-  if (parsed.data.action === "compare" && auth.source === "mobile" && (auth.native?.clientContractVersion || 0) < 48) return Response.json({ error: "Text comparison requires native contract v48." }, { status: 409, headers: privateNoStoreHeaders });
+  if (parsed.data.action === "compare" && auth.source === "mobile" && (auth.native?.clientContractVersion || 0) < 56) return Response.json({ error: "Text comparison requires native contract v56." }, { status: 409, headers: privateNoStoreHeaders });
   const { id } = await context.params;
   const owner = adaptationOwner(auth);
   if (!owner) return canonicalActorUnavailableResponse();

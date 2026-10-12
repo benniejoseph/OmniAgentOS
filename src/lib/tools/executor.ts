@@ -33,22 +33,11 @@ import {
 } from "@/lib/app-services/missions";
 import { listRunsService } from "@/lib/app-services/runs";
 import { executeFirstPartyAppTool } from "@/lib/app-services/tool-dispatcher";
-import { reconcileSalesforceRecordWriteService } from "@/lib/app-services/salesforce-writes";
 import {
   sanitizeModelComputerObservation,
   type ModelComputerObservation,
 } from "@/lib/models/computer-observation";
-import {
-  isSalesforceRecordWriteToolId,
-  parseSalesforceRecordWriteInput,
-  providerRecordIdSha256,
-  salesforceWriteCommitSchema,
-  salesforceWriteConfigurationInputSchema,
-  salesforceWriteExpectedTargetStateSha256,
-  salesforceWriteExternalKey,
-  salesforceWriteOperationId,
-  salesforceWriteToolMetadata,
-} from "@/lib/customer-success/salesforce-write-contracts";
+import { ModelProviderError } from "@/lib/models/types";
 import {
   createGoogleCalendarEvent,
   googleCalendarCreateSchema,
@@ -83,6 +72,7 @@ import {
   holdMcpToolForReview,
 } from "@/lib/connectors/store";
 import { readResponseTextLimited } from "@/lib/http/body";
+import { localAndroidInputs } from "@/lib/local-computer/android-contracts";
 import {
   LOCAL_COMPUTER_TASK_AUTHORITY_REFUSED_ERROR_CODE,
   LOCAL_COMPUTER_TASK_AUTHORITY_UNATTESTED_ERROR_CODE,
@@ -194,7 +184,8 @@ import {
 import { getGovernedTool } from "@/lib/tools/registry";
 import { RISK3_QUORUM, type ToolDefinition, type ToolExecutionRecord } from "@/lib/tools/types";
 import { actionClassFor, recordActionOutcome } from "@/lib/trust/ledger";
-import { runLiveWebSearch } from "@/lib/web-search/search";
+import { getWebSearchFailureDiagnostics, runLiveWebSearch } from "@/lib/web-search/search";
+import { readPublicWebSource } from "@/lib/web-search/read";
 import type { AiUsageOperation, AiUsageScope } from "@/lib/usage/types";
 
 const LOCAL_COMPUTER_TOOL_RESULT = Symbol("local-computer-tool-result");
@@ -207,7 +198,8 @@ type LocalComputerToolResult = Readonly<{
     frontmostApplication?: Readonly<{
       name: string;
       bundleId?: string | null;
-      pid: number;
+      pid?: number;
+      packageName?: string;
     }>;
     accessibilitySnapshot?: string;
     screenshot?: Readonly<{
@@ -239,6 +231,13 @@ const webSearchSchema = z.object({
   limit: z.number().int().min(1).max(20).optional(),
   searchContextSize: z.enum(["low", "medium", "high"]).optional(),
   allowedDomains: z.array(z.string().min(1).max(253)).max(20).optional(),
+}).strict();
+
+const webReadSchema = z.object({
+  url: z.string().trim().min(1).max(4_000).url(),
+  query: z.string().trim().min(1).max(4_000).optional(),
+  allowedDomains: z.array(z.string().trim().toLowerCase().max(253)
+    .regex(/^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,63}$/)).max(10).optional(),
 }).strict();
 
 const localMacObserveSchema = z.object({
@@ -478,7 +477,7 @@ export class LocalComputerObservationExpiredError extends Error {
 
   constructor() {
     super(
-      "The local Mac observation was already consumed or did not include fresh visual evidence. Run local.macos.observe again with a new tool call.",
+      "The local device observation was already consumed or did not include fresh evidence. Observe the selected device again with a new tool call.",
     );
     this.name = "LocalComputerObservationExpiredError";
   }
@@ -639,10 +638,10 @@ export async function executeGovernedTool({
   // Task authority brings forward only an app the user named in their
   // request; switching to any other app goes to the user for review.
   const localComputerTaskAppReview =
-    registeredTool.id === "local.macos.activate_app" &&
+    ["local.macos.activate_app", "local.android.open_app"].includes(registeredTool.id) &&
     localComputerTaskAuthority !== undefined &&
     !localComputerTaskAppNamed(
-      input.bundleId,
+      input.bundleId || input.packageName,
       localComputerTaskAuthority.objective,
     );
   // A durable approval record is part of the execution identity even when the
@@ -835,46 +834,6 @@ export async function executeGovernedTool({
         ? publicToolExecution(record).output
         : null,
     };
-  }
-  if (
-    !dryRun &&
-    isSalesforceRecordWriteToolId(tool.id) &&
-    existingRecord?.status === "executing" &&
-    executionClaimToken &&
-    executionClaimTokenFromRecord(existingRecord) === executionClaimToken &&
-    Boolean(getToolExecutionEffectIntentV2(existingRecord))
-  ) {
-    let parsedSalesforceInput: Record<string, unknown>;
-    try {
-      parsedSalesforceInput = parseSalesforceRecordWriteInput(tool.id, input);
-    } catch (error) {
-      return completeClaimedInputValidationFailure(
-        existingRecord,
-        executionClaimToken,
-        error,
-        executionScope,
-        idempotencyKey,
-      );
-    }
-    const scopedSalesforceRequest = await resolveToolExecutionScopeRequest({
-      record: existingRecord,
-      toolInput: parsedSalesforceInput,
-      requestedScope: executionScope,
-      context,
-      executionClaimToken,
-      mcpSessionScope,
-    });
-    const reconciled = await reconcileExistingSalesforceEffect({
-      record: existingRecord,
-      tool,
-      preparedInput: parsedSalesforceInput,
-      effectBinding,
-      executionScope: scopedSalesforceRequest.executionScope,
-      context,
-    });
-    if (reconciled) {
-      return { record: reconciled, result: reconciled.output };
-    }
   }
   let preparedInput: Record<string, unknown>;
   try {
@@ -1131,7 +1090,7 @@ export async function executeGovernedTool({
         }
         throw error;
       }
-      if (tool.id === "local.macos.observe") {
+      if (["local.macos.observe", "local.android.observe"].includes(tool.id)) {
         throw new LocalComputerObservationExpiredError();
       }
       const reconciled = (await reconcileExistingMemoryWriteEffect({
@@ -1169,13 +1128,6 @@ export async function executeGovernedTool({
         executionScope: scopedRequest.executionScope,
         context,
         agentRunId,
-      })) ?? (await reconcileExistingSalesforceEffect({
-        record: existing,
-        tool,
-        preparedInput,
-        effectBinding,
-        executionScope: scopedRequest.executionScope,
-        context,
       }));
       if (
         !reconciled &&
@@ -1394,7 +1346,7 @@ export async function executeGovernedTool({
   const effectiveApproved = authority.approved;
   const policyLeaseAuthority = authority.source === "policy_lease";
   // With no reviewed approval beside it, task authority alone lets this
-  // action run. The Mac must then check the real on-screen target itself;
+  // action run. The device must then check the real on-screen target itself;
   // when it cannot, the action goes to the user for review instead.
   const localComputerTaskAuthorityOnly =
     authority.source === "task_authority";
@@ -1410,7 +1362,7 @@ export async function executeGovernedTool({
   const approvalReviewReason =
     localComputerTaskAuthorityDecision.reviewReason ??
     (localComputerTaskAppReview
-      ? "This Mac task authority switches only to apps named in your request."
+      ? "ATLAS needs your approval to open an app that you did not name in this request."
       : taskAuthorityReviewReason);
   const baseRecord = {
     tenantId: existingRecord?.tenantId || context?.tenantId,
@@ -1867,13 +1819,6 @@ export async function executeGovernedTool({
         executionScope: scopedRequest.executionScope,
         context,
         agentRunId,
-      })) ?? (await reconcileExistingSalesforceEffect({
-        record: claim.record,
-        tool,
-        preparedInput,
-        effectBinding,
-        executionScope: scopedRequest.executionScope,
-        context,
       }));
       const recovered =
         !intendedEffectContext &&
@@ -2109,7 +2054,7 @@ export async function executeGovernedTool({
     }
     const localComputerResult = asLocalComputerToolResult(result);
     if (
-      tool.id === "local.macos.observe" &&
+      ["local.macos.observe", "local.android.observe"].includes(tool.id) &&
       !localComputerResult?.observation
     ) {
       throw new LocalComputerObservationExpiredError();
@@ -2230,7 +2175,16 @@ export async function executeGovernedTool({
     const record = createRecord({
       ...baseRecord,
       status: "failed" as const,
-      output: { error: message },
+      output: {
+        error: message,
+        ...(tool.id === "web.search" && error instanceof ModelProviderError
+          ? {
+              failureKind: error.kind,
+              retryable: error.retryable,
+              providerDiagnostics: getWebSearchFailureDiagnostics(error),
+            }
+          : {}),
+      },
       reason: message,
       completedAt: new Date().toISOString(),
     });
@@ -3100,96 +3054,6 @@ async function resumeClaimedGoogleWorkspaceCreationEffect(input: {
   }
 }
 
-async function reconcileExistingSalesforceEffect(input: {
-  record: ToolExecutionRecord;
-  tool: ToolDefinition;
-  preparedInput: Record<string, unknown>;
-  effectBinding?: GovernedToolEffectBinding;
-  executionScope?: ExecutionScope;
-  context?: SecurityContext;
-}): Promise<ToolExecutionRecord | undefined> {
-  if (
-    input.record.status !== "executing" ||
-    !isSalesforceRecordWriteToolId(input.tool.id) ||
-    !input.executionScope?.initiatingActorId ||
-    !input.context
-  ) return undefined;
-  const claimToken = executionClaimTokenFromRecord(input.record);
-  if (!claimToken) return undefined;
-  let intent: EffectIntentV2;
-  try {
-    intent = getToolExecutionEffectIntentV2(input.record) as EffectIntentV2;
-    const material = prepareProviderEffectMaterial(
-      input.tool,
-      input.preparedInput,
-      input.record.id,
-    );
-    if (!material) return undefined;
-    const expected = buildProviderEffectIntent({
-      record: input.record,
-      tool: input.tool,
-      material,
-      executionScope: input.executionScope,
-      effectBinding: input.effectBinding,
-    });
-    if (intent.effectIntentSha256 !== expected.effectIntentSha256) {
-      throw new Error(
-        "Salesforce reconciliation does not match the persisted effect intent.",
-      );
-    }
-  } catch (error) {
-    throw new EffectReceiptFinalizationError({ cause: error });
-  }
-  let service;
-  try {
-    service = await reconcileSalesforceRecordWriteService(
-      toolAppServiceCaller(
-        input.context,
-        input.executionScope,
-        input.record.id,
-      ),
-      input.tool.id,
-      input.preparedInput,
-    );
-  } catch (error) {
-    throw new EffectReceiptFinalizationError({ cause: error });
-  }
-  if (!service) return undefined;
-  const result = {
-    ...service.data,
-    serviceReceipt: service.receipt,
-  };
-  let effectReceipt: ToolExecutionRecord["effectReceipt"];
-  try {
-    effectReceipt = finalizeProviderEffectIntent(input.tool, intent, result);
-  } catch (error) {
-    throw new EffectReceiptFinalizationError({ cause: error });
-  }
-  const terminalRecord: ToolExecutionRecord = {
-    ...input.record,
-    status: "executed",
-    output: redactSensitive(result),
-    effectReceipt,
-    completedAt: new Date().toISOString(),
-  };
-  try {
-    const saved = await completeClaimedToolExecution(
-      terminalRecord,
-      claimToken,
-      { executionScope: input.executionScope },
-    );
-    if (saved) return saved;
-    const current = await getToolExecution(input.record.id, {
-      tenantId: input.executionScope.tenantId,
-    });
-    return current?.status === "executed" && current.effectReceipt
-      ? current
-      : undefined;
-  } catch (error) {
-    throw new EffectReceiptFinalizationError({ cause: error });
-  }
-}
-
 async function reconcileExistingMemoryForgetEffect(input: {
   record: ToolExecutionRecord;
   tool: ToolDefinition;
@@ -3316,9 +3180,29 @@ const LOCAL_COMPUTER_TOOL_ACTIONS = {
   "local.macos.key": "key",
   "local.macos.scroll": "scroll",
   "local.macos.command.run": "run_command",
+  "local.android.observe": "observe",
+  "local.android.list_apps": "list_apps",
+  "local.android.open_app": "open_app",
+  "local.android.press": "press",
+  "local.android.tap": "tap",
+  "local.android.type": "type",
+  "local.android.scroll": "scroll",
+  "local.android.swipe": "swipe",
+  "local.android.back": "back",
+  "local.android.home": "home",
+
 } as const;
 
 const LOCAL_COMPUTER_TASK_AUTHORIZED_TOOL_IDS = new Set([
+  "local.android.open_app",
+  "local.android.press",
+  "local.android.tap",
+  "local.android.type",
+  "local.android.scroll",
+  "local.android.swipe",
+  "local.android.back",
+  "local.android.home",
+
   "local.macos.activate_app",
   "local.macos.open_url",
   "local.macos.press",
@@ -3539,13 +3423,15 @@ function decideLocalComputerTaskAuthority(input: {
     return { covered: false };
   }
 
-  if (input.toolId === "local.macos.type") {
+  if (input.toolId.startsWith("local.android.") && input.toolId !== "local.android.open_app" &&
+      (typeof input.preparedInput.interactionPurpose !== "string" || !LOCAL_COMPUTER_SAFE_INTERACTION_PURPOSES.has(input.preparedInput.interactionPurpose))) return { covered: false };
+  if (input.toolId === "local.macos.type" || input.toolId === "local.android.type") {
     return localComputerTaskTextCovered(input.preparedInput.text)
       ? { covered: true }
       : {
           covered: false,
           reviewReason:
-            `This Mac task authority types only short single-line text (up to ${LOCAL_COMPUTER_TASK_MAX_TYPED_CHARACTERS} characters); line breaks, tabs, and control characters can send a message or move focus.`,
+            `Device task authority types only short single-line text (up to ${LOCAL_COMPUTER_TASK_MAX_TYPED_CHARACTERS} characters); line breaks, tabs, and control characters can send a message or move focus.`,
         };
   }
 
@@ -3592,10 +3478,10 @@ function decideLocalComputerTaskAuthority(input: {
 function localComputerTaskAuthorityReviewReason(error: unknown) {
   if (!(error instanceof LocalComputerCommandError)) return undefined;
   if (error.code === LOCAL_COMPUTER_TASK_AUTHORITY_UNATTESTED_ERROR_CODE) {
-    return "This version of the Mac app cannot check what a task-authorized action would touch on screen, so this one needs your review.";
+    return "This app version cannot check what a task-authorized action would touch on screen, so this one needs your review.";
   }
   if (error.code === LOCAL_COMPUTER_TASK_AUTHORITY_REFUSED_ERROR_CODE) {
-    return "Your Mac could not confirm that what this action would touch on screen is covered by task authority, so this one needs your review.";
+    return "Your device could not confirm that what this action would touch on screen is covered by task authority, so this one needs your review.";
   }
   return undefined;
 }
@@ -3631,7 +3517,7 @@ function localComputerModelObservation(input: {
     canonicalJsonSha256(input.terminalOutput || {});
   return sanitizeModelComputerObservation({
     schemaVersion: 1,
-    source: "local_macos",
+    source: input.operation.startsWith("local.android.") ? "local_android" : "local_macos",
     trust: "untrusted_data",
     executionId: input.executionId,
     operation: input.operation,
@@ -3641,7 +3527,8 @@ function localComputerModelObservation(input: {
           applicationState: {
             name: application.name,
             ...(application.bundleId ? { bundleId: application.bundleId } : {}),
-            pid: application.pid,
+            ...(application.pid ? { pid: application.pid } : {}),
+            ...(application.packageName ? { packageName: application.packageName } : {}),
           },
         }
       : {}),
@@ -4005,7 +3892,6 @@ function prepareMemoryWriteEffectContext(input: {
     if (
       input.tool.id === "calendar.create" ||
       isGoogleWorkspaceMutationToolId(input.tool.id) ||
-      isSalesforceRecordWriteToolId(input.tool.id) ||
       input.tool.id === "http.request" ||
       input.tool.category === "mcp" ||
       input.tool.category === "openapi"
@@ -4399,6 +4285,7 @@ async function runTool(
     }
     const completed = await executeLocalComputerCommand({
       action: localComputerAction,
+      platform: tool.id.startsWith("local.android.") ? "android" : "macos",
       toolInput: parsed,
       executionId: idempotencyKey,
       runId: agentRunId,
@@ -4485,6 +4372,11 @@ async function runTool(
       abortSignal,
       usageScope: aiUsageScope("web_search", "tool.web.search"),
     });
+  }
+
+  if (tool.id === "web.read") {
+    const { url, query, allowedDomains } = webReadSchema.parse(parsed);
+    return readPublicWebSource({ url, query, allowedDomains, abortSignal });
   }
 
   if (tool.id === "media.image.generate") {
@@ -5081,7 +4973,6 @@ type ProviderEffectMaterial = Readonly<{
     | "google_calendar_event"
     | "google_workspace_resource"
     | "moltbook_action"
-    | "salesforce_record"
     | "mcp_operation"
     | "openapi_operation";
   targetId: string;
@@ -5158,37 +5049,6 @@ function prepareProviderEffectMaterial(
   input: Record<string, unknown>,
   executionId?: string,
 ): ProviderEffectMaterial | undefined {
-  if (isSalesforceRecordWriteToolId(tool.id)) {
-    if (!executionId) return undefined;
-    const parsed = parseSalesforceRecordWriteInput(tool.id, input);
-    const metadata = salesforceWriteToolMetadata(tool.id);
-    const inputSha256 = toolInputSha256(parsed);
-    const recordIdentity = metadata.action === "create"
-      ? { externalKey: salesforceWriteExternalKey(executionId) }
-      : { providerRecordIdSha256: providerRecordIdSha256(parsed.recordId || "") };
-    const targetSha256 = canonicalJsonSha256({
-      targetType: "salesforce_record",
-      objectType: metadata.objectType,
-      action: metadata.action,
-      accountId: parsed.accountId,
-      recordIdentity,
-    });
-    return Object.freeze({
-      inputSha256,
-      approvalBindingSha256: approvalMaterialBindingSha256({
-        targetSha256,
-        inputSha256,
-      }),
-      targetType: "salesforce_record",
-      targetId: `salesforce_record:${metadata.objectType}:${targetSha256.slice(0, 52)}`,
-      targetSha256,
-      expectedTargetStateSha256: salesforceWriteExpectedTargetStateSha256({
-        toolId: tool.id,
-        value: parsed,
-        executionId,
-      }),
-    });
-  }
   if (tool.id === "calendar.create") {
     if (!executionId) return undefined;
     const parsed = googleCalendarCreateSchema.parse(input);
@@ -5427,26 +5287,6 @@ function finalizeProviderEffectIntent(
   intent: EffectIntentV2,
   resultValue: unknown,
 ) {
-  if (isSalesforceRecordWriteToolId(tool.id)) {
-    const result = asObjectRecord(resultValue);
-    const commit = salesforceWriteCommitSchema.parse(result.commit);
-    if (commit.toolId !== tool.id ||
-        commit.operationId !== salesforceWriteOperationId(intent.executionId) ||
-        commit.expectedTargetStateSha256 !== intent.expectedTargetStateSha256) {
-      throw new Error(
-        "Salesforce write receipt does not match its persisted effect intent.",
-      );
-    }
-    return finalizeEffectIntentV2(intent, {
-      providerAcknowledgement: commit.providerAcknowledgement,
-      providerAcknowledgementId: commit.providerAcknowledgementId,
-      providerAcknowledgementSha256: commit.providerAcknowledgementSha256,
-      verificationMethod: "read_after_write",
-      verificationState: commit.verificationState,
-      verificationReasonCode: commit.verificationReasonCode,
-      observedTargetStateSha256: commit.observedTargetStateSha256,
-    });
-  }
   if (tool.id === "calendar.create") {
     const result = z.object({
       connectionId: z.string().uuid(),
@@ -5768,6 +5608,10 @@ function toolAppServiceCaller(
 }
 
 function parseInput(tool: ToolDefinition, input: Record<string, unknown>) {
+  if (tool.id === "local.android.observe") {
+    return localAndroidInputs.observe.parse(input);
+  }
+
   if (tool.id === "local.macos.observe") {
     return localMacObserveSchema.parse(input);
   }
@@ -5786,6 +5630,10 @@ function parseInput(tool: ToolDefinition, input: Record<string, unknown>) {
 
   if (tool.id === "web.search") {
     return webSearchSchema.parse(input);
+  }
+
+  if (tool.id === "web.read") {
+    return webReadSchema.parse(input);
   }
 
   if (tool.id === "media.image.generate") return mediaImageGenerateSchema.parse(input);
@@ -5861,14 +5709,6 @@ function parseInput(tool: ToolDefinition, input: Record<string, unknown>) {
     return parseMoltbookToolInput(tool.id, input);
   }
 
-  if (isSalesforceRecordWriteToolId(tool.id)) {
-    return parseSalesforceRecordWriteInput(tool.id, input);
-  }
-
-  if (tool.id === "app.customer_accounts.salesforce.writes.configure") {
-    return salesforceWriteConfigurationInputSchema.parse(input);
-  }
-
   if (tool.category === "mcp" || tool.category === "openapi") {
     validateConnectorInput(tool.inputSchema, input);
     return input;
@@ -5878,14 +5718,6 @@ function parseInput(tool: ToolDefinition, input: Record<string, unknown>) {
 }
 
 function describeSideEffects(toolId: string) {
-  if (isSalesforceRecordWriteToolId(toolId)) {
-    return [
-      "creates or updates one allowlisted Salesforce record under the exact linked Account 360",
-      "requires an explicit account-owner activation and a persisted human approval",
-      "uses deterministic upsert or exact revision fencing so retries cannot duplicate writes",
-      "requires read-after-write verification and retains only hashed provider evidence",
-    ];
-  }
   if (toolId.startsWith("app.")) {
     return ["tenant-and-actor-scoped first-party application operation through the shared service boundary"];
   }
@@ -5978,6 +5810,10 @@ function describeSideEffects(toolId: string) {
 
   if (toolId === "web.search") {
     return ["read-only live web search", "uses OpenAI Responses web_search hosted tool", "stores source metadata in the tool audit ledger"];
+  }
+
+  if (toolId === "web.read") {
+    return ["read-only public source reading", "SSRF-guarded public URLs and redirects; no authentication or script execution", "returns bounded untrusted source text and citation metadata"];
   }
 
   if (toolId === "http.request") {

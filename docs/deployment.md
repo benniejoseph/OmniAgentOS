@@ -4,6 +4,136 @@ Production uses Node.js 24.x and npm 11.x across local metadata, CI, and the wor
 
 ## Required production configuration
 
+Mobile presentation **1.31.0+96** (Android arm64 version code **2096**) is a
+native-only release. It keeps contract **v54**, migrations **250–251**, and the
+compatible deployed web/worker unchanged. Build and distribute the signed
+Android update with the existing signing identity and a data-preserving
+installation. Do not reinstall or clear app storage to update the interface.
+Saved sessions, capture drafts, recording consent, phone-control permissions,
+the chosen calls folder and the existing nightly schedule retain their current
+owners and storage. Android screenshot protection stays enabled; the separate
+local design preview does not load live data. See the
+[mobile design guide](native-mobile-design.md) for screen coverage and limits.
+
+Listen call syncing also requires migration **251**,
+`20261012123000_listen_media_owner_scope.sql` (`listen_media_owner_scope_v1`).
+It repairs the rejected media-head write after an upload closes: the existing
+canonical owner policy additionally recognizes only an exact accepted Listen
+source and its current verified account identity. It preserves tenant/actor
+isolation, native meeting ownership, source tombstones and the **272** tenant
+tables. Apply it after migration 250 through the same encrypted-backup procedure;
+the phone can retry its saved uploads without changing their source identities.
+The paired server update also displays pending transcription as valid processing
+metadata and records content-free completion-stage diagnostics. Closing a Listen
+upload, restoring/queuing its exact processing job and creating its media head now
+commit together, so workers cannot claim an incomplete admission. A pre-fix
+orphan can recover only while its media head is absent; existing terminal media
+and segment transcription attempts are not restarted. Native contract v54 and
+the installed phone upload protocol are unchanged.
+Keep `/api/mobile/listen/ingest` behind a temporary retryable admission hold
+until the migration and corrected paired release are both live. Drain requests
+already in flight before applying the migration. The old completion handler must
+not create a head against an exhausted orphan job between those stages. Do not
+use 401/403 for this hold: Android interprets them as expired processing access.
+Remove only the owned hold after the exact web/worker candidate is verified.
+
+Phone Listen and nightly call notes introduce native contract **v54** and migration
+**250**, `20261010180000_listen_capture.sql` (`listen_capture_v1`). Apply the
+additive migration through the existing encrypted-backup/quiescence procedure,
+then deploy the paired web/worker before installing the Android build. The two
+new tenant/actor-scoped tables are `omni_listen_grants` and `omni_listen_sources`;
+the expected tenant-table inventory increases from **270 to 272**. They are
+classified as migration-scoped tables so their restrictive actor policies are
+preserved. Its narrow `omni_retire_listen_memories_v1` function also retires the
+canonical private source summary, graph references and retrieval traces when a
+recording's Knowledge source is deleted or replaced. Published v53/v52 contract
+documents remain byte-frozen and supported.
+The retired v47 publication now retains its already published compatibility
+metadata; `/api/mobile/contracts` is the current compatibility source.
+
+Listen uses the existing capture media jobs, configured diarized transcription,
+model routing, Knowledge indexing and durable workers. No additional provider
+credential or scheduler service is required. Android retains only the narrow,
+encrypted upload grant for background work; logout, device/session revocation,
+membership/role changes and expiry reject further uploads. Enable background
+processing from Listen while authenticated, grant the chosen calls folder through
+Android's picker, then enable the 23:30 India-time scan. A deferred or missed run
+catches up after Android allows execution and connectivity returns. Do not grant
+microphone or storage permissions with ADB, start recording during setup, or
+claim an exact 23:30 execution guarantee. Keep call originals on the phone;
+server raw audio is removed after successful processing.
+
+Rollback keeps the additive tables and tombstones. Revoke/disable Listen grants
+and disable the phone schedule before restoring a v53 server that lacks these
+routes. Do not delete source tombstones to “retry” imports: that would restore
+conversations the owner removed. Failed processing retains its saved chunks;
+status checks never silently restart a terminal failed provider operation.
+
+Android screen observation now uses its canonical Android input schema in the
+governed executor. The previous shared Mac parser added `includeScreenshot`,
+which Android correctly rejected before native dispatch. This server-only fix
+preserves native contract **v53**, migration **249**, and installed Android
+**1.28.2+91** / Mac **1.28.1+90**. Deploy the paired web/worker; no native rebuild
+or migration is needed. Validate with a multi-step This phone request that opens
+an app, observes its screen, and acts on the fresh observation.
+
+Android app **1.28.2+91** fixes the retained Flutter engine's ownership when
+Asael is reopened. The engine is registered before Activity creation and the
+Activity uses a cached, non-destroying Flutter fragment; this prevents a second
+Activity from crashing the process and its phone-control Accessibility service.
+The Android-only patch retains contract **v53**, migration **249**, and the
+compatible deployed web/worker. Mac **1.28.1+90** remains current because its
+runtime is unchanged. Existing Android Accessibility permission is preserved;
+confirm the service reconnects before enabling This phone and checking a request.
+
+Native app **1.28.1+90** fixes sign-in after clearing or expiring a saved
+session when biometric protection is enabled. Credential requests do not read
+the previous session's protected bearer token, and biometric refusals remain
+distinct from connection failures. Authenticated requests retain their existing
+biometric protection. This native-only patch keeps contract **v53**, migration
+**249**, and the already deployed web/worker unchanged; distribute the signed
+Android and Mac upgrades against that compatible backend.
+
+Private Android phone control uses native contract **v53**, app **1.28.0+89**,
+and migration **249** (`android_local_control_v1`). The migration extends existing
+device/action constraints and binds queued actions to the correct platform; the
+tenant-table inventory remains 270. Apply it with the encrypted-backup and
+quiescence procedure, then deploy the paired server/worker before installing the
+Android update. Published v52/v51 artifacts stay byte-frozen and supported.
+Android actions require v53 and the current phone's explicit foreground control
+session. Mac clients retain their own target and grants. See
+[ATLAS phone control](atlas-phone-control.md).
+
+ATLAS conversation controls use native contract **v52** and app **1.27.0+86**.
+Deploy the paired server/worker before installing the updated Mac build. This
+release adds no database migration; migration 248 and the 270-table inventory
+remain current. Native v51/v50 artifacts stay byte-frozen and supported. New Mac
+keyboard/app-discovery options and command deadlines above 30 seconds require
+v52. See [conversation controls](atlas-conversation-controls.md).
+
+About me adds migration **248** (`20261009203000_personal_profiles.sql`) and
+native contract **v51**. Apply the additive migration with the existing
+encrypted-backup and quiescence procedure before deploying the candidate.
+The two new tenant/actor-private tables hold current profile values and
+content-free save receipts. A prior server remains compatible with ordinary
+traffic, but its release inventory does not classify the new tables; use the
+exact forward-schema recovery pin for that previous/candidate pair. Native
+v50/v49 contracts remain byte-frozen. Profile writes require v51's dedicated
+capability; existing clients keep their previous operations. App 1.26.0+85
+adds the shared profile editor. See [About me](personal-context.md).
+
+Due Google connections now have a separate bounded maintenance pass before
+historical tenant pagination, so stale evaluation tenants cannot postpone an
+owner's source refresh. It selects at most two due tenants, retains the normal
+30-minute freshness rule, backoff, owner scope and sync leases, and reserves at
+most one minute of the existing maintenance budget. In-progress backfills stay
+partial; this is not proof that an entire mailbox has been indexed.
+
+Accounts, Customer Account 360, and the Salesforce integration were retired on
+2026-10-07. Their product routes, governed tools, background sync, and web/native
+UI are withdrawn. Historical migrations and protected records are retained.
+
+
 Set these through the platform secret/configuration store, never in source control:
 
 - `DATABASE_URL`: durable TLS Postgres. Production without it is blocked unless `OMNIAGENT_ALLOW_DEMO_STORAGE=true`; that override is only for disposable demos.
@@ -30,9 +160,6 @@ Set these through the platform secret/configuration store, never in source contr
 - `OMNIAGENT_PRIVATE_ACCOUNT_ALLOWLIST_JSON`, `GOOGLE_OAUTH_CLIENT_ID`, and `GOOGLE_OAUTH_CLIENT_SECRET`: the server-owned private account admission policy and Google OAuth web client. Each allowlisted email maps to one distinct immutable tenant and must set `tenantMode` to `existing` only when intentionally adopting a known legacy tenant, or `new` when the tenant must not already exist at first provisioning. Register both `${NEXT_PUBLIC_APP_URL}/api/auth/google/callback` for Asael sign-in and `${NEXT_PUBLIC_APP_URL}/api/oauth/google/callback` for the signed-in account's Workspace connection. `OMNIAGENT_OWNER_EMAIL` remains a single-account compatibility fallback only when the JSON allowlist is unset.
 - `OMNIAGENT_REPORT_SIGNING_SECRET`: production signing key for evaluation evidence. Set `OMNIAGENT_REPORT_SIGNING_KEY_ID`; use `OMNIAGENT_REPORT_SIGNING_KEYS` JSON during rotation.
 - `OMNIAGENT_ACCESS_REQUEST_FILE`: optional durable fallback path for local/non-database deployments. With `DATABASE_URL`, access requests are tenant-scoped in Postgres and appear in the admin Inbox for review.
-- `SALESFORCE_OAUTH_CLIENT_ID` and `SALESFORCE_OAUTH_CLIENT_SECRET`: server-only credentials for the read-only Salesforce Connected App. Register `${NEXT_PUBLIC_APP_URL}/api/oauth/salesforce/callback` and grant only `api` plus `refresh_token`; leaving either value unset keeps the Account 360 Salesforce health state at `configuration_required`.
-- `SALESFORCE_WEBHOOK_SECRET`: independent server-only HMAC key for the optional Salesforce CDC relay. The relay signs `${unixSeconds}.${rawBody}` with SHA-256, sends `x-asael-salesforce-signature: sha256=<hex>` and `x-asael-salesforce-timestamp`, and must arrive within five minutes. Do not reuse the Connected App secret.
-- `SALESFORCE_WRITE_ENABLED` and `SALESFORCE_WRITE_EXTERNAL_ID_FIELD`: independent fail-closed gate for P10.11 provider mutations. Leave the gate `false` until migration 139 is installed and the named `__c` field exists as a unique, createable, updateable External ID on Contact, Task, Case, and Opportunity. The application rechecks provider describe metadata before every create; setting these variables does not activate any Account 360 or bypass its separate owner approval.
 - `NEXT_PUBLIC_APP_URL`: canonical HTTPS origin. Set it to exactly `https://asael.bennierichard.com`. It is public and build-inlined, not a secret.
 - `OMNIAGENT_NATIVE_MIN_ANDROID_VERSION`, `OMNIAGENT_NATIVE_MIN_IOS_VERSION`, and `OMNIAGENT_NATIVE_MIN_MACOS_VERSION`: optional stable `major.minor.patch` minimums for native compatibility telemetry. An absent or empty value defaults to `1.0.0`; a malformed configured value invalidates the policy and holds adoption unavailable. These settings do not authorize Agent enrollment.
 
@@ -236,14 +363,13 @@ exact Work/Memory opening. It adds no mutation capability or migration; provider
 availability and exact current authorization remain authoritative. Native search
 uses cancellable owner-bound reads and the existing detail/mutation controllers.
 
-V38 adds reviewed private Memory promotion, Account workflow setup/outcomes and
-manual facts, custom Agent deletion and Skill mutations, already-linked Meeting
-recording processing, Salesforce sync/reconciliation/disconnect, source-map
+V38 added reviewed private Memory promotion, custom Agent deletion and Skill
+mutations, already-linked Meeting recording processing, source-map
 decisions/local source deletion, private graph inspection, deterministic
 maintenance/rebuild and explicit single-document cognition builds. Each new
 mutation has its own v38 capability floor and requires current domain authority.
 Existing floors remain: Companion 31, Responsibilities 32, Meetings 33,
-Account/Memory records 34, reconciliation 35, consent/Calendar 36 and health 37.
+Memory records 34, reconciliation 35 and consent/Calendar 36.
 Source-audio access and binary recording upload remain outside this publication.
 
 The earlier v39 rollout required a supporting server before distributing builds 1.23.17+52,
@@ -283,28 +409,17 @@ are checked around provider work. Media processing and Knowledge ingestion are
 reported separately; an accepted queue item is not evidence of a completed
 transcript or index. Exact acceptance reads and matching replay do not requeue.
 
-The Account journal preserves record and health recovery while adding workflow
-and manual fact actions under the same single pending-action boundary. Existing
-encrypted owner/role binding is unchanged. Unknown writes retain their original
-key and reviewed request, with GET-only recovery; navigation or a new review
-cannot reset uncertain admission. Agent/Skill controls use the existing encrypted
-Specialist recovery store with the same rule. These changes add no agent-tool
-authority: agent effects continue through the governed executor.
+Agent/Skill controls use the existing encrypted Specialist recovery store.
+Unknown writes retain their original key and reviewed request, with GET-only
+recovery; navigation or a new review cannot reset uncertain admission. Agent
+effects continue through the governed executor.
 
-Migration 226 adds nullable exact request intent/digest columns to immutable
-health score revisions, preserving legacy NULL/NULL writers. Its bounded CHECK
-binds owner, Workspace, reviewed Account and empty model suggestions to the score.
-No table, grant or RLS policy is added. Apply and verify before serving v37;
-rollback retains the columns and accepted evidence. Health admission uses the
-existing Account/health locks and transaction, and proves evaluation absence
-alongside current owner/membership authority. Exact GET recovery remains read-only.
-
-The native Account journal adds a version 2 health section while retaining its
-existing create/revise fields, encrypted address and strict role/actor binding.
-Only one pending Account action is admitted. Uncertain responses or storage
-acknowledgements hold the original request; recovery reads its exact receipt.
-Changing roles does not automatically adopt a journal encrypted under another
-role. Full score evidence stays outside this compact recovery record.
+Historical migration 226 adds nullable exact request intent/digest columns to
+immutable health score revisions, preserving legacy NULL/NULL writers. Its
+bounded CHECK binds owner, Workspace, reviewed Account and empty model
+suggestions to the score. No table, grant or RLS policy is added. Keep the
+checksum-linked migration and accepted evidence during rollout and rollback;
+the former health admission and native journal paths are retired.
 
 Personal recall uses the existing immutable consent history and owner lock;
 migration 225 repairs the missing execution grant on its existing immutable row
@@ -1483,12 +1598,12 @@ Keep `OPENAI_API_KEY` only on Vercel; the normal release shell does not need it,
 
 - Models and retrieval: `OPENAI_AGENT_MODEL`, `OPENAI_WEB_SEARCH_MODEL`, `OPENAI_EMBEDDING_MODEL`, `OPENAI_EMBEDDING_DIMENSIONS`, `OMNIAGENT_OPENAI_GATEWAY_URL`, `OMNIAGENT_OPENAI_GATEWAY_TOKEN`, optional Fly-only `OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN`, Fly-only `OMNIAGENT_OPENAI_UPSTREAM_HOST`, `OMNIAGENT_OPENAI_GATEWAY_HEALTH_TIMEOUT_MS`, `OMNIAGENT_WEB_SEARCH_TIMEOUT_MS`, and the optional Bedrock fallback group (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_REGION`, `AWS_BEDROCK_MODEL`, `AWS_BEDROCK_FAST_MODEL`, `AWS_BEDROCK_REASONING_MODEL`).
 - Database reads: `OMNIAGENT_DATABASE_POOL_MAX` bounds each process's runtime and maintenance pools. Durable production runtimes default to 4 so overlapping requests cannot be starved by a long workflow tick; size them against the upstream pooler's connection budget. Vercel is intentionally stricter: each runtime or maintenance pool inside a route bundle/isolate enforces a maximum of 1 connection even when the generic override is higher. Its postgres.js `idle_timeout` and `max_lifetime` timers are disabled: Vercel may freeze an isolate while a JavaScript connection timer is armed, then thaw it after the deadline while a new reservation is starting. Avoiding that timer race keeps the one-slot pool reusable; Vercel's isolate lifecycle and connection failures still retire sockets. Durable runtimes retain the 20-second idle timeout and postgres.js's randomized maximum-lifetime default. The single-slot Vercel pools prevent independent serverless functions from multiplying Supavisor frontends during burst traffic; work inside one warm pool is serialized through the existing admission queue, and bounded Workspace Summary reads are issued sequentially so a cold Today request cannot queue its own siblings past the acquisition deadline. Runtimes with a larger pool retain parallel summary reads. `OMNIAGENT_DATABASE_ACQUIRE_TIMEOUT_MS` bounds that cancellable application queue plus postgres.js pool-slot reservation for every tenant- and system-scoped query or callback transaction (20s by default, clamped to 0.5-30s). The 20s ceiling remains a rollback-safe bound from the former IAD-to-Singapore topology; warm requests do not wait for it. An independent `sin1` canary completed the security and tenant-scoped connector/workflow CRUD checks with a 15.7ms database `Server-Timing` sample, validating the regional direction while remaining too small a sample to justify lowering the rollback bound. Re-baseline it only after sustained production measurements prove a tighter safe value. Admission waiters that time out never enter postgres.js. If the sole Vercel reservation itself times out, Asael synchronously detaches that exact raw client and asks postgres.js to destroy it; queued reservations reject and release their existing admission permits, while the next request creates a fresh client and gate. This recovery is deliberately limited to Vercel's one-slot pools so one timeout never aborts valid concurrent work in a durable runtime. Every tenant- and system-scoped transaction applies `OMNIAGENT_DATABASE_STATEMENT_TIMEOUT_MS` (15s by default, clamped to 1-60s), `OMNIAGENT_DATABASE_LOCK_TIMEOUT_MS` (1s by default, clamped to 0.1-10s and never above the statement timeout), and `OMNIAGENT_DATABASE_IDLE_TRANSACTION_TIMEOUT_MS` (15s by default, clamped to 1-60s) on the database server. Together they bound statement execution, lock acquisition, and idle gaps between statements after a connection is leased; an abandoned transaction is terminated so its lease can be discarded and released. Request/platform deadlines remain responsible for other transport waits. `OMNIAGENT_SCHEMA_VERIFICATION_TIMEOUT_MS` is the production migration-marker verification watchdog and resets timed-out checks so later requests can retry. `OMNIAGENT_SETTINGS_CAPABILITY_TIMEOUT_MS` bounds the tenant-scoped Settings response and returns explicit unavailable fields when the database misses that deadline; `OMNIAGENT_SETTINGS_CAPABILITY_STATEMENT_TIMEOUT_MS` may lower the shared database deadline for the aggregate query. `OMNIAGENT_TODAY_SNAPSHOT_STATEMENT_TIMEOUT_MS` provides the same shorter override for the single owner-scoped Today projection query.
-- Agent limits: `OMNIAGENT_AGENT_MAX_TOOL_STEPS`, the independent ordinary-run `OMNIAGENT_AGENT_MAX_MODEL_TURNS`, the installed-Mac-only `OMNIAGENT_LOCAL_COMPUTER_MAX_TOOL_STEPS`, `OMNIAGENT_AGENT_MAX_MESSAGE_CHARS`, `OMNIAGENT_AGENT_MAX_MESSAGES`, `OMNIAGENT_AGENT_RUNS_PER_MINUTE`, `OMNIAGENT_AGENT_REASONING_EFFORT`, `OMNIAGENT_AGENT_MAX_OUTPUT_TOKENS`, `OMNIAGENT_AGENT_MAX_TOTAL_TOKENS`, `OMNIAGENT_AGENT_MAX_COST_MICROUSD`, `OMNIAGENT_TENANT_DAILY_MAX_TOKENS`, and `OMNIAGENT_TENANT_DAILY_MAX_COST_MICROUSD`. Ordinary runs default to 6 governed tool rounds, 30 total tool calls, and 14 model turns (two delegated child/Sentinel lifecycles pre-reserve ten, leaving four parent turns); raising the model-turn limit does not widen either tool limit, and request or delegation budgets may only narrow the server-configured authority. A parked legacy continuation without an exact persisted budget remains capped at the lower of its former 7-turn ceiling and the current deployment ceiling, so a release cannot silently widen resume authority. Dynamic delegation is a live, risk-one internal control action: an approval profile that forces it to pause fails closed before an approval record is created because its request-bound parent reservation cannot safely cross that boundary. The installed-Mac default remains 12 governed action/model rounds with 14 model turns (one additional semantic-plan reservation and one final-answer turn). A run may use 400,000 tokens and 2,500,000 micro-USD by default. Each model turn reserves its estimated input plus `OMNIAGENT_AGENT_MAX_OUTPUT_TOKENS` before it starts and is settled to the usage the provider reports, so the token limit counts the conversation each turn re-sends. `OMNIAGENT_AGENT_REASONING_EFFORT` is the effort the loop asks for, `low` by default. A reasoning model's request gets room to reason on top of `OMNIAGENT_AGENT_MAX_OUTPUT_TOKENS`; that reasoning is not reserved but is settled with the rest of the reported usage, so a turn at a raised effort can settle above its reservation. A turn that may call tools is sent without them when one more turn after a full round of tool results would not fit, and the run finishes within budget instead of failing. Every agent turn must also fit the workspace's AI usage over the last 24 hours, read from the usage ledger: 5,000,000 tokens and 25,000,000 micro-USD by default. A turn that would exceed it stops the run with `budget_exhausted`; if the ledger cannot be read, the run proceeds under its own limits and logs a warning. Wall-clock, approval, and other run limits are unchanged. Historical browser-action counters remain readable but grant no remote-browser execution authority.
+- Agent limits: `OMNIAGENT_AGENT_MAX_TOOL_STEPS`, the independent ordinary-run `OMNIAGENT_AGENT_MAX_MODEL_TURNS`, the installed-Mac-only `OMNIAGENT_LOCAL_COMPUTER_MAX_TOOL_STEPS`, `OMNIAGENT_AGENT_MAX_MESSAGE_CHARS`, `OMNIAGENT_AGENT_MAX_MESSAGES`, `OMNIAGENT_AGENT_RUNS_PER_MINUTE`, `OMNIAGENT_AGENT_REASONING_EFFORT`, `OMNIAGENT_AGENT_MAX_OUTPUT_TOKENS`, `OMNIAGENT_AGENT_MAX_TOTAL_TOKENS`, `OMNIAGENT_AGENT_MAX_COST_MICROUSD`, `OMNIAGENT_TENANT_DAILY_MAX_TOKENS`, and `OMNIAGENT_TENANT_DAILY_MAX_COST_MICROUSD`. Ordinary runs default to 6 governed tool rounds, 30 total tool calls, and 14 model turns (two delegated child/Sentinel lifecycles pre-reserve ten, leaving four parent turns); raising the model-turn limit does not widen either tool limit, and request or delegation budgets may only narrow the server-configured authority. A parked legacy continuation without an exact persisted budget remains capped at the lower of its former 7-turn ceiling and the current deployment ceiling, so a release cannot silently widen resume authority. Dynamic delegation is a live, risk-one internal control action: an approval profile that forces it to pause fails closed before an approval record is created because its request-bound parent reservation cannot safely cross that boundary. The installed-Mac default remains 12 governed action/model rounds with 14 model turns (one additional semantic-plan reservation and one final-answer turn). A run may use 400,000 tokens and 2,500,000 micro-USD by default. Each model turn reserves its estimated input plus `OMNIAGENT_AGENT_MAX_OUTPUT_TOKENS` before it starts and is settled to the usage the provider reports, so the token limit counts the conversation each turn re-sends. `OMNIAGENT_AGENT_REASONING_EFFORT` is the effort the loop asks for, `low` by default. A reasoning model's request gets room to reason on top of `OMNIAGENT_AGENT_MAX_OUTPUT_TOKENS`; that reasoning is not reserved but is settled with the rest of the reported usage, so a turn at a raised effort can settle above its reservation. A turn that may call tools is sent without them when one more turn after a full round of tool results would not fit, and the run finishes within budget instead of failing. Every agent turn must also fit the workspace's AI usage over the last 24 hours, read from the usage ledger: 5,000,000 tokens and 25,000,000 micro-USD by default. A turn that would exceed it stops the run with `budget_exhausted`; if the ledger cannot be read, the run proceeds under its own limits and logs a warning. New direct runs default to 1,500,000ms (25 minutes), controlled by `OMNIAGENT_AGENT_MAX_WALL_CLOCK_MS`, within the `/api/agent` route's 1,800s host duration. Production uses Vercel Pro with Fluid Compute and Node.js 24; the per-function extended duration requires that supported hosting configuration ([Vercel duration requirements](https://vercel.com/docs/functions/configuring-functions/duration#extended-max-duration-beta)). Other hosts must provide at least the admitted run time plus the runner's 30s invocation teardown margin, or lower the configured run limit to fit. Streaming heartbeat comments every 15s keep idle connections active, and a detached client can follow the persisted run again. Ordinary direct root runs stop starting tool rounds when the remaining time reaches a 90s answer reserve plus one configured web-search timeout; for shorter explicit budgets that threshold is capped at two-thirds of the admitted time. This check runs before model turns and before dispatching proposed tools, including between sequential calls. It does not change child-run, Local Computer, Quick Research, or approval-resume execution policies, and the hard deadline still applies. Saved budgets retain their exact limits; legacy continuations remain capped at 240,000ms. Stale-run cleanup reads the recorded harness allowance (or an approved continuation's exact remaining allowance), adds a two-minute completion grace, and retains the existing seven-minute minimum. A new default never extends cleanup authority for an older record without a saved budget. Legacy specialist jobs without an explicit allowance remain capped at 270,000ms. Queued Assistant dispatch and approval-resume routes use the same 1,800s duration, and web/native reconnect monitoring allows 30 minutes. The background queue schedules one approved continuation with Next `after()` per response, reporting it as scheduled rather than completed. Its existing atomic lease and heartbeat exclude duplicate execution; a callback without enough runway for the saved remaining budget plus 30s defers before resuming. Worker HTTP calls and fast/maintenance dispatch budgets retain their shorter limits. Durable workflows, including Deep Research, use `OMNIAGENT_WORKFLOW_MAX_WALL_CLOCK_MS` (900,000ms by default) across active execution deliveries, excluding queue and pause time; explicit Deep Research budgets are validated against that workflow authority. Historical browser-action counters remain readable but grant no remote-browser execution authority.
 - Workflow limits: `OMNIAGENT_QUEUE_LEASE_SECONDS`, `OMNIAGENT_WORKFLOW_DRAIN_LIMIT`, `OMNIAGENT_WORKFLOW_PLANNER_TIMEOUT_MS`, `OMNIAGENT_WORKFLOW_EXECUTOR_TIMEOUT_MS`, and the independent `OMNIAGENT_WORKFLOW_VERIFIER_TIMEOUT_MS`. Model-verifier transport failures retry the unchanged verification step within the run budget; they do not trigger a semantic replan or invalidate an existing approval. Inside a queue pass, the planner stops its model call early enough to save a fallback plan two seconds before the pass's deadline, but the model always gets at least 30 seconds; with less time left, the pass's deadline stops the call and the plan step runs again on a later pass, and nothing is saved. A plan that fell back after a model error is never reused: the next time that run is planned, the model is asked again.
 - Identity and native delivery: `OMNIAGENT_DEFAULT_TENANT`, `OMNIAGENT_DEFAULT_ACTOR`, `OMNIAGENT_DEFAULT_ROLE`, `OMNIAGENT_SESSION_DAYS`, bounded mobile token lifetimes, native platform minimum versions, bootstrap name/tenant, auth mode, `OMNIAGENT_FCM_SERVICE_ACCOUNT_JSON`, and the direct APNs configuration group.
 - Trust: `OMNIAGENT_GRADUATED_AUTONOMY` and `OMNIAGENT_AUTONOMY_GRADUATION_THRESHOLD`.
 - Alerts: queue/dispatch limits, signed webhook URL/secret, Slack webhook, Resend key, and email addresses.
-- Connectors: app-managed MCP bearer credentials use `OMNIAGENT_CREDENTIAL_KEYRING` and require no per-connector environment binding. Remote-browser MCP endpoints are retired and denied; do not restore a Playwright or Browser Use credential. Salesforce read synchronization uses `SALESFORCE_OAUTH_CLIENT_ID`, `SALESFORCE_OAUTH_CLIENT_SECRET`, and the independent optional `SALESFORCE_WEBHOOK_SECRET`; provider tokens remain sealed in the actor-owned OAuth grant. Guarded writes additionally require `SALESFORCE_WRITE_ENABLED=true` and the reviewed `SALESFORCE_WRITE_EXTERNAL_ID_FIELD`, while each Account 360 remains disabled until a separate owner activation. The legacy advanced `bearer_env` path uses `OMNIAGENT_CONNECTOR_SECRET_ALLOWLIST`, JSON `OMNIAGENT_CONNECTOR_SECRET_BINDINGS`, and referenced `OMNIAGENT_CONNECTOR_*` values; every such credential requires an exact tenant-and-origin deployer binding. Keep `OMNIAGENT_CONNECTOR_ALLOW_LEGACY_SYSTEM_SECRETS=false`.
+- Connectors: app-managed MCP bearer credentials use `OMNIAGENT_CREDENTIAL_KEYRING` and require no per-connector environment binding. Remote-browser MCP endpoints are retired and denied; do not restore a Playwright or Browser Use credential. The legacy advanced `bearer_env` path uses `OMNIAGENT_CONNECTOR_SECRET_ALLOWLIST`, JSON `OMNIAGENT_CONNECTOR_SECRET_BINDINGS`, and referenced `OMNIAGENT_CONNECTOR_*` values; every such credential requires an exact tenant-and-origin deployer binding. Keep `OMNIAGENT_CONNECTOR_ALLOW_LEGACY_SYSTEM_SECRETS=false`.
 - Model credentials and inbound MCP: `OMNIAGENT_CREDENTIAL_KEYRING`, `OMNIAGENT_MCP_ALLOWED_HOSTS`, and `OMNIAGENT_MCP_ALLOWED_ORIGINS`. MCP remains disabled per actor until enabled in Settings and requires a scoped, hash-only service key.
 - Model routing: a workspace model assignment that cannot be used as saved (Settings unreadable, provider disconnected, credential unopenable) stops the run with a `model_route_degraded` event and calls no model. Set `OMNIAGENT_MODEL_ROUTE_ALLOW_DEPLOYMENT_FALLBACK=true` only to let those runs use the deployment's own provider keys instead; each such run still records the event.
 - Workflow triggers: use dedicated `OMNIAGENT_TRIGGER_*` HMAC keys. Put legacy server-only names in `OMNIAGENT_TRIGGER_SECRET_ALLOWLIST`; platform credentials are always rejected, and unauthenticated triggers remain disabled at dispatch time in production.
@@ -1936,6 +2051,54 @@ npm run deploy:production
 unset OMNIAGENT_OPENAI_GATEWAY_TOKEN OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN OMNIAGENT_OPENAI_GATEWAY_URL gateway_token
 ```
 
+### Recovering a gateway token whose operator copy is lost
+
+Use `--preserve-gateway-primary` only when the existing token still works on
+the deployed web/Fly pair but its operator copy cannot be recovered. Generate
+a new token and save it in the owner's password manager or login Keychain
+before starting. Load that new value as `OMNIAGENT_OPENAI_GATEWAY_TOKEN` using
+the silent-prompt procedure above, leave
+`OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN` unset, and run:
+
+```bash
+npm run deploy:production -- --use-hosted-verification --preserve-gateway-primary
+```
+
+This mode preserves the unknown Fly primary throughout release and rollback.
+It requires a deployed primary, an empty secondary slot, no staged secrets,
+an exact compatible rollback image, and the usual clean main commit, hosted
+checks, signed manifest, and release gates. Initial-cutover and split-recovery
+flags cannot be combined with it. The old deployed app proves that its original
+token still authenticates through a fresh `openai_provider` readiness result;
+public gateway health alone is insufficient.
+
+The candidate uses a separate production-sensitive variable,
+`OMNIAGENT_OPENAI_GATEWAY_RECOVERY_TOKEN`. The non-secret deployment override
+`OMNIAGENT_OPENAI_GATEWAY_USE_RECOVERY_TOKEN=true` selects it, with no fallback
+to the original token if the recovery value is missing. Do not store that
+selector in project settings or supply a token with a deployment `--env`
+argument. The original sensitive project token remains unchanged while the
+candidate is verified, and Fly accepts the new token only in its secondary
+slot. Rollback restores the captured worker and web artifacts while preserving
+the token overlap.
+
+After the candidate and canonical checks pass, the runner synchronizes the
+normal sensitive production token to the saved replacement. An ambiguous final
+configuration write must leave the verified deployment and token overlap in
+place and report the required configuration repair; it must not claim that an
+unreadable old project value was restored. Retain the replacement in the
+password manager and preserve the overlap through the rollback window. Unset
+the local token variables when the command finishes.
+
+After recovery, the running deployment retains its sensitive alias snapshot,
+the normal Vercel project token is the saved replacement, and Fly still has the
+original primary plus the replacement secondary. Once the rollback window ends,
+the next normal paired release can use the saved replacement with no previous
+token; it stages the replacement as Fly primary and removes the overlap before
+deploying. Its rollback target already uses the replacement. Do not manually
+rebuild the recovery artifact with its selector enabled after alias cleanup;
+start a normal paired release from a verified main commit.
+
 For the first gateway rollout only, also export
 `OMNIAGENT_OPENAI_GATEWAY_INITIAL_CUTOVER=CONFIRMED`. This explicit flag skips
 the impossible prior-gateway check because the currently promoted release still
@@ -1969,6 +2132,12 @@ not proxy or retain microphone audio. The browser must show provider and
 retention disclosure before every session, and only reviewed transcript text
 may enter the existing Command API. Keep `/v1/realtime/calls` absent from the
 Fly allowlist: browser audio goes directly to the provider after consent.
+The production browser CSP permits the exact
+`https://api.openai.com/v1/realtime/calls` connection URL. Keep this allowance:
+without it, the session credential can be minted successfully but the browser
+blocks the subsequent voice connection before reaching OpenAI. The ephemeral
+token handshake sends raw SDP with `Content-Type: application/sdp`, as described
+in [OpenAI's WebRTC guide](https://developers.openai.com/api/docs/guides/voice-webrtc?voice-api=realtime).
 
 P9.10 adds the separate exact `POST /v1/audio/speech` gateway route with a
 32 KiB JSON limit and a 120-second upstream deadline. Only the authenticated
@@ -2105,7 +2274,7 @@ After the worker registration window, each release phase runs one successful log
 npm run deploy:production
 ```
 
-Before `npm run verify` or any platform change, the runner proves release
+By default, before `npm run verify` or any platform change, the runner proves release
 provenance against GitHub rather than the local clone. `OMNIAGENT_RELEASE_SHA`,
 when set, must equal the checked-out `HEAD`. GitHub's comparison of
 `benniejoseph/OmniAgentOS` `main` with that commit must report it as identical
@@ -2124,6 +2293,63 @@ release gate requires the worker heartbeat revision to equal the web revision,
 so web-only changes also use the paired runner. The scheduled `Production Smoke`
 repeats the provenance check for the served revision, and its `provenance` gate
 turns red when production serves a commit that did not come through this path.
+
+### Owner-authorized build and live validation
+
+When the owner explicitly directs a release without CI, tests, audits, or
+benchmarks, use the same paired runner with `--owner-authorized-live`. This is
+separate from `--use-hosted-verification`, which still requires green hosted CI.
+The two flags cannot be combined. It neither enables GitHub workflows nor
+changes application authentication, tool governance, or server release gates.
+
+Set `OMNIAGENT_RELEASE_OWNER_LIVE_AUTHORIZATION` to a fresh JSON object with
+exactly `previousRevision`, `candidateRevision`, `reason`, and `expiresAt`.
+Both revisions must be distinct full lowercase Git SHAs. The candidate must be
+the clean checked-out `HEAD` and the current `main` tip verified against the
+canonical GitHub repository. The previous revision must match the currently
+paired production web and gateway. Expiry must be canonical UTC ISO format,
+in the future and within four hours. The trimmed reason is limited to 200
+characters. It will appear in the signed public manifest, so use a concise
+release authorization reason without confidential material.
+
+```bash
+npm run deploy:production -- --owner-authorized-live
+```
+
+The runner consumes the pin before launching subprocesses and does not forward
+the environment variable to the app, smoke commands, Vercel, or Fly. It rechecks
+the exact clean candidate, GitHub `main` tip, and expiry before deployment,
+worker replacement, promotion, canonical rebind, and worker activation. A failed
+admission after a platform change follows the existing paired rollback path;
+expiry cannot prevent rollback.
+
+This mode runs `npm run typecheck` and `npm run build` locally, then verifies
+that the checkout still matches the candidate. It retains the signed previous
+manifest check, staged and canonical readiness, signature and manifest
+convergence, gateway token-pair checks, two real-session paid agent sentinels,
+`smoke:preflight`, and read-only `smoke:release` evidence. Post-activation evidence
+must still show fresh active worker heartbeats. The worker hold, canonical
+rebind, activation, token overlap, and automatic paired rollback stay intact.
+Manual feature validation should be recorded separately with the release result.
+
+It does not invoke `verify`, `test:production-smoke`, the security/tenant/eval
+smoke suites, or the preview/dashboard benchmarks. The read-only release report
+still checks database roles, isolation metadata, previously recorded evaluation
+status, provider access, worker revisions, and reliability; it does not launch
+an evaluation suite. An authorized exception for measured historical reliability
+continues to require the separate exact-pair
+`OMNIAGENT_RELEASE_OWNER_ERROR_BUDGET_OVERRIDE`; the live authorization cannot
+waive a failed release-evidence gate.
+
+An owner release has a strict **v2 signed manifest** with `checks: []`, an
+explicit owner-live policy, the exact authorization, completed local validation
+for that SHA, and the deferred hosted checks and commands. The manifest is
+signed before deployment and does not claim later live checks have passed.
+The runner reports their outcomes after execution. Existing v1 CI manifests
+remain verifiable for rollback. Pin expiry governs new release admission;
+historical signatures remain verifiable after expiry. The existing hosted CI
+provenance workflow remains unchanged and will not report green checks for
+an owner release whose CI was deferred. Unset the pin after the release.
 
 Set `BASE_URL` to the canonical production HTTPS origin and provide the smoke
 credentials, internal secret, pinned gateway URL, active token, optional
@@ -2228,9 +2454,8 @@ deletion controls.
 
 P11.7 truthful Integrations is a web-only projection and UI release with no
 migration, backfill, environment change, or Fly release. It reads the current
-OAuth grants, MCP/OpenAPI contracts, Salesforce sync health, and usage receipts;
-Salesforce still requires its existing external OAuth and relay configuration
-before it can report working. Deploy it as one complete Vercel feature. Verify
+OAuth grants, MCP/OpenAPI contracts, and usage receipts. Deploy it as one
+complete Vercel feature. Verify
 anonymous access returns 401, an authenticated response validates as
 `p11.7-truthful-integrations:1`, failed inventories remain unavailable, catalog
 suggestions remain visibly not installed, and no raw cursor or credential value
@@ -2678,30 +2903,19 @@ release and v33 contracts before distributing a client that uses these writes.
 A rollback to the retained v32 client is a client-compatibility option, not
 permission to run a pre-v220 server against admitted decision records.
 
-### Customer Account mutation intent schema v221
+### Historical Customer Account mutation intent schema v221
 
-`customer_account_mutation_intents_v1` follows the exact v220 predecessor.
-It adds paired nullable request intent and digest columns to immutable Account
-revisions. Apply it through the dedicated migration job before serving the new
-create/revise application path, then retain schema verification and serving-role
-transaction evidence. No table, RLS policy or privilege expansion is introduced.
+`customer_account_mutation_intents_v1` follows the exact v220 predecessor and
+adds paired nullable request intent and digest columns to immutable Account
+revisions. Keep it in the dedicated checksum-linked migration chain and retain
+schema verification and serving-role transaction evidence. It introduces no
+new table, RLS policy, or privilege expansion.
 
-The new path rechecks current canonical account ownership and Workspace write
-authority after acquiring the account admission lock. It atomically stores the
-normalized request, immutable revision, current projection and typed event. An
-identical accepted request returns its original account revision before a fresh
-CAS check; changed input and ambiguous legacy evidence are conflicts. The
-acceptance describes the original write, while the service receipt describes
-current request authority. The membership read does not serialize an independent
-authority-table revocation with the account transaction.
-
-Existing revisions and legacy internal Salesforce writers retain NULL/NULL
-intent fields and remain readable. They do not acquire exact-request replay
-guarantees. An application rollback preserves those rows but removes the new
-recovery behavior; use a compatible application for clients relying on it. Do
-not drop intent columns or rewrite immutable revisions during rollback. Native
-Account writes remain unavailable until a separate typed contract publication.
-
+The product feature was retired on 2026-10-07. Existing revisions, including
+legacy NULL/NULL intent fields, and their access protections remain retained.
+Do not drop intent columns, rewrite immutable revisions, or remove historical
+migrations during rollout or rollback. Their presence does not restore routes,
+tools, sync, or native mutation authority.
 
 ### Memory lifecycle acceptance schema v222
 
@@ -2728,9 +2942,9 @@ rollback procedure. New native controls require the paired v34 API publication.
 
 ### Native personal-data and Markets publication v34
 
-v34 publishes typed bounded Account, Library/current/history, entity-selector,
-Memory lifecycle and stored Markets projections. New Account record mutations
-and private Memory record/lifecycle controls require fresh v34 attestation plus
+v34 published typed bounded Library/current/history, entity-selector, Memory
+lifecycle and stored Markets projections. Private Memory record/lifecycle
+controls require fresh v34 attestation plus
 their existing application permission and exact current target authority. v33
 remains supported with its byte-frozen documents; v32 remains an unadvertised
 archive, and v31 public documents are retired. Existing capability floors stay
@@ -2757,20 +2971,21 @@ opaque chart plug-in state. Protected native recovery is bounded per namespace
 and shared across macOS engines through the existing host broker.
 
 
-## Personal partner candidate (2026-10-12)
+## Personal partner candidate (2026-10-13)
 
-Native v48 and migrations 246–247 form one release candidate. Migration 246
+Native v56 and migrations 252–253 form one release candidate. Migration 252
 extends the exact Responsibility runtime/notification trigger lanes for canonical
-work-item tracking. Migration 247 adds the owner-private text comparison ledger,
+work-item tracking. Migration 253 adds the owner-private text comparison ledger,
 comparison pointer and new-activation requirement. Apply them in manifest order
-after 245, using the existing backup, isolated replay, verification and paired
-web/worker release procedure. Previous v47 contract files remain byte-frozen;
-v46 is retained as an archive and falls outside the supported mutation window.
+after 251, using the existing backup, isolated replay, verification and paired
+web/worker release procedure. Previous v55 contract files remain byte-frozen;
+Previously supported v54, v53 and v52 clients retain their existing capabilities;
+work-item tracking and text comparison require a fresh v56 handshake.
 
-This candidate is not a claim that the prior v47 rollout or any native binary
-has been promoted. Preserve the existing rollout prerequisites above. Before
-promotion, verify the new actor policy/table inventory, current v48 client
-handshake, v47 meeting behavior and explicit work-item upgrade response. Do not
+The native candidate is 1.33.0+98. Verify the paired server release before
+installing the signed native package, and retain the prior signed app. Before
+promotion, verify the new actor policy/table inventory, current v56 client
+handshake, v55 meeting behavior and explicit work-item upgrade response. Do not
 roll back to an older server by dropping comparison history or altering saved
 runtime receipts. New guidance activation now needs measured improvement;
 legacy active guidance retains rollback. No live model credentials are required

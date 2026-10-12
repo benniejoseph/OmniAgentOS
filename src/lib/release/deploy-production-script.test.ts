@@ -1207,6 +1207,143 @@ describe("rolling back a failed production release", () => {
   const manifestCheck = (baseUrl: string) =>
     `npm run smoke:manifest against ${baseUrl} expecting ${head}`;
 
+  const recovery = () => ({
+    FAKE_PRIMARY_RECOVERY: "true",
+    FAKE_PRIOR_REVISION: "1".repeat(40),
+    OMNIAGENT_OPENAI_GATEWAY_TOKEN: "b".repeat(64),
+    FAKE_GATEWAY_TOKENS: "a".repeat(64),
+    FAKE_FLY_SECRETS: JSON.stringify([{ name: "OMNIAGENT_OPENAI_GATEWAY_TOKEN", digest: "a".repeat(16), status: "Deployed" }]),
+    FAKE_VERCEL_ENVS: JSON.stringify([{ id: "primary", key: "OMNIAGENT_OPENAI_GATEWAY_TOKEN", type: "sensitive", target: ["production"], updatedAt: 1000 }]),
+    FAKE_FLY_STATUS: JSON.stringify({ Machines: [{ id: "machine", state: "started", region: "iad",
+      config: { image: "registry.fly.io/omniagent-os-worker:prior" },
+      image_ref: { registry: "registry.fly.io", repository: "omniagent-os-worker", digest: `sha256:${"d".repeat(64)}` },
+    }] }),
+  });
+  const aliasAdd = "vercel env add OMNIAGENT_OPENAI_GATEWAY_RECOVERY_TOKEN production --sensitive --yes --scope benniejosephs-projects";
+  const aliasRemove = "vercel env rm OMNIAGENT_OPENAI_GATEWAY_RECOVERY_TOKEN production --yes --scope benniejosephs-projects";
+  const primarySync = "vercel env update OMNIAGENT_OPENAI_GATEWAY_TOKEN production --sensitive --yes --scope benniejosephs-projects";
+  const recoveryRollback = workerRollback.replace(":prior --env", `@sha256:${"d".repeat(64)} --env`);
+
+  it("recovers through a sensitive alias and secondary-only overlap without exporting the old primary", async () => {
+    await withFakeReleasePlatform(async ({ deploy }) => {
+      const result = await deploy(recovery());
+      expect(result.code, result.stderr).toBe(0);
+      expect(result.log).toContain(aliasAdd);
+      expect(result.log).toContain(`${stagedDeploy} --env OMNIAGENT_OPENAI_GATEWAY_USE_RECOVERY_TOKEN=true`);
+      expect(result.log.filter((line) => line.startsWith("fly staged "))).toEqual([
+        `fly staged OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN=${"b".repeat(64)}`,
+      ]);
+      expect(result.log.some((line) => line.startsWith("fly secrets unset"))).toBe(false);
+      const priorProof = "fetch https://omniagent-prior-benniejosephs-projects.vercel.app/api/release/evidence";
+      expect(result.log.filter((line) => line === priorProof)).toHaveLength(3);
+      expect(result.log.indexOf(priorProof)).toBeLessThan(result.log.indexOf(aliasAdd));
+      expect(result.log.indexOf(primarySync)).toBeGreaterThan(result.log.lastIndexOf(`npm run smoke:release against ${canonical} expecting ${head}`));
+      expect(result.log.indexOf(aliasRemove)).toBeGreaterThan(result.log.indexOf(primarySync));
+      expect(result.log.some((line) => line.includes("--env OMNIAGENT_OPENAI_GATEWAY_TOKEN"))).toBe(false);
+      expect(`${result.stdout}\n${result.stderr}`).not.toContain("b".repeat(64));
+      expectNoSigningKey(result);
+    });
+  });
+
+  it.each(["missing-primary", "occupied-secondary", "staged", "duplicate", "shared-production", "readable-primary", "existing-alias", "existing-selector", "missing-image-digest", "incompatible-worker", "same-token"])(
+    "refuses ambiguous recovery preflight: %s", async (failure) => {
+      const overrides: Record<string, string> = recovery();
+      const secrets = JSON.parse(overrides.FAKE_FLY_SECRETS);
+      const envs = JSON.parse(overrides.FAKE_VERCEL_ENVS);
+      if (failure === "missing-primary") secrets[0].name = "ANOTHER_SECRET";
+      if (failure === "occupied-secondary") secrets.push({ ...secrets[0], name: "OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN" });
+      if (failure === "staged") secrets[0].status = "Staged";
+      if (failure === "duplicate") secrets.push(secrets[0]);
+      if (failure === "shared-production") envs[0].target.push("preview");
+      if (failure === "readable-primary") envs[0].type = "encrypted";
+      if (failure === "existing-alias") envs.push({ ...envs[0], id: "existing", key: "OMNIAGENT_OPENAI_GATEWAY_RECOVERY_TOKEN" });
+      if (failure === "existing-selector") envs.push({ ...envs[0], id: "existing", key: "OMNIAGENT_OPENAI_GATEWAY_USE_RECOVERY_TOKEN" });
+      if (failure === "missing-image-digest") overrides.FAKE_FLY_STATUS = JSON.stringify({ Machines: [{ state: "started" }] });
+      if (failure === "incompatible-worker") overrides.FAKE_INCOMPATIBLE_WORKER = "true";
+      if (failure === "same-token") overrides.FAKE_GATEWAY_TOKENS = overrides.OMNIAGENT_OPENAI_GATEWAY_TOKEN;
+      overrides.FAKE_FLY_SECRETS = JSON.stringify(secrets);
+      overrides.FAKE_VERCEL_ENVS = JSON.stringify(envs);
+      await withFakeReleasePlatform(async ({ deploy }) => {
+        const result = await deploy(overrides);
+        expect(result.code, result.stdout).toBe(1);
+        expect(result.log.some((line) => /^(?:vercel (?:env add|env update|env rm|deploy|promote)|fly (?:deploy|secrets import)) /.test(line))).toBe(false);
+      });
+    },
+  );
+
+  it.each(["stale", "failed", "wrong-tenant", "wrong-revision"])("rejects %s original-deployment proof before mutation", async (failure) => {
+    await withFakeReleasePlatform(async ({ deploy }) => {
+      const result = await deploy({ ...recovery(), FAKE_OLD_PROOF: failure });
+      expect(result.code).toBe(1);
+      expect(result.log).not.toContain(aliasAdd);
+      expect(result.stderr).toContain(failure === "stale" ? "stayed stale" : "did not prove the preserved primary");
+    });
+  });
+
+  it.each(["staged", "canonical"])("restores exact artifacts after a %s failure while retaining both Fly tokens", async (phase) => {
+    await withFakeReleasePlatform(async ({ deploy }) => {
+      const result = await deploy({ ...recovery(), FAKE_RELEASE_FAIL: `npm run smoke:paid-agent against ${phase === "staged" ? staged : canonical} expecting ${head}` });
+      expect(result.code).toBe(1);
+      expect(result.log).toContain(recoveryRollback);
+      if (phase === "canonical") expect(result.log).toContain(webRollback);
+      else expect(result.log).not.toContain(webRollback);
+      expect(result.log.filter((line) => line.startsWith("fly staged "))).toHaveLength(1);
+      expect(result.log.some((line) => line.startsWith("fly secrets unset"))).toBe(false);
+      expect(result.log).toContain(aliasRemove);
+      expect(result.log).not.toContain(primarySync);
+    });
+  });
+
+  it("retains the verified deployment and alias after ambiguous final secret synchronization", async () => {
+    await withFakeReleasePlatform(async ({ deploy }) => {
+      const result = await deploy({ ...recovery(), FAKE_SYNC_AMBIGUOUS: "true" });
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("Verified production release retained with both Fly tokens");
+      expect(result.log).toContain(primarySync);
+      expect(result.log).not.toContain(aliasRemove);
+      expect(result.log).not.toContain(recoveryRollback);
+      expect(result.log).not.toContain(webRollback);
+      expect(`${result.stdout}\n${result.stderr}`).not.toContain("b".repeat(64));
+    });
+  });
+
+  it("reports ambiguous alias creation without deleting or adopting the unconfirmed alias", async () => {
+    await withFakeReleasePlatform(async ({ deploy }) => {
+      const result = await deploy({ ...recovery(), FAKE_ALIAS_ADD_AMBIGUOUS: "true" });
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("Recovery alias creation was not confirmed");
+      expect(result.log).toContain(aliasAdd);
+      expect(result.log).not.toContain(aliasRemove);
+      expect(result.log.some((line) => line.startsWith("vercel deploy ") || line.startsWith("fly deploy "))).toBe(false);
+      expect(`${result.stdout}\n${result.stderr}`).not.toContain("b".repeat(64));
+    });
+  });
+
+  it("withholds promotion when the original deployment provider proof becomes stale after the Fly change", async () => {
+    await withFakeReleasePlatform(async ({ deploy }) => {
+      const result = await deploy({ ...recovery(), FAKE_OLD_PROOF: "after:stale" });
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("provider proof stayed stale");
+      expect(result.log).not.toContain(promotion);
+      expect(result.log.filter((line) => line.startsWith("fly staged "))).toEqual([
+        `fly staged OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN=${"b".repeat(64)}`,
+      ]);
+      expect(result.log).not.toContain(primarySync);
+    });
+  });
+
+  it("refuses to overwrite drifted Fly primary metadata or delete an alias whose ownership changed", async () => {
+    await withFakeReleasePlatform(async ({ deploy }) => {
+      const drifted = await deploy({ ...recovery(), FAKE_PRIMARY_DRIFT: "true" });
+      expect(drifted.code).toBe(1);
+      expect(drifted.log.some((line) => line.startsWith("fly staged ") || line.startsWith("fly deploy "))).toBe(false);
+      const aliasChanged = await deploy({ ...recovery(), FAKE_ALIAS_OWNERSHIP_CHANGED: "true" });
+      expect(aliasChanged.code).toBe(1);
+      expect(aliasChanged.stderr).toContain("Recovery alias ownership changed");
+      expect(aliasChanged.log).not.toContain(aliasRemove);
+    });
+  });
+
   it("limits previous-release evidence compatibility to the initial production check", async () => {
     await withFakeReleasePlatform(async ({ deploy }) => {
       const result = await deploy();
@@ -1821,6 +1958,7 @@ async function withFakeReleaseTools(
       'case "$1" in',
       '  status) printf \'%s\' "$FAKE_GIT_STATUS" ;;',
       '  rev-parse) printf \'%s\\n\' "$FAKE_GIT_HEAD" ;;',
+      '  diff) [ "$FAKE_INCOMPATIBLE_WORKER" != "true" ] ;;',
       "  *) exit 97 ;;",
       "esac",
     ].join("\n"),
@@ -1971,6 +2109,15 @@ done
 line="$(printf '%s' "vercel $*" | sed -E 's/(OMNIAGENT_RELEASE_MANIFEST=)[A-Za-z0-9_-]+/\\1<manifest>/')"
 log "$line"
 if fails "$line"; then exit 1; fi
+if [ "$1" = "api" ]; then node "$FAKE_RECOVERY_METADATA_HELPER" vercel; exit $?; fi
+if [ "$1 $2" = "env add" ] || [ "$1 $2" = "env update" ]; then
+  supplied="$(cat)"
+  log "vercel secret stdin $3=$supplied"
+  printf '%s' "$supplied"
+  printf '%s' "$supplied" >&2
+  if [ "$1 $2" = "env update" ] && [ "$FAKE_SYNC_AMBIGUOUS" = "true" ]; then exit 1; fi
+  if [ "$1 $2" = "env add" ] && [ "$FAKE_ALIAS_ADD_AMBIGUOUS" = "true" ]; then exit 1; fi
+fi
 case "$1" in
   inspect) printf '%s\\n' '{"url":"omniagent-prior-benniejosephs-projects.vercel.app"}' ;;
   deploy) printf '%s\\n' "Inspect: https://vercel.com/benniejosephs-projects/omniagent" "https://omniagent-candidate-benniejosephs-projects.vercel.app" ;;
@@ -1983,9 +2130,34 @@ if fails "fly $*" "$staged"; then exit 1; fi
 if [ -n "$staged" ]; then log "$staged"; fi
 case "$1 $2" in
   "releases --app") printf '%s\\n' "$FAKE_FLY_RELEASES" ;;
-  "secrets list") printf '%s\\n' "$FAKE_FLY_SECRETS" ;;
+  "secrets list") if [ "$FAKE_PRIMARY_RECOVERY" = "true" ]; then node "$FAKE_RECOVERY_METADATA_HELPER" fly; else printf '%s\\n' "$FAKE_FLY_SECRETS"; fi ;;
+  "status --app") printf '%s\\n' "$FAKE_FLY_STATUS" ;;
 esac`,
 };
+
+const FAKE_RECOVERY_METADATA = `
+import { readFileSync } from "node:fs";
+const lines = readFileSync(process.env.FAKE_RELEASE_LOG, "utf8").split("\\n");
+const aliasAdded = lines.some((line) => line.startsWith("vercel secret stdin OMNIAGENT_OPENAI_GATEWAY_RECOVERY_TOKEN="));
+const aliasRemoved = lines.some((line) => line.startsWith("vercel env rm OMNIAGENT_OPENAI_GATEWAY_RECOVERY_TOKEN "));
+const primaryUpdated = lines.some((line) => line.startsWith("vercel secret stdin OMNIAGENT_OPENAI_GATEWAY_TOKEN="));
+if (process.argv[2] === "vercel") {
+  const records = JSON.parse(process.env.FAKE_VERCEL_ENVS);
+  if (primaryUpdated) records.find((record) => record.key === "OMNIAGENT_OPENAI_GATEWAY_TOKEN").updatedAt += 1;
+  if (aliasAdded && !aliasRemoved) records.push({
+    id: process.env.FAKE_ALIAS_OWNERSHIP_CHANGED === "true" && lines.some((line) => line.startsWith("fly deploy ")) ? "not-owned" : "recovery-alias",
+    key: "OMNIAGENT_OPENAI_GATEWAY_RECOVERY_TOKEN", type: "sensitive", target: ["production"], updatedAt: 1000,
+  });
+  console.log(JSON.stringify({ envs: records }));
+} else {
+  const records = JSON.parse(process.env.FAKE_FLY_SECRETS);
+  if (lines.some((line) => line.startsWith("fly staged OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN="))) {
+    records.push({ name: "OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN", digest: "b".repeat(16), status: "Deployed" });
+  }
+  if (process.env.FAKE_PRIMARY_DRIFT === "true" && aliasAdded) records[0].digest = "c".repeat(16);
+  console.log(JSON.stringify(records));
+}
+`;
 
 // Answers the deploy script's fetches from the log: the canonical web serves
 // whichever deployment was promoted last, and the gateway serves the last Fly
@@ -2018,6 +2190,9 @@ globalThis.fetch = async (input, init = {}) => {
     const accepted = staged
       ? staged.split(" ").slice(2).map((pair) => pair.slice(pair.indexOf("=") + 1))
       : (process.env.FAKE_GATEWAY_TOKENS || "").split(" ");
+    if (process.env.FAKE_PRIMARY_RECOVERY === "true" && staged && !staged.includes("OMNIAGENT_OPENAI_GATEWAY_TOKEN=")) {
+      accepted.push(...(process.env.FAKE_GATEWAY_TOKENS || "").split(" "));
+    }
     const revision = lines[deployed]?.includes("OMNIAGENT_RELEASE_SHA=" + OMNIAGENT_RELEASE_SHA)
       ? OMNIAGENT_RELEASE_SHA
       : process.env.FAKE_PRIOR_GATEWAY_REVISION || FAKE_PRIOR_REVISION;
@@ -2034,6 +2209,22 @@ globalThis.fetch = async (input, init = {}) => {
       return json(token && accepted.includes(token) ? 400 : 401, {});
     }
     return json(404, {});
+  }
+  if (url.pathname === "/api/release/evidence") {
+    const fail = process.env.FAKE_OLD_PROOF || "";
+    const afterMutation = lines.some((line) => line.startsWith("fly deploy "));
+    const failureApplies = !fail.startsWith("after:") || afterMutation;
+    const failure = failureApplies ? fail.replace("after:", "") : "";
+    const provider = { id: "openai_provider", status: failure === "failed" ? "fail" : "pass", details: {
+      configured: true, reachable: failure !== "failed", model: "test-model",
+      checkedAt: new Date(Date.now() + (failure === "stale" ? -120000 : 0)).toISOString(),
+    } };
+    return json(200, { report: {
+      tenantId: failure === "wrong-tenant" ? "another-tenant" : "production_smoke",
+      deployment: { commitSha: failure === "wrong-revision" ? OMNIAGENT_RELEASE_SHA : FAKE_PRIOR_REVISION, environment: "production", region: "sin1" },
+      gates: [provider, { id: "openai_us_egress_gateway", details: { configured: true, safeConfiguration: true,
+        serviceMatches: true, regionMatches: true, protocolMatches: true, reachable: true, serving: true } }],
+    } });
   }
   if (url.origin === "https://asael.bennierichard.com") {
     const promoted = lines.findLast((line) => line.startsWith("vercel promote "));
@@ -2073,6 +2264,8 @@ async function withFakeReleasePlatform(
       "fetch.mjs",
     );
     await writeFile(fetchStub, FAKE_PLATFORM_FETCH);
+    const metadataStub = path.join(path.dirname(fetchStub), "metadata.mjs");
+    await writeFile(metadataStub, FAKE_RECOVERY_METADATA);
     const configuration = releaseConfigurationEnvironment();
     await callback({
       async deploy(overrides = {}) {
@@ -2082,6 +2275,7 @@ async function withFakeReleasePlatform(
             "--import",
             pathToFileURL(fetchStub).href,
             "scripts/deploy-production.mjs",
+            ...(overrides.FAKE_PRIMARY_RECOVERY === "true" ? ["--preserve-gateway-primary"] : []),
           ],
           {
             ...environment,
@@ -2117,6 +2311,7 @@ async function withFakeReleasePlatform(
             FAKE_FLY_SECRETS: "[]",
             FAKE_GATEWAY_TOKENS: configuration.OMNIAGENT_OPENAI_GATEWAY_TOKEN,
             FAKE_RELEASE_FAIL: "",
+            FAKE_RECOVERY_METADATA_HELPER: metadataStub,
             SMOKE_EXPECTED_REVISION: "",
             EXPECTED_REVISION: "",
             FLY_APP: "",

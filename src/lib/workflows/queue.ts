@@ -3,6 +3,7 @@ import { OPERATION_QUEUE_LEASE_SECONDS, WORKFLOW_DRAIN_LIMIT } from "@/lib/confi
 import { RunBudgetExceededError } from "@/lib/runs/budgets";
 import {
   getDatabaseTenantContext,
+  runWithDatabaseSystemScope,
   runWithDatabaseTenantScope,
 } from "@/lib/db/client";
 import {
@@ -20,6 +21,7 @@ import {
 } from "@/lib/operations/job-queue";
 import { requestWorkDeadline } from "@/lib/observability/request-timing";
 import { redactSensitive } from "@/lib/security/context";
+import { RESEARCH_DELIVERY_MIN_RUNWAY_MS } from "@/lib/research/contracts";
 import { inspectWorkflowSpecialistDependencies } from "@/lib/subagents/context";
 import { tickWorkflowRun } from "@/lib/workflows/runner";
 import {
@@ -188,8 +190,14 @@ export function processWorkflowQueue(
     getDatabaseTenantContext() ||
     process.env.OMNIAGENT_DEFAULT_TENANT ||
     "default";
-  return runWithDatabaseTenantScope(tenantId, () =>
-    processWorkflowQueueInScope({ ...input, tenantId }),
+  // Clear the dispatch caller before entering the tenant: tenant scope alone
+  // inherits a same-tenant actor, and actor scope requires a nonempty actor list.
+  // All queue work runs in tenant scope; each delivery restores its bound authority.
+  return runWithDatabaseSystemScope(
+    "Reset caller actor scope before tenant workflow queue dispatch.",
+    () => runWithDatabaseTenantScope(tenantId, () =>
+      processWorkflowQueueInScope({ ...input, tenantId }),
+    ),
   );
 }
 
@@ -322,6 +330,10 @@ async function processWorkflowQueueInScope(
     limit,
     leaseSeconds: OPERATION_QUEUE_LEASE_SECONDS,
     tenantId: input.tenantId,
+    // Fast workers and short response drains must not take a research lease
+    // only to yield it. Leave these jobs available to the long background lane.
+    excludeDeepResearchWorkflows: input.deadlineAt !== undefined &&
+      input.deadlineAt - Date.now() < RESEARCH_DELIVERY_MIN_RUNWAY_MS,
   });
   const results: WorkflowQueueJobResult[] = [];
   let earlierTickRan = input.keepQueuePlaceOnDeadline === true;

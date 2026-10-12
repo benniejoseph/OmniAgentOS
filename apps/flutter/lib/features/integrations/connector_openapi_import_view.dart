@@ -2,9 +2,16 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+
+import 'mobile_connection_presentation.dart';
+
+import '../settings/adaptive_control_dialog.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/network/native_workspace_access.dart';
+import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_page_scaffold.dart';
 import 'connector_contracts.dart';
 import 'connector_openapi_import_contracts.dart';
 import 'connector_openapi_import_controller.dart';
@@ -255,9 +262,10 @@ class _ConnectorOpenApiImportPanelState
         key: PageStorageKey(('openapi-import-list', c)),
         padding: const EdgeInsets.all(20),
         children: [
-          Text(
-            'New OpenAPI import',
-            style: Theme.of(context).textTheme.headlineSmall,
+          ConnectionFlowHeading(
+            title: 'New OpenAPI import',
+            mobileTitle: 'Add tools from an API',
+            icon: Icons.api_rounded,
           ),
           const SizedBox(height: 8),
           const Text(
@@ -287,7 +295,25 @@ class _ConnectorOpenApiImportPanelState
               ),
             ),
           if (c.sequence != null) _recovery(),
-          if (c.canPrepare) ..._form(),
+          if (c.canPrepare)
+            if (usesMobilePresentation())
+              Padding(
+                padding: const EdgeInsets.only(top: 20),
+                child: MobileSurface(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      for (final field in _form().skip(1))
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 16),
+                          child: field,
+                        ),
+                    ],
+                  ),
+                ),
+              )
+            else
+              ..._form(),
         ],
       );
     },
@@ -303,6 +329,7 @@ class _ConnectorOpenApiImportPanelState
       onChanged: (_) => setState(() {}),
     ),
     DropdownButtonFormField<String>(
+      isExpanded: true,
       key: PageStorageKey(('openapi-import-source', c)),
       initialValue: _source,
       decoration: const InputDecoration(labelText: 'Specification source'),
@@ -371,6 +398,7 @@ class _ConnectorOpenApiImportPanelState
       label: 'Open browser setup',
     ),
     DropdownButtonFormField<String>(
+      isExpanded: true,
       key: PageStorageKey(('openapi-import-auth', c)),
       initialValue: _authType,
       decoration: const InputDecoration(labelText: 'API authentication'),
@@ -378,11 +406,11 @@ class _ConnectorOpenApiImportPanelState
         DropdownMenuItem(value: 'none', child: Text('No authentication')),
         DropdownMenuItem(
           value: 'bearer_env',
-          child: Text('Deployer-bound bearer handle'),
+          child: Text('Configured bearer token'),
         ),
         DropdownMenuItem(
           value: 'api_key_header_env',
-          child: Text('Deployer-bound API key handle'),
+          child: Text('Configured API key'),
         ),
       ],
       onChanged: (value) {
@@ -399,7 +427,7 @@ class _ConnectorOpenApiImportPanelState
         key: PageStorageKey(('openapi-import-environment', c)),
         controller: _environment,
         decoration: const InputDecoration(
-          labelText: 'Environment handle',
+          labelText: 'Configured secret name',
           helperText: 'Enter the configured handle, never its secret value.',
         ),
         onChanged: (_) => setState(() {}),
@@ -419,6 +447,7 @@ class _ConnectorOpenApiImportPanelState
         onChanged: (_) => setState(() {}),
       ),
     DropdownButtonFormField<int>(
+      isExpanded: true,
       key: PageStorageKey(('openapi-import-risk', c)),
       initialValue: _risk,
       decoration: const InputDecoration(labelText: 'Default operation risk'),
@@ -671,7 +700,7 @@ class _ConnectorOpenApiImportPanelState
             useRootNavigator: false,
             builder: (context) => ListenableBuilder(
               listenable: controller,
-              builder: (context, _) => AlertDialog(
+              builder: (context, _) => AdaptiveControlDialog(
                 scrollable: true,
                 title: Text(title),
                 content: (valid?.call() ?? true)

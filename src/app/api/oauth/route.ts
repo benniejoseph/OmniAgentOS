@@ -35,7 +35,7 @@ async function GETHandler(request: Request) {
       : (await listOAuthGrants(security.tenantId, security.actorId)).map(
           (grant) => ({ ...grant, manageable: true }),
         )).filter((grant) =>
-          grant.provider !== "google" ||
+          grant.provider === "google" &&
           (account &&
             grant.accountEmail === account.email &&
             grant.connectionPurpose === account.purpose));

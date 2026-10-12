@@ -1,6 +1,10 @@
+import { nativeCsmSchemas } from "@/lib/mobile/csm-contracts";
+import { localAndroidDeviceUpdateSchema, localAndroidCommandSchema, localAndroidCompletionRequestSchema } from "@/lib/local-computer/android-contracts";
 import { z } from "zod";
+import { researchOptionsSchema, researchProgressSchema } from "@/lib/research/contracts";
 import { contentSearchResponseSchema } from "@/lib/content-search/contracts";
 import { COMPANION_PREFERENCES_CONTRACT, companionChangeSchema, companionPreferencesSchema, companionThreadIdSchema } from "@/lib/companion/contracts";
+import { personalProfileChangeSchema, personalProfileResponseSchema } from "@/lib/personal-context/contracts";
 import { agentDailyLearningStatusV1Schema } from "@/lib/agents/learning-contracts";
 import {
   promptQueueCreateRequestSchema,
@@ -29,15 +33,8 @@ import {
 import { mobilePushReceiptRequestSchema } from "@/lib/mobile/push-contract";
 import { nativeResponsibilityContractSchemas } from "@/lib/mobile/responsibility-contracts";
 import { nativeMeetingContractSchemas } from "@/lib/mobile/meeting-contracts";
-import { nativeCustomerContractSchemas } from "@/lib/mobile/customer-contracts";
-import { nativeCustomerDetailContractSchemas } from "@/lib/mobile/customer-detail-contracts";
-import { nativeCustomerMutationContractSchemas } from "@/lib/mobile/customer-mutation-contracts";
-import { nativeCustomerHealthMutationSchemas } from "@/lib/mobile/customer-health-mutation-contracts";
-import { nativeCustomerWorkflowMutationSchemas } from "@/lib/mobile/customer-workflow-mutation-contracts";
 import { nativeAgentSkillMutationSchemas } from "@/lib/mobile/agent-skill-mutation-contracts";
 import { nativeMeetingRecordingSchemas } from "@/lib/mobile/meeting-recording-contracts";
-import { nativeCustomerFactMutationSchemas } from "@/lib/mobile/customer-fact-mutation-contracts";
-import { nativeSalesforceActionSchemas } from "@/lib/mobile/salesforce-native-contracts";
 import { nativeKnowledgeCognificationSchemas } from "@/lib/mobile/knowledge-cognification-contracts";
 import { nativeKnowledgeSourceDeletionSchemas } from "@/lib/mobile/knowledge-source-deletion-contracts";
 import { nativeMemoryGraphReadSchemas } from "@/lib/mobile/memory-graph-read-contracts";
@@ -70,15 +67,24 @@ import {
   MODEL_PROVIDERS,
 } from "@/lib/settings/types";
 import { voiceCommandInputSchema } from "@/lib/voice/command-input";
+import {
+  voiceConversationStartRequestSchema, voiceConversationStartResponseSchema,
+  voiceConversationFinishRequestSchema, voiceConversationFinishResponseSchema,
+} from "@/lib/voice/conversation-contracts";
+import { conversationVoiceTurnsRequestSchema, conversationVoiceTurnsResponseSchema } from "@/lib/voice/conversation-transcript";
+import { nativeListenSchemas } from "@/lib/capture/listen-contracts";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 48 as const;
-// v46/v47 remain byte-frozen. v48 adds work-item tracking and measured
-// text comparisons; both changes retain their existing operation paths.
-export const NATIVE_API_PREVIOUS_VERSION = 47 as const;
+export const NATIVE_API_CURRENT_VERSION = 56 as const;
+// v56 adds bounded work-item follow-through and measured text comparisons.
+// Preserve upstream rollout clients54/53/52; only56 may use these additions.
+export const NATIVE_API_PREVIOUS_VERSION = 55 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
+  54,
+  53,
+  52,
 ] as const;
 
 const positiveDatabaseInteger = z.number().int().min(1).max(2_147_483_647);
@@ -311,6 +317,9 @@ export const nativeCompatibilitySchema = z.object({
   supportedContractVersions: z.tuple([
     z.literal(NATIVE_API_CURRENT_VERSION),
     z.literal(NATIVE_API_PREVIOUS_VERSION),
+    z.literal(54),
+    z.literal(53),
+    z.literal(52),
   ]),
   status: z.enum(["compatible", "upgrade_required", "unknown"]),
   agentCatalogEnrollment: z.object({
@@ -399,6 +408,9 @@ export const nativeBootstrapResponseSchema = nativePublicIdentitySchema.extend({
       supportedVersions: z.tuple([
         z.literal(NATIVE_API_CURRENT_VERSION),
         z.literal(NATIVE_API_PREVIOUS_VERSION),
+        z.literal(54),
+        z.literal(53),
+        z.literal(52),
       ]),
       discoveryPath: z.literal("/api/mobile/contracts"),
     }).strict(),
@@ -509,8 +521,8 @@ export const nativePushAcknowledgementResponseSchema = z.object({
     "approval",
     "work_item",
     "meeting",
-    "customer",
     "run",
+    "research",
     "notification",
     "canary",
   ]),
@@ -522,8 +534,8 @@ const nativePushCauseKindSchema = z.enum([
   "approval",
   "work_item",
   "meeting",
-  "customer",
   "run",
+    "research",
   "notification",
   "canary",
 ]);
@@ -606,13 +618,15 @@ export const nativeConversationRequestSchema = z.object({
   message: z.string().min(1).max(120_000),
   threadId: z.string().uuid().optional(),
   mode: z.enum(["orchestrate", "research", "execute", "learn"]).optional(),
+  research: researchOptionsSchema.optional(),
   strategy: z.enum(["auto", "direct", "durable"]).optional(),
   agentId: z.string().trim().min(1).max(120).regex(/^[a-zA-Z0-9_.:-]+$/).optional(),
-  computerUseTarget: z.literal("local_macos").optional(),
+  computerUseTarget: z.enum(["local_macos", "local_android"]).optional(),
   modelSelection: commandModelSelectionRequestSchema.optional(),
   /** v34: existing server-resolved source references; never inline source content. */
   contextReferences: commandContextReferencesSchema.optional(),
   projectId: z.string().trim().min(1).max(200).regex(/^[a-zA-Z0-9_.:-]+$/).optional(),
+  contextScope: z.enum(["none", "current_turn", "session", "agent_private", "mission", "project", "workspace", "personal", "explicit_selection"]).optional(),
   requestId: z.string().min(1).max(200).regex(/^[A-Za-z0-9._:-]+$/),
   /** v30: the reviewed realtime voice declaration for this command. */
   voiceInput: voiceCommandInputSchema.optional(),
@@ -763,11 +777,19 @@ export const nativeLocalComputerStopResponseSchema = z.object({
   canceledCommands: z.number().int().min(0).max(10_000),
 }).strict();
 
+export const nativeLocalAndroidDeviceResponseSchema = localAndroidDeviceUpdateSchema.extend({
+  deviceId: z.string().min(8).max(200).regex(/^[A-Za-z0-9._:-]+$/), online: z.boolean(),
+  lifecycleRevision: positiveDatabaseInteger, lastSeenAt: isoDateTime, leaseExpiresAt: isoDateTime,
+}).strict();
+export const nativeLocalAndroidDeviceReadResponseSchema = nativeLocalAndroidDeviceResponseSchema.nullable();
+export const nativeLocalAndroidClaimResponseSchema = z.object({ schemaVersion: z.literal(1), command: localAndroidCommandSchema.nullable(), pollAfterMs: z.number().int().min(0).max(5_000) }).strict();
+
 const agentEventSchemas = [
   z.object({ type: z.literal("run"), runId: opaqueId, threadId: opaqueId.optional(), missionId: opaqueId.optional() }).passthrough(),
   z.object({ type: z.literal("delegated"), threadId: opaqueId, workflowId: opaqueId, missionId: opaqueId.optional(), acknowledgement: z.string(), reason: z.string() }).passthrough(),
   z.object({ type: z.literal("clarification"), threadId: opaqueId, runId: opaqueId.optional(), message: z.string(), reasonCode: z.enum(["ambiguous_destructive_target", "ambiguous_known_procedure", "ambiguous_read_target"]) }).passthrough(),
   z.object({ type: z.literal("status"), label: z.string(), detail: z.string().optional() }).passthrough(),
+  z.object({ type: z.literal("research_progress"), progress: researchProgressSchema }).passthrough(),
   z.object({ type: z.literal("harness"), version: z.union([z.literal(1), z.literal(2)]), mode: z.enum(["orchestrate", "research", "execute", "learn"]) }).passthrough(),
   z.object({ type: z.literal("delta"), text: z.string() }).passthrough(),
   z.object({ type: z.literal("memory"), title: z.string(), count: z.number().int().min(0).optional() }).passthrough(),
@@ -809,14 +831,14 @@ export type NativeOperation = Readonly<{
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   path: string;
   summary: string;
-  auth: "public" | "bearer";
+  auth: "public" | "bearer" | "listen";
   requestSchema?: string;
   responseSchema?: string;
   mediaType?: "application/json" | "text/event-stream" | "multipart/form-data";
   responseMediaType?: "application/json" | "text/event-stream" | "audio/pcm";
   responseHeaders?: readonly NativeResponseHeader[];
   successStatuses?: readonly (200 | 201 | 202)[];
-  errorStatuses?: readonly (400 | 401 | 403 | 404 | 409 | 413 | 415 | 428 | 500 | 503)[];
+  errorStatuses?: readonly (400 | 401 | 403 | 404 | 409 | 410 | 413 | 415 | 428 | 500 | 503)[];
   errorResponseSchema?: string;
   pathParameters?: readonly NativePathParameter[];
   queryParameters?: readonly NativeQueryParameter[];
@@ -964,7 +986,6 @@ const v4Operations = [
   operation("push.registrations.upsert", "POST", "/api/mobile/push/registrations", "Register or rotate an encrypted APNs/FCM device token.", "bearer", "NativePushRegistrationRequest", "NativePushRegistrationResponse"),
   operation("push.registrations.revoke", "DELETE", "/api/mobile/push/registrations/{id}", "Revoke one current-installation push registration.", "bearer", undefined, "JsonObject"),
   operation("push.deliveries.acknowledge", "POST", "/api/mobile/push/deliveries/{id}/acknowledge", "Acknowledge one actor-owned causal push delivery exactly once.", "bearer", "JsonObject", "NativePushAcknowledgementResponse"),
-  operation("customers.get", "GET", "/api/customer-accounts/{id}", "Read one actor-visible Customer 360 projection.", "bearer", undefined, "JsonObject"),
 ] as const satisfies readonly NativeOperation[];
 
 const v5Operations = [
@@ -975,8 +996,6 @@ const v5Operations = [
 
 const v6Operations = [
   ...v5Operations,
-  operation("customers.list", "GET", "/api/customer-accounts", "Read the actor-visible Customer 360 portfolio.", "bearer", undefined, "JsonObject"),
-  operation("customers.portfolio", "GET", "/api/customer-accounts/portfolio", "Read actor-visible customer health and risk intelligence.", "bearer", undefined, "JsonObject"),
   operation("market.overview", "GET", "/api/market-research", "Read the market-research instrument and provider projection.", "bearer", undefined, "JsonObject"),
   operation("market.bars", "GET", "/api/market-research/bars", "Read one immutable actor-owned market snapshot.", "bearer", undefined, "JsonObject"),
   operation("market.events", "GET", "/api/market-research/events", "Read official macro event history.", "bearer", undefined, "JsonObject"),
@@ -1846,11 +1865,6 @@ const privateReadOptions = {
   errorStatuses: [400, 401, 403, 404, 409, 503],
   responseHeaders: [{ name: "cache-control", description: "Private scoped response; never stored.", constValue: "private, no-store" }],
 } as const satisfies Partial<NativeOperation>;
-const customerWorkspaceQuery = [queryParameter("workspaceId", "string", { minLength: 1, maxLength: 240 })];
-const customerDetailOptions = {
-  ...privateReadOptions,
-  pathParameters: [{ name: "id", minLength: 81, maxLength: 81, pattern: "^customer-account:[a-f0-9]{64}$" }],
-} as const satisfies Partial<NativeOperation>;
 const marketInstrumentQuery = queryParameter("instrumentId", "string", { required: true, minLength: 3, maxLength: 120 });
 const marketIntervalQuery = queryParameter("interval", "string", { required: true, enumValues: ["5min", "15min", "1h"] });
 const libraryPath = { name: "id", minLength: 1, maxLength: 320,
@@ -1877,29 +1891,11 @@ const typedMarketQueries: Readonly<Record<string, readonly NativeQueryParameter[
   "market.journal": [marketInstrumentQuery, queryParameter("limit", "integer", { minimum: 1, maximum: 100, defaultValue: 40 })],
 };
 const v34Operations: readonly NativeOperation[] = [
-  ...v33Operations.filter(({ id }) => !["customers.list", "customers.get", "customers.portfolio", "market.analysis"].includes(id))
+  ...v33Operations.filter(({ id }) => id !== "market.analysis")
     .map((candidate) => typedMarketReadSchemas[candidate.id] ? {
       ...candidate, ...privateReadOptions, responseSchema: typedMarketReadSchemas[candidate.id],
       ...(typedMarketQueries[candidate.id] ? { queryParameters: typedMarketQueries[candidate.id] } : {}),
     } : candidate),
-  operation("customers.list", "GET", "/api/customer-accounts", "Read a bounded authorized Account portfolio.", "bearer", undefined, "NativeCustomerListResponse",
-    { ...privateReadOptions, queryParameters: [...customerWorkspaceQuery, queryParameter("lifecycle", "string", { enumValues: ["prospect", "onboarding", "active", "at_risk", "churned", "archived"] }), queryParameter("limit", "integer", { minimum: 1, maximum: 200, defaultValue: 100 })] }),
-  operation("customers.get", "GET", "/api/customer-accounts/{id}", "Read exact account facts, conflicts and source evidence with bounded fact coverage.", "bearer", undefined, "NativeCustomerReadResponse",
-    { ...customerDetailOptions, queryParameters: customerWorkspaceQuery }),
-  operation("customers.portfolio", "GET", "/api/customer-accounts/portfolio", "Read health and risk intelligence for the bounded authorized portfolio.", "bearer", undefined, "NativeCustomerPortfolioResponse",
-    { ...privateReadOptions, queryParameters: [...customerWorkspaceQuery, queryParameter("limit", "integer", { minimum: 1, maximum: 200, defaultValue: 100 })] }),
-  operation("customers.health", "GET", "/api/customer-accounts/{id}/health", "Read bounded health history and its evidence.", "bearer", undefined, "NativeCustomerHealthResponse",
-    { ...customerDetailOptions, queryParameters: [...customerWorkspaceQuery, queryParameter("historyLimit", "integer", { minimum: 1, maximum: 100, defaultValue: 20 })] }),
-  operation("customers.intelligence", "GET", "/api/customer-accounts/{id}/intelligence", "Read bounded Account intelligence and timeline evidence.", "bearer", undefined, "NativeCustomerIntelligenceResponse",
-    { ...customerDetailOptions, queryParameters: [...customerWorkspaceQuery, queryParameter("historyLimit", "integer", { minimum: 1, maximum: 250, defaultValue: 100 }), queryParameter("timelineLimit", "integer", { minimum: 1, maximum: 250, defaultValue: 100 })] }),
-  operation("customers.workflows", "GET", "/api/customer-accounts/{id}/workflows", "Read bounded exact Account workflow history.", "bearer", undefined, "NativeCustomerWorkflowsResponse",
-    { ...customerDetailOptions, queryParameters: [...customerWorkspaceQuery, queryParameter("limit", "integer", { minimum: 1, maximum: 100, defaultValue: 50 })] }),
-  operation("customers.salesforce.status", "GET", "/api/customer-accounts/salesforce", "Read CRM connection and reviewed write status; grants no OAuth or provider write authority.", "bearer", undefined, "NativeCustomerSalesforceStatusResponse",
-    { ...privateReadOptions, queryParameters: customerWorkspaceQuery }),
-  operation("customers.create", "POST", "/api/customer-accounts", "Create one exact Account intent with durable acceptance and no external CRM write.", "bearer", "NativeCustomerCreateRequest", "NativeCustomerCreateResponse",
-    { ...privateReadOptions, errorStatuses: [400, 401, 403, 404, 409, 413, 415, 503], headerParameters: pluginMutationHeaders, requestBodyMaxBytes: 250_000, successStatuses: [201] }),
-  operation("customers.update", "PATCH", "/api/customer-accounts/{id}", "Revise the exact Account intent and replay its original immutable acceptance.", "bearer", "NativeCustomerReviseRequest", "NativeCustomerReviseResponse",
-    { ...customerDetailOptions, errorStatuses: [400, 401, 403, 404, 409, 413, 415, 503], headerParameters: pluginMutationHeaders, requestBodyMaxBytes: 250_000 }),
   operation("library.list", "GET", "/api/library", "Read a bounded authorized page of current Library sources.", "bearer", undefined, "NativeLibraryListResponse",
     { ...privateReadOptions, queryParameters: nativeLibraryListQueryMetadata }),
   operation("library.get", "GET", "/api/library/{id}", "Resolve the exact current Library source and available citations.", "bearer", undefined, "NativeLibraryReadResponse",
@@ -1992,24 +1988,8 @@ const v36Operations: readonly NativeOperation[] = [
     queryParameters: [queryParameter("acceptanceKeySha256", "string", { required: true, minLength: 64, maxLength: 64, pattern: "^[a-f0-9]{64}$" })],
   }),
 ];
-
-const customerHealthEvaluationOptions = {
-  ...customerDetailOptions, queryPolicy: "exact",
-  errorResponseSchema: "NativeCustomerHealthEvaluationError",
-} as const satisfies Partial<NativeOperation>;
 const v37Operations: readonly NativeOperation[] = [
   ...v36Operations,
-  operation("customers.health.evaluate", "POST", "/api/customer-accounts/{id}/health", "Evaluate the exact reviewed Account with current authorized facts and deterministic policy, retaining immutable acceptance.", "bearer", "NativeCustomerHealthEvaluateRequest", "NativeCustomerHealthEvaluateResponse", {
-    ...customerHealthEvaluationOptions, headerParameters: pluginMutationHeaders,
-    requestBodyMaxBytes: 4096, successStatuses: [200, 201],
-    errorStatuses: [400, 401, 403, 404, 409, 413, 415, 500, 503],
-  }),
-  operation("customers.health.evaluations.get", "GET", "/api/customer-accounts/{id}/health/evaluations/{evaluationId}", "Read one exact authorized health evaluation receipt without repeating the evaluation.", "bearer", undefined, "NativeCustomerHealthEvaluationReadResponse", {
-    ...customerHealthEvaluationOptions, errorStatuses: [400, 401, 403, 404, 409, 500, 503],
-    pathParameters: [...customerDetailOptions.pathParameters,
-      { name: "evaluationId", minLength: 91, maxLength: 91, pattern: "^customer-health-evaluation:[a-f0-9]{64}$" }],
-    queryParameters: [queryParameter("workspaceId", "string", { required: true, minLength: 1, maxLength: 240 })],
-  }),
 ];
 
 const memoryPromotionOptions = {
@@ -2017,15 +1997,6 @@ const memoryPromotionOptions = {
   errorResponseSchema: "NativeMemoryPromotionError",
   errorStatuses: [400, 401, 403, 404, 409, 500, 503],
 } as const satisfies Partial<NativeOperation>;
-const customerWorkflowOptions = {
-  ...customerDetailOptions, queryPolicy: "exact",
-  errorResponseSchema: "NativeCustomerWorkflowError",
-  errorStatuses: [400, 401, 403, 404, 409, 500, 503],
-} as const satisfies Partial<NativeOperation>;
-const customerWorkflowRunParameters = [
-  ...customerDetailOptions.pathParameters,
-  { name: "runId", minLength: 85, maxLength: 85, pattern: "^customer-success-run:[a-f0-9]{64}$" },
-] as const;
 const agentSkillNativeOptions = {
   ...privateReadOptions, queryPolicy: "exact",
   errorResponseSchema: "NativeAgentSkillError",
@@ -2051,17 +2022,6 @@ const meetingRecordingOptions = {
 const meetingRecordingQuery = [
   queryParameter("workspaceId", "string", { required: true, minLength: 11, maxLength: 240, pattern: "^workspace:[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$" }),
   queryParameter("meetingId", "string", { required: true, minLength: 44, maxLength: 44, pattern: "^meeting:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }),
-];
-const customerFactOptions = {
-  ...customerDetailOptions, queryPolicy: "exact", errorResponseSchema: "NativeCustomerFactMutationError",
-  errorStatuses: [400, 401, 403, 404, 409, 500, 503],
-} as const satisfies Partial<NativeOperation>;
-const salesforceActionOptions = {
-  ...privateReadOptions, queryPolicy: "exact", errorResponseSchema: "NativeSalesforceActionError",
-  errorStatuses: [400, 401, 403, 404, 409, 500, 503],
-} as const satisfies Partial<NativeOperation>;
-const salesforceActionQuery = [
-  queryParameter("workspaceId", "string", { required: true, minLength: 11, maxLength: 240, pattern: "^workspace:[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$" }),
 ];
 const knowledgeCognitionOptions = {
   ...privateReadOptions, queryPolicy: "exact", errorResponseSchema: "NativeKnowledgeCognitionError",
@@ -2132,24 +2092,6 @@ const v38Operations: readonly NativeOperation[] = [
     ...memoryPromotionOptions, headerParameters: pluginMutationHeaders,
     requestBodyMaxBytes: 4096, errorStatuses: [400, 401, 403, 404, 409, 413, 415, 500, 503],
   }),
-  operation("customers.workflows.start", "POST", "/api/customer-accounts/{id}/workflows", "Create the exact reviewed workflow project and task plan atomically, without executing it.", "bearer", "NativeCustomerWorkflowStartRequest", "NativeCustomerWorkflowMutationResponse", {
-    ...customerWorkflowOptions, headerParameters: pluginMutationHeaders,
-    requestBodyMaxBytes: 32768, successStatuses: [200, 201],
-    errorStatuses: [400, 401, 403, 404, 409, 413, 415, 500, 503],
-  }),
-  operation("customers.workflows.outcome", "PATCH", "/api/customer-accounts/{id}/workflows", "Record a reviewed outcome against exact Account, run, definition and artifact evidence pins.", "bearer", "NativeCustomerWorkflowOutcomeRequest", "NativeCustomerWorkflowMutationResponse", {
-    ...customerWorkflowOptions, headerParameters: pluginMutationHeaders,
-    requestBodyMaxBytes: 131072, errorStatuses: [400, 401, 403, 404, 409, 413, 415, 500, 503],
-  }),
-  operation("customers.workflows.get", "GET", "/api/customer-accounts/{id}/workflows/{runId}", "Read one exact currently authorized workflow run, pinned definition and available project progress.", "bearer", undefined, "NativeCustomerWorkflowRunReadResponse", {
-    ...customerWorkflowOptions, pathParameters: customerWorkflowRunParameters,
-    queryParameters: [queryParameter("workspaceId", "string", { required: true, minLength: 1, maxLength: 240 })],
-  }),
-  operation("customers.workflows.mutations.get", "GET", "/api/customer-accounts/{id}/workflows/{runId}/mutations/{keySha256}", "Recover an exact workflow acceptance without creating or executing a plan or repeating an outcome.", "bearer", undefined, "NativeCustomerWorkflowAcceptanceReadResponse", {
-    ...customerWorkflowOptions, pathParameters: [...customerWorkflowRunParameters,
-      { name: "keySha256", minLength: 64, maxLength: 64, pattern: "^[a-f0-9]{64}$" }],
-    queryParameters: [queryParameter("workspaceId", "string", { required: true, minLength: 1, maxLength: 240 })],
-  }),
   operation("meetings.recordings.review", "GET", "/api/capture/recordings/{id}/processing-review", "Review an exact owned linked recording, current Meeting consent and reusable transcript checkpoints.", "bearer", undefined, "NativeMeetingRecordingReviewResponse", {
     ...meetingRecordingOptions, queryParameters: meetingRecordingQuery,
   }),
@@ -2160,26 +2102,6 @@ const v38Operations: readonly NativeOperation[] = [
   operation("meetings.recordings.processing.get", "GET", "/api/capture/recordings/{id}/processing/{keySha256}", "Observe exact processing acceptance and separate current media and Knowledge status without queueing or retrying work.", "bearer", undefined, "NativeMeetingRecordingReadResponse", {
     ...meetingRecordingOptions, pathParameters: [...meetingRecordingOptions.pathParameters,
       { name: "keySha256", minLength: 64, maxLength: 64, pattern: "^[a-f0-9]{64}$" }], queryParameters: meetingRecordingQuery,
-  }),
-  operation("customers.facts.record", "POST", "/api/customer-accounts/{id}/facts", "Create, revise or retract an exact reviewed manual Account fact with explicit operator-assertion provenance and immutable acceptance.", "bearer", "NativeCustomerFactMutationRequest", "NativeCustomerFactMutationResponse", {
-    ...customerFactOptions, headerParameters: pluginMutationHeaders, requestBodyMaxBytes: 65536, successStatuses: [200, 201],
-    errorStatuses: [400, 401, 403, 404, 409, 413, 415, 500, 503],
-  }),
-  operation("customers.facts.acceptance.get", "GET", "/api/customer-accounts/{id}/facts/acceptances/{keySha256}", "Read an exact currently authorized manual fact acceptance without recording another revision.", "bearer", undefined, "NativeCustomerFactAcceptanceReadResponse", {
-    ...customerFactOptions, pathParameters: [...customerDetailOptions.pathParameters,
-      { name: "keySha256", minLength: 64, maxLength: 64, pattern: "^[a-f0-9]{64}$" }],
-    queryParameters: [queryParameter("workspaceId", "string", { required: true, minLength: 1, maxLength: 240 })],
-  }),
-  operation("customers.salesforce.actions.review", "GET", "/api/customer-accounts/salesforce/actions", "Review the exact current owned Salesforce connection and available sync, reconciliation and disconnect actions.", "bearer", undefined, "NativeSalesforceActionReviewResponse", {
-    ...salesforceActionOptions, queryParameters: salesforceActionQuery,
-  }),
-  operation("customers.salesforce.actions.submit", "POST", "/api/customer-accounts/salesforce/actions", "Admit a reviewed Salesforce action once, preserving immutable acceptance and separately reporting provider settlement.", "bearer", "NativeSalesforceActionRequest", "NativeSalesforceActionSubmitResponse", {
-    ...salesforceActionOptions, headerParameters: pluginMutationHeaders, requestBodyMaxBytes: 16384,
-    successStatuses: [200, 201], errorStatuses: [400, 401, 403, 404, 409, 413, 415, 500, 503],
-  }),
-  operation("customers.salesforce.actions.get", "GET", "/api/customer-accounts/salesforce/actions/{keySha256}", "Observe the exact Salesforce acceptance and settlement without repeating provider work.", "bearer", undefined, "NativeSalesforceActionReadResponse", {
-    ...salesforceActionOptions, queryParameters: salesforceActionQuery,
-    pathParameters: [{ name: "keySha256", minLength: 64, maxLength: 64, pattern: "^[a-f0-9]{64}$" }],
   }),
   operation("knowledge.cognification.list", "GET", "/api/knowledge/cognification/reviews", "Read a bounded list of currently authorized private source-map reviews.", "bearer", undefined, "NativeKnowledgeCognitionListResponse", {
     ...knowledgeCognitionOptions, queryParameters: [
@@ -2446,17 +2368,6 @@ const v47Operations: readonly NativeOperation[] = [
     }),
 ];
 
-const v48Operations: readonly NativeOperation[] = v47Operations.map((entry) => {
-  if (entry.id.startsWith("responsibilities.")) return {
-    ...entry, summary: `${entry.summary} v48 also supports canonical work-item tracking; v47 receives an explicit upgrade error for work-item records.`,
-  };
-  if (entry.id === "agents.adaptations.manage") return {
-    ...entry, summary: "Check eligibility, compare current and proposed guidance on owner-supplied text examples, activate measured improvement, or roll back one adaptation.",
-    requestBodyMaxBytes: 49_152,
-  };
-  return entry;
-});
-
 const nativeCompanionPreferencesResponseSchema = z.object({
   schemaVersion: z.literal(1), contract: z.literal(COMPANION_PREFERENCES_CONTRACT),
   snapshot: z.object({
@@ -2477,6 +2388,19 @@ const nativeCompanionPreferencesResponseSchema = z.object({
 }).strict();
 
 export const nativeContractSchemas = Object.freeze({
+  ...nativeCsmSchemas,
+  ...nativeListenSchemas,
+  NativeEvidenceRunResponse: z.object({
+    run: z.object({
+      delegatedWork: z.object({
+        workflowId: z.string().min(1).max(200),
+        threadId: z.string().min(1).max(200),
+        status: z.literal("accepted"),
+      }).strict().optional(),
+    }).passthrough().nullable(),
+  }).passthrough(),
+  NativePersonalProfileRequest: personalProfileChangeSchema,
+  NativePersonalProfileResponse: personalProfileResponseSchema,
   ...nativeGooglePersonalSchemas,
   ...nativeConnectorSchemas,
   ...nativeConnectorCredentialRemovalSchemas,
@@ -2488,15 +2412,8 @@ export const nativeContractSchemas = Object.freeze({
   ...nativeConnectorGithubUpgradeSchemas,
   ...nativeResponsibilityContractSchemas,
   ...nativeMeetingContractSchemas,
-  ...nativeCustomerContractSchemas,
-  ...nativeCustomerDetailContractSchemas,
-  ...nativeCustomerMutationContractSchemas,
-  ...nativeCustomerHealthMutationSchemas,
-  ...nativeCustomerWorkflowMutationSchemas,
   ...nativeAgentSkillMutationSchemas,
   ...nativeMeetingRecordingSchemas,
-  ...nativeCustomerFactMutationSchemas,
-  ...nativeSalesforceActionSchemas,
   ...nativeKnowledgeCognificationSchemas,
   ...nativeKnowledgeSourceDeletionSchemas,
   ...nativeMemoryGraphReadSchemas,
@@ -2578,9 +2495,20 @@ export const nativeContractSchemas = Object.freeze({
   NativeRealtimeVoiceSessionStartResponse: nativeRealtimeVoiceSessionStartResponseSchema,
   NativeRealtimeVoiceSessionFinishRequest: nativeRealtimeVoiceSessionFinishRequestSchema,
   NativeRealtimeVoiceSessionFinishResponse: nativeRealtimeVoiceSessionFinishResponseSchema,
+  NativeVoiceConversationStartRequest: voiceConversationStartRequestSchema,
+  NativeVoiceConversationStartResponse: voiceConversationStartResponseSchema,
+  NativeVoiceConversationFinishRequest: voiceConversationFinishRequestSchema,
+  NativeVoiceConversationFinishResponse: voiceConversationFinishResponseSchema,
+  NativeVoiceConversationTurnsRequest: conversationVoiceTurnsRequestSchema,
+  NativeVoiceConversationTurnsResponse: conversationVoiceTurnsResponseSchema,
   NativeSpeechStreamRequest: nativeSpeechStreamRequestSchema,
   NativeConversationRequest: nativeConversationRequestSchema,
   NativeConversationEvent: nativeConversationEventSchema,
+  NativeLocalAndroidDeviceUpdateRequest: localAndroidDeviceUpdateSchema,
+  NativeLocalAndroidDeviceResponse: nativeLocalAndroidDeviceResponseSchema,
+  NativeLocalAndroidDeviceReadResponse: nativeLocalAndroidDeviceReadResponseSchema,
+  NativeLocalAndroidClaimResponse: nativeLocalAndroidClaimResponseSchema,
+  NativeLocalAndroidCompletionRequest: localAndroidCompletionRequestSchema,
   NativeLocalComputerDeviceUpdateRequest: localComputerDeviceUpdateSchema,
   NativeLocalComputerDeviceResponse: nativeLocalComputerDeviceResponseSchema,
   NativeLocalComputerDeviceReadResponse: nativeLocalComputerDeviceReadResponseSchema,
@@ -2598,6 +2526,9 @@ export const nativeContractSchemas = Object.freeze({
     supportedVersions: z.tuple([
       z.literal(NATIVE_API_CURRENT_VERSION),
       z.literal(NATIVE_API_PREVIOUS_VERSION),
+      z.literal(54),
+      z.literal(53),
+      z.literal(52),
     ]),
     versions: z.array(z.object({
       version: z.number().int().positive(),
@@ -2606,11 +2537,38 @@ export const nativeContractSchemas = Object.freeze({
       openapi: z.string(),
       events: z.string(),
       fixtures: z.string(),
-    }).strict()).length(2),
+    }).strict()).length(5),
   }).strict(),
 });
 
 export function nativeOperationsForVersion(version: number): readonly NativeOperation[] | undefined {
+  if (version === 56) return nativeOperationsForVersion(55)!.map((entry) => {
+    if (entry.id.startsWith("responsibilities.")) return {
+      ...entry, summary: `${entry.summary} v56 also supports canonical work-item tracking; older clients receive an explicit upgrade error for work-item records.`,
+    };
+    if (entry.id === "agents.adaptations.manage") return {
+      ...entry, summary: "Check eligibility, compare current and proposed guidance on owner-supplied text examples, activate measured improvement, or roll back one adaptation.",
+      requestBodyMaxBytes: 49_152,
+    };
+    return entry;
+  });
+  if (version === 55) return [...nativeOperationsForVersion(54)!,
+    operation("csm.clients.list", "GET", "/api/csm/clients", "Read your current client briefs.", "bearer", undefined, "NativeCsmClientListResponse"),
+    operation("csm.client.get", "GET", "/api/projects/{id}/csm", "Read one authorized client brief and its exact source links.", "bearer", undefined, "NativeCsmClientResponse"),
+    operation("csm.client.save", "PUT", "/api/projects/{id}/csm", "Save the reviewed client brief against its inspected revision.", "bearer", "NativeCsmProfileRequest", "NativeCsmClientResponse", { requestBodyMaxBytes: 32000 }),
+    operation("csm.client.sources.link", "POST", "/api/projects/{id}/csm/sources", "Link an inspected Library version to this client.", "bearer", "NativeCsmSourceRequest", "NativeCsmClientResponse", { requestBodyMaxBytes: 4000 }),
+    operation("csm.client.sources.unlink", "DELETE", "/api/projects/{id}/csm/sources", "Remove a client source link without deleting its original.", "bearer", "NativeCsmSourceDeleteRequest", "NativeCsmClientResponse", { requestBodyMaxBytes: 4000 }),
+    operation("csm.role.get", "GET", "/api/csm/role-context", "Read your private CSM role notes and sources.", "bearer", undefined, "NativeCsmRoleResponse"),
+    operation("csm.role.save", "PUT", "/api/csm/role-context", "Save your CSM role notes against their inspected revision.", "bearer", "NativeCsmRoleRequest", "NativeCsmRoleResponse", { requestBodyMaxBytes: 100000 }),
+    operation("csm.role.sources.link", "POST", "/api/csm/role-context/sources", "Link an inspected private Library source to your role context.", "bearer", "NativeCsmSourceRequest", "NativeCsmRoleResponse", { requestBodyMaxBytes: 4000 }),
+    operation("csm.role.sources.unlink", "DELETE", "/api/csm/role-context/sources", "Remove a role source link without deleting its original.", "bearer", "NativeCsmSourceDeleteRequest", "NativeCsmRoleResponse", { requestBodyMaxBytes: 4000 }),
+  ];
+  if (version === 54) return [...nativeOperationsForVersion(53)!,
+    operation("listen.grant", "POST", "/api/mobile/listen/grant", "Enable or revoke this phone's background transcript, source-memory and Knowledge processing. Captured instructions never authorize commands.", "bearer", "NativeListenGrantRequest", "NativeListenGrantResponse", { requestBodyMaxBytes: 4096 }),
+    operation("listen.ingest", "POST", "/api/mobile/listen/ingest", "Upload only owned recording chunks using a Listen grant. JSON start/complete/status or multipart segment; never returns transcript content. Audio is removed after processing.", "listen", "NativeListenIngestRequest", "NativeListenIngestResponse", { requestBodyMaxBytes: 3211264, successStatuses: [200, 202], errorStatuses: [400, 401, 403, 404, 409, 410, 413, 415, 503] }),
+    operation("listen.conversations.list", "GET", "/api/mobile/listen/conversations", "Read up to 50 of your recent phone conversations and call notes.", "bearer", undefined, "NativeListenConversationListResponse"),
+    operation("listen.conversations.get", "GET", "/api/mobile/listen/conversations/{id}", "Read a conversation's source transcript, summary, cited actions and relationship notes.", "bearer", undefined, "NativeListenConversationResponse"),
+  ];
   if (version === 1) return v1Operations;
   if (version === 2) return v2Operations;
   if (version === 3) return v3Operations;
@@ -2657,8 +2615,29 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 44) return v44Operations;
   if (version === 45) return v45Operations;
   if (version === 46) return v46Operations;
-  if (version === 47) return v47Operations;
-  if (version === 48) return v48Operations;
+  if (version === 47 || version === 48) return v47Operations;
+  if (version === 49) return [...v47Operations,
+    operation("research.control", "POST", "/api/workflows/{id}/signal", "Pause, resume, or stop your Deep research.", "bearer", "JsonObject", "JsonObject")];
+  if (version === 50) return [...nativeOperationsForVersion(49)!,
+    operation("voice.conversation.session.start", "POST", "/api/voice/conversation/session", "Start or reconnect an actor-owned continuous voice conversation.", "bearer", "NativeVoiceConversationStartRequest", "NativeVoiceConversationStartResponse", { requestBodyMaxBytes: 64_000 }),
+    operation("voice.conversation.session.finish", "PATCH", "/api/voice/conversation/session", "End one continuous voice conversation without retaining audio.", "bearer", "NativeVoiceConversationFinishRequest", "NativeVoiceConversationFinishResponse", { requestBodyMaxBytes: 8000 }),
+    operation("voice.conversation.turns", "POST", "/api/voice/conversation/turns", "Save bounded client-observed captions in the owned conversation.", "bearer", "NativeVoiceConversationTurnsRequest", "NativeVoiceConversationTurnsResponse", { requestBodyMaxBytes: 64_000 }),
+  ];
+  if (version === 53) return [...nativeOperationsForVersion(52)!,
+    operation("localAndroid.device", "GET", "/api/mobile/android-control/device", "Read readiness of this authenticated Android phone.", "bearer", undefined, "NativeLocalAndroidDeviceReadResponse"),
+    operation("localAndroid.device.update", "PUT", "/api/mobile/android-control/device", "Renew this phone's explicit control readiness lease.", "bearer", "NativeLocalAndroidDeviceUpdateRequest", "NativeLocalAndroidDeviceResponse"),
+    operation("localAndroid.command.claim", "POST", "/api/mobile/android-control/commands/claim", "Claim one governed run-bound phone command.", "bearer", "NativeLocalComputerClaimRequest", "NativeLocalAndroidClaimResponse"),
+    operation("localAndroid.command.complete", "POST", "/api/mobile/android-control/commands/{id}/complete", "Acknowledge one exact leased phone command.", "bearer", "NativeLocalAndroidCompletionRequest", "NativeLocalComputerCompletionResponse", { requestBodyMaxBytes: 2_200_000 }),
+    operation("localAndroid.stop", "POST", "/api/mobile/android-control/stop", "Stop this phone's control sessions and pending commands.", "bearer", "NativeLocalComputerStopRequest", "NativeLocalComputerStopResponse"),
+  ];
+  if (version === 52) return nativeOperationsForVersion(51)!.map(descriptor =>
+    descriptor.id === "evidence.run"
+      ? { ...descriptor, responseSchema: "NativeEvidenceRunResponse" }
+      : descriptor);
+  if (version === 51) return [...nativeOperationsForVersion(50)!,
+    operation("personal.profile.get", "GET", "/api/personal-context/profile", "Read About me for the authenticated owner.", "bearer", undefined, "NativePersonalProfileResponse", { ...privateReadOptions, headerParameters: companionOwnerHeaders }),
+    operation("personal.profile.update", "PUT", "/api/personal-context/profile", "Save or clear the owner's About me profile with an optimistic revision. Does not grant personal memory or connector access.", "bearer", "NativePersonalProfileRequest", "NativePersonalProfileResponse", { ...privateReadOptions, headerParameters: [...companionOwnerHeaders, ...pluginMutationHeaders], requestBodyMaxBytes: 48_000 }),
+  ];
   return undefined;
 }
 
@@ -2670,6 +2649,7 @@ export function nativeContractDiscovery() {
     previousVersion: NATIVE_API_PREVIOUS_VERSION,
     supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [
       typeof NATIVE_API_CURRENT_VERSION, typeof NATIVE_API_PREVIOUS_VERSION,
+      54, 53, 52,
     ],
     versions: NATIVE_API_SUPPORTED_VERSIONS.map((version) => ({
       version,

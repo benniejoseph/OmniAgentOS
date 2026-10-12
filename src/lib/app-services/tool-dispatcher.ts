@@ -41,6 +41,16 @@ import {
 } from "@/lib/app-services/workspaces";
 import { showTruthfulIntegrationsService } from "@/lib/app-services/integrations";
 import { showSourceCoverageService } from "@/lib/app-services/source-coverage";
+import { listWorkspaceLibraryService, showWorkspaceLibraryItemService } from "@/lib/app-services/library";
+import { installPluginService, listPluginsService, previewCatalogPluginService, transitionPluginService } from "@/lib/app-services/plugins";
+import { showUsageSummaryService } from "@/lib/app-services/usage";
+import { startResearchService } from "@/lib/app-services/research";
+import { showPersonalProfileService, updatePersonalProfileService } from "@/lib/app-services/personal-profile";
+import {
+  linkCsmClientSourceService, linkCsmRoleSourceService, listCsmClientsService,
+  showCsmClientService, showCsmRoleService, unlinkCsmClientSourceService,
+  unlinkCsmRoleSourceService, updateCsmClientService, updateCsmRoleService,
+} from "@/lib/app-services/csm-controls";
 import {
   generateMarketAnalysisVersionService,
   generateMarketForecastService,
@@ -92,30 +102,6 @@ import {
   showMeetingService,
   updateMeetingService,
 } from "@/lib/app-services/meetings";
-import {
-  createCustomerAccountService,
-  listCustomerAccountsService,
-  recordCustomerFactService,
-  reviseCustomerAccountService,
-  showCustomerAccountService,
-} from "@/lib/app-services/customer-accounts";
-import {
-  configureSalesforceWritesService,
-  executeSalesforceRecordWriteService,
-} from "@/lib/app-services/salesforce-writes";
-import {
-  evaluateCustomerHealthService,
-  showCustomerHealthService,
-} from "@/lib/app-services/customer-health";
-import {
-  listCustomerSuccessWorkflowsService,
-  recordCustomerSuccessWorkflowOutcomeService,
-  startCustomerSuccessWorkflowService,
-} from "@/lib/app-services/customer-success-workflows";
-import {
-  showCustomerSuccessIntelligenceService,
-  showCustomerSuccessPortfolioService,
-} from "@/lib/app-services/customer-success-intelligence";
 import { createAppServiceCaller } from "@/lib/app-services/contracts";
 import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
@@ -273,6 +259,27 @@ export async function executeFirstPartyAppTool(input: {
   const handlers: Record<string, () => Promise<unknown>> = {
     "app.workspaces.summary": () => getWorkspaceSummaryService(caller, input.toolInput as never),
     "app.workspaces.readiness": () => getWorkspaceReadinessService(caller, input.toolInput as never),
+    "app.usage.summary.show": () => showUsageSummaryService(caller, input.toolInput),
+    "app.research.start": () => startResearchService(caller, input.toolInput),
+    "app.personal_profile.show": () => showPersonalProfileService(caller, input.toolInput),
+    "app.personal_profile.update": () => updatePersonalProfileService(caller, input.toolInput),
+    "app.csm.clients.list": () => listCsmClientsService(caller, input.toolInput),
+    "app.csm.clients.show": () => showCsmClientService(caller, input.toolInput),
+    "app.csm.clients.update": () => updateCsmClientService(caller, input.toolInput),
+    "app.csm.clients.sources.link": () => linkCsmClientSourceService(caller, input.toolInput),
+    "app.csm.clients.sources.unlink": () => unlinkCsmClientSourceService(caller, input.toolInput),
+    "app.csm.role.show": () => showCsmRoleService(caller, input.toolInput),
+    "app.csm.role.update": () => updateCsmRoleService(caller, input.toolInput),
+    "app.csm.role.sources.link": () => linkCsmRoleSourceService(caller, input.toolInput),
+    "app.csm.role.sources.unlink": () => unlinkCsmRoleSourceService(caller, input.toolInput),
+    "app.library.list": () => listWorkspaceLibraryService(caller, input.toolInput as never),
+    "app.library.show": () => showWorkspaceLibraryItemService(caller, input.toolInput as never),
+    "app.plugins.list": () => listPluginsService(caller, input.toolInput as never),
+    "app.plugins.preview": () => previewCatalogPluginService(caller, input.toolInput),
+    "app.plugins.install": () => installPluginService(caller, input.toolInput as never),
+    "app.plugins.enable": () => transitionPluginService(caller, { ...input.toolInput, action: "enable" } as never),
+    "app.plugins.disable": () => transitionPluginService(caller, { ...input.toolInput, action: "disable" } as never),
+    "app.plugins.uninstall": () => transitionPluginService(caller, { ...input.toolInput, action: "uninstall" } as never),
     "app.integrations.overview.show": () => showTruthfulIntegrationsService(caller, input.toolInput as never),
     "app.sources.coverage.show": () => showSourceCoverageService(caller, input.toolInput as never),
     "app.market_research.overview.show": () => showMarketResearchOverviewService(caller),
@@ -299,29 +306,6 @@ export async function executeFirstPartyAppTool(input: {
     "app.meetings.commitments.list": () => listMeetingCommitmentsService(caller, input.toolInput as never),
     "app.meetings.commitments.propose": () => proposeMeetingCommitmentService(caller, input.toolInput as never),
     "app.meetings.commitments.resolve": () => resolveMeetingCommitmentService(caller, input.toolInput as never),
-    "app.customer_accounts.list": () => listCustomerAccountsService(caller, input.toolInput as never),
-    "app.customer_accounts.show": () => showCustomerAccountService(caller, input.toolInput as never),
-    "app.customer_accounts.portfolio.show": () => showCustomerSuccessPortfolioService(caller, input.toolInput as never),
-    "app.customer_accounts.intelligence.show": () => showCustomerSuccessIntelligenceService(caller, input.toolInput as never),
-    "app.customer_accounts.create": () => createCustomerAccountService(caller, input.toolInput as never),
-    "app.customer_accounts.revise": () => reviseCustomerAccountService(caller, input.toolInput as never),
-    "app.customer_accounts.facts.record": () => recordCustomerFactService(caller, input.toolInput as never),
-    "app.customer_accounts.health.show": () => showCustomerHealthService(caller, input.toolInput as never),
-    "app.customer_accounts.health.evaluate": () => evaluateCustomerHealthService(caller, input.toolInput as never),
-    "app.customer_accounts.workflows.list": () => listCustomerSuccessWorkflowsService(caller, input.toolInput as never),
-    "app.customer_accounts.workflows.start": () => startCustomerSuccessWorkflowService(caller, input.toolInput as never),
-    "app.customer_accounts.workflows.outcome.record": () => recordCustomerSuccessWorkflowOutcomeService(caller, input.toolInput as never),
-    "app.customer_accounts.salesforce.writes.configure": () => configureSalesforceWritesService(caller, input.toolInput as never),
-    "app.customer_accounts.salesforce.contact.create": () => executeSalesforceRecordWriteService(caller, "app.customer_accounts.salesforce.contact.create", input.toolInput),
-    "app.customer_accounts.salesforce.contact.update": () => executeSalesforceRecordWriteService(caller, "app.customer_accounts.salesforce.contact.update", input.toolInput),
-    "app.customer_accounts.salesforce.task.create": () => executeSalesforceRecordWriteService(caller, "app.customer_accounts.salesforce.task.create", input.toolInput),
-    "app.customer_accounts.salesforce.task.update": () => executeSalesforceRecordWriteService(caller, "app.customer_accounts.salesforce.task.update", input.toolInput),
-    "app.customer_accounts.salesforce.note.update": () => executeSalesforceRecordWriteService(caller, "app.customer_accounts.salesforce.note.update", input.toolInput),
-    "app.customer_accounts.salesforce.case.create": () => executeSalesforceRecordWriteService(caller, "app.customer_accounts.salesforce.case.create", input.toolInput),
-    "app.customer_accounts.salesforce.case.update": () => executeSalesforceRecordWriteService(caller, "app.customer_accounts.salesforce.case.update", input.toolInput),
-    "app.customer_accounts.salesforce.opportunity.create": () => executeSalesforceRecordWriteService(caller, "app.customer_accounts.salesforce.opportunity.create", input.toolInput),
-    "app.customer_accounts.salesforce.opportunity.update": () => executeSalesforceRecordWriteService(caller, "app.customer_accounts.salesforce.opportunity.update", input.toolInput),
-    "app.customer_accounts.salesforce.account.update": () => executeSalesforceRecordWriteService(caller, "app.customer_accounts.salesforce.account.update", input.toolInput),
     "app.projects.list": () => listProjectsService(caller, input.toolInput as never),
     "app.projects.show": () => showProjectService(caller, input.toolInput as never),
     "app.projects.create": () => createProjectService(caller, input.toolInput as never),

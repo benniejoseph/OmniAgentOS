@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_page_scaffold.dart';
 import 'meetings.dart';
 import 'meetings_commitments.dart';
 import 'meetings_snapshots.dart';
@@ -42,6 +44,7 @@ class MeetingDetailBody extends StatelessWidget {
         error: controller.detailError != null,
       );
     }
+    if (usesMobilePresentation()) return _MobileMeetingBody(view: this);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -241,6 +244,202 @@ class MeetingDetailBody extends StatelessWidget {
   }
 }
 
+class _MobileMeetingBody extends StatefulWidget {
+  const _MobileMeetingBody({required this.view});
+  final MeetingDetailBody view;
+  @override
+  State<_MobileMeetingBody> createState() => _MobileMeetingBodyState();
+}
+
+class _MobileMeetingBodyState extends State<_MobileMeetingBody> {
+  int _section = 0;
+  @override
+  Widget build(BuildContext context) {
+    final view = widget.view, controller = view.controller;
+    final snapshot = controller.detail;
+    final meeting = snapshot?.meeting;
+    if (!controller.readable || meeting == null || snapshot == null)
+      return const SizedBox.shrink();
+    final locale = MaterialLocalizations.of(context),
+        start = meeting.startAt.toLocal();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (controller.detailError != null)
+          MeetingNotice(
+            'This is the last loaded meeting. Refresh before relying on its current state.',
+            action: 'Retry',
+            onAction: controller.detailLoading
+                ? null
+                : controller.refreshDetail,
+            error: true,
+          ),
+        if (controller.detailLoading) const LinearProgressIndicator(),
+        Text(meeting.title, style: Theme.of(context).textTheme.headlineSmall),
+        const SizedBox(height: 8),
+        Text(
+          '${locale.formatFullDate(start)} · ${locale.formatTimeOfDay(TimeOfDay.fromDateTime(start))}',
+        ),
+        if (meeting.location.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Text(meeting.location),
+          ),
+        const SizedBox(height: 8),
+        Text(
+          meetingLabel(meeting.status),
+          style: Theme.of(context).textTheme.labelLarge
+              ?.copyWith(color: Theme.of(context).colorScheme.primary),
+        ),
+        const SizedBox(height: 20),
+        MobileSegmentBar<int>(
+          items: const [
+            (value: 0, label: 'Brief', icon: null),
+            (value: 1, label: 'Actions', icon: null),
+            (value: 2, label: 'Sources', icon: null),
+          ],
+          value: _section,
+          onChanged: (value) => setState(() => _section = value),
+        ),
+        const SizedBox(height: 20),
+        if (_section == 0) ...[
+          MobileSurface(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(
+                      Icons.short_text_rounded,
+                      color: Theme.of(context).colorScheme.primary,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      'The conversation at a glance',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                SelectableText(
+                  meeting.summary.isEmpty
+                      ? 'No summary has been saved yet.'
+                      : meeting.summary,
+                  style: Theme.of(context).textTheme.bodyLarge
+                      ?.copyWith(height: 1.6),
+                ),
+              ],
+            ),
+          ),
+          if (meeting.decisions.isNotEmpty)
+            MeetingSection(
+              'Decisions',
+              child: _Notes(meeting.decisions, empty: 'No decisions saved.'),
+            ),
+          MeetingDisclosure(
+            'People & consent',
+            subtitle:
+                '${meeting.participants.length} people · attendance and recording consent are separate',
+            children: [
+              if (meeting.participants.isEmpty)
+                const Text(
+                  'No participants are saved. Recording consent is unconfirmed.',
+                ),
+              for (final person in meeting.participants)
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(person.name),
+                  subtitle: Text(
+                    '${meetingLabel(person.role)}\nAttendance: ${meetingLabel(person.attendeeConsent)}\nRecording: ${meetingLabel(person.recordingConsent)}',
+                  ),
+                ),
+            ],
+          ),
+          if (view.actions != null) view.actions!,
+          MeetingDisclosure(
+            'Meeting details',
+            children: [
+              MeetingValue('Time zone', meeting.timezone),
+              MeetingValue('Access', meetingLabel(meeting.accessClass)),
+              MeetingValue('Meeting reference', meeting.id),
+              MeetingValue('Workspace reference', meeting.workspaceId),
+              MeetingValue('Revision', '${meeting.revision}'),
+              MeetingValue('Revision fingerprint', meeting.sha256),
+              MeetingValue('Consent fingerprint', meeting.consentSha256),
+            ],
+          ),
+        ],
+        if (_section == 1) ...[
+          MeetingSection(
+            'Commitments',
+            child: _Notes(
+              meeting.commitments,
+              empty: 'No commitments have been saved.',
+            ),
+          ),
+          MeetingSection(
+            'Follow-ups',
+            child: _Notes(
+              meeting.followUps,
+              empty: 'No follow-ups have been saved.',
+            ),
+          ),
+          MeetingSection(
+            'Ready for your review',
+            subtitle: 'Accepting a proposal creates its work item. A communication draft is created only when you explicitly choose it.',
+            child: _Commitments(
+              controller,
+              onReview: view.onReview,
+              disabledReason: view.reviewDisabledReason,
+            ),
+          ),
+        ],
+        if (_section == 2) ...[
+          if (view.recordings != null && meeting.workspaceId != null)
+            MeetingRecordingPanel(
+              key: ObjectKey(view.recordings),
+              controller: view.recordings!,
+              meeting: meeting,
+              active: view.active,
+              isCurrent: () =>
+                  controller.readable &&
+                  controller.detailError == null &&
+                  !controller.detailLoading &&
+                  controller.detail?.meeting.versionKey == meeting.versionKey,
+            ),
+          MeetingSection(
+            'Saved sources',
+            subtitle: 'These are saved references. Their presence does not confirm a current upstream connection.',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (meeting.evidence.isEmpty)
+                  const Text('No source links have been saved.'),
+                if (view.proposeDisabledReason != null)
+                  MeetingNotice(view.proposeDisabledReason!),
+                for (final evidence in meeting.evidence)
+                  _Source(
+                    evidence,
+                    snapshot.sources
+                        .where((source) => source.id == evidence.id)
+                        .firstOrNull,
+                    onPropose:
+                        view.proposeDisabledReason == null &&
+                            controller.detailError == null &&
+                            snapshot.context?.canWrite == true &&
+                            meeting.projectId != null
+                        ? view.onPropose
+                        : null,
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
 class _Notes extends StatelessWidget {
   const _Notes(this.notes, {required this.empty});
   final List<MeetingNote> notes;
@@ -328,7 +527,9 @@ class _Commitments extends StatelessWidget {
           ),
         if (snapshot != null) ...[
           Text(
-            '${snapshot.rows.length} loaded proposals · ${snapshot.meetingRevisionId}',
+            usesMobilePresentation()
+                ? '${snapshot.rows.length} proposed follow-ups'
+                : '${snapshot.rows.length} loaded proposals · ${snapshot.meetingRevisionId}',
           ),
           if (!controller.currentCommitments)
             MeetingNotice(
@@ -345,29 +546,54 @@ class _Commitments extends StatelessWidget {
                   ? 'Proposed · review required'
                   : 'Recorded ${meetingLabel(row.decision!).toLowerCase()}',
               children: [
-                MeetingValue('Proposal', row.id),
-                MeetingValue('Proposal SHA-256', row.sha256),
-                MeetingValue(
-                  'Evidence meeting revision',
-                  row.meetingRevisionId,
-                ),
-                MeetingValue('Media revision', row.mediaRevisionId),
+                if (usesMobilePresentation())
+                  MeetingDisclosure(
+                    'Source details',
+                    children: [
+                      MeetingValue('Proposal', row.id),
+                      MeetingValue('Proposal SHA-256', row.sha256),
+                      MeetingValue(
+                        'Evidence meeting revision',
+                        row.meetingRevisionId,
+                      ),
+                      MeetingValue('Media revision', row.mediaRevisionId),
+                      MeetingValue(
+                        'Owner evidence',
+                        row.proposal['ownership']['authority'] as String,
+                      ),
+                      MeetingValue(
+                        'Due-date evidence',
+                        row.proposal['dueDate']['authority'] as String,
+                      ),
+                    ],
+                  )
+                else ...[
+                  MeetingValue('Proposal', row.id),
+                  MeetingValue('Proposal SHA-256', row.sha256),
+                  MeetingValue(
+                    'Evidence meeting revision',
+                    row.meetingRevisionId,
+                  ),
+                  MeetingValue('Media revision', row.mediaRevisionId),
+                ],
                 if (row.meetingRevisionId != snapshot.meetingRevisionId)
                   const MeetingNotice(
                     'Historical proposal: its evidence belongs to an earlier meeting revision.',
                   ),
-                MeetingValue(
-                  'Owner evidence',
-                  row.proposal['ownership']['authority'] as String,
-                ),
+                if (!usesMobilePresentation())
+                  MeetingValue(
+                    'Owner evidence',
+                    row.proposal['ownership']['authority'] as String,
+                  ),
                 MeetingValue(
                   'Proposed owner',
                   row.proposal['ownership']['displayName'] as String?,
                 ),
-                MeetingValue(
-                  'Due-date evidence',
-                  row.proposal['dueDate']['authority'] as String,
-                ),
+                if (!usesMobilePresentation())
+                  MeetingValue(
+                    'Due-date evidence',
+                    row.proposal['dueDate']['authority'] as String,
+                  ),
                 MeetingValue(
                   'Proposed due date',
                   row.proposal['dueDate']['dueAt'] as String?,
@@ -431,7 +657,11 @@ class _Commitments extends StatelessWidget {
                             row.meetingRevisionId == snapshot.meetingRevisionId
                         ? () => onReview!(row)
                         : null,
-                    child: const Text('Review exact follow-up'),
+                    child: Text(
+                      usesMobilePresentation()
+                          ? 'Review action'
+                          : 'Review exact follow-up',
+                    ),
                   ),
               ],
             ),
@@ -607,26 +837,47 @@ class MeetingCitationView extends StatelessWidget {
   const MeetingCitationView(this.citation, {super.key});
   final MeetingCitation citation;
   @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.symmetric(vertical: 8),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          '${citation.speaker} · segment ${citation.segmentIndex} · ${(citation.startMs / 1000).toStringAsFixed(1)}–${(citation.endMs / 1000).toStringAsFixed(1)} seconds',
-        ),
-        SelectableText(
-          citation.turnId,
-          style: Theme.of(context).textTheme.bodySmall,
-        ),
-        if (citation.participantId != null)
-          SelectableText(
-            citation.participantId!,
-            style: Theme.of(context).textTheme.bodySmall,
+  Widget build(BuildContext context) => usesMobilePresentation()
+      ? ExpansionTile(
+          tilePadding: EdgeInsets.zero,
+          leading: const Icon(Icons.format_quote_rounded, size: 20),
+          title: Text(
+            citation.speaker,
+            style: Theme.of(context).textTheme.labelLarge,
           ),
-      ],
-    ),
-  );
+          subtitle: Text(
+            'At ${(citation.startMs / 1000).toStringAsFixed(1)}–${(citation.endMs / 1000).toStringAsFixed(1)} seconds in the recording',
+          ),
+          expansionAnimationStyle: MediaQuery.disableAnimationsOf(context)
+              ? AnimationStyle.noAnimation
+              : null,
+          children: [
+            MeetingValue('Source segment', '${citation.segmentIndex}'),
+            MeetingValue('Turn reference', citation.turnId),
+            if (citation.participantId != null)
+              MeetingValue('Participant reference', citation.participantId!),
+          ],
+        )
+      : Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '${citation.speaker} · segment ${citation.segmentIndex} · ${(citation.startMs / 1000).toStringAsFixed(1)}–${(citation.endMs / 1000).toStringAsFixed(1)} seconds',
+              ),
+              SelectableText(
+                citation.turnId,
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              if (citation.participantId != null)
+                SelectableText(
+                  citation.participantId!,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+            ],
+          ),
+        );
 }
 
 class MeetingTurns extends StatefulWidget {

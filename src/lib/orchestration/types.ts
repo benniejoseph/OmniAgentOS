@@ -2,7 +2,7 @@ import type { RequestMemoryAccessV1 } from "@/lib/memory/request-access";
 import type { RequestPersonalContextMemoryAccessV1 } from "@/lib/memory/personal-context-access";
 import type { RequestSharedMemoryAccessV1 } from "@/lib/memory/shared-context";
 import type { RequestEntityAccessV1 } from "@/lib/entities/request-access";
-import type { GroundingReport } from "@/lib/rag/citations";
+import type { CitationSource, GroundingReport } from "@/lib/rag/citations";
 import type { ContextSelectionLockBinding } from "@/lib/rag/context-selection-lock";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
 import type { SecurityContext } from "@/lib/security/types";
@@ -19,6 +19,10 @@ import type {
 } from "@/lib/models/command-selection";
 import type { ModelRouteDegradation } from "@/lib/settings/runtime-models";
 import type { VoiceCommandInput } from "@/lib/voice/command-input";
+import type { ResearchOptions, ResearchProgress } from "@/lib/research/contracts";
+import type { CompanionPersonality } from "@/lib/companion/personality";
+import type { CompanionLanguageStyle } from "@/lib/companion/language-style";
+import type { PersonalProfileRuntimeReceipt } from "@/lib/personal-context/contracts";
 
 export type ChatRole = "user" | "assistant";
 
@@ -29,7 +33,7 @@ export type ChatMessage = {
 
 export type AgentMode = "orchestrate" | "research" | "execute" | "learn";
 /** Active Computer Use surfaces. Local control is always owner-selected. */
-export type ComputerUseTarget = "local_macos";
+export type ComputerUseTarget = "local_macos" | "local_android";
 /**
  * Persisted runs can outlive a release. Keep the retired value readable so a
  * legacy continuation can be terminated explicitly instead of being dropped
@@ -112,6 +116,10 @@ export type AgentHarnessEvent = {
   skillIds: string[];
   toolboxSha256: string;
   instructionsSha256: string;
+  /** Content-free delivery receipt; the compiled instruction digest remains the replay pin. */
+  companionLanguageStyle?: CompanionLanguageStyle;
+  /** Content-free About me inclusion receipt; contains no profile text. */
+  personalProfile?: PersonalProfileRuntimeReceipt;
   maxToolSteps: number;
   maxToolCallsPerTurn: number;
   maxToolResultChars: number;
@@ -136,6 +144,7 @@ export type AgentHarnessEvent = {
 };
 
 export type AgentEvent =
+  | { type: "research_progress"; progress: ResearchProgress }
   | { type: "run"; runId: string; threadId?: string; missionId?: string }
   | {
       type: "delegated";
@@ -190,6 +199,9 @@ export type AgentEvent =
 
 export type AgentRunRequest = {
   messages: ChatMessage[];
+  /** Fixed delivery choice, applied only after live direct-conversation admission. */
+  companionPersonality?: CompanionPersonality;
+  research?: ResearchOptions;
   /** Trusted server-owned identity for a new root run. */
   runId?: string;
   /** Explicit owner-selected execution surface. Never inferred or silently changed. */
@@ -202,6 +214,11 @@ export type AgentRunRequest = {
     id: string;
     name: string;
   }>[];
+  /** Fresh capabilities of the exact native session admitted by the server. */
+  localComputerCapabilities?: Readonly<{
+    visualControlReady: boolean;
+    commandRunnerReady: boolean;
+  }>;
   /**
    * Live authenticated request identity for owner-scoped governed tools.
    * This value is never persisted in a continuation; approval resumes under
@@ -328,5 +345,7 @@ export type AgentRunRequest = {
     receiptSha256: string;
     selectionSha256: string;
     pinCount: number;
+    /** Server-authorized canonical excerpts included in this exact context. */
+    citationSources?: readonly CitationSource[];
   };
 };

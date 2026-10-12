@@ -304,6 +304,44 @@ class LocalComputerCommand {
   }
 
   static bool _isValidActionInput(String action, Map<String, Object?> input) {
+    if (action == 'key') {
+      final modifiers = input['modifiers'];
+      return input.length == 3 &&
+          input['snapshotRevision'] is String &&
+          RegExp(r'^[a-f0-9]{64}$')
+              .hasMatch(input['snapshotRevision'] as String) &&
+          _keyboardKeys.contains(input['key']) &&
+          modifiers is List &&
+          modifiers.length <= 4 &&
+          modifiers.toSet().length == modifiers.length &&
+          modifiers.every(
+            (value) =>
+                const {'command', 'shift', 'option', 'control'}.contains(value),
+          );
+    }
+    if (action == 'list_apps') {
+      final query = input['query'];
+      return input.keys.every(
+            (key) => const {'includeInstalled', 'query'}.contains(key),
+          ) &&
+          (input['includeInstalled'] == null ||
+              input['includeInstalled'] is bool) &&
+          (query == null ||
+              (query is String &&
+                  query.trim().isNotEmpty &&
+                  query.length <= 100 &&
+                  !RegExp(r'[\u0000-\u001f\u007f]').hasMatch(query)));
+    }
+    if (action == 'activate_app') {
+      final bundleId = input['bundleId'];
+      return input.keys.every(
+            (key) => const {'bundleId', 'launchIfNeeded'}.contains(key),
+          ) &&
+          bundleId is String &&
+          bundleId.length <= 300 &&
+          RegExp(r'^[A-Za-z0-9][A-Za-z0-9.-]+$').hasMatch(bundleId) &&
+          (input['launchIfNeeded'] == null || input['launchIfNeeded'] is bool);
+    }
     if (action == 'run_command') {
       if (input.length != 5 ||
           input.keys.any(
@@ -363,7 +401,7 @@ class LocalComputerCommand {
           validRelativeDirectory &&
           timeoutSeconds is int &&
           timeoutSeconds >= 1 &&
-          timeoutSeconds <= 30;
+          timeoutSeconds <= 300;
     }
     if (action != 'open_url') return true;
     if (input.keys.any(
@@ -395,6 +433,110 @@ class LocalComputerCommand {
     final wait = input['loadWaitSeconds'];
     return wait == null || (wait is int && wait >= 0 && wait <= 15);
   }
+
+  // BEGIN GENERATED local keyboard policy
+  // From src/lib/local-computer/keyboard-policy.json; regenerate with
+  // node scripts/generate-local-keyboard-policy.mjs.
+  static const _keyboardKeys = <String>{
+    '0',
+    '1',
+    '2',
+    '3',
+    '4',
+    '5',
+    '6',
+    '7',
+    '8',
+    '9',
+    'a',
+    'b',
+    'backslash',
+    'c',
+    'comma',
+    'd',
+    'delete',
+    'down',
+    'e',
+    'end',
+    'equal',
+    'escape',
+    'f',
+    'f1',
+    'f10',
+    'f11',
+    'f12',
+    'f13',
+    'f14',
+    'f15',
+    'f16',
+    'f17',
+    'f18',
+    'f19',
+    'f2',
+    'f20',
+    'f3',
+    'f4',
+    'f5',
+    'f6',
+    'f7',
+    'f8',
+    'f9',
+    'forward_delete',
+    'g',
+    'grave',
+    'h',
+    'home',
+    'i',
+    'j',
+    'k',
+    'l',
+    'left',
+    'left_bracket',
+    'm',
+    'minus',
+    'n',
+    'o',
+    'p',
+    'page_down',
+    'page_up',
+    'period',
+    'q',
+    'quote',
+    'r',
+    'return',
+    'right',
+    'right_bracket',
+    's',
+    'semicolon',
+    'slash',
+    'space',
+    't',
+    'tab',
+    'u',
+    'up',
+    'v',
+    'w',
+    'x',
+    'y',
+    'z',
+    'apostrophe',
+    'arrow_down',
+    'arrow_left',
+    'arrow_right',
+    'arrow_up',
+    'backspace',
+    'backtick',
+    'dash',
+    'del',
+    'enter',
+    'equals',
+    'esc',
+    'pagedown',
+    'pageup',
+    'pgdn',
+    'pgup',
+  };
+  // END GENERATED local keyboard policy
 }
 
 class LocalComputerCommandResult {
@@ -551,7 +693,7 @@ class LocalComputerTerminalOutput {
         exitCode < -2147483648 ||
         exitCode > 2147483647 ||
         durationMs < 0 ||
-        durationMs > 300000 ||
+        durationMs > 345000 ||
         stdoutBytes < 0 ||
         stdoutBytes > 4 * 1024 * 1024 ||
         stderrBytes < 0 ||

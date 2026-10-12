@@ -24,7 +24,7 @@ import { createExecutionScope } from "@/lib/security/execution-scope";
 import * as network from "@/lib/security/network";
 import { sealCredentialBundle, openCredentialBundle } from "@/lib/settings/credential-vault";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
-import { removeEmptyPersonalPartnerMigrationsForReplay, replayPersonalPartnerMigrations, removeNativeMcpRegistrationsForReplay, removeNativeOpenapiImportsForReplay, removeNativeMcpDiscoveriesForReplay, removeNativeGithubUpgradesForReplay } from "./helpers/native-catalog-replay";
+import { removeEmptyPersonalPartnerMigrationsForReplay, removeEmptyPost245MigrationsForReplay, replayPost245Migrations, removeNativeMcpRegistrationsForReplay, removeNativeOpenapiImportsForReplay, removeNativeMcpDiscoveriesForReplay, removeNativeGithubUpgradesForReplay } from "./helpers/native-catalog-replay";
 
 const databaseUrl = process.env.DATABASE_URL;
 const integration = databaseUrl && process.env.OMNIAGENT_INTEGRATION_DATABASE_RESET === "true" ? describe : describe.skip;
@@ -172,6 +172,7 @@ integration("prepared MCP registration under serving-role RLS", () => {
     const aclRepairMigration = await readSqlMigrationFile({ file: "20261006110000_native_provider_function_acl_repair.sql", sha256: aclRepair.checksum, migrations: [aclRepair] });
     await admin.begin(async (sql) => {
       await removeEmptyPersonalPartnerMigrationsForReplay(sql);
+      await removeEmptyPost245MigrationsForReplay(sql);
       await removeNativeGithubUpgradesForReplay(sql); await sql`DELETE FROM omni_schema_version WHERE version IN (244,245)`;
       await removeNativeMcpDiscoveriesForReplay(sql); await sql`DELETE FROM omni_schema_version WHERE version=243`;
       await removeNativeOpenapiImportsForReplay(sql); await sql`DELETE FROM omni_schema_version WHERE version=242`;
@@ -185,7 +186,7 @@ integration("prepared MCP registration under serving-role RLS", () => {
       await applySqlMigrationFile(migrationSql, discoveryMigration, [discovery], []);
       await applySqlMigrationFile(migrationSql, githubUpgradeMigration, [githubUpgrade], []);
       await applySqlMigrationFile(migrationSql, aclRepairMigration, [aclRepair], []);
-      await replayPersonalPartnerMigrations(sql);
+      await replayPost245Migrations(sql);
       expect(await sql`SELECT intent,acceptance,state,settlement FROM omni_native_connector_actions ORDER BY id`).toEqual(before);
       expect(await sql`SELECT * FROM omni_native_connector_credential_preparations ORDER BY id`).toEqual(stages);
     });

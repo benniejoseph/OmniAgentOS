@@ -1510,16 +1510,58 @@
   },
   {
     "version": 246,
-    "name": "responsibility_work_item_followthrough_v1",
-    "checksum": "d06e01433542116390082bed7170750b3021d6b96c95102b9579bde09ad951d0",
-    "file": "20261012110000_responsibility_work_item_followthrough.sql",
-    "sha256": "d06e01433542116390082bed7170750b3021d6b96c95102b9579bde09ad951d0"
+    "name": "research_workflow_notifications_v1",
+    "checksum": "9399238975ab8f6af3d0df6f56d6432bbbcd67110385d77ddff4f7cdd6960873",
+    "file": "20261008100000_research_workflow_notifications.sql",
+    "sha256": "9399238975ab8f6af3d0df6f56d6432bbbcd67110385d77ddff4f7cdd6960873"
   },
   {
     "version": 247,
+    "name": "thread_turn_workflow_run_binding_v1",
+    "checksum": "f4f1712090f74fbb0beab44c4014d4542ed15d6c651984f83f395e75c8507a4e",
+    "file": "20261008110000_thread_turn_workflow_run_binding.sql",
+    "sha256": "f4f1712090f74fbb0beab44c4014d4542ed15d6c651984f83f395e75c8507a4e"
+  },
+  {
+    "version": 248,
+    "name": "personal_profiles_v1",
+    "checksum": "032b554dec2e7f1e7d811180e9e74aa5170ec1418b79136a3f152cf84ffa2cdd",
+    "file": "20261009203000_personal_profiles.sql",
+    "sha256": "032b554dec2e7f1e7d811180e9e74aa5170ec1418b79136a3f152cf84ffa2cdd"
+  },
+  {
+    "version": 249,
+    "name": "android_local_control_v1",
+    "checksum": "0078bbaccb6ea94da05a158220ddcca027e83cca776bbfd1375732362c7bd168",
+    "file": "20261010120000_android_local_control.sql",
+    "sha256": "0078bbaccb6ea94da05a158220ddcca027e83cca776bbfd1375732362c7bd168"
+  },
+  {
+    "version": 250,
+    "name": "listen_capture_v1",
+    "checksum": "7bafada2e72418b3cdee84df711e76b42107025f1198322cc5cfa6fdd5c832dc",
+    "file": "20261010180000_listen_capture.sql",
+    "sha256": "7bafada2e72418b3cdee84df711e76b42107025f1198322cc5cfa6fdd5c832dc"
+  },
+  {
+    "version": 251,
+    "name": "listen_media_owner_scope_v1",
+    "checksum": "ad82f1c2f762cc8a591293c6bcc33b498f8dadb70724e5bb2c0601c5a2ec9d83",
+    "file": "20261012123000_listen_media_owner_scope.sql",
+    "sha256": "ad82f1c2f762cc8a591293c6bcc33b498f8dadb70724e5bb2c0601c5a2ec9d83"
+  },
+  {
+    "version": 252,
+    "name": "responsibility_work_item_followthrough_v1",
+    "checksum": "bdbd505c30ba2dfc9ff3e2810a59a11aa047625efedb39c9cc7e3270ee23fc11",
+    "file": "20261013090000_responsibility_work_item_followthrough.sql",
+    "sha256": "bdbd505c30ba2dfc9ff3e2810a59a11aa047625efedb39c9cc7e3270ee23fc11"
+  },
+  {
+    "version": 253,
     "name": "agent_text_comparisons_v1",
-    "checksum": "53acaf455f91e3f362df647a9b2d61cd70735bc12d74d90d3196830e078704a7",
-    "file": "20261012113000_agent_text_comparisons.sql",
-    "sha256": "53acaf455f91e3f362df647a9b2d61cd70735bc12d74d90d3196830e078704a7"
+    "checksum": "81d516ebca9be6fcf0e2e9131a30d0eeb1dc0301ce52e8d5ab40902fd7beca50",
+    "file": "20261013093000_agent_text_comparisons.sql",
+    "sha256": "81d516ebca9be6fcf0e2e9131a30d0eeb1dc0301ce52e8d5ab40902fd7beca50"
   }
 ]

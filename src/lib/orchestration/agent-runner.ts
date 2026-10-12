@@ -1,3 +1,4 @@
+import { buildResearchPlan, assessResearchCoverage, researchReportInstructions, formatResearchEvidence, researchSearchQueries, selectResearchSources, shouldInvestigateResearchQuery, isResearchWebExplicitlyDisabled, type ResearchSourceRead } from "@/lib/orchestration/research";
 import { createHash, randomUUID } from "node:crypto";
 import {
   buildAgentRunIdentityPinV1,
@@ -8,6 +9,7 @@ import {
 } from "@/lib/agents/identity-contracts";
 import {
   AGENT_MAX_OUTPUT_TOKENS,
+  RESEARCH_MAX_OUTPUT_TOKENS,
   AGENT_MAX_TOOL_STEPS,
   AGENT_REASONING_EFFORT,
   COMPUTER_USE_MODEL,
@@ -18,6 +20,7 @@ import {
   LOCAL_COMPUTER_RUN_BUDGET_LIMITS,
   TENANT_DAILY_MAX_COST_MICROUSD,
   TENANT_DAILY_MAX_TOKENS,
+  WEB_SEARCH_TIMEOUT_MS,
 } from "@/lib/config";
 import { getActiveAgentAdaptationGuidance } from "@/lib/agents/adaptation-store";
 import {
@@ -32,6 +35,7 @@ import {
   composeCapabilitySearchQuery,
   loadProgressiveAgentTools,
 } from "@/lib/capabilities/toolbox";
+import { requestsConversationalResearch } from "@/lib/capabilities/conversation-controls";
 import { runWithDatabaseTenantScope } from "@/lib/db/client";
 import { databaseMemoryAccessScopeFromExecutionScope } from "@/lib/db/memory-access-scope";
 import { generateModelToolTurn } from "@/lib/models/gateway";
@@ -80,8 +84,15 @@ import {
   buildAgentInstructions,
 } from "@/lib/orchestration/prompts";
 import { resolveAgentToolPolicy } from "@/lib/orchestration/agent-tool-policy";
+import { workflowHandoffFromExecution, type WorkflowHandoff } from "@/lib/orchestration/workflow-handoff";
 import { assignedSkillsWithinRuntimeLimit } from "@/lib/skills/limits";
-import { modelAssignmentScopeForAgent } from "@/lib/orchestration/computer-use-routing";
+import {
+  modelAssignmentScopeForAgent,
+  isLocalComputerTarget,
+  localComputerTargetFrom,
+  isLocalComputerToolId,
+  isLocalComputerAppListTool,
+} from "@/lib/orchestration/computer-use-routing";
 import { runtimeModelRoutingPolicySha256 } from "@/lib/settings/runtime-model-routing-pin";
 import {
   formatCouncilContributions,
@@ -245,9 +256,15 @@ import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
 import { appendThreadTurn } from "@/lib/threads/store";
 import { findActorTimezone } from "@/lib/today/briefs";
 import { resolveDirectConversationLanguageStyle } from "@/lib/companion/language-style-resolver";
+import { resolveDirectPersonalProfile } from "@/lib/personal-context/runtime";
 import { loadTenantAiUsageSince } from "@/lib/usage/allowance";
 import { recordAiUsageSafely } from "@/lib/usage/ledger";
-import { formatLiveWebSearchContext, runLiveWebSearch, shouldUseLiveWebSearch } from "@/lib/web-search/search";
+import {
+  formatLiveWebSearchContext,
+  isLiveWebSearchExplicitlyDisabled,
+  shouldUseLiveWebSearch,
+  type LiveWebSearchResult,
+} from "@/lib/web-search/search";
 
 /** The Settings assignment and credential a usage record attributes a call to. */
 type ModelUsageReceipt = RuntimeModelResolution["usageReceipt"];
@@ -303,7 +320,7 @@ function transitionEphemeralLocalObservation(
       discardPriorLocalObservations: true,
     };
   }
-  if (toolId.startsWith("local.macos.") && execution.computerObservation) {
+  if (isLocalComputerToolId(toolId) && execution.computerObservation) {
     const fresh =
       execution.record.status === "executed" &&
         execution.computerObservation
@@ -322,7 +339,7 @@ function transitionEphemeralLocalObservation(
     };
   }
   if (
-    toolId === "local.macos.list_apps" &&
+    isLocalComputerAppListTool(toolId) &&
     soleToolInTurn &&
     execution.record.status === "executed" &&
     latest?.listAppsCarryAvailable
@@ -336,7 +353,7 @@ function transitionEphemeralLocalObservation(
       discardPriorLocalObservations: false,
     };
   }
-  if (toolId.startsWith("local.macos.")) {
+  if (isLocalComputerToolId(toolId)) {
     return { discardPriorLocalObservations: true };
   }
   return { discardPriorLocalObservations: true };
@@ -345,7 +362,7 @@ function transitionEphemeralLocalObservation(
 function toolCallsPerTurnForComputerUse(
   target?: ComputerUseTarget,
 ) {
-  return target === "local_macos"
+  return isLocalComputerTarget(target)
     ? LOCAL_COMPUTER_TOOL_CALLS_PER_TURN
     : MAX_TOOL_CALLS_PER_TURN;
 }
@@ -373,8 +390,7 @@ function isSoleLocalAppListCall(
   byFunctionName: ReadonlyMap<string, ToolboxEntry>,
 ) {
   return calls.length === 1 &&
-    byFunctionName.get(calls[0].name)?.definition.id ===
-      "local.macos.list_apps";
+    isLocalComputerAppListTool(byFunctionName.get(calls[0].name)?.definition.id);
 }
 
 type ContinuationQueueMarker = {
@@ -421,7 +437,10 @@ async function* runAgentUntilStopped(
     );
   }
   const mode = request.mode || "orchestrate";
-  const localComputerUseRequested = request.computerUseTarget === "local_macos";
+  const maxOutputTokens = mode === "research"
+    ? RESEARCH_MAX_OUTPUT_TOKENS
+    : AGENT_MAX_OUTPUT_TOKENS;
+  const localComputerUseRequested = isLocalComputerTarget(request.computerUseTarget);
   const toolStepAuthority = localComputerUseRequested
     ? LOCAL_COMPUTER_MAX_TOOL_STEPS
     : AGENT_MAX_TOOL_STEPS;
@@ -619,6 +638,17 @@ async function* runAgentUntilStopped(
   cancellation.watch({ runId, tenantId: runTenantId });
   const reserveEstimatedModelTurn = createAgentTurnBudgeter({
     tenantId: runTenantId,
+    // Keep time for synthesis in direct root conversations. Child runs and
+    // durable or computer workflows retain their own execution policies.
+    minimumToolRoundWallTimeMs:
+      request.invocation && !request.executionScope?.delegationId &&
+        !request.preclaimedRunId && mode !== "research" &&
+        !isLocalComputerTarget(computerUseTarget)
+        ? Math.min(
+            90_000 + WEB_SEARCH_TIMEOUT_MS,
+            Math.floor(budgetLimits.wallTimeMs * 2 / 3),
+          )
+        : undefined,
     getState: () => runBudgetState,
     setState: (state) => {
       runBudgetState = state;
@@ -1101,10 +1131,10 @@ async function* runAgentUntilStopped(
         throw new ModelRouteUnavailableError(runtimeModel.degradation);
       }
     }
-    if (computerUseTarget === "local_macos") {
+    if (isLocalComputerTarget(computerUseTarget)) {
       yield await emit({
         type: "status",
-        label: "This Mac connected",
+        label: computerUseTarget === "local_android" ? "This phone connected" : "This Mac connected",
         detail:
           "Running this objective as one bounded see-and-act session. Sending, deleting, purchases, security changes, unknown effects, and terminal commands still pause for approval.",
       });
@@ -1132,18 +1162,24 @@ async function* runAgentUntilStopped(
           "Project memory is not loaded until a canonical project authority is bound; this run remains session-only.",
       });
     }
-    const useLiveWeb = request.liveWebPolicy !== "disabled" &&
+    const liveWebRequested = request.liveWebPolicy !== "disabled" &&
       !personalPromptMemoryAccessScope &&
-      shouldUseLiveWebSearch(query);
+      (mode === "research"
+        ? shouldInvestigateResearchQuery(query)
+        : shouldUseLiveWebSearch(query));
+    // Keep research admission's complete tool bundle ahead of a semantic
+    // discovery rewrite. A rewritten query can retain the start action while
+    // losing the natural-language phrase that would select its web contracts.
+    // These IDs still pass through the Agent's existing allowlist and budget.
+    const researchCapabilityPrefix = mode !== "research" && request.liveWebPolicy !== "disabled" &&
+      !personalPromptMemoryAccessScope && requestsConversationalResearch(query)
+      ? "app.research.start web.search web.read app.workflows.show"
+      : mode === "research" && liveWebRequested ? "web.search web.read" : undefined;
     if (durableMemoryEnabled) {
       reserveBudget({
         tokens: AGENT_CONTEXT_TASK_TOKEN_LIMIT,
         costMicrousd: 1_000,
       });
-    }
-    if (useLiveWeb) {
-      reserveModelTurnWithoutRetry();
-      reserveBudget({ toolCalls: 1 });
     }
     const retrievalQuery = request.contextSelection?.query || automaticRetrievalQuery;
     const retrievalPromise = durableMemoryEnabled
@@ -1232,7 +1268,7 @@ async function* runAgentUntilStopped(
       ...request.agentProfile.toolIds,
       ...runtimeAgentSkills.flatMap((skill) => skill.toolIds),
     ])] : undefined;
-    const localComputerToolIds = [
+    const macVisualToolIds = [
       "local.macos.observe",
       "local.macos.list_apps",
       "local.macos.activate_app",
@@ -1242,17 +1278,31 @@ async function* runAgentUntilStopped(
       "local.macos.type",
       "local.macos.key",
       "local.macos.scroll",
-      ...(request.localComputerWorkspaces?.length
-        ? ["local.macos.command.run" as const]
-        : []),
     ] as const;
+    const androidVisualToolIds = [
+      "local.android.observe", "local.android.list_apps", "local.android.open_app",
+      "local.android.press", "local.android.tap", "local.android.type",
+      "local.android.scroll", "local.android.swipe", "local.android.back", "local.android.home",
+    ] as const;
+    const localVisualToolIds = computerUseTarget === "local_android"
+      ? androidVisualToolIds : macVisualToolIds;
+    const allLocalComputerToolIds = [...macVisualToolIds, ...androidVisualToolIds, "local.macos.command.run"];
+    const localComputerToolIds = localComputerUseRequested ? [
+      ...(request.localComputerCapabilities?.visualControlReady !== false ? localVisualToolIds : []),
+      ...(computerUseTarget === "local_macos" && request.localComputerWorkspaces?.length && request.localComputerCapabilities?.commandRunnerReady !== false
+        ? ["local.macos.command.run"] : []),
+    ] : [];
+    const unavailableLocalToolIds = allLocalComputerToolIds.filter(id => !localComputerToolIds.includes(id));
+    // The explicit target adds one admitted device to the same governed app
+    // toolbox. It never discards the Agent's app tools or expands its custom
+    // allowlist; command access retains the existing explicit folder opt-in.
     const configuredToolIds = localComputerUseRequested
       ? request.agentProfile
-        ? localComputerToolIds.filter((id) =>
-            id === "local.macos.command.run" ||
-            profileConfiguredToolIds?.includes(id)
-          )
-        : [...localComputerToolIds]
+        ? [...new Set([
+            ...(profileConfiguredToolIds || []).filter(id => !unavailableLocalToolIds.includes(id)),
+            ...(localComputerToolIds.includes("local.macos.command.run") ? ["local.macos.command.run"] : []),
+          ])]
+        : undefined
       : profileConfiguredToolIds;
     const groundToolDiscoveryInMemory = !isolatedMemoryContext &&
       durableMemoryEnabled &&
@@ -1264,7 +1314,11 @@ async function* runAgentUntilStopped(
       : groundToolDiscoveryInMemory
         ? undefined
         : buildAgentToolbox(request.tenantId, {
-            query: baseCapabilitySearchQuery || query,
+            excludeToolIds: unavailableLocalToolIds,
+            query: composeCapabilitySearchQuery(
+              researchCapabilityPrefix,
+              baseCapabilitySearchQuery || query,
+            ),
             preferredToolIds: configuredToolIds,
           });
     const workspaceAccessPromise = providerConfigured
@@ -1293,6 +1347,9 @@ async function* runAgentUntilStopped(
     const companionLanguageStylePromise = providerConfigured
       ? resolveDirectConversationLanguageStyle(request)
       : Promise.resolve(undefined);
+    const personalProfilePromise = providerConfigured
+      ? resolveDirectPersonalProfile(request)
+      : Promise.resolve(undefined);
     const adaptationGuidancePromise = !isolatedMemoryContext &&
       durableMemoryEnabled &&
       request.contextSelection?.evidenceIds.length !== 0 &&
@@ -1304,29 +1361,6 @@ async function* runAgentUntilStopped(
           definitionVersion: resolvedAgentIdentity.definition.definitionVersion,
         })
       : Promise.resolve([]);
-    const liveWebPromise = useLiveWeb
-      ? runLiveWebSearch({
-          query,
-          contextSize: "low",
-          maxSources: 4,
-          abortSignal: runAbortSignal,
-          ...(request.actorId ? {
-            usageScope: {
-              tenantId: runTenantId,
-              actorId: request.actorId,
-              sourceStreamId: `run:${run.id}`,
-              operation: "web_search" as const,
-              purpose: "agent.web.prefetch",
-              correlationId: executionScope.correlationId,
-              causationId: executionScope.causationId || undefined,
-              executionScope,
-              credentialSource: "deployment_environment" as const,
-            },
-          } : {}),
-        })
-          .then((result) => ({ result }))
-          .catch((error: unknown) => ({ error }))
-      : undefined;
     const retrieval = await retrievalPromise;
     if (retrieval.compilerV2Shadow) {
       await appendContextCompilerV2ShadowEventSafely(
@@ -1362,7 +1396,11 @@ async function* runAgentUntilStopped(
         )
       : baseCapabilitySearchQuery;
     const resolvedToolboxPromise = toolboxPromise || buildAgentToolbox(request.tenantId, {
-      query: capabilitySearchQuery || query,
+      excludeToolIds: unavailableLocalToolIds,
+      query: composeCapabilitySearchQuery(
+        researchCapabilityPrefix,
+        capabilitySearchQuery || query,
+      ),
       preferredToolIds: configuredToolIds,
     });
     if (durableMemoryEnabled) {
@@ -1374,49 +1412,15 @@ async function* runAgentUntilStopped(
       });
     }
 
-    let liveWebContext = "";
-    let citationSources = buildCitationSources(retrieval.results);
-    if (useLiveWeb && liveWebPromise) {
-      yield await emit({
-        type: "status",
-        label: "live web search",
-        detail: "The request appears to need current information, so Asael is searching the web before answering.",
-      });
-      const liveWebOutcome = await liveWebPromise;
-      if ("result" in liveWebOutcome && liveWebOutcome.result) {
-        const liveWeb = liveWebOutcome.result;
-        citationSources = mergeCitationSources(
-          citationSources,
-          buildWebCitationSources(liveWeb.sources, liveWeb.searchedAt),
-        );
-        liveWebContext = String(
-          redactSensitive(formatLiveWebSearchContext(liveWeb)),
-        );
-        yield await emit({
-          type: "memory",
-          title: "live web sources ready",
-          count: liveWeb.sourceCount,
-        });
-      } else if ("error" in liveWebOutcome) {
-        const webSearchError = liveWebOutcome.error;
-        yield await emit({
-          type: "status",
-          label: "live web unavailable",
-          detail: webSearchError instanceof Error ? webSearchError.message : "Live web search failed.",
-        });
-      }
-    }
-
-    // Skip web.search when we already fetched live web context — avoids redundant
-    // tool-call loops that blow the 60s Vercel budget. Excluding it from the toolbox
-    // filters the OpenAI tool list, the instructions, and the dispatch map together.
+    // Resolve authority before automatic reads. A freshness hint cannot grant
+    // web access to a custom Agent, a private-context run, or This Mac.
     let toolbox = filterAgentToolbox(
       await resolvedToolboxPromise,
       [
-        ...(liveWebContext ? ["web.search"] : []),
-        ...(!localComputerUseRequested
-          ? localComputerToolIds
-          : []),
+        ...((isLiveWebSearchExplicitlyDisabled(query) ||
+          (mode === "research" && isResearchWebExplicitlyDisabled(query)))
+          ? ["web.search", "web.read"] : []),
+        ...unavailableLocalToolIds,
       ],
     );
     let agentToolPolicy: AgentRunContinuation["toolPolicy"];
@@ -1441,7 +1445,13 @@ async function* runAgentUntilStopped(
     if (request.voiceInput || request.voiceOrigin) {
       agentToolPolicy = {
         ...agentToolPolicy,
-        forceApprovalAboveRisk: 0,
+        // Routine reversible app actions follow their ordinary policy. Keep
+        // any stricter configured Agent policy, and always review risk-two
+        // Mac actions, terminal commands and other consequential operations.
+        forceApprovalAboveRisk: Math.min(
+          agentToolPolicy.forceApprovalAboveRisk ?? 1,
+          request.voiceInput?.schemaVersion === 2 ? 1 : 0,
+        ),
       };
     }
     if (promptMemoryAccessScope || personalPromptMemoryAccessScope) {
@@ -1451,6 +1461,7 @@ async function* runAgentUntilStopped(
         forceApproval: true,
       };
     }
+
     const workspaceAccess = await workspaceAccessPromise;
     const workspaceCapabilityContext = workspaceAccess
       ? formatWorkspaceAccessContext(workspaceAccess, {
@@ -1495,7 +1506,9 @@ async function* runAgentUntilStopped(
     );
     const actorTimeZone = await actorTimeZonePromise;
     const companionLanguageStyle = await companionLanguageStylePromise;
-    const instructions = buildAgentInstructions({
+    const personalProfile = await personalProfilePromise;
+    const directCommandContext = [request.commandContext?.content, personalProfile?.content].filter(Boolean).join("\n\n");
+    const baseInstructions = buildAgentInstructions({
       mode,
       runtimeClock: { timeZone: actorTimeZone },
       agentId: request.agentId,
@@ -1520,6 +1533,285 @@ async function* runAgentUntilStopped(
       computerUse: computerUseTarget,
       localComputerWorkspaces: request.localComputerWorkspaces,
     });
+
+    // Research is a run mode, not a new immutable Agent or Skill identity.
+    // Persist the compiled instructions on approval pauses and hash them in the
+    // harness receipt, while leaving older definition and prompt pins intact.
+    const instructions = mode === "research"
+      ? `${baseInstructions}\n\n${researchReportInstructions}${request.research ? `\nUser research brief (preserve these preferences): ${JSON.stringify(redactSensitive(request.research))}` : ""}`
+      : baseInstructions;
+
+    let liveWebContext = "";
+    let researchProgress: import("@/lib/research/contracts").ResearchProgress | undefined;
+    let citationSources = mergeCitationSources(
+      [...(request.commandContext?.citationSources || [])],
+      buildCitationSources(retrieval.results),
+    );
+    const webSearchTool = toolbox.tools.find(
+      ({ definition }) => definition.id === "web.search",
+    )?.definition;
+    // A prefetch has no model approval continuation. Only the currently
+    // authorized, approval-free read may run here; all other tools stay in
+    // the normal governed model loop.
+    const conversationalResearch = mode !== "research" && requestsConversationalResearch(query) &&
+      toolbox.tools.some(({ definition }) => definition.id === "app.research.start");
+    const useLiveWeb = Boolean(liveWebRequested && !conversationalResearch &&
+      !localComputerUseRequested &&
+      webSearchTool &&
+      webSearchTool.riskLevel === 0 &&
+      !webSearchTool.approvalRequired &&
+      !forceApprovalForTool(agentToolPolicy, webSearchTool.riskLevel) &&
+      governedToolOperationClass(webSearchTool, { query }) === "read_only");
+    if (useLiveWeb && webSearchTool && mode === "research") {
+      const searches: LiveWebSearchResult[] = [];
+      const reads: ResearchSourceRead[] = [];
+      const limitations: string[] = [];
+      const researchPlan = buildResearchPlan(query, { ...request.research, depth: "quick" });
+      let discoveryStopped = false;
+      let searchAttempts = 0;
+      let readAttempts = 0;
+      const attemptedSources = new Set<string>();
+      const progress = (stage: import("@/lib/research/contracts").ResearchProgress["stage"]) => {
+        const coverage = assessResearchCoverage({ plan: researchPlan, searches, reads });
+        researchProgress = { schemaVersion: 1, depth: "quick", stage,
+          questions: researchPlan.facets.map((facet) => facet.question), searches: searches.length,
+          sourcesRead: reads.length, gaps: coverage.gaps,
+          limitations: [...limitations, ...coverage.limitations].slice(0, 16) };
+        return researchProgress;
+      };
+      yield await emit({ type: "research_progress", progress: progress("planning") });
+      // Collection shares the run's original authority and leaves at least
+      // 90 seconds for synthesis/teardown. Individual tools keep their own
+      // smaller deadlines; no parallel checkpoint/effect admission is needed.
+      const collectionDeadline = Date.now() + Math.max(0, Math.min(
+        110_000,
+        remainingRunBudget(runBudgetState).wallTimeMs - 90_000,
+      ));
+      // Protect the complete bounded evidence envelope plus the actual prompt,
+      // transcript and toolbox before admitting another paid discovery turn.
+      const synthesisEstimate = agentTurnBudgetEstimate({
+        provider: modelRoute.provider,
+        model: modelRoute.model,
+        maxOutputTokens,
+        inputTokens: estimateModelInputTokens([
+          instructions,
+          buildAgentInput({ messages: safeMessages,
+            commandContext: directCommandContext,
+            memoryContext: request.agentProfile?.memoryScope === "session" ? "" : retrieval.contextBlock,
+            injectionCanary: renderInjectionCanary(normalizeTenantId(request.tenantId)),
+            liveWebContext: "", councilContext: "", workspaceCapabilityContext }),
+          toolbox.openAITools,
+        ]) + 12_000,
+      });
+      const canCollect = (search: boolean) => {
+        runAbortSignal.throwIfAborted();
+        const remaining = remainingRunBudget(runBudgetState);
+        const searchTokens = search ? budgetPerRemainingModelTurn(runBudgetState, "tokens") : 0;
+        const searchCost = search ? budgetPerRemainingModelTurn(runBudgetState, "costMicrousd") : 0;
+        return Date.now() < collectionDeadline &&
+          remaining.wallTimeMs > 90_000 + (search ? WEB_SEARCH_TIMEOUT_MS : 15_000) &&
+          remaining.toolCalls > 0 &&
+          remaining.modelTurns > (search ? 1 : 0) &&
+          remaining.tokens - searchTokens >= synthesisEstimate.tokens &&
+          remaining.costMicrousd - searchCost >= synthesisEstimate.costMicrousd &&
+          remaining.costMicrousd > searchCost;
+      };
+      async function* gather(
+        tool: ToolDefinition,
+        input: Record<string, unknown>,
+        step: string,
+      ): AsyncGenerator<AgentEvent, Awaited<ReturnType<typeof executeGovernedTool>>> {
+        if (tool.id === "web.search") reserveModelTurnWithoutRetry();
+        reserveToolBudget([tool]);
+        yield await emit({ type: "tool", toolId: tool.id, toolName: tool.name,
+          status: "running", riskLevel: tool.riskLevel });
+        const scope = agentToolExecutionScope(executionScope, step);
+        const execution = await executeGovernedTool({
+          toolId: tool.id, input, dryRun: false, approved: false,
+          requireReadOnly: true, context: agentToolSecurityContext(request),
+          requestActorBinding: request.requestActorBinding,
+          moltbookAutonomy: request.moltbookAutonomy,
+          abortSignal: runAbortSignal, idempotencyKey: `${run.id}:${step}`,
+          executionScope: scope, agentRunId: run.id,
+          checkpointBeforeEffect: checkpointBeforeGovernedTool,
+        });
+        runAbortSignal.throwIfAborted();
+        await checkpointAfterGovernedTool({ record: execution.record, tool,
+          operationClass: "read_only", executionScope: scope });
+        yield await emit(toolEventForExecution(tool, execution.record));
+        if (execution.record.status === "executed") {
+          citationSources = mergeCitationSources(citationSources,
+            citationSourcesFromToolResult(tool.id, execution.result));
+        }
+        return execution;
+      }
+      yield await emit({ type: "status", label: "planning research",
+        detail: "Investigating the question, primary evidence, and limitations before writing the report." });
+      const queries = researchPlan.facets.map((facet) => facet.query);
+      for (const [index, searchQuery] of queries.entries()) {
+        if (!canCollect(true)) {
+          limitations.push("Further searches were skipped to preserve the report's time and run budget.");
+          break;
+        }
+        yield await emit({ type: "status", label: "gathering research evidence",
+          detail: `Searching complementary evidence (${index + 1} of ${queries.length}).` });
+        searchAttempts += 1;
+        const execution = yield* gather(webSearchTool,
+          // Discovery locates sources; full governed page reads provide depth.
+          // High-context, multi-call search was independently writing the
+          // entire report and exhausting its 60-second deadline here.
+          { query: searchQuery, limit: 8, searchContextSize: "low", allowedDomains: researchPlan.allowedDomains },
+          `research-search-${index + 1}`);
+        const result = execution.record.status === "executed"
+          ? liveWebPrefetchResult(execution.result) : undefined;
+        if (result) searches.push(result);
+        else {
+          limitations.push(`Search ${index + 1} did not return usable evidence.`);
+          // An ambiguous timeout is not replayed by the synthesis model. The
+          // next preplanned facet is a distinct, separately budgeted query.
+          if (webSearchFailureIsNonRetryable(execution.record)) {
+            toolbox = filterAgentToolbox(toolbox, ["web.search"]);
+          }
+          if (webSearchFailureStopsCollection(execution.record)) {
+            discoveryStopped = true;
+            limitations.push(execution.record.reason || "Further searches were stopped because the provider requires attention.");
+            toolbox = filterAgentToolbox(toolbox, ["web.search"]);
+            break;
+          }
+        }
+      }
+      const webReadTool = toolbox.tools.find(({ definition }) =>
+        definition.id === "web.read")?.definition;
+      const canRead = webReadTool && webReadTool.riskLevel === 0 &&
+        !webReadTool.approvalRequired &&
+        !forceApprovalForTool(agentToolPolicy, webReadTool.riskLevel) &&
+        governedToolOperationClass(webReadTool, {}) === "read_only";
+      yield await emit({ type: "research_progress", progress: progress("reading") });
+      if (!canRead) limitations.push("Public-page reading is not authorized for this Agent; only search evidence is available.");
+      async function* readSources(limit: number, prefix: string): AsyncGenerator<AgentEvent> {
+        if (!canRead || !webReadTool) return;
+        const selected = selectResearchSources(searches, researchPlan.limits.reads, researchPlan)
+          .filter((source) => !attemptedSources.has(source.citationId)).slice(0, limit);
+        for (const source of selected) {
+          if (readAttempts >= researchPlan.limits.reads || !canCollect(false)) {
+            limitations.push("Some pages were left unread to keep time for the report.");
+            break;
+          }
+          attemptedSources.add(source.citationId);
+          readAttempts += 1;
+          yield await emit({ type: "status", label: "Reading sources",
+            detail: `Reading ${source.title || new URL(source.url).hostname}; ${reads.length} sources collected.` });
+          const execution = yield* gather(webReadTool, {
+            url: source.url, query: researchPlan.facets.map((facet) => facet.question).join("\n"),
+            allowedDomains: researchPlan.allowedDomains,
+          }, `${prefix}-${readAttempts}`);
+          const page = execution.record.status === "executed" ? researchSourceReadResult(execution.result) : undefined;
+          if (page) reads.push(page);
+          else limitations.push(`Could not read ${source.url}. Its detailed claims remain unconfirmed.`);
+          yield await emit({ type: "research_progress", progress: progress("reading") });
+        }
+      }
+      // Leave capacity for replacement sources or a question not covered by the initial pass.
+      yield* readSources(Math.min(6, researchPlan.limits.reads), "research-read");
+      let coverage = assessResearchCoverage({ plan: researchPlan, searches, reads });
+      if (coverage.gapQueries.length && !discoveryStopped && searchAttempts < researchPlan.limits.searches && canCollect(true)) {
+        yield await emit({ type: "status", label: "Filling evidence gaps",
+          detail: "Looking for specific evidence still missing from the initial sources." });
+        searchAttempts += 1;
+        const execution = yield* gather(webSearchTool, {
+          query: coverage.gapQueries[0], limit: 6, searchContextSize: "low", allowedDomains: researchPlan.allowedDomains,
+        }, `research-gap-search-${searchAttempts}`);
+        const result = execution.record.status === "executed" ? liveWebPrefetchResult(execution.result) : undefined;
+        if (result) searches.push(result);
+        else limitations.push("The follow-up search did not return usable evidence; remaining questions are disclosed.");
+        yield* readSources(researchPlan.limits.reads - readAttempts, "research-gap-read");
+        coverage = assessResearchCoverage({ plan: researchPlan, searches, reads });
+      }
+      liveWebContext = String(redactSensitive(formatResearchEvidence({ searches, reads, limitations, plan: researchPlan, coverage })));
+      // The collection phase owns the exact depth and domain limits. The writer
+      // cannot silently extend them through a second, unrestricted web loop.
+      toolbox = filterAgentToolbox(toolbox, ["web.search", "web.read"]);
+      yield await emit({ type: "research_progress", progress: progress("writing") });
+      if (!searches.length) {
+        yield await emit({ type: "status", label: "live web unavailable",
+          detail: "Research could not collect live sources; the report must disclose the evidence gap." });
+      }
+      yield await emit({ type: "status", label: "writing research report",
+        detail: `Synthesizing ${searches.length} completed searches and ${reads.length} fetched page excerpts; reporting coverage and limitations.` });
+    } else if (useLiveWeb && webSearchTool) {
+      reserveModelTurnWithoutRetry();
+      reserveToolBudget([webSearchTool]);
+      yield await emit({
+        type: "status",
+        label: "live web search",
+        detail: "The request appears to need current information, so Asael is searching the web before answering.",
+      });
+      yield await emit({
+        type: "tool",
+        toolId: webSearchTool.id,
+        toolName: webSearchTool.name,
+        status: "running",
+        riskLevel: webSearchTool.riskLevel,
+      });
+      const prefetchScope = agentToolExecutionScope(executionScope, "web-prefetch");
+      const execution = await executeGovernedTool({
+        toolId: webSearchTool.id,
+        // User messages may exceed the search tool's 4,000-character limit.
+        // Keep the same explicit, bounded start/end query used by Research;
+        // the synthesis turn still receives the complete original request.
+        input: { query: researchSearchQueries(query)[0], limit: 4, searchContextSize: "low" },
+        dryRun: false,
+        approved: false,
+        requireReadOnly: true,
+        context: agentToolSecurityContext(request),
+        requestActorBinding: request.requestActorBinding,
+        moltbookAutonomy: request.moltbookAutonomy,
+        abortSignal: runAbortSignal,
+        idempotencyKey: `${run.id}:web-prefetch`,
+        executionScope: prefetchScope,
+        agentRunId: run.id,
+        checkpointBeforeEffect: checkpointBeforeGovernedTool,
+      });
+      runAbortSignal.throwIfAborted();
+      await checkpointAfterGovernedTool({
+        record: execution.record,
+        tool: webSearchTool,
+        operationClass: "read_only",
+        executionScope: prefetchScope,
+      });
+      yield await emit(toolEventForExecution(webSearchTool, execution.record));
+      const liveWeb = execution.record.status === "executed"
+        ? liveWebPrefetchResult(execution.result)
+        : undefined;
+      if (liveWeb) {
+        citationSources = mergeCitationSources(
+          citationSources,
+          buildWebCitationSources(liveWeb.sources, liveWeb.searchedAt),
+        );
+        liveWebContext = String(
+          redactSensitive(formatLiveWebSearchContext(liveWeb)),
+        );
+        yield await emit({
+          type: "memory",
+          title: "live web sources ready",
+          count: liveWeb.sourceCount,
+        });
+      } else {
+        if (webSearchFailureIsNonRetryable(execution.record)) {
+          toolbox = filterAgentToolbox(toolbox, ["web.search"]);
+        }
+        yield await emit({
+          type: "status",
+          label: "live web unavailable",
+          detail: execution.record.reason || "Live web search returned no verified source evidence.",
+        });
+      }
+    }
+    // Ordinary quick answers can reuse their initial evidence. Research keeps
+    // the authorized tool so it can compare sources or refine the question.
+    if (liveWebContext && mode !== "research") {
+      toolbox = filterAgentToolbox(toolbox, ["web.search"]);
+    }
     const toolIds = toolbox.tools
       .map((entry) => entry.definition.id)
       .sort((left, right) => left.localeCompare(right));
@@ -1663,10 +1955,12 @@ async function* runAgentUntilStopped(
         .sort((left, right) => left.localeCompare(right)),
       toolboxSha256: stableToolboxFingerprint(toolbox.tools),
       instructionsSha256: createHash("sha256").update(instructions).digest("hex"),
+      companionLanguageStyle,
+      personalProfile: personalProfile?.receipt,
       maxToolSteps,
       maxToolCallsPerTurn,
       maxToolResultChars: MAX_TOOL_RESULT_CHARS,
-      maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
+      maxOutputTokens,
       budgetLimits,
       budgetLimitsSha256: canonicalJsonSha256(budgetLimits),
       approvalPolicy: request.agentProfile?.approvalPolicy || "risk_based",
@@ -1699,12 +1993,14 @@ async function* runAgentUntilStopped(
     ) && toolbox.tools.some(
       (entry) => entry.definition.id === "app.agents.delegate",
     );
-    // Local Mac observations are deliberately disclosed to the assigned agent
+    // Local device observations are deliberately disclosed to the assigned agent
     // for one provider turn and are never added to durable council context.
     // A sibling critic therefore cannot independently inspect the evidence and
     // must not rewrite a completed Computer Use result as "unverified" after
     // the native commands have succeeded.
-    const councilActive = councilRequested &&
+    // Research synthesizes the full collected pack once. The optional sibling
+    // review/rewrite path has smaller context/output caps and would discard it.
+    const councilActive = mode !== "research" && councilRequested &&
       !isolatedMemoryContext &&
       !localComputerUseRequested &&
       !explicitDynamicDelegationAvailable;
@@ -1738,7 +2034,7 @@ async function* runAgentUntilStopped(
     if (councilRequested && localComputerUseRequested) {
       yield await emit({
         type: "status",
-        label: "This Mac evidence isolated",
+        label: computerUseTarget === "local_android" ? "Phone screen kept private" : "This Mac evidence isolated",
         detail:
           "The assigned agent may carry a fresh local observation across exactly one immediate app-list check in this in-memory run; sibling review cannot see or rewrite private screen evidence.",
       });
@@ -1947,7 +2243,7 @@ async function* runAgentUntilStopped(
     }
     const initialConversationItems = buildAgentInput({
       messages: safeMessages,
-      commandContext: request.commandContext?.content,
+      commandContext: directCommandContext,
       memoryContext: request.agentProfile?.memoryScope === "session" ? "" : retrieval.contextBlock,
       injectionCanary: renderInjectionCanary(normalizeTenantId(request.tenantId)),
       liveWebContext,
@@ -1956,6 +2252,7 @@ async function* runAgentUntilStopped(
     });
 
     let response = "";
+    let workflowHandoff: WorkflowHandoff | undefined;
     const delegationExecutionsForReceiptReconciliation:
       GovernedToolExecutionResult[] = [];
 
@@ -1989,6 +2286,7 @@ async function* runAgentUntilStopped(
       if (modelRoute.provider !== "openai" || runtimeModel.allowCrossProviderFallback) {
         const securityContext = agentToolSecurityContext(request);
         const providerLoop = runNonOpenAIProviderToolLoop({
+          maxOutputTokens,
           requireReadOnly: agentToolPolicy.readOnly,
           provider: modelRoute.provider,
           tier: modelRoute.tier,
@@ -2007,6 +2305,7 @@ async function* runAgentUntilStopped(
           moltbookAutonomy: request.moltbookAutonomy,
           executionScope,
           runId: run.id,
+          threadId: run.threadId,
           promptCacheScope: agentPromptCacheScope(run.agentId),
           computerUseTarget,
           usageReceipt: runtimeModel.usageReceipt,
@@ -2028,6 +2327,7 @@ async function* runAgentUntilStopped(
               tier,
               budget: {
                 estimate: agentTurnBudgetEstimate({
+              maxOutputTokens,
                   provider,
                   model: modelRoute.model,
                   inputTokens: estimatedInputTokens,
@@ -2048,7 +2348,7 @@ async function* runAgentUntilStopped(
           checkpointBeforeTool: checkpointBeforeGovernedTool,
           checkpointAfterTool: checkpointAfterGovernedTool,
           reserveTools: reserveToolBudget,
-          serializeToolCalls: computerUseTarget === "local_macos" ||
+          serializeToolCalls: isLocalComputerTarget(computerUseTarget) ||
             Boolean(request.moltbookAutonomy) ||
             isExpandedCheckpointShadowEnrollment(checkpointShadowEnrollment),
           maxToolSteps,
@@ -2151,6 +2451,7 @@ async function* runAgentUntilStopped(
             response,
             toolSteps: result.toolSteps,
             maxToolSteps,
+            maxOutputTokens,
             outputsBeforeApproval: [],
             pendingToolCall: {
               callId: waiting.providerState.pendingCall.callId,
@@ -2199,6 +2500,7 @@ async function* runAgentUntilStopped(
           }, { tenantId: request.tenantId, actorId: securityContext.actorId });
           return;
         }
+        workflowHandoff = result.workflowHandoff;
         providerTextCompleted = true;
       }
 
@@ -2214,7 +2516,7 @@ async function* runAgentUntilStopped(
 
       // Tool loop: stream a turn; if the model called tools, execute them
       // through the governed executor and continue with the outputs.
-      for (;;) {
+      while (!workflowHandoff) {
         runAbortSignal.throwIfAborted();
         const durableTurnInput = conversationItems ?? initialConversationItems;
         const turnInput: ResponseTurnInput = openAITurnInputWithComputerObservations(
@@ -2229,6 +2531,7 @@ async function* runAgentUntilStopped(
           tier: modelRoute.tier,
           budget: {
             estimate: agentTurnBudgetEstimate({
+              maxOutputTokens,
               provider: "openai",
               model: modelRoute.model,
               inputTokens: estimateModelInputTokens([
@@ -2259,7 +2562,7 @@ async function* runAgentUntilStopped(
             abortSignal: runAbortSignal,
             reasoningEffort:
               runtimeModel.reasoningEffort || AGENT_REASONING_EFFORT,
-            maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
+            maxOutputTokens,
             keepTruncatedAnswer: true,
             model: modelRoute.model,
             fallbackModel: modelBudget.maxAttempts > 1
@@ -2402,6 +2705,14 @@ async function* runAgentUntilStopped(
           conversationItems ?? initialConversationItems;
         conversationItems = [...priorItems, ...turn.outputItems];
 
+        if (modelBudget.shouldFinishBeforeTools?.()) {
+          conversationItems.push(...turn.functionCalls.map((call) =>
+            functionCallOutput(call, { error: TOOL_TIME_RESERVED_FOR_ANSWER })
+          ));
+          yield await emit(finishingWithinBudgetEvent());
+          continue;
+        }
+
         toolSteps += 1;
         const outputs: Array<{ type: "function_call_output"; call_id: string; output: string }> = [];
 
@@ -2460,7 +2771,7 @@ async function* runAgentUntilStopped(
               item.call.callId,
             ),
             agentRunId: run.id,
-            localComputerTaskAuthority: computerUseTarget === "local_macos"
+            localComputerTaskAuthority: isLocalComputerTarget(computerUseTarget)
               ? { objective: run.prompt }
               : undefined,
             checkpointBeforeEffect: checkpointBeforeGovernedTool,
@@ -2524,6 +2835,12 @@ async function* runAgentUntilStopped(
           }
         } else for (let callIndex = 0; callIndex < callsThisTurn.length; callIndex += 1) {
           const call = callsThisTurn[callIndex];
+          if (modelBudget.shouldFinishBeforeTools?.()) {
+            outputs.push(functionCallOutput(call, {
+              error: TOOL_TIME_RESERVED_FOR_ANSWER,
+            }));
+            continue;
+          }
           const entry = toolbox.byFunctionName.get(call.name);
           if (!entry) {
             outputs.push(functionCallOutput(call, { error: `Unknown tool ${call.name}.` }));
@@ -2583,7 +2900,7 @@ async function* runAgentUntilStopped(
               mcpSessionScope: agentMcpSessionScope(run.id, securityContext),
               executionScope: toolExecutionScope,
               agentRunId: run.id,
-              localComputerTaskAuthority: computerUseTarget === "local_macos"
+              localComputerTaskAuthority: isLocalComputerTarget(computerUseTarget)
                 ? { objective: run.prompt }
                 : undefined,
               checkpointBeforeEffect: checkpointBeforeGovernedTool,
@@ -2639,6 +2956,7 @@ async function* runAgentUntilStopped(
               response,
               toolSteps,
               maxToolSteps,
+              maxOutputTokens,
               outputsBeforeApproval: outputs,
               pendingToolCall: {
                 callId: call.callId,
@@ -2681,6 +2999,10 @@ async function* runAgentUntilStopped(
             return;
           }
 
+          workflowHandoff = workflowHandoffFromExecution(execution, {
+            tenantId: runTenantId, actorId: securityContext.actorId, threadId: run.threadId,
+          });
+          if (workflowHandoff) break;
           outputs.push(functionCallOutput(call, executionPayload(execution)));
           const observationTransition = transitionEphemeralLocalObservation(
             latestLocalObservation,
@@ -2703,6 +3025,7 @@ async function* runAgentUntilStopped(
           }
         }
 
+        if (workflowHandoff) break;
         for (const call of turn.functionCalls.slice(maxToolCallsPerTurn)) {
           outputs.push(functionCallOutput(call, { error: "Per-turn tool call limit reached; call skipped." }));
         }
@@ -2722,7 +3045,7 @@ async function* runAgentUntilStopped(
       await flushDeltas();
     }
 
-    if (councilActive && councilAgentIds.includes("sentinel") && response.trim()) {
+    if (!workflowHandoff && councilActive && councilAgentIds.includes("sentinel") && response.trim()) {
       try {
         const verdict = await reviewCouncilResponse({
           goal: query,
@@ -2810,6 +3133,7 @@ async function* runAgentUntilStopped(
     const finalization = await finalizeAgentRun({
       runId: run.id,
       response,
+      workflowHandoff,
       delegationExecutions: delegationExecutionsForReceiptReconciliation,
       recordStatus: async (event) => {
         finalStatusEvents.push(await emit(event));
@@ -2841,9 +3165,14 @@ async function* runAgentUntilStopped(
       });
       return;
     }
+    if (researchProgress && !workflowHandoff) {
+      researchProgress = { ...researchProgress, stage: "complete",
+        reportStatus: researchProgress.sourcesRead > 0 && !researchProgress.gaps.length ? "ready" : "partial" };
+      yield await emit({ type: "research_progress", progress: researchProgress });
+    }
     // Clients get the public grounding projection, as on every other path;
     // the raw claim evidence stays on the stored run.
-    yield {
+    yield workflowHandoff || {
       type: "done",
       response,
       grounding: publicGroundingReport(finalization.grounding),
@@ -2905,6 +3234,9 @@ async function* runAgentUntilStopped(
 const CUT_OFF_ANSWER_NOTICE =
   "\n\n[The answer reached its length limit and stops here. Ask to continue for the rest.]";
 
+const TOOL_TIME_RESERVED_FOR_ANSWER =
+  "This call was not run because the remaining time is reserved for your final answer. Answer from completed results and state any remaining gaps.";
+
 function answerCutOffEvent() {
   return {
     type: "status" as const,
@@ -2956,6 +3288,7 @@ type NonOpenAIProviderLoopResult = {
   toolSteps: number;
   citationSources: CitationSource[];
   delegationExecutions: readonly GovernedToolExecutionResult[];
+  workflowHandoff?: WorkflowHandoff;
   waitingApproval?: {
     executionId: string;
     toolId: string;
@@ -3002,6 +3335,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   moltbookAutonomy?: AgentRunRequest["moltbookAutonomy"];
   executionScope?: ExecutionScope;
   runId: string;
+  threadId?: string;
   /** What the loop's model turns share a prompt cache with. */
   promptCacheScope?: string;
   computerUseTarget?: ComputerUseTarget;
@@ -3016,6 +3350,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   ephemeralLocalObservation?: EphemeralLocalObservationState;
   toolSteps?: number;
   maxToolSteps?: number;
+  maxOutputTokens?: number;
   modelAttemptOffset?: number;
   generateTurn?: (request: ModelToolTurnRequest) => Promise<ModelToolTurnResult>;
   bindModelRequest?: (request: ModelToolTurnRequest) => ModelToolTurnRequest;
@@ -3030,6 +3365,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   }) => Promise<{
     maxAttempts?: number;
     finalTurn?: boolean;
+    shouldFinishBeforeTools?: () => boolean;
     settle?: (turn: ModelToolTurnResult) => void;
   } | void>;
   afterModelFailure?: (input: {
@@ -3051,6 +3387,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   ) => DynamicDelegationReservation | undefined;
   executeTool?: typeof executeGovernedTool;
 }): AsyncGenerator<NonOpenAIProviderLoopEvent, NonOpenAIProviderLoopResult> {
+  const maxOutputTokens = input.maxOutputTokens ?? AGENT_MAX_OUTPUT_TOKENS;
   const generateTurn = input.generateTurn || generateModelToolTurn;
   const executeTool = input.executeTool || executeGovernedTool;
   const maxToolSteps = resolveMaxToolSteps(
@@ -3086,6 +3423,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   };
   let citationSources: CitationSource[] = [];
   const delegationExecutions: GovernedToolExecutionResult[] = [];
+  let workflowHandoff: WorkflowHandoff | undefined;
   let activeProvider: "openai" | "google" | "anthropic" | "aws_bedrock" = input.provider;
 
   const finish = (
@@ -3106,6 +3444,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
     toolSteps,
     citationSources,
     delegationExecutions: Object.freeze([...delegationExecutions]),
+    ...(workflowHandoff ? { workflowHandoff } : {}),
     ...(waitingApproval ? { waitingApproval } : {}),
   });
 
@@ -3151,7 +3490,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
       preferredProvider: activeProvider,
       allowedProviders: [activeProvider],
       allowCrossProviderFallback: false,
-      maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
+      maxOutputTokens,
       reasoningEffort: AGENT_REASONING_EFFORT,
       maxAttempts: modelBudget?.maxAttempts,
       abortSignal: input.abortSignal,
@@ -3285,6 +3624,15 @@ export async function* runNonOpenAIProviderToolLoop(input: {
       continue;
     }
 
+    if (modelBudget?.shouldFinishBeforeTools?.()) {
+      budgetFinal = true;
+      toolResults = turn.toolCalls.map((call) => providerToolResult(call, {
+        error: TOOL_TIME_RESERVED_FOR_ANSWER,
+      }, true));
+      yield finishingWithinBudgetEvent();
+      continue;
+    }
+
     toolSteps += 1;
     const callsThisTurn = turn.toolCalls.slice(0, maxToolCallsPerTurn);
     if (
@@ -3357,7 +3705,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
             ),
             executionScope: toolExecutionScope,
             agentRunId: input.runId,
-            localComputerTaskAuthority: input.computerUseTarget === "local_macos"
+            localComputerTaskAuthority: isLocalComputerTarget(input.computerUseTarget)
               ? { objective: input.prompt }
               : undefined,
             checkpointBeforeEffect: input.checkpointBeforeTool,
@@ -3408,6 +3756,13 @@ export async function* runNonOpenAIProviderToolLoop(input: {
     } else {
       for (let callIndex = 0; callIndex < callsThisTurn.length; callIndex += 1) {
         const call = callsThisTurn[callIndex];
+        if (modelBudget?.shouldFinishBeforeTools?.()) {
+          budgetFinal = true;
+          outputs.push(providerToolResult(call, {
+            error: TOOL_TIME_RESERVED_FOR_ANSWER,
+          }, true));
+          continue;
+        }
         const entry = input.toolbox.byFunctionName.get(call.name);
         if (!entry) {
           outputs.push(providerToolResult(call, {
@@ -3479,7 +3834,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
             ),
             executionScope: toolExecutionScope,
             agentRunId: input.runId,
-            localComputerTaskAuthority: input.computerUseTarget === "local_macos"
+            localComputerTaskAuthority: isLocalComputerTarget(input.computerUseTarget)
               ? { objective: input.prompt }
               : undefined,
             checkpointBeforeEffect: input.checkpointBeforeTool,
@@ -3534,6 +3889,10 @@ export async function* runNonOpenAIProviderToolLoop(input: {
             },
           });
         }
+        workflowHandoff = workflowHandoffFromExecution(execution, {
+          tenantId: input.securityContext.tenantId, actorId: input.securityContext.actorId, threadId: input.threadId,
+        });
+        if (workflowHandoff) return finish();
         const isError =
           execution.record.status !== "executed" &&
           execution.record.status !== "dry_run";
@@ -3681,6 +4040,8 @@ type AgentModelTurnBudget = {
   maxAttempts: number;
   /** The turn may not call tools: the budget has no room for another round. */
   finalTurn?: boolean;
+  /** Recheck time after model reasoning or each completed sequential tool. */
+  shouldFinishBeforeTools?: () => boolean;
   /** Replace the turn's reservation with what it spent, once it completes. */
   settle?: (turn: SpentModelTurn) => void;
 };
@@ -3713,33 +4074,34 @@ function agentTurnBudgetEstimate(input: {
   provider: "openai" | "google" | "anthropic" | "aws_bedrock";
   model: string;
   inputTokens: number;
+  maxOutputTokens: number;
   computerUseTarget?: ComputerUseTarget;
 }): ModelTurnBudgetEstimate {
   const toolRoundTokens = Math.ceil(
     toolCallsPerTurnForComputerUse(input.computerUseTarget) *
       MAX_TOOL_RESULT_CHARS / 4,
   ) + (
-    input.computerUseTarget === "local_macos"
+    isLocalComputerTarget(input.computerUseTarget)
       ? ESTIMATED_IMAGE_INPUT_TOKENS
       : 0
   );
   const followUpInputTokens =
-    input.inputTokens + AGENT_MAX_OUTPUT_TOKENS + toolRoundTokens;
+    input.inputTokens + input.maxOutputTokens + toolRoundTokens;
   const cost = (inputTokens: number) => {
     const priced = estimateProviderCost(input.provider, input.model, {
       inputTokens,
-      outputTokens: AGENT_MAX_OUTPUT_TOKENS,
+      outputTokens: input.maxOutputTokens,
       cachedInputTokens: 0,
-      totalTokens: inputTokens + AGENT_MAX_OUTPUT_TOKENS,
+      totalTokens: inputTokens + input.maxOutputTokens,
     });
     return priced.costKnown
       ? Math.ceil(priced.estimatedCostUsd * 1_000_000)
       : 0;
   };
   return {
-    tokens: input.inputTokens + AGENT_MAX_OUTPUT_TOKENS,
+    tokens: input.inputTokens + input.maxOutputTokens,
     costMicrousd: cost(input.inputTokens),
-    followUpTokens: followUpInputTokens + AGENT_MAX_OUTPUT_TOKENS,
+    followUpTokens: followUpInputTokens + input.maxOutputTokens,
     followUpCostMicrousd: cost(followUpInputTokens),
   };
 }
@@ -3813,9 +4175,11 @@ function tenantDailyBudgetCeiling(
  */
 function createAgentTurnBudgeter(input: {
   tenantId: string;
+  minimumToolRoundWallTimeMs?: number;
   getState: () => RunBudgetStateV1;
   setState: (state: RunBudgetStateV1) => void;
 }) {
+  const minimumToolRoundWallTimeMs = input.minimumToolRoundWallTimeMs;
   let window: Promise<TenantDailyBudgetWindow | undefined> | undefined;
   return async (
     budget: AgentTurnBudget,
@@ -3827,11 +4191,16 @@ function createAgentTurnBudgeter(input: {
       ...budget,
       allowRetry,
       ceiling,
+      minimumToolRoundWallTimeMs,
     });
     input.setState(plan.state);
     return {
       maxAttempts: plan.maxAttempts,
       finalTurn: plan.finalTurn,
+      ...(minimumToolRoundWallTimeMs !== undefined ? {
+        shouldFinishBeforeTools: () => remainingRunBudget(input.getState()).wallTimeMs <=
+          minimumToolRoundWallTimeMs,
+      } : {}),
       settle: (turn) => input.setState(settleModelTurnBudget(
         input.getState(),
         plan.reserved,
@@ -3918,9 +4287,7 @@ function restoreAgentRunBudgetState(
     startedAt: run.startedAt,
     toolSteps: continuation.toolSteps,
     toolCallsPerStep: toolCallsPerTurnForComputerUse(
-      continuation.computerUseTarget === "local_macos"
-        ? "local_macos"
-        : undefined,
+      localComputerTargetFrom(continuation.computerUseTarget),
     ),
   });
 }
@@ -4090,15 +4457,14 @@ async function resumeAgentRunAfterToolApprovalInScope({
   const abortSignal = externalAbortSignal
     ? AbortSignal.any([externalAbortSignal, cancellation.signal])
     : cancellation.signal;
+  const maxOutputTokens = continuation.maxOutputTokens ?? AGENT_MAX_OUTPUT_TOKENS;
   const maxToolSteps = resolveMaxToolSteps(
     continuation.maxToolSteps,
     Math.max(AGENT_MAX_TOOL_STEPS, LOCAL_COMPUTER_MAX_TOOL_STEPS),
     AGENT_MAX_TOOL_STEPS,
   );
   const maxToolCallsPerTurn = toolCallsPerTurnForComputerUse(
-    continuation.computerUseTarget === "local_macos"
-      ? "local_macos"
-      : undefined,
+    localComputerTargetFrom(continuation.computerUseTarget),
   );
   const executionScope = await resolveContinuationExecutionScope(
     run,
@@ -4329,7 +4695,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
     : resumeDeploymentRoute.tier;
   const resumeModel = run.model || resumeDeploymentRoute.model;
   const resumeComputerUseRequested =
-    continuation.computerUseTarget === "local_macos";
+    isLocalComputerTarget(continuation.computerUseTarget);
   const resumeRuntimeModel = await resolveRuntimeModelAssignment({
     tenantId: normalizeTenantId(tenantId),
     actorId: continuation.context.actorId,
@@ -4416,6 +4782,9 @@ async function resumeAgentRunAfterToolApprovalInScope({
     );
   }
   let response = continuation.response || run.response || "";
+  let workflowHandoff = workflowHandoffFromExecution(toolExecution, {
+    tenantId: continuation.context.tenantId, actorId: continuation.context.actorId, threadId: run.threadId,
+  });
   let toolSteps = continuation.toolSteps;
   let citationSources = mergeCitationSources(
     continuation.citationSources || [],
@@ -4499,7 +4868,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
   }
 
   try {
-    for (let queueIndex = 0; queueIndex < queuedCalls.length; queueIndex += 1) {
+    for (let queueIndex = 0; !workflowHandoff && queueIndex < queuedCalls.length; queueIndex += 1) {
       const call = queuedCalls[queueIndex];
       if (call.skipReason) {
         carriedOutputs.push(functionCallOutput(call, { error: call.skipReason }));
@@ -4559,7 +4928,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
           executionScope: toolExecutionScope,
           agentRunId: run.id,
           localComputerTaskAuthority:
-            continuation.computerUseTarget === "local_macos"
+            isLocalComputerTarget(continuation.computerUseTarget)
               ? { objective: run.prompt }
               : undefined,
           checkpointBeforeEffect: checkpointBeforeResumeTool,
@@ -4615,6 +4984,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
             response,
             toolSteps,
             maxToolSteps,
+            maxOutputTokens,
             outputsBeforeApproval: carriedOutputs,
             pendingToolCall: {
               callId: call.callId,
@@ -4646,6 +5016,10 @@ async function resumeAgentRunAfterToolApprovalInScope({
         return { resumed: true, status: "waiting_approval" };
       }
 
+      workflowHandoff = workflowHandoffFromExecution(execution, {
+        tenantId: continuation.context.tenantId, actorId: continuation.context.actorId, threadId: run.threadId,
+      });
+      if (workflowHandoff) break;
       carriedOutputs.push(functionCallOutput(call, {
         executionId: execution.record.id,
         status: execution.record.status,
@@ -4675,7 +5049,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
     }
     conversationItems = [...conversationItems, ...carriedOutputs];
 
-    for (;;) {
+    while (!workflowHandoff) {
       resumeAbortSignal.throwIfAborted();
       const turnInput: ResponseTurnInput = openAITurnInputWithComputerObservations(
         conversationItems,
@@ -4690,6 +5064,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
         allowRetry: false,
         budget: {
           estimate: agentTurnBudgetEstimate({
+              maxOutputTokens,
             provider: "openai",
             model: resumeModel,
             inputTokens: estimateModelInputTokens([
@@ -4697,9 +5072,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
               turnInput,
               toolbox.openAITools,
             ]),
-            computerUseTarget: continuation.computerUseTarget === "local_macos"
-              ? "local_macos"
-              : undefined,
+            computerUseTarget: localComputerTargetFrom(continuation.computerUseTarget),
           }),
           toolsEnabled: toolSteps < maxToolSteps,
         },
@@ -4723,7 +5096,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
             abortSignal: resumeAbortSignal,
             reasoningEffort:
               resumeRuntimeModel.reasoningEffort || AGENT_REASONING_EFFORT,
-            maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
+            maxOutputTokens,
             keepTruncatedAnswer: true,
             model: resumeModel,
             apiKey: workspaceOpenAIAvailable ? apiKey : undefined,
@@ -4920,7 +5293,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
             executionScope: toolExecutionScope,
             agentRunId: run.id,
             localComputerTaskAuthority:
-              continuation.computerUseTarget === "local_macos"
+              isLocalComputerTarget(continuation.computerUseTarget)
                 ? { objective: run.prompt }
                 : undefined,
             checkpointBeforeEffect: checkpointBeforeResumeTool,
@@ -4981,6 +5354,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
               response,
               toolSteps,
               maxToolSteps,
+              maxOutputTokens,
               outputsBeforeApproval: outputs,
               pendingToolCall: {
                 callId: call.callId,
@@ -5012,6 +5386,10 @@ async function resumeAgentRunAfterToolApprovalInScope({
           return { resumed: true, status: "waiting_approval" };
         }
 
+        workflowHandoff = workflowHandoffFromExecution(execution, {
+          tenantId: continuation.context.tenantId, actorId: continuation.context.actorId, threadId: run.threadId,
+        });
+        if (workflowHandoff) break;
         outputs.push(functionCallOutput(call, {
           executionId: execution.record.id,
           status: execution.record.status,
@@ -5040,6 +5418,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
         }
       }
 
+      if (workflowHandoff) break;
       for (const call of turn.functionCalls.slice(maxToolCallsPerTurn)) {
         outputs.push(functionCallOutput(call, { error: "Per-turn tool call limit reached; call skipped." }));
       }
@@ -5060,6 +5439,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
     const finalization = await finalizeAgentRun({
       runId: run.id,
       response,
+      workflowHandoff,
       delegationExecutions: resumeDelegationExecutions,
       carriedDelegationReceipts: continuation.delegationReceipts,
       recordStatus: appendScopedRunEvent,
@@ -5174,6 +5554,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
   resumeActorBinding?: CanonicalRequestActorBindingV1;
 }) {
   const providerState = continuation.providerToolState;
+  const maxOutputTokens = continuation.maxOutputTokens ?? AGENT_MAX_OUTPUT_TOKENS;
   const maxToolSteps = resolveMaxToolSteps(
     continuation.maxToolSteps,
     Math.max(AGENT_MAX_TOOL_STEPS, LOCAL_COMPUTER_MAX_TOOL_STEPS),
@@ -5357,7 +5738,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
     deploymentAdapter?.targets(providerState.tier)[0]?.model ||
     "provider-continuation";
   const resumeComputerUseRequested =
-    continuation.computerUseTarget === "local_macos";
+    isLocalComputerTarget(continuation.computerUseTarget);
   const resumeRuntimeModel = await resolveRuntimeModelAssignment({
     tenantId: normalizeTenantId(tenantId),
     actorId: continuation.context.actorId,
@@ -5466,6 +5847,9 @@ async function resumeProviderBoundAgentRunAfterApproval({
   }
 
   let response = continuation.response || run.response || "";
+  let workflowHandoff = workflowHandoffFromExecution(toolExecution, {
+    tenantId: continuation.context.tenantId, actorId: continuation.context.actorId, threadId: run.threadId,
+  });
   let toolSteps = continuation.toolSteps;
   let citationSources = mergeCitationSources(
     continuation.citationSources || [],
@@ -5555,6 +5939,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
       response,
       toolSteps,
       maxToolSteps,
+      maxOutputTokens,
       outputsBeforeApproval: [],
       pendingToolCall: {
         callId: waiting.providerState.pendingCall.callId,
@@ -5598,7 +5983,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
   try {
     for (
       let queueIndex = 0;
-      queueIndex < providerState.queuedCalls.length;
+      !workflowHandoff && queueIndex < providerState.queuedCalls.length;
       queueIndex += 1
     ) {
       const call = providerState.queuedCalls[queueIndex];
@@ -5674,7 +6059,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
           executionScope: toolExecutionScope,
           agentRunId: run.id,
           localComputerTaskAuthority:
-            continuation.computerUseTarget === "local_macos"
+            isLocalComputerTarget(continuation.computerUseTarget)
               ? { objective: run.prompt }
               : undefined,
           checkpointBeforeEffect: checkpointBeforeResumeTool,
@@ -5714,6 +6099,10 @@ async function resumeProviderBoundAgentRunAfterApproval({
           },
         });
       }
+      workflowHandoff = workflowHandoffFromExecution(execution, {
+        tenantId: continuation.context.tenantId, actorId: continuation.context.actorId, threadId: run.threadId,
+      });
+      if (workflowHandoff) break;
       const observationTransition = transitionEphemeralLocalObservation(
         latestLocalObservation,
         definition.id,
@@ -5733,7 +6122,9 @@ async function resumeProviderBoundAgentRunAfterApproval({
       ));
     }
 
+    if (!workflowHandoff) {
     const providerLoop = runNonOpenAIProviderToolLoop({
+      maxOutputTokens,
       requireReadOnly: continuation.toolPolicy?.readOnly,
       provider: providerState.provider,
       tier: providerState.tier,
@@ -5750,10 +6141,9 @@ async function resumeProviderBoundAgentRunAfterApproval({
       requestActorBinding: resumeActorBinding,
       executionScope,
       runId: run.id,
+      threadId: run.threadId,
       promptCacheScope: agentPromptCacheScope(run.agentId),
-      computerUseTarget: continuation.computerUseTarget === "local_macos"
-        ? "local_macos"
-        : undefined,
+      computerUseTarget: localComputerTargetFrom(continuation.computerUseTarget),
       usageReceipt: resumeUsageReceipt,
       abortSignal: resumeAbortSignal,
       forceApproval: continuation.toolPolicy?.forceApproval,
@@ -5782,12 +6172,11 @@ async function resumeProviderBoundAgentRunAfterApproval({
           tier,
           budget: {
             estimate: agentTurnBudgetEstimate({
+              maxOutputTokens,
               provider,
               model: resumeModel,
               inputTokens: estimatedInputTokens,
-              computerUseTarget: continuation.computerUseTarget === "local_macos"
-                ? "local_macos"
-                : undefined,
+              computerUseTarget: localComputerTargetFrom(continuation.computerUseTarget),
             }),
             toolsEnabled,
           },
@@ -5825,7 +6214,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
       checkpointAfterTool: checkpointAfterResumeTool,
       reserveTools: reserveResumeTools,
       serializeToolCalls:
-        continuation.computerUseTarget === "local_macos" ||
+        isLocalComputerTarget(continuation.computerUseTarget) ||
         isExpandedCheckpointShadowEnrollment(
           continuation.checkpointShadowEnrollment,
         ),
@@ -5914,11 +6303,15 @@ async function resumeProviderBoundAgentRunAfterApproval({
     if (result.waitingApproval) {
       return await parkForApproval(result.waitingApproval);
     }
+    workflowHandoff = result.workflowHandoff;
+    }
 
+    await flushDeltas();
     runBudgetState = refreshRunBudgetWallTime(runBudgetState);
     const finalization = await finalizeAgentRun({
       runId: run.id,
       response,
+      workflowHandoff,
       delegationExecutions: resumeDelegationExecutions,
       carriedDelegationReceipts: continuation.delegationReceipts,
       recordStatus: appendScopedRunEvent,
@@ -6029,6 +6422,7 @@ type AgentRunFinalization =
 async function finalizeAgentRun(input: {
   runId: string;
   response: string;
+  workflowHandoff?: WorkflowHandoff;
   delegationExecutions: readonly GovernedToolExecutionResult[];
   carriedDelegationReceipts?: readonly DelegationReceiptProjection[];
   recordStatus: (event: AgentEvent) => Promise<unknown>;
@@ -6049,7 +6443,7 @@ async function finalizeAgentRun(input: {
     input.delegationExecutions,
     input.carriedDelegationReceipts,
   );
-  if (reconciliation.replaced) {
+  if (reconciliation.replaced && !input.workflowHandoff) {
     await input.recordStatus({
       type: "status",
       label: "Delegation receipts reconciled",
@@ -6057,7 +6451,7 @@ async function finalizeAgentRun(input: {
         `The final response was replaced with ${reconciliation.receiptCount} server-owned delegation receipt(s).`,
     });
   }
-  const response = reconciliation.response;
+  const response = input.workflowHandoff?.acknowledgement || reconciliation.response;
   const grounding = await buildClaimGroundingReport({
     runId: input.runId,
     response,
@@ -6068,7 +6462,7 @@ async function finalizeAgentRun(input: {
     input.runId,
     response,
     grounding,
-    input.runMutationOptions,
+    { ...input.runMutationOptions, workflowHandoff: input.workflowHandoff },
   );
   if (!completed) return { committed: false, response };
   await appendAssistantTurnSafely({
@@ -6079,7 +6473,7 @@ async function finalizeAgentRun(input: {
   });
   // Only a durable decision forms memory. A continuation saved before runs
   // carried the decision has none, so it resumes withheld.
-  const consolidation = input.memory.formation === "durable"
+  const consolidation = input.memory.formation === "durable" && !input.workflowHandoff
     ? enqueueMemoryConsolidationSafely({
         runId: input.runId,
         tenantId: input.tenantId,
@@ -6331,11 +6725,25 @@ function durableModelToolResults(results: readonly ModelToolResult[]) {
 }
 
 function serializeToolResult(payload: unknown) {
-  let output = JSON.stringify({
-    provenance: "tool_result",
-    trust: "untrusted_data",
-    data: payload ?? null,
+  const envelope = (data: unknown) => JSON.stringify({
+    provenance: "tool_result", trust: "untrusted_data", data: data ?? null,
   });
+  // Keep follow-up page reads valid JSON and preserve citation/coverage metadata
+  // even when their extracts exceed the model's per-tool context allowance.
+  if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+    const record = payload as Record<string, unknown>;
+    const page = researchSourceReadResult(record.result);
+    if (page) {
+      let content = page.content;
+      let output = envelope({ ...record, result: { ...page, content } });
+      while (output.length > MAX_TOOL_RESULT_CHARS && content.length) {
+        content = content.slice(0, Math.floor(content.length * 0.75));
+        output = envelope({ ...record, result: { ...page, content, truncated: true } });
+      }
+      if (output.length <= MAX_TOOL_RESULT_CHARS) return output;
+    }
+  }
+  let output = envelope(payload);
   if (output.length > MAX_TOOL_RESULT_CHARS) {
     output = `${output.slice(0, MAX_TOOL_RESULT_CHARS)}… [truncated]`;
   }
@@ -6362,6 +6770,57 @@ function executionPayload(
     result: execution.result,
     admissibleEvidenceIds,
   };
+}
+
+function researchSourceReadResult(result: unknown): ResearchSourceRead | undefined {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return;
+  const page = result as Record<string, unknown>;
+  if (typeof page.url !== "string" || typeof page.title !== "string" ||
+    typeof page.content !== "string" || !page.content.trim() ||
+    typeof page.contentType !== "string" || typeof page.fetchedAt !== "string" ||
+    !Number.isFinite(Date.parse(page.fetchedAt)) || typeof page.citationId !== "string" ||
+    typeof page.truncated !== "boolean" || page.contentTrust !== "untrusted") return;
+  const source = buildWebCitationSources([{ url: page.url }], page.fetchedAt)[0];
+  if (!source || source.citationId !== page.citationId) return;
+  return page as unknown as ResearchSourceRead;
+}
+
+function liveWebPrefetchResult(result: unknown): LiveWebSearchResult | undefined {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return;
+  const value = result as Record<string, unknown>;
+  if (
+    value.provider !== "openai.responses.web_search" ||
+    typeof value.query !== "string" ||
+    typeof value.searchedAt !== "string" ||
+    !Number.isFinite(Date.parse(value.searchedAt)) ||
+    typeof value.model !== "string" ||
+    typeof value.summary !== "string" ||
+    !Array.isArray(value.sources) ||
+    value.sources.length === 0 ||
+    value.sourceCount !== value.sources.length ||
+    !value.sources.every((source: unknown) => {
+      if (!source || typeof source !== "object" || Array.isArray(source)) return false;
+      const item = source as Record<string, unknown>;
+      return typeof item.citationId === "string" &&
+        typeof item.title === "string" &&
+        typeof item.url === "string" &&
+        (item.snippet === undefined || typeof item.snippet === "string");
+    })
+  ) return;
+  return value as unknown as LiveWebSearchResult;
+}
+
+function webSearchFailureStopsCollection(record: ToolExecutionRecord): boolean {
+  if (!webSearchFailureIsNonRetryable(record)) return false;
+  // A deadline says this search ran too long, not that another focused facet
+  // cannot work. Do not replay it, but do not cancel all remaining discovery.
+  return (record.output as Record<string, unknown>).failureKind !== "timeout";
+}
+
+function webSearchFailureIsNonRetryable(record: ToolExecutionRecord): boolean {
+  if (record.toolId !== "web.search" || record.status !== "failed" ||
+      !record.output || typeof record.output !== "object" || Array.isArray(record.output)) return false;
+  return (record.output as Record<string, unknown>).retryable === false;
 }
 
 function citationSourcesFromToolResult(toolId: string, result: unknown) {
@@ -6401,6 +6860,11 @@ function citationSourcesFromToolResult(toolId: string, result: unknown) {
           }];
         })
       : [];
+  }
+  if (toolId === "web.read") {
+    const page = researchSourceReadResult(result);
+    return page ? buildWebCitationSources([{ url: page.url, title: page.title,
+      snippet: page.content.slice(0, 500) }], page.fetchedAt) : [];
   }
   if (toolId !== "web.search") return [];
   const items = Array.isArray(record.sources)

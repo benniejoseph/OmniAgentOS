@@ -58,7 +58,7 @@ def exercise(browser, origin, credentials, checks, coarse):
         page.on("popup", lambda popup: (fixture.unexpected.append({"kind": "popup"}), popup.close()))
         page.on("download", lambda download: (fixture.unexpected.append({"kind": "download"}), download.cancel()))
         navigate(page, origin, "/app/responsibilities")
-        button(page, "New responsibility").click()
+        button(page, "New follow-up").click()
         root(page).get_by_label("Canonical work").select_option(json.dumps(fixture.draft["work"], separators=(",", ":")))
         button(page, "Set up work-item tracking").click()
         expect(root(page).get_by_label("Purpose", exact=True)).to_have_value("Follow through on Synthetic canonical Work")

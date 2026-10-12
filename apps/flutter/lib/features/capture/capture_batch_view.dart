@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
+import '../../app/mobile/mobile_flow_scaffold.dart';
+import '../../app/platform/mobile_presentation.dart';
 import 'capture_controller.dart';
 import 'capture_models.dart';
 
@@ -19,12 +21,15 @@ class CaptureSelectionPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final totalBytes = files.fold<int>(0, (total, item) => total + item.length);
+    final mobile = usesMobilePresentation();
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surfaceContainerLow,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+        border: mobile
+            ? null
+            : Border.all(color: Theme.of(context).colorScheme.outlineVariant),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -45,15 +50,17 @@ class CaptureSelectionPanel extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 4),
-          const Text(
-            'Each file keeps its original identity. Files are read and encrypted after you queue them; processing may return partial or unsupported extraction.',
+          Text(
+            mobile
+                ? 'Each file is saved separately. Review processing afterwards: some files may only be read in part.'
+                : 'Each file keeps its original identity. Files are read and encrypted after you queue them; processing may return partial or unsupported extraction.',
           ),
           const SizedBox(height: 10),
           for (final item in files)
             Material(
               type: MaterialType.transparency,
               child: ListTile(
-                dense: true,
+                dense: !mobile,
                 contentPadding: EdgeInsets.zero,
                 leading: const Icon(Icons.description_outlined),
                 title: Text(
@@ -103,12 +110,15 @@ class CaptureBatchProgressPanel extends StatelessWidget {
               !localIds.contains(item.id),
         );
     final scheme = Theme.of(context).colorScheme;
+    final mobile = usesMobilePresentation();
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: scheme.primaryContainer.withValues(alpha: 0.42),
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: scheme.primary.withValues(alpha: 0.24)),
+        borderRadius: BorderRadius.circular(mobile ? 16 : 18),
+        border: mobile
+            ? null
+            : Border.all(color: scheme.primary.withValues(alpha: 0.24)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -126,7 +136,9 @@ class CaptureBatchProgressPanel extends StatelessWidget {
                       style: Theme.of(context).textTheme.titleMedium,
                     ),
                     Text(
-                      '$active active · $completed processing jobs completed${failed > 0 ? ' · $failed need attention' : ''}',
+                      mobile
+                          ? '$active in progress · $completed finished${failed > 0 ? ' · $failed need attention' : ''}'
+                          : '$active active · $completed processing jobs completed${failed > 0 ? ' · $failed need attention' : ''}',
                     ),
                   ],
                 ),
@@ -139,7 +151,7 @@ class CaptureBatchProgressPanel extends StatelessWidget {
                       : () => unawaited(controller.refreshBatchProgress()),
                   icon: const Icon(Icons.refresh_rounded),
                 ),
-              if (hasFinished)
+              if (hasFinished && !mobile)
                 TextButton(
                   onPressed: controller.clearFinishedBatchItems,
                   child: const Text('Clear finished'),
@@ -152,6 +164,14 @@ class CaptureBatchProgressPanel extends StatelessWidget {
               value: items.isEmpty ? null : (completed + failed) / items.length,
             ),
           ],
+          if (hasFinished && mobile)
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton(
+                onPressed: controller.clearFinishedBatchItems,
+                child: const Text('Clear finished'),
+              ),
+            ),
           const SizedBox(height: 8),
           for (final item in items)
             _CaptureBatchItemTile(controller: controller, item: item),
@@ -220,10 +240,11 @@ class _CaptureBatchItemTile extends StatelessWidget {
       ),
       _ => null,
     };
-    return Material(
+    final mobile = usesMobilePresentation();
+    final tile = Material(
       type: MaterialType.transparency,
       child: ListTile(
-        dense: true,
+        dense: !mobile,
         contentPadding: EdgeInsets.zero,
         leading:
             item.state == CaptureBatchState.uploading ||
@@ -246,12 +267,29 @@ class _CaptureBatchItemTile extends StatelessWidget {
                 : _captureBatchStateLabel(item.state),
             if (item.progressStage != null) _humanizeStage(item.progressStage!),
             if (item.detail != null) item.detail!,
-            if (item.jobId != null) 'Job: ${item.jobId}',
-            if (item.source != null) 'Source: ${item.source}',
+            if (!mobile && item.jobId != null) 'Job: ${item.jobId}',
+            if (!mobile && item.source != null) 'Source: ${item.source}',
           ].join(' · '),
         ),
         trailing: action,
       ),
+    );
+    if (!mobile) return tile;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        tile,
+        if (item.jobId != null || item.source != null)
+          MobileDetailsDisclosure(
+            title: 'Processing details',
+            child: SelectableText(
+              [
+                if (item.jobId != null) 'Job: ${item.jobId}',
+                if (item.source != null) 'Source: ${item.source}',
+              ].join('\n'),
+            ),
+          ),
+      ],
     );
   }
 }

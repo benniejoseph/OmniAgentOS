@@ -34,7 +34,7 @@ export function CompanionPresence(props: PresenceProps) {
 
 function ScopedPresence({ scope, conversationId, showHome = true, onOpenHome, homeDisabledReason, layout = "compact", ...input }: PresenceProps & { scope?: string }) {
   const presentation = companionPresentation(input);
-  const { read, assetFailed, showPortrait, fullBody, motion, intensity, observationRef, posterRef, spriteRef, poster, onPosterError } = useCompanionAtlasPlayer({ scope, conversationId, presentation, greeting: layout === "greeting" && presentation.state === "available" });
+  const { read, assetFailed, showPortrait, motion, intensity, observationRef, portrait } = useCompanionAtlasPlayer({ scope, conversationId, presentation, greeting: layout === "greeting" && presentation.state === "available" });
   const preferences = read.response?.snapshot.preferences;
 
   const home = read.response?.home;
@@ -42,12 +42,12 @@ function ScopedPresence({ scope, conversationId, showHome = true, onOpenHome, ho
     <section ref={observationRef} className={styles.presence} aria-label="ATLAS companion status" data-testid="companion-presence"
       data-companion-state={presentation.state} data-companion-motion={motion} data-companion-intensity={intensity}
       data-companion-layout={layout}
-      data-companion-artwork={fullBody ? "greeting" : "portrait"}
+      data-companion-artwork="lottie"
       data-companion-preferences={read.state} data-companion-portrait={showPortrait ? "visible" : assetFailed ? "unavailable" : "hidden"}>
       <details className={styles.disclosure}>
       <summary className={styles.summary}>
-      <CompanionAtlasPortrait posterRef={posterRef} spriteRef={spriteRef} showPortrait={showPortrait} poster={poster} fullBody={fullBody} onPosterError={onPosterError}
-        className={styles.portrait} imageClassName={styles.image} size={layout === "greeting" ? "72px" : "36px"} />
+      <CompanionAtlasPortrait {...portrait}
+        className={styles.portrait} size={layout === "greeting" ? "72px" : "36px"} />
       <span className={styles.status}><span className={styles.name}>ATLAS</span><span className={styles.state}>{presentation.label}</span></span>
       <ChevronDown size={13} className={styles.chevron} aria-hidden="true" />
       <span className="sr-only">Status details and companion settings</span>

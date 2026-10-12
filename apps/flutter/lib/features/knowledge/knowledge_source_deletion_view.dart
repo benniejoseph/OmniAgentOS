@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
 
+import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_page_scaffold.dart';
+
 import '../../core/network/api_exception.dart';
 import 'knowledge.dart';
 import 'knowledge_mutations.dart';
@@ -225,12 +228,46 @@ class _KnowledgeSourceCleanupState extends State<KnowledgeSourceCleanup>
                 _ => 'This local source scope is not eligible for deletion.',
               }),
             if (pin != null) ...[
-              Text('${pin['documentCount']} local documents'),
-              Text('${pin['derivedMemoryCount']} derived Memory records'),
-              Text('${pin['retrievalTraceCount']} retrieval traces'),
-              Text(
-                '${pin['graphNodeCount']} relationship points and ${pin['graphEdgeCount']} relationships',
-              ),
+              if (usesMobilePresentation())
+                MobileSurface(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text(
+                        'What will be removed',
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                      const SizedBox(height: 12),
+                      for (final entry in {
+                        'Saved sources': pin['documentCount'],
+                        'Memories learned from them': pin['derivedMemoryCount'],
+                        'Recall records': pin['retrievalTraceCount'],
+                        'Connection points': pin['graphNodeCount'],
+                        'Relationships': pin['graphEdgeCount'],
+                      }.entries)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 6),
+                          child: Row(
+                            children: [
+                              Expanded(child: Text(entry.key)),
+                              Text(
+                                '${entry.value}',
+                                style: Theme.of(context).textTheme.titleMedium,
+                              ),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
+                )
+              else ...[
+                Text('${pin['documentCount']} local documents'),
+                Text('${pin['derivedMemoryCount']} derived Memory records'),
+                Text('${pin['retrievalTraceCount']} retrieval traces'),
+                Text(
+                  '${pin['graphNodeCount']} relationship points and ${pin['graphEdgeCount']} relationships',
+                ),
+              ],
               ExpansionTile(
                 title: Text(
                   'Complete document list (${(review.review['documents'] as List).length})',

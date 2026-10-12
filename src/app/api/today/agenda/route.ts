@@ -20,7 +20,6 @@ async function GETHandler(request: Request) {
     workLimit: numberQuery(url, "workLimit", 16),
     approvalLimit: numberQuery(url, "approvalLimit", 12),
     meetingLimit: numberQuery(url, "meetingLimit", 50),
-    accountLimit: numberQuery(url, "accountLimit", 50),
   });
   if (!parsed.success) return Response.json(
     { error: "Invalid cohesive Today request.", details: parsed.error.flatten() },

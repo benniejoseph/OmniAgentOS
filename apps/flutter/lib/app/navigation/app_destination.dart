@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-enum AppDestinationGroup { workspace, automation, review, system }
+enum AppDestinationGroup { workspace, automation, review, system, advanced }
 
 class AppDestination {
   const AppDestination({
@@ -69,16 +69,16 @@ const appDestinations = <AppDestination>[
     primary: true,
   ),
   AppDestination(
-    label: 'Activity',
+    label: 'History',
     path: '/activity',
-    icon: Icons.receipt_long_outlined,
-    selectedIcon: Icons.receipt_long,
-    eyebrow: 'WORK AND UPDATES',
-    description: 'Authorized work, decisions, updates and history.',
-    group: AppDestinationGroup.workspace,
+    icon: Icons.history_outlined,
+    selectedIcon: Icons.history_rounded,
+    eyebrow: 'RESULTS AND TIMELINE',
+    description: 'Results, decisions, and a timeline of your work.',
+    group: AppDestinationGroup.review,
   ),
   AppDestination(
-    label: 'Responsibilities',
+    label: 'Follow-ups',
     path: '/responsibilities',
     icon: Icons.event_repeat_outlined,
     selectedIcon: Icons.event_repeat,
@@ -116,15 +116,6 @@ const appDestinations = <AppDestination>[
     group: AppDestinationGroup.workspace,
   ),
   AppDestination(
-    label: 'Accounts',
-    path: '/accounts',
-    icon: Icons.business_outlined,
-    selectedIcon: Icons.business_rounded,
-    eyebrow: 'CUSTOMER 360',
-    description: 'Customer health, evidence, risks, and renewal context.',
-    group: AppDestinationGroup.workspace,
-  ),
-  AppDestination(
     label: 'Markets',
     path: '/markets',
     icon: Icons.candlestick_chart_outlined,
@@ -152,6 +143,7 @@ const appDestinations = <AppDestination>[
     description: 'Repeatable work, schedules, event triggers, and run history.',
     group: AppDestinationGroup.automation,
     macosVisible: false,
+    adaptiveVisible: false,
   ),
   AppDestination(
     label: 'Connections',
@@ -163,6 +155,7 @@ const appDestinations = <AppDestination>[
         'Accounts, data sources, MCP servers, and REST APIs Asael may use.',
     group: AppDestinationGroup.automation,
     macosVisible: false,
+    adaptiveVisible: false,
   ),
   AppDestination(
     label: 'Needs you',
@@ -186,13 +179,15 @@ const appDestinations = <AppDestination>[
     adaptiveVisible: false,
   ),
   AppDestination(
-    label: 'Results',
+    label: 'History',
     path: '/results',
     icon: Icons.fact_check_outlined,
     selectedIcon: Icons.fact_check_rounded,
     eyebrow: 'EVIDENCE LEDGER',
     description: 'Review completed work with evidence and verification.',
     group: AppDestinationGroup.review,
+    macosVisible: false,
+    adaptiveVisible: false,
   ),
   AppDestination(
     label: 'Quality Checks',
@@ -201,7 +196,9 @@ const appDestinations = <AppDestination>[
     selectedIcon: Icons.rule_rounded,
     eyebrow: 'EVALUATIONS',
     description: 'Automated checks that verify agent behavior.',
-    group: AppDestinationGroup.review,
+    group: AppDestinationGroup.advanced,
+    macosVisible: false,
+    adaptiveVisible: false,
   ),
   AppDestination(
     label: 'Monitoring',
@@ -210,7 +207,9 @@ const appDestinations = <AppDestination>[
     selectedIcon: Icons.monitor_heart_rounded,
     eyebrow: 'SYSTEM HEALTH',
     description: 'Events, service health, alerts, and incidents.',
-    group: AppDestinationGroup.system,
+    group: AppDestinationGroup.advanced,
+    macosVisible: false,
+    adaptiveVisible: false,
   ),
   AppDestination(
     label: 'Security',
@@ -227,7 +226,7 @@ const appDestinations = <AppDestination>[
     icon: Icons.tune_outlined,
     selectedIcon: Icons.tune_rounded,
     eyebrow: 'CONFIGURATION',
-    description: 'Models, environment, identity, and portable data.',
+    description: 'Preferences, models, Quality Checks, and Monitoring.',
     group: AppDestinationGroup.system,
   ),
   AppDestination(
@@ -238,6 +237,17 @@ const appDestinations = <AppDestination>[
     eyebrow: 'WORKSPACE CONTENT',
     description: 'Find conversations, work, private memory and saved sources.',
     group: AppDestinationGroup.workspace,
+  ),
+  AppDestination(
+    label: 'Library',
+    path: '/library',
+    icon: Icons.widgets_outlined,
+    selectedIcon: Icons.widgets_rounded,
+    eyebrow: 'YOUR SPACES',
+    description: 'Your knowledge, tools and preferences.',
+    group: AppDestinationGroup.workspace,
+    macosVisible: false,
+    adaptiveVisible: false,
   ),
 ];
 
@@ -259,3 +269,9 @@ List<int> destinationIndices({
             appDestinations[index].adaptiveVisible == adaptiveVisible))
       index,
 ];
+
+/// Result detail routes share the visible History destination.
+int navigationDisplayIndex(int index) =>
+    appDestinations[index].path == '/results'
+    ? destinationIndex('/activity')
+    : index;

@@ -1,5 +1,11 @@
 # Personal partner implementation — 2026-10-12
 
+> Historical validation record for checkpoint `2d8b52fd`, based on the earlier
+> production baseline. Release integration on 2026-10-13 preserves main through
+> `8f5b0195`, renumbers the candidate to migrations 252–253 and native contract 56,
+> and uses native version 1.33.0+98. The counts below describe the original
+> checkpoint; the integrated release requires fresh CI and live release evidence.
+
 The owner selected a personal AI partner that carries real work across life and projects, and authorized implementation and removal decisions. This change implements the first complete increment on `codex/personal-partner`.
 
 ## Product decisions
@@ -40,7 +46,7 @@ Three related moderate entries remain in the mammoth → argparse → sprintf-js
 
 This is a local implementation candidate. It has not been deployed, and production data or connected accounts were not used for verification. Browser checks use the real interface and isolated authentication with explicitly intercepted synthetic effects. Database checks use an isolated local PostgreSQL instance. The developer's saved environment file was left untouched.
 
-Production promotion still needs the normal hosted CI and paired web/worker release process, including migrations 246/247 and contract-48 artifacts. See [deployment](../deployment.md) and [production rollout](../production-rollout.md). The product direction and deliberately narrow capability claims are recorded in [the product vision](../vision/PRODUCT.md).
+Production promotion still needs the normal hosted CI and paired web/worker release process, including the integrated migrations 252/253 and contract-56 artifacts. See [deployment](../deployment.md) and [production rollout](../production-rollout.md). The product direction and deliberately narrow capability claims are recorded in [the product vision](../vision/PRODUCT.md).
 
 ## Validation evidence
 

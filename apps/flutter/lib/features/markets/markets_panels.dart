@@ -2,6 +2,9 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_page_scaffold.dart';
+
 typedef Json = Map<String, dynamic>;
 
 Widget marketOverviewPanel({Json? overview, Json? bars}) =>
@@ -57,6 +60,46 @@ class _OverviewTab extends StatelessWidget {
     final providers = (overview?['providers'] as List? ?? const [])
         .whereType<Map>()
         .toList();
+    if (usesMobilePresentation()) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _PriceCanvas(
+            values: values,
+            last: last,
+            change: change,
+            asOf: bars?['asOf']?.toString(),
+            source: bars?['snapshotSource']?.toString(),
+          ),
+          const SizedBox(height: 12),
+          ExpansionTile(
+            tilePadding: EdgeInsets.zero,
+            title: const Text('Research sources & limits'),
+            subtitle: Text(agent['name']?.toString() ?? 'Market research'),
+            children: [
+              if (agent['note'] case final String note)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: Text(note),
+                ),
+              for (final provider in providers)
+                _EvidenceRow(
+                  icon: Icons.hub_outlined,
+                  title: provider['label']?.toString() ?? 'Provider',
+                  detail: provider['purpose']?.toString() ?? '',
+                  status: provider['status']?.toString() ?? 'unknown',
+                ),
+              for (final item
+                  in (overview?['guardrails'] as List? ?? const []).take(8))
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  child: Text(item.toString()),
+                ),
+            ],
+          ),
+        ],
+      );
+    }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -813,64 +856,154 @@ class _PriceCanvas extends StatelessWidget {
   final double? last, change;
   final String? asOf, source;
   @override
-  Widget build(BuildContext context) => Container(
-    width: double.infinity,
-    padding: const EdgeInsets.all(18),
-    decoration: BoxDecoration(
-      color: const Color(0xFF061C1E),
-      borderRadius: BorderRadius.circular(16),
-      border: Border.all(color: const Color(0xFF1E5752)),
-    ),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          last?.toStringAsFixed(2) ?? 'Price unavailable',
-          style: const TextStyle(
-            color: Color(0xFFF3F8EF),
-            fontSize: 25,
-            fontWeight: FontWeight.w700,
+  Widget build(BuildContext context) => usesMobilePresentation()
+      ? MobileSurface(
+          spotlight: true,
+          padding: const EdgeInsets.all(22),
+          child: Builder(
+            builder: (context) {
+              final theme = Theme.of(context);
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'SAVED PRICE',
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      letterSpacing: 1.4,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    last?.toStringAsFixed(2) ?? 'Price unavailable',
+                    style: theme.textTheme.headlineLarge?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    change == null
+                        ? 'Choose a saved snapshot to see the price.'
+                        : '${change! >= 0 ? '+' : ''}${change!.toStringAsFixed(2)}% over the displayed period',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.primary,
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  Semantics(
+                    label:
+                        '${values.length} saved closing prices. Exact values are available in price evidence.',
+                    child: SizedBox(
+                      height: 150,
+                      width: double.infinity,
+                      child: RepaintBoundary(
+                        child: CustomPaint(
+                          painter: _LinePainter(
+                            values,
+                            gridColor: theme.colorScheme.outlineVariant
+                                .withValues(alpha: .5),
+                            lineColor: theme.colorScheme.primary,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 18),
+                  Text(
+                    '${_shortDate(asOf)}${source == null ? '' : ' · $source'}',
+                    style: theme.textTheme.bodySmall,
+                  ),
+                ],
+              );
+            },
           ),
-        ),
-        const SizedBox(height: 6),
-        Wrap(
-          spacing: 16,
-          runSpacing: 8,
-          children: [
-            Text(
-              change == null
-                  ? (source ?? 'Select a stored snapshot')
-                  : '${change! >= 0 ? '+' : ''}${change!.toStringAsFixed(2)}% · ${source ?? 'snapshot'}',
-              style: const TextStyle(color: Color(0xFF78E4C7)),
+        )
+      : Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(18),
+          decoration: BoxDecoration(
+            color: usesMobilePresentation()
+                ? Theme.of(context).colorScheme.surfaceContainerLow
+                : const Color(0xFF061C1E),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: usesMobilePresentation()
+                  ? Theme.of(context).colorScheme.outlineVariant
+                  : const Color(0xFF1E5752),
             ),
-            Text(
-              _shortDate(asOf),
-              style: const TextStyle(color: Color(0xFFB6D3CE)),
-            ),
-          ],
-        ),
-        const SizedBox(height: 16),
-        Semantics(
-          label:
-              '${values.length} stored closing prices. Exact OHLC values are available in the snapshot inspector.',
-          child: SizedBox(
-            height: 160,
-            width: double.infinity,
-            child: CustomPaint(painter: _LinePainter(values)),
           ),
-        ),
-      ],
-    ),
-  );
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                last?.toStringAsFixed(2) ?? 'Price unavailable',
+                style: TextStyle(
+                  color: usesMobilePresentation()
+                      ? Theme.of(context).colorScheme.onSurface
+                      : const Color(0xFFF3F8EF),
+                  fontSize: 25,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Wrap(
+                spacing: 16,
+                runSpacing: 8,
+                children: [
+                  Text(
+                    change == null
+                        ? (source ?? 'Select a stored snapshot')
+                        : '${change! >= 0 ? '+' : ''}${change!.toStringAsFixed(2)}% · ${source ?? 'snapshot'}',
+                    style: TextStyle(
+                      color: usesMobilePresentation()
+                          ? Theme.of(context).colorScheme.secondary
+                          : const Color(0xFF78E4C7),
+                    ),
+                  ),
+                  Text(
+                    _shortDate(asOf),
+                    style: TextStyle(
+                      color: usesMobilePresentation()
+                          ? Theme.of(context).colorScheme.onSurfaceVariant
+                          : const Color(0xFFB6D3CE),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              Semantics(
+                label:
+                    '${values.length} stored closing prices. Exact OHLC values are available in the snapshot inspector.',
+                child: SizedBox(
+                  height: 160,
+                  width: double.infinity,
+                  child: RepaintBoundary(
+                    child: CustomPaint(
+                      painter: _LinePainter(
+                        values,
+                        gridColor: usesMobilePresentation()
+                            ? Theme.of(context).colorScheme.outlineVariant
+                            : const Color(0xFF123B3C),
+                        lineColor: usesMobilePresentation()
+                            ? Theme.of(context).colorScheme.secondary
+                            : const Color(0xFF72E0C0),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
 }
 
 class _LinePainter extends CustomPainter {
-  _LinePainter(this.values);
+  _LinePainter(this.values, {required this.gridColor, required this.lineColor});
   final List<double> values;
+  final Color gridColor, lineColor;
   @override
   void paint(Canvas canvas, Size size) {
     final grid = Paint()
-      ..color = const Color(0xFF123B3C)
+      ..color = gridColor
       ..strokeWidth = 1;
     for (var index = 1; index < 5; index++) {
       canvas.drawLine(
@@ -901,7 +1034,7 @@ class _LinePainter extends CustomPainter {
     canvas.drawPath(
       path,
       Paint()
-        ..color = const Color(0xFF72E0C0)
+        ..color = lineColor
         ..strokeWidth = 2.1
         ..style = PaintingStyle.stroke
         ..strokeCap = StrokeCap.round,
@@ -910,7 +1043,9 @@ class _LinePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _LinePainter oldDelegate) =>
-      oldDelegate.values != values;
+      oldDelegate.values != values ||
+      oldDelegate.gridColor != gridColor ||
+      oldDelegate.lineColor != lineColor;
 }
 
 class _EventRow extends StatelessWidget {

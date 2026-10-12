@@ -1,6 +1,8 @@
 "use client";
 
 import Link from "next/link";
+import { ResearchPanel, researchViewFromWorkflow } from "@/components/command/research-panel";
+import dynamic from "next/dynamic";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
@@ -30,6 +32,9 @@ import { GeneratedArtifactsShelf } from "@/components/generated-artifacts-shelf"
 import { WorkspaceLibrary } from "@/components/workspace-library";
 import styles from "./results-center.module.css";
 
+const ResultReport = dynamic(() => import("@/components/agent-runs-workspace")
+  .then((module) => module.ConversationMessageContent));
+
 const RESULT_LIBRARY_KINDS = [
   "image",
   "transcript",
@@ -57,7 +62,7 @@ type PrimaryResult = {
   tone: Tone;
 };
 
-export function ResultsCenter() {
+export function ResultsCenter({ embedded = false }: { embedded?: boolean }) {
   const {
     session,
     status: sessionStatus,
@@ -221,6 +226,14 @@ export function ResultsCenter() {
     return () => window.removeEventListener("popstate", readSelection);
   }, []);
 
+  useEffect(() => {
+    if (!selectedResultKey) return;
+    const timer = window.setTimeout(() => void load(), 0);
+    return () => window.clearTimeout(timer);
+    // A selected result needs its exact saved report, including interrupted drafts.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedResultKey]);
+
   const agentRuns = arrayPath(data, "runs.runs");
   const workflowRuns = arrayPath(data, "workflows.runs");
   const approvalItems = arrayPath(data, "approvals.items");
@@ -252,7 +265,7 @@ export function ResultsCenter() {
         return selected;
       }
       return selectedResultKey
-        ? unavailableSelectedResult(selectedResultKey)
+        ? unavailableSelectedResult()
         : choosePrimaryResult(resultTimeline, resultSourceError);
     },
     [resultSourceError, resultTimeline, selectedResultKey],
@@ -297,10 +310,10 @@ export function ResultsCenter() {
   }
 
   return (
-    <div className={styles.shell} aria-busy={state === "loading"} data-testid="results-workspace">
+    <div className={clsx(styles.shell, embedded && styles.embedded)} aria-busy={state === "loading"} data-testid="results-workspace">
       <header className={styles.header}>
         <div className={styles.introduction}>
-          <h1>Results</h1>
+          <h2>Results</h2>
           <p>Review outputs, their current status, and the evidence behind them.</p>
           <p className={styles.refreshTime}>
             {lastRefresh ? `Updated ${lastRefresh}` : state === "loading" ? "Loading results" : "Update time unknown"}
@@ -372,6 +385,12 @@ export function ResultsCenter() {
           <div className={styles.resultsLayout}>
             <PrimaryResultCard
               result={primaryResult}
+              researchWorkflow={primaryResult.kind === "workflow"
+                ? stringValue(readPath(data.workflows, "selectedDetail.run.id")) === primaryResult.key?.slice("workflow:".length)
+                  ? readPath(data.workflows, "selectedDetail")
+                  : { run: workflowRuns.find((run) => `workflow:${run.id}` === primaryResult.key) }
+                : undefined}
+              researchRun={primaryResult.kind === "agent" ? agentRuns.find((run) => `agent:${run.id}` === primaryResult.key) : undefined}
               canceling={Boolean(cancelingRunId)}
               onCancel={() => void cancelAgentResult(primaryResult)}
             />
@@ -414,9 +433,9 @@ export function ResultsCenter() {
             </section>
           </div>
 
-          <section className={styles.approvals} aria-labelledby="result-blockers-title">
+          {approvalItems.length > 0 ? <section className={styles.approvals} aria-labelledby="result-blockers-title">
             <div className={styles.sectionHeading}>
-              <h2 id="result-blockers-title">Blocked before result</h2>
+              <h2 id="result-blockers-title">Waiting for your decision</h2>
               <p>Resolve these requests before the outcome is final.</p>
             </div>
             <ResultRows
@@ -430,7 +449,7 @@ export function ResultsCenter() {
               empty={resourceError(data.approvals) ? "Approval state is unavailable. The source notice above has more detail." : "No approval blockers are waiting."}
               icon={ShieldCheck}
             />
-          </section>
+          </section> : null}
 
           <div className={styles.sharedOutputs}>
             <GeneratedArtifactsShelf refreshKey={lastRefresh} />
@@ -459,13 +478,13 @@ export function ResultsCenter() {
                 <Metric label="Evaluations" value={resourceMetric(state, signedIn, data.evaluations, evaluationRuns.length.toString())} />
               </dl>
               <div className={styles.evidenceLinks}>
-                <EvidenceLink label="Release" value="Open release gate" href="/app/evaluations" />
+                <EvidenceLink label="Release" value="Open release gate" href="/app/settings?section=quality" />
                 <EvidenceLink
                   label="Evaluations"
                   value={resourceMetric(state, signedIn, data.evaluations, `${evaluationRuns.length} runs`)}
-                  href="/app/evaluations"
+                  href="/app/settings?section=quality"
                 />
-                <EvidenceLink label="Runtime" value="Open monitoring" href="/app/observability" />
+                <EvidenceLink label="Runtime" value="Open monitoring" href="/app/settings?section=monitoring" />
               </div>
               <ResultPanel title="Recent evaluations" description="Recorded checks and their exact run status.">
                 <ResultRows
@@ -474,7 +493,7 @@ export function ResultsCenter() {
                     status: stringValue(run.status, "unknown"),
                     meta: formatResultTime(stringValue(run.completedAt || run.startedAt || run.createdAt)),
                     body: `Passed ${stringPath(run, "summary.passed", "0")} of ${stringPath(run, "summary.total", "0")} checks.`,
-                    href: "/app/evaluations",
+                    href: "/app/settings?section=quality",
                   }))}
                   empty={resourceError(data.evaluations) ? "Evaluation evidence is unavailable. Retry the source above." : "No evaluation runs loaded."}
                   icon={CheckCircle2}
@@ -495,7 +514,7 @@ export function ResultsCenter() {
               <NextStepRow
                 icon={RefreshCw}
                 title="Active"
-                body="Open Activity to follow progress. A running or queued item is not a completed result."
+                body="Open the Timeline tab to follow progress. A running or queued item is not a completed result."
                 active={["running", "queued", "pending", "waiting_clarification"].includes(primaryResult.status)}
               />
               <NextStepRow
@@ -519,7 +538,7 @@ export function ResultsCenter() {
               <NextStepRow
                 icon={TerminalSquare}
                 title="No output yet"
-                body="Start or continue a run from Run Agent. Results will appear here after execution."
+                body="Start or continue a task in Assistant. Results will appear here after execution."
                 active={primaryResult.kind === "empty"}
               />
             </ul>
@@ -532,13 +551,19 @@ export function ResultsCenter() {
 
 function PrimaryResultCard({
   result,
+  researchWorkflow,
+  researchRun,
   canceling,
   onCancel,
 }: {
   result: PrimaryResult;
+  researchWorkflow?: unknown;
+  researchRun?: JsonRecord;
   canceling: boolean;
   onCancel: () => void;
 }) {
+  const title = resultTitle(result.title);
+  const request = result.title;
   const canCancel =
     result.kind === "agent" &&
     ["running", "waiting_approval", "resuming"].includes(
@@ -549,10 +574,15 @@ function PrimaryResultCard({
       <div className={styles.resultHeading}>
         <p className={styles.resultLabel}>Current result</p>
         <StatusPill label={result.status} tone={result.tone} />
-        <h2 id="current-result-title">{result.title}</h2>
+        <h2 id="current-result-title">{title}</h2>
         <p className={styles.resultMeta}>{result.meta}</p>
       </div>
-      <div className={styles.resultBody}>{result.body}</div>
+      {request !== title ? <details className={styles.requestDisclosure}>
+        <summary>Read full request</summary><p tabIndex={0}>{request}</p>
+      </details> : null}
+      {researchViewFromWorkflow(researchWorkflow) || researchRun?.mode === "research"
+        ? <ResearchPanel workflow={researchWorkflow} directRun={researchRun} renderReport={(content, grounding) => <ResultReport content={content} grounding={grounding} />} />
+        : <div className={styles.resultBody}><ResultReport content={result.body} /></div>}
       <div className={styles.actions}>
         <Link href={result.href} className={styles.button}>
           {result.href.startsWith("/app/results?")
@@ -632,13 +662,13 @@ function ResultRows({
           <>
             <Icon size={18} className={styles.rowIcon} aria-hidden="true" />
             <span className={styles.rowCopy}>
-              <span className={styles.rowTitle}>{row.title}</span>
+              <span className={styles.rowTitle}>{resultTitle(row.title)}</span>
               <span className={styles.rowStatus}>
                 <StatusPill label={row.status} tone={toneForStatus(row.status)} />
                 {selected ? <span className={styles.selectedLabel}>Selected</span> : null}
               </span>
-              <span className={styles.rowMeta}>{row.meta}</span>
-              <span className={styles.rowPreview}>{row.body}</span>
+              <span className={styles.rowMeta}>{friendlyResultText(row.meta)}</span>
+              <span className={styles.rowPreview}>{friendlyResultText(row.body)}</span>
             </span>
           </>
         );
@@ -677,7 +707,7 @@ function EvidenceLink({ label, value, href }: { label: string; value: string; hr
 }
 
 function StatusPill({ label, tone }: { label: string; tone: Tone }) {
-  return <span className={clsx(styles.status, styles[tone])}>{label}</span>;
+  return <span className={clsx(styles.status, styles[tone])}>{label.replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase())}</span>;
 }
 
 function Metric({ label, value }: { label: string; value: string }) {
@@ -689,15 +719,14 @@ function Metric({ label, value }: { label: string; value: string }) {
   );
 }
 
-function unavailableSelectedResult(key: string): PrimaryResult {
-  const [kind, id] = key.split(":", 2);
+function unavailableSelectedResult(): PrimaryResult {
   return {
     kind: "unknown",
     title: "Linked result is unavailable",
     status: "unavailable",
     body:
       "This result could not be loaded. It may have expired under the retention policy, belong to another workspace, or use an invalid link.",
-    meta: `${kind || "result"} ${id || "unknown"}`,
+    meta: "Try another result or refresh your workspace.",
     href: "/app/results",
     tone: "neutral",
   };
@@ -724,7 +753,7 @@ function choosePrimaryResult(timeline: ResultTimelineItem[], sourceError: boolea
     title: "No result yet",
     status: "empty",
     body: "Start a task. Its latest run, workflow, or approval state will appear here after execution begins.",
-    meta: "Start / Runs / Approvals / Results",
+    meta: "Your completed work and saved outputs will collect here.",
     href: "/app/command",
     tone: "neutral",
   };
@@ -767,12 +796,7 @@ async function loadSelectedResult(
   }
   if (requestedResultKey?.startsWith("workflow:")) {
     const runId = requestedResultKey.slice("workflow:".length);
-    if (
-      runId &&
-      !arrayPath(workflowsPayload, "runs").some(
-        (run) => stringValue(run.id) === runId,
-      )
-    ) {
+    if (runId) {
       const direct = asRecord(
         await readJson(`/api/workflows/${encodeURIComponent(runId)}`, {
           signal,
@@ -780,9 +804,10 @@ async function loadSelectedResult(
       );
       const directRun = asRecord(direct.run);
       if (stringValue(directRun.id) === runId) {
+        workflowsPayload.selectedDetail = direct;
         workflowsPayload.runs = [
           directRun,
-          ...arrayPath(workflowsPayload, "runs"),
+          ...arrayPath(workflowsPayload, "runs").filter((run) => stringValue(run.id) !== runId),
         ];
       }
     }
@@ -852,7 +877,6 @@ function workflowMeta(run: JsonRecord) {
     .toLowerCase()
     .replaceAll("_", " ");
   return [
-    stringValue(run.currentStep, "complete"),
     outcome ? `Outcome: ${outcome}` : "",
     formatResultTime(stringValue(run.completedAt || run.updatedAt || run.createdAt)),
   ].filter(Boolean).join(" / ");
@@ -862,10 +886,9 @@ function agentResultMeta(run: JsonRecord) {
   const card = asRecord(readPath(run, "agentIdentity.card"));
   const identity = stringValue(card.name)
     ? `${stringValue(card.name)} (${stringValue(card.role, "Agent")})`
-    : stringValue(run.agentId, "Agent");
+    : "Assistant";
   return [
     identity,
-    stringValue(run.mode, "agent"),
     formatResultTime(stringValue(run.completedAt || run.startedAt)),
   ].join(" / ");
 }
@@ -950,4 +973,21 @@ function resourceMetric(
     return state === "loading" ? "Loading" : "Unknown";
   }
   return value;
+}
+
+// Presentation only: preserve original requests and reports for deliberate review.
+function friendlyResultText(value: string) {
+  return value
+    .replace(/(?:captureasset:)?capture_asset_[A-Za-z0-9_-]+/g, "saved capture")
+    .replace(/\b(?:project|appbuild|agent|run)_[a-f0-9]{16,}\b/gi, "workspace reference");
+}
+
+function resultTitle(value: string) {
+  const text = friendlyResultText(value).trim().replace(/^#{1,6}\s*/, "")
+    .split(/\r?\n/).find((line) => line.trim())?.trim() || "Untitled task";
+  const sentence = text.match(/^.{12,140}?[.!?](?:\s|$)/)?.[0]?.trim() || text;
+  if (sentence.length <= 120) return sentence;
+  const prefix = sentence.slice(0, 117);
+  const boundary = prefix.lastIndexOf(" ");
+  return `${prefix.slice(0, boundary > 75 ? boundary : prefix.length)}…`;
 }

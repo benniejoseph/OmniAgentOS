@@ -227,18 +227,24 @@ class PortableArchiveController extends ChangeNotifier {
   PortableArchiveController(
     this.repository, {
     this.exporter = const ScopedCreatedFileExporter(),
+    this.destinationAdapter,
     PortableArchiveVerifier? verifier,
     DateTime Function()? now,
   }) : verifier = verifier ?? IsolatePortableArchiveVerifier(),
        _now = now ?? DateTime.now {
     _detach = repository.observeInvalidation(invalidateAndNotifyLater);
+    if (destinationAdapter != null) Future<void>.microtask(refreshDestination);
   }
   final PortableArchiveRepository repository;
   final ScopedCreatedFileExporter exporter;
+  final AndroidCreatedFileExportAdapter? destinationAdapter;
+  AndroidPreparedFileDestination? destination;
+  bool get needsSeparateDestination => destinationAdapter != null;
   final PortableArchiveVerifier verifier;
   final DateTime Function() _now;
   void Function()? _detach;
   bool _disposed = false, _invalidated = false;
+  bool _choosing = false;
   int _generation = 0;
   _ArchiveAttempt? _attempt;
   Future<void>? _pending;
@@ -254,7 +260,7 @@ class PortableArchiveController extends ChangeNotifier {
       !_disposed &&
       !_invalidated &&
       !authorizationDenied;
-  bool get busy => _pending != null;
+  bool get busy => _pending != null || _choosing;
   bool get savingSupported => exporter.available;
   void _publish() {
     if (!_disposed) notifyListeners();
@@ -268,8 +274,10 @@ class PortableArchiveController extends ChangeNotifier {
     _attempt = null;
     verifier.cancel();
     _pending = null;
+    _choosing = false;
     receipt = null;
     error = null;
+    destination = null;
     phase = PortableArchivePhase.idle;
     if (notify) _publish();
   }
@@ -290,10 +298,55 @@ class PortableArchiveController extends ChangeNotifier {
     }
   }
 
+  String get suggestedFilename {
+    final date = _now().toUtc();
+    String pad(int part) => part.toString().padLeft(2, '0');
+    return 'asael-${date.year}-${pad(date.month)}-${pad(date.day)}-v2.json';
+  }
+
+  Future<void> refreshDestination() async {
+    final adapter = destinationAdapter;
+    if (!available || adapter == null || busy) return;
+    final generation = _generation;
+    try {
+      final value = await adapter.preparedDestination();
+      if (!available || generation != _generation) return;
+      destination = value;
+      _publish();
+    } catch (_) {
+      // The user may still be completing normal device/app unlock. No private
+      // content has been fetched and a manual refresh remains available.
+    }
+  }
+
+  Future<void> chooseDestination() async {
+    final adapter = destinationAdapter;
+    if (!available || adapter == null || busy) return;
+    _choosing = true;
+    phase = PortableArchivePhase.choosingDestination;
+    error = null;
+    _publish();
+    try {
+      await adapter.prepareDestination(filename: suggestedFilename);
+      if (!available) return;
+      _choosing = false;
+      phase = PortableArchivePhase.idle;
+      await refreshDestination();
+    } catch (_) {
+      if (!available) return;
+      _choosing = false;
+      phase = PortableArchivePhase.failed;
+      error =
+          'A save location could not be selected. Unlock Asael and try again.';
+    }
+    if (available) _publish();
+  }
+
   Future<void> verifyAndSave() {
     if (!available) return Future.value();
     final pending = _pending;
     if (pending != null) return pending;
+    if (needsSeparateDestination && destination == null) return Future.value();
     receipt = null;
     error = null;
     if (!savingSupported) {
@@ -322,10 +375,7 @@ class PortableArchiveController extends ChangeNotifier {
     await Future<void>.value();
     if (!_current(attempt)) return;
     try {
-      final date = _now().toUtc();
-      String pad(int part) => part.toString().padLeft(2, '0');
-      final filename =
-          'asael-${date.year}-${pad(date.month)}-${pad(date.day)}-v2.json';
+      final filename = destination?.requestedFilename ?? suggestedFilename;
       final outcome = await exporter.save(
         filename: filename,
         isCurrent: () => _current(attempt),
@@ -399,6 +449,7 @@ class PortableArchiveController extends ChangeNotifier {
         _attempt = null;
         _pending = null;
         _publish();
+        if (needsSeparateDestination) unawaited(refreshDestination());
       }
     }
   }

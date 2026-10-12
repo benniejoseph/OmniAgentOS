@@ -6,6 +6,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../app/brand/asael_mark.dart';
 import '../../../app/macos/macos_page_scaffold.dart';
 import '../../../app/platform/macos_presentation.dart';
+import '../../../app/platform/mobile_presentation.dart';
+import '../../companion/atlas_player.dart';
+import '../../companion/companion_models.dart';
 import '../../../app/theme/macos_workspace_backdrop.dart';
 import '../../../core/auth/biometric_gate.dart';
 import '../../../core/storage/secure_session_store.dart';
@@ -20,6 +23,24 @@ class SessionBootstrapScreen extends ConsumerWidget {
     final biometricLocked = session.error is BiometricGateException;
     final migrationRequired =
         session.error is SecureStoreMigrationRequiredException;
+    if (usesMobilePresentation()) {
+      return _MobileSessionBootstrap(
+        session: session,
+        biometricLocked: biometricLocked,
+        migrationRequired: migrationRequired,
+        onPrimary: () {
+          final controller = ref.read(sessionControllerProvider.notifier);
+          if (migrationRequired) {
+            controller.migrateLegacyCredentials();
+          } else {
+            controller.retry();
+          }
+        },
+        onClear: migrationRequired
+            ? null
+            : () => ref.read(sessionControllerProvider.notifier).signOut(),
+      );
+    }
     if (usesMacosPresentation()) {
       return _MacosSessionBootstrap(
         session: session,
@@ -146,6 +167,135 @@ class SessionBootstrapScreen extends ConsumerWidget {
                     ),
                   ],
                 ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MobileSessionBootstrap extends StatelessWidget {
+  const _MobileSessionBootstrap({
+    required this.session,
+    required this.biometricLocked,
+    required this.migrationRequired,
+    required this.onPrimary,
+    required this.onClear,
+  });
+
+  final AsyncValue<Object?> session;
+  final bool biometricLocked;
+  final bool migrationRequired;
+  final VoidCallback onPrimary;
+  final VoidCallback? onClear;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final failed = session.hasError;
+    final title = !failed
+        ? 'Opening your workspace'
+        : biometricLocked
+        ? 'Welcome back'
+        : migrationRequired
+        ? 'Update your protected sign-in'
+        : 'Let’s reconnect';
+    final detail = !failed
+        ? 'Restoring your saved session securely.'
+        : biometricLocked
+        ? 'Use your phone’s security prompt to unlock Asael.'
+        : migrationRequired
+        ? 'Update the saved sign-in protection on this device to continue.'
+        : 'Asael couldn’t confirm your saved sign-in. Try again, or sign in again.';
+    return Scaffold(
+      body: SafeArea(
+        child: CustomScrollView(
+          slivers: [
+            SliverFillRemaining(
+              hasScrollBody: false,
+              child: Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 460),
+                  child: Padding(
+                    padding: const EdgeInsets.all(28),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        const Center(
+                          child: ExcludeSemantics(
+                            child: AtlasPortrait(
+                              size: 144,
+                              preferences: CompanionPreferences(
+                                intensity: 'quiet',
+                                motion: 'off',
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 28),
+                        Text(
+                          title,
+                          textAlign: TextAlign.center,
+                          style: theme.textTheme.headlineMedium,
+                        ),
+                        const SizedBox(height: 12),
+                        Text(
+                          detail,
+                          textAlign: TextAlign.center,
+                          style: theme.textTheme.bodyLarge,
+                        ),
+                        const SizedBox(height: 28),
+                        if (!failed)
+                          Semantics(
+                            liveRegion: true,
+                            label: 'Restoring your session',
+                            child: Center(
+                              child: MediaQuery.disableAnimationsOf(context)
+                                  ? const Icon(Icons.lock_outline_rounded)
+                                  : const SizedBox.square(
+                                      dimension: 24,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
+                                    ),
+                            ),
+                          )
+                        else ...[
+                          FilledButton.icon(
+                            style: FilledButton.styleFrom(
+                              minimumSize: const Size.fromHeight(54),
+                            ),
+                            onPressed: onPrimary,
+                            icon: Icon(
+                              biometricLocked
+                                  ? Icons.fingerprint_rounded
+                                  : migrationRequired
+                                  ? Icons.key_rounded
+                                  : Icons.refresh_rounded,
+                            ),
+                            label: Text(
+                              biometricLocked
+                                  ? 'Unlock Asael'
+                                  : migrationRequired
+                                  ? 'Update securely'
+                                  : 'Try again',
+                            ),
+                          ),
+                          if (onClear != null) ...[
+                            const SizedBox(height: 8),
+                            TextButton(
+                              onPressed: onClear,
+                              child: const Text('Sign in again'),
+                            ),
+                          ],
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );

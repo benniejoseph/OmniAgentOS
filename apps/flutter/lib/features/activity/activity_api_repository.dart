@@ -3,9 +3,21 @@ import 'package:dio/dio.dart';
 import '../../core/network/api_client.dart';
 import 'activity.dart';
 
-class ApiActivityRepository implements ActivityRepository {
+class ApiActivityRepository implements ActivityRepository, ActivityDetailRepository {
   ApiActivityRepository(this.api);
   final ApiClient api;
+
+  @override
+  Future<ActivityTaskDetail> loadTaskDetail({
+    required String runId,
+    required CancelToken cancelToken,
+  }) async {
+    final body = await api.getJsonFreshCancelable(
+      '/api/runs/${Uri.encodeComponent(runId)}',
+      cancelToken: cancelToken,
+    );
+    return ActivityTaskDetail.fromJson(body, runId);
+  }
 
   @override
   Future<ActivitySnapshot> load({

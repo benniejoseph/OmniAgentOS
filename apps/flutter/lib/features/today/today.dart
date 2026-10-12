@@ -1,6 +1,14 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../core/network/api_exception.dart';
+import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_page_scaffold.dart';
+import '../auth/application/session_controller.dart';
+import '../companion/atlas_player.dart';
+import '../companion/companion_providers.dart';
+import '../companion/companion_models.dart';
 
 typedef Json = Map<String, dynamic>;
 
@@ -202,6 +210,231 @@ class TodayController extends ChangeNotifier {
   }
 }
 
+List<TodayItem> todayOrderedItems(
+  Iterable<TodayItem> items, {
+  String? focusItemId,
+}) {
+  final now = DateTime.now();
+  return [...items]..sort((left, right) {
+    if (left.isDone != right.isDone) return left.isDone ? 1 : -1;
+    if (left.id == focusItemId && right.id != focusItemId) return -1;
+    if (right.id == focusItemId && left.id != focusItemId) return 1;
+    final leftOverdue = !left.isDone && left.dueAt?.isBefore(now) == true;
+    final rightOverdue = !right.isDone && right.dueAt?.isBefore(now) == true;
+    if (leftOverdue != rightOverdue) return leftOverdue ? -1 : 1;
+    final priority = right.priority.index.compareTo(left.priority.index);
+    if (priority != 0) return priority;
+    if (left.dueAt != null && right.dueAt != null) {
+      final due = left.dueAt!.compareTo(right.dueAt!);
+      if (due != 0) return due;
+    } else if (left.dueAt != right.dueAt) {
+      return left.dueAt == null ? 1 : -1;
+    }
+    return left.id.compareTo(right.id);
+  });
+}
+
+/// The same quiet greeting on phone and desktop, using saved owner preferences.
+class TodayWelcome extends StatelessWidget {
+  const TodayWelcome({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    try {
+      ProviderScope.containerOf(context);
+    } on StateError {
+      // Riverpod exposes its container through a private inherited widget.
+      // Standalone presentation can still show an unpersonalized welcome.
+      return const _TodayWelcomeContent();
+    }
+    return const _TodayBoundWelcome();
+  }
+}
+
+class _TodayBoundWelcome extends ConsumerWidget {
+  const _TodayBoundWelcome();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final session = ref.watch(sessionControllerProvider);
+    final name = !session.isLoading && !session.hasError
+        ? session.value?.displayName.trim() ?? ''
+        : '';
+    final firstName = name.isEmpty || name == 'Operator'
+        ? ''
+        : name.split(RegExp(r'\s+')).first;
+    final scope = ref.watch(companionScopeProvider);
+    final preferences = scope == null
+        ? null
+        : ref.watch(companionControllerProvider).current?.preferences;
+    return _TodayWelcomeContent(
+      firstName: firstName,
+      preferences: preferences,
+      scopeKey: scope,
+    );
+  }
+}
+
+class _TodayWelcomeContent extends StatelessWidget {
+  const _TodayWelcomeContent({
+    this.firstName = '',
+    this.preferences,
+    this.scopeKey,
+  });
+  final String firstName;
+  final CompanionPreferences? preferences;
+  final Object? scopeKey;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final now = DateTime.now();
+    final greeting = now.hour < 12
+        ? 'Good morning'
+        : now.hour < 17
+        ? 'Good afternoon'
+        : 'Good evening';
+    return Row(
+      children: [
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Semantics(
+                header: true,
+                child: Text(
+                  firstName.isEmpty ? greeting : '$greeting, $firstName',
+                  style: theme.textTheme.headlineMedium,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                MaterialLocalizations.of(context).formatFullDate(now),
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+        ),
+        if (preferences?.visible == true) ...[
+          const SizedBox(width: 12),
+          AtlasPortrait(
+            size: 64,
+            greeting: true,
+            preferences: preferences,
+            scopeKey: scopeKey,
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+class TodayNextTask extends StatelessWidget {
+  const TodayNextTask({
+    super.key,
+    required this.item,
+    required this.busy,
+    required this.onComplete,
+  });
+  final TodayItem item;
+  final bool busy;
+  final VoidCallback onComplete;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final overdue = item.dueAt?.isBefore(DateTime.now()) == true;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                Icons.arrow_forward_rounded,
+                size: 18,
+                color: theme.colorScheme.primary,
+              ),
+              const SizedBox(width: 8),
+              Text('Next up', style: theme.textTheme.titleSmall),
+              if (overdue) ...[
+                const SizedBox(width: 12),
+                Text(
+                  'Overdue',
+                  style: theme.textTheme.labelMedium?.copyWith(
+                    color: theme.colorScheme.error,
+                  ),
+                ),
+              ],
+            ],
+          ),
+          const SizedBox(height: 10),
+          Text(item.title, style: theme.textTheme.titleLarge),
+          const SizedBox(height: 8),
+          Text(
+            [
+              if (item.priority == TodayPriority.high) 'High priority',
+              if (item.dueAt != null)
+                'Due ${MaterialLocalizations.of(context).formatShortDate(item.dueAt!.toLocal())}',
+              if (item.priority != TodayPriority.high && item.dueAt == null)
+                'One task to start with.',
+            ].join(' · '),
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            onPressed: busy ? null : onComplete,
+            icon: busy
+                ? const SizedBox.square(
+                    dimension: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.check_rounded, size: 17),
+            label: Text(busy ? 'Saving…' : 'Mark complete'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class TodayCompletedDisclosure extends StatelessWidget {
+  const TodayCompletedDisclosure({
+    super.key,
+    required this.count,
+    required this.focused,
+    required this.children,
+  });
+  final int count;
+  final bool focused;
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) => ExpansionTile(
+    key: PageStorageKey(('today-completed', focused)),
+    initiallyExpanded: focused,
+    title: Text('Completed ($count)'),
+    leading: const Icon(Icons.task_alt_rounded, size: 18),
+    tilePadding: const EdgeInsets.symmetric(horizontal: 4),
+    shape: const Border(),
+    collapsedShape: const Border(),
+    expansionAnimationStyle: MediaQuery.disableAnimationsOf(context)
+        ? AnimationStyle.noAnimation
+        : const AnimationStyle(duration: Duration(milliseconds: 180)),
+    children: children,
+  );
+}
+
 class TodayView extends StatelessWidget {
   const TodayView({super.key, required this.controller, this.focusItemId});
   final TodayController controller;
@@ -226,17 +459,16 @@ class TodayView extends StatelessWidget {
           action: controller.refresh,
         );
       }
-      final items = [...data.items]
-        ..sort((left, right) {
-          if (left.id == focusItemId) return -1;
-          if (right.id == focusItemId) return 1;
-          return 0;
-        });
-      final pending = data.items.where((item) => !item.isDone).length;
-      final completed = data.items.where((item) => item.isDone).length;
+      final items = todayOrderedItems(data.items, focusItemId: focusItemId);
+      final open = items.where((item) => !item.isDone).toList();
+      final completed = items.where((item) => item.isDone).toList();
+      if (usesMobilePresentation()) {
+        return _mobileToday(context, data, open, completed);
+      }
       return RefreshIndicator(
         onRefresh: controller.refresh,
         child: CustomScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
           slivers: [
             SliverToBoxAdapter(
               child: _TodayHeader(
@@ -274,25 +506,38 @@ class TodayView extends StatelessWidget {
                   ),
                 ),
               ),
-            if (data.brief case final brief?)
-              SliverToBoxAdapter(child: _DailyBriefPanel(brief: brief)),
-            SliverToBoxAdapter(
-              child: _SectionHeading(
-                title: 'Focus list',
-                detail: '$pending open · $completed complete',
-              ),
-            ),
-            if (data.items.isEmpty)
+            if (open.isNotEmpty)
               SliverToBoxAdapter(
-                child: _EmptyToday(onRefresh: controller.refresh),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+                  child: TodayNextTask(
+                    item: open.first,
+                    busy: controller.updating.contains(open.first.id),
+                    onComplete: () => controller.toggle(open.first),
+                  ),
+                ),
+              ),
+            if (open.length > 1)
+              SliverToBoxAdapter(
+                child: _SectionHeading(
+                  title: 'Also on your list',
+                  detail: '${open.length - 1} more to do',
+                ),
+              ),
+            if (open.isEmpty)
+              SliverToBoxAdapter(
+                child: _EmptyToday(
+                  hasCompleted: completed.isNotEmpty,
+                  onAdd: () => _addItem(context),
+                ),
               )
-            else
+            else if (open.length > 1)
               SliverPadding(
                 padding: const EdgeInsets.symmetric(horizontal: 16),
                 sliver: SliverList.builder(
-                  itemCount: items.length,
+                  itemCount: open.length - 1,
                   itemBuilder: (context, index) {
-                    final item = items[index];
+                    final item = open[index + 1];
                     return _TodayRow(
                       item: item,
                       busy: controller.updating.contains(item.id),
@@ -302,41 +547,578 @@ class TodayView extends StatelessWidget {
                   },
                 ),
               ),
+            if (completed.isNotEmpty)
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: TodayCompletedDisclosure(
+                    count: completed.length,
+                    focused: completed.any((item) => item.id == focusItemId),
+                    children: [
+                      for (final item in completed)
+                        _TodayRow(
+                          item: item,
+                          busy: controller.updating.contains(item.id),
+                          focused: item.id == focusItemId,
+                          onToggle: () => controller.toggle(item),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            if (data.brief != null)
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.only(top: 24),
+                  child: _DailyBriefPanel(brief: data.brief!),
+                ),
+              ),
             SliverToBoxAdapter(child: _TodayContext(snapshot: data)),
-            const SliverPadding(padding: EdgeInsets.only(bottom: 96)),
+            SliverPadding(padding: EdgeInsets.only(bottom: 96)),
           ],
         ),
       );
     },
   );
 
+  Widget _mobileToday(
+    BuildContext context,
+    TodaySnapshot data,
+    List<TodayItem> open,
+    List<TodayItem> completed,
+  ) => RefreshIndicator(
+    onRefresh: controller.refresh,
+    child: CustomScrollView(
+      physics: const AlwaysScrollableScrollPhysics(),
+      slivers: [
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(24, 18, 16, 24),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Expanded(child: TodayWelcome()),
+                IconButton.filledTonal(
+                  tooltip: 'Settings',
+                  onPressed: () => context.push('/settings'),
+                  icon: const Icon(Icons.settings_outlined, size: 21),
+                ),
+              ],
+            ),
+          ),
+        ),
+        if (controller.error != null)
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(24, 0, 24, 16),
+              child: MobileSurface(
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.cloud_off_outlined,
+                      color: Theme.of(context).colorScheme.error,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        controller.error is ApiConflictException
+                            ? 'Changed elsewhere. Your latest tasks are shown.'
+                            : 'Couldn’t refresh. Your last saved day is shown.',
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: controller.refresh,
+                      child: const Text('Retry'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24),
+            child: _MobileDailyBrief(
+              brief: data.brief,
+              busy: controller.acting,
+              onGenerate: controller.generateBrief,
+            ),
+          ),
+        ),
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(24, 16, 24, 8),
+            child: Row(
+              children: [
+                Expanded(
+                  child: _MobileTodayShortcut(
+                    icon: Icons.edit_note_rounded,
+                    label: 'Capture a thought',
+                    onTap: () => context.go('/capture'),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _MobileTodayShortcut(
+                    icon: Icons.graphic_eq_rounded,
+                    label: 'Talk to ATLAS',
+                    onTap: () => context.go('/talk'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        SliverToBoxAdapter(
+          child: MobileSectionHeader(
+            title: 'Your agenda',
+            description: open.isEmpty
+                ? 'Room for what matters next.'
+                : '${open.length} ${open.length == 1 ? 'task' : 'tasks'} to move forward',
+            trailing: IconButton.filledTonal(
+              tooltip: 'Add a task',
+              onPressed: controller.acting ? null : () => _addItem(context),
+              icon: const Icon(Icons.add_rounded),
+            ),
+          ),
+        ),
+        if (open.isEmpty)
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(24, 4, 24, 16),
+              child: MobileSurface(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(
+                      Icons.wb_sunny_outlined,
+                      color: Theme.of(context).colorScheme.primary,
+                      size: 28,
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      completed.isEmpty
+                          ? 'A little space for your day.'
+                          : 'You’re all caught up.',
+                      style: Theme.of(context).textTheme.titleLarge,
+                    ),
+                    const SizedBox(height: 8),
+                    const Text(
+                      'Add something you want to do, remember or follow up on.',
+                    ),
+                    const SizedBox(height: 12),
+                    TextButton.icon(
+                      onPressed: controller.acting
+                          ? null
+                          : () => _addItem(context),
+                      icon: const Icon(Icons.add_rounded),
+                      label: const Text('Add your next task'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          )
+        else
+          SliverPadding(
+            padding: const EdgeInsets.symmetric(horizontal: 24),
+            sliver: SliverList.builder(
+              itemCount: open.length,
+              itemBuilder: (context, index) => _MobileAgendaRow(
+                item: open[index],
+                busy: controller.updating.contains(open[index].id),
+                focused: open[index].id == focusItemId,
+                last: index == open.length - 1,
+                onToggle: () => controller.toggle(open[index]),
+              ),
+            ),
+          ),
+        if (completed.isNotEmpty)
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 24),
+              child: TodayCompletedDisclosure(
+                count: completed.length,
+                focused: completed.any((item) => item.id == focusItemId),
+                children: [
+                  for (final item in completed)
+                    _MobileAgendaRow(
+                      item: item,
+                      busy: controller.updating.contains(item.id),
+                      focused: item.id == focusItemId,
+                      last: true,
+                      onToggle: () => controller.toggle(item),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        SliverToBoxAdapter(child: _TodayContext(snapshot: data)),
+        const SliverPadding(padding: EdgeInsets.only(bottom: 28)),
+      ],
+    ),
+  );
+
   Future<void> _addItem(BuildContext context) async {
     final input = TextEditingController();
-    final submit = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Add focus item'),
-        content: TextField(
-          controller: input,
-          autofocus: true,
-          maxLength: 280,
-          decoration: const InputDecoration(labelText: 'What needs attention?'),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(dialogContext, true),
-            child: const Text('Add'),
-          ),
-        ],
-      ),
-    );
+    final submit = usesMobilePresentation()
+        ? await showMobileSheet<bool>(
+            context: context,
+            title: 'Add a task',
+            builder: (sheetContext) => Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  TextField(
+                    controller: input,
+                    autofocus: true,
+                    maxLength: 280,
+                    textInputAction: TextInputAction.done,
+                    onSubmitted: (value) {
+                      if (value.trim().isNotEmpty)
+                        Navigator.pop(sheetContext, true);
+                    },
+                    decoration: const InputDecoration(
+                      hintText: 'What needs attention?',
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  FilledButton.icon(
+                    onPressed: () => Navigator.pop(sheetContext, true),
+                    icon: const Icon(Icons.add_rounded),
+                    label: const Text('Add task'),
+                  ),
+                ],
+              ),
+            ),
+          )
+        : await showDialog<bool>(
+            context: context,
+            builder: (dialogContext) => AlertDialog(
+              title: const Text('Add task'),
+              content: TextField(
+                controller: input,
+                autofocus: true,
+                maxLength: 280,
+                decoration: const InputDecoration(
+                  labelText: 'What needs attention?',
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext, false),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.pop(dialogContext, true),
+                  child: const Text('Add'),
+                ),
+              ],
+            ),
+          );
     final title = input.text.trim();
     input.dispose();
     if (submit == true && title.isNotEmpty) await controller.add(title);
+  }
+}
+
+class _MobileDailyBrief extends StatelessWidget {
+  const _MobileDailyBrief({
+    required this.brief,
+    required this.busy,
+    required this.onGenerate,
+  });
+  final DailyBrief? brief;
+  final bool busy;
+  final VoidCallback onGenerate;
+
+  @override
+  Widget build(BuildContext context) => MobileSurface(
+    spotlight: true,
+    padding: const EdgeInsets.all(24),
+    child: Builder(
+      builder: (context) {
+        final theme = Theme.of(context);
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  Icons.auto_awesome_rounded,
+                  size: 18,
+                  color: theme.colorScheme.primary,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'ATLAS · DAILY BRIEF',
+                    style: theme.textTheme.labelMedium?.copyWith(
+                      letterSpacing: 1.5,
+                    ),
+                  ),
+                ),
+                if (brief?.generatedAt != null)
+                  Text(
+                    MaterialLocalizations.of(context)
+                        .formatShortDate(brief!.generatedAt!.toLocal()),
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 22),
+            Text(
+              brief == null
+                  ? 'A clearer view\nof what matters.'
+                  : 'Your day, in focus.',
+              style: theme.textTheme.headlineSmall?.copyWith(height: 1.18),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              brief?.summary.isNotEmpty == true ? brief!.summary : 'Bring your tasks and context together in one useful briefing.',
+              maxLines: 4,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodyMedium?.copyWith(
+                height: 1.55,
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 16),
+            if (brief == null)
+              Align(
+                alignment: Alignment.centerLeft,
+                child: FilledButton.icon(
+                  onPressed: busy ? null : onGenerate,
+                  icon: busy
+                      ? const SizedBox.square(
+                          dimension: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.arrow_forward_rounded, size: 18),
+                  label: Text(
+                    busy ? 'Preparing your brief…' : 'Create my brief',
+                  ),
+                ),
+              )
+            else
+              ExpansionTile(
+                tilePadding: EdgeInsets.zero,
+                childrenPadding: const EdgeInsets.only(top: 8),
+                shape: const Border(),
+                collapsedShape: const Border(),
+                title: Text(
+                  'View your brief',
+                  style: theme.textTheme.labelLarge?.copyWith(
+                    color: theme.colorScheme.primary,
+                  ),
+                ),
+                expansionAnimationStyle: MediaQuery.disableAnimationsOf(context)
+                    ? AnimationStyle.noAnimation
+                    : null,
+                children: [
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      brief!.summary,
+                      style: theme.textTheme.bodyLarge,
+                    ),
+                  ),
+                  for (final focus in brief!.focus) ...[
+                    const SizedBox(height: 18),
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        focus.title,
+                        style: theme.textTheme.titleMedium,
+                      ),
+                    ),
+                    if (focus.reason.isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text(focus.reason),
+                      ),
+                    ],
+                  ],
+                  if (brief!.watchouts.isNotEmpty) ...[
+                    const SizedBox(height: 20),
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        'Keep an eye on',
+                        style: theme.textTheme.titleMedium,
+                      ),
+                    ),
+                    for (final item in brief!.watchouts)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8),
+                        child: Align(
+                          alignment: Alignment.centerLeft,
+                          child: Text(item),
+                        ),
+                      ),
+                  ],
+                  const SizedBox(height: 12),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton.icon(
+                      onPressed: busy ? null : onGenerate,
+                      icon: const Icon(Icons.refresh_rounded, size: 18),
+                      label: Text(busy ? 'Updating…' : 'Refresh brief'),
+                    ),
+                  ),
+                ],
+              ),
+          ],
+        );
+      },
+    ),
+  );
+}
+
+class _MobileTodayShortcut extends StatelessWidget {
+  const _MobileTodayShortcut({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+  });
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+  @override
+  Widget build(BuildContext context) => MobileSurface(
+    padding: EdgeInsets.zero,
+    child: InkWell(
+      borderRadius: BorderRadius.circular(16),
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(icon, color: Theme.of(context).colorScheme.primary, size: 25),
+            const SizedBox(height: 16),
+            Text(label, style: Theme.of(context).textTheme.titleSmall),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+class _MobileAgendaRow extends StatelessWidget {
+  const _MobileAgendaRow({
+    required this.item,
+    required this.busy,
+    required this.focused,
+    required this.last,
+    required this.onToggle,
+  });
+  final TodayItem item;
+  final bool busy, focused, last;
+  final VoidCallback onToggle;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final due = item.dueAt?.toLocal();
+    final overdue = !item.isDone && due?.isBefore(DateTime.now()) == true;
+    final detail = [
+      if (overdue) 'Overdue',
+      if (due != null) MaterialLocalizations.of(context).formatShortDate(due),
+      if (item.priority == TodayPriority.high) 'Priority',
+      if (item.kind == 'reminder') 'Reminder',
+    ].join(' · ');
+    return Material(
+      color: focused ? theme.colorScheme.primaryContainer : Colors.transparent,
+      borderRadius: BorderRadius.circular(18),
+      child: InkWell(
+        onTap: busy ? null : onToggle,
+        borderRadius: BorderRadius.circular(18),
+        child: Stack(
+          children: [
+            if (!last)
+              Positioned(
+                left: 23.5,
+                top: 44,
+                bottom: 0,
+                child: Container(
+                  width: 1,
+                  color: theme.colorScheme.outlineVariant,
+                ),
+              ),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SizedBox(
+                  width: 48,
+                  child: Column(
+                    children: [
+                      if (busy)
+                        const Padding(
+                          padding: EdgeInsets.all(14),
+                          child: SizedBox.square(
+                            dimension: 20,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                        )
+                      else
+                        Checkbox(
+                          value: item.isDone,
+                          shape: const CircleBorder(),
+                          onChanged: (_) => onToggle(),
+                        ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.only(
+                      top: 12,
+                      bottom: 24,
+                      right: 8,
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          item.title,
+                          style: theme.textTheme.titleMedium?.copyWith(
+                            decoration: item.isDone
+                                ? TextDecoration.lineThrough
+                                : null,
+                            color: item.isDone
+                                ? theme.colorScheme.onSurfaceVariant
+                                : null,
+                          ),
+                        ),
+                        if (detail.isNotEmpty) ...[
+                          const SizedBox(height: 6),
+                          Text(
+                            detail,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: overdue
+                                  ? theme.colorScheme.error
+                                  : theme.colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 
@@ -355,25 +1137,12 @@ class _TodayHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final date = MaterialLocalizations.of(context)
-        .formatFullDate(DateTime.now());
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 24, 20, 24),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Semantics(
-            header: true,
-            child: Text('Today', style: theme.textTheme.headlineMedium),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            date,
-            style: theme.textTheme.bodyMedium?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
-          ),
+          const TodayWelcome(),
           const SizedBox(height: 16),
           Wrap(
             spacing: 10,
@@ -382,12 +1151,17 @@ class _TodayHeader extends StatelessWidget {
               FilledButton.icon(
                 onPressed: acting ? null : onAdd,
                 icon: const Icon(Icons.add_rounded, size: 18),
-                label: const Text('Add focus'),
+                label: const Text('Add task'),
               ),
               OutlinedButton.icon(
                 onPressed: acting ? null : onBrief,
                 icon: const Icon(Icons.auto_awesome_outlined, size: 17),
                 label: Text(hasBrief ? 'Refresh brief' : 'Create brief'),
+              ),
+              TextButton.icon(
+                onPressed: () => context.go('/capture?section=listen'),
+                icon: const Icon(Icons.hearing_rounded, size: 18),
+                label: const Text('Listen'),
               ),
             ],
           ),
@@ -683,10 +1457,9 @@ class _TodayContext extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _SectionHeading(
-            title: 'Related work',
+            title: 'Pick up where you left off',
             padding: EdgeInsets.zero,
-            detail:
-                '${snapshot.projects.length} projects · ${snapshot.threads.length} conversations',
+            detail: 'Continue a project or conversation.',
           ),
           if (snapshot.projects.isNotEmpty) ...[
             const SizedBox(height: 6),
@@ -741,34 +1514,41 @@ class _ProjectContextRow extends StatelessWidget {
     final progress = project.total == 0
         ? 0.0
         : (project.completed / project.total).clamp(0.0, 1.0);
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 9),
-      child: Row(
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  project.title,
-                  style: Theme.of(context).textTheme.bodyMedium
-                      ?.copyWith(fontWeight: FontWeight.w500),
-                ),
-                const SizedBox(height: 7),
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(99),
-                  child: LinearProgressIndicator(value: progress, minHeight: 3),
-                ),
-              ],
+    return InkWell(
+      onTap: () => context.push('/projects/${Uri.encodeComponent(project.id)}'),
+      borderRadius: BorderRadius.circular(10),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 12),
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    project.title,
+                    style: Theme.of(context).textTheme.bodyMedium
+                        ?.copyWith(fontWeight: FontWeight.w500),
+                  ),
+                  const SizedBox(height: 7),
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(99),
+                    child: LinearProgressIndicator(
+                      value: progress,
+                      minHeight: 3,
+                    ),
+                  ),
+                ],
+              ),
             ),
-          ),
-          const SizedBox(width: 14),
-          Text(
-            '${project.completed}/${project.total}',
-            style: Theme.of(context).textTheme.bodySmall
-                ?.copyWith(color: scheme.onSurfaceVariant),
-          ),
-        ],
+            const SizedBox(width: 14),
+            Text(
+              '${project.completed}/${project.total}',
+              style: Theme.of(context).textTheme.bodySmall
+                  ?.copyWith(color: scheme.onSurfaceVariant),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -780,33 +1560,40 @@ class _ThreadContextRow extends StatelessWidget {
   final ({String id, String title}) thread;
 
   @override
-  Widget build(BuildContext context) => Container(
-    width: double.infinity,
-    padding: const EdgeInsets.symmetric(vertical: 10),
-    decoration: BoxDecoration(
-      border: Border(
-        bottom: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
-      ),
+  Widget build(BuildContext context) => InkWell(
+    onTap: () => context.go(
+      Uri(path: '/talk', queryParameters: {'thread': thread.id}).toString(),
     ),
-    child: Row(
-      children: [
-        Container(
-          width: 6,
-          height: 6,
-          decoration: BoxDecoration(
-            color: Theme.of(context).colorScheme.tertiary,
-            shape: BoxShape.circle,
+    borderRadius: BorderRadius.circular(10),
+    child: Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(vertical: 14),
+      decoration: BoxDecoration(
+        border: Border(
+          bottom: BorderSide(
+            color: Theme.of(context).colorScheme.outlineVariant,
           ),
         ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: Text(
-            thread.title,
-            style: Theme.of(context).textTheme.bodyMedium
-                ?.copyWith(fontWeight: FontWeight.w500),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            Icons.chat_bubble_outline_rounded,
+            size: 17,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
           ),
-        ),
-      ],
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              thread.title,
+              style: Theme.of(context).textTheme.bodyMedium
+                  ?.copyWith(fontWeight: FontWeight.w500),
+            ),
+          ),
+          const SizedBox(width: 8),
+          const Icon(Icons.chevron_right_rounded, size: 18),
+        ],
+      ),
     ),
   );
 }
@@ -845,8 +1632,9 @@ class _Skeleton extends StatelessWidget {
 }
 
 class _EmptyToday extends StatelessWidget {
-  const _EmptyToday({required this.onRefresh});
-  final VoidCallback onRefresh;
+  const _EmptyToday({required this.onAdd, required this.hasCompleted});
+  final VoidCallback onAdd;
+  final bool hasCompleted;
   @override
   Widget build(BuildContext context) => Center(
     child: Padding(
@@ -856,25 +1644,29 @@ class _EmptyToday extends StatelessWidget {
         children: [
           Icon(
             Icons.checklist_rounded,
-            size: 44,
+            size: 28,
             color: Theme.of(context).colorScheme.primary,
           ),
           const SizedBox(height: 16),
           Text(
-            'No focus items yet',
+            hasCompleted
+                ? 'Your list is clear'
+                : 'What would you like to move forward?',
             style: Theme.of(context).textTheme.titleLarge,
             textAlign: TextAlign.center,
           ),
           const SizedBox(height: 6),
-          const Text(
-            'New focus items and reminders will appear here.',
+          Text(
+            hasCompleted
+                ? 'Completed tasks are saved below.'
+                : 'Add a task or continue recent work below.',
             textAlign: TextAlign.center,
           ),
           const SizedBox(height: 18),
           OutlinedButton.icon(
-            onPressed: onRefresh,
-            icon: const Icon(Icons.refresh_rounded),
-            label: const Text('Check again'),
+            onPressed: onAdd,
+            icon: const Icon(Icons.add_rounded),
+            label: const Text('Add task'),
           ),
         ],
       ),

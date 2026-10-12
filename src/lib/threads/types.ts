@@ -17,7 +17,10 @@ export type ThreadTurnRecord = {
   threadId: string;
   role: ChatRole;
   content: string;
+  /** Agent-run storage reference; public views also project workflow:<id>. */
   runId?: string;
+  /** The actual durable workflow ID, stored separately from the agent-run FK. */
+  workflowRunId?: string;
   createdAt: string;
 };
 

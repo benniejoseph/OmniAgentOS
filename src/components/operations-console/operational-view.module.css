@@ -60,3 +60,6 @@
 @media (prefers-reduced-motion: reduce) { .workspace *, .workspace *::before, .workspace *::after { animation: none; transition: none; scroll-behavior: auto; } }
 @media (prefers-contrast: more) { .workspace { --muted: var(--foreground); --line: var(--line-strong); } }
 @media (forced-colors: active) { .workspace { --background: Canvas; --surface: Canvas; --surface-raised: Canvas; --surface-overlay: Canvas; --foreground: CanvasText; --muted: CanvasText; --line: CanvasText; --line-strong: ButtonText; --primary: ButtonFace; --primary-ink: ButtonText; --primary-hover: ButtonFace; --primary-pressed: ButtonFace; --accent: LinkText; --focus: Highlight; --warning: CanvasText; } .status { border: 1px solid CanvasText; } }
+
+.workspace.embedded { padding: 0; container-type: inline-size; }
+@container (max-width: 54rem) { .embedded .columns { grid-template-columns: minmax(0,1fr); } }

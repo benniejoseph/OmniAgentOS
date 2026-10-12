@@ -47,7 +47,7 @@ function agentTimelineItem(item: ResultRecord): ResultTimelineItem {
     title: stringValue(item.prompt, "Agent run"),
     status,
     body: fullText(item.response || item.error, finalState(status) ? "No result text was stored." : "This run has not produced a final result yet."),
-    meta: `${agentIdentitySummary(item)} / ${stringValue(item.mode, "agent")} / ${groundingSummary(item.grounding)} / ${formatResultTime(timestampValue)}`,
+    meta: `${agentIdentitySummary(item)} / ${groundingSummary(item.grounding)} / ${formatResultTime(timestampValue)}`,
     href: `/app/command?run=${encodeURIComponent(stringValue(item.id))}`,
     tone: toneForResultStatus(status),
     timestamp: parsedTime(timestampValue),
@@ -59,7 +59,7 @@ function agentIdentitySummary(item: ResultRecord) {
   const name = stringValue(card.name);
   return name
     ? `${name} (${stringValue(card.role, "Agent")})`
-    : stringValue(item.agentId, "Agent identity unavailable");
+    : "Assistant";
 }
 
 function groundingSummary(value: unknown) {
@@ -78,7 +78,7 @@ function groundingSummary(value: unknown) {
   if (status === "missing") return "citation needed";
   if (status === "invalid") return "invalid citation";
   if (status === "not_required") return "no retrieved sources";
-  return "grounding unavailable";
+  return "source verification unavailable";
 }
 
 function numericValue(value: unknown) {
@@ -95,7 +95,7 @@ function workflowTimelineItem(item: ResultRecord): ResultTimelineItem {
     title: stringValue(item.goal, "Workflow"),
     status,
     body: fullText(item.report || readPath(item, "result.report") || item.error, finalState(status) ? "No final report was stored." : "This workflow has not produced a final report yet."),
-    meta: `${stringValue(item.currentStep, "workflow")} / ${formatResultTime(timestampValue)}`,
+    meta: formatResultTime(timestampValue),
     href: `/app/results?run=${encodeURIComponent(key)}`,
     tone: toneForResultStatus(status),
     timestamp: parsedTime(timestampValue),

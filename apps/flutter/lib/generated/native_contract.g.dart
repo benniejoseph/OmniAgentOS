@@ -3,9 +3,9 @@
 
 abstract final class NativeContract {
   static const id = 'asael.native-api';
-  static const currentVersion = 48;
-  static const previousVersion = 47;
-  static const supportedVersions = <int>[48, 47];
+  static const currentVersion = 56;
+  static const previousVersion = 55;
+  static const supportedVersions = <int>[56, 55, 54, 53, 52];
   static const discoveryPath = '/api/mobile/contracts';
   static const operationIds = <String>{
     'auth.login',
@@ -167,15 +167,6 @@ abstract final class NativeContract {
     'meetings.commitments.list',
     'meetings.commitments.propose',
     'meetings.commitments.resolve',
-    'customers.list',
-    'customers.get',
-    'customers.portfolio',
-    'customers.health',
-    'customers.intelligence',
-    'customers.workflows',
-    'customers.salesforce.status',
-    'customers.create',
-    'customers.update',
     'library.list',
     'library.get',
     'library.versions.list',
@@ -200,8 +191,6 @@ abstract final class NativeContract {
     'meetings.calendar.get',
     'meetings.calendar.sync',
     'meetings.calendar.sync.get',
-    'customers.health.evaluate',
-    'customers.health.evaluations.get',
     'agents.delete.review',
     'agents.delete',
     'agents.mutations.get',
@@ -213,18 +202,9 @@ abstract final class NativeContract {
     'memory.promotions.list',
     'memory.promotions.read',
     'memory.promotions.decide',
-    'customers.workflows.start',
-    'customers.workflows.outcome',
-    'customers.workflows.get',
-    'customers.workflows.mutations.get',
     'meetings.recordings.review',
     'meetings.recordings.process',
     'meetings.recordings.processing.get',
-    'customers.facts.record',
-    'customers.facts.acceptance.get',
-    'customers.salesforce.actions.review',
-    'customers.salesforce.actions.submit',
-    'customers.salesforce.actions.get',
     'knowledge.cognification.list',
     'knowledge.cognification.read',
     'knowledge.cognification.decide',
@@ -283,6 +263,30 @@ abstract final class NativeContract {
     'connectors.native.githubUpgrades.submit',
     'connectors.native.githubUpgrades.read',
     'connectors.native.githubUpgrades.close',
+    'research.control',
+    'voice.conversation.session.start',
+    'voice.conversation.session.finish',
+    'voice.conversation.turns',
+    'personal.profile.get',
+    'personal.profile.update',
+    'localAndroid.device',
+    'localAndroid.device.update',
+    'localAndroid.command.claim',
+    'localAndroid.command.complete',
+    'localAndroid.stop',
+    'listen.grant',
+    'listen.ingest',
+    'listen.conversations.list',
+    'listen.conversations.get',
+    'csm.clients.list',
+    'csm.client.get',
+    'csm.client.save',
+    'csm.client.sources.link',
+    'csm.client.sources.unlink',
+    'csm.role.get',
+    'csm.role.save',
+    'csm.role.sources.link',
+    'csm.role.sources.unlink',
   };
 
   static bool supports(int version) => supportedVersions.contains(version);
@@ -715,92 +719,6 @@ abstract final class NativePaths {
   }
   static String meetingsCommitmentsPropose(String id) => '/api/meetings/${Uri.encodeComponent(id)}/commitments';
   static String meetingsCommitmentsResolve(String id) => '/api/meetings/${Uri.encodeComponent(id)}/commitments';
-  static String customersList({String? workspaceId, String? lifecycle, int? limit}) {
-    final path = '/api/customer-accounts';
-    final query = <String, String>{
-      'workspaceId': ?workspaceId,
-      'lifecycle': ?lifecycle,
-      if (limit != null) 'limit': limit.toString(),
-    };
-    if (query.isEmpty) return path;
-    final encoded = query.entries
-        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
-        .join('&');
-    return '$path?$encoded';
-  }
-  static String customersGet(String id, {String? workspaceId}) {
-    final path = '/api/customer-accounts/${Uri.encodeComponent(id)}';
-    final query = <String, String>{
-      'workspaceId': ?workspaceId,
-    };
-    if (query.isEmpty) return path;
-    final encoded = query.entries
-        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
-        .join('&');
-    return '$path?$encoded';
-  }
-  static String customersPortfolio({String? workspaceId, int? limit}) {
-    final path = '/api/customer-accounts/portfolio';
-    final query = <String, String>{
-      'workspaceId': ?workspaceId,
-      if (limit != null) 'limit': limit.toString(),
-    };
-    if (query.isEmpty) return path;
-    final encoded = query.entries
-        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
-        .join('&');
-    return '$path?$encoded';
-  }
-  static String customersHealth(String id, {String? workspaceId, int? historyLimit}) {
-    final path = '/api/customer-accounts/${Uri.encodeComponent(id)}/health';
-    final query = <String, String>{
-      'workspaceId': ?workspaceId,
-      if (historyLimit != null) 'historyLimit': historyLimit.toString(),
-    };
-    if (query.isEmpty) return path;
-    final encoded = query.entries
-        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
-        .join('&');
-    return '$path?$encoded';
-  }
-  static String customersIntelligence(String id, {String? workspaceId, int? historyLimit, int? timelineLimit}) {
-    final path = '/api/customer-accounts/${Uri.encodeComponent(id)}/intelligence';
-    final query = <String, String>{
-      'workspaceId': ?workspaceId,
-      if (historyLimit != null) 'historyLimit': historyLimit.toString(),
-      if (timelineLimit != null) 'timelineLimit': timelineLimit.toString(),
-    };
-    if (query.isEmpty) return path;
-    final encoded = query.entries
-        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
-        .join('&');
-    return '$path?$encoded';
-  }
-  static String customersWorkflows(String id, {String? workspaceId, int? limit}) {
-    final path = '/api/customer-accounts/${Uri.encodeComponent(id)}/workflows';
-    final query = <String, String>{
-      'workspaceId': ?workspaceId,
-      if (limit != null) 'limit': limit.toString(),
-    };
-    if (query.isEmpty) return path;
-    final encoded = query.entries
-        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
-        .join('&');
-    return '$path?$encoded';
-  }
-  static String customersSalesforceStatus({String? workspaceId}) {
-    final path = '/api/customer-accounts/salesforce';
-    final query = <String, String>{
-      'workspaceId': ?workspaceId,
-    };
-    if (query.isEmpty) return path;
-    final encoded = query.entries
-        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
-        .join('&');
-    return '$path?$encoded';
-  }
-  static const customersCreate = '/api/customer-accounts';
-  static String customersUpdate(String id) => '/api/customer-accounts/${Uri.encodeComponent(id)}';
   static String libraryList({String? q, String? kind, String? project, int? limit, int? offset}) {
     final path = '/api/library';
     final query = <String, String>{
@@ -949,18 +867,6 @@ abstract final class NativePaths {
         .join('&');
     return '$path?$encoded';
   }
-  static String customersHealthEvaluate(String id) => '/api/customer-accounts/${Uri.encodeComponent(id)}/health';
-  static String customersHealthEvaluationsGet(String id, String evaluationId, {required String workspaceId}) {
-    final path = '/api/customer-accounts/${Uri.encodeComponent(id)}/health/evaluations/${Uri.encodeComponent(evaluationId)}';
-    final query = <String, String>{
-      'workspaceId': workspaceId,
-    };
-    if (query.isEmpty) return path;
-    final encoded = query.entries
-        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
-        .join('&');
-    return '$path?$encoded';
-  }
   static String agentsDeleteReview(String id) => '/api/agents/${Uri.encodeComponent(id)}/deletion-review';
   static String agentsDelete(String id) => '/api/agents/${Uri.encodeComponent(id)}';
   static String agentsMutationsGet(String keySha256) => '/api/agents/mutations/${Uri.encodeComponent(keySha256)}';
@@ -1003,30 +909,6 @@ abstract final class NativePaths {
     return '$path?$encoded';
   }
   static const memoryPromotionsDecide = '/api/memory/promotions';
-  static String customersWorkflowsStart(String id) => '/api/customer-accounts/${Uri.encodeComponent(id)}/workflows';
-  static String customersWorkflowsOutcome(String id) => '/api/customer-accounts/${Uri.encodeComponent(id)}/workflows';
-  static String customersWorkflowsGet(String id, String runId, {required String workspaceId}) {
-    final path = '/api/customer-accounts/${Uri.encodeComponent(id)}/workflows/${Uri.encodeComponent(runId)}';
-    final query = <String, String>{
-      'workspaceId': workspaceId,
-    };
-    if (query.isEmpty) return path;
-    final encoded = query.entries
-        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
-        .join('&');
-    return '$path?$encoded';
-  }
-  static String customersWorkflowsMutationsGet(String id, String runId, String keySha256, {required String workspaceId}) {
-    final path = '/api/customer-accounts/${Uri.encodeComponent(id)}/workflows/${Uri.encodeComponent(runId)}/mutations/${Uri.encodeComponent(keySha256)}';
-    final query = <String, String>{
-      'workspaceId': workspaceId,
-    };
-    if (query.isEmpty) return path;
-    final encoded = query.entries
-        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
-        .join('&');
-    return '$path?$encoded';
-  }
   static String meetingsRecordingsReview(String id, {required String workspaceId, required String meetingId}) {
     final path = '/api/capture/recordings/${Uri.encodeComponent(id)}/processing-review';
     final query = <String, String>{
@@ -1045,41 +927,6 @@ abstract final class NativePaths {
     final query = <String, String>{
       'workspaceId': workspaceId,
       'meetingId': meetingId,
-    };
-    if (query.isEmpty) return path;
-    final encoded = query.entries
-        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
-        .join('&');
-    return '$path?$encoded';
-  }
-  static String customersFactsRecord(String id) => '/api/customer-accounts/${Uri.encodeComponent(id)}/facts';
-  static String customersFactsAcceptanceGet(String id, String keySha256, {required String workspaceId}) {
-    final path = '/api/customer-accounts/${Uri.encodeComponent(id)}/facts/acceptances/${Uri.encodeComponent(keySha256)}';
-    final query = <String, String>{
-      'workspaceId': workspaceId,
-    };
-    if (query.isEmpty) return path;
-    final encoded = query.entries
-        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
-        .join('&');
-    return '$path?$encoded';
-  }
-  static String customersSalesforceActionsReview({required String workspaceId}) {
-    final path = '/api/customer-accounts/salesforce/actions';
-    final query = <String, String>{
-      'workspaceId': workspaceId,
-    };
-    if (query.isEmpty) return path;
-    final encoded = query.entries
-        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
-        .join('&');
-    return '$path?$encoded';
-  }
-  static const customersSalesforceActionsSubmit = '/api/customer-accounts/salesforce/actions';
-  static String customersSalesforceActionsGet(String keySha256, {required String workspaceId}) {
-    final path = '/api/customer-accounts/salesforce/actions/${Uri.encodeComponent(keySha256)}';
-    final query = <String, String>{
-      'workspaceId': workspaceId,
     };
     if (query.isEmpty) return path;
     final encoded = query.entries
@@ -1217,6 +1064,30 @@ abstract final class NativePaths {
   static const connectorsNativeGithubUpgradesSubmit = '/api/connectors/native/github-upgrades';
   static String connectorsNativeGithubUpgradesRead(String keySha256) => '/api/connectors/native/github-upgrades/${Uri.encodeComponent(keySha256)}';
   static String connectorsNativeGithubUpgradesClose(String keySha256) => '/api/connectors/native/github-upgrades/${Uri.encodeComponent(keySha256)}/close';
+  static String researchControl(String id) => '/api/workflows/${Uri.encodeComponent(id)}/signal';
+  static const voiceConversationSessionStart = '/api/voice/conversation/session';
+  static const voiceConversationSessionFinish = '/api/voice/conversation/session';
+  static const voiceConversationTurns = '/api/voice/conversation/turns';
+  static const personalProfileGet = '/api/personal-context/profile';
+  static const personalProfileUpdate = '/api/personal-context/profile';
+  static const localAndroidDevice = '/api/mobile/android-control/device';
+  static const localAndroidDeviceUpdate = '/api/mobile/android-control/device';
+  static const localAndroidCommandClaim = '/api/mobile/android-control/commands/claim';
+  static String localAndroidCommandComplete(String id) => '/api/mobile/android-control/commands/${Uri.encodeComponent(id)}/complete';
+  static const localAndroidStop = '/api/mobile/android-control/stop';
+  static const listenGrant = '/api/mobile/listen/grant';
+  static const listenIngest = '/api/mobile/listen/ingest';
+  static const listenConversationsList = '/api/mobile/listen/conversations';
+  static String listenConversationsGet(String id) => '/api/mobile/listen/conversations/${Uri.encodeComponent(id)}';
+  static const csmClientsList = '/api/csm/clients';
+  static String csmClientGet(String id) => '/api/projects/${Uri.encodeComponent(id)}/csm';
+  static String csmClientSave(String id) => '/api/projects/${Uri.encodeComponent(id)}/csm';
+  static String csmClientSourcesLink(String id) => '/api/projects/${Uri.encodeComponent(id)}/csm/sources';
+  static String csmClientSourcesUnlink(String id) => '/api/projects/${Uri.encodeComponent(id)}/csm/sources';
+  static const csmRoleGet = '/api/csm/role-context';
+  static const csmRoleSave = '/api/csm/role-context';
+  static const csmRoleSourcesLink = '/api/csm/role-context/sources';
+  static const csmRoleSourcesUnlink = '/api/csm/role-context/sources';
 }
 
 abstract final class NativeConversationEvents {

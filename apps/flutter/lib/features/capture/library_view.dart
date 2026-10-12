@@ -3,8 +3,11 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../core/network/native_workspace_access.dart';
+import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_page_scaffold.dart';
 import 'entity_options.dart';
 import 'library_contracts.dart';
 import 'library_controller.dart';
@@ -76,11 +79,26 @@ class NativeLibraryPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(
+      leading: usesMobilePresentation()
+          ? IconButton(
+              tooltip: 'Back',
+              icon: const Icon(Icons.arrow_back_rounded),
+              onPressed: () {
+                if (Navigator.of(context).canPop()) {
+                  Navigator.of(context).pop();
+                } else {
+                  context.go('/library');
+                }
+              },
+            )
+          : null,
       title: Text(
         selectForMeeting
-            ? 'Choose a Meeting source'
+            ? 'Choose a meeting source'
             : selectForCommand
-            ? 'Choose current Library context'
+            ? 'Attach a saved file'
+            : usesMobilePresentation()
+            ? 'Saved files'
             : 'Library',
       ),
     ),
@@ -279,6 +297,491 @@ class _LibraryViewState extends State<LibraryView> with WidgetsBindingObserver {
       label: Text(label),
     ),
   );
+  Widget _mobileLibrary(
+    BuildContext context,
+    LibraryController c,
+    List<LibraryItem> rows,
+  ) {
+    final page = c.page;
+    if (c.selectedId != null) return _mobileFileDetail(context, c);
+    return RefreshIndicator(
+      onRefresh: () => c.load(),
+      child: CustomScrollView(
+        key: const Key('library-scroll'),
+        physics: const AlwaysScrollableScrollPhysics(),
+        slivers: [
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    widget.selectForMeeting
+                        ? 'Choose a ready source for your meeting.'
+                        : widget.onSelectedCurrent != null
+                        ? 'Bring a saved source into this conversation.'
+                        : 'Your notes, documents and recordings in one place.',
+                  ),
+                  const SizedBox(height: 16),
+                  TextField(
+                    key: const Key('library-search'),
+                    controller: _search,
+                    maxLength: 240,
+                    textInputAction: TextInputAction.search,
+                    onSubmitted: (value) => c.search(value, _kind),
+                    decoration: InputDecoration(
+                      hintText: 'Find a saved source',
+                      counterText: '',
+                      prefixIcon: const Icon(Icons.search_rounded),
+                      suffixIcon: IconButton(
+                        tooltip: 'Search saved files',
+                        onPressed: () => c.search(_search.text, _kind),
+                        icon: const Icon(Icons.arrow_forward_rounded),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  const SizedBox(height: 8),
+                  MobileSegmentBar<String>(
+                    items: [
+                      (value: 'all', label: 'All files', icon: null),
+                      for (final kind in libraryKinds)
+                        (value: kind, label: _fileKind(kind), icon: null),
+                    ],
+                    value: _kind ?? 'all',
+                    onChanged: (value) {
+                      setState(() => _kind = value == 'all' ? null : value);
+                      c.search(_search.text, _kind);
+                    },
+                  ),
+                  const SizedBox(height: 20),
+                  if (page != null)
+                    Text(
+                      '${page.total}${page.lowerBound ? '+' : ''} matching sources${c.listLoading || c.listError != null ? ' · last loaded' : ''}',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  if (c.listLoading)
+                    const LinearProgressIndicator(minHeight: 2),
+                  if (c.listError != null)
+                    LibraryReadNotice(
+                      c.listError!,
+                      retry: () => c.load(),
+                      stale: page != null,
+                    ),
+                ],
+              ),
+            ),
+          ),
+          if (rows.isEmpty && !c.listLoading)
+            const SliverToBoxAdapter(
+              child: Padding(
+                padding: EdgeInsets.all(24),
+                child: Text(
+                  'No saved sources match this view. Try a different search or add something in Capture.',
+                ),
+              ),
+            ),
+          SliverPadding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            sliver: SliverList.builder(
+              itemCount: rows.length,
+              itemBuilder: (_, index) {
+                final row = rows[index];
+                final theme = Theme.of(context);
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: Material(
+                    color: theme.colorScheme.surface,
+                    borderRadius: BorderRadius.circular(18),
+                    clipBehavior: Clip.antiAlias,
+                    child: InkWell(
+                      onTap: row.exactAvailable ? () => _open(row.id) : null,
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Container(
+                              width: 48,
+                              height: 58,
+                              decoration: BoxDecoration(
+                                color: theme.colorScheme.primaryContainer
+                                    .withValues(alpha: .45),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Icon(
+                                _fileIcon(row.kind),
+                                color: theme.colorScheme.primary,
+                                size: 24,
+                              ),
+                            ),
+                            const SizedBox(width: 16),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    row.title,
+                                    style: theme.textTheme.titleMedium,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  const SizedBox(height: 6),
+                                  Text(
+                                    _fileKind(row.kind),
+                                    style: theme.textTheme.bodySmall,
+                                  ),
+                                  const SizedBox(height: 10),
+                                  Text(
+                                    row.raw['status'].toString().replaceAll(
+                                      '_',
+                                      ' ',
+                                    ),
+                                    style: theme.textTheme.labelSmall?.copyWith(
+                                      color: theme.colorScheme.primary,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            if (row.exactAvailable)
+                              const Icon(Icons.chevron_right_rounded, size: 18),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+          if (page != null)
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.all(20),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: c.hasPrevious && !c.listLoading
+                            ? c.previous
+                            : null,
+                        child: const Text('Previous'),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed:
+                            page.nextOffset != null &&
+                                page.nextOffset! <= 10000 &&
+                                !c.listLoading
+                            ? c.next
+                            : null,
+                        child: const Text('Next'),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Focus(
+                key: _detailKey,
+                focusNode: _detailFocus,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            'Source details',
+                            style: Theme.of(context).textTheme.titleLarge,
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: 'Close source details',
+                          onPressed: () {
+                            c.clearSelection();
+                            _listFocus.requestFocus();
+                          },
+                          icon: const Icon(Icons.close_rounded),
+                        ),
+                      ],
+                    ),
+                    if (c.detailLoading) const LinearProgressIndicator(),
+                    if (c.detailError != null)
+                      LibraryReadNotice(
+                        c.detailError!,
+                        retry: () => c.select(c.selectedId!),
+                        stale: c.detail != null,
+                      ),
+                    if (c.detail != null) _detail(context, c.detail!, c),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: ExpansionTile(
+                title: const Text('More ways to browse'),
+                tilePadding: EdgeInsets.zero,
+                expansionAnimationStyle: MediaQuery.disableAnimationsOf(context)
+                    ? AnimationStyle.noAnimation
+                    : null,
+                children: [
+                  TextField(
+                    key: const Key('library-exact-id'),
+                    controller: _exactId,
+                    maxLength: 320,
+                    decoration: const InputDecoration(
+                      labelText: 'Saved source reference',
+                    ),
+                    onSubmitted: (value) => _open(value.trim()),
+                  ),
+                  if (_formError != null) Text(_formError!),
+                  TextButton(
+                    onPressed: () => _open(_exactId.text.trim()),
+                    child: const Text('Open source'),
+                  ),
+                  TextButton(
+                    onPressed: () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => const NativeEntityOptionsPage(),
+                      ),
+                    ),
+                    child: const Text('Browse related work'),
+                  ),
+                  if (page != null)
+                    Text(
+                      'Search checks the sources you can access. Counts ${page.countsLowerBound ? 'are a lower bound' : 'cover the returned search window'}.',
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _fileKind(String kind) => switch (kind) {
+    'document' => 'Documents',
+    'spreadsheet' => 'Spreadsheets',
+    'presentation' => 'Presentations',
+    'image' => 'Images',
+    'audio' => 'Audio',
+    'recording' => 'Recordings',
+    'transcript' => 'Transcripts',
+    'file' => 'Files',
+    _ =>
+      kind.isEmpty
+          ? 'File'
+          : '${kind[0].toUpperCase()}${kind.substring(1).replaceAll('_', ' ')}',
+  };
+
+  IconData _fileIcon(String kind) => kind.contains('image')
+      ? Icons.image_outlined
+      : kind.contains('audio') || kind.contains('recording')
+      ? Icons.audio_file_outlined
+      : kind.contains('spreadsheet')
+      ? Icons.table_chart_outlined
+      : kind.contains('presentation')
+      ? Icons.slideshow_rounded
+      : Icons.description_outlined;
+
+  Widget _mobileFileDetail(BuildContext context, LibraryController c) {
+    final item = c.detail;
+    final theme = Theme.of(context);
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop && !_attaching) c.clearSelection();
+      },
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+            child: Row(
+              children: [
+                TextButton.icon(
+                  onPressed: _attaching ? null : c.clearSelection,
+                  icon: const Icon(Icons.arrow_back_rounded),
+                  label: const Text('All saved files'),
+                ),
+                const Spacer(),
+                IconButton(
+                  tooltip: 'Refresh this source',
+                  onPressed: c.detailLoading || _attaching
+                      ? null
+                      : () => c.select(c.selectedId!),
+                  icon: const Icon(Icons.refresh_rounded),
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: ListView(
+              key: const Key('library-scroll'),
+              padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
+              children: [
+                Focus(
+                  key: _detailKey,
+                  focusNode: _detailFocus,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      if (c.detailLoading) const LinearProgressIndicator(),
+                      if (c.detailError != null)
+                        LibraryReadNotice(
+                          c.detailError!,
+                          retry: () => c.select(c.selectedId!),
+                          stale: item != null,
+                        ),
+                      if (item != null) ...[
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: Container(
+                            width: 60,
+                            height: 72,
+                            decoration: BoxDecoration(
+                              color: theme.colorScheme.primaryContainer
+                                  .withValues(alpha: .45),
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                            child: Icon(
+                              _fileIcon(item.kind),
+                              color: theme.colorScheme.primary,
+                              size: 32,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 24),
+                        SelectableText(
+                          item.title,
+                          style: theme.textTheme.headlineSmall,
+                        ),
+                        const SizedBox(height: 14),
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: MobileStatusPill(
+                            label: item.raw['status'].toString().replaceAll(
+                              '_',
+                              ' ',
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 24),
+                        MobileSurface(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'At a glance',
+                                style: theme.textTheme.titleMedium,
+                              ),
+                              const SizedBox(height: 12),
+                              SelectableText(
+                                (item.raw['summary'] as String).isEmpty
+                                    ? 'This source is saved. A text preview is not available here.'
+                                    : item.raw['summary'] as String,
+                                style: theme.textTheme.bodyLarge?.copyWith(
+                                  height: 1.6,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 20),
+                        Text(
+                          'Version ${item.version['versionNumber']} · ${item.raw['versionCount']} saved versions',
+                          style: theme.textTheme.bodySmall,
+                        ),
+                        if (c.detailLoading ||
+                            c.detailError != null ||
+                            c.historyPage != null &&
+                                c.historyPage!.head != item.versionId)
+                          const Padding(
+                            padding: EdgeInsets.only(top: 12),
+                            child: Text(
+                              'The current version needs refreshing before you use it.',
+                            ),
+                          ),
+                        const SizedBox(height: 20),
+                        ExpansionTile(
+                          title: const Text('Source details & version history'),
+                          tilePadding: EdgeInsets.zero,
+                          expansionAnimationStyle:
+                              MediaQuery.disableAnimationsOf(context)
+                              ? AnimationStyle.noAnimation
+                              : null,
+                          children: [_detail(context, item, c)],
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (widget.onSelectedCurrent != null && item != null)
+            SafeArea(
+              top: false,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    if (_attachmentNotice != null)
+                      Semantics(
+                        liveRegion: true,
+                        child: Text(_attachmentNotice!),
+                      ),
+                    if (!_selectable(item))
+                      Text(
+                        widget.selectForMeeting
+                            ? 'Choose a ready recording, capture or connected source for this meeting.'
+                            : 'This source is not ready to attach to a conversation.',
+                      ),
+                    FilledButton.icon(
+                      onPressed:
+                          !_attaching &&
+                              !c.detailLoading &&
+                              c.detailError == null &&
+                              _selectable(item)
+                          ? () => _attach(item)
+                          : null,
+                      icon: const Icon(Icons.attach_file_rounded),
+                      label: Text(
+                        _attaching
+                            ? 'Checking current version…'
+                            : widget.selectForMeeting
+                            ? 'Use for this meeting'
+                            : 'Attach to conversation',
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      widget.selectForMeeting
+                          ? 'Adds this source to your private meeting draft. Access and consent are checked again when you save.'
+                          : 'The current version is checked again before it is attached and when you send.',
+                      style: theme.textTheme.bodySmall,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: widget.controller,
@@ -311,6 +814,7 @@ class _LibraryViewState extends State<LibraryView> with WidgetsBindingObserver {
               )
               .toList() ??
           const <LibraryItem>[];
+      if (usesMobilePresentation()) return _mobileLibrary(context, c, rows);
       return SingleChildScrollView(
         key: const Key('library-scroll'),
         padding: const EdgeInsets.all(24),
@@ -606,25 +1110,73 @@ class _LibraryViewState extends State<LibraryView> with WidgetsBindingObserver {
         const Text(
           'This is the last loaded current record. Refresh it before relying on its current version.',
         ),
-      LibraryValue('Source', '${item.authority}\n${item.sourceId}'),
-      LibraryValue('State', item.raw['status']),
-      LibraryValue(
-        'Scope',
-        '${item.scope['visibility']} · ${item.scope['permissionBasis']}',
-      ),
-      LibraryValue('Owner', item.scope['ownerActorId']),
-      for (final key in ['workspaceId', 'projectId', 'workItemId', 'missionId'])
-        if (item.scope[key] != null) LibraryValue(key, item.scope[key]),
-      LibraryValue(
-        'Current version',
-        '${item.versionId}\nVersion ${item.version['versionNumber']} of ${item.raw['versionCount']} known',
-      ),
-      LibraryValue(
-        'Source revision',
-        item.version['sourceRevisionId'] ??
-            'No revision ID in this source projection',
-      ),
-      LibraryValue('Content SHA-256', item.version['contentSha256']),
+      if (usesMobilePresentation()) ...[
+        LibraryValue(
+          'Status',
+          item.raw['status'].toString().replaceAll('_', ' '),
+        ),
+        Text(
+          'Version ${item.version['versionNumber']} · ${item.raw['versionCount']} saved versions',
+        ),
+        ExpansionTile(
+          tilePadding: EdgeInsets.zero,
+          title: const Text('Source and access details'),
+          expansionAnimationStyle: MediaQuery.disableAnimationsOf(context)
+              ? AnimationStyle.noAnimation
+              : null,
+          children: [
+            LibraryValue('Source', '${item.authority}\n${item.sourceId}'),
+            LibraryValue('State', item.raw['status']),
+            LibraryValue(
+              'Scope',
+              '${item.scope['visibility']} · ${item.scope['permissionBasis']}',
+            ),
+            LibraryValue('Owner', item.scope['ownerActorId']),
+            for (final key in [
+              'workspaceId',
+              'projectId',
+              'workItemId',
+              'missionId',
+            ])
+              if (item.scope[key] != null) LibraryValue(key, item.scope[key]),
+            LibraryValue(
+              'Current version',
+              '${item.versionId}\nVersion ${item.version['versionNumber']} of ${item.raw['versionCount']} known',
+            ),
+            LibraryValue(
+              'Source revision',
+              item.version['sourceRevisionId'] ??
+                  'No revision ID in this source projection',
+            ),
+            LibraryValue('Content SHA-256', item.version['contentSha256']),
+          ],
+        ),
+      ] else ...[
+        LibraryValue('Source', '${item.authority}\n${item.sourceId}'),
+        LibraryValue('State', item.raw['status']),
+        LibraryValue(
+          'Scope',
+          '${item.scope['visibility']} · ${item.scope['permissionBasis']}',
+        ),
+        LibraryValue('Owner', item.scope['ownerActorId']),
+        for (final key in [
+          'workspaceId',
+          'projectId',
+          'workItemId',
+          'missionId',
+        ])
+          if (item.scope[key] != null) LibraryValue(key, item.scope[key]),
+        LibraryValue(
+          'Current version',
+          '${item.versionId}\nVersion ${item.version['versionNumber']} of ${item.raw['versionCount']} known',
+        ),
+        LibraryValue(
+          'Source revision',
+          item.version['sourceRevisionId'] ??
+              'No revision ID in this source projection',
+        ),
+        LibraryValue('Content SHA-256', item.version['contentSha256']),
+      ],
       LibraryValue(
         'Content description',
         '${item.version['byteCount']} bytes · ${item.version['mediaType']}',
@@ -649,7 +1201,7 @@ class _LibraryViewState extends State<LibraryView> with WidgetsBindingObserver {
             c.detail?.versionId == item.versionId &&
             c.detail?.id == item.id,
       ),
-      if (widget.onSelectedCurrent != null) ...[
+      if (widget.onSelectedCurrent != null && !usesMobilePresentation()) ...[
         Text(
           widget.selectForMeeting
               ? 'This exact current source is read again now. Linking only changes your private Meeting draft; the server revalidates access and consent when you save the reviewed Meeting.'

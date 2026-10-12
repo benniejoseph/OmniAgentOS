@@ -15,6 +15,19 @@ import { getGovernedTools } from "@/lib/tools/registry";
 import { dynamicDelegationCapabilityQueryPrefix } from "@/lib/delegation/runtime-policy";
 
 describe("progressive agent toolbox", () => {
+  it("discovers public source reading while preserving custom-agent tool allowlists", async () => {
+    const dependencies = {
+      listNative: getGovernedTools,
+      search: vi.fn(async () => ({ capabilities: [], query: "", total: 0, limit: 50, hasMore: false })),
+      resolveMcp: vi.fn(async () => null),
+      resolveOpenApi: vi.fn(async () => null),
+    };
+    const discovered = await loadProgressiveAgentTools({ query: "Research and read public web source URLs" }, dependencies);
+    expect(discovered.definitions.map((tool) => tool.id)).toContain("web.read");
+    const restricted = await loadProgressiveAgentTools({ query: "Research and read public web source URLs", preferredToolIds: ["web.search"] }, dependencies);
+    expect(restricted.definitions.map((tool) => tool.id)).toEqual(["web.search"]);
+  });
+
   it("keeps Google Workspace, document creation, and imported Photos discoverable from Command language", async () => {
     const dependencies = {
       listNative: getGovernedTools,

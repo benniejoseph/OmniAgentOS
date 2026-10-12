@@ -3,6 +3,11 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_page_scaffold.dart';
+import '../settings/adaptive_control_dialog.dart';
+import '../integrations/connector_view.dart';
+
 import '../auth/application/session_controller.dart';
 import '../../core/network/native_workspace_access.dart';
 import 'automation_controller.dart';
@@ -62,53 +67,87 @@ class _AutomationStudioViewState extends ConsumerState<AutomationStudioView> {
     }
     final controller = ref.watch(automationControllerProvider);
     return Scaffold(
-      appBar: AppBar(
-        title: const Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Capabilities'),
-            Text(
-              'Skills, connections, extensions, and repeatable work',
-              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w400),
+      appBar: usesMobilePresentation()
+          ? null
+          : AppBar(
+              title: const Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Capabilities'),
+                  Text(
+                    'Skills, connections, extensions, and repeatable work',
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w400),
+                  ),
+                ],
+              ),
+              actions: [
+                IconButton(
+                  key: const Key('automation-portable-refresh'),
+                  tooltip: 'Refresh Automation Studio',
+                  onPressed: controller.refreshing ? null : controller.refresh,
+                  icon: controller.refreshing
+                      ? const SizedBox.square(
+                          dimension: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.refresh_rounded),
+                ),
+              ],
+              bottom: PreferredSize(
+                preferredSize: const Size.fromHeight(48),
+                child: NavigationBar(
+                  height: 48,
+                  selectedIndex: _tabIndex,
+                  onDestinationSelected: _selectTab,
+                  destinations: const [
+                    NavigationDestination(
+                      icon: Icon(Icons.schedule_outlined),
+                      selectedIcon: Icon(Icons.schedule_rounded),
+                      label: 'Automations',
+                    ),
+                    NavigationDestination(
+                      icon: Icon(Icons.extension_outlined),
+                      selectedIcon: Icon(Icons.extension_rounded),
+                      label: 'Skills & more',
+                    ),
+                  ],
+                ),
+              ),
             ),
-          ],
-        ),
-        actions: [
-          IconButton(
-            key: const Key('automation-portable-refresh'),
-            tooltip: 'Refresh Automation Studio',
-            onPressed: controller.refreshing ? null : controller.refresh,
-            icon: controller.refreshing
-                ? const SizedBox.square(
-                    dimension: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.refresh_rounded),
-          ),
-        ],
-        bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(48),
-          child: NavigationBar(
-            height: 48,
-            selectedIndex: _tabIndex,
-            onDestinationSelected: _selectTab,
-            destinations: const [
-              NavigationDestination(
-                icon: Icon(Icons.schedule_outlined),
-                selectedIcon: Icon(Icons.schedule_rounded),
-                label: 'Automations',
-              ),
-              NavigationDestination(
-                icon: Icon(Icons.extension_outlined),
-                selectedIcon: Icon(Icons.extension_rounded),
-                label: 'Skills & more',
-              ),
-            ],
-          ),
-        ),
-      ),
       body: Column(
         children: [
+          if (usesMobilePresentation()) ...[
+            MobilePageHeader(
+              title: 'Capabilities',
+              subtitle: 'What your agents can do.',
+              actions: [
+                IconButton(
+                  tooltip: 'Refresh capabilities',
+                  onPressed: controller.refreshing ? null : controller.refresh,
+                  icon: const Icon(Icons.refresh_rounded),
+                ),
+              ],
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+              child: MobileSegmentBar<int>(
+                items: const [
+                  (
+                    value: 0,
+                    label: 'Automations',
+                    icon: Icons.schedule_outlined,
+                  ),
+                  (
+                    value: 1,
+                    label: 'Skills & connections',
+                    icon: Icons.extension_outlined,
+                  ),
+                ],
+                value: _tabIndex,
+                onChanged: _selectTab,
+              ),
+            ),
+          ],
           if (controller.error != null)
             MaterialBanner(
               content: Text(controller.error!),
@@ -123,7 +162,9 @@ class _AutomationStudioViewState extends ConsumerState<AutomationStudioView> {
             child: RefreshIndicator(
               onRefresh: controller.refresh,
               child: AnimatedSwitcher(
-                duration: const Duration(milliseconds: 180),
+                duration: MediaQuery.disableAnimationsOf(context)
+                    ? Duration.zero
+                    : const Duration(milliseconds: 180),
                 child: _tabIndex == 0
                     ? _PortableAutomations(
                         key: const ValueKey('portable-automations'),
@@ -157,9 +198,10 @@ class _PortableAutomations extends StatelessWidget {
       children: [
         _PortableSectionHeader(
           icon: Icons.bolt_outlined,
-          title: 'Triggers',
-          description:
-              'Schedules and external events that begin repeatable work.',
+          title: usesMobilePresentation() ? 'Schedules & events' : 'Triggers',
+          description: usesMobilePresentation()
+              ? 'The work you have set in motion.'
+              : 'Schedules and external events that begin repeatable work.',
           count: triggers.data?.length,
         ),
         const SizedBox(height: 10),
@@ -287,8 +329,10 @@ class _PortableScheduleSheetState extends State<_PortableScheduleSheet> {
                         widget.trigger.name,
                         style: Theme.of(context).textTheme.titleLarge,
                       ),
-                      const Text(
-                        'Occurrences, receipts, and PolicyLease outcomes',
+                      Text(
+                        usesMobilePresentation()
+                            ? 'Recent activity and saved evidence'
+                            : 'Occurrences, receipts, and PolicyLease outcomes',
                       ),
                     ],
                   ),
@@ -352,9 +396,10 @@ class _PortableScheduleDetail extends StatelessWidget {
         ),
       _PortableSectionHeader(
         icon: Icons.event_repeat_outlined,
-        title: 'Occurrences',
-        description:
-            'Exact trigger occurrences and their bound authority digest.',
+        title: usesMobilePresentation() ? 'Scheduled activity' : 'Occurrences',
+        description: usesMobilePresentation()
+            ? 'What happened when this schedule ran.'
+            : 'Exact trigger occurrences and their bound authority digest.',
         count: detail.occurrences.length,
       ),
       if (detail.occurrences.isEmpty)
@@ -362,10 +407,13 @@ class _PortableScheduleDetail extends StatelessWidget {
       else
         for (final occurrence in detail.occurrences)
           _PortableEvidenceCard(
-            title: occurrence.id,
+            title: usesMobilePresentation()
+                ? '${_plain(occurrence.status)} · attempt ${occurrence.attemptCount}'
+                : occurrence.id,
             subtitle:
                 '${_plain(occurrence.status)} · attempt ${occurrence.attemptCount}',
             fields: {
+              if (usesMobilePresentation()) 'Occurrence': occurrence.id,
               'Workflow run': occurrence.workflowRunId ?? 'Not created',
               'Authority SHA-256': occurrence.authoritySha256.isEmpty
                   ? 'Unavailable'
@@ -389,9 +437,17 @@ class _PortableScheduleDetail extends StatelessWidget {
       else
         for (final receipt in detail.receipts)
           _PortableEvidenceCard(
-            title: receipt.id,
-            subtitle: '${_plain(receipt.status)} · ${receipt.occurrenceId}',
+            title: usesMobilePresentation()
+                ? '${_plain(receipt.status)} receipt'
+                : receipt.id,
+            subtitle: usesMobilePresentation()
+                ? 'Saved evidence for this schedule'
+                : '${_plain(receipt.status)} · ${receipt.occurrenceId}',
             fields: {
+              if (usesMobilePresentation()) ...{
+                'Receipt': receipt.id,
+                'Occurrence': receipt.occurrenceId,
+              },
               'Receipt SHA-256': receipt.receiptSha256.isEmpty
                   ? 'Unavailable'
                   : receipt.receiptSha256,
@@ -403,22 +459,40 @@ class _PortableScheduleDetail extends StatelessWidget {
       const SizedBox(height: 20),
       _PortableSectionHeader(
         icon: Icons.policy_outlined,
-        title: 'PolicyLease outcomes',
-        description: 'Content-free evidence only. A history record never grants authority.',
+        title: usesMobilePresentation()
+            ? 'Action permissions'
+            : 'PolicyLease outcomes',
+        description: usesMobilePresentation()
+            ? 'Permission decisions made for scheduled actions.'
+            : 'Content-free evidence only. A history record never grants authority.',
         count: detail.policyLeasesAvailable ? detail.policyLeases.length : null,
       ),
       if (!detail.policyLeasesAvailable)
-        const _PortableInlineEmpty(
-          'PolicyLease history is unavailable on this installation.',
+        _PortableInlineEmpty(
+          usesMobilePresentation()
+              ? 'Action permission history is unavailable on this device.'
+              : 'PolicyLease history is unavailable on this installation.',
         )
       else if (detail.policyLeases.isEmpty)
-        const _PortableInlineEmpty('No PolicyLease outcomes are recorded.')
+        _PortableInlineEmpty(
+          usesMobilePresentation()
+              ? 'No action permission decisions are recorded.'
+              : 'No PolicyLease outcomes are recorded.',
+        )
       else
         for (final lease in detail.policyLeases)
           _PortableEvidenceCard(
-            title: lease.leaseId,
-            subtitle: '${_plain(lease.status)} · ${lease.toolId}',
+            title: usesMobilePresentation()
+                ? _plain(lease.status)
+                : lease.leaseId,
+            subtitle: usesMobilePresentation()
+                ? 'Action permission record'
+                : '${_plain(lease.status)} · ${lease.toolId}',
             fields: {
+              if (usesMobilePresentation()) ...{
+                'Permission record': lease.leaseId,
+                'Tool': lease.toolId,
+              },
               'Occurrence': lease.occurrenceId,
               'Execution': lease.executionId,
               'Lease SHA-256': lease.leaseSha256,
@@ -436,14 +510,131 @@ class _PortableScheduleDetail extends StatelessWidget {
   );
 }
 
-class _PortableCapabilities extends StatelessWidget {
+class _PortableCapabilities extends StatefulWidget {
   const _PortableCapabilities({super.key, required this.controller});
 
   final AutomationController controller;
+  @override
+  State<_PortableCapabilities> createState() => _PortableCapabilitiesState();
+}
 
+class _PortableCapabilitiesState extends State<_PortableCapabilities> {
+  int _category = 0;
+  AutomationController get controller => widget.controller;
   @override
   Widget build(BuildContext context) {
     final snapshot = controller.snapshot;
+    if (usesMobilePresentation()) {
+      final records = <Widget>[
+        if (_category == 0)
+          for (final item in snapshot.skills.data ?? const <AutomationSkill>[])
+            _PortableInspection(
+              title: item.name,
+              identity: item.id,
+              status: item.status,
+              value: item.raw,
+            ),
+        if (_category == 1) ...[
+          for (final item
+              in snapshot.connections.data?.installed ??
+                  const <AutomationConnection>[])
+            _PortableInspection(
+              title: item.name,
+              identity: item.id,
+              status: item.state,
+              value: item.raw,
+            ),
+          for (final item in snapshot.mcp.data ?? const <AutomationMcpServer>[])
+            _PortableInspection(
+              title: item.name,
+              identity: item.id,
+              status: item.status,
+              value: item.raw,
+            ),
+        ],
+        if (_category == 2)
+          for (final item in snapshot.tools.data ?? const <AutomationTool>[])
+            _PortableInspection(
+              title: item.name,
+              identity: item.id,
+              status: item.status,
+              value: item.raw,
+            ),
+        if (_category == 3)
+          for (final item
+              in snapshot.plugins.data?.plugins ?? const <AutomationPlugin>[])
+            _PortablePluginControls(controller: controller, plugin: item),
+      ];
+      final header = Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          MobileSegmentBar<int>(
+            items: const [
+              (value: 0, label: 'Skills', icon: Icons.psychology_outlined),
+              (value: 1, label: 'Connections', icon: Icons.link_rounded),
+              (value: 2, label: 'Tools', icon: Icons.build_outlined),
+              (value: 3, label: 'Extensions', icon: Icons.extension_outlined),
+            ],
+            value: _category,
+            onChanged: (value) => setState(() => _category = value),
+          ),
+          const SizedBox(height: 12),
+          switch (_category) {
+            1 => Column(
+              children: [
+                _CapabilityCard(
+                  icon: Icons.link_rounded,
+                  title: 'Connected services',
+                  resource: snapshot.connections,
+                  count: snapshot.connections.data?.installed.length,
+                ),
+                _CapabilityCard(
+                  icon: Icons.hub_outlined,
+                  title: 'Custom connections',
+                  resource: snapshot.mcp,
+                  count: snapshot.mcp.data?.length,
+                ),
+                OutlinedButton.icon(
+                  onPressed: () => Navigator.of(context).push<void>(
+                    MaterialPageRoute(
+                      builder: (_) =>
+                          const NativeConnectorWorkspace(showBackButton: true),
+                    ),
+                  ),
+                  icon: const Icon(Icons.tune_rounded),
+                  label: const Text('Manage connections'),
+                ),
+              ],
+            ),
+            2 => _CapabilityCard(
+              icon: Icons.build_outlined,
+              title: 'Tools',
+              resource: snapshot.tools,
+              count: snapshot.tools.data?.length,
+            ),
+            3 => _CapabilityCard(
+              icon: Icons.extension_outlined,
+              title: 'Extensions',
+              resource: snapshot.plugins,
+              count: snapshot.plugins.data?.plugins.length,
+            ),
+            _ => _CapabilityCard(
+              icon: Icons.psychology_outlined,
+              title: 'Skills',
+              resource: snapshot.skills,
+              count: snapshot.skills.data?.length,
+            ),
+          },
+          const SizedBox(height: 12),
+        ],
+      );
+      return ListView.builder(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
+        itemCount: records.length + 1,
+        itemBuilder: (_, index) => index == 0 ? header : records[index - 1],
+      );
+    }
     return ListView(
       physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 40),
@@ -534,6 +725,63 @@ class _PortableInspection extends StatelessWidget {
   final AutomationJson value;
   @override
   Widget build(BuildContext context) {
+    if (usesMobilePresentation()) {
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 10),
+        child: MobileSurface(
+          padding: EdgeInsets.zero,
+          child: ExpansionTile(
+            key: PageStorageKey<String>('mobile-capability:$identity'),
+            tilePadding: const EdgeInsets.symmetric(
+              horizontal: 12,
+              vertical: 8,
+            ),
+            leading: const Icon(Icons.extension_outlined),
+            title: Text(title),
+            subtitle: Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: MobileStatusPill(label: _plain(status)),
+              ),
+            ),
+            childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+            children: [
+              if (value['description'] case final String description)
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(description),
+                ),
+              if (value['purpose'] case final String purpose)
+                Align(alignment: Alignment.centerLeft, child: Text(purpose)),
+              ExpansionTile(
+                key: PageStorageKey<String>(
+                  'mobile-capability-technical:$identity',
+                ),
+                tilePadding: EdgeInsets.zero,
+                title: const Text('Technical details'),
+                children: [
+                  Builder(
+                    builder: (_) {
+                      final detail = const JsonEncoder.withIndent('  ')
+                          .convert(value);
+                      return Align(
+                        alignment: Alignment.centerLeft,
+                        child: SelectableText(
+                          detail.length > 16000
+                              ? '${detail.substring(0, 16000)}\nDisplay limited. Open the browser workspace for the full record.'
+                              : detail,
+                        ),
+                      );
+                    },
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      );
+    }
     final detail = const JsonEncoder.withIndent('  ').convert(value);
     return Card(
       child: ExpansionTile(
@@ -568,7 +816,7 @@ class _PortablePluginControls extends StatelessWidget {
     final install = await showDialog<bool>(
       context: context,
       useRootNavigator: false,
-      builder: (context) => AlertDialog(
+      builder: (context) => AdaptiveControlDialog(
         title: Text('Review ${preview.name}'),
         content: SingleChildScrollView(
           child: Column(
@@ -605,7 +853,7 @@ class _PortablePluginControls extends StatelessWidget {
     final confirmed = await showDialog<bool>(
       context: context,
       useRootNavigator: false,
-      builder: (context) => AlertDialog(
+      builder: (context) => AdaptiveControlDialog(
         title: Text('Uninstall ${plugin.name}?'),
         content: SelectableText(
           'Installation: ${plugin.installationId}\nRevision: ${plugin.revision}\nManifest: ${plugin.manifestSha256}\nThis removes this exact installed plugin.',
@@ -704,7 +952,9 @@ class _CapabilityCard<T> extends StatelessWidget {
       child: ListTile(
         leading: Icon(icon),
         title: Text(title),
-        subtitle: Text(resource.error ?? label),
+        subtitle: usesMobilePresentation() && resource.error == null
+            ? null
+            : Text(resource.error ?? label),
         trailing: resource.isLoading
             ? const SizedBox.square(
                 dimension: 18,

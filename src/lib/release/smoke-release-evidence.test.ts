@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
+import { readOwnerBudgetOverride } from "../../../scripts/release-owner-budget-override.mjs";
 
 const requiredPreviousGates = [
   "tenant_isolation_database",
@@ -66,7 +67,7 @@ globalThis.fetch = async (url) => {
     rmSync(directory, { recursive: true, force: true });
   });
 
-  function smoke(report: ReturnType<typeof passingReport>, previousRelease = false, status = 200, reason?: string) {
+  function smoke(report: ReturnType<typeof passingReport>, previousRelease = false, status = 200, reason?: string, ownerPin?: Record<string, string>) {
     rmSync(requestsFile, { force: true });
     const result = spawnSync(process.execPath, [
       "--import", pathToFileURL(fetchStub).href,
@@ -85,6 +86,7 @@ globalThis.fetch = async (url) => {
         FAKE_STATUS: String(status),
         FAKE_EVIDENCE: JSON.stringify({ report }),
         ...(reason ? { OMNIAGENT_RELEASE_ERROR_BUDGET_EXCEPTION: reason } : {}),
+        ...(ownerPin ? { OMNIAGENT_RELEASE_OWNER_ERROR_BUDGET_OVERRIDE: JSON.stringify(ownerPin) } : {}),
       },
     });
     return {
@@ -253,5 +255,84 @@ globalThis.fetch = async (url) => {
     degraded.releaseGate.status = "warning";
     expect(smoke(degraded, true).code).toBe(1);
     expect(smoke(passingReport(), true, 503).code).toBe(1);
+  });
+
+  const ownerPin = () => ({
+    candidateRevision: "b".repeat(40), previousRevision: "a".repeat(40),
+    reason: "Owner requested live verification of Accounts retirement and search timeout repair.",
+    expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+  });
+  function ownerReport(previous = false) {
+    const details = budgetDetails("exhausted", "exhausted");
+    const { exception: _exception, ...measured } = details;
+    const report = passingReport("fail", measured);
+    report.gates.push(...["deployment_environment", "maintenance_database_role", "openai_us_egress_gateway"]
+      .map((id) => ({ id, status: "pass", summary: "Ready." })));
+    return {
+      ...report, checkedAt: new Date().toISOString(),
+      deployment: { commitSha: previous ? "a".repeat(40) : "b".repeat(40) },
+      releaseGate: { approved: false, status: "blocked", reasons: ["Measured historical error budget spent."], warnings: [] as string[],
+        summary: { total: report.gates.length, passed: report.gates.length - 1, warnings: 0, failures: 1 } },
+    };
+  }
+
+  it.each([false, true])("records owner deployment authorization without rewriting the blocked report (prior=%s)", (previous) => {
+    const report = ownerReport(previous);
+    const pin = ownerPin();
+    const result = smoke(report, previous, 200, undefined, pin);
+    expect(result.code).toBe(0);
+    expect(result.artifact.releaseGate).toEqual(report.releaseGate);
+    expect(result.artifact.gates.find((gate: Gate) => gate.id === "agent_error_budget").status).toBe("fail");
+    expect(result.artifact.ownerErrorBudgetOverride).toMatchObject({ ...pin, applied: true,
+      observedRevision: report.deployment.commitSha, proof: { measured: true } });
+    expect(JSON.stringify(result.artifact)).not.toContain("ignoredSensitiveData");
+    expect(new URL(result.requested[0]).searchParams.has("errorBudgetException")).toBe(false);
+  });
+
+  it("continues to block historical tool failures without the owner's release pin", () => {
+    expect(smoke(ownerReport()).code).toBe(1);
+  });
+
+  it.each(["deployment_environment", "maintenance_database_role", "openai_us_egress_gateway"])("requires %s even when the remaining report has enough passing gates", (id) => {
+    const report = ownerReport();
+    report.gates = report.gates.filter((gate) => gate.id !== id);
+    report.releaseGate.summary.total--;
+    report.releaseGate.summary.passed--;
+    expect(smoke(report, false, 200, undefined, ownerPin()).code).toBe(1);
+  });
+
+  it.each(["revision", "stale", "future", "unmeasured", "changed objective", "other failure", "warning", "missing gate", "duplicate gate", "summary"])("refuses owner override for %s", (failure) => {
+    const report = ownerReport();
+    const budget = report.gates.find((gate) => gate.id === "agent_error_budget")!;
+    const details = budget.details as ReturnType<typeof budgetDetails>;
+    if (failure === "revision") report.deployment.commitSha = "c".repeat(40);
+    if (failure === "stale") report.checkedAt = new Date(Date.now() - 900_000).toISOString();
+    if (failure === "future") report.checkedAt = new Date(Date.now() + 900_000).toISOString();
+    if (failure === "unmeasured") details.measured = false;
+    if (failure === "changed objective") details.objectives[1].objective = 0.8;
+    if (failure === "other failure") report.gates[0].status = "fail";
+    if (failure === "warning") report.releaseGate.warnings.push("Independent warning.");
+    if (failure === "missing gate") report.gates.shift();
+    if (failure === "duplicate gate") report.gates[0] = report.gates[1];
+    if (failure === "summary") report.releaseGate.summary.failures = 2;
+    const result = smoke(report, false, 200, undefined, ownerPin());
+    expect(result.code).toBe(1);
+    expect(result.artifact).not.toHaveProperty("ownerErrorBudgetOverride");
+  });
+
+  it("rejects expired, unbounded, malformed, or combined owner authorization", () => {
+    const key = "OMNIAGENT_RELEASE_OWNER_ERROR_BUDGET_OVERRIDE";
+    expect(readOwnerBudgetOverride({})).toBeUndefined();
+    for (const pin of [
+      { ...ownerPin(), expiresAt: new Date(Date.now() - 1000).toISOString() },
+      { ...ownerPin(), expiresAt: new Date(Date.now() + 5 * 3_600_000).toISOString() },
+      { ...ownerPin(), reason: "two\nlines" },
+      { ...ownerPin(), candidateRevision: "short" },
+      { ...ownerPin(), candidateRevision: "a".repeat(40) },
+      { ...ownerPin(), extraAuthority: true },
+    ]) expect(() => readOwnerBudgetOverride({ [key]: JSON.stringify(pin) })).toThrow();
+    expect(() => readOwnerBudgetOverride({ [key]: "invalid" })).toThrow();
+    expect(() => readOwnerBudgetOverride({ [key]: JSON.stringify(ownerPin()),
+      OMNIAGENT_RELEASE_ERROR_BUDGET_EXCEPTION: "Other exception" })).toThrow();
   });
 });

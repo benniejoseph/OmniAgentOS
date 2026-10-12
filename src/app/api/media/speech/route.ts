@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { arsenalAgents } from "@/lib/agents/arsenal";
 import { SPEECH_MODEL, hasOpenAIKey } from "@/lib/config";
+import { COMPANION_PERSONALITIES } from "@/lib/companion/personality";
+import { resolveAuthenticatedCompanionLanguageStyle } from "@/lib/companion/language-style-resolver";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { appendScopedDomainEvent } from "@/lib/events/store";
 import { parseJsonBody, jsonBodyErrorResponse } from "@/lib/http/body";
@@ -42,6 +44,7 @@ const schema = z.object({
     /^[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$/,
   ).optional(),
   threadId: z.string().uuid().optional(),
+  companionPersonality: z.enum(COMPANION_PERSONALITIES).optional(),
   runId: z.string().trim().min(1).max(240).regex(
     /^[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$/,
   ).optional(),
@@ -139,10 +142,13 @@ async function POSTHandler(request: Request) {
       { status: 503, headers: privateNoStoreHeaders },
     );
   }
+  const languageStyle = parsed.data.companionPersonality
+    ? await resolveAuthenticatedCompanionLanguageStyle(context, parsed.data.companionPersonality)
+    : undefined;
   const profile = versionedVoiceProfile(identity, {
     provider: runtimeModel.provider,
     model: runtimeModel.model,
-  });
+  }, languageStyle);
   const correlationId = `voice-speech:${randomUUID()}`;
   const executionScope = executionScopeFromSecurityContext(context, {
     correlationId,
@@ -221,6 +227,9 @@ async function POSTHandler(request: Request) {
             model: profile.model,
             profileVersion: profile.profileVersion,
             profileSha256: profile.sha256,
+            companionPersonality: profile.companionPersonality,
+            personalityVersion: profile.personalityVersion,
+            companionLanguageStyle: languageStyle,
             agentId: identity.id,
             agentDefinitionVersion: identity.definitionVersion,
             threadId: parsed.data.threadId,
@@ -246,6 +255,9 @@ async function POSTHandler(request: Request) {
             model: profile.model,
             profileVersion: profile.profileVersion,
             profileSha256: profile.sha256,
+            companionPersonality: profile.companionPersonality,
+            personalityVersion: profile.personalityVersion,
+            companionLanguageStyle: languageStyle,
             agentId: identity.id,
             agentDefinitionVersion: identity.definitionVersion,
             threadId: parsed.data.threadId,

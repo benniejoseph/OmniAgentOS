@@ -1,6 +1,10 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
+
+import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_page_scaffold.dart';
 
 typedef Json = Map<String, dynamic>;
 
@@ -550,6 +554,15 @@ class InboxView extends StatelessWidget {
           ),
         );
       }
+      if (usesMobilePresentation()) {
+        return _MobileInbox(
+          controller: controller,
+          approvals: approvals,
+          focusApprovalId: focusApprovalId,
+          focusApprovalKind: focusApprovalKind,
+          onOpenResponsibility: onOpenResponsibility,
+        );
+      }
       return RefreshIndicator(
         onRefresh: controller.refresh,
         child: CustomScrollView(
@@ -744,6 +757,387 @@ class InboxView extends StatelessWidget {
   );
 }
 
+/// The exact review stays inside the account-owned page, so a route or account
+/// change removes the private inputs and the decision controls together.
+class _MobileInbox extends StatefulWidget {
+  const _MobileInbox({
+    required this.controller,
+    required this.approvals,
+    this.focusApprovalId,
+    this.focusApprovalKind,
+    this.onOpenResponsibility,
+  });
+  final InboxController controller;
+  final List<ApprovalItem> approvals;
+  final String? focusApprovalId, focusApprovalKind;
+  final ValueChanged<String>? onOpenResponsibility;
+  @override
+  State<_MobileInbox> createState() => _MobileInboxState();
+}
+
+class _MobileInboxState extends State<_MobileInbox> {
+  ApprovalItem? _review;
+  bool _notifications = false;
+  @override
+  void didUpdateWidget(covariant _MobileInbox oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.controller, widget.controller)) _review = null;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = widget.controller, review = _review;
+    final notifications = c.notificationCenter;
+    final items = [...widget.approvals]
+      ..sort((a, b) {
+        final af = approvalMatchesFocus(
+          a,
+          widget.focusApprovalId,
+          widget.focusApprovalKind,
+        );
+        final bf = approvalMatchesFocus(
+          b,
+          widget.focusApprovalId,
+          widget.focusApprovalKind,
+        );
+        if (af != bf) return af ? -1 : 1;
+        return b.riskLevel.compareTo(a.riskLevel);
+      });
+    final current =
+        review != null && items.any((item) => identical(item, review));
+    return PopScope(
+      canPop: review == null,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && review != null) setState(() => _review = null);
+      },
+      child: Column(
+        children: [
+          MobilePageHeader(
+            title: review == null ? 'Inbox' : 'Review action',
+            subtitle: review == null
+                ? 'Decisions first. Updates when you need them.'
+                : null,
+            leading: review == null
+                ? null
+                : IconButton(
+                    tooltip: 'Back to Inbox',
+                    onPressed: () => setState(() => _review = null),
+                    icon: const Icon(Icons.arrow_back_rounded),
+                  ),
+            actions: [
+              IconButton(
+                tooltip: 'Refresh inbox',
+                onPressed: c.loading ? null : c.refresh,
+                icon: const Icon(Icons.refresh_rounded),
+              ),
+            ],
+          ),
+          if (review == null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+              child: MobileSegmentBar<bool>(
+                items: [
+                  (
+                    value: false,
+                    label: c.queue == null
+                        ? 'Decisions'
+                        : 'Decisions · ${items.length}',
+                    icon: Icons.rule_rounded,
+                  ),
+                  (
+                    value: true,
+                    label: notifications == null
+                        ? 'Updates'
+                        : 'Updates · ${notifications.unreadCount}',
+                    icon: Icons.notifications_none_rounded,
+                  ),
+                ],
+                value: _notifications,
+                onChanged: (value) => setState(() => _notifications = value),
+              ),
+            ),
+          Expanded(
+            child: RefreshIndicator(
+              onRefresh: c.refresh,
+              child: CustomScrollView(
+                key: ValueKey(('mobile-inbox', review?.id, _notifications)),
+                physics: const AlwaysScrollableScrollPhysics(),
+                slivers: [
+                  if (c.hasLoadError || c.actionError != null)
+                    SliverToBoxAdapter(
+                      child: _InboxNotice(
+                        stale: c.hasData && c.hasLoadError,
+                        onRetry: c.refresh,
+                      ),
+                    ),
+                  if (review != null)
+                    SliverPadding(
+                      padding: const EdgeInsets.fromLTRB(20, 0, 20, 32),
+                      sliver: SliverToBoxAdapter(
+                        child: !current
+                            ? Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Text(
+                                    'This request changed or is no longer in the current queue. Return to Inbox to review the latest request.',
+                                  ),
+                                  TextButton(
+                                    onPressed: () =>
+                                        setState(() => _review = null),
+                                    child: const Text('Back to Inbox'),
+                                  ),
+                                ],
+                              )
+                            : Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    review.title,
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .titleLarge,
+                                  ),
+                                  const SizedBox(height: 12),
+                                  Text(
+                                    'Risk level ${review.riskLevel} · ${review.kind.replaceAll('_', ' ')}',
+                                  ),
+                                  if (review.reason?.isNotEmpty ?? false) ...[
+                                    const SizedBox(height: 12),
+                                    Text(review.reason!),
+                                  ],
+                                  const SizedBox(height: 20),
+                                  Text(
+                                    'Exact action details',
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .titleMedium,
+                                  ),
+                                  const SizedBox(height: 8),
+                                  const Text(
+                                    'Approve only the request shown below. Its original values are preserved for your review.',
+                                  ),
+                                  const SizedBox(height: 12),
+                                  MobileSurface(
+                                    child: SizedBox(
+                                      width: double.infinity,
+                                      child: SelectableText(
+                                        const JsonEncoder.withIndent('  ')
+                                            .convert(review.input),
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 24),
+                                  FilledButton.icon(
+                                    style: FilledButton.styleFrom(
+                                      minimumSize: const Size(
+                                        double.infinity,
+                                        48,
+                                      ),
+                                    ),
+                                    onPressed: c.deciding.contains(review.id)
+                                        ? null
+                                        : () async {
+                                            if (c.queue?.items.any(
+                                                  (item) =>
+                                                      identical(item, review),
+                                                ) !=
+                                                true)
+                                              return;
+                                            await c.decide(review, true);
+                                            if (mounted)
+                                              setState(() => _review = null);
+                                          },
+                                    icon: const Icon(Icons.check_rounded),
+                                    label: const Text('Approve this action'),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  OutlinedButton(
+                                    style: OutlinedButton.styleFrom(
+                                      minimumSize: const Size(
+                                        double.infinity,
+                                        48,
+                                      ),
+                                    ),
+                                    onPressed: c.deciding.contains(review.id)
+                                        ? null
+                                        : () async {
+                                            if (c.queue?.items.any(
+                                                  (item) =>
+                                                      identical(item, review),
+                                                ) !=
+                                                true)
+                                              return;
+                                            await c.decide(review, false);
+                                            if (mounted)
+                                              setState(() => _review = null);
+                                          },
+                                    child: const Text('Reject this action'),
+                                  ),
+                                ],
+                              ),
+                      ),
+                    )
+                  else if (!_notifications) ...[
+                    if (widget.focusApprovalId != null &&
+                        !items.any(
+                          (item) => approvalMatchesFocus(
+                            item,
+                            widget.focusApprovalId,
+                            widget.focusApprovalKind,
+                          ),
+                        ))
+                      const SliverToBoxAdapter(
+                        child: Padding(
+                          padding: EdgeInsets.all(20),
+                          child: Text(
+                            'The requested action is no longer in this queue. Refresh to check its availability.',
+                          ),
+                        ),
+                      ),
+                    if (items.isEmpty && c.queue == null)
+                      const SliverToBoxAdapter(
+                        child: Padding(
+                          padding: EdgeInsets.all(24),
+                          child: Text(
+                            'The decision queue is unavailable. Refresh to check what needs your approval.',
+                          ),
+                        ),
+                      ),
+                    if (items.isEmpty && c.queue != null)
+                      const SliverFillRemaining(
+                        hasScrollBody: false,
+                        child: Center(
+                          child: Padding(
+                            padding: EdgeInsets.all(32),
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.task_alt_rounded, size: 40),
+                                SizedBox(height: 12),
+                                Text('No decisions waiting'),
+                                SizedBox(height: 6),
+                                Text(
+                                  'Requests that need your approval will appear here.',
+                                  textAlign: TextAlign.center,
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    SliverList.builder(
+                      itemCount: items.length,
+                      itemBuilder: (_, index) {
+                        final item = items[index];
+                        return Padding(
+                          padding: const EdgeInsets.fromLTRB(20, 0, 20, 10),
+                          child: MobileSurface(
+                            padding: EdgeInsets.zero,
+                            child: MobileActionTile(
+                              icon: item.riskLevel >= 3
+                                  ? Icons.priority_high_rounded
+                                  : Icons.rule_rounded,
+                              title: item.title,
+                              subtitle:
+                                  '${item.reason ?? 'Review the exact action before deciding'}\nRisk level ${item.riskLevel}',
+                              onTap: () => setState(() => _review = item),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ] else ...[
+                    if (notifications?.quietHoursActive == true)
+                      const SliverToBoxAdapter(
+                        child: Padding(
+                          padding: EdgeInsets.symmetric(
+                            horizontal: 20,
+                            vertical: 8,
+                          ),
+                          child: Text('Quiet hours are active.'),
+                        ),
+                      ),
+                    if ((notifications?.unreadCount ?? 0) > 0)
+                      SliverToBoxAdapter(
+                        child: Align(
+                          alignment: Alignment.centerRight,
+                          child: TextButton(
+                            onPressed: c.readAllNotifications,
+                            child: const Text('Mark all read'),
+                          ),
+                        ),
+                      ),
+                    if (notifications == null)
+                      const SliverToBoxAdapter(
+                        child: Padding(
+                          padding: EdgeInsets.all(24),
+                          child: Text(
+                            'Updates could not be loaded. Refresh to try again.',
+                          ),
+                        ),
+                      ),
+                    if (notifications != null &&
+                        notifications.notifications.isEmpty)
+                      const SliverToBoxAdapter(
+                        child: Padding(
+                          padding: EdgeInsets.all(24),
+                          child: Text('No updates in this view.'),
+                        ),
+                      ),
+                    SliverList.builder(
+                      itemCount: notifications?.notifications.length ?? 0,
+                      itemBuilder: (_, index) {
+                        final item = notifications!.notifications[index];
+                        return NotificationCard(
+                          notification: item,
+                          busy: c.updatingNotifications.contains(item.id),
+                          onOpenResponsibility: widget.onOpenResponsibility,
+                          onAction: (action, {snoozeMinutes}) =>
+                              c.updateNotification(
+                                item,
+                                action,
+                                snoozeMinutes: snoozeMinutes,
+                              ),
+                        );
+                      },
+                    ),
+                    if (c.dispositionHistory?.items.isNotEmpty == true)
+                      SliverToBoxAdapter(
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
+                          child: ExpansionTile(
+                            title: const Text('Why updates were delivered'),
+                            subtitle: const Text(
+                              'Delivery decisions and exact evidence',
+                            ),
+                            children: [
+                              for (final item in c.dispositionHistory!.items)
+                                ListTile(
+                                  title: Text(_dispositionLabel(item.outcome)),
+                                  subtitle: Text(
+                                    _dispositionLabel(item.reason),
+                                  ),
+                                  trailing: const Icon(
+                                    Icons.chevron_right_rounded,
+                                  ),
+                                  onTap: () =>
+                                      _showDispositionEvidence(context, item),
+                                ),
+                            ],
+                          ),
+                        ),
+                      ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _InboxNotice extends StatelessWidget {
   const _InboxNotice({required this.stale, required this.onRetry});
   final bool stale;
@@ -827,7 +1221,9 @@ class NotificationCard extends StatelessWidget {
     final due = MaterialLocalizations.of(context)
         .formatMediumDate(notification.dueAt.toLocal());
     return AnimatedOpacity(
-      duration: const Duration(milliseconds: 180),
+      duration: MediaQuery.disableAnimationsOf(context)
+          ? Duration.zero
+          : const Duration(milliseconds: 180),
       opacity: busy ? .62 : 1,
       child: Container(
         margin: const EdgeInsets.fromLTRB(16, 0, 16, 10),
@@ -960,7 +1356,9 @@ class ApprovalCard extends StatelessWidget {
         ? Theme.of(context).colorScheme.error
         : Theme.of(context).colorScheme.tertiary;
     return AnimatedOpacity(
-      duration: const Duration(milliseconds: 180),
+      duration: MediaQuery.disableAnimationsOf(context)
+          ? Duration.zero
+          : const Duration(milliseconds: 180),
       opacity: busy ? .62 : 1,
       child: Container(
         margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
@@ -1095,7 +1493,9 @@ class NotificationDispositionCard extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 7),
-            Text('${_dispositionLabel(item.sourceKind)} · ${item.reason}'),
+            Text(
+              '${_dispositionLabel(item.sourceKind)} · ${_dispositionLabel(item.reason)}',
+            ),
             const Spacer(),
             Text(
               'Exact evidence · tap to inspect',
@@ -1255,8 +1655,8 @@ const _notificationSourceKinds = {
   'responsibility_change',
   'tool_approval',
   'meeting',
-  'customer_risk',
   'agent_run',
+  'research_workflow',
   'today_reminder',
   'delegated_task',
   'scheduled_routine',
@@ -1269,6 +1669,7 @@ const _notificationReasons = {
   'approval_required',
   'security_alert',
   'actionable_failure',
+  'research_ready',
   'meeting_imminent',
   'critical_delivery',
   'quiet_hours',

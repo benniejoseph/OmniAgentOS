@@ -16,6 +16,8 @@ import {
   appendRunEvent,
   cancelAgentRun,
   getAgentRun,
+  getAgentRunResearchProgress,
+  getAgentRunWorkflowHandoff,
   getRunContextUseReceipt,
   getRunStats,
   listAgentRuns,
@@ -99,8 +101,26 @@ export async function showRunServiceWithRecord(
     getAgentIdentityCardForRun(value.runId, { tenantId: caller.context.tenantId }),
   ]);
   await assertRunReadable(run, caller);
+  const supportsResearchProgress = caller.context.source !== "mobile" ||
+    (caller.context.native?.clientContractVersion ?? 0) >= 49;
+  const researchProgress = run?.mode === "research" && supportsResearchProgress
+    ? await getAgentRunResearchProgress(run.id, {
+        tenantId: caller.context.tenantId,
+        actorId: run.ownerActorId,
+      })
+    : undefined;
+  const supportsWorkflowHandoff = caller.context.source !== "mobile" ||
+    (caller.context.native?.clientContractVersion ?? 0) >= 52;
+  const workflowHandoff = run?.status === "completed" && supportsWorkflowHandoff
+    ? await getAgentRunWorkflowHandoff(run.id, { tenantId: caller.context.tenantId, actorId: run.ownerActorId })
+    : undefined;
   const result = completeAppServiceCall(authorized, {
-    run: run ? publicAgentRun(run) : null,
+    run: run ? {
+      ...publicAgentRun(run), ...(researchProgress ? { researchProgress } : {}),
+      ...(workflowHandoff ? { delegatedWork: {
+        workflowId: workflowHandoff.workflowId, threadId: workflowHandoff.threadId, status: "accepted" as const,
+      } } : {}),
+    } : null,
     contextReceipt: run ? contextReceipt : null,
     agentIdentity: run ? agentIdentity : null,
   }, { resourceCount: run ? 1 : 0 });

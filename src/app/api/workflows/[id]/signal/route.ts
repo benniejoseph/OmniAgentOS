@@ -11,6 +11,8 @@ import {
   WorkflowSignalConflictError,
 } from "@/lib/workflows/runner";
 import { publicWorkflowRunDetail } from "@/lib/workflows/public";
+import { getWorkflowRunDetail } from "@/lib/workflows/store";
+import { RESEARCH_WORKFLOW_METADATA_KEY, researchOptionsSchema } from "@/lib/research/contracts";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -47,7 +49,20 @@ async function POSTHandler(
       resourceType: "workflow",
       resourceId: id,
       metadata: { signal: parsed.data.signal },
+      nativeMutationCapability: ["pause", "resume", "cancel"].includes(parsed.data.signal)
+        ? "research.control" : undefined,
     });
+    const owned = await getWorkflowRunDetail(id, { tenantId: securityContext.tenantId });
+    const research = researchOptionsSchema.safeParse(owned?.run.input.metadata?.[RESEARCH_WORKFLOW_METADATA_KEY]);
+    if (owned?.run.input.metadata?.[RESEARCH_WORKFLOW_METADATA_KEY] !== undefined &&
+      owned.run.input.metadata.actorId !== securityContext.actorId) {
+      return Response.json({ error: "Research task not found." }, { status: 404 });
+    }
+    if (securityContext.source === "mobile") {
+      if (!owned || owned.run.input.mode !== "research" || !research.success || research.data.depth !== "deep") {
+        return Response.json({ error: "Research task not found." }, { status: 404 });
+      }
+    }
     const detail = await signalWorkflowRun(id, parsed.data.signal, {
       tenantId: securityContext.tenantId,
       actorId: securityContext.actorId,

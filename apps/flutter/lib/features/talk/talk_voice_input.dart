@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import '../ambient_voice/realtime_voice_controller.dart';
+import '../companion/companion_personality.dart';
 
 final _voiceUuidPattern = RegExp(
   r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
@@ -25,6 +26,9 @@ class TalkVoiceInput {
     required this.reviewRequired,
     this.confidenceMean,
     this.confidenceMinimum,
+    this.turnId,
+    this.commandContext,
+    this.companionPersonality,
   });
 
   final String sessionId;
@@ -36,6 +40,38 @@ class TalkVoiceInput {
 
   /// Whether the transcript needed its review checkbox, not Send alone.
   final bool reviewRequired;
+  final String? turnId;
+  final Map<String, dynamic>? commandContext;
+  // Travels beside voice provenance on /api/agent, never inside its strict
+  // declaration or the server-pinned command context.
+  final CompanionPersonality? companionPersonality;
+  bool get continuous => turnId != null;
+
+  /// A provider function call carries continuous-consent provenance, never a
+  /// fabricated transcript-review attestation. The server rechecks its pin.
+  factory TalkVoiceInput.conversation({
+    required String sessionId,
+    required String conversationId,
+    required String turnId,
+    required Map<String, dynamic> commandContext,
+    CompanionPersonality? companionPersonality,
+  }) {
+    if (!_voiceUuidPattern.hasMatch(sessionId) ||
+        !_voiceUuidPattern.hasMatch(conversationId) ||
+        !RegExp(r'^[A-Za-z0-9_-]{1,160}$').hasMatch(turnId)) {
+      throw const FormatException('This voice request could not be verified.');
+    }
+    return TalkVoiceInput._(
+      sessionId: sessionId,
+      conversationId: conversationId,
+      turnId: turnId,
+      commandContext: Map.unmodifiable(commandContext),
+      companionPersonality: companionPersonality,
+      confidenceBand: AmbientVoiceConfidenceBand.unavailable,
+      confidenceSampleCount: 0,
+      reviewRequired: false,
+    );
+  }
 
   /// Returns null unless the draft names the minted session and conversation
   /// and its transcript review was attested.
@@ -60,19 +96,28 @@ class TalkVoiceInput {
     );
   }
 
-  Map<String, Object?> toRequestJson() => {
-    'schemaVersion': 1,
-    'source': 'realtime_voice',
-    'sessionId': sessionId,
-    'conversationId': conversationId,
-    'provider': 'openai',
-    'confidenceBand': confidenceBand.name,
-    'confidenceMean': ?confidenceMean,
-    'confidenceMinimum': ?confidenceMinimum,
-    'confidenceSampleCount': confidenceSampleCount,
-    'reviewMethod': reviewRequired ? 'explicit_checkbox' : 'send_button',
-    'reviewAttested': true,
-  };
+  Map<String, Object?> toRequestJson() => continuous
+      ? {
+          'schemaVersion': 2,
+          'source': 'realtime_voice',
+          'sessionId': sessionId,
+          'conversationId': conversationId,
+          'provider': 'openai',
+          'turnId': turnId,
+        }
+      : {
+          'schemaVersion': 1,
+          'source': 'realtime_voice',
+          'sessionId': sessionId,
+          'conversationId': conversationId,
+          'provider': 'openai',
+          'confidenceBand': confidenceBand.name,
+          'confidenceMean': ?confidenceMean,
+          'confidenceMinimum': ?confidenceMinimum,
+          'confidenceSampleCount': confidenceSampleCount,
+          'reviewMethod': reviewRequired ? 'explicit_checkbox' : 'send_button',
+          'reviewAttested': true,
+        };
 }
 
 double? _unitInterval(double? value) =>

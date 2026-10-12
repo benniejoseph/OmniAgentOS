@@ -8,12 +8,16 @@ import 'package:go_router/go_router.dart';
 import '../../core/network/api_client.dart';
 import '../../core/network/native_workspace_access.dart';
 import '../../core/platform/desktop_host_bridge.dart';
+import '../../core/platform/android_device_bridge.dart';
 import '../../core/storage/secure_session_store.dart';
 import '../../core/sync/reconnect_coordinator.dart';
 import '../../features/ambient_voice/ambient_voice_consent.dart';
 import '../../features/ambient_voice/realtime_voice_controller.dart';
+import '../../features/ambient_voice/voice_conversation_controller.dart';
+import '../../features/ambient_voice/android_voice_session.dart';
 import '../../features/activity/activity_providers.dart';
 import '../../features/activity/activity_view.dart';
+import '../../features/history/history_workspace.dart';
 import '../../features/agents/native_agents_workspace.dart';
 import '../../features/automation/native_automation_workspace.dart';
 import '../../features/auth/application/biometric_session_lock_controller.dart';
@@ -22,11 +26,15 @@ import '../../features/auth/presentation/login_screen.dart';
 import '../../features/auth/presentation/session_bootstrap_screen.dart';
 import '../../features/capture/capture.dart';
 import '../../features/capture/capture_providers.dart';
+import '../../features/capture/library_view.dart';
+import '../../features/csm/csm_workspace.dart';
+import '../../features/listen/capture_listen_workspace.dart';
 import '../../features/computer_use/local_computer.dart';
+import '../../features/computer_use/android_phone.dart';
 import '../../features/companion/companion_entry.dart';
 import '../../features/companion/companion_models.dart';
+import '../../features/companion/companion_personality.dart';
 import '../../features/companion/companion_providers.dart';
-import '../../features/customers/accounts_workspace.dart';
 import '../../features/inbox/macos_inbox_view.dart';
 import '../../features/inbox/inbox.dart';
 import '../../features/inbox/inbox_providers.dart';
@@ -37,12 +45,10 @@ import '../../features/markets/markets_workspace.dart';
 import '../../features/payments/macos_payments_view.dart';
 import '../../features/payments/payments_view.dart';
 import '../../features/meetings/meetings_page.dart';
-import '../../features/monitoring/monitoring_workspace_view.dart';
 import '../../features/projects/macos_project_detail_view.dart';
 import '../../features/projects/projects_providers.dart';
 import '../../features/projects/macos_projects_view.dart';
 import '../../features/projects/projects_view.dart';
-import '../../features/quality/quality_workspace_view.dart';
 import '../../features/results/macos_result_detail_view.dart';
 import '../../features/results/results_providers.dart';
 import '../../features/results/macos_results_view.dart';
@@ -51,7 +57,7 @@ import '../../features/responsibilities/responsibility_providers.dart';
 import '../../features/responsibilities/responsibility_workspace.dart';
 import '../../features/settings/admin_console.dart';
 import '../../features/settings/macos_admin_workspace_view.dart';
-import '../../features/settings/model_settings_view.dart';
+import '../../features/settings/settings_workspace_page.dart';
 import '../../features/security/device_security_screen.dart';
 import '../../features/security/security_workspace_view.dart';
 import '../../features/search/content_search_targets.dart';
@@ -64,6 +70,7 @@ import '../../features/today/today_providers.dart';
 import '../navigation/adaptive_shell.dart';
 import '../navigation/app_destination.dart';
 import '../navigation/destination_placeholder.dart';
+import '../navigation/mobile_library_page.dart';
 import '../platform/macos_presentation.dart';
 
 Widget _nativeAdminWorkspace(String moduleId) => NativePrivateWorkspace(
@@ -74,9 +81,7 @@ Widget _nativeAdminWorkspace(String moduleId) => NativePrivateWorkspace(
       : AdminWorkspaceView(moduleId: moduleId),
 );
 
-String appHomePath() => !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS
-    ? '/talk'
-    : '/today';
+String appHomePath() => '/today';
 
 @visibleForTesting
 bool nativeRouteQueryDecodes(Uri uri) {
@@ -169,9 +174,14 @@ class _EntryIntent {
 class ProviderBoundActivityRoute extends ConsumerWidget {
   const ProviderBoundActivityRoute({super.key});
   @override
-  Widget build(BuildContext context, WidgetRef ref) => ActivityView(
-    controller: ref.watch(activityControllerProvider.select((value) => value)),
-    onOpen: (location) => context.push(location),
+  Widget build(BuildContext context, WidgetRef ref) => HistoryWorkspace(
+    timeline: true,
+    child: ActivityView(
+      controller: ref.watch(
+        activityControllerProvider.select((value) => value),
+      ),
+      onOpen: (location) => context.push(location),
+    ),
   );
 }
 
@@ -200,26 +210,6 @@ class ProviderBoundResponsibilityRoute extends ConsumerWidget {
       focusId: focusId,
       onOpenResponsibility: (id) => _openResponsibility(context, id),
       onNewDraft: () => context.go('/responsibilities'),
-    );
-  }
-}
-
-class ProviderBoundAccountsRoute extends StatelessWidget {
-  const ProviderBoundAccountsRoute({super.key, this.id});
-  final String? id;
-
-  @override
-  Widget build(BuildContext context) {
-    if (id != null &&
-        !RegExp(r'^customer-account:[a-f0-9]{64}$').hasMatch(id!)) {
-      return const Scaffold(
-        body: Center(child: Text('This customer account link is invalid.')),
-      );
-    }
-    return NativeAccountsView(
-      accountId: id,
-      onOpen: (account) =>
-          context.push('/accounts/${Uri.encodeComponent(account.id)}'),
     );
   }
 }
@@ -318,15 +308,18 @@ class ProviderBoundResultsRoute extends ConsumerWidget {
       context.push('/results/${Uri.encodeComponent(key)}$query');
     }
 
-    return usesMacosPresentation()
-        ? MacosResultsView(
-            controller: controller,
-            onOpen: (result) => open(result.key, result.approvalKind),
-          )
-        : ResultsView(
-            controller: controller,
-            onOpen: (result) => open(result.key, result.approvalKind),
-          );
+    return HistoryWorkspace(
+      timeline: false,
+      child: usesMacosPresentation()
+          ? MacosResultsView(
+              controller: controller,
+              onOpen: (result) => open(result.key, result.approvalKind),
+            )
+          : ResultsView(
+              controller: controller,
+              onOpen: (result) => open(result.key, result.approvalKind),
+            ),
+    );
   }
 }
 
@@ -467,12 +460,35 @@ class ProviderBoundTalkRoute extends ConsumerWidget {
     localComputer: ref.watch(
       localComputerCoordinatorProvider.select((coordinator) => coordinator),
     ),
+    androidPhone: appAndroidDeviceBridge.supported
+        ? ref.watch(androidPhoneProvider.select((value) => value))
+        : null,
     quickEntry: quickEntry,
     ambientVoice: ambientVoice,
-    ambientRealtimeFactory: ambientVoice
+    backgroundVoiceController: ambientVoice && appAndroidDeviceBridge.supported
+        ? ref.watch(androidVoiceSessionProvider.select((value) => value))
+        : null,
+    backgroundVoiceDelegate: ambientVoice && appAndroidDeviceBridge.supported
+        ? ref.watch(androidVoiceDelegateProvider)
+        : null,
+    voiceConversationFactory: ambientVoice && appDesktopHostBridge.supported
+        ? () => VoiceConversationController(
+            api: ref.read(apiClientProvider),
+            readCompanionPersonality: ref
+                .read(companionPersonalityProvider.notifier)
+                .readSelection,
+          )
+        : null,
+    ambientRealtimeFactory:
+        ambientVoice &&
+            !appDesktopHostBridge.supported &&
+            !appAndroidDeviceBridge.supported
         ? () => AmbientRealtimeVoiceController(
             api: ref.read(apiClientProvider),
             sessionStore: ref.read(secureSessionStoreProvider),
+            readCompanionPersonality: ref
+                .read(companionPersonalityProvider.notifier)
+                .readSelection,
             onConversationBound: (id) =>
                 ref.read(talkControllerProvider).adoptConversationThreadId(id),
           )
@@ -495,6 +511,11 @@ class ProviderBoundTalkRoute extends ConsumerWidget {
     companionController: ref.watch(
       companionControllerProvider.select((value) => value),
     ),
+    draftHandoff: quickEntry || ambientVoice
+        ? null
+        : ref.watch(csmDraftProvider),
+    onDraftHandoffHandled: (id) =>
+        ref.read(csmDraftProvider.notifier).handled(id),
     requestedThreadId: companionThreadId(requestedThreadId),
     onThreadAdopted: (id) {
       // Same mounted Conversation, retained composer; only adopt confirmed ID.
@@ -505,6 +526,12 @@ class ProviderBoundTalkRoute extends ConsumerWidget {
   static AmbientVoiceConsent? _ambientConsent(WidgetRef ref) {
     final owner = ref.watch(sessionOwnerKeyProvider);
     if (owner == null) return null;
+    if (appDesktopHostBridge.supported) {
+      return MacOsAmbientVoiceConsent(
+        tenantId: owner.tenantId,
+        actorId: owner.actorId,
+      );
+    }
     return SecureAmbientVoiceConsent(
       ref.read(secureSessionStoreProvider),
       tenantId: owner.tenantId,
@@ -538,6 +565,7 @@ class _WorkspaceLocked implements ValueListenable<bool> {
 
 final appRouterProvider = Provider<GoRouter>((ref) {
   final session = ref.watch(sessionControllerProvider);
+  final showSignIn = ref.read(sessionControllerProvider.notifier).showSignIn;
   final initialLocation = ref.watch(appInitialLocationProvider);
   final explicitEntry = ref.watch(appExplicitInitialLocationProvider);
   final entryLocation = explicitEntry ? initialLocation : '/companion-entry';
@@ -567,6 +595,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       final atLogin = state.matchedLocation == '/login';
       final atBootstrap = state.matchedLocation == '/bootstrap';
       if (session.isLoading || session.hasError) {
+        if (showSignIn) return atLogin ? null : '/login';
         if (!entryIntent.hadSession) entryIntent.remember(state.uri.toString());
         return atBootstrap ? null : '/bootstrap';
       }
@@ -598,7 +627,8 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(
         path: '/administration',
-        redirect: (_, _) => usesMacosPresentation() ? '/monitoring' : null,
+        redirect: (_, _) =>
+            usesMacosPresentation() ? '/settings?section=monitoring' : null,
         builder: (_, _) => NativePrivateWorkspace(
           requireManager: true,
           ownNavigator: true,
@@ -637,9 +667,8 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         builder: (context, _) => ProviderBoundTalkRoute(
           quickEntry: true,
           ambientVoice: true,
-          onQuickEntryReady: () {
-            unawaited(appDesktopHostBridge.showAmbientVoicePresentation());
-          },
+          // The native voice surface sizes its window after layout using this
+          // owner's device appearance and effective text size.
           onExitQuickEntry: () {
             final router = GoRouter.of(context);
             if (router.canPop()) {
@@ -655,11 +684,6 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(path: '/missions', redirect: (_, _) => '/projects'),
       GoRoute(path: '/missions/:id', redirect: (_, _) => '/projects'),
-      GoRoute(
-        path: '/customers/:id',
-        builder: (_, state) =>
-            ProviderBoundAccountsRoute(id: state.pathParameters['id']!),
-      ),
       StatefulShellRoute.indexedStack(
         builder: (_, _, shell) => AdaptiveShell(navigationShell: shell),
         branches: [
@@ -668,14 +692,18 @@ final appRouterProvider = Provider<GoRouter>((ref) {
               routes: [
                 GoRoute(
                   path: destination.path,
-                  redirect: (_, _) =>
-                      legacyAutomationRedirect(destination.path),
+                  redirect: (_, _) => switch (destination.path) {
+                    '/quality' => '/settings?section=quality',
+                    '/monitoring' => '/settings?section=monitoring',
+                    _ => legacyAutomationRedirect(destination.path),
+                  },
                   builder: (context, state) =>
                       !nativeRouteQueryDecodes(state.uri)
                       ? const Center(
                           child: Text('This workspace link is invalid.'),
                         )
                       : switch (destination.path) {
+                          '/library' => const MobileLibraryPage(),
                           '/search' => const NativeContentSearchPage(),
                           '/today' =>
                             usesMacosPresentation()
@@ -715,7 +743,14 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                                             'This Library link is invalid.',
                                           ),
                                         )
-                                : const ProviderBoundCaptureRoute(),
+                                : state.uri.queryParameters['tab'] == 'library'
+                                ? const NativeLibraryPage()
+                                : CaptureListenWorkspace(
+                                    listening:
+                                        state.uri.queryParameters['section'] ==
+                                        'listen',
+                                    capture: const ProviderBoundCaptureRoute(),
+                                  ),
                           '/projects' => const ProviderBoundProjectsRoute(),
                           '/meetings' => const ProviderBoundMeetingsRoute(),
                           '/results' => const ProviderBoundResultsRoute(),
@@ -772,7 +807,6 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                                     initialMemoryId:
                                         state.uri.queryParameters['memory'],
                                   ),
-                          '/accounts' => const ProviderBoundAccountsRoute(),
                           '/markets' => const NativeMarketsView(),
                           '/payments' => NativePrivateWorkspace(
                             ownNavigator: true,
@@ -795,28 +829,13 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                             'integrations',
                           ),
                           '/tools' => _nativeAdminWorkspace('tools'),
-                          '/quality' => const NativeQualityPage(),
-                          '/monitoring' => const NativeMonitoringPage(),
                           '/security' => const NativeSecurityPage(),
-                          '/settings' => NativePrivateWorkspace(
-                            ownNavigator: true,
-                            builder: (access) => ModelSettingsView(
-                              api: access.api,
-                              authority: access.authority,
-                            ),
+                          '/settings' => SettingsWorkspacePage(
+                            section: state.uri.queryParameters['section'],
                           ),
                           _ => DestinationPlaceholder(destination: destination),
                         },
-                  routes: destination.path == '/accounts'
-                      ? [
-                          GoRoute(
-                            path: ':id',
-                            builder: (_, state) => ProviderBoundAccountsRoute(
-                              id: state.pathParameters['id']!,
-                            ),
-                          ),
-                        ]
-                      : destination.path == '/projects'
+                  routes: destination.path == '/projects'
                       ? [
                           GoRoute(
                             path: ':id',

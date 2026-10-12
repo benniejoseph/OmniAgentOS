@@ -6,6 +6,7 @@ import '../../../core/network/api_client.dart';
 import '../../../core/network/api_exception.dart';
 import '../../../core/storage/secure_session_store.dart';
 import '../../../generated/native_contract.g.dart';
+import '../../listen/listen_bridge.dart';
 import '../domain/app_session.dart';
 
 class SessionRepository {
@@ -30,11 +31,14 @@ class SessionRepository {
         return await _bindOfflineProjectionOwner(
           AppSession.fromJson(await _api.getJson(NativePaths.bootstrapGet)),
         );
+      } on NativeSessionExpiredException {
+        return null;
       } on ApiException catch (error) {
         if (error.statusCode != 401) rethrow;
       }
     }
     // The 401 above may have cleared a pair the service rejected.
+    if (!await _store.hasStoredCredentials()) return null;
     if (await _store.readRefreshToken() == null) {
       await _store.clear();
       return null;
@@ -53,6 +57,8 @@ class SessionRepository {
       return await _bindOfflineProjectionOwner(
         AppSession.fromJson(await _api.getJson(NativePaths.bootstrapGet)),
       );
+    } on NativeSessionExpiredException {
+      return null;
     } on ApiException catch (error) {
       if (error.statusCode != 401) rethrow;
       await _store.clear();
@@ -85,6 +91,21 @@ class SessionRepository {
 
   Future<void> signOut() async {
     try {
+      if (appListenBridge.supported) {
+        // Stop native recording/import before removing the ordinary session.
+        // These requests never expose either credential family to Flutter UI.
+        try {
+          await appListenBridge.clearOwner();
+        } catch (_) {}
+        try {
+          await _api.postJson(
+            NativePaths.listenGrant,
+            data: {'action': 'revoke', 'timeZone': 'Asia/Kolkata'},
+          );
+        } catch (_) {
+          // The grant is also bound to the session revoked by logout below.
+        }
+      }
       final registrationId = await _store.readPushRegistrationId();
       if (registrationId != null) {
         try {

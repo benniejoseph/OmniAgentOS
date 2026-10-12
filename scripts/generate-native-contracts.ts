@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
+import { CSM_AGENT_TEMPLATE } from "../src/lib/csm/template";
 import {
   NATIVE_API_CONTRACT_ID,
   NATIVE_API_CURRENT_VERSION,
@@ -16,21 +17,79 @@ import {
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const checkOnly = process.argv.includes("--check");
-// The previous contract and the one archive before it, byte for byte. When a
-// new contract ships, the oldest entry goes, and its directory with it.
+// Product retirement keeps these prior public artifacts byte-frozen. The v47
+// compatibility publication is withdrawn narrowly from its archived original.
 const frozenDocumentSha256ByVersion = Object.freeze({
+  55: Object.freeze({
+    "openapi.json": "762c522975ba34d19e5ae22b4dbf7ff1a9e91adbc1cb851b66081497a326e3fd", // gitleaks:allow -- public artifact integrity digest
+    "events.schema.json": "86aa365fcc455ed5d8ca2e1861a646d614af6080cbbd743035ed0503ad71c0e7", // gitleaks:allow -- public artifact integrity digest
+    "fixtures.json": "dfabc330a19ebfac18b78708a3e2b5c27aef09522ab2d119ced7f8b6b4a6263e", // gitleaks:allow -- public artifact integrity digest
+    "manifest.json": "9d7a762182bd7081a5ed85ab578480695b8db06089b36d3b861a89ec709d8e72", // gitleaks:allow -- public artifact integrity digest
+  }),
+  48: Object.freeze({
+    "openapi.json": "91c7557d6a19660f21f65a5a7b08c66616fad5f7734f7b3729c9359984ddf803", // gitleaks:allow -- public artifact integrity digest
+    "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
+    "fixtures.json": "9cff54d500e04fc240106996c833e3fec530aacf80c36882bcfb61f890b8ed04", // gitleaks:allow -- public artifact integrity digest
+    "manifest.json": "9a6a337f080c042a6155e578984af4dcdb4650086b3d1163595c968207e29c0f", // gitleaks:allow -- public artifact integrity digest
+  }),
+  54: Object.freeze({
+    "openapi.json": "aa67baafd9c3b5be5da61b06128be97a7e7873bb474c32fae458a23427e2d482", // gitleaks:allow -- public artifact integrity digest
+    "events.schema.json": "86aa365fcc455ed5d8ca2e1861a646d614af6080cbbd743035ed0503ad71c0e7", // gitleaks:allow -- public artifact integrity digest
+    "fixtures.json": "7410245f163715c941c042a119aedaf3a40e25d144f54d93fcb9827478fe8b54", // gitleaks:allow -- public artifact integrity digest
+    "manifest.json": "e96b390bf576e2fddb24978039efbcec830197894c8ac0ff65459a7fd9df831f", // gitleaks:allow -- public artifact integrity digest
+  }),
+
+  53: Object.freeze({
+    "openapi.json": "441a3e1bc68ad9258245c02c5dd9bb6a6f5c4e3dc32c92822452e1d4492f2a14", // gitleaks:allow -- public artifact integrity digest
+    "events.schema.json": "86aa365fcc455ed5d8ca2e1861a646d614af6080cbbd743035ed0503ad71c0e7", // gitleaks:allow -- public artifact integrity digest
+    "fixtures.json": "645e3cc49be364fb894ab8683eb150b91d3b2a8b19ed8981bcb2932a7e44954b", // gitleaks:allow -- public artifact integrity digest
+    "manifest.json": "c241a4454c22b97103122248241587cdc76cdea237fe5155e6eb9614bb122b86", // gitleaks:allow -- public artifact integrity digest
+  }),
+
+  52: Object.freeze({
+    "openapi.json": "dd524fba01e935a8837cef430cc973a590340c0c41bdcb5fece2db9fc6e6b776", // gitleaks:allow -- public artifact integrity digest
+    "events.schema.json": "86aa365fcc455ed5d8ca2e1861a646d614af6080cbbd743035ed0503ad71c0e7", // gitleaks:allow -- public artifact integrity digest
+    "fixtures.json": "4381c08e47498a5ca8eaf1c72e109e75185acd796ab236fe7925e7a54b680435", // gitleaks:allow -- public artifact integrity digest
+    "manifest.json": "20b683ce5e225e70e0d9ffe9933ababd041f35166f5f2a02537ffed489d23746", // gitleaks:allow -- public artifact integrity digest
+  }),
+
+  51: Object.freeze({
+    "openapi.json": "aed11c793c1614b62e83fd03e714b642cee20febc3ee8603641d3a351109d506", // gitleaks:allow -- public artifact integrity digest
+    "events.schema.json": "86aa365fcc455ed5d8ca2e1861a646d614af6080cbbd743035ed0503ad71c0e7", // gitleaks:allow -- public artifact integrity digest
+    "fixtures.json": "846aeac3f18d7998323292758b4b1ed0624a07dec22db270ac204373574993bf", // gitleaks:allow -- public artifact integrity digest
+    "manifest.json": "d2f4eb39bdf294ffe2b0b296ddf3d09a741b24630e53745b327f171221cab299", // gitleaks:allow -- public artifact integrity digest
+  }),
+  49: Object.freeze({
+    "openapi.json": "aa4fd99f6820a31cad8c2ecf808e560f7c9cd0de54a43caa5b161e43ba49702f", // gitleaks:allow -- public artifact integrity digest
+    "events.schema.json": "86aa365fcc455ed5d8ca2e1861a646d614af6080cbbd743035ed0503ad71c0e7", // gitleaks:allow -- public artifact integrity digest
+    "fixtures.json": "db948c3e1bac14bfe01652167a698c9d5e8e2bcb6d982a8bba76bf2c980f8e98", // gitleaks:allow -- public artifact integrity digest
+    "manifest.json": "4c3505ade9a98c40cee85816961b7d6dd83a15272b6865c657fff982a4a9793b", // gitleaks:allow -- public artifact integrity digest
+  }),
+  50: Object.freeze({
+    "openapi.json": "294f37a0461730ae7a0ccd121bb5dc81275d02d36472b452f31c81678c3496ae", // gitleaks:allow -- public artifact integrity digest
+    "events.schema.json": "86aa365fcc455ed5d8ca2e1861a646d614af6080cbbd743035ed0503ad71c0e7", // gitleaks:allow -- public artifact integrity digest
+    "fixtures.json": "288a403cda188d1a83b76a2402fce630ba5fc478ad7a67c8aa19733454362c8e", // gitleaks:allow -- public artifact integrity digest
+    "manifest.json": "3af2ea57685e42c6b543537a681877ce56e0208ffb38869c1e105370a8b99426", // gitleaks:allow -- public artifact integrity digest
+  }),
+  45: Object.freeze({
+    "openapi.json": "0550a5cd1cc7df01168164ec8e68710e90743c2145d2a6db2162127f7ab22123", // gitleaks:allow -- public artifact integrity digest
+    "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
+    "fixtures.json": "066eb546a3043a1bb16f89f8bea771f00f43b9b80cf91bf77d0eca43a7dd7d6e", // gitleaks:allow -- public artifact integrity digest
+    "manifest.json": "cd5c20e3cffeb331d0f4ce7c4288604ac3e9f1d0e327292e3ce2bfdfad40a5a9", // gitleaks:allow -- public artifact integrity digest
+  }),
   46: Object.freeze({
     "openapi.json": "338f0ffe6f4e2051a87b85d77f8aec605bb639b7c06de232b4989a69e15a1233", // gitleaks:allow -- public artifact integrity digest
     "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
     "fixtures.json": "7dbf329ac4ad5f51c78fb00012421d4c6e9832e204b4744d7eb06bbf542f79f7", // gitleaks:allow -- public artifact integrity digest
     "manifest.json": "80df210e108bcaa7f281504f154b50c7e53cdc3c13cd0b65553c486ce1f2657c", // gitleaks:allow -- public artifact integrity digest
   }),
-  47: Object.freeze({
-    "openapi.json": "cc783eff3bf60b6a198607c4fce70c8d87b12bbbccec5b1909106e67084f6b24", // gitleaks:allow -- public artifact integrity digest
-    "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
-    "fixtures.json": "738bc72f1a1ff8d175549b00903437bb265f28adce74d92500970a65889f9eba", // gitleaks:allow -- public artifact integrity digest
-    "manifest.json": "7213892e4b6e4143e8f87dec58fffac88fef3a1cc7b610ea24dd99687be30dae", // gitleaks:allow -- public artifact integrity digest
-  }),
+});
+
+const originalV47DocumentSha256 = Object.freeze({
+  "openapi.json": "cc783eff3bf60b6a198607c4fce70c8d87b12bbbccec5b1909106e67084f6b24", // gitleaks:allow -- public artifact integrity digest
+  "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
+  "fixtures.json": "738bc72f1a1ff8d175549b00903437bb265f28adce74d92500970a65889f9eba", // gitleaks:allow -- public artifact integrity digest
+  "manifest.json": "7213892e4b6e4143e8f87dec58fffac88fef3a1cc7b610ea24dd99687be30dae", // gitleaks:allow -- public artifact integrity digest
 });
 
 const fixtures = Object.freeze({
@@ -140,9 +199,10 @@ async function generate() {
       documents,
     );
   }
+  await retainRetiredV47Compatibility(expected);
   for (const version of NATIVE_API_SUPPORTED_VERSIONS) {
     const directory = path.join(repositoryRoot, "public", "native-contracts", `v${version}`);
-    if (version === NATIVE_API_PREVIOUS_VERSION) {
+    if (version !== NATIVE_API_CURRENT_VERSION) {
       continue;
     }
     const operations = nativeOperationsForVersion(version);
@@ -175,6 +235,10 @@ async function generate() {
     expected.set(path.join(directory, "manifest.json"), stableJson(manifest));
   }
   expected.set(
+    path.join(repositoryRoot, "apps", "flutter", "lib", "features", "csm", "csm_agent_template.dart"),
+    `// GENERATED FILE. Source: src/lib/csm/template.ts. Run npm run generate:native-contracts.\nimport 'dart:convert';\n\nMap<String, dynamic> csmAgentTemplate() => Map<String, dynamic>.from(jsonDecode(${JSON.stringify(JSON.stringify(CSM_AGENT_TEMPLATE)).replaceAll("$", "\\$")}));\n`,
+  );
+  expected.set(
     path.join(repositoryRoot, "apps", "flutter", "lib", "generated", "native_contract.g.dart"),
     renderDartContract(nativeOperationsForVersion(NATIVE_API_CURRENT_VERSION) || []),
   );
@@ -197,6 +261,69 @@ async function generate() {
     await writeFile(filename, content, "utf8");
   }
   process.stdout.write(`Generated native contracts v${NATIVE_API_CURRENT_VERSION} and v${NATIVE_API_PREVIOUS_VERSION}.\n`);
+}
+
+async function retainRetiredV47Compatibility(expected: Map<string, string>) {
+  const archived = path.join(repositoryRoot, "docs", "archive", "native-contracts", "v47");
+  await retainFrozenContract(expected, archived, originalV47DocumentSha256);
+  const document = JSON.parse(expected.get(path.join(archived, "openapi.json"))!) as {
+    paths: Record<string, Record<string, { operationId: string }>>;
+    components: { schemas: Record<string, unknown> };
+  };
+  for (const [route, methods] of Object.entries(document.paths)) {
+    for (const [method, operation] of Object.entries(methods)) {
+      if (operation.operationId.startsWith("customers.")) delete methods[method];
+    }
+    if (Object.keys(methods).length === 0) delete document.paths[route];
+  }
+  for (const [name, schema] of Object.entries(document.components.schemas)) {
+    if (/^Native(?:Customer|Salesforce)/.test(name)) {
+      delete document.components.schemas[name];
+    } else if (name.startsWith("NativePush")) {
+      document.components.schemas[name] = withoutRetiredPushTarget(schema);
+    }
+  }
+  const directory = path.join(repositoryRoot, "public", "native-contracts", "v47");
+  const openapiText = stableJson(document);
+  const eventsText = expected.get(path.join(archived, "events.schema.json"))!;
+  const fixturesText = expected.get(path.join(archived, "fixtures.json"))!;
+  const manifest = {
+    schemaVersion: 1,
+    contractId: NATIVE_API_CONTRACT_ID,
+    version: 47,
+    state: "previous",
+    compatibility: {
+      // This retired publication retains its last published compatibility metadata.
+      // Current compatibility is discovered through /api/mobile/contracts.
+      currentVersion: 53,
+      previousVersion: 52,
+      supportedVersions: [53, 52, 51],
+    },
+    retirement: {
+      reason: "crm_workspace_retired",
+      originalManifestSha256: originalV47DocumentSha256["manifest.json"],
+    },
+    documents: {
+      openapi: { path: "openapi.json", sha256: sha256(openapiText) },
+      events: { path: "events.schema.json", sha256: sha256(eventsText) },
+      fixtures: { path: "fixtures.json", sha256: sha256(fixturesText) },
+    },
+  };
+  expected.set(path.join(directory, "openapi.json"), openapiText);
+  expected.set(path.join(directory, "events.schema.json"), eventsText);
+  expected.set(path.join(directory, "fixtures.json"), fixturesText);
+  expected.set(path.join(directory, "manifest.json"), stableJson(manifest));
+}
+
+function withoutRetiredPushTarget(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withoutRetiredPushTarget);
+  if (value === null || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [
+    key,
+    key === "enum" && Array.isArray(item)
+      ? item.filter((entry) => entry !== "customer")
+      : withoutRetiredPushTarget(item),
+  ]));
 }
 
 async function retainFrozenContract(
@@ -259,6 +386,9 @@ function openApiDocument(version: number, operations: readonly NativeOperation[]
             [mediaType === "text/event-stream" ? "application/json" : mediaType]: {
               schema: ref(operation.requestSchema),
             },
+            ...(operation.id === "listen.ingest" ? {
+              "multipart/form-data": { schema: ref("NativeListenSegmentRequest") },
+            } : {}),
           },
         }
       : undefined;
@@ -267,7 +397,7 @@ function openApiDocument(version: number, operations: readonly NativeOperation[]
       operationId: operation.id,
       summary: operation.summary,
       tags: [operation.id.split(".")[0]],
-      ...(operation.auth === "bearer" ? { security: [{ bearerAuth: [] }] } : {}),
+      ...(operation.auth === "bearer" ? { security: [{ bearerAuth: [] }] } : operation.auth === "listen" ? { security: [{ listenGrant: [] }] } : {}),
       ...(parameters.length ? { parameters } : {}),
       ...(requestBody ? { requestBody } : {}),
       ...(operation.queryPolicy === "exact" ? { "x-asael-query-policy": { unknownParameters: "reject", repeatedParameters: "reject" } } : {}),
@@ -310,6 +440,7 @@ function openApiDocument(version: number, operations: readonly NativeOperation[]
     components: {
       securitySchemes: {
         bearerAuth: { type: "http", scheme: "bearer", bearerFormat: "opaque" },
+        ...(version >= 54 ? { listenGrant: { type: "http", scheme: "Listen", description: "A device/session/origin-bound upload grant; never an ordinary bearer credential." } } : {}),
       },
       schemas: Object.fromEntries(schemaNamesForVersion(version).map((name) => [
         name,

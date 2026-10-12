@@ -6,8 +6,6 @@ import {
 } from "@/lib/connectors/oauth-store";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
-import { resolveSalesforceRequestAccess } from "@/lib/customer-success/salesforce-access";
-import { revokeSalesforceConnection } from "@/lib/customer-success/salesforce-store";
 
 export const runtime = "nodejs";
 export const DELETE = withDatabaseRequestScope(DELETEHandler);
@@ -15,22 +13,9 @@ async function DELETEHandler(request: Request, context: { params: Promise<{ prov
   const { provider } = await context.params;
   if (!isOAuthProvider(provider)) return Response.json({ error: "Unsupported OAuth provider." }, { status: 404 });
   let security;
-  try { security = await authorizeRequest({ request, action: provider === "salesforce" ? "manage.connector" : "write.memory", resourceType: "oauth_grant", metadata: { provider, operation: "revoke" } }); } catch (error) { return forbiddenResponse(error); }
+  try { security = await authorizeRequest({ request, action: "write.memory", resourceType: "oauth_grant", metadata: { provider, operation: "revoke" } }); } catch (error) { return forbiddenResponse(error); }
 
-  let grantActorId = security.actorId;
-  let salesforceAccess: Awaited<ReturnType<typeof resolveSalesforceRequestAccess>> | undefined;
-  if (provider === "salesforce") {
-    try {
-      salesforceAccess = await resolveSalesforceRequestAccess(security, {
-        workspaceId: new URL(request.url).searchParams.get("workspaceId") || undefined,
-        mode: "write",
-        correlationId: crypto.randomUUID(),
-      });
-      grantActorId = salesforceAccess.readAuthority.canonicalActorId;
-    } catch (error) {
-      return forbiddenResponse(error);
-    }
-  }
+  const grantActorId = security.actorId;
 
   let providerToken = "";
   let providerRevocation: "revoked" | "not_needed" | "failed" = "not_needed";
@@ -67,12 +52,6 @@ async function DELETEHandler(request: Request, context: { params: Promise<{ prov
       provider,
       connectionId ? { connectionId } : undefined,
     );
-    if (provider === "salesforce" && salesforceAccess && secrets) {
-      await revokeSalesforceConnection({
-        authority: salesforceAccess.mutationAuthority!,
-        oauthGrantId: secrets.grant.id,
-      });
-    }
   } catch {
     return Response.json(
       { error: "The local OAuth connection could not be disconnected." },

@@ -1,6 +1,10 @@
 import 'package:flutter/material.dart';
 
+import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_flow_scaffold.dart';
+
 import 'knowledge.dart';
+import 'knowledge_labels.dart';
 import 'knowledge_mutations.dart';
 import 'knowledge_mutation_widgets.dart';
 export 'knowledge_reviews.dart';
@@ -29,10 +33,9 @@ class KnowledgeCoverage extends StatelessWidget {
           Text(
             graph
                 ? 'Visible relationship sample: ${state?.nodes.length ?? 0} points, ${state?.edges.length ?? 0} links. Connections outside this sample are not shown.'
-                : 'Live durable catalogue · 40 per read · at most 200 retained per list. Working memory is excluded. Totals describe the observed catalogue, not every stored record.',
+                : 'Saved memories and source documents. Open an item to read or manage it.',
           ),
-          if (state?.overview['generatedAt'] != null)
-            Text('Observed ${state!.overview['generatedAt']}'),
+
           if (graph)
             Text(
               'Graph state: ${(state?.overview['summary'] as Map?)?['graphStatus'] ?? 'not reported'}. Sampled communities are not a global total.',
@@ -55,6 +58,12 @@ class KnowledgePageControls extends StatelessWidget {
   Widget build(BuildContext context) {
     final state = controller.state;
     final count = memory ? state?.memories.length : state?.knowledge.length;
+    final hiddenCount = memory && controller.claimState == 'all'
+        ? state?.memories
+                  .where((item) => memoryRetiredPlaceholder(item.title))
+                  .length ??
+              0
+        : 0;
     final total = memory
         ? state?.memoryCatalogTotal
         : state?.knowledgeCatalogTotal;
@@ -76,7 +85,7 @@ class KnowledgePageControls extends StatelessWidget {
         crossAxisAlignment: WrapCrossAlignment.center,
         children: [
           Text(
-            '${count ?? 0} loaded · observed total ${total ?? 'unavailable'}',
+            '${count ?? 0} loaded${total != null ? ' of $total' : ''}${hiddenCount > 0 ? ' · $hiddenCount retired placeholders hidden' : ''}',
           ),
           if (error != null)
             const Text(
@@ -125,7 +134,7 @@ class KnowledgeMemoryFilters extends StatelessWidget {
             key: ValueKey('tier-${controller.tier}'),
             initialValue: controller.tier,
             isExpanded: true,
-            decoration: const InputDecoration(labelText: 'Memory tier'),
+            decoration: const InputDecoration(labelText: 'Kind'),
             items: [
               for (final value in [
                 'all',
@@ -137,7 +146,10 @@ class KnowledgeMemoryFilters extends StatelessWidget {
                 'decision',
                 'summary',
               ])
-                DropdownMenuItem(value: value, child: Text(value)),
+                DropdownMenuItem(
+                  value: value,
+                  child: Text(memoryFriendlyLabel(value)),
+                ),
             ],
             onChanged: controller.loading
                 ? null
@@ -150,7 +162,7 @@ class KnowledgeMemoryFilters extends StatelessWidget {
             key: ValueKey('state-${controller.claimState}'),
             initialValue: controller.claimState,
             isExpanded: true,
-            decoration: const InputDecoration(labelText: 'Claim state'),
+            decoration: const InputDecoration(labelText: 'Status'),
             items: [
               for (final value in [
                 'all',
@@ -160,7 +172,14 @@ class KnowledgeMemoryFilters extends StatelessWidget {
                 'contradicted',
                 'archived',
               ])
-                DropdownMenuItem(value: value, child: Text(value)),
+                DropdownMenuItem(
+                  value: value,
+                  child: Text(
+                    value == 'all'
+                        ? 'All except retired'
+                        : memoryFriendlyLabel(value),
+                  ),
+                ),
             ],
             onChanged: controller.loading
                 ? null
@@ -309,12 +328,10 @@ class _KnowledgeMemoryInspectorState extends State<KnowledgeMemoryInspector> {
                 ),
               OutlinedButton(
                 onPressed: _loading ? null : _read,
-                child: const Text('Refresh exact memory'),
+                child: const Text('Refresh memory'),
               ),
             ],
           ),
-          const Text('Exact memory identity'),
-          SelectableText(widget.memoryId),
           if (_loading)
             const Padding(
               padding: EdgeInsets.all(20),
@@ -322,15 +339,36 @@ class _KnowledgeMemoryInspectorState extends State<KnowledgeMemoryInspector> {
             ),
           if (_error != null)
             const Text(
-              'This memory is unavailable or no longer accessible. No index content is substituted. Retry to verify its current state.',
+              'This memory is unavailable or no longer accessible. Refresh to try again.',
             ),
           if (memory != null) ...[
             const SizedBox(height: 16),
-            Text(memory.title, style: Theme.of(context).textTheme.titleLarge),
+            Text(
+              memoryDisplayTitle(memory.title, memory.updatedAt),
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
             const SizedBox(height: 16),
-            SelectableText(memory.content),
+            SelectableText(
+              memoryReadableContent(memory.content),
+              style: usesMobilePresentation()
+                  ? Theme.of(context).textTheme.bodyLarge?.copyWith(height: 1.6)
+                  : null,
+            ),
+            if (memoryRoleContext(memory.content) case final role?) ...[
+              const SizedBox(height: 12),
+              Text(
+                role.sourceCount == 0
+                    ? 'No role documents linked yet.'
+                    : '${role.sourceCount} linked ${role.sourceCount == 1 ? 'document' : 'documents'}. View the saved sources in Work → My CSM role.',
+              ),
+            ],
             const SizedBox(height: 16),
-            MemoryEvidenceDetails(memory: memory),
+            if (usesMobilePresentation())
+              MobileDetailsDisclosure(
+                child: MemoryEvidenceDetails(memory: memory),
+              )
+            else
+              MemoryEvidenceDetails(memory: memory),
             const SizedBox(height: 16),
             if (widget.onOpenWorkspace != null)
               OutlinedButton(
@@ -353,7 +391,7 @@ class _KnowledgeMemoryInspectorState extends State<KnowledgeMemoryInspector> {
                           widget.controller,
                           memory: memory,
                         ),
-                  child: const Text('Review a correction'),
+                  child: const Text('Edit memory'),
                 ),
               if (widget.controller.canManage)
                 OutlinedButton.icon(
@@ -361,16 +399,14 @@ class _KnowledgeMemoryInspectorState extends State<KnowledgeMemoryInspector> {
                   style: OutlinedButton.styleFrom(
                     minimumSize: const Size(48, 48),
                   ),
-                  icon: const Icon(Icons.policy_outlined),
+                  icon: const Icon(Icons.delete_outline),
                   label: Text(
-                    _previewLoading
-                        ? 'Reading impact…'
-                        : 'Review forgetting impact',
+                    _previewLoading ? 'Checking deletion…' : 'Delete memory',
                   ),
                 ),
               if (_previewError != null)
                 const Text(
-                  'The current impact could not be verified. Nothing was forgotten.',
+                  'Deletion could not be checked. Nothing was deleted.',
                 ),
               if (_preview != null) ...[
                 MemoryImpactDetails(preview: _preview!),
@@ -381,7 +417,7 @@ class _KnowledgeMemoryInspectorState extends State<KnowledgeMemoryInspector> {
                     contentPadding: EdgeInsets.zero,
                     value: _forgetConfirmed,
                     title: const Text(
-                      'I reviewed this exact impact and understand forgetting is irreversible.',
+                      'I understand this permanently deletes the memory and the related memories listed above.',
                     ),
                     onChanged: widget.controller.pendingChange != null
                         ? null
@@ -439,7 +475,7 @@ class _KnowledgeMemoryInspectorState extends State<KnowledgeMemoryInspector> {
                               setState(() => _memory = null);
                             }
                           },
-                    child: const Text('Forget reviewed memory and descendants'),
+                    child: const Text('Delete permanently'),
                   ),
                 ] else
                   const Text(
@@ -462,7 +498,12 @@ class MemoryEvidenceDetails extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final metadata = memory.metadata;
+    final roleContext = memoryRoleContext(memory.content);
+    final visibleTags = memory.tags
+        .where((tag) => roleContext == null || tag != 'csm-role-context-v1')
+        .toList();
     final entries = <String, String>{
+      'Original title': memory.title,
       'Type / tier / claim':
           '${memory.type} / ${memory.tier} / ${memory.claimStatus}',
       'Scope': memory.scope,
@@ -491,29 +532,47 @@ class MemoryEvidenceDetails extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        for (final entry in entries.entries)
+        Text(
+          '${memoryFriendlyLabel(memory.tier)} · ${memoryFriendlyLabel(memory.claimStatus)} · Updated ${memoryFriendlyDate(memory.updatedAt)}',
+        ),
+        if (metadata.why.isNotEmpty)
           Padding(
-            padding: const EdgeInsets.only(bottom: 10),
-            child: SelectableText('${entry.key}\n${entry.value}'),
+            padding: const EdgeInsets.only(top: 8),
+            child: Text(metadata.why),
           ),
-        if (memory.tags.isNotEmpty)
-          Wrap(
-            spacing: 6,
-            runSpacing: 6,
-            children: [
-              for (final tag in memory.tags.take(50)) Chip(label: Text(tag)),
+        if (visibleTags.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                for (final tag in visibleTags.take(12)) Chip(label: Text(tag)),
+              ],
+            ),
+          ),
+        ExpansionTile(
+          tilePadding: EdgeInsets.zero,
+          title: Text(
+            'Source and technical details · ${memory.evidenceRefs.length} references',
+          ),
+          children: [
+            SelectableText('Reference: ${memory.id}'),
+            if (roleContext != null) ...[
+              const Text('Stored role record'),
+              SelectableText(memory.content),
+              SelectableText('Stored tags: ${memory.tags.join(', ')}'),
             ],
-          ),
-        Text('Evidence references · ${memory.evidenceRefs.length} returned'),
-        if (memory.evidenceRefs.isEmpty)
-          const Text('No evidence references were returned.'),
-        for (final reference in memory.evidenceRefs.take(50))
-          SelectableText(reference),
-        if (memory.evidenceRefs.length > 50)
-          const Text('Only the first 50 returned references are displayed.'),
-        const SizedBox(height: 10),
-        const Text(
-          'These are recorded references and direct correction links. Full history and evidence contents are not included in this read.',
+            for (final entry in entries.entries)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: SelectableText('${entry.key}: ${entry.value}'),
+              ),
+            for (final reference in memory.evidenceRefs.take(50))
+              SelectableText(reference),
+            if (memory.evidenceRefs.length > 50)
+              const Text('Showing the first 50 source references.'),
+          ],
         ),
       ],
     );
@@ -532,27 +591,44 @@ class MemoryImpactDetails extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const SizedBox(height: 16),
-        const Text('Impact preview only. No deletion has been submitted.'),
-        SelectableText(
-          'Memory: ${preview.memoryId}\nObserved: ${preview.generatedAt}\nGuarantee: ${preview.guarantee}',
+        Text(
+          'Delete this memory?',
+          style: Theme.of(context).textTheme.titleMedium,
         ),
         Text(
-          '${preview.descendantMemoryCount} derived memories · ${preview.retrievalTraceCount} retrieval traces · '
-          '${preview.graphNodeCount} relationship points · ${preview.graphEdgeCount} links',
+          'This permanently deletes the selected memory and ${preview.descendantMemoryCount} memories created from it. It removes their map connections and recall history. This cannot be undone.',
         ),
-        Text(
-          'Pending Agent runs: ${impact['pendingAgentRunCount'] ?? 'unavailable'}; pending workflow runs: ${impact['pendingWorkflowRunCount'] ?? 'unavailable'}.',
+        const SizedBox(height: 8),
+        const Text(
+          'Original files and messages are not deleted. A deletion receipt is retained.',
         ),
-        const Text('Expected manifest fingerprint'),
-        SelectableText(preview.expectedReceiptManifestSha256),
         for (final value in descendants.take(40))
-          SelectableText('${(value as Map)['title']}\n${value['id']}'),
-        if (descendants.length > 40)
-          Text(
-            'Showing 40 of ${descendants.length} enumerated derived memories.',
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Text('• ${(value as Map)['title']}'),
           ),
+        if (descendants.length > 40)
+          Text('Showing 40 of ${descendants.length} related memories.'),
         if (preview.guarantee == 'best_effort')
-          const Text('Best effort is not a verified rollback barrier.'),
+          const Text(
+            'Older backups may still contain this memory. Permanent deletion is unavailable in this state.',
+          ),
+        ExpansionTile(
+          tilePadding: EdgeInsets.zero,
+          title: const Text('Deletion details'),
+          children: [
+            Text(
+              '${preview.retrievalTraceCount} recall records · ${preview.graphNodeCount} map items · ${preview.graphEdgeCount} connections',
+            ),
+            Text(
+              'Affected active tasks: ${impact['pendingAgentRunCount'] ?? 'unavailable'}; workflows: ${impact['pendingWorkflowRunCount'] ?? 'unavailable'}.',
+            ),
+            SelectableText('Reference: ${preview.memoryId}'),
+            SelectableText(
+              'Preview fingerprint: ${preview.expectedReceiptManifestSha256}',
+            ),
+          ],
+        ),
       ],
     );
   }

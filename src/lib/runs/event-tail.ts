@@ -6,7 +6,7 @@ import {
   startSseHeartbeat,
 } from "@/lib/http/sse";
 import { agentRunOutcomeEvent } from "@/lib/runs/public";
-import { getAgentRun, listAgentRunEventsAfter } from "@/lib/runs/store";
+import { getAgentRun, getAgentRunWorkflowHandoff, listAgentRunEventsAfter } from "@/lib/runs/store";
 import { redactSensitive } from "@/lib/security/context";
 
 /**
@@ -61,6 +61,7 @@ export function agentRunTailResponse(input: {
   pollIntervalMs?: number;
   heartbeatIntervalMs?: number;
   maxDurationMs?: number;
+  includeResearchProgress?: boolean;
 }) {
   const encoder = new TextEncoder();
   const stop = new AbortController();
@@ -110,11 +111,15 @@ export function agentRunTailResponse(input: {
               cursor = Math.max(cursor, record.seq);
               const event = record.payload as AgentEvent;
               if (UNTAILED_EVENT_TYPES.has(event.type)) continue;
+              if (event.type === "research_progress" && input.includeResearchProgress === false) continue;
               write(encodeSse(event, { id: record.seq }));
             }
             if (page.length < TAIL_PAGE_SIZE || stop.signal.aborted) break;
           }
-          const outcome = agentRunOutcomeEvent(run);
+          const workflowHandoff = run.status === "completed"
+            ? await getAgentRunWorkflowHandoff(run.id, { tenantId: input.tenantId, actorId: run.ownerActorId })
+            : undefined;
+          const outcome = agentRunOutcomeEvent(run, { workflowHandoff });
           if (outcome) {
             write(encodeSse(outcome));
             break;

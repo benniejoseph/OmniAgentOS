@@ -5,6 +5,10 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:mime/mime.dart';
+import 'package:go_router/go_router.dart';
+
+import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_page_scaffold.dart';
 
 import '../../app/macos/macos_page_scaffold.dart';
 import 'capture_batch_view.dart';
@@ -67,6 +71,7 @@ class _CaptureViewState extends State<CaptureView> {
   bool dropping = false;
   bool picking = false;
   CaptureMode mode = CaptureMode.note;
+  bool _mobileEditorOpen = false;
   late CaptureRecordingController recording;
   int _scopeGeneration = 0, _intakeEpoch = 0;
   bool get _busy =>
@@ -115,6 +120,7 @@ class _CaptureViewState extends State<CaptureView> {
     batchFiles.clear();
     dropSummary = null;
     picking = dropping = false;
+    _mobileEditorOpen = false;
   }
 
   void _authorityChanged() {
@@ -548,6 +554,468 @@ class _CaptureViewState extends State<CaptureView> {
     });
   }
 
+  Widget _mobileStudio(CaptureController controller) {
+    final theme = Theme.of(context);
+    final hasDraft =
+        title.text.isNotEmpty ||
+        note.text.isNotEmpty ||
+        tags.text.isNotEmpty ||
+        attachment != null ||
+        batchFiles.isNotEmpty;
+    void open(CaptureMode next) => setState(() {
+      mode = next;
+      _mobileEditorOpen = true;
+    });
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Capture', style: theme.textTheme.headlineLarge),
+                  const SizedBox(height: 8),
+                  Text(
+                    'A place for every thought.',
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            IconButton.filledTonal(
+              tooltip: 'Saved sources',
+              onPressed: controller.available
+                  ? () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => const NativeLibraryPage(),
+                      ),
+                    )
+                  : null,
+              icon: const Icon(Icons.folder_open_outlined),
+            ),
+          ],
+        ),
+        const SizedBox(height: 28),
+        MobileSurface(
+          spotlight: true,
+          padding: EdgeInsets.zero,
+          child: Builder(
+            builder: (context) => InkWell(
+              borderRadius: BorderRadius.circular(16),
+              onTap: _busy ? null : () => context.go('/capture?section=listen'),
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.graphic_eq_rounded,
+                          size: 30,
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
+                        const Spacer(),
+                        const Icon(Icons.arrow_outward_rounded, size: 22),
+                      ],
+                    ),
+                    const SizedBox(height: 24),
+                    Text(
+                      'Be in the moment.',
+                      style: Theme.of(context).textTheme.headlineSmall,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Turn conversations into notes, people and next steps.',
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        height: 1.5,
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                    const MobileStatusPill(
+                      label: 'Open Listen',
+                      icon: Icons.mic_none_rounded,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 24),
+        Text(
+          'What would you like to keep?',
+          style: theme.textTheme.titleMedium,
+        ),
+        const SizedBox(height: 14),
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final wide =
+                constraints.maxWidth >= 340 &&
+                MediaQuery.textScalerOf(context).scale(14) < 22;
+            final width = wide
+                ? (constraints.maxWidth - 12) / 2
+                : constraints.maxWidth;
+            return Wrap(
+              spacing: 12,
+              runSpacing: 12,
+              children: [
+                SizedBox(
+                  width: width,
+                  child: _MobileCaptureChoice(
+                    icon: Icons.edit_note_rounded,
+                    title: 'Write a note',
+                    subtitle: 'Ideas, links, reminders',
+                    onTap: _busy ? null : () => open(CaptureMode.note),
+                  ),
+                ),
+                SizedBox(
+                  width: width,
+                  child: _MobileCaptureChoice(
+                    icon: Icons.document_scanner_outlined,
+                    title: 'Scan a moment',
+                    subtitle: 'A page, slide or photo',
+                    onTap: _busy
+                        ? null
+                        : () {
+                            open(CaptureMode.upload);
+                            pickImage(ImageSource.camera, CaptureKind.scan);
+                          },
+                  ),
+                ),
+                SizedBox(
+                  width: width,
+                  child: _MobileCaptureChoice(
+                    icon: Icons.file_upload_outlined,
+                    title: 'Add files',
+                    subtitle: 'Documents and media',
+                    onTap: _busy ? null : () => open(CaptureMode.upload),
+                  ),
+                ),
+                SizedBox(
+                  width: width,
+                  child: _MobileCaptureChoice(
+                    icon: Icons.mic_none_rounded,
+                    title: 'Voice note',
+                    subtitle: 'Say what’s on your mind',
+                    onTap: _busy ? null : () => open(CaptureMode.record),
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
+        if (hasDraft) ...[
+          const SizedBox(height: 20),
+          MobileActionTile(
+            icon: Icons.edit_outlined,
+            title: 'Continue your capture',
+            subtitle: 'Your unfinished draft is still here',
+            onTap: () => setState(() => _mobileEditorOpen = true),
+          ),
+        ],
+        if (!controller.available || !controller.canWrite) ...[
+          const SizedBox(height: 20),
+          Text(
+            !controller.available ? 'Unlock Asael to save something new.' : 'You can read saved sources. Write access is needed to add new ones.',
+          ),
+        ],
+        if (controller.error != null) ...[
+          const SizedBox(height: 16),
+          Text(
+            'Something needs your attention. Open your capture to review it.',
+            style: TextStyle(color: theme.colorScheme.error),
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _mobileForm(CaptureController controller) {
+    final scheme = Theme.of(context).colorScheme;
+    if (!_mobileEditorOpen) {
+      return _mobileStudio(controller);
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            IconButton(
+              tooltip: 'Back to Capture',
+              onPressed: _busy
+                  ? null
+                  : () => setState(() => _mobileEditorOpen = false),
+              icon: const Icon(Icons.arrow_back_rounded),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Semantics(
+                    header: true,
+                    child: Text(
+                      mode == CaptureMode.note
+                          ? 'New note'
+                          : mode == CaptureMode.record
+                          ? 'Voice note'
+                          : 'Add files',
+                      style: Theme.of(context).textTheme.titleLarge,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Keep the thought. ATLAS keeps the context.',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
+              ),
+            ),
+            IconButton(
+              tooltip: 'Saved sources',
+              onPressed: controller.available
+                  ? () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => const NativeLibraryPage(),
+                      ),
+                    )
+                  : null,
+              icon: const Icon(Icons.folder_open_outlined),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        MobileSegmentBar<CaptureMode>(
+          items: const [
+            (
+              value: CaptureMode.note,
+              label: 'Note',
+              icon: Icons.edit_note_rounded,
+            ),
+            (
+              value: CaptureMode.upload,
+              label: 'Files',
+              icon: Icons.attach_file_rounded,
+            ),
+            (
+              value: CaptureMode.record,
+              label: 'Voice note',
+              icon: Icons.mic_none_rounded,
+            ),
+          ],
+          value: mode,
+          onChanged: (value) {
+            if (!_busy) setState(() => mode = value);
+          },
+        ),
+        const SizedBox(height: 20),
+        if (!controller.available)
+          const Text('Unlock Asael to save something new.'),
+        if (controller.available && !controller.canWrite)
+          const Text(
+            'You can read and recover saved sources. Saving new content needs write access.',
+          ),
+        if (mode == CaptureMode.upload) ...[
+          MobileActionTile(
+            icon: Icons.file_upload_outlined,
+            title: 'Choose files',
+            subtitle: 'Documents, images and more',
+            onTap: _busy ? null : pickBatchDocuments,
+          ),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _busy
+                      ? null
+                      : () => pickImage(ImageSource.gallery, CaptureKind.image),
+                  icon: const Icon(Icons.image_outlined),
+                  label: const Text('Photos'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _busy ? null : pickMeetingMedia,
+                  icon: const Icon(Icons.audio_file_outlined),
+                  label: const Text('Audio / video'),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Text(
+            'Up to 25 queued items · 5 MB per file',
+            style: Theme.of(context).textTheme.bodySmall
+                ?.copyWith(color: scheme.onSurfaceVariant),
+          ),
+          if (picking || dropping) const LinearProgressIndicator(),
+          const SizedBox(height: 16),
+        ],
+        if (mode == CaptureMode.record) ...[
+          CaptureRecordingPanel(
+            controller: recording,
+            onAttach: (audio) {
+              if (!controller.canWrite) {
+                audio.bytes.fillRange(0, audio.bytes.length, 0);
+                return;
+              }
+              setState(() {
+                attachment?.bytes.fillRange(0, attachment!.bytes.length, 0);
+                attachment = audio;
+                attachmentKind = CaptureKind.meetingMedia;
+                batchFiles.clear();
+              });
+            },
+          ),
+          const SizedBox(height: 16),
+        ],
+        if (attachment != null)
+          Align(
+            alignment: Alignment.centerLeft,
+            child: InputChip(
+              avatar: const Icon(Icons.insert_drive_file_outlined, size: 18),
+              label: Text(
+                '${attachment!.name} · ${_fileSize(attachment!.bytes.length)}',
+                overflow: TextOverflow.ellipsis,
+              ),
+              onDeleted: _busy
+                  ? null
+                  : () => setState(() {
+                      attachment?.bytes.fillRange(
+                        0,
+                        attachment!.bytes.length,
+                        0,
+                      );
+                      attachment = null;
+                      attachmentKind = CaptureKind.text;
+                    }),
+            ),
+          ),
+        if (batchFiles.isNotEmpty)
+          CaptureSelectionPanel(
+            files: batchFiles,
+            onRemove: _busy
+                ? null
+                : (item) => setState(() => batchFiles.remove(item)),
+          ),
+        if (attachmentError != null)
+          Semantics(
+            liveRegion: true,
+            child: Text(
+              attachmentError!,
+              style: TextStyle(color: scheme.error),
+            ),
+          ),
+        TextField(
+          key: const Key('capture-note'),
+          controller: note,
+          enabled: !_busy,
+          minLines: mode == CaptureMode.note ? 9 : 3,
+          maxLines: 12,
+          maxLength: 20000,
+          decoration: InputDecoration(
+            hintText: mode == CaptureMode.note
+                ? 'An idea, a thought, something to remember…'
+                : 'What should ATLAS know about this?',
+            alignLabelWithHint: true,
+            filled: true,
+            fillColor: scheme.surface,
+            contentPadding: const EdgeInsets.all(24),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(16),
+              borderSide: BorderSide.none,
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(16),
+              borderSide: BorderSide.none,
+            ),
+            counterText: '',
+          ),
+        ),
+        const SizedBox(height: 8),
+        ExpansionTile(
+          tilePadding: EdgeInsets.zero,
+          title: const Text('Add details'),
+          subtitle: const Text('Title, tags or a short voice note'),
+          expansionAnimationStyle: MediaQuery.disableAnimationsOf(context)
+              ? AnimationStyle.noAnimation
+              : null,
+          children: [
+            TextField(
+              key: const Key('capture-title'),
+              controller: title,
+              enabled: !_busy,
+              maxLength: 240,
+              decoration: const InputDecoration(
+                labelText: 'Title (optional)',
+                counterText: '',
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              key: const Key('capture-tags'),
+              controller: tags,
+              enabled: !_busy,
+              decoration: const InputDecoration(
+                labelText: 'Tags',
+                hintText: 'Ideas, work, personal',
+              ),
+            ),
+            const SizedBox(height: 8),
+            TextButton.icon(
+              onPressed: _busy
+                  ? null
+                  : () => setState(() => mode = CaptureMode.record),
+              icon: const Icon(Icons.mic_none_rounded),
+              label: const Text('Record a voice note'),
+            ),
+            const Padding(
+              padding: EdgeInsets.only(bottom: 12),
+              child: Text(
+                'Pasted links are saved as text. Files may need review if only some content can be read.',
+              ),
+            ),
+          ],
+        ),
+        if (controller.loadingOutbox) const LinearProgressIndicator(),
+        if (controller.error != null)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 12),
+            child: Text(
+              controller.error is CaptureOutboxIntegrityException
+                  ? 'Saved captures could not be verified. Nothing was uploaded.'
+                  : 'Could not save this capture. Your draft is still here.',
+              style: TextStyle(color: scheme.error),
+            ),
+          ),
+        const SizedBox(height: 12),
+        FilledButton.icon(
+          key: const Key('capture-submit'),
+          onPressed: _busy ? null : submit,
+          icon: const Icon(Icons.add_rounded),
+          label: Text(
+            controller.batchQueueing
+                ? 'Preparing files…'
+                : controller.submitting
+                ? 'Saving…'
+                : batchFiles.isNotEmpty
+                ? 'Save ${batchFiles.length} files'
+                : 'Save capture',
+          ),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final body = ListenableBuilder(
@@ -561,256 +1029,274 @@ class _CaptureViewState extends State<CaptureView> {
             child: LayoutBuilder(
               builder: (context, constraints) {
                 final controller = widget.controller;
-                final form = Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Text(
-                      'Keep the source. Add the context.',
-                      style: Theme.of(context).textTheme.headlineSmall,
-                    ),
-                    const SizedBox(height: 8),
-                    const Text(
-                      'Save a note, record audio, or add files. Transfer, extraction and indexing each have their own state.',
-                    ),
-                    Align(
-                      alignment: AlignmentDirectional.centerStart,
-                      child: OutlinedButton.icon(
-                        key: const Key('capture-open-library'),
-                        onPressed: controller.available
-                            ? () => Navigator.of(context).push(
-                                MaterialPageRoute<void>(
-                                  builder: (_) => const NativeLibraryPage(),
-                                ),
-                              )
-                            : null,
-                        style: OutlinedButton.styleFrom(
-                          minimumSize: const Size(48, 48),
-                        ),
-                        icon: const Icon(Icons.folder_copy_outlined, size: 18),
-                        label: const Text('Open Library and version history'),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: [
-                        for (final value in CaptureMode.values)
-                          ChoiceChip(
-                            key: Key('capture-mode-${value.name}'),
-                            selected: mode == value,
-                            label: Text(switch (value) {
-                              CaptureMode.note => 'Note',
-                              CaptureMode.record => 'Record',
-                              CaptureMode.upload => 'Upload',
-                            }),
-                            onSelected: _busy
-                                ? null
-                                : (_) => setState(() => mode = value),
-                          ),
-                      ],
-                    ),
-                    if (!controller.available)
-                      const Padding(
-                        padding: EdgeInsets.only(top: 12),
-                        child: Text(
-                          'Capture is locked or unavailable. Sign in or unlock to continue.',
-                        ),
-                      ),
-                    if (controller.available && !controller.canWrite)
-                      const Padding(
-                        padding: EdgeInsets.only(top: 12),
-                        child: Text(
-                          'This role can inspect sources and recover or discard local copies. Saving, recording, and queue replay require write access.',
-                        ),
-                      ),
-                    const SizedBox(height: 16),
-                    TextField(
-                      key: const Key('capture-title'),
-                      controller: title,
-                      enabled: !_busy,
-                      maxLength: 240,
-                      decoration: const InputDecoration(
-                        labelText: 'Title',
-                        helperText: 'Optional; a batch uses this as its collection label',
-                      ),
-                    ),
-                    if (mode == CaptureMode.record) ...[
-                      CaptureRecordingPanel(
-                        controller: recording,
-                        onAttach: (audio) {
-                          if (!controller.canWrite) {
-                            audio.bytes.fillRange(0, audio.bytes.length, 0);
-                            return;
-                          }
-                          setState(() {
-                            attachment?.bytes.fillRange(
-                              0,
-                              attachment!.bytes.length,
-                              0,
-                            );
-                            attachment = audio;
-                            attachmentKind = CaptureKind.meetingMedia;
-                            batchFiles.clear();
-                          });
-                        },
-                      ),
-                      const SizedBox(height: 16),
-                    ],
-                    if (mode == CaptureMode.upload) ...[
-                      if (_isDesktop)
-                        CaptureDropSurface(
-                          enabled: !_dropDisabled && !_busy,
-                          busy: dropping || dropIntake.busy,
-                          remainingCapacity:
-                              (captureBatchMaxFiles - controller.pending.length)
-                                  .clamp(0, captureBatchMaxFiles),
-                          onDrop: submitDroppedFiles,
-                        ),
-                      if (dropSummary != null)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 8),
-                          child: Text(dropSummary!.message),
-                        ),
-                      const SizedBox(height: 12),
-                      Wrap(
-                        spacing: 8,
-                        runSpacing: 8,
+                final form = usesMobilePresentation()
+                    ? _mobileForm(controller)
+                    : Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
-                          if (!_isDesktop)
-                            OutlinedButton.icon(
-                              onPressed: _busy
-                                  ? null
-                                  : () => pickImage(
-                                      ImageSource.camera,
-                                      CaptureKind.scan,
-                                    ),
-                              icon: const Icon(Icons.document_scanner_outlined),
-                              label: const Text('Scan page'),
+                          Text(
+                            'Keep the source. Add the context.',
+                            style: Theme.of(context).textTheme.headlineSmall,
+                          ),
+                          const SizedBox(height: 8),
+                          const Text(
+                            'Save a note, record audio, or add files. Transfer, extraction and indexing each have their own state.',
+                          ),
+                          Align(
+                            alignment: AlignmentDirectional.centerStart,
+                            child: OutlinedButton.icon(
+                              key: const Key('capture-open-library'),
+                              onPressed: controller.available
+                                  ? () => Navigator.of(context).push(
+                                      MaterialPageRoute<void>(
+                                        builder: (_) =>
+                                            const NativeLibraryPage(),
+                                      ),
+                                    )
+                                  : null,
+                              style: OutlinedButton.styleFrom(
+                                minimumSize: const Size(48, 48),
+                              ),
+                              icon: const Icon(
+                                Icons.folder_copy_outlined,
+                                size: 18,
+                              ),
+                              label: const Text(
+                                'Open Library and version history',
+                              ),
                             ),
-                          FilledButton.tonalIcon(
-                            onPressed: _busy ? null : pickBatchDocuments,
-                            icon: const Icon(Icons.library_add_outlined),
-                            label: const Text('Choose files'),
                           ),
-                          OutlinedButton.icon(
-                            onPressed: _busy
-                                ? null
-                                : () => pickImage(
-                                    ImageSource.gallery,
-                                    CaptureKind.image,
-                                  ),
-                            icon: const Icon(Icons.image_outlined),
-                            label: const Text('Choose image'),
+                          const SizedBox(height: 16),
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            children: [
+                              for (final value in CaptureMode.values)
+                                ChoiceChip(
+                                  key: Key('capture-mode-${value.name}'),
+                                  selected: mode == value,
+                                  label: Text(switch (value) {
+                                    CaptureMode.note => 'Note',
+                                    CaptureMode.record => 'Record',
+                                    CaptureMode.upload => 'Upload',
+                                  }),
+                                  onSelected: _busy
+                                      ? null
+                                      : (_) => setState(() => mode = value),
+                                ),
+                            ],
                           ),
-                          OutlinedButton.icon(
-                            onPressed: _busy ? null : pickMeetingMedia,
-                            icon: const Icon(Icons.audio_file_outlined),
-                            label: const Text('Choose audio or video'),
+                          if (!controller.available)
+                            const Padding(
+                              padding: EdgeInsets.only(top: 12),
+                              child: Text(
+                                'Capture is locked or unavailable. Sign in or unlock to continue.',
+                              ),
+                            ),
+                          if (controller.available && !controller.canWrite)
+                            const Padding(
+                              padding: EdgeInsets.only(top: 12),
+                              child: Text(
+                                'This role can inspect sources and recover or discard local copies. Saving, recording, and queue replay require write access.',
+                              ),
+                            ),
+                          const SizedBox(height: 16),
+                          TextField(
+                            key: const Key('capture-title'),
+                            controller: title,
+                            enabled: !_busy,
+                            maxLength: 240,
+                            decoration: const InputDecoration(
+                              labelText: 'Title',
+                              helperText: 'Optional; a batch uses this as its collection label',
+                            ),
                           ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      const Text(
-                        'Up to 25 queued items, 5 MB per file and 64 MB total encrypted storage. A supported upload does not guarantee complete extraction.',
-                      ),
-                      if (picking || dropping) const LinearProgressIndicator(),
-                      const SizedBox(height: 12),
-                    ],
-                    if (attachment != null)
-                      Padding(
-                        padding: const EdgeInsets.only(bottom: 12),
-                        child: InputChip(
-                          label: Text(
-                            '${attachment!.name} · ${_fileSize(attachment!.bytes.length)}',
-                          ),
-                          onDeleted: _busy
-                              ? null
-                              : () => setState(() {
+                          if (mode == CaptureMode.record) ...[
+                            CaptureRecordingPanel(
+                              controller: recording,
+                              onAttach: (audio) {
+                                if (!controller.canWrite) {
+                                  audio.bytes.fillRange(
+                                    0,
+                                    audio.bytes.length,
+                                    0,
+                                  );
+                                  return;
+                                }
+                                setState(() {
                                   attachment?.bytes.fillRange(
                                     0,
                                     attachment!.bytes.length,
                                     0,
                                   );
-                                  attachment = null;
-                                  attachmentKind = CaptureKind.text;
-                                }),
-                        ),
-                      ),
-                    if (batchFiles.isNotEmpty)
-                      CaptureSelectionPanel(
-                        files: batchFiles,
-                        onRemove: _busy
-                            ? null
-                            : (item) => setState(() => batchFiles.remove(item)),
-                      ),
-                    if (attachmentError != null)
-                      Semantics(
-                        liveRegion: true,
-                        child: Text(
-                          attachmentError!,
-                          style: TextStyle(
-                            color: Theme.of(context).colorScheme.error,
+                                  attachment = audio;
+                                  attachmentKind = CaptureKind.meetingMedia;
+                                  batchFiles.clear();
+                                });
+                              },
+                            ),
+                            const SizedBox(height: 16),
+                          ],
+                          if (mode == CaptureMode.upload) ...[
+                            if (_isDesktop)
+                              CaptureDropSurface(
+                                enabled: !_dropDisabled && !_busy,
+                                busy: dropping || dropIntake.busy,
+                                remainingCapacity:
+                                    (captureBatchMaxFiles -
+                                            controller.pending.length)
+                                        .clamp(0, captureBatchMaxFiles),
+                                onDrop: submitDroppedFiles,
+                              ),
+                            if (dropSummary != null)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 8),
+                                child: Text(dropSummary!.message),
+                              ),
+                            const SizedBox(height: 12),
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 8,
+                              children: [
+                                if (!_isDesktop)
+                                  OutlinedButton.icon(
+                                    onPressed: _busy
+                                        ? null
+                                        : () => pickImage(
+                                            ImageSource.camera,
+                                            CaptureKind.scan,
+                                          ),
+                                    icon: const Icon(
+                                      Icons.document_scanner_outlined,
+                                    ),
+                                    label: const Text('Scan page'),
+                                  ),
+                                FilledButton.tonalIcon(
+                                  onPressed: _busy ? null : pickBatchDocuments,
+                                  icon: const Icon(Icons.library_add_outlined),
+                                  label: const Text('Choose files'),
+                                ),
+                                OutlinedButton.icon(
+                                  onPressed: _busy
+                                      ? null
+                                      : () => pickImage(
+                                          ImageSource.gallery,
+                                          CaptureKind.image,
+                                        ),
+                                  icon: const Icon(Icons.image_outlined),
+                                  label: const Text('Choose image'),
+                                ),
+                                OutlinedButton.icon(
+                                  onPressed: _busy ? null : pickMeetingMedia,
+                                  icon: const Icon(Icons.audio_file_outlined),
+                                  label: const Text('Choose audio or video'),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            const Text(
+                              'Up to 25 queued items, 5 MB per file and 64 MB total encrypted storage. A supported upload does not guarantee complete extraction.',
+                            ),
+                            if (picking || dropping)
+                              const LinearProgressIndicator(),
+                            const SizedBox(height: 12),
+                          ],
+                          if (attachment != null)
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 12),
+                              child: InputChip(
+                                label: Text(
+                                  '${attachment!.name} · ${_fileSize(attachment!.bytes.length)}',
+                                ),
+                                onDeleted: _busy
+                                    ? null
+                                    : () => setState(() {
+                                        attachment?.bytes.fillRange(
+                                          0,
+                                          attachment!.bytes.length,
+                                          0,
+                                        );
+                                        attachment = null;
+                                        attachmentKind = CaptureKind.text;
+                                      }),
+                              ),
+                            ),
+                          if (batchFiles.isNotEmpty)
+                            CaptureSelectionPanel(
+                              files: batchFiles,
+                              onRemove: _busy
+                                  ? null
+                                  : (item) =>
+                                        setState(() => batchFiles.remove(item)),
+                            ),
+                          if (attachmentError != null)
+                            Semantics(
+                              liveRegion: true,
+                              child: Text(
+                                attachmentError!,
+                                style: TextStyle(
+                                  color: Theme.of(context).colorScheme.error,
+                                ),
+                              ),
+                            ),
+                          TextField(
+                            key: const Key('capture-note'),
+                            controller: note,
+                            enabled: !_busy,
+                            minLines: 4,
+                            maxLines: 12,
+                            maxLength: 20000,
+                            decoration: const InputDecoration(
+                              labelText: 'Note or context',
+                              helperText: 'A pasted or shared link stays note text. This does not fetch the linked page.',
+                              alignLabelWithHint: true,
+                            ),
                           ),
-                        ),
-                      ),
-                    TextField(
-                      key: const Key('capture-note'),
-                      controller: note,
-                      enabled: !_busy,
-                      minLines: 4,
-                      maxLines: 12,
-                      maxLength: 20000,
-                      decoration: const InputDecoration(
-                        labelText: 'Note or context',
-                        helperText: 'A pasted or shared link stays note text. This does not fetch the linked page.',
-                        alignLabelWithHint: true,
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      key: const Key('capture-tags'),
-                      controller: tags,
-                      enabled: !_busy,
-                      decoration: const InputDecoration(
-                        labelText: 'Tags',
-                        hintText: 'research, launch, idea',
-                      ),
-                    ),
-                    if (controller.loadingOutbox)
-                      const Padding(
-                        padding: EdgeInsets.only(top: 12),
-                        child: LinearProgressIndicator(),
-                      ),
-                    if (controller.error != null)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 12),
-                        child: Text(
-                          controller.error is CaptureOutboxIntegrityException
-                              ? 'Encrypted captures could not be verified. Nothing was uploaded.'
-                              : 'This capture could not be saved. Your draft is retained.',
-                          style: TextStyle(
-                            color: Theme.of(context).colorScheme.error,
+                          const SizedBox(height: 12),
+                          TextField(
+                            key: const Key('capture-tags'),
+                            controller: tags,
+                            enabled: !_busy,
+                            decoration: const InputDecoration(
+                              labelText: 'Tags',
+                              hintText: 'research, launch, idea',
+                            ),
                           ),
-                        ),
-                      ),
-                    const SizedBox(height: 20),
-                    FilledButton.icon(
-                      key: const Key('capture-submit'),
-                      onPressed: _busy ? null : submit,
-                      icon: const Icon(Icons.add_box_outlined),
-                      label: Text(
-                        controller.batchQueueing
-                            ? 'Encrypting batch…'
-                            : controller.submitting
-                            ? 'Saving capture…'
-                            : batchFiles.isNotEmpty
-                            ? 'Queue ${batchFiles.length} files'
-                            : 'Save capture',
-                      ),
-                    ),
-                  ],
-                );
+                          if (controller.loadingOutbox)
+                            const Padding(
+                              padding: EdgeInsets.only(top: 12),
+                              child: LinearProgressIndicator(),
+                            ),
+                          if (controller.error != null)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 12),
+                              child: Text(
+                                controller.error
+                                        is CaptureOutboxIntegrityException
+                                    ? 'Encrypted captures could not be verified. Nothing was uploaded.'
+                                    : 'This capture could not be saved. Your draft is retained.',
+                                style: TextStyle(
+                                  color: Theme.of(context).colorScheme.error,
+                                ),
+                              ),
+                            ),
+                          const SizedBox(height: 20),
+                          FilledButton.icon(
+                            key: const Key('capture-submit'),
+                            onPressed: _busy ? null : submit,
+                            icon: const Icon(Icons.add_box_outlined),
+                            label: Text(
+                              controller.batchQueueing
+                                  ? 'Encrypting batch…'
+                                  : controller.submitting
+                                  ? 'Saving capture…'
+                                  : batchFiles.isNotEmpty
+                                  ? 'Queue ${batchFiles.length} files'
+                                  : 'Save capture',
+                            ),
+                          ),
+                        ],
+                      );
                 final status = Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
@@ -867,7 +1353,9 @@ class _CaptureViewState extends State<CaptureView> {
             body: body,
           )
         : Scaffold(
-            appBar: AppBar(title: const Text('Capture')),
+            appBar: usesMobilePresentation()
+                ? null
+                : AppBar(title: const Text('Capture')),
             body: body,
           );
   }
@@ -876,6 +1364,44 @@ class _CaptureViewState extends State<CaptureView> {
 String _fileSize(int bytes) => bytes >= 1024 * 1024
     ? '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB'
     : '${(bytes / 1024).ceil()} KB';
+
+class _MobileCaptureChoice extends StatelessWidget {
+  const _MobileCaptureChoice({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    this.onTap,
+  });
+  final IconData icon;
+  final String title, subtitle;
+  final VoidCallback? onTap;
+  @override
+  Widget build(BuildContext context) => MobileSurface(
+    padding: EdgeInsets.zero,
+    child: InkWell(
+      borderRadius: BorderRadius.circular(16),
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(icon, size: 28, color: Theme.of(context).colorScheme.primary),
+            const SizedBox(height: 24),
+            Text(title, style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 6),
+            Text(
+              subtitle,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
 
 class _CaptureLegacyRecoveryPanel extends StatelessWidget {
   const _CaptureLegacyRecoveryPanel({required this.controller});

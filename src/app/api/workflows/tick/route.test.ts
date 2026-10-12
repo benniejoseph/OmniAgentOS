@@ -28,7 +28,6 @@ const routeMocks = vi.hoisted(() => ({
   dispatchMobilePushDeliveries: vi.fn(),
   processActiveProjectExecutions: vi.fn(),
   syncDuePersonalProviders: vi.fn(),
-  syncDueSalesforceConnections: vi.fn(),
   processDueMoltbookHeartbeats: vi.fn(),
   processDueMoltbookAutonomyCycles: vi.fn(),
   processProactiveAgentAdaptationProposalsForTenant: vi.fn(),
@@ -194,11 +193,6 @@ vi.mock("@/lib/projects/execution", async (importOriginal) => ({
 vi.mock("@/lib/connectors/personal-sync", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/connectors/personal-sync")>()),
   syncDuePersonalProviders: routeMocks.syncDuePersonalProviders,
-}));
-
-vi.mock("@/lib/customer-success/salesforce-sync", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/lib/customer-success/salesforce-sync")>()),
-  syncDueSalesforceConnections: routeMocks.syncDueSalesforceConnections,
 }));
 
 vi.mock("@/lib/moltbook/store", async (importOriginal) => ({
@@ -393,7 +387,6 @@ beforeEach(() => {
   routeMocks.processAgentResumeQueue.mockReset().mockResolvedValue({});
   routeMocks.processDurableSpecialistQueue.mockReset().mockResolvedValue({});
   routeMocks.processBackgroundOperationQueue.mockReset().mockResolvedValue({});
-  routeMocks.syncDueSalesforceConnections.mockReset().mockResolvedValue([]);
   routeMocks.processDueMoltbookHeartbeats.mockReset().mockResolvedValue({
     processed: 0,
     healthy: 0,

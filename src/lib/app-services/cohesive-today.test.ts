@@ -6,7 +6,7 @@ import { DEFAULT_TODAY_SECTIONS } from "@/lib/today/sections";
 const NOW = "2026-09-07T10:00:00.000Z";
 const dependencies = {
   loadToday: vi.fn(), loadWorkspace: vi.fn(), listMeetings: vi.fn(),
-  loadCustomerPortfolio: vi.fn(), loadUsage: vi.fn(),
+  loadUsage: vi.fn(),
 };
 const caller = {
   context: {
@@ -26,22 +26,20 @@ beforeEach(() => {
     },
   });
   dependencies.listMeetings.mockResolvedValue({ data: { meetings: [] } });
-  dependencies.loadCustomerPortfolio.mockResolvedValue({ data: { portfolio: portfolioFixture() } });
   dependencies.loadUsage.mockResolvedValue(usageFixture());
 });
 
 describe("cohesive Today application service", () => {
   it("composes every selected source under the authenticated caller", async () => {
-    dependencies.loadToday.mockResolvedValue(todayFixture([...DEFAULT_TODAY_SECTIONS, "customers", "active_agents", "memory", "conversations", "consumption"]));
+    dependencies.loadToday.mockResolvedValue(todayFixture([...DEFAULT_TODAY_SECTIONS, "active_agents", "memory", "conversations", "consumption"]));
     const result = await showCohesiveTodayService(caller, {
       workspaceId: "workspace:personal:test", workLimit: 8, approvalLimit: 6,
-      meetingLimit: 20, accountLimit: 10,
+      meetingLimit: 20,
     }, dependencies as never);
 
     expect(result.receipt.operation).toBe("app.today.agenda.show");
     expect(dependencies.loadWorkspace).toHaveBeenCalledWith(expect.objectContaining({ tenantId: "tenant:test", role: "admin", limit: 8 }));
     expect(dependencies.listMeetings).toHaveBeenCalledWith(caller, { workspaceId: "workspace:personal:test", limit: 20 });
-    expect(dependencies.loadCustomerPortfolio).toHaveBeenCalledWith(caller, { workspaceId: "workspace:personal:test", limit: 10 });
     expect(result.data.projection.sources.every((source) => source.status === "ready")).toBe(true);
   });
 
@@ -51,7 +49,6 @@ describe("cohesive Today application service", () => {
 
     expect(dependencies.loadWorkspace).not.toHaveBeenCalled();
     expect(dependencies.listMeetings).not.toHaveBeenCalled();
-    expect(dependencies.loadCustomerPortfolio).not.toHaveBeenCalled();
     expect(dependencies.loadUsage).not.toHaveBeenCalled();
     expect(result.data.projection.sources.find((source) => source.source === "meetings")?.status).toBe("hidden");
   });
@@ -77,14 +74,6 @@ function todayFixture(visibleSections = [...DEFAULT_TODAY_SECTIONS]) {
       visibleSections,
     },
     briefLocalDate: "2026-09-07", briefGenerationDue: false, projects: [],
-  };
-}
-
-function portfolioFixture() {
-  return {
-    policyVersion: "p10.14-customer-success-intelligence:1", generatedAt: NOW, accounts: [],
-    counts: { total: 0, urgent: 0, attention: 0, pendingApprovals: 0, overdueCommitments: 0 },
-    projectionSha256: "0".repeat(64),
   };
 }
 

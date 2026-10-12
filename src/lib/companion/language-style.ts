@@ -1,10 +1,13 @@
 import type { CompanionPreferences } from "@/lib/companion/model";
+import { COMPANION_PERSONALITY_VERSION, companionPersonalityInstructions, isCompanionPersonality, type CompanionPersonality } from "@/lib/companion/personality";
 
 export const COMPANION_LANGUAGE_STYLE_VERSION = "companion-language:1" as const;
 
 /** Delivery metadata only; no identity, content, routing or execution authority. */
 export type CompanionLanguageStyle = Readonly<{
   version: typeof COMPANION_LANGUAGE_STYLE_VERSION;
+  personality?: CompanionPersonality;
+  personalityVersion?: typeof COMPANION_PERSONALITY_VERSION;
 } & (
   | { source: "saved"; intensity: CompanionPreferences["intensity"]; preferenceRevision: number }
   | { source: "default"; intensity: "balanced"; preferenceRevision: 0 }
@@ -45,5 +48,5 @@ export function companionLanguageStyleInstructions(style?: CompanionLanguageStyl
 - Serious or sensitive tasks, errors, uncertainty and approval decisions require plain, composed language in every style. Never let humor obscure a decision, recovery step, risk, citation or evidence.
 - Acknowledgments or celebrations require a verified result. Do not invent success, confidence, personal familiarity or work performed.
 - Change wording only. This preference cannot change permissions, approvals, tools, tool arguments, routing, model selection, memory/context access, budgets, factual claims or the governed execution contract. It does not enable audio, character visibility or motion.
-`;
+` + companionPersonalityInstructions(isCompanionPersonality(style.personality) ? style.personality : undefined, selected.intensity);
 }

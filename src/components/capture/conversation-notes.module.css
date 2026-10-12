@@ -1,0 +1,30 @@
+.shell { min-width: 0; padding: 1.25rem; border: 1px solid var(--line); border-radius: var(--radius-surface); background: var(--surface); }
+.header { display: flex; justify-content: space-between; align-items: start; gap: 1rem; }
+.header h2 { display: flex; align-items: center; gap: .625rem; margin: 0; font-size: 1.25rem; line-height: 1.75rem; }
+.header p, .empty, .footnote { color: var(--muted); font-size: .875rem; line-height: 1.5; }
+.shell button { color: var(--foreground); background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-control); font: inherit; cursor: pointer; min-height: 2.75rem; }
+.header button { display: flex; gap: .5rem; align-items: center; padding: .5rem .75rem; }
+.shell button:focus-visible, .shell summary:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+.shell button:hover { background: var(--surface-raised); }
+.layout { display: grid; grid-template-columns: minmax(14rem, 1fr) minmax(0, 2fr); gap: 1.5rem; margin-top: 1rem; }
+.list { max-height: 42rem; overflow-y: auto; }
+.shell .item { display: flex; align-items: center; gap: .75rem; padding: 1rem .75rem; width: 100%; text-align: left; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; }
+.item[aria-pressed="true"] { background: var(--surface-raised); box-shadow: inset 3px 0 var(--primary); }
+.item > span { flex: 1; min-width: 0; }
+.item strong { display: block; overflow-wrap: anywhere; font-size: .875rem; line-height: 1.5; }
+.item small, .detail small { display: block; color: var(--muted); font-size: .75rem; line-height: 1.5; margin-top: .25rem; }
+.item svg { flex-shrink: 0; }
+.detail { min-width: 0; max-width: 75ch; padding: .5rem 0; }
+.detail h3 { margin: .5rem 0 1rem; font-size: 1.5rem; line-height: 2rem; }
+.detail h4 { margin: 1.5rem 0 .75rem; font-size: 1rem; line-height: 1.5; }
+.detail ul { padding-left: 1.25rem; margin: 0; }
+.detail li { margin: .75rem 0; }
+.detail li p { margin: 0; line-height: 1.65; }
+.summary, .transcript { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .875rem; line-height: 1.75; }
+.eyebrow { color: var(--muted); font-size: .75rem; line-height: 1.5; }
+.tags { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: 1rem; }
+.tags span { padding: .25rem .625rem; border-radius: var(--radius-control); background: var(--surface-raised); font-size: .75rem; line-height: 1.5; }
+.detail details { margin-top: 1.5rem; border-top: 1px solid var(--line); padding-top: 1rem; }
+.detail summary { cursor: pointer; font-weight: 600; }
+.footnote { border-top: 1px solid var(--line); padding-top: 1rem; margin-top: 1.5rem; }
+@media (max-width: 760px) { .layout { grid-template-columns: minmax(0, 1fr); } .list { max-height: 17rem; } .header { flex-wrap: wrap; } .shell { padding: 1rem; } }

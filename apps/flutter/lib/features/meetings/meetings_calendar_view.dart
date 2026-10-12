@@ -1,5 +1,9 @@
 import 'package:flutter/material.dart';
 
+import 'meetings_mobile_flow.dart';
+import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_flow_scaffold.dart';
+
 import '../../core/network/native_workspace_access.dart';
 import 'meetings_calendar_controller.dart';
 import 'meetings_widgets.dart';
@@ -72,14 +76,34 @@ class _MeetingCalendarPanelState extends State<MeetingCalendarPanel>
       final reviewed = controller.status!, connection = reviewed.connection!;
       final confirmed = await showDialog<bool>(
         context: context,
-        builder: (context) => AlertDialog(
+        builder: (context) => meetingReviewDialog(
           title: const Text('Sync Google Calendar?'),
           content: SingleChildScrollView(
-            child: Text(
-              'Account: ${connection.email}\nAuthorization generation: ${connection.generation}\n\n'
-              'Import Calendar events into your personal workspace. This destination is independent of the Meeting workspace currently selected. '
-              'A sync may import or remove Calendar sources. The saved receipt will report the observed result.',
-            ),
+            child: usesMobilePresentation()
+                ? Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text(
+                        connection.email,
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                      const SizedBox(height: 16),
+                      const Text(
+                        'Import Calendar events into your personal workspace. This destination is independent of the Meeting workspace currently selected. A sync may import or remove Calendar sources. The saved receipt will report the observed result.',
+                      ),
+                      MobileDetailsDisclosure(
+                        title: 'Connection details',
+                        child: SelectableText(
+                          'Authorization generation: ${connection.generation}',
+                        ),
+                      ),
+                    ],
+                  )
+                : Text(
+                    'Account: ${connection.email}\nAuthorization generation: ${connection.generation}\n\n'
+                    'Import Calendar events into your personal workspace. This destination is independent of the Meeting workspace currently selected. '
+                    'A sync may import or remove Calendar sources. The saved receipt will report the observed result.',
+                  ),
           ),
           actions: [
             TextButton(
@@ -142,7 +166,11 @@ class _MeetingCalendarPanelState extends State<MeetingCalendarPanel>
               if (connection != null) ...[
                 Text('Account: ${connection.email}'),
                 Text(
-                  'Authorization generation ${connection.generation} · ${connection.ready ? 'Calendar read access available' : 'Calendar authorization needs attention'}',
+                  usesMobilePresentation()
+                      ? (connection.ready
+                            ? 'Calendar is connected'
+                            : 'Calendar connection needs attention')
+                      : 'Authorization generation ${connection.generation} · ${connection.ready ? 'Calendar read access available' : 'Calendar authorization needs attention'}',
                 ),
                 if (connection.raw['lastSyncedAt'] != null)
                   Text(

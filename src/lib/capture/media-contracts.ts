@@ -113,10 +113,18 @@ export const captureSegmentMediaTranscriptSchema = z.object({
   sourceAudioSha256: sha256Schema,
   transcriptSha256: sha256Schema,
   model: z.string().trim().min(1).max(160),
-  languageTags: z.array(languageTagSchema).min(1).max(24),
-  turns: z.array(captureSegmentMediaTurnSchema).min(1).max(2_000),
+  languageTags: z.array(languageTagSchema).max(24),
+  turns: z.array(captureSegmentMediaTurnSchema).max(2_000),
+  noSpeech: z.literal(true).optional(),
   transcribedAt: z.string().datetime({ offset: true }),
 }).strict().superRefine((value, context) => {
+  if (value.noSpeech ? value.turns.length > 0 || value.languageTags.length > 0 : !value.turns.length || !value.languageTags.length) {
+    context.addIssue({
+      code: "custom",
+      message: "An empty checkpoint requires an explicit no-speech marker; a no-speech checkpoint cannot contain transcript turns or languages.",
+      path: ["noSpeech"],
+    });
+  }
   const languages = [...new Set(value.turns.map((turn) => turn.languageTag))]
     .sort((left, right) => left.localeCompare(right));
   if (JSON.stringify(languages) !== JSON.stringify(value.languageTags)) {
@@ -186,6 +194,16 @@ export const captureMediaDecisionSchema = citedTextSchema.extend({
   decisionId: z.string().regex(/^media-decision:[a-f0-9]{64}$/),
 }).strict();
 
+/** Source observations, never verified identities or instructions to execute. */
+export const captureConversationContextSchema = z.object({
+  categories: z.array(z.string().trim().min(1).max(80)).max(12),
+  keyFacts: z.array(citedTextSchema).max(100),
+  relationships: z.array(citedTextSchema).max(100),
+  openQuestions: z.array(citedTextSchema).max(100),
+  processedTurnCount: z.number().int().min(1).max(50_000),
+  windowCount: z.number().int().min(1).max(1_000),
+}).strict();
+
 export const captureMediaOutputSchema = z.object({
   schemaVersion: z.literal(1),
   tenantId: z.string().trim().min(1).max(120),
@@ -204,6 +222,7 @@ export const captureMediaOutputSchema = z.object({
   summary: citedTextSchema,
   actionItems: z.array(captureMediaActionItemSchema).max(500),
   decisions: z.array(captureMediaDecisionSchema).max(500),
+  conversation: captureConversationContextSchema.optional(),
   warnings: z.array(z.string().trim().min(1).max(240)).max(100),
   rawAudioRetention: captureRawAudioRetentionSchema,
   processedAt: z.string().datetime({ offset: true }),
@@ -321,6 +340,9 @@ function allOutputCitations(output: CaptureMediaOutput) {
     ...output.chapters.flatMap((chapter) => chapter.citations),
     ...output.actionItems.flatMap((item) => item.citations),
     ...output.decisions.flatMap((item) => item.citations),
+    ...(output.conversation?.keyFacts.flatMap((item) => item.citations) || []),
+    ...(output.conversation?.relationships.flatMap((item) => item.citations) || []),
+    ...(output.conversation?.openQuestions.flatMap((item) => item.citations) || []),
   ];
 }
 

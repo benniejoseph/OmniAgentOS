@@ -8,6 +8,13 @@ product
 
 Asael is a personal AI partner for one owner who wants help carrying real work across life and projects. The owner describes an outcome, gives useful context, reviews decisions when needed, and comes back to progress and evidence. Specialist agents and workflows support that relationship.
 
+Work supports the owner's Salesforce Customer Success practice: mainly Secondary
+CSM assignments, with some Lead CSM clients. Each client has its own context,
+Success Path, stakeholder notes, and next actions. Evidence comes from supplied
+meeting recordings, screenshots, transcripts, decks, and documents. The product
+does not assume access to Salesforce orgs. Its dedicated CSM assistant prepares
+briefs and recommendations from the selected client's evidence for owner review.
+
 ## Product Purpose
 
 Asael turns personal goals into adaptive, durable work. It combines specialist agents, long-term memory, tools, approvals, recovery, and evidence so repeated reversible work becomes easier while novel or consequential actions remain supervised. Success means the owner can quickly answer four questions: what is working, what needs me, what did the system learn, and can I trust the result?
@@ -38,3 +45,13 @@ Clear, calm, and accountable. The interface should feel technically capable with
 ## Accessibility & Inclusion
 
 Target WCAG 2.2 AA across authenticated and public surfaces. All workflows must be keyboard operable, screen-reader understandable, robust at 200% zoom, usable without color alone, and functional with reduced motion. Touch targets, focus visibility, live status announcements, contrast, error recovery, and mobile navigation are release requirements rather than polish.
+
+
+### CSM role context
+
+Work includes a personal “My CSM role” space for evolving responsibilities,
+working preferences, notes, screenshots and role documents. The CSM assistant
+reads current saved role guidance alongside the selected client’s context on
+each request. Role guidance is scoped to its owner and kept separate from client
+facts; file readiness and bounded excerpt coverage remain explicit. This is
+context retrieval, not model training or permission expansion.

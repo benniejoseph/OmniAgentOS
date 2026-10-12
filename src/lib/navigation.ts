@@ -1,10 +1,10 @@
 import {
-  Activity,
+  History,
+  House,
   Blocks,
   Inbox,
   Brain,
   Bot,
-  Building2,
   CalendarDays,
   ChartCandlestick,
   Cable,
@@ -66,13 +66,6 @@ export const appNav: AppNavItem[] = [
     icon: CalendarDays,
   },
   {
-    href: "/app/accounts",
-    label: "Accounts",
-    shortLabel: "Accounts",
-    description: "Customer context, evidence, health, risks, and renewal.",
-    icon: Building2,
-  },
-  {
     href: "/app/markets",
     label: "Markets",
     shortLabel: "Markets",
@@ -98,14 +91,14 @@ export const appNav: AppNavItem[] = [
     label: "Today",
     shortLabel: "Today",
     description: "What matters today, what changed, and what needs you.",
-    icon: Activity,
+    icon: House,
   },
   {
-    href: "/app/activity",
-    label: "Activity",
-    shortLabel: "Activity",
-    description: "Work in progress, decisions and updates from the records you can access.",
-    icon: Activity,
+    href: "/app/history",
+    label: "History",
+    shortLabel: "History",
+    description: "Your results and a timeline of work, decisions, and updates.",
+    icon: History,
   },
   {
     href: "/app/projects",
@@ -142,8 +135,8 @@ export const appNav: AppNavItem[] = [
   },
   {
     href: "/app/responsibilities",
-    label: "Responsibilities",
-    description: "Ongoing checks and follow-through on your commitments.",
+    label: "Follow-ups",
+    description: "Give Asael a bounded outcome to check, with sources, limits, and optional reminders.",
     icon: CalendarDays,
   },
   {
@@ -181,7 +174,7 @@ export const appNav: AppNavItem[] = [
   {
     href: "/app/settings",
     label: "Settings",
-    description: "Models, environment, and configuration.",
+    description: "Preferences, models, Quality Checks, and Monitoring.",
     icon: Settings,
   },
 ];
@@ -196,16 +189,22 @@ export const primaryNavItems = primaryNavHrefs.map((href) => {
 });
 
 export const appNavGroups: AppNavGroup[] = [
-  {
-    label: "Workspace",
-    items: primaryNavItems,
-  },
+  { label: "Workspace", items: primaryNavItems },
+  { label: "Review", items: ["/app/history", "/app/approvals"].map(appNavItem) },
   {
     label: "More",
     collapsible: true,
-    items: appNav.filter((item) => !primaryNavHrefs.includes(item.href)),
+    items: ["/app/capture", "/app/meetings", "/app/responsibilities", "/app/agents", "/app/markets", "/app/automation"].map(appNavItem),
+  },
+  {
+    label: "Settings",
+    items: ["/app/security", "/app/settings"].map(appNavItem),
   },
 ];
+
+// Route metadata remains available for old deep links. Navigation itself uses
+// only the canonical destinations above, including the shared History page.
+export const navigationItems = appNavGroups.flatMap((group) => group.items);
 
 function appNavItem(href: string) {
   const item = appNav.find((entry) => entry.href === href);

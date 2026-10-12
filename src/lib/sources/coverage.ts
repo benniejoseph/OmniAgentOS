@@ -15,7 +15,7 @@ const domainSchema = z.object({
   id: z.string().min(1).max(80),
   label: z.string().min(1).max(120),
   category: z.enum([
-    "communication", "schedule", "files", "media", "customer",
+    "communication", "schedule", "files", "media",
     "knowledge", "productivity", "location", "health", "finance",
     "commerce", "travel", "social", "home",
   ]),
@@ -150,7 +150,6 @@ export function projectSourceCoverage(input: SourceCoverageInput): SourceCoverag
     : defaultGoogleDomains(input, generatedAt);
   const domains: SourceCoverageDomain[] = [
     ...googleDomains,
-    salesforceDomain(input),
     nativeCaptureDomain(input, generatedAt),
     nativeKnowledgeDomain(input, generatedAt),
     ...unsupportedDomains.map(([id, label, category, limitation]) => unsupportedDomain(
@@ -406,49 +405,6 @@ function googleAccountSuffix(grant: RequestOAuthGrant) {
     (grant.connectionPurpose === "work" ? "Work" : "Personal");
   const email = grant.accountEmail?.trim().toLowerCase();
   return email ? `${label} (${email})`.slice(0, 88) : label;
-}
-
-function salesforceDomain(input: SourceCoverageInput): SourceCoverageDomain {
-  if (input.integrations.state === "unavailable") {
-    return unavailableDomain("salesforce", "Salesforce", "customer", input.integrations.detail, "/app/accounts");
-  }
-  const integration = input.integrations.value.installed.find((item) => item.id === "salesforce:workspace");
-  if (!integration?.connected) {
-    return notConnectedDomain("salesforce", "Salesforce", "customer", integration?.nextAction || "Connect Salesforce to a canonical Workspace.", "/app/accounts");
-  }
-  const coverage = integration.sync.coverage;
-  const freshness = integration.sync.freshness.state === "current"
-    ? "current" as const
-    : integration.sync.freshness.state === "stale"
-      ? "stale" as const
-      : integration.sync.freshness.state === "never"
-        ? "never" as const
-        : "unknown" as const;
-  return {
-    id: "salesforce",
-    label: "Salesforce",
-    category: "customer",
-    availability: "connected",
-    coverage: { state: coverage, observedItems: null, detail: integration.sync.coverageDetail },
-    backfill: {
-      state: coverage === "complete" ? "complete" : coverage === "partial" ? "in_progress" : coverage === "none" ? "not_started" : "unknown",
-      detail: integration.sync.cursor.detail,
-    },
-    freshness: {
-      state: freshness,
-      lastVerifiedAt: integration.sync.lastSuccessfulAt,
-      staleAfterSeconds: integration.sync.freshness.staleAfterSeconds,
-    },
-    blindSpot: coverage !== "complete",
-    limitation: coverage === "complete"
-      ? "Coverage is limited to the configured Salesforce object scope and Workspace authority."
-      : "Uncheckpointed Salesforce objects remain unknown and are not treated as absent records.",
-    nextAction: {
-      state: integration.state === "working" ? "none" : "action_required",
-      label: integration.nextAction,
-      href: integration.manageHref,
-    },
-  };
 }
 
 function nativeCaptureDomain(input: SourceCoverageInput, generatedAt: string): SourceCoverageDomain {

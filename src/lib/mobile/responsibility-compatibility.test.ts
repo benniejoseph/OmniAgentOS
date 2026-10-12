@@ -8,8 +8,8 @@ vi.mock("@/lib/responsibilities/service", () => ({ getResponsibilityDraft: read 
 vi.mock("@/lib/responsibilities/lifecycle-service", () => ({ getResponsibilityLifecycle: runtime }));
 vi.mock("@/lib/responsibilities/notification-service", () => ({ getResponsibilityNotifications: notifications }));
 const old: SecurityContext = { tenantId: "t", actorId: "a", source: "mobile", role: "operator",
-  native: { deviceId: "d", platform: "macos", clientContractVersion: 47 } };
-const current = { ...old, native: { ...old.native!, clientContractVersion: 48 } };
+  native: { deviceId: "d", platform: "macos", clientContractVersion: 55 } };
+const current = { ...old, native: { ...old.native!, clientContractVersion: 56 } };
 const work = { record: { draft: { sources: [{ kind: "work_item", id: "work-a", workspaceId: "w", projectId: "p" }] } } };
 describe("native responsibility upgrade boundary", () => {
   it("retains meeting reads and web/current work reads", () => {

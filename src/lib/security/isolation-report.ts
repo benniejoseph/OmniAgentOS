@@ -90,6 +90,10 @@ const RESTRICTIVE_ACTOR_POLICIES = new Map<string, string>([
   ...[
     "omni_companion_preferences",
     "omni_companion_preference_mutations",
+    "omni_personal_profiles",
+    "omni_personal_profile_mutations",
+    "omni_listen_grants",
+    "omni_listen_sources",
     "omni_responsibilities",
     "omni_responsibility_mutations",
     "omni_responsibility_observations",

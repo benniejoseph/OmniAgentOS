@@ -6,7 +6,7 @@ import {
 } from "@/lib/events/store";
 import type { AgentEvent } from "@/lib/orchestration/types";
 import { agentRunOutcomeEvent } from "@/lib/runs/public";
-import { getAgentRun } from "@/lib/runs/store";
+import { getAgentRun, getAgentRunWorkflowHandoff } from "@/lib/runs/store";
 import type { AgentRunRecord } from "@/lib/runs/types";
 import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import type { SecurityContext } from "@/lib/security/types";
@@ -212,7 +212,7 @@ export async function admitAgentRequest(input: {
   return workflowReplay || { state: "new" };
 }
 
-function replayRun(run: AgentRunRecord): AgentRequestAdmission {
+async function replayRun(run: AgentRunRecord): Promise<AgentRequestAdmission> {
   const started: AgentEvent = {
     type: "run",
     runId: run.id,
@@ -220,6 +220,9 @@ function replayRun(run: AgentRunRecord): AgentRequestAdmission {
   };
   const outcome = agentRunOutcomeEvent(run, {
     canceledMessage: REPLAYED_CANCELLATION,
+    workflowHandoff: run.status === "completed"
+      ? await getAgentRunWorkflowHandoff(run.id, { tenantId: run.tenantId, actorId: run.ownerActorId })
+      : undefined,
   });
   if (!outcome) {
     return {

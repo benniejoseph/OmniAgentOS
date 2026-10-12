@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/network/native_workspace_access.dart';
+import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_page_scaffold.dart';
 
 import '../auth/application/session_controller.dart';
 import 'admin_controller.dart';
@@ -20,6 +22,7 @@ class AdminConsole extends ConsumerStatefulWidget {
 
 class _AdminConsoleState extends ConsumerState<AdminConsole> {
   int selected = 0;
+  bool _mobileModuleOpen = false;
 
   @override
   Widget build(BuildContext context) {
@@ -31,23 +34,63 @@ class _AdminConsoleState extends ConsumerState<AdminConsole> {
         !access.current) {
       return const _AccessDenied();
     }
-    final module = adminModules[selected];
-    final controller = ref.watch(adminControllerProvider(module.id));
-    final width = MediaQuery.sizeOf(context).width;
-    final showRail = width >= 840;
-
-    return Scaffold(
-      appBar: AppBar(
-        title: const Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+    if (usesMobilePresentation() && !_mobileModuleOpen) {
+      return Scaffold(
+        body: ListView(
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 32),
           children: [
-            Text('Control plane'),
-            Text(
-              'Workspace administration',
-              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w400),
+            const MobilePageHeader(
+              title: 'Workspace controls',
+              subtitle: 'Status and tools for managing Asael.',
+            ),
+            MobileSurface(
+              padding: EdgeInsets.zero,
+              child: Column(
+                children: [
+                  for (var i = 0; i < adminModules.length; i++) ...[
+                    MobileActionTile(
+                      icon: adminModules[i].icon,
+                      title: adminModules[i].label,
+                      subtitle: 'View status and available controls',
+                      onTap: () => setState(() {
+                        selected = i;
+                        _mobileModuleOpen = true;
+                      }),
+                    ),
+                    if (i < adminModules.length - 1)
+                      const Divider(height: 1, indent: 56),
+                  ],
+                ],
+              ),
             ),
           ],
         ),
+      );
+    }
+    final module = adminModules[selected];
+    final controller = ref.watch(adminControllerProvider(module.id));
+    final width = MediaQuery.sizeOf(context).width;
+    final showRail = !usesMobilePresentation() && width >= 840;
+
+    return Scaffold(
+      appBar: AppBar(
+        leading: usesMobilePresentation()
+            ? BackButton(
+                onPressed: () => setState(() => _mobileModuleOpen = false),
+              )
+            : null,
+        title: usesMobilePresentation()
+            ? Text(module.label)
+            : const Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Control plane'),
+                  Text(
+                    'Workspace administration',
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w400),
+                  ),
+                ],
+              ),
         actions: [
           IconButton(
             tooltip: controller.loading
@@ -94,7 +137,7 @@ class _AdminConsoleState extends ConsumerState<AdminConsole> {
           Expanded(
             child: Column(
               children: [
-                if (!showRail)
+                if (!showRail && !usesMobilePresentation())
                   _CompactNavigation(
                     selected: selected,
                     onSelected: (value) => setState(() => selected = value),
@@ -160,6 +203,68 @@ class AdminModuleView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final snapshot = controller.snapshot;
+    if (usesMobilePresentation()) {
+      return RefreshIndicator(
+        onRefresh: controller.refresh,
+        child: ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 32),
+          children: [
+            _ModuleHeader(module: module),
+            const SizedBox(height: 16),
+            _StatusBar(
+              loading: controller.loading,
+              available: snapshot?.values.length ?? 0,
+              failed: snapshot?.failures.length ?? 0,
+              total: module.endpoints.length,
+              updatedAt: snapshot?.updatedAt,
+            ),
+            if (controller.notice != null) ...[
+              const SizedBox(height: 12),
+              _MessagePanel(message: controller.notice!),
+            ],
+            if (controller.error != null) ...[
+              const SizedBox(height: 12),
+              _ErrorPanel(error: controller.error!, retry: controller.refresh),
+            ],
+            const SizedBox(height: 24),
+            const MobileSectionHeader(
+              title: 'Current status',
+              description: 'Open an area to see its latest response.',
+            ),
+            if (controller.loading && snapshot == null)
+              const _EndpointSkeleton()
+            else
+              for (final endpoint in module.endpoints)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: _EndpointPanel(
+                    endpoint: endpoint,
+                    value: snapshot?.values[endpoint.path],
+                    error: snapshot?.failures[endpoint.path],
+                  ),
+                ),
+            if (module.actions.isNotEmpty) ...[
+              const SizedBox(height: 20),
+              const MobileSectionHeader(
+                title: 'Available actions',
+                description: 'Review each operation before running it.',
+              ),
+              for (final action in module.actions)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: _ActionTile(action: action, controller: controller),
+                ),
+            ],
+            const SizedBox(height: 16),
+            NativeWorkspaceBrowserButton(
+              path: module.browserPath,
+              label: 'More ${module.label.toLowerCase()} controls',
+            ),
+          ],
+        ),
+      );
+    }
     return RefreshIndicator(
       onRefresh: controller.refresh,
       child: ListView(

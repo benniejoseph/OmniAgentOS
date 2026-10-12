@@ -9,6 +9,7 @@ export const LOCAL_COMPUTER_PRESENT_SCREENSHOT_CONTRACT_VERSION = 12 as const;
 export const LOCAL_COMPUTER_OPEN_URL_CONTRACT_VERSION = 13 as const;
 export const LOCAL_COMPUTER_SCREENSHOT_COORDINATE_CONTRACT_VERSION = 13 as const;
 export const LOCAL_COMPUTER_COMMAND_RUNNER_CONTRACT_VERSION = 27 as const;
+export const LOCAL_COMPUTER_EXTENDED_CONTROLS_CONTRACT_VERSION = 52 as const;
 // A press, click, key, or type that runs on This Mac task authority alone may
 // reach the Mac only when the helper checks its real on-screen target. From
 // this contract version the command says so with `authority: "task"`, and the
@@ -24,6 +25,8 @@ export const LOCAL_COMPUTER_TASK_AUTHORITY_REFUSED_ERROR_CODE =
 export const LOCAL_COMPUTER_DEVICE_LEASE_SECONDS = 24;
 export const LOCAL_COMPUTER_COMMAND_LEASE_SECONDS = 30;
 export const LOCAL_COMPUTER_COMMAND_TIMEOUT_MS = 45_000;
+export const LOCAL_COMPUTER_MAX_PROGRAM_SECONDS = 300;
+export const LOCAL_COMPUTER_PROGRAM_TRANSPORT_GRACE_MS = 45_000;
 export const LOCAL_COMPUTER_MAX_SCREENSHOT_BYTES = 1_300_000;
 export const LOCAL_COMPUTER_MAX_TERMINAL_OUTPUT_BYTES = 32 * 1_024;
 export const LOCAL_COMPUTER_MAX_TERMINAL_STREAM_BYTES = 4 * 1_024 * 1_024;
@@ -307,7 +310,7 @@ export const localComputerRunCommandInputSchema = z.object({
         });
       }
     }),
-  timeoutSeconds: z.number().int().min(1).max(30),
+  timeoutSeconds: z.number().int().min(1).max(LOCAL_COMPUTER_MAX_PROGRAM_SECONDS),
 }).strict().superRefine((value, context) => {
   if (
     value.arguments.reduce(
@@ -496,7 +499,9 @@ export const localComputerTerminalOutputSchema = z.object({
   stdout: terminalDisplayText,
   stderr: terminalDisplayText,
   exitCode: z.number().int().min(-1).max(255),
-  durationMs: z.number().int().min(0).max(LOCAL_COMPUTER_COMMAND_TIMEOUT_MS),
+  durationMs: z.number().int().min(0).max(
+    LOCAL_COMPUTER_MAX_PROGRAM_SECONDS * 1_000 + LOCAL_COMPUTER_PROGRAM_TRANSPORT_GRACE_MS,
+  ),
   stdoutBytes: z.number().int().min(0).max(
     LOCAL_COMPUTER_MAX_TERMINAL_STREAM_BYTES,
   ),

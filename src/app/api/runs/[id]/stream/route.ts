@@ -44,6 +44,7 @@ async function GETHandler(
   if (!run) return Response.json({ error: "Run not found." }, { status: 404 });
 
   return agentRunTailResponse({
+    includeResearchProgress: auth.source !== "mobile" || (auth.native?.clientContractVersion || 0) >= 49,
     runId: run.id,
     tenantId: auth.tenantId,
     threadId: run.threadId,

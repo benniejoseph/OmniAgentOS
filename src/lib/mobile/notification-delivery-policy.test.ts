@@ -35,15 +35,6 @@ describe("server notification delivery policy", () => {
     });
     expect(domainNotificationCandidate({
       ...base,
-      sourceKind: "customer",
-      sourceState: "at_risk",
-    })).toMatchObject({
-      kind: "failure",
-      actionable: true,
-      severity: "warning",
-    });
-    expect(domainNotificationCandidate({
-      ...base,
       sourceKind: "run",
       sourceState: "completed",
     })).toMatchObject({ kind: "routine_success" });

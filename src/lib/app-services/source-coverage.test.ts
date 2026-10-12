@@ -84,7 +84,6 @@ function emptyOverview() {
       oauth: { state: "ready", detail: "ready" },
       mcp: { state: "ready", detail: "ready" },
       openapi: { state: "ready", detail: "ready" },
-      salesforce: { state: "ready", detail: "ready" },
       usage: { state: "ready", detail: "ready" },
     },
     installed: [],

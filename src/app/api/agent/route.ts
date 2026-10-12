@@ -1,6 +1,15 @@
+import { enqueueWorkflowRunTick, scheduleWorkflowQueueDrain } from "@/lib/workflows/queue";
 import { createHash, randomUUID } from "node:crypto";
 import { after } from "next/server";
 import { z } from "zod";
+import { researchOptionsSchema, RESEARCH_WORKFLOW_METADATA_KEY } from "@/lib/research/contracts";
+import {
+  createWorkflowCommandContextBinding,
+  createWorkflowCommandModelBinding,
+  resolveReviewedWorkflowCommandModel,
+  WORKFLOW_COMMAND_CONTEXT_METADATA_KEY,
+  WORKFLOW_COMMAND_MODEL_METADATA_KEY,
+} from "@/lib/workflows/command-context";
 import {
   AGENT_MAX_MESSAGE_CHARS,
   AGENT_MAX_MESSAGES,
@@ -92,6 +101,7 @@ import {
 import { firstOutputTimer } from "@/lib/observability/agent-quality";
 import { runAgent } from "@/lib/orchestration/agent-runner";
 import type { AgentEvent } from "@/lib/orchestration/types";
+import { isLocalComputerTarget, localComputerTargetFrom } from "@/lib/orchestration/computer-use-routing";
 import {
   admitAgentRequest,
   agentRequestDelegatedTurnId,
@@ -179,13 +189,20 @@ import {
 } from "@/lib/workflows/personal-context";
 import { resolveVoiceCommandGate, type VoiceCommandGate } from "@/lib/voice/command-gate";
 import { voiceCommandInputSchema } from "@/lib/voice/command-input";
+import { COMPANION_PERSONALITIES } from "@/lib/companion/personality";
+import {
+  conversationVoiceContextMatches, conversationVoiceRequestId,
+  requireActiveConversationVoiceSession, VoiceConversationError,
+  resolveConversationVoiceClarification, recordConversationVoiceClarification, claimConversationVoiceClarification,
+  type ConversationVoiceSession, type ConversationVoiceClarification,
+} from "@/lib/voice/conversation-session";
 import { listWorkspaceTemplates } from "@/lib/workspace-templates/store";
 import { personalWorkspaceId } from "@/lib/workspaces/contracts";
 
 export const runtime = "nodejs";
-// gpt-5 research/orchestrate runs can exceed 60s; 300s is the Vercel Pro ceiling.
-// On Hobby this is silently capped to 60s (harmless).
-export const maxDuration = 300;
+// Production uses Vercel Pro, Fluid Compute, and Node.js 24. Extended duration
+// is configured per route; the agent's own 25-minute budget remains tighter.
+export const maxDuration = 1800;
 export const POST = withRuntimeModelRequestCache(
   withDatabaseRequestScope(POSTHandler),
 );
@@ -205,18 +222,26 @@ const requestSchema = z.object({
   requestId: z.string().trim().min(1).max(200).regex(/^[a-zA-Z0-9._:-]+$/).optional(),
   message: z.string().min(1).max(AGENT_MAX_MESSAGE_CHARS).optional(),
   mode: z.enum(["orchestrate", "research", "execute", "learn"]).optional(),
+  research: researchOptionsSchema.optional(),
   agentId: z.string().min(1).max(120).regex(/^[a-zA-Z0-9_.:-]+$/).optional(),
   requireReadOnlyAgent: z.boolean().optional(),
   specialistIds: z.array(z.enum(["atlas", "scout", "forge", "sentinel", "mnemosyne"])).max(5).optional(),
   strategy: z.enum(["auto", "direct", "durable"]).optional(),
-  computerUseTarget: z.enum(["local_macos", "isolated_browser"]).optional(),
+  computerUseTarget: z.enum(["local_macos", "local_android", "isolated_browser"]).optional(),
   contextScope: z.enum(CONTEXT_SCOPE_IDS).optional(),
   contextSelection: contextSelectionRequestSchema.optional(),
   contextReferences: commandContextReferencesSchema.optional(),
   modelSelection: commandModelSelectionRequestSchema.optional(),
   budgets: runBudgetCountersV1Schema.partial().optional(),
   voiceInput: voiceCommandInputSchema.optional(),
+  companionPersonality: z.enum(COMPANION_PERSONALITIES).optional(),
 }).strict()
+  .refine((value) => !value.research || value.mode === "research", {
+    message: "Research options require Research mode.", path: ["research"],
+  })
+  .refine((value) => !value.research || !value.resumeRunId, {
+    message: "A resumed run keeps its original research brief.", path: ["research"],
+  })
   .refine((value) => Boolean(value.message || value.messages?.length), {
     message: "A message is required.",
   })
@@ -285,12 +310,17 @@ async function POSTHandler(request: Request) {
       headers: { "cache-control": "private, no-store" },
     });
   }
-  const computerUseTarget = parsed.data.computerUseTarget === "local_macos"
-    ? "local_macos" as const
-    : undefined;
+  const computerUseTarget = localComputerTargetFrom(parsed.data.computerUseTarget);
+  const deepResearch = parsed.data.mode === "research" && parsed.data.research?.depth === "deep";
+  if (deepResearch && (computerUseTarget || parsed.data.requireReadOnlyAgent || parsed.data.resumeRunId)) {
+    return Response.json({
+      error: "Research needs its own run",
+      message: "Start Deep research as a new Asael task so its plan and evidence can be saved in the background.",
+    }, { status: 409 });
+  }
 
-  const requestMessage = parsed.data.message || parsed.data.messages?.at(-1)?.content || "";
-  const safeRequestMessage = String(redactSensitive(requestMessage));
+  let requestMessage = parsed.data.message || parsed.data.messages?.at(-1)?.content || "";
+  let safeRequestMessage = String(redactSensitive(requestMessage));
   if (
     parsed.data.contextSelection &&
     normalizeTaskQuery(parsed.data.contextSelection.query) !== normalizeTaskQuery(requestMessage)
@@ -326,7 +356,9 @@ async function POSTHandler(request: Request) {
   }
   let clientRequestId: string | undefined;
   try {
-    clientRequestId = resolveClientRequestId(request, parsed.data.requestId);
+    clientRequestId = parsed.data.voiceInput?.schemaVersion === 2
+      ? conversationVoiceRequestId(parsed.data.voiceInput.sessionId, parsed.data.voiceInput.turnId)
+      : resolveClientRequestId(request, parsed.data.requestId);
   } catch (error) {
     return Response.json(
       { error: error instanceof Error ? error.message : "Invalid request id." },
@@ -352,6 +384,44 @@ async function POSTHandler(request: Request) {
   }
   const requestActorBinding =
     canonicalRequestActorBindingFromSecurityContext(context);
+  let companionPersonality = parsed.data.companionPersonality;
+  let activeVoiceSession: ConversationVoiceSession | undefined;
+  let voiceClarification: ConversationVoiceClarification | undefined;
+  if (parsed.data.voiceInput?.schemaVersion === 2) {
+    try {
+      const voiceInput = parsed.data.voiceInput;
+      const active = await requireActiveConversationVoiceSession({
+        context, sessionId: voiceInput.sessionId, conversationId: voiceInput.conversationId,
+      });
+      activeVoiceSession = active;
+      // A spoken task keeps the delivery chosen when its live session began.
+      // The client cannot hot-swap that session by changing a later request.
+      companionPersonality = active.companionLanguageStyle?.personality;
+      if (!conversationVoiceContextMatches(active.commandContext, {
+        agentId: parsed.data.agentId || "atlas", projectId: parsed.data.projectId,
+        mode: parsed.data.mode || "orchestrate", contextScope: parsed.data.contextScope || "session",
+        computerUseTarget: localComputerTargetFrom(parsed.data.computerUseTarget),
+        contextReferences: parsed.data.contextReferences || [], contextSelection: parsed.data.contextSelection,
+      }) || parsed.data.missionId || parsed.data.messages || parsed.data.message!.length > 8000 ||
+          request.headers.has(PROMPT_QUEUE_DISPATCH_ID_HEADER) ||
+          request.headers.has(PROMPT_QUEUE_DISPATCH_TOKEN_HEADER)) {
+        throw new VoiceConversationError("voice_context_changed",
+          "This spoken request no longer matches its voice conversation. End voice and start again with the selected Agent and context.", 409);
+      }
+      voiceClarification = await resolveConversationVoiceClarification({ context, session: active, requestId });
+      if (voiceClarification) {
+        requestMessage = `${voiceClarification.prompt}\nLatest reply from the user: ${parsed.data.message}\nUse the latest reply to clarify or change the earlier request. Do not treat the earlier question as permission for an action.`;
+        if (requestMessage.length > AGENT_MAX_MESSAGE_CHARS) throw new VoiceConversationError("voice_clarification_too_long",
+          "This task has accumulated too much clarification context. Start a new call and restate the complete task concisely.", 409);
+        safeRequestMessage = String(redactSensitive(requestMessage));
+      }
+    } catch (error) {
+      return Response.json({
+        error: error instanceof VoiceConversationError ? error.message : "Voice session verification is temporarily unavailable.",
+        code: error instanceof VoiceConversationError ? error.code : "voice_session_unavailable",
+      }, { status: error instanceof VoiceConversationError ? error.status : 503, headers: { "cache-control": "private, no-store" } });
+    }
+  }
   const queuedItemId = request.headers
     .get(PROMPT_QUEUE_DISPATCH_ID_HEADER)?.trim();
   const queuedDispatchToken = request.headers
@@ -403,7 +473,7 @@ async function POSTHandler(request: Request) {
   }
   if (
     parsed.data.contextReferences?.length &&
-    parsed.data.strategy === "durable"
+    parsed.data.strategy === "durable" && !deepResearch
   ) {
     return Response.json({
       error: "Command context requires direct execution",
@@ -415,7 +485,7 @@ async function POSTHandler(request: Request) {
   }
   if (
     parsed.data.modelSelection &&
-    parsed.data.strategy === "durable"
+    parsed.data.strategy === "durable" && !deepResearch
   ) {
     return Response.json({
       error: "Model selection requires direct execution",
@@ -454,6 +524,9 @@ async function POSTHandler(request: Request) {
   let queuedLifecycleBinding: PromptQueueDispatchReceiptBinding | undefined;
   let commandContextSecurity = context;
   if (queuedItemId && queuedDispatchToken) {
+    if (parsed.data.research) {
+      return Response.json({ error: "Start research directly", message: "Start a fresh Research task to keep its brief and depth together." }, { status: 409 });
+    }
     const queuedSessionId = context.auth?.sessionId?.trim();
     if (!queuedSessionId) {
       return Response.json({
@@ -540,7 +613,7 @@ async function POSTHandler(request: Request) {
   // suppress saved-procedure matching or change the execution shape. Local
   // Computer Use remains a fixed direct harness because its governed tool set
   // and target are established before semantic routing.
-  const deterministicIntentInvariant = computerUseTarget === "local_macos";
+  const deterministicIntentInvariant = isLocalComputerTarget(computerUseTarget);
   let commandContext;
   try {
     commandContext = await resolveCommandContextReferences({
@@ -741,12 +814,14 @@ async function POSTHandler(request: Request) {
   let budgetLimits;
   let workflowBudgetLimits;
   try {
-    const agentBudgetAuthority =
-      computerUseTarget === "local_macos"
+    const requestBudgetAuthority =
+      deepResearch
+        ? WORKFLOW_RUN_BUDGET_LIMITS
+        : isLocalComputerTarget(computerUseTarget)
         ? LOCAL_COMPUTER_RUN_BUDGET_LIMITS
         : AGENT_RUN_BUDGET_LIMITS;
     budgetLimits = narrowRunBudgetLimits(
-      agentBudgetAuthority,
+      requestBudgetAuthority,
       parsed.data.budgets,
     );
     workflowBudgetLimits = narrowRunBudgetLimits(
@@ -839,6 +914,7 @@ async function POSTHandler(request: Request) {
       // (after the last event this client saw, if it says) instead of running
       // the instruction again.
       return agentRunTailResponse({
+        includeResearchProgress: context.source !== "mobile" || (context.native?.clientContractVersion || 0) >= 49,
         runId: admission.runId,
         tenantId: context.tenantId,
         threadId: admission.threadId,
@@ -858,11 +934,14 @@ async function POSTHandler(request: Request) {
   // policy that run started with.
   let voiceGate: VoiceCommandGate;
   try {
-    voiceGate = parsed.data.resumeRunId
+    voiceGate = parsed.data.voiceInput?.schemaVersion === 2
+      ? { state: "declared", sessionId: parsed.data.voiceInput.sessionId, sessionEvidence: "minted" }
+      : parsed.data.resumeRunId
       ? { state: "none" }
       : await resolveVoiceCommandGate({
           tenantId: context.tenantId,
           actorId: context.actorId,
+          readableOwnerActorIds: requestActorBinding?.readableOwnerActorIds,
           threadId: parsed.data.threadId,
           declaredSessionId: parsed.data.voiceInput?.sessionId,
           requestId,
@@ -893,17 +972,20 @@ async function POSTHandler(request: Request) {
   let localComputerWorkspaces:
     | readonly Readonly<{ id: string; name: string }>[]
     | undefined;
-  if (computerUseTarget === "local_macos") {
+  let localComputerCapabilities: { visualControlReady: boolean; commandRunnerReady: boolean } | undefined;
+  if (isLocalComputerTarget(computerUseTarget)) {
     try {
       const localSession = await startLocalComputerSession(
         context,
         directRootRunId,
+        computerUseTarget,
       );
       localComputerWorkspaces = localSession.workspaces;
+      localComputerCapabilities = localSession.capabilities;
     } catch (error) {
       if (!(error instanceof LocalComputerUnavailableError)) throw error;
       return Response.json({
-        error: "This Mac is unavailable",
+        error: computerUseTarget === "local_android" ? "This phone is unavailable" : "This Mac is unavailable",
         message: error.message,
       }, {
         status: error.status,
@@ -951,6 +1033,7 @@ async function POSTHandler(request: Request) {
       contextBlockSha256: commandContext.contextBlockSha256,
       receiptSha256: commandContext.receiptSha256,
       pins: commandContext.pins,
+      ...(commandContext.roleContextPin ? { roleContextPin: commandContext.roleContextPin } : {}),
       toolGrantCount: 0,
       delegationCount: 0,
     };
@@ -1031,7 +1114,11 @@ async function POSTHandler(request: Request) {
     ? safeMessages
     : [{ role: "user" as const, content: safeRequestMessage }];
   const deterministicDecision = routeAgentRequest(
-    requestMessage,
+    // The earlier vague wording already caused this server-bound question.
+    // Classify the new answer, while semantic/model context retains the exact
+    // original request. Reclassifying "delete it" would ask forever even after
+    // the user supplied its target. Real effects still need governed previews.
+    voiceClarification ? parsed.data.message! : requestMessage,
     mode,
     requestedBuiltInAgent,
     toSupervisorKnownProcedures(savedProcedures),
@@ -1065,7 +1152,9 @@ async function POSTHandler(request: Request) {
       getContextScopePolicy(parsed.data.contextScope).durableContext !== "none",
   );
   const preliminaryDecision =
-    parsed.data.requireReadOnlyAgent || computerUseTarget === "local_macos" || commandContext ||
+    deepResearch
+      ? applySupervisorStrategy(semanticResolution.decision, "durable")
+      : parsed.data.requireReadOnlyAgent || isLocalComputerTarget(computerUseTarget) || commandContext ||
       (scopeCarriesDurableContext && parsed.data.strategy !== "durable")
       ? requireDirectRoute(semanticResolution.decision)
       : applySupervisorStrategy(
@@ -1180,7 +1269,7 @@ async function POSTHandler(request: Request) {
 
   if (
     scopeCarriesDurableContext &&
-    preliminaryDecision.route === "durable_workflow"
+    preliminaryDecision.route === "durable_workflow" && !deepResearch
   ) {
     return Response.json(
       {
@@ -1256,6 +1345,8 @@ async function POSTHandler(request: Request) {
       };
       stopHeartbeat = startSseHeartbeat(write);
       const enqueueTransportEvent = (event: AgentEvent) => {
+        if (event.type === "research_progress" && context.source === "mobile" &&
+          (context.native?.clientContractVersion || 0) < 49) return;
         firstOutput.observe(event);
         write(encodeSse(event, { id: runEventCursor(event) }));
       };
@@ -1305,12 +1396,23 @@ async function POSTHandler(request: Request) {
           }),
         );
         const executingAgentId = customAgent?.id || decision.primaryAgentId;
+        // Deep research owns its bounded evidence branches; generic specialists
+        // must not launch duplicate investigations outside that saved plan.
+        if (deepResearch) { decision.specialistIds = []; decision.procedure = undefined; }
         const agentIdentity = requestedCustomIdentity ||
           await resolveAgentIdentityForExecution({
             tenantId: context.tenantId,
             actorId: context.actorId,
             agentId: executingAgentId,
           });
+        if (voiceClarification && activeVoiceSession) {
+          if (agentIdentity.definition.logicalAgentId !== voiceClarification.agentId ||
+              agentIdentity.definition.definitionSha256 !== voiceClarification.definitionSha256 ||
+              agentIdentity.principal.principalSha256 !== voiceClarification.principalSha256) {
+            throw new Error("The Agent’s permissions or instructions changed after its question. Start a new call and restate the task.");
+          }
+          await claimConversationVoiceClarification({ context, session: activeVoiceSession, requestId, clarification: voiceClarification });
+        }
         if (queuedDispatch && (
           queuedDispatch.agent.logicalAgentId !== agentIdentity.definition.logicalAgentId ||
           queuedDispatch.agent.definitionVersionId !== agentIdentity.definition.definitionVersionId ||
@@ -1410,7 +1512,7 @@ async function POSTHandler(request: Request) {
           );
         }
         const loopV2Enrollment =
-          effectiveModelSelection
+          effectiveModelSelection || mode === "research"
             ? undefined
             : loopV2CanaryEnrollment || loopV2ContextTextEnrollment ||
               loopV2ModelTextEnrollment;
@@ -1496,7 +1598,24 @@ async function POSTHandler(request: Request) {
             role: "user",
             content: safeMessage,
           });
-          if (parsed.data.voiceInput) {
+          if (parsed.data.voiceInput?.schemaVersion === 2) {
+            if (await stopBeforeMutationIfCanceled()) return;
+            const voiceInput = parsed.data.voiceInput;
+            await appendScopedDomainEvent({
+              streamId: `thread:${thread.id}`, type: "voice.command_dispatched",
+              executionScope: executionScopeFromSecurityContext(context, {
+                ...agentPrincipalExecution, projectId: threadProjectId,
+                correlationId: requestId, causationId: userTurn.id, purpose: "voice.command.dispatch",
+              }),
+              payload: {
+                schemaVersion: 2, threadId: thread.id, voiceSessionId: voiceInput.sessionId,
+                turnId: voiceInput.turnId, provider: voiceInput.provider,
+                submission: "continuous_conversation", reviewAttested: false,
+                transcriptSha256: createHash("sha256").update(safeMessage, "utf8").digest("hex"),
+                transcriptCharacters: safeMessage.length, sessionEvidence: "minted", forceApprovalAboveRisk: 1,
+              },
+            });
+          } else if (parsed.data.voiceInput?.schemaVersion === 1) {
             if (await stopBeforeMutationIfCanceled()) return;
             const voiceInput = parsed.data.voiceInput;
             await appendScopedDomainEvent({
@@ -1599,11 +1718,17 @@ async function POSTHandler(request: Request) {
                 effectCount: 0,
               },
             });
-            await appendThreadTurn({
+            const questionTurn = await appendThreadTurn({
+              ...(activeVoiceSession ? { id: agentRequestDelegatedTurnId(context.tenantId, context.actorId, thread.id, requestId) } : {}),
               tenantId: context.tenantId,
               threadId: thread.id,
               role: "assistant",
               content: ambiguity.clarificationPrompt,
+            });
+            if (activeVoiceSession) await recordConversationVoiceClarification({
+              context, session: activeVoiceSession, requestId, questionId: questionTurn.id, userTurnId: userTurn.id,
+              agentId: agentIdentity.definition.logicalAgentId, definitionSha256: agentIdentity.definition.definitionSha256,
+              principalSha256: agentIdentity.principal.principalSha256, prior: voiceClarification,
             });
             await enqueueEvent({
               type: "clarification",
@@ -1660,7 +1785,9 @@ async function POSTHandler(request: Request) {
             const executionMessage = parsed.data.missionId
               ? missionInstruction(mission, safeMessage)
               : safeMessage;
-            if (decision.route === "durable_workflow") {
+            // Deep Research owns its retrieval plan; the generic scheduler adds a
+            // default specialist even when the requested specialist list is empty.
+            if (decision.route === "durable_workflow" && !deepResearch) {
               if (await stopBeforeMutationIfCanceled()) return;
               const parentExecutionScope = executionScopeFromSecurityContext(
                 context,
@@ -1762,6 +1889,30 @@ async function POSTHandler(request: Request) {
                   workflowExecutionScope,
                 })
               : undefined;
+            const workflowCommandContext = deepResearch && commandContext
+              ? createWorkflowCommandContextBinding({
+                  context: commandContextSecurity,
+                  references: parsed.data.contextReferences || [],
+                  resolved: commandContext,
+                  workflowExecutionScope,
+                })
+              : undefined;
+            const reviewedResearchModel = deepResearch && effectiveModelSelection
+              ? await resolveReviewedWorkflowCommandModel({
+                  tenantId: context.tenantId,
+                  actorId: context.actorId,
+                  primaryAgentId: customAgent?.id || decision.primaryAgentId,
+                  selection: effectiveModelSelection,
+                })
+              : undefined;
+            const workflowResearchModel = reviewedResearchModel && effectiveModelSelection
+              ? createWorkflowCommandModelBinding({
+                  primaryAgentId: customAgent?.id || decision.primaryAgentId,
+                  selection: effectiveModelSelection,
+                  boundary: reviewedResearchModel.boundary,
+                  workflowExecutionScope,
+                })
+              : undefined;
             if (await stopBeforeMutationIfCanceled()) return;
             const detail = await createWorkflowRun({
               tenantId: context.tenantId,
@@ -1775,6 +1926,9 @@ async function POSTHandler(request: Request) {
               budgetLimits: workflowBudgetLimits,
               metadata: {
                 source: "atomic_supervisor",
+                ...(deepResearch ? { [RESEARCH_WORKFLOW_METADATA_KEY]: parsed.data.research } : {}),
+                ...(workflowCommandContext ? { [WORKFLOW_COMMAND_CONTEXT_METADATA_KEY]: workflowCommandContext } : {}),
+                ...(workflowResearchModel ? { [WORKFLOW_COMMAND_MODEL_METADATA_KEY]: workflowResearchModel } : {}),
                 threadId: thread.id,
                 requestId,
                 actorId: context.actorId,
@@ -1840,6 +1994,19 @@ async function POSTHandler(request: Request) {
             ) {
               throw new Error("requestId was already used with a different context boundary. Submit this work with a new requestId.");
             }
+            if (deepResearch) {
+              const storedResearch = researchOptionsSchema.safeParse(
+                detail.run.input.metadata?.[RESEARCH_WORKFLOW_METADATA_KEY],
+              );
+              // JSONB can reorder object keys; compare validated briefs canonically.
+              if (
+                !storedResearch.success ||
+                canonicalJsonSha256(storedResearch.data) !==
+                  canonicalJsonSha256(parsed.data.research)
+              ) {
+                throw new Error("This request already has a different research brief. Start a new research request to change it.");
+              }
+            }
             if (!sameSavedProcedure(detail.run.input.metadata?.savedProcedure, savedProcedure)) {
               throw new Error("requestId was already used with a different saved procedure. Submit this work with a new requestId.");
             }
@@ -1850,6 +2017,10 @@ async function POSTHandler(request: Request) {
             );
             if (mission.status === "draft") {
               mission = await transitionMission(mission.id, "queued", missionOwner);
+            }
+            if (deepResearch) {
+              await enqueueWorkflowRunTick(detail.run.id, "research_created", undefined, context.tenantId);
+              scheduleWorkflowQueueDrain(undefined, context.tenantId, { routeMaxDurationSeconds: maxDuration });
             }
             scheduleDurableSpecialistDrain(
               context.tenantId,
@@ -1876,6 +2047,7 @@ async function POSTHandler(request: Request) {
               threadId: thread.id,
               role: "assistant",
               content: acknowledgement,
+              ...(deepResearch ? { workflowRunId: detail.run.id } : {}),
             });
             await enqueueEvent({
               type: "delegated",
@@ -1903,6 +2075,11 @@ async function POSTHandler(request: Request) {
             }).messages;
           } else {
             safeMessages = [{ role: "user", content: safeMessage }];
+          }
+          if (voiceClarification) {
+            // Exact same-call clarification context is not ambient retrieval.
+            // Keep it even when the selected scope excludes older chat history.
+            safeMessages = [...safeMessages.slice(0, -1), { role: "user", content: safeRequestMessage }];
           }
         }
         if (parsed.data.missionId && (!mission || !missionTask)) {
@@ -2020,8 +2197,11 @@ async function POSTHandler(request: Request) {
                 mode: parsed.data.mode,
                 threadId,
                 messages: safeMessages,
+                research: parsed.data.research,
+                companionPersonality,
                 computerUseTarget,
                 localComputerWorkspaces,
+                localComputerCapabilities,
                 securityContext: context,
                 requestActorBinding,
                 semanticRouting: {
@@ -2057,7 +2237,7 @@ async function POSTHandler(request: Request) {
                 ...(parsed.data.requireReadOnlyAgent ? { memoryFormation: "withheld" as const } : {}),
                 budgetLimits,
                 maxToolSteps:
-                  computerUseTarget === "local_macos"
+                  isLocalComputerTarget(computerUseTarget)
                     ? LOCAL_COMPUTER_MAX_TOOL_STEPS
                     : AGENT_MAX_TOOL_STEPS,
                 voiceInput: parsed.data.voiceInput,
@@ -2068,6 +2248,7 @@ async function POSTHandler(request: Request) {
                   receiptSha256: commandContext.receiptSha256,
                   selectionSha256: commandContext.selectionSha256,
                   pinCount: commandContext.pins.length,
+                  citationSources: commandContext.citationSources,
                 } : undefined,
               },
               agentAbortController.signal,

@@ -27,15 +27,16 @@ import {
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 const pluginIdentifierSchema = z.string().trim().min(3).max(120);
 const pluginVersionSchema = z.string().trim().min(5).max(80);
+const catalogPreviewSchema = z.object({
+  pluginId: pluginIdentifierSchema,
+  version: pluginVersionSchema,
+  manifestSha256: sha256Schema,
+}).strict();
 
 export const pluginListServiceInputSchema = z.object({}).strict();
 export const pluginPreviewServiceInputSchema = z.union([
   z.object({ manifest: pluginManifestSchema }).strict(),
-  z.object({
-    pluginId: pluginIdentifierSchema,
-    version: pluginVersionSchema,
-    manifestSha256: sha256Schema,
-  }).strict(),
+  catalogPreviewSchema,
 ]);
 export const pluginInstallServiceInputSchema = z.object({
   previewId: z.string().trim().min(16).max(200),
@@ -119,6 +120,11 @@ export async function previewPluginService(
     preview: result.preview,
     manifest: result.manifest,
   });
+}
+
+/** Conversational installation resolves only an exact catalog contract. */
+export async function previewCatalogPluginService(caller: AppServiceCaller, input: unknown) {
+  return previewPluginService(caller, catalogPreviewSchema.parse(input));
 }
 
 export async function installPluginService(

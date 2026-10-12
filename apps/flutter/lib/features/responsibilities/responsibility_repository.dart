@@ -193,7 +193,7 @@ class ApiResponsibilityRepository implements ResponsibilityRepository {
               (source) => responsibilityMap(source)['kind'] == 'work_item',
             );
     responsibilityRequire(
-      !includesWorkItem || NativeContract.currentVersion >= 48,
+      !includesWorkItem || NativeContract.currentVersion >= 56,
       'Update the app before setting up work-item follow-through.',
     );
     responsibilityRequire(

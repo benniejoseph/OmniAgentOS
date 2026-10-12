@@ -6,6 +6,29 @@
 - Run `npm ci` from a clean checkout. If the lockfile and manifest disagree, do not hand-edit the lockfile; run `npm install` with the reviewed package versions.
 - `npm run audit:production` gates high/critical production advisories. A development-only advisory must still be reported, but it does not represent the deployed dependency graph.
 
+## Listen call processing stopped after upload
+
+For a saved Listen call, check its current media head and exact operation job under
+the authenticated owner scope. A parent transcript can remain empty while segment
+transcription is already complete and the summary is processing. A blank generated
+summary now falls back to labeled, cited transcript excerpts; it does not trigger
+another paid generation of the same window.
+
+The former missing-head recovery incorrectly bound a JSON-encoded string into a
+JSONB merge. The resulting malformed payload could later lose its actor binding
+and fail with `Owner-bound background job is missing its actor binding.` The
+corrected recovery binds an object and checks the preserved identity before
+committing. Do not patch an owner into the historical job or reset its attempts.
+
+After deploying the correction, an authorized browser owner can use the existing
+`POST /api/capture/recordings/:id/complete` action for that same recording, omitting
+`meetingId` and specifying `rawAudioRetention: { mode: "delete_after_processing" }`.
+Its recorded-language request creates a fresh finalizer while retaining the old
+failed job as evidence. It reuses the same recording, source mapping, segment
+deduplication and transcription checkpoints; it does not reset failed segment
+attempts. Confirm the accepted response and that the media head references the
+new operation job. Phone status polling does not silently retry terminal work.
+
 ## Production shows “database required”
 
 `DATABASE_URL` is missing or blank. Set a TLS Postgres URL and redeploy. `OMNIAGENT_ALLOW_DEMO_STORAGE=true` bypasses the guard only for disposable demos and must not be used as a production recovery measure.
@@ -188,6 +211,43 @@ A job is quarantined after its lease lapsed on three deliveries in a row: each t
 - A split recovery checks the web with `smoke:preflight` before it deploys, and preflight does not read the budget. Set the exception before such a release starts if the budget is held, or the post-activation `smoke:release` fails and the runner rolls the release back.
 - While the budget is held, the nightly `Production Smoke` fails its `release` gate too.
 
+### Owner-authorized deployment despite historical error rates
+
+The owner's delivery preference is to deploy implementation changes so they can
+verify them live. Historical run or tool failure rates must remain visible, but
+an explicitly authorized release can proceed through the paired runner using
+`OMNIAGENT_RELEASE_OWNER_ERROR_BUDGET_OVERRIDE`. Supply one JSON object with
+exactly `candidateRevision`, `previousRevision`, `reason`, and `expiresAt`.
+Revisions are distinct full commit SHAs; the reason is one line of at most 200
+characters; the expiry is an ISO timestamp no more than four hours ahead.
+Do not combine it with `OMNIAGENT_RELEASE_ERROR_BUDGET_EXCEPTION` or save it in
+Vercel, Fly, repository configuration, or an unattended recurring job.
+
+This exception accepts only fresh, measured 95% agent-run and 90% tool-call
+objectives, on the pinned previous revision during preflight/rollback and the
+pinned candidate during staged/canonical checks. An exhausted budget must be
+the sole failed gate, every other gate must pass, and warnings are not waived.
+Unread telemetry, changed objectives, missing gates, wrong revisions, expiry,
+and any additional failure still stop deployment. Ordinary checks without the
+pin keep their existing behavior.
+
+For the prior-release check only, this pin can accompany an independently
+validated `OMNIAGENT_RELEASE_FORWARD_SCHEMA_RECOVERY` pin for the same exact
+previous/candidate pair. The ordinary smoke still fails and preserves the
+blocked report, including its measured budget proof. The paired runner then
+requires exactly the pinned unclassified-table gap and the separately
+authorized budget failure, exact reason/count agreement, no warnings, and a
+fresh successful candidate database verification. Its admission artifact records
+both authorizations and the original blocked-report digest. A third failure,
+wrong table, unread budget or mismatched/expired pin still stops deployment.
+Staged and canonical checks retain the ordinary sole-budget-failure rule.
+
+The local release artifact preserves the server's original blocked report and
+adds `ownerErrorBudgetOverride` with the bounded reason, revision pair, expiry,
+and measured proof. It never rewrites failure history or claims that the
+server's reliability gate passed. Keep each release artifact with the owner
+authorization, unset the pin afterward, and investigate the recorded failures.
+
 ## The provider contract suite fails
 
 - `<provider>/<scenario>: request N was POST <url>, but the fixture expected POST <url>`, or `request N (POST <url>) has no recorded response`: the adapter sent a request that the fixture does not have, such as a new endpoint or an extra turn. The adapter got a 400 `contract_fixture_mismatch` response instead, and the test reports the mismatch rather than the error that response caused. If the adapter changed on purpose, record the scenario again with `npm run test:provider-contract:record` and review the diff.
@@ -216,6 +276,11 @@ A job is quarantined after its lease lapsed on three deliveries in a row: each t
 - `503` with `Request replay protection is unavailable.` and `Retry-After: 30`: the request's binding could not be read or written, usually because the event store is unavailable. Nothing ran. Retry after the delay with the same ID.
 - A retry streams `canceled` with `This request stopped before it finished, so it was not run again.`: the first attempt was canceled. Send the message again; the workspace uses a new ID after a cancellation.
 - A retry streams a `Replayed` status and the earlier answer: the first attempt finished, so its recorded outcome was returned instead of running the work again. To run it again on purpose, send it with a new ID.
+
+## Private graph search fails while the map opens
+
+- If `/api/memory/graph` returns `500` with `Memory access binding digest does not match` at `accessScopeSha256`, inspect timestamp decoding before changing authorization. SQL JSON projections return timestamp strings, while direct graph reads return `Date` objects.
+- `graphAccessBindingFromRow` must canonicalize a valid `access_bound_at` to UTC ISO milliseconds before validating the original binding digest. Reject invalid timestamps; never skip digest validation or recompute the stored digest to admit a mismatched record.
 
 ## Memory forget or the deletion scrub fails
 
@@ -325,7 +390,43 @@ Synthetic smoke requests carry correlation IDs and are marked SLO-excluded. Sear
 After installing a hardened owner-only build:
 
 - If Asael quits at launch and the crash report says `mapped file has no Team ID and is not a platform binary`, the host lost `com.apple.security.cs.disable-library-validation`.
-- If voice never prompts for the microphone and records nothing, the host lost `com.apple.security.device.audio-input`. The Hardened Runtime denies the microphone without that entitlement.
+- If Voice says it could not save the agreement, check the consent preference before diagnosing the microphone or provider. The frozen Mac credential broker accepts only fixed credential keys and rejects dynamic preference keys. Mac Voice consent belongs in the dedicated desktop host preference, scoped by the tenant/actor digest and exact consent terms; never expand the broker's credential allowlist or bypass agreement to store it.
+- If voice proceeds beyond agreement but cannot open the microphone, verify `com.apple.security.device.audio-input` on the installed host and its macOS microphone permission. The Hardened Runtime denies the microphone without that entitlement.
+
+For web Voice, microphone permission may remain pending in an embedded browser even when the provider is healthy. Startup must bound permission, session creation, audio negotiation, and channel readiness separately, release late microphone streams after cancellation, and show an actionable retry. HTTP acceptance of an SDP offer alone does not prove Voice works: verify actual transcription and audible reply on the target client, then stop capture.
+
+## Continuous Voice conversation
+
+Web and Mac Voice now keep one WebRTC microphone and remote-audio connection
+open. Start once, then speak, interrupt, mute/unmute or end. Ordinary replies
+come directly from OpenAI Realtime; they do not wait for the agent loop and a
+separate speech-generation request. Workspace questions, research and actions
+use the single `ask_asael` function through the existing governed agent route.
+Approvals remain in Inbox; a spoken agreement does not bypass them.
+
+The session binds the selected agent and context for its lifetime. Changing
+the selection or account ends capture. Query-bound evidence selections and
+mission context require switching to another context before starting. Calls
+expire after thirty minutes; start a new call to continue. Web may reconnect
+up to three times without replaying accepted work; Mac ends a failed connection
+and offers Start again.
+
+`POST /api/voice/conversation/session` issues a short-lived credential using
+the active actor-owned OpenAI connection. A saved disabled or unreadable
+connection fails closed; the deployment key is a fallback only when no saved
+OpenAI connection exists. `OPENAI_REALTIME_CONVERSATION_MODEL` optionally
+overrides the default `gpt-realtime`; the separate transcription assignment
+does not select this conversation model. Native contract v50 adds the session,
+finish and caption operations and keeps v49/v48 clients compatible. No database
+migration is required for this change.
+
+Asael stores final captions in conversation History, not raw audio. Captions
+are client-observed text, not provider-authenticated evidence. Interrupted
+replies omit the unheard tail; they may show a simple interruption marker.
+End stops local capture immediately, then saves pending captions before closing
+the server receipt. A failed history write must remain visible without
+interrupting live audio. Mac asks for one fresh agreement because the updated
+terms cover continuous audio, selected context and saved captions.
 
 ## Web presentation regression
 
@@ -333,3 +434,137 @@ Run the focused component or contract test for the changed surface, followed by
 `npm run build`. For installed-Mac Computer Use, use the signed native canary and
 verify the governed command receipt rather than adding a browser-automation test
 runtime back to the repository.
+
+## Live web search and Research
+
+Deep Research can retain a complete draft while its claim-review step is
+paused. Inspect the newest saved `researchProgress` from `persist_report`,
+`verify`, `execute`, then `plan`; the elapsed UI timer includes paused time.
+An absent final result does not mean the collected evidence or draft was lost.
+
+Report synthesis and claim review have a bounded 180-second model deadline,
+separate from the overall research budget. The queue reserves at least 185
+seconds of delivery time, including five seconds to save the result; the
+planner keeps its shorter deadline. Keep these limits aligned with the worker
+delivery, request and gateway ceilings when changing them. On 9 October 2026,
+the Winter '27 research review stopped twice at the former 90-second limit.
+Increasing only the overall run budget did not change that per-call limit.
+
+Research interruption events retain a bounded `modelFailure` classification,
+elapsed time, applicable timeout and provider status where available. They do
+not retain raw provider error messages, credentials, prompts or answers.
+Distinguish a model timeout from authentication, rate limits, provider failure
+or a result-save failure before recovering the run. A started model call
+without a saved completion still requires an explicit Resume; never replay it
+automatically on worker redelivery. Timeout-only changes preserve the saved
+request digest so an existing draft can resume without repeating discovery.
+
+General Research uses the normal bounded Agent loop, with Scout and the
+Evidence research Skill exposing `web.search`, knowledge retrieval, and memory
+retrieval where authorized. Markets/Meridian is a separate market-data workspace.
+A configured provider key is configuration evidence only; it does not prove a
+live search succeeded.
+
+`web.search` requires a completed hosted search, a nonempty answer, and usable
+source URLs. Requests preserve `allowedDomains`; a model that rejects domain
+filters returns an actionable error instead of widening the search. The
+provider request has a 60-second default deadline (or the deployment's explicit
+`OMNIAGENT_WEB_SEARCH_TIMEOUT_MS`), no hidden SDK retries, and bounded hosted
+calls and output. Returned hosted calls determine search usage. Caller
+cancellation and the enclosing run deadline still stop it sooner.
+
+Hosted search uses the Web search assignment independently of the answering
+Agent. For reasoning models it explicitly requests `low` effort and reserves
+the shared reasoning allowance in addition to the 2,000-token brief. Otherwise
+the provider's default reasoning can consume the whole brief allowance before
+any visible answer. `minimal` is not valid for GPT-5 hosted web search; see the
+[web search limitations](https://developers.openai.com/api/docs/guides/tools-web-search)
+and [reasoning output budget](https://developers.openai.com/api/docs/guides/reasoning).
+The complete Research report is synthesized separately from the collected
+sources; increasing this discovery allowance does not turn each search into
+another full report.
+
+The quick-answer prefetch uses the same bounded query builder as Research for
+messages longer than the tool's 4,000-character input limit. The original
+request remains available to synthesis. The tool schema advertises its actual
+query, source-count, and domain limits so generated calls can respect them.
+Timeouts, cancelled calls, rate limits, authentication failures, and invalid
+provider requests retain separate usage failure categories. An inactive saved
+route reports its Settings recovery instruction; it is never silently replaced
+with another model or credential.
+The governed search failure receipt retains `failureKind` and `retryable`.
+Research stops further discovery after a non-retryable configuration, access,
+or provider-request failure, keeps collected evidence, and records the
+limitation. A timed-out call is not replayed. The next distinct preplanned
+query may still run through normal governed accounting if the remaining
+budget admits it; a timeout does not disable every other research question.
+The synthesis model is not offered the failed search route again during that
+run. Transient provider failures keep their retry classification; the SDK
+itself never repeats a paid request.
+
+On revision `459b52ed`, live verification found that sending the complete
+1,213-character report-writing brief with high search context exhausted the
+60-second deadline (60,143 ms), while a 77-character low-context discovery
+completed in 10,779 ms on the same saved GPT-6 Astra assignment. Increasing
+the deadline alone did not solve the request-design problem. Discovery now
+removes recognizable report-format instructions without removing sentences
+containing explicit source/domain/date restrictions, uses low search context,
+and permits one hosted invocation per focused query. The provider is explicitly
+asked to return at most six findings within 400 words. Three complementary
+queries plus governed page reads supply evidence for the separate full report;
+the original request and its output requirements remain intact for synthesis.
+The run and provider deadlines were not increased.
+
+Revision `e2987876` removed that timeout in the same live report, but all three
+prefetches still failed in 23–25 seconds because a hosted call was not marked
+completed. A 73-character follow-up also failed while a 95-character query
+succeeded. Low context and a shorter query therefore do not by themselves
+establish reliability. Failed `web.search` receipts retain `providerDiagnostics`:
+the terminal response status, incomplete reason, and each hosted call's
+status/action plus source counts. These bounded enums and counts exclude query,
+answer, source URLs, credentials, and private reasoning. Inspect them before
+changing the completed-search gate or retrying a paid request; the provider may
+return optional actions or statuses newer than the installed SDK declares.
+
+The pinned `82bb32d6` diagnostic resolved that failure: the provider's parent
+response was `completed`, its first `search` completed with 19 source/results,
+and a later `open_page` remained `searching` with no evidence. The answer also
+referenced URLs outside those search results. Recovery is limited to that exact
+shape under the one-call request bound. It returns only URLs, titles, and
+snippets from the completed search; provider answer prose and annotations are
+excluded. The result marks partial evidence, retains the provider diagnostics,
+and carries a plain-language unfinished-page-read limitation into both quick
+answers and Research. Separate governed `web.read` calls still fetch pages.
+Failed or unfinished searches, other unfinished action/status combinations,
+nonempty unfinished evidence, refused responses, and non-completed parent
+responses retain their failure gates. Observed hosted calls and actual token
+usage remain recorded; the unfinished wrapper is not asserted to be unbilled
+or ignored by the provider.
+
+A completed report may have valid citation IDs while grounding says `missing`.
+The served grounding status comes from material-claim evidence coverage, not
+just matching references. Do not force that status to `verified` to make a
+search check pass; inspect invalid citation IDs and claim coverage separately.
+
+Automatic search resolves the Agent's permitted tools before using the governed
+executor. Research keeps that authorized search tool for follow-up questions.
+Explicit no-web instructions disable search for the run; selecting Research
+alone does not trigger a paid search for an otherwise offline request.
+
+For a bounded authenticated check, provide `BASE_URL`, `EXPECTED_REVISION`,
+`SMOKE_PAID_AGENT_EMAIL`, and `SMOKE_PAID_AGENT_PASSWORD` through the operator
+environment, then run `npm run smoke:web-research`. Optional
+`SMOKE_INTERNAL_AUTH_SECRET` labels synthetic telemetry, and
+`VERCEL_AUTOMATION_BYPASS_SECRET` admits a protected staged deployment. The
+script never uses those headers as execution identity. It verifies a direct
+governed search and a session-only, read-only Research Agent, checks citations,
+purges its temporary Agent through exact previews, and signs out. It never
+retries a paid POST. `SMOKE_WEB_SEARCH_ONLY=1` limits the check to direct search.
+
+The receipt and stream diagnostics omit answer text and credentials. A passing
+receipt applies only to the pinned deployment and queries tested; it is not a
+guarantee that every source is correct or every provider request will succeed.
+
+### Retention and immutable execution checkpoints
+
+A retention sweep must preserve runs referenced by immutable Loop v2 checkpoints. The restrictive run foreign key and checkpoint immutability triggers must not be changed to cascade. Both tenant and system retention batches exclude those parent runs before selecting a bounded deletion batch, preventing the observed `omni_agent_loop_v2_checkpoints_run_id_fkey` failure from aborting all cleanup. Protected parent records may retain content beyond the nominal run window; a separate bounded content-expiry policy is still needed. Security shows that exception rather than promising every record expires on the configured day.

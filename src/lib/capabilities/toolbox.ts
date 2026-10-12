@@ -12,6 +12,7 @@ import {
   type CapabilitySource,
 } from "@/lib/capabilities/types";
 import { getGovernedTools } from "@/lib/tools/registry";
+import { conversationControlToolPreferences } from "@/lib/capabilities/conversation-controls";
 import type { ToolDefinition } from "@/lib/tools/types";
 import {
   extractExplicitDynamicDelegationReadToolIds,
@@ -244,9 +245,17 @@ function selectNativeDefinitions(
       left.definition.riskLevel - right.definition.riskLevel ||
       left.index - right.index
     );
-  const selected = definitions.length <= limit
-    ? [...definitions]
-    : ranked.slice(0, limit).map(({ definition }) => definition);
+  const conversationPreferences = conversationControlToolPreferences(query);
+  const byId = new Map(definitions.map(definition => [definition.id, definition]));
+  const preferred = conversationPreferences.flatMap(id => {
+    const definition = byId.get(id);
+    return definition ? [definition] : [];
+  });
+  const selected = deduplicateDefinitions([
+    ...ranked.filter(item => item.exactCanonicalMatch).map(item => item.definition),
+    ...preferred,
+    ...ranked.map(item => item.definition),
+  ]).slice(0, limit);
   if (
     !selected.some((definition) => definition.id === "app.agents.delegate") ||
     !delegationToolRequested(query, definitions)
@@ -295,9 +304,15 @@ function prioritizeSelectedDefinitions(
   const dependencies = definitions.filter((definition) =>
     dependencyIds.has(definition.id)
   );
+  const byId = new Map(definitions.map(definition => [definition.id, definition]));
+  const conversationPreferences = conversationControlToolPreferences(query).flatMap(id => {
+    const definition = byId.get(id);
+    return definition ? [definition] : [];
+  });
   return deduplicateDefinitions([
     ...exact,
     ...dependencies,
+    ...conversationPreferences,
     ...definitions,
   ]);
 }

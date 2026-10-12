@@ -159,6 +159,9 @@ async function POSTHandler(request: Request) {
       { status: 400 },
     );
   }
+  if (parsed.data.metadata?.researchOptionsV1 !== undefined) {
+    return Response.json({ error: "Start Deep research from Assistant so the research brief and context can be reviewed together." }, { status: 400 });
+  }
   let budgetLimits;
   try {
     budgetLimits = narrowRunBudgetLimits(

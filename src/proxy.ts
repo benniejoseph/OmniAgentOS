@@ -117,7 +117,8 @@ function buildContentSecurityPolicy(nonce: string) {
     "style-src-attr 'unsafe-inline'",
     "img-src 'self' data: blob:",
     "font-src 'self' data:",
-    `connect-src 'self'${production ? "" : " http: https: ws: wss:"}`,
+    // Voice sends its SDP directly to this endpoint after explicit consent.
+    `connect-src 'self' https://api.openai.com/v1/realtime/calls${production ? "" : " http: https: ws: wss:"}`,
     "worker-src 'self' blob:",
     "frame-src 'self' blob: https://*.vercel.run",
     "manifest-src 'self'",

@@ -1,4 +1,3 @@
-import type { CustomerSuccessPortfolio } from "@/lib/customer-success/intelligence-contracts";
 import type { MeetingRevision } from "@/lib/meetings/contracts";
 import {
   DEFAULT_TODAY_SECTIONS,
@@ -20,7 +19,6 @@ export type TodayProjectionSourceKey =
   | "personal_reminders"
   | "meetings"
   | "commitments"
-  | "customer_risks"
   | "approvals"
   | "active_agents"
   | "work"
@@ -37,7 +35,7 @@ export type TodayProjectionSourceState = Readonly<{
 
 export type TodayAgendaItem = Readonly<{
   itemId: string;
-  kind: "reminder" | "meeting" | "commitment" | "approval" | "customer_risk";
+  kind: "reminder" | "meeting" | "commitment" | "approval";
   priority: "urgent" | "high" | "normal";
   title: string;
   detail: string;
@@ -55,7 +53,6 @@ export type CohesiveTodayProjection = Readonly<{
   today: TodaySnapshot;
   workspaceSummary: WorkspaceSummary | null;
   meetings: readonly MeetingRevision[];
-  customerPortfolio: CustomerSuccessPortfolio | null;
   usage: UsageSummary | null;
   agenda: readonly TodayAgendaItem[];
   sources: readonly TodayProjectionSourceState[];
@@ -81,7 +78,6 @@ export function buildCohesiveTodayProjection(input: {
   today: TodaySnapshot;
   workspaceSummary: OptionalSource<WorkspaceSummary>;
   meetings: OptionalSource<readonly MeetingRevision[]>;
-  customerPortfolio: OptionalSource<CustomerSuccessPortfolio>;
   usage: OptionalSource<UsageSummary>;
   generatedAt?: string;
 }): CohesiveTodayProjection {
@@ -91,15 +87,11 @@ export function buildCohesiveTodayProjection(input: {
   const workspaceSummary = input.workspaceSummary.status === "ready"
     ? input.workspaceSummary.value || null
     : null;
-  const customerPortfolio = input.customerPortfolio.status === "ready"
-    ? input.customerPortfolio.value || null
-    : null;
   const usage = input.usage.status === "ready" ? input.usage.value || null : null;
   const agenda = buildAgenda({
     today: input.today,
     meetings,
     approvals: readyData(workspaceSummary?.sources.approvals),
-    customerPortfolio,
     generatedAt,
   });
   const sources = sourceStates({
@@ -107,7 +99,6 @@ export function buildCohesiveTodayProjection(input: {
     today: input.today,
     workspaceSummary: input.workspaceSummary,
     meetings: input.meetings,
-    customerPortfolio: input.customerPortfolio,
     usage: input.usage,
   });
   const runs = readyData(workspaceSummary?.sources.runs);
@@ -137,7 +128,6 @@ export function buildCohesiveTodayProjection(input: {
     today: input.today,
     workspaceSummary,
     meetings,
-    customerPortfolio,
     usage,
     agenda,
     sources,
@@ -153,7 +143,6 @@ function buildAgenda(input: {
   today: TodaySnapshot;
   meetings: readonly MeetingRevision[];
   approvals: ReturnType<typeof readyData<WorkspaceSummary["sources"]["approvals"] extends WorkspaceSummarySource<infer T> ? T : never>>;
-  customerPortfolio: CustomerSuccessPortfolio | null;
   generatedAt: string;
 }) {
   const nowMs = Date.parse(input.generatedAt);
@@ -228,20 +217,6 @@ function buildAgenda(input: {
       sourceRevisionId: null,
     }));
   }
-  for (const account of input.customerPortfolio?.accounts || []) {
-    if (account.attention !== "urgent" && account.attention !== "attention") continue;
-    items.push(Object.freeze({
-      itemId: `agenda:customer:${account.accountId}:${account.nextBestAction.recommendationId}`,
-      kind: "customer_risk" as const,
-      priority: account.attention === "urgent" ? "urgent" as const : "high" as const,
-      title: account.name,
-      detail: `${account.nextBestAction.title} · suggested, not authoritative`,
-      scheduledAt: account.changedAt,
-      href: `/app/accounts/${encodeURIComponent(account.accountId)}`,
-      sourceId: account.accountId,
-      sourceRevisionId: account.accountRevisionId,
-    }));
-  }
   return Object.freeze(items.sort((left, right) =>
     priorityRank(left.priority) - priorityRank(right.priority) ||
     nullableTimestamp(left.scheduledAt) - nullableTimestamp(right.scheduledAt) ||
@@ -254,12 +229,10 @@ function sourceStates(input: {
   today: TodaySnapshot;
   workspaceSummary: OptionalSource<WorkspaceSummary>;
   meetings: OptionalSource<readonly MeetingRevision[]>;
-  customerPortfolio: OptionalSource<CustomerSuccessPortfolio>;
   usage: OptionalSource<UsageSummary>;
 }) {
   const summary = input.workspaceSummary.value;
   const meetings = input.meetings.value || [];
-  const portfolio = input.customerPortfolio.value;
   return Object.freeze([
     readyState("personal_reminders", input.generatedAt, latest([
       input.today.generatedAt,
@@ -267,7 +240,6 @@ function sourceStates(input: {
     ]), "Canonical personal tasks and reminders."),
     externalState("meetings", input.meetings, input.generatedAt, latest(meetings.map((meeting) => meeting.revisedAt)), "Canonical workspace meetings."),
     externalState("commitments", input.meetings, input.generatedAt, latest(meetings.flatMap((meeting) => [meeting.revisedAt])), "Confirmed Meeting commitments."),
-    externalState("customer_risks", input.customerPortfolio, input.generatedAt, latest(portfolio?.accounts.map((account) => account.changedAt) || []), "Evidence-bound customer risks and suggestions."),
     summaryState("approvals", input.workspaceSummary, summary?.sources.approvals, input.generatedAt, "Governed actions waiting for review."),
     summaryState("active_agents", input.workspaceSummary, summary?.sources.runs, input.generatedAt, "Active agent runs and identities."),
     summaryState("work", input.workspaceSummary, summary?.sources.workflows, input.generatedAt, "Canonical project and workflow state."),

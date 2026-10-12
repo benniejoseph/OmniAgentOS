@@ -16,7 +16,7 @@ import type { McpToolRecord } from "@/lib/connectors/types";
 import * as client from "@/lib/connectors/mcp-client";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
-import { removeEmptyPersonalPartnerMigrationsForReplay, replayPersonalPartnerMigrations, removeNativeGithubUpgradesForReplay } from "./helpers/native-catalog-replay";
+import { removeEmptyPersonalPartnerMigrationsForReplay, removeEmptyPost245MigrationsForReplay, replayPost245Migrations, removeNativeGithubUpgradesForReplay } from "./helpers/native-catalog-replay";
 
 const databaseUrl = process.env.DATABASE_URL;
 const integration = databaseUrl && process.env.OMNIAGENT_INTEGRATION_DATABASE_RESET === "true" ? describe : describe.skip;
@@ -279,6 +279,7 @@ integration("native GitHub upgrade244 serving-role and shared-provider proof", (
     let verified = false;
     await expect(admin.begin(async (sql) => {
       await removeEmptyPersonalPartnerMigrationsForReplay(sql);
+      await removeEmptyPost245MigrationsForReplay(sql);
       await removeNativeGithubUpgradesForReplay(sql);
       await sql`DELETE FROM omni_schema_version WHERE version IN (244,245)`;
       for (const role of ["anon", "authenticated", "service_role"]) {
@@ -320,7 +321,7 @@ integration("native GitHub upgrade244 serving-role and shared-provider proof", (
         { proname: "omni_native_provider_singleflight_v1", owner: after[1].owner,
           grantees: [after[1].owner], runtime_execute: false },
       ]);
-      await replayPersonalPartnerMigrations(sql);
+      await replayPost245Migrations(sql);
       verified = true;
       throw new Error("Rollback production-default ACL fixture");
     })).rejects.toThrow("Rollback production-default ACL fixture");

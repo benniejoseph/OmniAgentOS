@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../settings/adaptive_control_dialog.dart';
+
 import 'agent_skill_contracts.dart';
 import 'agent_skill_controller.dart';
 import 'specialist_contracts.dart';
@@ -242,7 +244,7 @@ class _AgentSkillDecisionViewState extends State<AgentSkillDecisionView>
         'skill.update' => 'Edit Skill',
         _ => 'Create Skill',
       };
-      return AlertDialog(
+      return AdaptiveControlDialog(
         insetPadding: const EdgeInsets.all(12),
         title: Text(title),
         content: SizedBox(

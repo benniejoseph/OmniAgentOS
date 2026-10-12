@@ -173,7 +173,7 @@ export function applySemanticIntentPolicy(input: {
         specialistIds: cardSelection.specialistIds.map(asSupervisorAgentId),
       }
       : semanticAgentTeam(candidate, input.mode, input.preferredAgentId);
-  const route = semanticRoute(candidate, input.baseline);
+  const route = semanticRoute(candidate, input.baseline, input.mode);
   const requiresCapabilityApproval = matchedCapabilities.some(
     (capability) =>
       capability.approvalRequired || capability.riskLevel >= 2,
@@ -291,10 +291,15 @@ export function attachSemanticModelReceipt(
 function semanticRoute(
   candidate: SemanticIntentCandidate,
   baseline: SupervisorDecision,
+  mode: AgentMode,
 ): SupervisorDecision["route"] {
   if (baseline.route === "durable_workflow") {
     return "durable_workflow";
   }
+  // "Build a report" can be classified as several kinds of work. Research's
+  // report runtime already handles those stages; only explicit durable intent
+  // from the baseline (or the caller's later strategy override) changes it.
+  if (mode === "research") return "direct";
   if (
     candidate.executionShape === "multi_step" &&
     candidate.workKinds.includes("build") &&

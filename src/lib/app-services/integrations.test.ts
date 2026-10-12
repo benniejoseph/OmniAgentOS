@@ -26,10 +26,6 @@ describe("truthful Integrations application service", () => {
       listOAuth,
       loadMcp,
       loadOpenApi,
-      loadSalesforce: vi.fn().mockResolvedValue({
-        health: disconnectedSalesforceHealth(),
-        writesConfigured: false,
-      }),
       loadUsage: vi.fn().mockResolvedValue(emptyUsage()),
       oauthConfigured: vi.fn().mockReturnValue(false),
       catalog: [],
@@ -59,7 +55,6 @@ describe("truthful Integrations application service", () => {
       listOAuth: vi.fn().mockResolvedValue([]),
       loadMcp: vi.fn().mockRejectedValue(Object.assign(new Error("secret detail"), { code: "POOL_TIMEOUT" })),
       loadOpenApi: vi.fn().mockResolvedValue({ connectors: [], operations: [] }),
-      loadSalesforce: vi.fn().mockResolvedValue({ health: disconnectedSalesforceHealth(), writesConfigured: false }),
       loadUsage: vi.fn().mockResolvedValue(emptyUsage()),
       oauthConfigured: vi.fn().mockReturnValue(true),
       catalog: [],
@@ -76,28 +71,6 @@ describe("truthful Integrations application service", () => {
     warn.mockRestore();
   });
 });
-
-function disconnectedSalesforceHealth() {
-  return {
-    schemaVersion: 1,
-    contractVersion: "p10.10-salesforce-read-sync:1",
-    configured: false,
-    connected: false,
-    connectionId: null,
-    workspaceId: "workspace:test",
-    status: "configuration_required",
-    accessMode: "read_only",
-    objectScope: ["Account", "Contact", "Opportunity", "Case", "Task", "Note", "Product2", "Contract"],
-    purposeScope: ["customer_success.account.read", "customer_success.crm_sync"],
-    cursor: null,
-    lagSeconds: null,
-    lastSuccessfulSyncAt: null,
-    lastWebhookAt: null,
-    lastReplayIdSha256: null,
-    actionableError: null,
-    evaluatedAt: "2026-09-07T12:00:00.000Z",
-  } as never;
-}
 
 function emptyUsage() {
   const totals = {

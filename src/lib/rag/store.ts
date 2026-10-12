@@ -1205,9 +1205,35 @@ async function retireScopeBoundCognitionMemories(input: {
   if (!canonicalOwnerActorId.startsWith("actor:")) {
     throw new Error("Knowledge cognition lifecycle owner is invalid.");
   }
+  // Both source-derived private-memory families retire inside the caller's
+  // existing transaction, before document lineage is removed. Keep their
+  // content-free receipts together for downstream run and entity invalidation.
+  const listenRows = await input.sql`
+    SELECT retired_memory_ids, retrieval_trace_ids,
+      canonical_owner_actor_id
+    FROM omni_retire_listen_memories_v1(
+      ${input.tenantId}, ${input.sourceOwnerActorId},
+      ${documentIds}::TEXT[], ${input.retiredAt}::TIMESTAMPTZ
+    )
+  `;
+  if (listenRows.length !== 1) {
+    throw new Error("Listen source lifecycle receipt is unavailable.");
+  }
+  const listenOwnerActorId = String(
+    listenRows[0].canonical_owner_actor_id || "",
+  ).trim();
+  if (listenOwnerActorId !== canonicalOwnerActorId) {
+    throw new Error("Source memory retirement receipts disagree on their owner.");
+  }
   return Object.freeze({
-    retiredMemoryIds: Object.freeze(stringArray(rows[0].retired_memory_ids)),
-    retrievalTraceIds: Object.freeze(stringArray(rows[0].retrieval_trace_ids)),
+    retiredMemoryIds: Object.freeze(canonicalIds([
+      ...stringArray(rows[0].retired_memory_ids),
+      ...stringArray(listenRows[0].retired_memory_ids),
+    ])),
+    retrievalTraceIds: Object.freeze(canonicalIds([
+      ...stringArray(rows[0].retrieval_trace_ids),
+      ...stringArray(listenRows[0].retrieval_trace_ids),
+    ])),
     canonicalOwnerActorId,
   });
 }

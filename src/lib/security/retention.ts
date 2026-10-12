@@ -1010,15 +1010,23 @@ async function sweepPostgres(policy: RetentionPolicy, tenantId?: string) {
         WHERE target.ctid = expired.ctid
         RETURNING target.id
       `;
+  // Immutable Loop v2 checkpoints retain their parent run identity. Do not
+  // cascade or remove checkpoint evidence to make an expired run deletable.
   const runs = tenantId
     ? await sql`
         WITH expired AS (
-          SELECT ctid
-          FROM omni_agent_runs
-          WHERE tenant_id = ${tenantId}
-            AND status IN ('completed', 'failed', 'canceled')
-            AND completed_at < ${runCutoff}::timestamptz
-          ORDER BY completed_at ASC
+          SELECT run.ctid
+          FROM omni_agent_runs run
+          WHERE run.tenant_id = ${tenantId}
+            AND run.status IN ('completed', 'failed', 'canceled')
+            AND run.completed_at < ${runCutoff}::timestamptz
+            AND NOT EXISTS (
+              SELECT 1
+              FROM omni_agent_loop_v2_checkpoints checkpoint
+              WHERE checkpoint.tenant_id = run.tenant_id
+                AND checkpoint.run_id = run.id
+            )
+          ORDER BY run.completed_at ASC
           FOR UPDATE SKIP LOCKED
           LIMIT ${batchLimit}
         )
@@ -1029,11 +1037,17 @@ async function sweepPostgres(policy: RetentionPolicy, tenantId?: string) {
       `
     : await sql`
         WITH expired AS (
-          SELECT ctid
-          FROM omni_agent_runs
-          WHERE status IN ('completed', 'failed', 'canceled')
-            AND completed_at < ${runCutoff}::timestamptz
-          ORDER BY completed_at ASC
+          SELECT run.ctid
+          FROM omni_agent_runs run
+          WHERE run.status IN ('completed', 'failed', 'canceled')
+            AND run.completed_at < ${runCutoff}::timestamptz
+            AND NOT EXISTS (
+              SELECT 1
+              FROM omni_agent_loop_v2_checkpoints checkpoint
+              WHERE checkpoint.tenant_id = run.tenant_id
+                AND checkpoint.run_id = run.id
+            )
+          ORDER BY run.completed_at ASC
           FOR UPDATE SKIP LOCKED
           LIMIT ${batchLimit}
         )

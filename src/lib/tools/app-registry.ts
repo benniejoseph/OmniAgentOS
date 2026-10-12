@@ -1,5 +1,7 @@
 import type { ToolDefinition } from "@/lib/tools/types";
 import { MAX_ASSIGNED_SKILLS } from "@/lib/skills/limits";
+import { PERSONAL_PROFILE_FIELD_DETAILS, PERSONAL_PROFILE_FIELDS } from "@/lib/personal-context/contracts";
+import { workspaceLibraryKindSchema } from "@/lib/library/contracts";
 
 export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   readTool("app.workspaces.summary", "Workspace summary", "Read the current tenant workspace summary, including recent runs, workflows, and permitted approval items.", objectSchema({
@@ -7,6 +9,72 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
     approvalLimit: integer(1, 25, 12),
   })),
   readTool("app.workspaces.readiness", "Workspace readiness", "Read the authenticated tenant workspace readiness checks.", objectSchema({})),
+  mutationTool("app.research.start", "Start research", "Start a durable Quick or Deep report from this conversation using the existing research pipeline. Use for explicit requests to research a public topic or produce a detailed multi-source report; ordinary short factual questions can use web.search directly. Supply only the requested public topic and brief, never private profile, client, email or saved-context details. Returns a workflow ID; completion and report arrive in the same conversation. Saved context is not inherited.", requiredObjectSchema({
+    goal: text(1, 4_000), depth: { type: "string", enum: ["quick", "deep"], default: "quick" },
+    questions: { type: "array", maxItems: 6, items: text(1, 500), description: "Up to three focus questions for Quick, or six for Deep." },
+    sourceGuidance: text(0, 1_500),
+    allowedDomains: { type: "array", maxItems: 10, items: { type: "string", maxLength: 253, pattern: "^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\\.)+[a-z]{2,63}$" } },
+  }, ["goal", "depth"]), { reversible: false }),
+  readTool("app.usage.summary.show", "Show AI consumption", "Read recorded AI usage, tokens, estimated cost, failed calls, and provider/model breakdown for the current workspace. Compare the selected rolling period with the preceding period; preserve unknown pricing and incomplete coverage.", objectSchema({
+    period: { type: "string", enum: ["day", "week", "month"], default: "week" },
+    breakdownLimit: integer(1, 20, 10),
+  })),
+  readTool("app.personal_profile.show", "Show About me", "Read the signed-in user's saved About me profile, field sources, enabled state, and exact revision. Use before changing any personal field; this does not grant access to private memory or connected sources.", objectSchema({})),
+  mutationTool("app.personal_profile.update", "Update About me", "Change only the named About me fields from the user's explicit request, using the exact revision from app.personal_profile.show. Omitted fields and enabled state are preserved; an empty string clears a named field. Do not infer or silently save new personal facts.", requiredObjectSchema({
+    expectedRevision: integer(0, Number.MAX_SAFE_INTEGER - 1),
+    enabled: { type: "boolean", description: "Change only when the user explicitly asks to enable or disable About me." },
+    profile: objectSchema(Object.fromEntries(PERSONAL_PROFILE_FIELDS.map(field => [field, {
+      ...text(0, PERSONAL_PROFILE_FIELD_DETAILS[field].maxLength), description: PERSONAL_PROFILE_FIELD_DETAILS[field].label,
+    }]))),
+  }, ["expectedRevision"]), { reversible: true }),
+  readTool("app.csm.clients.list", "List clients", "List the current user's Salesforce Customer Success clients and saved brief summaries. Resolve readable client names before requesting an exact client or changing its fields.", objectSchema({})),
+  readTool("app.csm.clients.show", "Show client brief", "Read one exact client brief, current revision, role, success plan, goals, stakeholders, next review, tasks and linked source freshness. This reads saved context and does not connect to a Salesforce org.", requiredObjectSchema({
+    projectId: opaqueId("Exact client project ID returned by app.csm.clients.list or app.projects.list."),
+  }, ["projectId"])),
+  mutationTool("app.csm.clients.update", "Update client brief", "Update only explicitly named client brief fields from the user's request. First read the exact current brief and revision. Omitted fields and linked evidence are preserved; empty strings clear text and null clears the next review date.", requiredObjectSchema({
+    projectId: opaqueId("Exact client project ID."), expectedRevision: csmRevision(),
+    profile: objectSchema({
+      role: { type: "string", enum: ["secondary", "lead"] },
+      successPlan: { type: "string", enum: ["unknown", "standard", "premier", "signature"] },
+      leadCsm: text(0, 240), customerGoals: text(0, 4_000), successPath: text(0, 4_000), stakeholders: text(0, 4_000),
+      nextReviewDate: { type: ["string", "null"], format: "date", description: "Client's next review date, or null to clear it." },
+    }),
+  }, ["projectId", "expectedRevision", "profile"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
+  readTool("app.csm.role.show", "Show my CSM role context", "Read the user's saved CSM role notes, current revision and linked private role documents. Keep these general working instructions separate from each client's own context.", objectSchema({})),
+  mutationTool("app.csm.role.update", "Update my CSM role context", "Add the user's new role notes while preserving existing notes and source links. Use replace only for an explicit correction, replacement or clearing request, after reading the complete current notes. A stale revision cannot overwrite another edit.", requiredObjectSchema({
+    expectedRevision: csmRevision(), text: text(0, 20_000),
+    mode: { type: "string", enum: ["append", "replace"], default: "append" },
+  }, ["expectedRevision", "text"]), { reversible: true }),
+  mutationTool("app.csm.clients.sources.link", "Link client evidence", "Attach one exact current Library version to a saved client brief without copying content or expanding source access. Resolve the document by name, inspect it, and preserve its exact version and digest.", requiredObjectSchema({
+    projectId: opaqueId("Exact client project ID."), ...csmSourceLinkProperties(),
+  }, ["projectId", "expectedRevision", "libraryItemId", "versionId", "contentSha256"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
+  mutationTool("app.csm.clients.sources.unlink", "Unlink client evidence", "Remove one source reference from the exact client brief revision. The source file itself remains saved.", requiredObjectSchema({
+    projectId: opaqueId("Exact client project ID."), expectedRevision: csmRevision(), libraryItemId: libraryId(),
+  }, ["projectId", "expectedRevision", "libraryItemId"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
+  mutationTool("app.csm.role.sources.link", "Link a CSM role document", "Attach one inspected private Library document to the user's general CSM role context. Client, workspace and mission documents cannot be used as general role sources.", requiredObjectSchema(csmSourceLinkProperties(),
+    ["expectedRevision", "libraryItemId", "versionId", "contentSha256"]), { reversible: true }),
+  mutationTool("app.csm.role.sources.unlink", "Unlink a CSM role document", "Remove one document reference from the exact CSM role revision. The document itself remains saved.", requiredObjectSchema({
+    expectedRevision: csmRevision(), libraryItemId: libraryId(),
+  }, ["expectedRevision", "libraryItemId"]), { reversible: true }),
+  readTool("app.library.list", "Find files and evidence", "Find readable documents, decks, recordings, transcripts, connected sources and generated files by title or text in the Library. Return bounded metadata and exact IDs for inspection; source permissions remain unchanged.", objectSchema({
+    query: text(0, 240), kinds: { type: "array", maxItems: 20, items: { type: "string", enum: workspaceLibraryKindSchema.options } },
+    projectId: { type: "string", minLength: 1, maxLength: 320 }, limit: integer(1, 100, 30), offset: integer(0, 10_000, 0),
+  })),
+  readTool("app.library.show", "Inspect a file or source", "Read one exact accessible Library item's title, current version and digest, source freshness, citation metadata and app links. Binary bytes and credentials remain excluded.", requiredObjectSchema({
+    libraryItemId: libraryId(),
+  }, ["libraryItemId"])),
+  readTool("app.plugins.list", "Show plugins", "List available declarative plugins and this actor's installed plugins, current lifecycle revisions, component counts and activation limits. Installed templates do not imply connected integrations or executable workflows.", objectSchema({})),
+  mutationTool("app.plugins.preview", "Prepare plugin installation", "Prepare a reviewed installation from an exact catalog plugin ID, version and manifest digest returned by app.plugins.list. This creates only a preview and does not activate a plugin or execute code.", requiredObjectSchema({
+    pluginId: text(3, 120), version: text(5, 80), manifestSha256: sha256("Exact catalog manifest digest."),
+  }, ["pluginId", "version", "manifestSha256"]), { reversible: true }),
+  mutationTool("app.plugins.install", "Install reviewed plugin", "Install one exact unexpired preview after approval. Copy preview ID and manifest digest from the preview response; existing integration discovery, credential setup and workflow review remain separate.", requiredObjectSchema({
+    previewId: text(16, 200), manifestSha256: sha256("Exact reviewed manifest digest."),
+  }, ["previewId", "manifestSha256"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
+  ...(["enable", "disable", "uninstall"] as const).map(action => mutationTool(`app.plugins.${action}`,
+    `${action === "enable" ? "Enable" : action === "disable" ? "Disable" : "Uninstall"} plugin`,
+    `${action === "enable" ? "Enable" : action === "disable" ? "Disable" : "Uninstall"} one exact installed plugin using its current lifecycle revision from app.plugins.list. Never infer a plugin's state from its catalog availability.`,
+    requiredObjectSchema({ installationId: text(16, 200), expectedRevision: integer(1, Number.MAX_SAFE_INTEGER) }, ["installationId", "expectedRevision"]),
+    { riskLevel: 2, approvalRequired: true, reversible: action !== "uninstall" })),
   readTool("app.sources.coverage.show", "Show source coverage", "Read connected knowledge domains, bounded backfill completeness, last verified freshness, and explicit source blind spots without inferring absence as a negative fact.", objectSchema({
     workspaceId: opaqueId("Optional exact workspace ID for Workspace-scoped integrations."),
   })),
@@ -163,193 +231,6 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
       ],
     },
   }, ["meetingId", "proposalId", "expectedProposalSha256", "decision"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
-  readTool("app.customer_accounts.list", "List customer accounts", "List provider-neutral Account 360 records readable through the selected workspace membership and customer-data purpose boundary.", objectSchema({
-    workspaceId: opaqueId("Optional exact workspace ID."),
-    lifecycle: { type: "string", enum: customerAccountLifecycleValues() },
-    limit: integer(1, 200, 100),
-  })),
-  readTool("app.customer_accounts.show", "Show customer Account 360", "Read one Account 360 projection with current organization, people, products, opportunities, cases, usage, projects, interactions, health, risks, renewal, conflicts, freshness, and history counts.", requiredObjectSchema({
-    workspaceId: opaqueId("Optional exact workspace ID."),
-    accountId: customerAccountIdSchema(),
-  }, ["accountId"])),
-  readTool("app.customer_accounts.portfolio.show", "Show customer-success portfolio", "Rank readable Account 360 records by deterministic attention state and show evidence-bound next-best actions, risk, commitments, approvals, uncertainty, confidence, and freshness.", objectSchema({
-    workspaceId: opaqueId("Optional exact workspace ID."),
-    limit: integer(1, 200, 100),
-  })),
-  readTool("app.customer_accounts.intelligence.show", "Show customer account intelligence", "Read one governed customer-success decision projection: what changed, current risks and commitments, exact related approvals, and a non-authoritative next-best action with evidence, freshness, confidence, and uncertainty.", requiredObjectSchema({
-    workspaceId: opaqueId("Optional exact workspace ID."),
-    accountId: customerAccountIdSchema(),
-    historyLimit: integer(1, 250, 100),
-    timelineLimit: integer(1, 250, 100),
-  }, ["accountId"])),
-  mutationTool("app.customer_accounts.create", "Create customer account", "Create one provider-neutral Account 360 record with explicit owner and customer-data purposes. External CRM writes remain disabled.", requiredObjectSchema({
-    workspaceId: opaqueId("Optional exact workspace ID."),
-    name: text(1, 240),
-    lifecycle: { type: "string", enum: customerAccountLifecycleValues(), default: "prospect" },
-    organizationEntityId: { type: ["string", "null"], maxLength: 240 },
-    accountOwner: customerFactOwnerToolSchema(),
-    customerDataPurposeIds: customerDataPurposesToolSchema(),
-  }, ["name", "accountOwner"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
-  mutationTool("app.customer_accounts.revise", "Revise customer account", "Publish a new immutable Account 360 revision after exact optimistic-concurrency review. External CRM writes remain disabled.", requiredObjectSchema({
-    workspaceId: opaqueId("Optional exact workspace ID."),
-    accountId: customerAccountIdSchema(),
-    expectedRevision: integer(1, Number.MAX_SAFE_INTEGER),
-    name: text(1, 240),
-    lifecycle: { type: "string", enum: customerAccountLifecycleValues() },
-    organizationEntityId: { type: ["string", "null"], maxLength: 240 },
-    accountOwner: customerFactOwnerToolSchema(),
-    customerDataPurposeIds: customerDataPurposesToolSchema(),
-  }, ["accountId", "expectedRevision"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
-  mutationTool("app.customer_accounts.facts.record", "Record customer account fact", "Append one exact, sourced Account 360 fact revision. The source revision, customer-data purposes, owner, confidence, validity, and freshness deadline remain visible; conflicting current facts are preserved.", requiredObjectSchema({
-    workspaceId: opaqueId("Optional exact workspace ID."),
-    accountId: customerAccountIdSchema(),
-    factId: customerFactIdSchema(),
-    expectedRevision: integer(1, Number.MAX_SAFE_INTEGER),
-    factKey: { type: "string", minLength: 1, maxLength: 160, pattern: "^[a-z0-9][a-z0-9._:-]*$" },
-    state: { type: "string", enum: ["active", "retracted"], default: "active" },
-    value: customerFactValueToolSchema(),
-    source: customerFactSourceToolSchema(),
-    owner: customerFactOwnerToolSchema(),
-    confidenceBasisPoints: integer(0, 10_000),
-    validFrom: { type: "string", format: "date-time" },
-    validTo: { type: ["string", "null"], format: "date-time" },
-    staleAfter: { type: ["string", "null"], format: "date-time" },
-  }, ["accountId", "factKey", "value", "source", "owner", "confidenceBasisPoints", "validFrom"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
-  readTool("app.customer_accounts.health.show", "Show customer health", "Read the current explainable customer health score, immutable history, exact factor evidence, freshness and confidence penalties, and active deterministic policy.", requiredObjectSchema({
-    workspaceId: opaqueId("Optional exact workspace ID."),
-    accountId: customerAccountIdSchema(),
-    historyLimit: integer(1, 100, 20),
-  }, ["accountId"])),
-  mutationTool("app.customer_accounts.health.evaluate", "Evaluate customer health", "Evaluate one exact Account 360 revision through the deterministic versioned factor policy. Optional model suggestions remain explicitly non-authoritative and cannot alter any factor or score.", requiredObjectSchema({
-    workspaceId: opaqueId("Optional exact workspace ID."),
-    accountId: customerAccountIdSchema(),
-    expectedAccountRevision: integer(1, Number.MAX_SAFE_INTEGER),
-    expectedAccountSha256: sha256("Exact Account 360 revision digest."),
-    modelSuggestions: {
-      type: "array",
-      maxItems: 20,
-      items: requiredObjectSchema({
-        suggestionKind: { type: "string", enum: ["next_action", "factor_review", "input_gap"] },
-        statement: text(1, 1_000),
-        citedEvidence: {
-          type: "array",
-          minItems: 1,
-          maxItems: 20,
-          items: requiredObjectSchema({
-            factRevisionId: opaqueId("Exact current fact revision ID."),
-            factSha256: sha256("Exact current fact revision digest."),
-          }, ["factRevisionId", "factSha256"]),
-        },
-        confidenceBasisPoints: integer(0, 10_000),
-        origin: requiredObjectSchema({
-          providerId: opaqueId("Model provider identity."),
-          modelId: opaqueId("Exact model identity."),
-          promptSha256: sha256("Digest of the suggestion prompt contract."),
-        }, ["providerId", "modelId", "promptSha256"]),
-      }, ["suggestionKind", "statement", "citedEvidence", "confidenceBasisPoints", "origin"]),
-    },
-  }, ["accountId", "expectedAccountRevision", "expectedAccountSha256"]), { reversible: true }),
-  readTool("app.customer_accounts.workflows.list", "List customer-success workflows", "List the eight immutable CSM pack definitions and current governed workflow runs for one Account 360.", requiredObjectSchema({
-    workspaceId: opaqueId("Optional exact workspace ID."),
-    accountId: customerAccountIdSchema(),
-    limit: integer(1, 100, 50),
-  }, ["accountId"])),
-  mutationTool("app.customer_accounts.workflows.start", "Start customer-success workflow", "Create an exact Account 360-bound project and dependency-aware work items from one typed CSM pack definition. This creates no external communication or CRM effect.", requiredObjectSchema({
-    workspaceId: opaqueId("Optional exact workspace ID."),
-    accountId: customerAccountIdSchema(),
-    expectedAccountRevision: integer(1, Number.MAX_SAFE_INTEGER),
-    expectedAccountSha256: sha256("Exact current Account 360 revision digest."),
-    input: customerSuccessWorkflowInputToolSchema(),
-  }, ["accountId", "expectedAccountRevision", "expectedAccountSha256", "input"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
-  mutationTool("app.customer_accounts.workflows.outcome.record", "Record customer-success workflow outcome", "Append an immutable completed, blocked, or cancelled outcome receipt. Completed outcomes must cite required artifacts and evidence actually produced by the workflow project.", requiredObjectSchema({
-    workspaceId: opaqueId("Optional exact workspace ID."),
-    accountId: customerAccountIdSchema(),
-    runId: { type: "string", pattern: "^customer-success-run:[a-f0-9]{64}$", maxLength: 85 },
-    expectedRevision: integer(1, Number.MAX_SAFE_INTEGER),
-    status: { type: "string", enum: ["completed", "blocked", "cancelled"] },
-    summary: text(1, 4_000),
-    artifactReceipts: {
-      type: "array",
-      maxItems: 20,
-      items: requiredObjectSchema({
-        artifactKey: { type: "string", pattern: "^[a-z][a-z0-9_]{1,79}$", maxLength: 80 },
-        projectArtifactId: opaqueId("Exact artifact ID produced by this workflow project."),
-        evidenceKeys: { type: "array", maxItems: 20, items: { type: "string", pattern: "^[a-z][a-z0-9_]{1,79}$", maxLength: 80 } },
-        evidenceRefs: { type: "array", maxItems: 100, items: opaqueId("Exact evidence reference present on the project artifact.") },
-      }, ["artifactKey", "projectArtifactId", "evidenceKeys", "evidenceRefs"]),
-    },
-    nextAction: text(1, 500),
-  }, ["accountId", "runId", "expectedRevision", "status", "summary", "nextAction"]), { riskLevel: 2, approvalRequired: true, reversible: false }),
-  mutationTool("app.customer_accounts.salesforce.writes.configure", "Configure Salesforce writes", "Activate or disable approval-bound Salesforce writes for one exact owner-controlled Account 360 revision. Activation requires a linked Salesforce Account and reviewed provider configuration.", requiredObjectSchema({
-    workspaceId: opaqueId("Optional exact workspace ID."),
-    accountId: customerAccountIdSchema(),
-    expectedAccountRevision: integer(1, Number.MAX_SAFE_INTEGER),
-    enabled: { type: "boolean" },
-  }, ["accountId", "expectedAccountRevision", "enabled"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
-  salesforceCreateWriteTool(
-    "app.customer_accounts.salesforce.contact.create",
-    "Create Salesforce contact",
-    "Create one Contact under the linked Salesforce Account through a deterministic unique External ID upsert, then verify the exact provider state.",
-    salesforceContactFields(),
-    ["LastName"],
-  ),
-  salesforceUpdateWriteTool(
-    "app.customer_accounts.salesforce.contact.update",
-    "Update Salesforce contact",
-    "Update reviewed Contact fields only when the linked record and exact provider revision still match, then verify the resulting state.",
-    salesforceContactFields(),
-  ),
-  salesforceCreateWriteTool(
-    "app.customer_accounts.salesforce.task.create",
-    "Create Salesforce task",
-    "Create one Task under the linked Salesforce Account through a deterministic unique External ID upsert, then verify the exact provider state.",
-    salesforceTaskFields(),
-    ["Subject", "Status", "Priority"],
-  ),
-  salesforceUpdateWriteTool(
-    "app.customer_accounts.salesforce.task.update",
-    "Update Salesforce task",
-    "Update reviewed Task fields only when the linked record and exact provider revision still match, then verify the resulting state.",
-    salesforceTaskFields(),
-  ),
-  salesforceUpdateWriteTool(
-    "app.customer_accounts.salesforce.note.update",
-    "Update Salesforce note",
-    "Update reviewed Note fields only when the linked record and exact provider revision still match, then verify the resulting state.",
-    { Title: text(1, 80), Body: nullableTextTool(32_000) },
-  ),
-  salesforceCreateWriteTool(
-    "app.customer_accounts.salesforce.case.create",
-    "Create Salesforce case",
-    "Create one Case under the linked Salesforce Account through a deterministic unique External ID upsert, then verify the exact provider state.",
-    salesforceCaseFields(),
-    ["Subject", "Status", "Priority", "Origin"],
-  ),
-  salesforceUpdateWriteTool(
-    "app.customer_accounts.salesforce.case.update",
-    "Update Salesforce case",
-    "Update reviewed Case fields only when the linked record and exact provider revision still match, then verify the resulting state.",
-    salesforceCaseFields(),
-  ),
-  salesforceCreateWriteTool(
-    "app.customer_accounts.salesforce.opportunity.create",
-    "Create Salesforce opportunity",
-    "Create one Opportunity under the linked Salesforce Account through a deterministic unique External ID upsert, then verify the exact provider state.",
-    salesforceOpportunityFields(),
-    ["Name", "StageName", "CloseDate"],
-  ),
-  salesforceUpdateWriteTool(
-    "app.customer_accounts.salesforce.opportunity.update",
-    "Update Salesforce opportunity",
-    "Update reviewed Opportunity fields only when the linked record and exact provider revision still match, then verify the resulting state.",
-    salesforceOpportunityFields(),
-  ),
-  salesforceUpdateWriteTool(
-    "app.customer_accounts.salesforce.account.update",
-    "Update Salesforce account",
-    "Update reviewed fields on the exact linked Salesforce Account only when its provider revision still matches, then verify the resulting state.",
-    salesforceAccountFields(),
-  ),
   readTool("app.projects.list", "List projects", "List the current actor's projects with their work items and artifacts.", objectSchema({
     limit: integer(1, 100, 50),
     status: { type: "string", enum: ["draft", "active", "completed", "archived"] },
@@ -528,10 +409,10 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
     expectedTargetsSha256: { type: "string", minLength: 64, maxLength: 64, pattern: "^[a-f0-9]{64}$" },
   }, ["source", "expectedTargetsSha256"]), { riskLevel: 2, approvalRequired: true, reversible: false }),
   readTool("app.today.show", "Show Today", "Read the current actor's Today snapshot.", objectSchema({})),
-  readTool("app.today.agenda.show", "Show cohesive Today", "Read the actor-selected cohesive Today projection across personal reminders, meetings, commitments, customer risks, approvals, active agents, canonical work, source freshness, and complete AI consumption.", objectSchema({
+  readTool("app.today.agenda.show", "Show cohesive Today", "Read the actor-selected cohesive Today projection across personal reminders, meetings, commitments, approvals, active agents, canonical work, source freshness, and complete AI consumption.", objectSchema({
     workspaceId: opaqueId("Optional exact workspace ID."),
     workLimit: integer(1, 50, 16), approvalLimit: integer(1, 25, 12),
-    meetingLimit: integer(1, 200, 50), accountLimit: integer(1, 200, 50),
+    meetingLimit: integer(1, 200, 50),
   })),
   mutationTool("app.today.item.create", "Create Today item", "Create one task or reminder in Today.", requiredObjectSchema({
     title: text(1, 280), kind: { type: "string", enum: ["task", "reminder"], default: "task" },
@@ -548,7 +429,7 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
     timezone: text(1, 120), reminderLeadMinutes: { type: "integer", enum: [5, 15, 30, 60, 120] },
     notificationsEnabled: { type: "boolean" }, quietHoursEnabled: { type: "boolean" },
     quietHoursStart: { type: "string", pattern: "^([01]\\d|2[0-3]):[0-5]\\d$" }, quietHoursEnd: { type: "string", pattern: "^([01]\\d|2[0-3]):[0-5]\\d$" },
-    visibleSections: { type: "array", minItems: 1, maxItems: 9, uniqueItems: true, items: { type: "string", enum: ["focus", "agenda", "approvals", "customers", "active_agents", "work", "memory", "conversations", "consumption"] } },
+    visibleSections: { type: "array", minItems: 1, maxItems: 8, uniqueItems: true, items: { type: "string", enum: ["focus", "agenda", "approvals", "active_agents", "work", "memory", "conversations", "consumption"] } },
   }), { reversible: true }),
   readTool("app.notifications.list", "List notifications", "Read the current actor's notification center without generating new reminders.", objectSchema({})),
   mutationTool("app.notifications.update", "Update notification", "Read, dismiss, snooze, or complete one exact personal notification.", requiredObjectSchema({
@@ -764,8 +645,8 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   readTool("app.connectors.list", "List connectors", "List tenant-scoped MCP and OpenAPI connectors with reviewed contract summaries.", objectSchema({
     kind: connectorKind(), limit: integer(1, 100, 20),
   })),
-  readTool("app.integrations.overview.show", "Show integration access", "Show what the current actor can access and do through installed OAuth, MCP, OpenAPI, and Salesforce integrations, including permission, sync, cursor, freshness, failure, and attributable cost states. Catalog suggestions remain separate.", objectSchema({
-    workspaceId: opaqueId("Optional canonical Workspace ID for Salesforce health."),
+  readTool("app.integrations.overview.show", "Show integration access", "Show what the current actor can access and do through installed OAuth, MCP, and OpenAPI integrations, including permission, sync, cursor, freshness, failure, and attributable cost states. Catalog suggestions remain separate.", objectSchema({
+    workspaceId: opaqueId("Optional canonical Workspace ID."),
   })),
   readTool("app.connectors.show", "Show connector", "Read one exact connector and its discovered tools or imported operations.", requiredObjectSchema({
     kind: connectorKind(), connectorId: opaqueId("Exact connector ID."),
@@ -929,6 +810,17 @@ function readTool(id: string, name: string, description: string, inputSchema: Re
   return { id, name, description, category: "app", status: "active", riskLevel: 0, dryRunSupported: true, approvalRequired: false, operationClass: "read_only", reversible: true, inputSchema };
 }
 
+function csmRevision() {
+  return { type: ["string", "null"], minLength: 1, maxLength: 320,
+    description: "Exact current revision from the matching CSM read; null only when no saved revision exists." };
+}
+function libraryId() { return { type: "string", minLength: 1, maxLength: 320, description: "Exact Library item ID from a readable source result." }; }
+function csmSourceLinkProperties() {
+  return { expectedRevision: csmRevision(), libraryItemId: libraryId(),
+    versionId: { type: "string", minLength: 1, maxLength: 320 },
+    contentSha256: sha256("Exact current content digest returned by app.library.show.") };
+}
+
 function mutationTool(
   id: string,
   name: string,
@@ -960,107 +852,6 @@ function text(minLength: number, maxLength: number) {
 
 function integer(minimum: number, maximum: number, defaultValue?: number) {
   return { type: "integer", minimum, maximum, ...(defaultValue === undefined ? {} : { default: defaultValue }) };
-}
-
-function salesforceCreateWriteTool(
-  id: string,
-  name: string,
-  description: string,
-  fields: Record<string, unknown>,
-  requiredFields: string[],
-) {
-  return mutationTool(id, name, description, requiredObjectSchema({
-    ...salesforceWriteBaseProperties(),
-    fields: requiredObjectSchema(fields, requiredFields),
-  }, ["accountId", "expectedAccountRevision", "fields"]), {
-    riskLevel: 2,
-    approvalRequired: true,
-    reversible: false,
-  });
-}
-
-function salesforceUpdateWriteTool(
-  id: string,
-  name: string,
-  description: string,
-  fields: Record<string, unknown>,
-) {
-  return mutationTool(id, name, description, requiredObjectSchema({
-    ...salesforceWriteBaseProperties(),
-    recordId: salesforceRecordIdToolSchema(),
-    expectedProviderModifiedAt: { type: "string", format: "date-time" },
-    fields: { ...objectSchema(fields), minProperties: 1 },
-  }, [
-    "accountId", "expectedAccountRevision", "recordId",
-    "expectedProviderModifiedAt", "fields",
-  ]), { riskLevel: 2, approvalRequired: true, reversible: false });
-}
-
-function salesforceWriteBaseProperties() {
-  return {
-    workspaceId: opaqueId("Optional exact workspace ID."),
-    accountId: customerAccountIdSchema(),
-    expectedAccountRevision: integer(1, Number.MAX_SAFE_INTEGER),
-  };
-}
-
-function salesforceRecordIdToolSchema() {
-  return { type: "string", pattern: "^[A-Za-z0-9]{15,18}$" };
-}
-
-function nullableTextTool(maxLength: number) {
-  return { anyOf: [text(1, maxLength), { type: "null" }] };
-}
-
-function salesforceDateTool() {
-  return { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" };
-}
-
-function salesforceAccountFields() {
-  return {
-    Name: text(1, 255), Phone: nullableTextTool(40),
-    Website: nullableTextTool(255), Industry: nullableTextTool(80),
-    Type: nullableTextTool(80), Description: nullableTextTool(32_000),
-    BillingStreet: nullableTextTool(255), BillingCity: nullableTextTool(40),
-    BillingState: nullableTextTool(80), BillingPostalCode: nullableTextTool(20),
-    BillingCountry: nullableTextTool(80),
-  };
-}
-
-function salesforceContactFields() {
-  return {
-    FirstName: nullableTextTool(40), LastName: text(1, 80),
-    Email: { anyOf: [{ type: "string", format: "email", maxLength: 254 }, { type: "null" }] },
-    Phone: nullableTextTool(40), MobilePhone: nullableTextTool(40),
-    Title: nullableTextTool(128), Department: nullableTextTool(80),
-    Description: nullableTextTool(32_000),
-  };
-}
-
-function salesforceTaskFields() {
-  return {
-    Subject: text(1, 255), Description: nullableTextTool(32_000),
-    ActivityDate: { anyOf: [salesforceDateTool(), { type: "null" }] },
-    Status: text(1, 80), Priority: text(1, 80),
-  };
-}
-
-function salesforceCaseFields() {
-  return {
-    Subject: text(1, 255), Description: nullableTextTool(32_000),
-    Status: text(1, 80), Priority: text(1, 80), Origin: text(1, 80),
-    Type: nullableTextTool(80), Reason: nullableTextTool(80),
-  };
-}
-
-function salesforceOpportunityFields() {
-  return {
-    Name: text(1, 120), StageName: text(1, 120), CloseDate: salesforceDateTool(),
-    Amount: { anyOf: [{ type: "number", minimum: 0, maximum: 1_000_000_000_000 }, { type: "null" }] },
-    Probability: { anyOf: [{ type: "number", minimum: 0, maximum: 100 }, { type: "null" }] },
-    Type: nullableTextTool(80), NextStep: nullableTextTool(255),
-    Description: nullableTextTool(32_000),
-  };
 }
 
 function opaqueId(description: string) {
@@ -1190,176 +981,6 @@ function meetingDraftProperties() {
         commitmentId: { type: ["string", "null"], maxLength: 240 },
       }, ["followUpId", "label", "status"]),
     },
-  };
-}
-
-function customerAccountLifecycleValues() {
-  return ["prospect", "onboarding", "active", "at_risk", "churned", "archived"];
-}
-
-function customerSuccessWorkflowInputToolSchema() {
-  const workflowId = (value: string) => ({ type: "string", enum: [value] });
-  const objective = text(1, 2_000);
-  const targetDate = { type: ["string", "null"], format: "date-time" };
-  const textList = (maxItems = 20) => ({
-    type: "array", minItems: 1, maxItems, items: text(1, 500),
-  });
-  const optionalTextList = (maxItems = 20, maxLength = 240) => ({
-    type: "array", maxItems, items: text(1, maxLength),
-  });
-  const requiredIds = (maxItems = 50) => ({
-    type: "array", minItems: 1, maxItems, uniqueItems: true,
-    items: opaqueId("Exact Account 360, meeting, case, or stakeholder identity."),
-  });
-  const optionalIds = (maxItems = 50) => ({
-    ...requiredIds(maxItems), minItems: 0,
-  });
-  const base = { objective, targetDate };
-  return {
-    anyOf: [
-      requiredObjectSchema({
-        workflowId: workflowId("onboarding"), ...base,
-        successCriteria: textList(),
-        productNames: optionalTextList(),
-        stakeholderIds: optionalIds(),
-      }, ["workflowId", "objective", "successCriteria"]),
-      requiredObjectSchema({
-        workflowId: workflowId("adoption_review"), ...base,
-        periodStartAt: { type: "string", format: "date-time" },
-        periodEndAt: { type: "string", format: "date-time" },
-        adoptionGoals: textList(),
-        productIds: optionalIds(20),
-      }, ["workflowId", "objective", "periodStartAt", "periodEndAt", "adoptionGoals"]),
-      requiredObjectSchema({
-        workflowId: workflowId("risk_escalation"), ...base,
-        riskTitle: text(1, 500),
-        severity: { type: "string", enum: ["low", "medium", "high", "critical"] },
-        signals: textList(),
-        executiveSponsorId: { anyOf: [opaqueId("Optional executive sponsor identity."), { type: "null" }] },
-      }, ["workflowId", "objective", "riskTitle", "severity", "signals"]),
-      requiredObjectSchema({
-        workflowId: workflowId("renewal_planning"), ...base,
-        renewalAt: { type: "string", format: "date-time" },
-        renewalGoals: textList(),
-        amountMinor: { type: ["integer", "null"], minimum: 0 },
-        currency: { type: ["string", "null"], pattern: "^[A-Z]{3}$" },
-      }, ["workflowId", "objective", "renewalAt", "renewalGoals"]),
-      requiredObjectSchema({
-        workflowId: workflowId("qbr_ebr"), ...base,
-        reviewKind: { type: "string", enum: ["qbr", "ebr"] },
-        meetingAt: { type: "string", format: "date-time" },
-        periodStartAt: { type: "string", format: "date-time" },
-        periodEndAt: { type: "string", format: "date-time" },
-        audience: textList(),
-        agendaObjectives: textList(),
-      }, ["workflowId", "objective", "reviewKind", "meetingAt", "periodStartAt", "periodEndAt", "audience", "agendaObjectives"]),
-      requiredObjectSchema({
-        workflowId: workflowId("meeting_prep_follow_up"), ...base,
-        meetingId: opaqueId("Exact governed meeting identity."),
-        phase: { type: "string", enum: ["prep", "follow_up"] },
-        participantIds: requiredIds(),
-        meetingObjectives: textList(),
-      }, ["workflowId", "objective", "meetingId", "phase", "participantIds", "meetingObjectives"]),
-      requiredObjectSchema({
-        workflowId: workflowId("support_escalation"), ...base,
-        caseIds: requiredIds(),
-        severity: { type: "string", enum: ["medium", "high", "critical"] },
-        customerImpact: text(1, 2_000),
-        requestedOutcome: text(1, 1_000),
-      }, ["workflowId", "objective", "caseIds", "severity", "customerImpact", "requestedOutcome"]),
-      requiredObjectSchema({
-        workflowId: workflowId("expansion_discovery"), ...base,
-        hypotheses: textList(),
-        stakeholderIds: requiredIds(),
-        discoveryWindowEndAt: { type: "string", format: "date-time" },
-      }, ["workflowId", "objective", "hypotheses", "stakeholderIds", "discoveryWindowEndAt"]),
-    ],
-  };
-}
-
-function customerAccountIdSchema() {
-  return { type: "string", pattern: "^customer-account:[a-f0-9]{64}$", maxLength: 81 };
-}
-
-function customerFactIdSchema() {
-  return { type: "string", pattern: "^customer-fact:[a-f0-9]{64}$", maxLength: 78 };
-}
-
-function customerDataPurposesToolSchema() {
-  return {
-    type: "array",
-    minItems: 2,
-    maxItems: 5,
-    uniqueItems: true,
-    items: {
-      type: "string",
-      enum: [
-        "customer_success.account.read",
-        "customer_success.account.manage",
-        "customer_success.meeting_follow_up",
-        "customer_success.analytics",
-        "customer_success.crm_sync",
-      ],
-    },
-  };
-}
-
-function customerFactOwnerToolSchema() {
-  return requiredObjectSchema({
-    ownerKind: { type: "string", enum: ["actor", "person", "organization", "team", "system"] },
-    ownerId: opaqueId("Exact semantic owner identity."),
-    displayName: text(1, 180),
-  }, ["ownerKind", "ownerId", "displayName"]);
-}
-
-function customerFactSourceToolSchema() {
-  return requiredObjectSchema({
-    sourceKind: { type: "string", enum: ["manual", "meeting", "project", "work_item", "connected_source", "crm", "computed"] },
-    sourceId: opaqueId("Exact source identity."),
-    sourceRevisionId: opaqueId("Exact immutable source revision identity."),
-    sourceRevisionSha256: sha256("Exact immutable source revision digest."),
-    sourceLabel: text(1, 240),
-    providerId: { type: ["string", "null"], maxLength: 240 },
-    providerObjectType: { type: ["string", "null"], maxLength: 120 },
-    providerObjectIdSha256: { anyOf: [sha256("Hashed external provider object identity."), { type: "null" }] },
-    permissionBasis: { type: "string", enum: ["operator_assertion", "workspace_membership", "project_membership", "connector_grant", "derived_from_cited_evidence"] },
-    allowedPurposeIds: {
-      ...customerDataPurposesToolSchema(),
-      minItems: 1,
-    },
-    observedAt: { type: "string", format: "date-time" },
-    ingestedAt: { type: "string", format: "date-time" },
-  }, [
-    "sourceKind", "sourceId", "sourceRevisionId", "sourceRevisionSha256",
-    "sourceLabel", "providerId", "providerObjectType", "providerObjectIdSha256",
-    "permissionBasis", "allowedPurposeIds", "observedAt", "ingestedAt",
-  ]);
-}
-
-function customerFactValueToolSchema() {
-  const entity = {
-    entityId: opaqueId("Exact ontology entity identity."),
-    name: text(1, 240),
-  };
-  const money = {
-    amountMinor: { type: ["integer", "null"], minimum: 0 },
-    currency: { type: ["string", "null"], pattern: "^[A-Z]{3}$" },
-  };
-  return {
-    anyOf: [
-      requiredObjectSchema({ kind: { type: "string", enum: ["organization"] }, ...entity, industry: { type: ["string", "null"], maxLength: 160 }, website: { type: ["string", "null"], format: "uri", maxLength: 2_000 } }, ["kind", "entityId", "name", "industry", "website"]),
-      requiredObjectSchema({ kind: { type: "string", enum: ["contact"] }, ...entity, email: { type: ["string", "null"], format: "email", maxLength: 320 }, title: { type: ["string", "null"], maxLength: 180 } }, ["kind", "entityId", "name", "email", "title"]),
-      requiredObjectSchema({ kind: { type: "string", enum: ["stakeholder"] }, ...entity, role: text(1, 180), influence: { type: "string", enum: ["low", "medium", "high", "unknown"] }, stance: { type: "string", enum: ["champion", "supportive", "neutral", "detractor", "unknown"] } }, ["kind", "entityId", "name", "role", "influence", "stance"]),
-      requiredObjectSchema({ kind: { type: "string", enum: ["product"] }, ...entity, status: { type: "string", enum: ["trial", "active", "paused", "ended", "unknown"] }, quantity: { type: ["number", "null"], minimum: 0 } }, ["kind", "entityId", "name", "status", "quantity"]),
-      requiredObjectSchema({ kind: { type: "string", enum: ["opportunity"] }, ...entity, stage: text(1, 120), ...money, expectedCloseAt: { type: ["string", "null"], format: "date-time" } }, ["kind", "entityId", "name", "stage", "amountMinor", "currency", "expectedCloseAt"]),
-      requiredObjectSchema({ kind: { type: "string", enum: ["case"] }, entityId: entity.entityId, title: text(1, 500), status: text(1, 120), severity: { type: "string", enum: ["low", "medium", "high", "critical", "unknown"] } }, ["kind", "entityId", "title", "status", "severity"]),
-      requiredObjectSchema({ kind: { type: "string", enum: ["usage"] }, metricId: opaqueId("Stable usage metric identity."), label: text(1, 240), value: { type: "number" }, unit: text(1, 80), periodStartAt: { type: "string", format: "date-time" }, periodEndAt: { type: "string", format: "date-time" } }, ["kind", "metricId", "label", "value", "unit", "periodStartAt", "periodEndAt"]),
-      requiredObjectSchema({ kind: { type: "string", enum: ["project"] }, projectId: opaqueId("Canonical or compatible project identity."), name: text(1, 240), status: text(1, 120) }, ["kind", "projectId", "name", "status"]),
-      requiredObjectSchema({ kind: { type: "string", enum: ["interaction"] }, interactionId: opaqueId("Stable interaction identity."), channel: { type: "string", enum: ["meeting", "email", "call", "message", "support", "other"] }, summary: text(1, 4_000), occurredAt: { type: "string", format: "date-time" } }, ["kind", "interactionId", "channel", "summary", "occurredAt"]),
-      requiredObjectSchema({ kind: { type: "string", enum: ["health"] }, dimension: text(1, 120), status: { type: "string", enum: ["healthy", "watch", "at_risk", "unknown"] }, scoreBasisPoints: { type: ["integer", "null"], minimum: 0, maximum: 10_000 }, summary: text(1, 2_000) }, ["kind", "dimension", "status", "scoreBasisPoints", "summary"]),
-      requiredObjectSchema({ kind: { type: "string", enum: ["risk"] }, entityId: entity.entityId, title: text(1, 500), severity: { type: "string", enum: ["low", "medium", "high", "critical"] }, status: { type: "string", enum: ["open", "mitigating", "resolved"] } }, ["kind", "entityId", "title", "severity", "status"]),
-      requiredObjectSchema({ kind: { type: "string", enum: ["renewal"] }, renewalId: opaqueId("Stable renewal identity."), status: { type: "string", enum: ["unplanned", "planning", "proposed", "committed", "renewed", "lost"] }, renewalAt: { type: "string", format: "date-time" }, ...money }, ["kind", "renewalId", "status", "renewalAt", "amountMinor", "currency"]),
-    ],
   };
 }
 

@@ -8,6 +8,7 @@ import {
   withDatabaseRequestScope,
 } from "@/lib/db/client";
 import { isServerFailure, serverErrorResponse } from "@/lib/http/errors";
+import { requestWorkDeadline } from "@/lib/observability/request-timing";
 import {
   applyObservabilitySloPolicyChange,
   getObservabilitySloPolicyChange,
@@ -60,7 +61,7 @@ import {
 } from "@/lib/workflows/runner";
 
 export const runtime = "nodejs";
-export const maxDuration = 300;
+export const maxDuration = 1800;
 export const GET = withDatabaseRequestScope(GETHandler);
 export const POST = withDatabaseRequestScope(POSTHandler);
 
@@ -760,6 +761,7 @@ async function POSTHandler(
   if (waitingRun && result.computerObservation) {
     const tenantId = securityContext.tenantId;
     const executionId = claim.record.id;
+    const deadlineAt = requestWorkDeadline(maxDuration);
     after(async () => {
       try {
         // The observation exists only in this request, so the resume runs
@@ -768,6 +770,7 @@ async function POSTHandler(
           executionId,
           toolExecution: result,
           tenantId,
+          deadlineAt,
         });
       } catch {
         console.warn(

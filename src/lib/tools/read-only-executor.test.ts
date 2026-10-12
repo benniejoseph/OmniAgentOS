@@ -8,6 +8,7 @@ import type { ToolDefinition } from "@/lib/tools/types";
 
 const mocks = vi.hoisted(() => ({
   recordRuntimeEvent: vi.fn(),
+  readPublicWebSource: vi.fn(),
   toolOverrides: new Map<string, ToolDefinition>(),
 }));
 
@@ -29,6 +30,8 @@ vi.mock("@/lib/http/rate-limit", () => ({
   checkSharedRateLimit: vi.fn().mockResolvedValue({ allowed: true, retryAfterSeconds: 0 }),
 }));
 
+vi.mock("@/lib/web-search/read", () => ({ readPublicWebSource: mocks.readPublicWebSource }));
+
 import { executeGovernedTool } from "@/lib/tools/executor";
 
 const context: SecurityContext = {
@@ -45,9 +48,36 @@ beforeEach(async () => {
   delete process.env.DATABASE_URL;
   mocks.recordRuntimeEvent.mockReset().mockResolvedValue(undefined);
   mocks.toolOverrides.clear();
+  mocks.readPublicWebSource.mockReset().mockResolvedValue({
+    title: "Public report", url: "https://example.com/report", content: "Bounded source text.",
+    contentType: "text/html", fetchedAt: "2026-10-07T00:00:00.000Z", citationId: "web-fixture",
+    truncated: false, contentTrust: "untrusted",
+  });
 });
 
 describe("governed executor read-only constraint", () => {
+  it("runs public source reading with scoped audit and cancellation through the governed executor", async () => {
+    const controller = new AbortController();
+    const { record, result } = await executeGovernedTool({
+      toolId: "web.read", input: { url: "https://example.com/report" }, context,
+      requireReadOnly: true, dryRun: false, abortSignal: controller.signal,
+    });
+    expect(record).toMatchObject({ tenantId: context.tenantId, actorId: context.actorId, toolId: "web.read", status: "executed", riskLevel: 0 });
+    expect(result).toMatchObject({ contentTrust: "untrusted", title: "Public report" });
+    expect(mocks.readPublicWebSource).toHaveBeenCalledWith({ url: "https://example.com/report", abortSignal: expect.any(AbortSignal) });
+    expect(await listStreamEvents(`tool_execution:${record.id}`, { tenantId: context.tenantId })).toContainEqual(expect.objectContaining({
+      type: "tool.execution.upserted", payload: expect.objectContaining({ executionId: record.id, status: "executed" }),
+    }));
+  });
+
+  it("rejects authentication or arbitrary request options before public reading", async () => {
+    await expect(executeGovernedTool({
+      toolId: "web.read", input: { url: "https://example.com/report", headers: { authorization: "unsafe" } }, context,
+      requireReadOnly: true,
+    })).rejects.toThrow();
+    expect(mocks.readPublicWebSource).not.toHaveBeenCalled();
+  });
+
   it("blocks a low-risk write even with approval and records the normal policy audit", async () => {
     const { record, result } = await executeGovernedTool({
       toolId: "memory.write",

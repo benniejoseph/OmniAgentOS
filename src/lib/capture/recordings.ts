@@ -1944,7 +1944,9 @@ function assertRequestCaptureRecordingMetadataDetail(
     (detail.actorId !== canonicalActorId && detail.actorId !== exactActorId) ||
     detail.segments.length !== detail.segmentCount ||
     detail.segments.length > MAX_CAPTURE_SEGMENTS ||
-    (detail.status !== "recording" && detail.segments.some((segment) =>
+    // Closing an upload starts asynchronous transcription; both processing
+    // and failed recordings may still contain untranscribed segments.
+    (detail.status === "ready" && detail.segments.some((segment) =>
       segment.transcriptionStatus === "pending"
     ))
   ) {

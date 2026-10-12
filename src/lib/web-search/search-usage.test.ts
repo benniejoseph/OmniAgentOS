@@ -43,7 +43,15 @@ describe("live web search usage", () => {
     mocks.create.mockResolvedValue({
       id: "resp_search",
       output_text: "Short answer",
-      output: [],
+      output: [{
+        id: "ws_search",
+        type: "web_search_call",
+        status: "completed",
+        action: {
+          type: "search",
+          sources: [{ type: "url", url: "https://example.com/prices" }],
+        },
+      }],
       usage: {
         input_tokens: 1_000,
         input_tokens_details: { cached_tokens: 200 },
@@ -64,6 +72,14 @@ describe("live web search usage", () => {
         correlationId: "correlation-a",
       },
     });
+
+    // The same low reasoning/answer allowance used by other model calls also
+    // applies to the independently assigned hosted-search model. Minimal
+    // reasoning is not supported by GPT-5's web search tool.
+    expect(mocks.create).toHaveBeenCalledWith(expect.objectContaining({
+      reasoning: { effort: "low" },
+      max_output_tokens: 6_000,
+    }), expect.anything());
 
     // The deployment's client tells its gateway which work the call is for.
     expect(mocks.client).toHaveBeenCalledWith({

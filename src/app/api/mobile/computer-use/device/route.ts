@@ -27,7 +27,7 @@ async function GETHandler(request: Request) {
       action: "run.agent",
       resourceType: "local_computer_device",
     });
-    const device = await getLocalComputerDevice(context);
+    const device = await getLocalComputerDevice(context, "local_macos");
     return Response.json(
       nativeLocalComputerDeviceReadResponseSchema.parse(device),
       { headers: mobileNoStoreHeaders },

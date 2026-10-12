@@ -321,6 +321,7 @@ export function AppShell({
               aria-current={active ? "page" : undefined}
               onFocus={(event) => event.currentTarget.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "instant" })}
               className={clsx(
+                styles.dockLink,
                 "flex min-h-14 flex-col items-center justify-center gap-1 rounded-md px-1 text-xs font-semibold transition",
                 active ? "text-primary" : "text-muted hover:bg-surface-raised hover:text-foreground",
               )}
@@ -412,10 +413,8 @@ export function MobileNavigation({
 }) {
   return (
     <nav className="min-h-0 flex-1 overflow-y-auto px-3 py-4" aria-label="Complete workspace navigation">
-      {appNavGroups.map((group) => (
-        <div key={group.label} className="mb-5">
-          <p className="px-3 text-xs font-semibold text-muted">{group.label}</p>
-          <div className="mt-2 space-y-1">
+      {appNavGroups.map((group) => {
+        const links = <div className="mt-2 space-y-1">
             {group.items.map((item) => {
               const Icon = item.icon;
               const active = isActivePath(pathname, item.href);
@@ -441,15 +440,20 @@ export function MobileNavigation({
                 </Link>
               );
             })}
-          </div>
-        </div>
-      ))}
+          </div>;
+        return group.label === "Advanced" ? <details key={group.label} className={styles.mobileAdvanced}
+          open={group.items.some((item) => isActivePath(pathname, item.href)) || undefined}>
+          <summary>Advanced tools</summary>{links}
+        </details> : <div key={group.label} className="mb-5">
+          <p className="px-3 text-xs font-semibold text-muted">{group.label}</p>{links}
+        </div>;
+      })}
     </nav>
   );
 }
 
 export function CompactNavigation({ pathname, inboxCount }: { pathname: string; inboxCount?: number }) {
-  const secondary = appNavGroups.flatMap((group) => group.collapsible ? group.items : []);
+  const secondary = appNavGroups.flatMap((group) => group.items).filter((item) => !primaryNavItems.includes(item));
   const attention = secondary.find((item) => item.href === "/app/approvals")!;
   const activeSecondary = secondary.find((item) => item !== attention && isActivePath(pathname, item.href));
   const more = secondary.filter((item) => item !== attention && item !== activeSecondary);
@@ -761,5 +765,6 @@ function rememberDesktopNavCollapsed(collapsed: boolean) {
 }
 
 function isActivePath(pathname: string, href: string) {
+  if (href === "/app/history" && (pathname === "/app/activity" || pathname === "/app/results" || pathname.startsWith("/app/results/"))) return true;
   return pathname === href || (href !== "/app" && pathname.startsWith(`${href}/`));
 }

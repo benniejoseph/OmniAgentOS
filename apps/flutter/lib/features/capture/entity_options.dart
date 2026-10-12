@@ -1,6 +1,9 @@
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 
+import '../../app/mobile/mobile_flow_scaffold.dart';
+import '../../app/mobile/mobile_page_scaffold.dart';
+import '../../app/platform/mobile_presentation.dart';
 import '../../core/network/native_workspace_access.dart';
 import 'library_contracts.dart';
 import 'library_controller.dart';
@@ -44,7 +47,13 @@ class NativeEntityOptionsPage extends StatelessWidget {
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(
       title: Text(
-        select ? 'Choose an authorized entity' : 'Authorized entities',
+        usesMobilePresentation()
+            ? select
+                  ? 'Choose context'
+                  : 'People & projects'
+            : select
+            ? 'Choose an authorized entity'
+            : 'Authorized entities',
       ),
     ),
     body: NativePrivateWorkspace(
@@ -81,6 +90,7 @@ class _EntityOptionsViewState extends State<_EntityOptionsView>
   bool _loading = false, _visible = true, _denied = false;
   final List<String?> _afters = [null];
   final _heading = FocusNode();
+  String _query = '';
   bool get _current => mounted && _visible && widget.access.current;
   @override
   void initState() {
@@ -193,6 +203,7 @@ class _EntityOptionsViewState extends State<_EntityOptionsView>
     final rows =
         _page?.items.where((row) => widget.types.contains(row.type)).toList() ??
         const <EntityOption>[];
+    if (usesMobilePresentation()) return _mobileOptions(rows);
     return SingleChildScrollView(
       padding: const EdgeInsets.all(24),
       child: Center(
@@ -304,6 +315,156 @@ class _EntityOptionsViewState extends State<_EntityOptionsView>
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _mobileOptions(List<EntityOption> rows) {
+    final visible = rows
+        .where((row) => row.label.toLowerCase().contains(_query.toLowerCase()))
+        .toList();
+    final scheme = Theme.of(context).colorScheme;
+    return RefreshIndicator(
+      onRefresh: _read,
+      child: CustomScrollView(
+        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+        slivers: [
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
+            sliver: SliverToBoxAdapter(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Focus(
+                    focusNode: _heading,
+                    child: Text(
+                      widget.select
+                          ? 'Give this a little context'
+                          : 'Your people and projects',
+                      style: Theme.of(context).textTheme.headlineSmall,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    widget.select
+                        ? 'Choose who or what this relates to. You can review the selection before saving.'
+                        : 'Browse the people, organisations and projects available in your workspace.',
+                    style: TextStyle(color: scheme.onSurfaceVariant),
+                  ),
+                  const SizedBox(height: 20),
+                  TextField(
+                    onChanged: (value) => setState(() => _query = value.trim()),
+                    decoration: const InputDecoration(
+                      hintText: 'Find in this page',
+                      prefixIcon: Icon(Icons.search_rounded),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  if (_loading) const LinearProgressIndicator(),
+                  if (_error != null)
+                    MobileSurface(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(_error!),
+                          TextButton.icon(
+                            onPressed: _loading ? null : () => _read(),
+                            icon: const Icon(Icons.refresh_rounded),
+                            label: const Text('Try again'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  if (!_loading && _error == null && visible.isEmpty)
+                    MobileSurface(
+                      child: Text(
+                        _query.isNotEmpty
+                            ? 'No matches on this page. Try a different name or open the next page.'
+                            : 'Nothing to choose on this page. More options may be available below.',
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+          SliverPadding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            sliver: SliverList.builder(
+              itemCount: visible.length,
+              itemBuilder: (context, index) {
+                final row = visible[index];
+                final (label, icon) = switch (row.type) {
+                  'person' => ('Person', Icons.person_outline_rounded),
+                  'organization' => ('Organisation', Icons.business_outlined),
+                  'project' => ('Project', Icons.folder_outlined),
+                  'account' => ('Organisation', Icons.business_outlined),
+                  _ => ('Saved context', Icons.link_rounded),
+                };
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: MobileSurface(
+                    padding: EdgeInsets.zero,
+                    child: ListTile(
+                      minVerticalPadding: 16,
+                      leading: Icon(icon, color: scheme.primary),
+                      title: Text(row.label),
+                      subtitle: Text(label),
+                      trailing: widget.select
+                          ? const Icon(Icons.chevron_right_rounded)
+                          : null,
+                      onTap: widget.select && !_loading && !_denied
+                          ? () => _choose(row)
+                          : null,
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 32),
+            sliver: SliverToBoxAdapter(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  if (_page != null) ...[
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            onPressed: !_loading && _afters.length > 1
+                                ? _previous
+                                : null,
+                            icon: const Icon(Icons.arrow_back_rounded),
+                            label: const Text('Previous'),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: FilledButton.tonalIcon(
+                            onPressed: !_loading && _page!.nextAfter != null
+                                ? () =>
+                                      _read(after: _page!.nextAfter, next: true)
+                                : null,
+                            icon: const Icon(Icons.arrow_forward_rounded),
+                            label: const Text('Next'),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    MobileDetailsDisclosure(
+                      title: 'Selection details',
+                      child: SelectableText(
+                        'Workspace ${widget.access.authority.tenantId}\nOwner actor:${widget.access.authority.canonicalUserId}\nAccess scope ${_page!.accessScope}\nPurpose entity.read.v1',
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

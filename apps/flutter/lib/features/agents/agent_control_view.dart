@@ -1,5 +1,11 @@
 import 'package:flutter/material.dart';
 
+import '../../app/mobile/mobile_flow_scaffold.dart';
+
+import '../settings/adaptive_control_dialog.dart';
+
+import '../../app/platform/mobile_presentation.dart';
+
 import 'agent_council.dart';
 import 'task_authority_view.dart';
 
@@ -44,8 +50,8 @@ class _AgentControlViewState extends State<AgentControlView> {
       if (projection.state == 'unavailable') {
         return _AgentControlNotice(
           icon: Icons.sync_problem_outlined,
-          title: 'Delegation ledger is unavailable',
-          message: 'No task health or authority was inferred.',
+          title: 'Live work could not be loaded',
+          message: 'Refresh to check the current status of your agents.',
           onRetry: controller.refresh,
         );
       }
@@ -53,7 +59,7 @@ class _AgentControlViewState extends State<AgentControlView> {
         return _AgentControlNotice(
           icon: Icons.account_tree_outlined,
           title: 'No delegated work yet',
-          message: 'Bounded specialist tasks will appear here with their authority, runtime, cost, and verification.',
+          message: 'When ATLAS gives work to your specialists, their progress and results appear here.',
           onRetry: controller.refresh,
         );
       }
@@ -93,7 +99,7 @@ class _AgentControlViewState extends State<AgentControlView> {
     final reason = await showDialog<String>(
       context: context,
       useRootNavigator: false,
-      builder: (dialogContext) => AlertDialog(
+      builder: (dialogContext) => AdaptiveControlDialog(
         title: Text('Cancel ${member.identity.name}\'s task?'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
@@ -173,11 +179,15 @@ class _AgentControlSummary extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        'Agent Control',
+                        usesMobilePresentation()
+                            ? 'Your team at work'
+                            : 'Agent Control',
                         style: Theme.of(context).textTheme.titleLarge,
                       ),
                       Text(
-                        'Canonical delegated work',
+                        usesMobilePresentation()
+                            ? 'Specialists working together'
+                            : 'Canonical delegated work',
                         style: Theme.of(context).textTheme.bodySmall,
                       ),
                     ],
@@ -238,7 +248,7 @@ class _ExecutionCard extends StatelessWidget {
     margin: EdgeInsets.zero,
     clipBehavior: Clip.antiAlias,
     child: ExpansionTile(
-      initiallyExpanded: true,
+      initiallyExpanded: !usesMobilePresentation(),
       leading: const Icon(Icons.hub_outlined),
       title: Text(
         execution.currentWork,
@@ -356,7 +366,11 @@ class _MemberTile extends StatelessWidget {
                 key: Key('android-agent-control-authority-${member.taskId}'),
                 onPressed: () => _showAuthority(context),
                 icon: const Icon(Icons.key_outlined, size: 18),
-                label: const Text('Inspect authority'),
+                label: Text(
+                  usesMobilePresentation()
+                      ? 'View permissions'
+                      : 'Inspect authority',
+                ),
               ),
               if (controller.canCancel(member))
                 OutlinedButton.icon(
@@ -377,36 +391,53 @@ class _MemberTile extends StatelessWidget {
     );
   }
 
-  Future<void> _showAuthority(BuildContext context) =>
-      showModalBottomSheet<void>(
+  Future<void> _showAuthority(BuildContext context) {
+    if (usesMobilePresentation()) {
+      return showDialog<void>(
         context: context,
-        showDragHandle: true,
-        isScrollControlled: true,
-        builder: (context) => SafeArea(
-          child: DraggableScrollableSheet(
-            expand: false,
-            initialChildSize: .78,
-            minChildSize: .42,
-            maxChildSize: .94,
-            builder: (context, scrollController) => ListView(
-              controller: scrollController,
-              padding: const EdgeInsets.fromLTRB(20, 0, 20, 28),
-              children: [
-                Text(
-                  '${member.identity.name} authority',
-                  style: Theme.of(context).textTheme.titleLarge,
-                ),
-                const SizedBox(height: 14),
-                AgentTaskAuthorityView(
-                  controller: controller,
-                  taskId: member.taskId,
-                  compact: true,
-                ),
-              ],
+        useRootNavigator: false,
+        builder: (_) => Dialog.fullscreen(
+          child: MobileFlowScaffold(
+            title: '${member.identity.name} permissions',
+            child: AgentTaskAuthorityView(
+              controller: controller,
+              taskId: member.taskId,
+              compact: true,
             ),
           ),
         ),
       );
+    }
+    return showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (context) => SafeArea(
+        child: DraggableScrollableSheet(
+          expand: false,
+          initialChildSize: .78,
+          minChildSize: .42,
+          maxChildSize: .94,
+          builder: (context, scrollController) => ListView(
+            controller: scrollController,
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 28),
+            children: [
+              Text(
+                '${member.identity.name} authority',
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+              const SizedBox(height: 14),
+              AgentTaskAuthorityView(
+                controller: controller,
+                taskId: member.taskId,
+                compact: true,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class _FactRow extends StatelessWidget {

@@ -6,10 +6,10 @@ import 'security_contracts.dart';
 import 'security_repository.dart';
 
 enum SecuritySection {
-  access('Access and role rules'),
-  audits('Recent audit'),
-  isolation('Tenant isolation'),
-  retention('Retention policy');
+  access('Your access'),
+  retention('Your data'),
+  audits('Recent decisions'),
+  isolation('Technical checks');
 
   const SecuritySection(this.label);
   final String label;

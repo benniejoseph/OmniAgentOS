@@ -5,6 +5,31 @@ import { getGovernedTool, getGovernedTools } from "@/lib/tools/registry";
 import { MAIN_AGENT_EXCLUDED_APP_OPERATIONS } from "@/lib/app-services/registry";
 
 describe("governed native tool schemas", () => {
+  it("does not publish the retired CRM workspace or its mutation tools", () => {
+    expect(getGovernedTools().some((tool) =>
+      tool.id.startsWith("app.customer_accounts."),
+    )).toBe(false);
+    for (const id of [
+      "app.customer_accounts.list",
+      "app.customer_accounts.create",
+      "app.customer_accounts.salesforce.contact.create",
+    ]) {
+      expect(getGovernedTool(id), id).toBeUndefined();
+    }
+    expect(getGovernedTool("app.integrations.overview.show")).toBeDefined();
+    expect(getGovernedTool("app.projects.create")).toBeDefined();
+  });
+
+  it("registers bounded public source reading as an explicit read-only tool", () => {
+    const tool = getGovernedTool("web.read");
+    expect(tool).toMatchObject({
+      status: "active", riskLevel: 0, approvalRequired: false, operationClass: "read_only",
+      inputSchema: { additionalProperties: false, required: ["url"], properties: { url: { maxLength: 4_000 } } },
+    });
+    expect(Object.keys(tool!.inputSchema.properties as object)).toEqual(["url"]);
+    expect(evaluateToolPolicy({ tool: tool! }).allowed).toBe(true);
+  });
+
   it("keeps memory.correct compatible with OpenAI function schemas", () => {
     const tool = getGovernedTool("memory.correct");
 

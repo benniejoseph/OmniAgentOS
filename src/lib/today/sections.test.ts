@@ -9,10 +9,10 @@ describe("Today section preferences", () => {
     }
   });
 
-  it("preserves an existing person's sections and their order, including all legacy sections", () => {
+  it("preserves an existing person's sections and their order, including all active optional sections", () => {
     expect(normalizeTodaySections(TODAY_SECTION_KEYS)).toEqual(TODAY_SECTION_KEYS);
     expect(normalizeTodaySections(["consumption", "customers", "memory", "active_agents", "conversations"]))
-      .toEqual(["consumption", "customers", "memory", "active_agents", "conversations"]);
+      .toEqual(["consumption", "memory", "active_agents", "conversations"]);
   });
 
   it("removes invalid and duplicate entries without changing valid preferences", () => {

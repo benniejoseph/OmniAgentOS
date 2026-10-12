@@ -268,7 +268,7 @@ class ApiAgentsRepository
       );
     }
     if (name == 'compare') {
-      if (NativeContract.currentVersion < 48) {
+      if (NativeContract.currentVersion < 56) {
         throw const FormatException(
           'Update the app before comparing guidance.',
         );

@@ -21,7 +21,7 @@ const readinessItems = [
   { key: "knowledge", label: "Knowledge or memory added", href: "/app/memory" },
   { key: "connector", label: "Connector active", href: "/app/connectors" },
   { key: "firstRun", label: "First task completed", href: "/app/command" },
-  { key: "evaluation", label: "Readiness evaluation recorded", href: "/app/evaluations" },
+  { key: "evaluation", label: "Readiness evaluation recorded", href: "/app/settings?section=quality" },
 ] as const;
 
 export function WorkspaceReadinessCard({

@@ -14,7 +14,6 @@ export const MOBILE_PUSH_COOLDOWN_MINUTES = 15;
 export type DomainNotificationProducerKind =
   | "approval"
   | "meeting"
-  | "customer"
   | "run";
 
 type CandidateCoordinates = Readonly<{
@@ -35,7 +34,7 @@ type ProactiveCandidateCoordinates = Readonly<{
 
 export type DomainNotificationCandidateInput = CandidateCoordinates & Readonly<{
   occursAt: string;
-  sourceState: "approval_required" | "scheduled" | "at_risk" |
+  sourceState: "approval_required" | "scheduled" |
     "completed" | "failed" | "canceled";
 }>;
 
@@ -62,14 +61,6 @@ export function domainNotificationCandidate(
     case "meeting":
       requireState(input.sourceState, "scheduled", input.sourceKind);
       return { ...base, kind: "meeting", startsAt: canonicalInstant(input.occursAt) };
-    case "customer":
-      requireState(input.sourceState, "at_risk", input.sourceKind);
-      return {
-        ...base,
-        kind: "failure",
-        actionable: true,
-        severity: "warning",
-      };
     case "run":
       if (input.sourceState === "completed") {
         return { ...base, kind: "routine_success" };
@@ -89,6 +80,18 @@ export function domainNotificationCandidate(
     case "today_reminder":
       throw new Error("Today reminders require todayReminderNotificationCandidate().");
   }
+}
+
+/** A requested background report is a completion the owner is waiting for.
+ * Its notification still respects quiet hours, cooldown and delivery preferences. */
+export function researchWorkflowNotificationCandidate(input:
+  ProactiveCandidateCoordinates & Readonly<{ state: "completed" | "failed" }>,
+): NotificationCandidateV1 {
+  if (input.sourceKind !== "research_workflow") throw new Error("Research notification source kind is invalid.");
+  const base = candidateBase(input);
+  return input.state === "completed"
+    ? { ...base, kind: "research_ready" }
+    : { ...base, kind: "failure", actionable: true, severity: "warning" };
 }
 
 export function todayReminderNotificationCandidate(

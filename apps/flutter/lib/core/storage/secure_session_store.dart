@@ -56,7 +56,8 @@ class SecureSessionStore {
   /// What an owner agrees to before Ambient Command listens: OpenAI processes
   /// the live microphone audio, and Asael does not store it. Different terms
   /// need a new agreement.
-  static const ambientVoiceConsentTerms = 'openai:audio_not_stored_by_asael';
+  static const ambientVoiceConsentTerms =
+      'openai:continuous_conversation:audio_not_stored_by_asael:conversation_history:v2';
   static const _legacyTokenKey = 'omniagent.session_token';
   final AsaelSecureValueStore _storage;
   bool _biometricReleaseUnlocked = false;

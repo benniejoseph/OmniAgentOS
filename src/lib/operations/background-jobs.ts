@@ -37,6 +37,8 @@ import {
   type CaptureMediaDeferredResult,
 } from "@/lib/capture/media-jobs";
 import { markCaptureMediaProcessingStatus } from "@/lib/capture/media-store";
+import { rememberProcessedConversation } from "@/lib/capture/conversation-memory";
+import { linkProcessedListenClient } from "@/lib/capture/listen-client-context";
 import {
   runWithDatabaseActorScope,
   runWithDatabaseTenantScope,
@@ -1207,6 +1209,16 @@ async function executeBackgroundOperation(
               completedAt: recording.completedAt || output.processedAt,
               structuredSourceKind: "audio",
               extractionState: "completed",
+              ...(recording.metadata.listen === true ? {
+                listen: true,
+                sourceKind: String(recording.metadata.sourceKind || "listen"),
+                recordedAt: String(recording.metadata.recordedAt || recording.startedAt),
+                contextCategory: String(recording.metadata.contextCategory || "unfiled"),
+                projectId: typeof recording.metadata.projectId === "string" ? recording.metadata.projectId : null,
+                categories: output.conversation?.categories.join(", ") || "",
+                transcriptTurnCount: output.turns.length,
+                processedTurnCount: output.conversation?.processedTurnCount || 0,
+              } : {}),
             },
             evidenceRefs,
           },
@@ -2114,6 +2126,14 @@ async function executeKnowledgeIngestJobRequest(
         ingestTextDocument(ingestRequest)
       )
     : await ingestTextDocument(ingestRequest);
+  const conversationMemoryCount = captureIngestGuard
+    ? await rememberProcessedConversation({
+        guard: captureIngestGuard,
+        documentId: result.document.id,
+        evidenceUnitIds: result.chunks.flatMap((chunk) => chunk.evidenceUnitId ? [chunk.evidenceUnitId] : []),
+        executionScope: sourceExecutionScope,
+        abortSignal,
+      }) : 0;
   if (actorId && captureExecutionScope) {
     try {
       const executionScope = captureExecutionScope;
@@ -2156,6 +2176,10 @@ async function executeKnowledgeIngestJobRequest(
     }
   }
   let cognition: Record<string, unknown> = { status: "not_eligible" };
+  const clientContext = actorId && captureTarget?.recordingId
+    ? await linkProcessedListenClient({ tenantId: job.tenantId, actorId,
+        recordingId: captureTarget.recordingId, executionScope: sourceExecutionScope })
+    : undefined;
   if (actorId && result.document.sourceRevisionId && !options.nativeRecording) {
     try {
       const cognitionJob = await enqueueKnowledgeCognificationPlan({
@@ -2181,10 +2205,11 @@ async function executeKnowledgeIngestJobRequest(
     resourceId: result.document.id,
     documentId: result.document.id,
     chunkCount: result.chunks.length,
-    memoryCount: result.memories.length,
+    memoryCount: result.memories.length + conversationMemoryCount,
     retiredDocumentCount: result.retired.documents,
     retiredMemoryCount: result.retired.memories,
     cognition,
+    ...(clientContext ? { clientContext } : {}),
   };
 }
 

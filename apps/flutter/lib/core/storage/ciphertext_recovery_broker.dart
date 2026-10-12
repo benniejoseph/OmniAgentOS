@@ -13,7 +13,6 @@ enum RecoveryNamespace {
   builder(128, 8000000),
   meetings(128, 4000000),
   markets(12, 262144),
-  accounts(16, 1048576),
   specialist(32, 1048576),
   memory(16, 8388608);
 

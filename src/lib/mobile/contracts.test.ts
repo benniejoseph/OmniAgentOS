@@ -18,6 +18,73 @@ import {
 } from "@/lib/mobile/contracts";
 
 describe("native API contracts", () => {
+  it("adds measured text comparisons and work-item tracking in v56 without losing upstream operations", () => {
+    const previous = nativeOperationsForVersion(55)!, current = nativeOperationsForVersion(56)!;
+    expect(current.map(({ id }) => id)).toEqual(previous.map(({ id }) => id));
+    for (const operation of current) {
+      const old = previous.find(({ id }) => id === operation.id)!;
+      if (operation.id === "agents.adaptations.manage") {
+        expect(operation.requestBodyMaxBytes).toBe(49_152);
+        expect(operation.summary).toContain("owner-supplied text examples");
+      } else if (operation.id.startsWith("responsibilities.")) {
+        expect(operation.summary).toContain("v56");
+        expect({ ...operation, summary: old.summary }).toEqual(old);
+      } else expect(operation).toEqual(old);
+    }
+    for (const id of ["research.control", "localAndroid.device", "listen.grant", "csm.client.get"]) {
+      expect(current.some((entry) => entry.id === id)).toBe(true);
+    }
+    expect(current.some(({ id }) => id.startsWith("customers."))).toBe(false);
+  });
+  it("withdraws the retired workspace from the v47 and v48 publications while preserving every surviving v47 contract", async () => {
+    const original = JSON.parse(await readFile(new URL("../../../docs/archive/native-contracts/v47/openapi.json", import.meta.url), "utf8"));
+    const expected = structuredClone(original);
+    for (const [path, methods] of Object.entries(expected.paths)) {
+      for (const [method, operation] of Object.entries(methods as Record<string, { operationId: string }>)) {
+        if (operation.operationId.startsWith("customers.")) delete expected.paths[path][method];
+      }
+      if (Object.keys(expected.paths[path]).length === 0) delete expected.paths[path];
+    }
+    for (const name of Object.keys(expected.components.schemas)) {
+      if (/^Native(?:Customer|Salesforce)/.test(name)) delete expected.components.schemas[name];
+    }
+    for (const causeKind of [
+      expected.components.schemas.NativePushAcknowledgementResponse.properties.causeKind,
+      expected.components.schemas.NativePushReceiptResponse.properties.delivery.properties.causeKind,
+      expected.components.schemas.NativePushCanaryResponse.properties.state.properties.causeKind,
+    ]) causeKind.enum = causeKind.enum.filter((kind: string) => kind !== "customer");
+    const previous = JSON.parse(await readFile(new URL("../../../public/native-contracts/v47/openapi.json", import.meta.url), "utf8"));
+    expect(previous).toEqual(expected);
+    for (const version of [47, 48] as const) {
+      const document = JSON.parse(await readFile(new URL(`../../../public/native-contracts/v${version}/openapi.json`, import.meta.url), "utf8"));
+      expect(document.paths).toEqual(expected.paths);
+      expect(Object.keys(document.components.schemas).filter((name) => /Customer|Salesforce/.test(name))).toEqual([]);
+      const schemas = structuredClone(expected.components.schemas);
+      if (version === 48) {
+        for (const compatibility of [
+          schemas.NativeCompatibility,
+          schemas.NativeLoginResponse.properties.client,
+          schemas.NativeRefreshResponse.properties.client,
+          schemas.NativeBootstrapResponse.properties.client,
+        ]) compatibility.properties.supportedContractVersions.prefixItems = [
+          { type: "number", const: 48 }, { type: "number", const: 47 },
+        ];
+        for (const contract of [
+          schemas.NativeBootstrapResponse.properties.api.properties.nativeContract,
+          schemas.NativeContractDiscovery,
+        ]) {
+          contract.properties.currentVersion.const = 48;
+          contract.properties.previousVersion.const = 47;
+          contract.properties.supportedVersions.prefixItems = [
+            { type: "number", const: 48 }, { type: "number", const: 47 },
+          ];
+        }
+      }
+      expect(document.components.schemas).toEqual(schemas);
+      expect(nativeOperationsForVersion(version)?.some(({ id }) => id.startsWith("customers."))).toBe(false);
+    }
+    expect(nativeOperationsForVersion(48)).toEqual(nativeOperationsForVersion(47));
+  });
   it("adds only reviewed official GitHub upgrade, exact recovery and closure in v47", () => {
     const previous = nativeOperationsForVersion(46)!, current = nativeOperationsForVersion(47)!;
     expect(current.slice(0, previous.length)).toEqual(previous);
@@ -258,14 +325,15 @@ describe("native API contracts", () => {
       expect(current.paths[path].get.parameters).toContainEqual({ name: "view", in: "query", required: false, schema: { type: "string", enum: [view] } });
     }
   });
-  it("retains exactly the current and previous rollout versions", () => {
+  it("retains the current contract and upstream supported rollout versions", () => {
     // Tripwire: a native contract bump must be a deliberate, reviewed change.
     // The other tests follow these constants.
-    expect(NATIVE_API_CURRENT_VERSION).toBe(48);
-    expect(NATIVE_API_PREVIOUS_VERSION).toBe(47);
+    expect(NATIVE_API_CURRENT_VERSION).toBe(56);
+    expect(NATIVE_API_PREVIOUS_VERSION).toBe(55);
     expect(NATIVE_API_SUPPORTED_VERSIONS).toEqual([
       NATIVE_API_CURRENT_VERSION,
       NATIVE_API_PREVIOUS_VERSION,
+      54, 53, 52,
     ]);
     expect(NATIVE_API_PREVIOUS_VERSION).toBeLessThan(NATIVE_API_CURRENT_VERSION);
     expect(nativeOperationsForVersion(NATIVE_API_CURRENT_VERSION)).toBeDefined();
@@ -332,10 +400,7 @@ describe("native API contracts", () => {
     const discovery = nativeContractDiscovery();
     expect(nativeContractSchemas.NativeContractDiscovery.parse(
       discovery,
-    ).supportedVersions).toEqual([
-      NATIVE_API_CURRENT_VERSION,
-      NATIVE_API_PREVIOUS_VERSION,
-    ]);
+    ).supportedVersions).toEqual([...NATIVE_API_SUPPORTED_VERSIONS]);
     for (const supportedVersions of [
       [NATIVE_API_CURRENT_VERSION + 1, NATIVE_API_CURRENT_VERSION],
       [NATIVE_API_CURRENT_VERSION, NATIVE_API_PREVIOUS_VERSION - 1],
@@ -503,11 +568,11 @@ describe("native API contracts", () => {
         "responsibilities.references", "responsibilities.lifecycle.get", "responsibilities.lifecycle.change",
         "responsibilities.observations.list", "responsibilities.notifications.get", "responsibilities.notifications.change"),
       33: added("meetings.create", "meetings.update", "meetings.commitments.list", "meetings.commitments.propose", "meetings.commitments.resolve"),
-      34: { ...added("customers.health", "customers.intelligence", "customers.workflows", "customers.salesforce.status", "customers.create", "customers.update", "library.list", "library.get", "library.versions.list", "library.versions.get", "entities.options", "market.snapshots.list", "market.snapshots.get", "market.analysis.metadata", "market.jobs.get", "market.calendar", "memory.create", "memory.update", "memory.delete", "memory.lifecycle.get", "memory.lifecycle.change"), removed: ["market.analysis"] },
+      34: { ...added("library.list", "library.get", "library.versions.list", "library.versions.get", "entities.options", "market.snapshots.list", "market.snapshots.get", "market.analysis.metadata", "market.jobs.get", "market.calendar", "memory.create", "memory.update", "memory.delete", "memory.lifecycle.get", "memory.lifecycle.change"), removed: ["market.analysis"] },
       35: added("memory.reconciliation.list", "memory.reconciliation.read", "memory.reconciliation.resolve"),
       36: added("memory.personal-context-consent.get", "memory.personal-context-consent.decide", "memory.personal-context-consent.decision.get", "meetings.calendar.get", "meetings.calendar.sync", "meetings.calendar.sync.get"),
-      37: added("customers.health.evaluate", "customers.health.evaluations.get"),
-      38: added("agents.delete.review", "agents.delete", "agents.mutations.get", "skills.mutation.review", "skills.create", "skills.update", "skills.delete", "skills.mutations.get", "memory.promotions.list", "memory.promotions.read", "memory.promotions.decide", "customers.workflows.start", "customers.workflows.outcome", "customers.workflows.get", "customers.workflows.mutations.get", "meetings.recordings.review", "meetings.recordings.process", "meetings.recordings.processing.get", "customers.facts.record", "customers.facts.acceptance.get", "customers.salesforce.actions.review", "customers.salesforce.actions.submit", "customers.salesforce.actions.get", "knowledge.cognification.list", "knowledge.cognification.read", "knowledge.cognification.decide", "knowledge.cognification.decisions.get", "knowledge.sources.deletion.review", "knowledge.sources.delete", "knowledge.sources.deletions.get", "memory.graph.universe", "memory.graph.node", "memory.graph.entity", "memory.graph.temporalRelations", "memory.graph.relationshipPaths", "memory.maintenance.review", "memory.maintenance.run", "memory.maintenance.runs.get", "memory.graph.rebuild.review", "memory.graph.rebuild", "memory.graph.rebuilds.get", "knowledge.cognification.build.review", "knowledge.cognification.build", "knowledge.cognification.builds.get"),
+      37: added(),
+      38: added("agents.delete.review", "agents.delete", "agents.mutations.get", "skills.mutation.review", "skills.create", "skills.update", "skills.delete", "skills.mutations.get", "memory.promotions.list", "memory.promotions.read", "memory.promotions.decide", "meetings.recordings.review", "meetings.recordings.process", "meetings.recordings.processing.get", "knowledge.cognification.list", "knowledge.cognification.read", "knowledge.cognification.decide", "knowledge.cognification.decisions.get", "knowledge.sources.deletion.review", "knowledge.sources.delete", "knowledge.sources.deletions.get", "memory.graph.universe", "memory.graph.node", "memory.graph.entity", "memory.graph.temporalRelations", "memory.graph.relationshipPaths", "memory.maintenance.review", "memory.maintenance.run", "memory.maintenance.runs.get", "memory.graph.rebuild.review", "memory.graph.rebuild", "memory.graph.rebuilds.get", "knowledge.cognification.build.review", "knowledge.cognification.build", "knowledge.cognification.builds.get"),
       39: added("content.search", "content.search.work.get", "content.search.memory.get"),
       40: added("google.personal.actions.review", "google.personal.actions.submit", "google.personal.actions.read", "connectors.native.list", "connectors.native.review", "connectors.native.act", "connectors.native.actions.get"),
       41: added("connectors.native.credentialRemovals.submit", "connectors.native.credentialRemovals.read"),
@@ -518,6 +583,14 @@ describe("native API contracts", () => {
       45: added("connectors.native.openapiImportPreparations.submit", "connectors.native.openapiImportPreparations.read", "connectors.native.openapiImportPreparations.abandon", "connectors.native.openapiImports.submit", "connectors.native.openapiImports.read"),
       47: added("connectors.native.githubUpgrades.review", "connectors.native.githubUpgrades.submit", "connectors.native.githubUpgrades.read", "connectors.native.githubUpgrades.close"),
       48: added(),
+      49: added("research.control"),
+      50: added("voice.conversation.session.start", "voice.conversation.session.finish", "voice.conversation.turns"),
+      51: added("personal.profile.get", "personal.profile.update"),
+      52: added(),
+      53: added("localAndroid.device", "localAndroid.device.update", "localAndroid.command.claim", "localAndroid.command.complete", "localAndroid.stop"),
+      54: added("listen.grant", "listen.ingest", "listen.conversations.list", "listen.conversations.get"),
+      55: added("csm.clients.list", "csm.client.get", "csm.client.save", "csm.client.sources.link", "csm.client.sources.unlink", "csm.role.get", "csm.role.save", "csm.role.sources.link", "csm.role.sources.unlink"),
+      56: added(),
     });
     // v20 and v23 changed only request and push schemas.
     expect(nativeOperationsForVersion(20)).toEqual(nativeOperationsForVersion(19));
@@ -544,23 +617,18 @@ describe("native API contracts", () => {
     }
   });
 
-  it("publishes the current and previous contracts plus one unadvertised archive", async () => {
+  it("publishes the supported contracts and retains both immutable pre-retirement archives", async () => {
     const published = (await readdir(
       new URL("../../../public/native-contracts/", import.meta.url),
     )).filter((name) => !name.startsWith(".")).sort();
 
-    // Shipping a new contract deletes the oldest of these directories.
-    expect(published).toEqual([
-      `v${NATIVE_API_PREVIOUS_VERSION - 1}`,
-      `v${NATIVE_API_PREVIOUS_VERSION}`,
-      `v${NATIVE_API_CURRENT_VERSION}`,
-    ].sort());
+    // This product retirement preserves the prior archive identities.
+    expect(published).toEqual(Array.from({ length: 12 }, (_, index) => `v${index + 45}`).sort());
     const discovery = nativeContractDiscovery();
-    expect(discovery.versions).toEqual([
-      expect.objectContaining({ version: NATIVE_API_CURRENT_VERSION, state: "current" }),
-      expect.objectContaining({ version: NATIVE_API_PREVIOUS_VERSION, state: "previous" }),
-    ]);
-    expect(discovery.supportedVersions).not.toContain(NATIVE_API_PREVIOUS_VERSION - 1);
+    expect(discovery.versions).toEqual(NATIVE_API_SUPPORTED_VERSIONS.map((version) =>
+      expect.objectContaining({ version, state: version === NATIVE_API_CURRENT_VERSION ? "current" : "previous" })));
+    expect(discovery.supportedVersions).toEqual([56, 55, 54, 53, 52]);
+    expect(discovery.supportedVersions).not.toContain(51);
   });
 
   it("does not advertise unenrolled native mutations in v8", () => {
@@ -706,9 +774,9 @@ describe("native API contracts", () => {
       delivery: {
         id: "delivery-one",
         notificationId: "n".repeat(240),
-        causeKind: "customer",
+        causeKind: "meeting",
         causeId: "c".repeat(240),
-        deepLink: "/customers/customer-one",
+        deepLink: "/meetings/meeting-one",
         providerState: "accepted",
         providerAcceptedAt: timestamp,
         appState: "received",
@@ -756,27 +824,95 @@ describe("native API contracts", () => {
     });
   });
 
-  it("retains every published v46 and v47 document byte for byte", async () => {
+  it("retains every upstream published v45–v55 document byte for byte", async () => {
     const frozen = {
-  "46": {
-    "openapi.json": "338f0ffe6f4e2051a87b85d77f8aec605bb639b7c06de232b4989a69e15a1233",
-    "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9",
-    "fixtures.json": "7dbf329ac4ad5f51c78fb00012421d4c6e9832e204b4744d7eb06bbf542f79f7",
-    "manifest.json": "80df210e108bcaa7f281504f154b50c7e53cdc3c13cd0b65553c486ce1f2657c"
-  },
-  "47": {
-    "openapi.json": "cc783eff3bf60b6a198607c4fce70c8d87b12bbbccec5b1909106e67084f6b24",
-    "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9",
-    "fixtures.json": "738bc72f1a1ff8d175549b00903437bb265f28adce74d92500970a65889f9eba",
-    "manifest.json": "7213892e4b6e4143e8f87dec58fffac88fef3a1cc7b610ea24dd99687be30dae"
-  }
-};
+      "45": {
+        "openapi.json": "0550a5cd1cc7df01168164ec8e68710e90743c2145d2a6db2162127f7ab22123", // gitleaks:allow -- public artifact integrity digest
+        "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
+        "fixtures.json": "066eb546a3043a1bb16f89f8bea771f00f43b9b80cf91bf77d0eca43a7dd7d6e", // gitleaks:allow -- public artifact integrity digest
+        "manifest.json": "cd5c20e3cffeb331d0f4ce7c4288604ac3e9f1d0e327292e3ce2bfdfad40a5a9", // gitleaks:allow -- public artifact integrity digest
+      },
+      "46": {
+        "openapi.json": "338f0ffe6f4e2051a87b85d77f8aec605bb639b7c06de232b4989a69e15a1233", // gitleaks:allow -- public artifact integrity digest
+        "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
+        "fixtures.json": "7dbf329ac4ad5f51c78fb00012421d4c6e9832e204b4744d7eb06bbf542f79f7", // gitleaks:allow -- public artifact integrity digest
+        "manifest.json": "80df210e108bcaa7f281504f154b50c7e53cdc3c13cd0b65553c486ce1f2657c", // gitleaks:allow -- public artifact integrity digest
+      },
+      "47": {
+        "openapi.json": "5692034ed7d906d1b94ace82e1a4a4d86c6b0c4002dc3494d609d8e30b5af455", // gitleaks:allow -- public artifact integrity digest
+        "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
+        "fixtures.json": "738bc72f1a1ff8d175549b00903437bb265f28adce74d92500970a65889f9eba", // gitleaks:allow -- public artifact integrity digest
+        "manifest.json": "f4ae416d94c53e23681c8fe38d79eb0014897036493c84c02c800567c3967826", // gitleaks:allow -- public artifact integrity digest
+      },
+      "48": {
+        "openapi.json": "91c7557d6a19660f21f65a5a7b08c66616fad5f7734f7b3729c9359984ddf803", // gitleaks:allow -- public artifact integrity digest
+        "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
+        "fixtures.json": "9cff54d500e04fc240106996c833e3fec530aacf80c36882bcfb61f890b8ed04", // gitleaks:allow -- public artifact integrity digest
+        "manifest.json": "9a6a337f080c042a6155e578984af4dcdb4650086b3d1163595c968207e29c0f", // gitleaks:allow -- public artifact integrity digest
+      },
+      "49": {
+        "openapi.json": "aa4fd99f6820a31cad8c2ecf808e560f7c9cd0de54a43caa5b161e43ba49702f", // gitleaks:allow -- public artifact integrity digest
+        "events.schema.json": "86aa365fcc455ed5d8ca2e1861a646d614af6080cbbd743035ed0503ad71c0e7", // gitleaks:allow -- public artifact integrity digest
+        "fixtures.json": "db948c3e1bac14bfe01652167a698c9d5e8e2bcb6d982a8bba76bf2c980f8e98", // gitleaks:allow -- public artifact integrity digest
+        "manifest.json": "4c3505ade9a98c40cee85816961b7d6dd83a15272b6865c657fff982a4a9793b", // gitleaks:allow -- public artifact integrity digest
+      },
+      "50": {
+        "openapi.json": "294f37a0461730ae7a0ccd121bb5dc81275d02d36472b452f31c81678c3496ae", // gitleaks:allow -- public artifact integrity digest
+        "events.schema.json": "86aa365fcc455ed5d8ca2e1861a646d614af6080cbbd743035ed0503ad71c0e7", // gitleaks:allow -- public artifact integrity digest
+        "fixtures.json": "288a403cda188d1a83b76a2402fce630ba5fc478ad7a67c8aa19733454362c8e", // gitleaks:allow -- public artifact integrity digest
+        "manifest.json": "3af2ea57685e42c6b543537a681877ce56e0208ffb38869c1e105370a8b99426", // gitleaks:allow -- public artifact integrity digest
+      },
+      "51": {
+        "openapi.json": "aed11c793c1614b62e83fd03e714b642cee20febc3ee8603641d3a351109d506", // gitleaks:allow -- public artifact integrity digest
+        "events.schema.json": "86aa365fcc455ed5d8ca2e1861a646d614af6080cbbd743035ed0503ad71c0e7", // gitleaks:allow -- public artifact integrity digest
+        "fixtures.json": "846aeac3f18d7998323292758b4b1ed0624a07dec22db270ac204373574993bf", // gitleaks:allow -- public artifact integrity digest
+        "manifest.json": "d2f4eb39bdf294ffe2b0b296ddf3d09a741b24630e53745b327f171221cab299", // gitleaks:allow -- public artifact integrity digest
+      },
+      "52": {
+        "openapi.json": "dd524fba01e935a8837cef430cc973a590340c0c41bdcb5fece2db9fc6e6b776", // gitleaks:allow -- public artifact integrity digest
+        "events.schema.json": "86aa365fcc455ed5d8ca2e1861a646d614af6080cbbd743035ed0503ad71c0e7", // gitleaks:allow -- public artifact integrity digest
+        "fixtures.json": "4381c08e47498a5ca8eaf1c72e109e75185acd796ab236fe7925e7a54b680435", // gitleaks:allow -- public artifact integrity digest
+        "manifest.json": "20b683ce5e225e70e0d9ffe9933ababd041f35166f5f2a02537ffed489d23746", // gitleaks:allow -- public artifact integrity digest
+      },
+      "53": {
+        "openapi.json": "441a3e1bc68ad9258245c02c5dd9bb6a6f5c4e3dc32c92822452e1d4492f2a14", // gitleaks:allow -- public artifact integrity digest
+        "events.schema.json": "86aa365fcc455ed5d8ca2e1861a646d614af6080cbbd743035ed0503ad71c0e7", // gitleaks:allow -- public artifact integrity digest
+        "fixtures.json": "645e3cc49be364fb894ab8683eb150b91d3b2a8b19ed8981bcb2932a7e44954b", // gitleaks:allow -- public artifact integrity digest
+        "manifest.json": "c241a4454c22b97103122248241587cdc76cdea237fe5155e6eb9614bb122b86", // gitleaks:allow -- public artifact integrity digest
+      },
+      "54": {
+        "openapi.json": "aa67baafd9c3b5be5da61b06128be97a7e7873bb474c32fae458a23427e2d482", // gitleaks:allow -- public artifact integrity digest
+        "events.schema.json": "86aa365fcc455ed5d8ca2e1861a646d614af6080cbbd743035ed0503ad71c0e7", // gitleaks:allow -- public artifact integrity digest
+        "fixtures.json": "7410245f163715c941c042a119aedaf3a40e25d144f54d93fcb9827478fe8b54", // gitleaks:allow -- public artifact integrity digest
+        "manifest.json": "e96b390bf576e2fddb24978039efbcec830197894c8ac0ff65459a7fd9df831f", // gitleaks:allow -- public artifact integrity digest
+      },
+      "55": {
+        "openapi.json": "762c522975ba34d19e5ae22b4dbf7ff1a9e91adbc1cb851b66081497a326e3fd", // gitleaks:allow -- public artifact integrity digest
+        "events.schema.json": "86aa365fcc455ed5d8ca2e1861a646d614af6080cbbd743035ed0503ad71c0e7", // gitleaks:allow -- public artifact integrity digest
+        "fixtures.json": "dfabc330a19ebfac18b78708a3e2b5c27aef09522ab2d119ced7f8b6b4a6263e", // gitleaks:allow -- public artifact integrity digest
+        "manifest.json": "9d7a762182bd7081a5ed85ab578480695b8db06089b36d3b861a89ec709d8e72", // gitleaks:allow -- public artifact integrity digest
+      },
+    };
     for (const [version, documents] of Object.entries(frozen)) {
       for (const [name, digest] of Object.entries(documents)) {
         const document = await readFile(new URL(`../../../public/native-contracts/v${version}/${name}`, import.meta.url), "utf8");
         expect(sha256(document), `v${version}/${name}`).toBe(digest);
       }
     }
+  });
+
+  it("preserves the original v47 manifest identity outside the public serving path", async () => {
+    const frozen = {
+      "openapi.json": "cc783eff3bf60b6a198607c4fce70c8d87b12bbbccec5b1909106e67084f6b24", // gitleaks:allow -- public artifact integrity digest
+      "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
+      "fixtures.json": "738bc72f1a1ff8d175549b00903437bb265f28adce74d92500970a65889f9eba", // gitleaks:allow -- public artifact integrity digest
+      "manifest.json": "7213892e4b6e4143e8f87dec58fffac88fef3a1cc7b610ea24dd99687be30dae", // gitleaks:allow -- public artifact integrity digest
+    };
+    for (const [name, digest] of Object.entries(frozen)) {
+      expect(sha256(await readFile(new URL(`../../../docs/archive/native-contracts/v47/${name}`, import.meta.url), "utf8"))).toBe(digest);
+    }
+    const manifest = JSON.parse(await readFile(new URL("../../../public/native-contracts/v47/manifest.json", import.meta.url), "utf8"));
+    expect(manifest.retirement).toEqual({ reason: "crm_workspace_retired", originalManifestSha256: frozen["manifest.json"] });
   });
 
   it("keeps the v29 to v30 operation surface unchanged while task authority remains version-gated", () => {
@@ -875,10 +1011,7 @@ describe("native API contracts", () => {
           id: "asael.native-api",
           currentVersion: NATIVE_API_CURRENT_VERSION,
           previousVersion: NATIVE_API_PREVIOUS_VERSION,
-          supportedVersions: [
-            NATIVE_API_CURRENT_VERSION,
-            NATIVE_API_PREVIOUS_VERSION,
-          ],
+          supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS],
           discoveryPath: "/api/mobile/contracts",
         },
       },
@@ -890,10 +1023,7 @@ describe("native API contracts", () => {
         clientContractVersion: NATIVE_API_CURRENT_VERSION,
         minimumVersion: "1.0.0",
         requiredContractVersion: NATIVE_API_CURRENT_VERSION,
-        supportedContractVersions: [
-          NATIVE_API_CURRENT_VERSION,
-          NATIVE_API_PREVIOUS_VERSION,
-        ],
+        supportedContractVersions: [...NATIVE_API_SUPPORTED_VERSIONS],
         status: "compatible",
         agentCatalogEnrollment: { state: "held", clientReady: true },
       },

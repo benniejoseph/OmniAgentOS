@@ -1,4 +1,4 @@
-import { hasOpenAIKey } from "@/lib/config";
+import { getOpenAIGatewayToken, hasOpenAIKey } from "@/lib/config";
 import {
   getMaintenanceDatabaseRoleSafety,
   getRuntimeDatabaseRoleSafety,
@@ -608,17 +608,22 @@ async function getOpenAIGatewayEvidence(
   checkedAt: string,
 ) {
   const configuredUrl = process.env.OMNIAGENT_OPENAI_GATEWAY_URL?.trim();
-  const configuredToken =
-    process.env.OMNIAGENT_OPENAI_GATEWAY_TOKEN?.trim();
+  let configuredToken: string | undefined;
+  let tokenSelectionValid = true;
+  try {
+    configuredToken = getOpenAIGatewayToken();
+  } catch {
+    tokenSelectionValid = false;
+  }
   const required =
     deployment.environment === "production" && deployment.region === "sin1";
-  const present = Boolean(configuredUrl || configuredToken);
+  const present = Boolean(configuredUrl || configuredToken || !tokenSelectionValid);
   const configured = Boolean(configuredUrl && configuredToken);
   const tokenSafe = Boolean(
     configuredToken && /^[A-Za-z0-9._~-]{32,256}$/.test(configuredToken),
   );
   const baseUrl = normalizeOpenAIGatewayUrl(configuredUrl);
-  const safeConfiguration = configured && tokenSafe && Boolean(baseUrl);
+  const safeConfiguration = tokenSelectionValid && configured && tokenSafe && Boolean(baseUrl);
   const empty = {
     checkedAt,
     required,

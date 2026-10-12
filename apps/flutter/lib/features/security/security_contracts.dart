@@ -528,21 +528,21 @@ enum SecurityRetentionWindow {
   pendingApprovalDays('Pending tool approvals', 'Approvals and access'),
   pendingAccessRequestDays('Pending access requests', 'Approvals and access'),
   reviewedAccessRequestDays('Reviewed access requests', 'Approvals and access'),
-  episodeMemoryDays('Episode memory', 'Memory and content'),
-  consolidatedMemoryDays('Consolidated memory', 'Memory and content'),
-  retrievalTraceDays('Retrieval traces', 'Memory and content'),
-  runContentDays('Run content', 'Memory and content'),
-  toolPayloadDays('Tool payloads', 'Memory and content'),
+  episodeMemoryDays('Conversation memories', 'Memory and content'),
+  consolidatedMemoryDays('Consolidated memories', 'Memory and content'),
+  retrievalTraceDays('Memory lookup history', 'Memory and content'),
+  runContentDays('Assistant conversations', 'Memory and content'),
+  toolPayloadDays('Tool inputs and outputs', 'Memory and content'),
   workflowDays('Workflows', 'Execution and history'),
   triggerEventDays('Trigger events', 'Execution and history'),
-  operationJobDays('Operation jobs', 'Execution and history'),
+  operationJobDays('Background jobs', 'Execution and history'),
   evaluationHistoryDays('Evaluation history', 'Execution and history'),
-  graphBuildHistoryDays('Graph build history', 'Execution and history'),
+  graphBuildHistoryDays('Knowledge map updates', 'Execution and history'),
   aiUsageDays('AI usage', 'Security and telemetry'),
-  domainEventDays('Domain events', 'Security and telemetry'),
-  observabilityDays('Observability events', 'Security and telemetry'),
+  domainEventDays('Workspace history', 'Security and telemetry'),
+  observabilityDays('Diagnostic logs', 'Security and telemetry'),
   healthHistoryDays('Health history', 'Security and telemetry'),
-  securityAuditDays('Security audit records', 'Security and telemetry');
+  securityAuditDays('Security decisions', 'Security and telemetry');
 
   const SecurityRetentionWindow(this.label, this.group);
   final String label, group;

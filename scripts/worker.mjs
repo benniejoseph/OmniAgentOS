@@ -56,7 +56,7 @@ const backgroundIdleMaxIntervalMs = Math.max(
   backgroundIntervalMs,
   normalizePositiveInteger(
     process.env.OMNIAGENT_WORKER_BACKGROUND_IDLE_MAX_INTERVAL_MS,
-    5 * 60 * 1_000,
+    30_000,
   ),
 );
 const remoteHeartbeatIntervalMs = Math.max(

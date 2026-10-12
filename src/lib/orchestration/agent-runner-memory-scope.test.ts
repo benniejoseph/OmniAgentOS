@@ -19,6 +19,7 @@ import { DEFAULT_CUSTOM_AGENT_PERSONA } from "@/lib/agents/persona";
 import { COMPANION_LANGUAGE_STYLE_VERSION } from "@/lib/companion/language-style";
 import { AUTHORIZED_CONTEXT_RETRIEVAL_SOURCES } from "@/lib/rag/context-engine";
 import {
+  citationIdForWebUrl,
   publicGroundingReport,
   type GroundingReport,
 } from "@/lib/rag/citations";
@@ -79,8 +80,10 @@ const mocks = vi.hoisted(() => ({
   readAgentRunStatus: vi.fn(),
   resolveRuntimeModelAssignment: vi.fn(),
   selectAgentModel: vi.fn(),
+  shouldUseLiveWebSearch: vi.fn(),
   syncMissionExecutorSafely: vi.fn(),
   updateRunContextCount: vi.fn(),
+  webSearchTimeoutMs: 60_000,
 }));
 
 vi.mock("@/lib/config", async (importOriginal) => {
@@ -90,6 +93,7 @@ vi.mock("@/lib/config", async (importOriginal) => {
     AGENT_MAX_OUTPUT_TOKENS: 128,
     AGENT_MAX_TOOL_STEPS: 1,
     AGENT_REASONING_EFFORT: "minimal",
+    get WEB_SEARCH_TIMEOUT_MS() { return mocks.webSearchTimeoutMs; },
     hasAnthropicKey: () => false,
     hasGeminiKey: () => false,
     hasOpenAIKey: () => true,
@@ -250,10 +254,10 @@ vi.mock("@/lib/usage/ledger", async (importOriginal) => ({
   recordAiUsageSafely: mocks.recordAiUsageSafely,
 }));
 
-vi.mock("@/lib/web-search/search", () => ({
-  formatLiveWebSearchContext: vi.fn(),
+vi.mock("@/lib/web-search/search", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/web-search/search")>()),
   runLiveWebSearch: vi.fn(),
-  shouldUseLiveWebSearch: () => false,
+  shouldUseLiveWebSearch: mocks.shouldUseLiveWebSearch,
 }));
 vi.mock("@/lib/today/briefs", () => ({
   findActorTimezone: mocks.findActorTimezone,
@@ -262,6 +266,7 @@ vi.mock("@/lib/today/briefs", () => ({
 describe("agent memory scope", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.webSearchTimeoutMs = 60_000;
     mocks.resolveDirectConversationLanguageStyle.mockReset().mockResolvedValue(undefined);
     mocks.createAgentRun.mockResolvedValue({
       id: "run-memory-scope",
@@ -300,6 +305,7 @@ describe("agent memory scope", () => {
     mocks.generateModelToolTurn.mockReset();
     mocks.recordRuntimeEventSafely.mockResolvedValue(undefined);
     mocks.executeGovernedTool.mockReset();
+    mocks.shouldUseLiveWebSearch.mockReset().mockReturnValue(false);
     mocks.failAgentRun.mockResolvedValue({ id: "run-memory-scope" });
     mocks.findAgentRunWaitingForToolApproval.mockReset();
     mocks.findActorTimezone.mockResolvedValue(undefined);
@@ -390,9 +396,307 @@ describe("agent memory scope", () => {
     });
   });
 
+  describe("governed live web research", () => {
+    function researchRequest() {
+      const value = request("session");
+      value.mode = "research";
+      value.messages = [{ role: "user", content: "Compare current official sources." }];
+      value.agentProfile!.toolIds = ["web.search"];
+      mocks.loadProgressiveAgentTools.mockResolvedValue({
+        definitions: [getGovernedTool("web.search")!],
+      });
+      mocks.shouldUseLiveWebSearch.mockReturnValue(true);
+      return value;
+    }
+
+    function searchExecution(suffix = "initial") {
+      return {
+        record: localExecutionRecord("web.search", `execution-web-${suffix}`),
+        result: {
+          query: "Compare current official sources.",
+          searchedAt: "2026-10-06T08:00:00.000Z",
+          provider: "openai.responses.web_search",
+          model: "search-test",
+          summary: `VERIFIED_WEB_${suffix}`,
+          sourceCount: 1,
+          sources: [{ citationId: citationIdForWebUrl(`https://example.com/${suffix}`)!, title: suffix, url: `https://example.com/${suffix}` }],
+        },
+      };
+    }
+
+    it("gathers complementary searches through the governed boundary and retains Research followups", async () => {
+      const value = researchRequest();
+      mocks.executeGovernedTool
+        .mockResolvedValueOnce(searchExecution())
+        .mockResolvedValueOnce(searchExecution("primary"))
+        .mockResolvedValueOnce(searchExecution("limitations"))
+        .mockResolvedValueOnce(searchExecution("followup"));
+      mocks.streamResponseTurn
+        .mockResolvedValueOnce(openAITurn({
+          calls: [{ callId: "call-web-followup", name: "web.search" }],
+        }))
+        .mockImplementationOnce(async (modelRequest) => {
+          await modelRequest.onDelta("Sources compared.");
+          return openAITurn({ text: "Sources compared." });
+        });
+
+      const events = await collectRequest(value);
+
+      expect(mocks.executeGovernedTool).toHaveBeenCalledTimes(4);
+      expect(mocks.executeGovernedTool).toHaveBeenNthCalledWith(1, expect.objectContaining({
+        toolId: "web.search",
+        input: { query: value.messages[0].content, limit: 8, searchContextSize: "low" },
+        dryRun: false,
+        approved: false,
+        requireReadOnly: true,
+        idempotencyKey: "run-memory-scope:research-search-1",
+        agentRunId: "run-memory-scope",
+        context: expect.objectContaining({ tenantId: "paid-test-tenant", actorId: "paid-test-actor" }),
+        executionScope: expect.objectContaining({ tenantId: "paid-test-tenant", causationId: "research-search-1", purpose: "agent.tool.execute" }),
+        abortSignal: expect.any(AbortSignal),
+        checkpointBeforeEffect: expect.any(Function),
+      }));
+      expect(mocks.executeGovernedTool).toHaveBeenNthCalledWith(4, expect.objectContaining({
+        idempotencyKey: "run-memory-scope:call-web-followup",
+      }));
+      const modelRequest = mocks.streamResponseTurn.mock.calls[0][0];
+      expect(modelRequest.tools.map((tool: { name: string }) => tool.name)).toContain("web.search");
+      expect(JSON.stringify(modelRequest.input)).toContain("VERIFIED_WEB_initial");
+      expect(events).toContainEqual(expect.objectContaining({
+        type: "tool", toolId: "web.search", status: "executed", executionId: "execution-web-initial",
+      }));
+      expect(events).toContainEqual(expect.objectContaining({ type: "done", response: "Sources compared." }));
+    });
+
+    it("reads deduplicated public sources and carries complete evidence into a larger report allowance", async () => {
+      const value = researchRequest();
+      value.messages = [{ role: "user", content: "Research Roman water engineering and its limitations." }];
+      value.agentProfile!.toolIds = ["web.search", "web.read"];
+      mocks.shouldUseLiveWebSearch.mockReturnValue(false);
+      mocks.loadProgressiveAgentTools.mockResolvedValue({
+        definitions: [getGovernedTool("web.search")!, getGovernedTool("web.read")!],
+      });
+      let search = 0;
+      mocks.executeGovernedTool.mockImplementation(async (input) => {
+        if (input.toolId === "web.search") {
+          search += 1;
+          const execution = searchExecution(String(search));
+          execution.result.summary = `EVIDENCE_${search} ` + "detailed evidence ".repeat(100);
+          execution.result.sources.push({ citationId: citationIdForWebUrl("https://other.example/overlap")!, title: "overlap", url: "https://other.example/overlap" });
+          execution.result.sourceCount = 2;
+          return execution;
+        }
+        const url = input.input.url as string;
+        return {
+          record: localExecutionRecord("web.read", `read-${url}`),
+          result: { url, title: "Primary document", content: "FETCHED_PAGE_CONTEXT ".repeat(150),
+            contentType: "text/html", fetchedAt: "2026-10-07T00:00:00Z",
+            citationId: citationIdForWebUrl(url)!, truncated: false, contentTrust: "untrusted" },
+        };
+      });
+      const events = await collectRequest(value);
+      const executions = mocks.executeGovernedTool.mock.calls.map(([input]) => input);
+      expect(mocks.loadProgressiveAgentTools).toHaveBeenCalledWith(expect.objectContaining({
+        query: expect.stringMatching(/^web\.search web\.read /),
+        preferredToolIds: ["web.search", "web.read"],
+      }));
+      expect(executions.filter((input) => input.toolId === "web.search")).toHaveLength(3);
+      expect(executions.filter((input) => input.toolId === "web.read")).toHaveLength(4);
+      for (const execution of executions) {
+        expect(execution).toEqual(expect.objectContaining({ requireReadOnly: true, approved: false,
+          agentRunId: "run-memory-scope", abortSignal: expect.any(AbortSignal),
+          context: expect.objectContaining({ tenantId: "paid-test-tenant", actorId: "paid-test-actor" }),
+          checkpointBeforeEffect: expect.any(Function) }));
+      }
+      const model = mocks.streamResponseTurn.mock.calls[0][0];
+      expect(model.maxOutputTokens).toBe(6_000);
+      expect(model.instructions).toContain("Research mode should produce a substantial evidence-led report");
+      expect(model.instructions).toContain("honor an explicit request for a brief answer");
+      expect(JSON.stringify(model.input)).toContain("FETCHED_PAGE_CONTEXT");
+      expect(JSON.stringify(model.input)).toContain("EVIDENCE_3");
+      expect(events.filter((event) => event.type === "tool" && event.toolId === "web.read" && event.status === "executed")).toHaveLength(4);
+      expect(events).toContainEqual(expect.objectContaining({ type: "status", label: "writing research report" }));
+      expect(mocks.completeAgentRun.mock.calls[0][2].sources).toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: "web", url: "https://other.example/overlap" }),
+      ]));
+    });
+
+    it("keeps source-read failures explicit and still synthesizes the available evidence", async () => {
+      const value = researchRequest();
+      value.agentProfile!.toolIds = ["web.search", "web.read"];
+      mocks.loadProgressiveAgentTools.mockResolvedValue({ definitions: [getGovernedTool("web.search")!, getGovernedTool("web.read")!] });
+      mocks.executeGovernedTool.mockImplementation(async (input) => input.toolId === "web.search"
+        ? searchExecution()
+        : { record: { ...localExecutionRecord("web.read", "failed-read"), status: "failed", reason: "Blocked page." }, result: { error: "Blocked page." } });
+      await collectRequest(value);
+      expect(JSON.stringify(mocks.streamResponseTurn.mock.calls[0][0].input)).toContain("Page unavailable:");
+      expect(JSON.stringify(mocks.streamResponseTurn.mock.calls[0][0].input)).toContain("No source-page text was successfully read");
+      expect(mocks.completeAgentRun).toHaveBeenCalledOnce();
+    });
+
+    it("reserves synthesis time instead of starting searches near the wall deadline", async () => {
+      const value = researchRequest();
+      value.budgetLimits = { ...DEFAULT_AGENT_RUN_BUDGET_LIMITS, wallTimeMs: 90_000 };
+      await collectRequest(value);
+      expect(mocks.executeGovernedTool).not.toHaveBeenCalled();
+      expect(JSON.stringify(mocks.streamResponseTurn.mock.calls[0][0].input)).toContain("preserve the report's time and run budget");
+      expect(mocks.completeAgentRun).toHaveBeenCalledOnce();
+    });
+
+    it.each([
+      { timeoutMs: 60_000, wallTimeMs: 140_000, searches: 0 },
+      { timeoutMs: 45_000, wallTimeMs: 140_000, searches: 3 },
+      { timeoutMs: 90_000, wallTimeMs: 170_000, searches: 0 },
+    ])("reserves synthesis after a configured $timeoutMs ms search within $wallTimeMs ms", async ({ timeoutMs, wallTimeMs, searches }) => {
+      mocks.webSearchTimeoutMs = timeoutMs;
+      const value = researchRequest();
+      value.budgetLimits = { ...DEFAULT_AGENT_RUN_BUDGET_LIMITS, wallTimeMs };
+      mocks.executeGovernedTool.mockResolvedValue(searchExecution());
+      await collectRequest(value);
+      expect(mocks.executeGovernedTool).toHaveBeenCalledTimes(searches);
+      expect(mocks.streamResponseTurn).toHaveBeenCalledOnce();
+      expect(mocks.completeAgentRun).toHaveBeenCalledOnce();
+      if (!searches) {
+        expect(JSON.stringify(mocks.streamResponseTurn.mock.calls[0][0].input)).toContain("preserve the report's time and run budget");
+      }
+    });
+
+    it("does not pay for discovery that would consume a tight report budget", async () => {
+      const value = researchRequest();
+      value.budgetLimits = { ...DEFAULT_AGENT_RUN_BUDGET_LIMITS, tokens: 16_000, modelTurns: 2 };
+      await collectRequest(value);
+      expect(mocks.executeGovernedTool).not.toHaveBeenCalled();
+      expect(mocks.streamResponseTurn.mock.calls[0][0].maxOutputTokens).toBe(6_000);
+      expect(mocks.completeAgentRun).toHaveBeenCalledOnce();
+    });
+
+    it("does not let freshness hints grant a tool excluded by the Agent profile", async () => {
+      const value = researchRequest();
+      value.agentProfile!.toolIds = [];
+      await collectRequest(value);
+      expect(mocks.executeGovernedTool).not.toHaveBeenCalled();
+      expect(mocks.streamResponseTurn.mock.calls[0][0].tools).toEqual([]);
+    });
+
+    it("removes web search from automatic and model dispatch after a user opt-out", async () => {
+      const value = researchRequest();
+      value.messages = [{ role: "user", content: "Compare current official sources, but do not browse the web." }];
+      await collectRequest(value);
+      expect(mocks.executeGovernedTool).not.toHaveBeenCalled();
+      expect(mocks.streamResponseTurn.mock.calls[0][0].tools).toEqual([]);
+    });
+
+    it.each([
+      "Research using only the provided documents.",
+      "Research the context without external sources.",
+    ])("removes both web tools for an explicit evidence restriction: %s", async (query) => {
+      const value = researchRequest();
+      value.messages = [{ role: "user", content: query }];
+      value.agentProfile!.toolIds = ["web.search", "web.read"];
+      mocks.loadProgressiveAgentTools.mockResolvedValue({ definitions: [getGovernedTool("web.search")!, getGovernedTool("web.read")!] });
+      await collectRequest(value);
+      expect(mocks.executeGovernedTool).not.toHaveBeenCalled();
+      expect(mocks.streamResponseTurn.mock.calls[0][0].tools).toEqual([]);
+    });
+
+    it("keeps long follow-up page extracts as valid JSON with their citation and truncation flag", async () => {
+      const value = researchRequest();
+      value.liveWebPolicy = "disabled";
+      value.agentProfile!.toolIds = ["web.read"];
+      mocks.loadProgressiveAgentTools.mockResolvedValue({ definitions: [getGovernedTool("web.read")!] });
+      const url = "https://example.com/long-document";
+      mocks.executeGovernedTool.mockResolvedValue({
+        record: localExecutionRecord("web.read", "execution-long-read"),
+        result: { url, title: "Long source", content: "Substantial evidence. ".repeat(600),
+          contentType: "text/html", fetchedAt: "2026-10-07T00:00:00Z",
+          citationId: citationIdForWebUrl(url)!, truncated: false, contentTrust: "untrusted" },
+      });
+      mocks.streamResponseTurn
+        .mockResolvedValueOnce(openAITurn({ calls: [{ callId: "call-long-read", name: "web.read" }] }))
+        .mockResolvedValueOnce(openAITurn({ text: "Report from available extracts." }));
+      await collectRequest(value);
+      const items = mocks.streamResponseTurn.mock.calls[1][0].input;
+      const output = items.find((item: { type: string; call_id?: string }) => item.type === "function_call_output" && item.call_id === "call-long-read").output;
+      expect(output.length).toBeLessThanOrEqual(8_000);
+      expect(JSON.parse(output)).toMatchObject({ trust: "untrusted_data", data: { result: {
+        url, citationId: citationIdForWebUrl(url), truncated: true,
+      } } });
+    });
+
+    it("keeps the full Research report out of the short-context automatic Council rewrite", async () => {
+      const value = researchRequest();
+      value.agentId = "atlas";
+      value.specialistIds = ["scout", "mnemosyne", "sentinel"];
+      mocks.executeGovernedTool.mockResolvedValue(searchExecution());
+      await collectRequest(value);
+      expect(mocks.runCouncilRound).not.toHaveBeenCalled();
+      expect(mocks.streamResponseTurn.mock.calls[0][0].maxOutputTokens).toBe(6_000);
+    });
+
+    it("keeps explicit delegated web grants when automatic prefetch is disabled", async () => {
+      const value = researchRequest();
+      value.liveWebPolicy = "disabled";
+      mocks.executeGovernedTool.mockResolvedValue(searchExecution());
+      mocks.streamResponseTurn
+        .mockResolvedValueOnce(openAITurn({ calls: [{ callId: "call-delegated-web", name: "web.search" }] }))
+        .mockResolvedValueOnce(openAITurn({ text: "Granted search completed." }));
+      await collectRequest(value);
+      expect(mocks.executeGovernedTool).toHaveBeenCalledOnce();
+      expect(mocks.executeGovernedTool).toHaveBeenCalledWith(expect.objectContaining({
+        idempotencyKey: "run-memory-scope:call-delegated-web",
+      }));
+    });
+
+    it("does not spend on web research for a trivial offline calculation", async () => {
+      const value = researchRequest();
+      value.messages = [{ role: "user", content: "What is 2 + 2?" }];
+      mocks.shouldUseLiveWebSearch.mockReturnValue(false);
+      await collectRequest(value);
+      expect(mocks.executeGovernedTool).not.toHaveBeenCalled();
+      expect(mocks.streamResponseTurn.mock.calls[0][0].tools.map((tool: { name: string }) => tool.name))
+        .toContain("web.search");
+    });
+
+    it.each(["failed", "blocked", "empty"] as const)(
+      "does not disclose a %s prefetch as successful evidence",
+      async (outcome) => {
+        const value = researchRequest();
+        const execution = searchExecution();
+        if (outcome === "empty") {
+          execution.result.sources = [];
+          execution.result.sourceCount = 0;
+        } else {
+          execution.record.status = outcome;
+          execution.record.reason = "Search was unavailable.";
+        }
+        mocks.executeGovernedTool.mockResolvedValue(execution);
+        const events = await collectRequest(value);
+        expect(JSON.stringify(mocks.streamResponseTurn.mock.calls[0][0].input)).not.toContain("VERIFIED_WEB_initial");
+        expect(events).toContainEqual(expect.objectContaining({ type: "status", label: "live web unavailable" }));
+        expect(events).not.toContainEqual(expect.objectContaining({ type: "memory", title: "live web sources ready" }));
+      },
+    );
+
+    it("stops a canceled prefetch before disclosing evidence or starting a model turn", async () => {
+      const value = researchRequest();
+      const watch = cancellationWatchStub();
+      mocks.createAgentRunCancellationWatch.mockReturnValue(watch);
+      mocks.executeGovernedTool.mockImplementation(async () => {
+        watch.cancel();
+        return searchExecution();
+      });
+      const events = await collectRequest(value);
+      expect(mocks.streamResponseTurn).not.toHaveBeenCalled();
+      expect(events.at(-1)).toEqual({ type: "canceled", message: "Agent run stopped because it was canceled." });
+      expect(mocks.completeAgentRun).not.toHaveBeenCalled();
+    });
+  });
+
   it("keeps a session-only paid turn out of durable retrieval and memory events", async () => {
     const events = await collectRun("session");
 
+    expect(mocks.streamResponseTurn.mock.calls[0][0].instructions)
+      .not.toContain("Research mode should produce a substantial evidence-led report");
     expect(mocks.buildContextPack).not.toHaveBeenCalled();
     expect(mocks.updateRunContextCount).not.toHaveBeenCalled();
     expect(mocks.getActiveAgentAdaptationGuidance).not.toHaveBeenCalled();
@@ -1662,6 +1966,7 @@ describe("agent memory scope", () => {
         { callId: "call-memory-approval", name: APPROVAL_TOOL_ID },
         { callId: "call-memory-queued", name: APPROVAL_TOOL_ID },
       ]);
+      continuation.maxOutputTokens = 6_000;
       mocks.markAgentRunWaitingForApproval.mockClear();
 
       await expect(resumeAfterApproval(continuation)).resolves.toMatchObject({
@@ -1862,6 +2167,7 @@ describe("agent memory scope", () => {
         APPROVAL_CALL,
         { callId: "call-memory-queued", name: APPROVAL_TOOL_ID },
       ]);
+      continuation.maxOutputTokens = 6_000;
       mocks.markAgentRunWaitingForApproval.mockClear();
 
       await expect(resumeAfterApproval(continuation)).resolves.toMatchObject({
@@ -1873,6 +2179,7 @@ describe("agent memory scope", () => {
         mocks.markAgentRunWaitingForApproval.mock.calls[0][1].continuation
           .delegationReceipts,
       ).toEqual([SCOUT_RECEIPT]);
+      expect(mocks.markAgentRunWaitingForApproval.mock.calls[0][1].continuation.maxOutputTokens).toBe(6_000);
     });
 
     it("keeps the model's answer when the run delegated nothing", async () => {
@@ -2322,6 +2629,7 @@ describe("agent memory scope", () => {
       "charges a resumed %s turn what it spent",
       async (provider) => {
         const continuation = await pauseForApproval(request("session"), provider);
+        continuation.maxOutputTokens = 6_000;
         mocks.markAgentRunWaitingForApproval.mockClear();
         const call = { callId: "call-second-approval", name: APPROVAL_TOOL_ID };
 
@@ -2339,6 +2647,7 @@ describe("agent memory scope", () => {
           tokens: 14,
           retries: 0,
         });
+        expect(parked.maxOutputTokens).toBe(6_000);
       },
     );
 

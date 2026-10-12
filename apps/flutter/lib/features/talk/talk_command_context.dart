@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../app/platform/mobile_presentation.dart';
 import '../../core/network/native_workspace_access.dart';
 import '../capture/library_view.dart';
 
@@ -534,7 +535,7 @@ class _TalkCommandComposerState extends State<TalkCommandComposer> {
                 if (activeIndex != index) setState(() => activeIndex = index);
               },
               child: ListTile(
-                dense: true,
+                dense: !usesMobilePresentation(),
                 selected: selected,
                 selectedTileColor: theme.colorScheme.primaryContainer
                     .withValues(alpha: 0.46),
@@ -566,18 +567,20 @@ class _TalkCommandComposerState extends State<TalkCommandComposer> {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
-                trailing: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 112),
-                  child: Text(
-                    _kindAliasLabel(item.kind),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    textAlign: TextAlign.end,
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      color: theme.colorScheme.onSurfaceVariant,
-                    ),
-                  ),
-                ),
+                trailing: usesMobilePresentation()
+                    ? null
+                    : ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 112),
+                        child: Text(
+                          _kindAliasLabel(item.kind),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          textAlign: TextAlign.end,
+                          style: theme.textTheme.labelSmall?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ),
                 onTap: () => _choose(item),
               ),
             ),
@@ -609,7 +612,14 @@ class _TalkCommandComposerState extends State<TalkCommandComposer> {
         children: [
           if (trigger != null)
             Container(
-              constraints: const BoxConstraints(maxHeight: 360),
+              constraints: BoxConstraints(
+                maxHeight: usesMobilePresentation()
+                    ? ((MediaQuery.sizeOf(context).height -
+                                  MediaQuery.viewInsetsOf(context).bottom) *
+                              .38)
+                          .clamp(150.0, 300.0)
+                    : 360,
+              ),
               margin: const EdgeInsets.only(bottom: 8),
               decoration: BoxDecoration(
                 color: Theme.of(context).colorScheme.surfaceContainerHigh,
@@ -642,18 +652,20 @@ class _TalkCommandComposerState extends State<TalkCommandComposer> {
                                 menuTitle,
                                 style: Theme.of(context).textTheme.labelLarge,
                               ),
-                              const SizedBox(height: 1),
-                              Text(
-                                menuDescription,
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                                style: Theme.of(context).textTheme.bodySmall
-                                    ?.copyWith(
-                                      color: Theme.of(context)
-                                          .colorScheme
-                                          .onSurfaceVariant,
-                                    ),
-                              ),
+                              if (!usesMobilePresentation()) ...[
+                                const SizedBox(height: 1),
+                                Text(
+                                  menuDescription,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: Theme.of(context).textTheme.bodySmall
+                                      ?.copyWith(
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .onSurfaceVariant,
+                                      ),
+                                ),
+                              ],
                             ],
                           ),
                         ),
@@ -792,18 +804,28 @@ class _TalkCommandComposerState extends State<TalkCommandComposer> {
             decoration: InputDecoration(
               hintText: widget.hintText,
               filled: true,
-              fillColor: Theme.of(context).colorScheme.surfaceContainerLowest,
+              fillColor: usesMobilePresentation()
+                  ? Theme.of(context).colorScheme.surface
+                  : Theme.of(context).colorScheme.surfaceContainerLowest,
               contentPadding: const EdgeInsets.symmetric(
                 horizontal: 16,
                 vertical: 16,
               ),
               border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(16),
+                borderRadius: BorderRadius.circular(
+                  usesMobilePresentation() ? 28 : 16,
+                ),
               ),
               enabledBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(16),
+                borderRadius: BorderRadius.circular(
+                  usesMobilePresentation() ? 28 : 16,
+                ),
                 borderSide: BorderSide(
-                  color: Theme.of(context).colorScheme.outlineVariant,
+                  color:
+                      usesMobilePresentation() &&
+                          !MediaQuery.highContrastOf(context)
+                      ? Colors.transparent
+                      : Theme.of(context).colorScheme.outlineVariant,
                 ),
               ),
               prefixIcon: IconButton(

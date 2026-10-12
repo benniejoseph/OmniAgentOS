@@ -166,7 +166,7 @@ def exercise(browser, origin, credentials, checks, coarse):
         navigate(page, origin, "/app/responsibilities")
         fixture.release("late-after-leave"); settle(page)
         checks.check(label + ": disposed notification read cannot repopulate the list route", notifications(page).count() == 0)
-        button(page, "New responsibility").click(); root(page).get_by_label("Purpose", exact=True).fill("A deliberately incomplete draft")
+        button(page, "New follow-up").click(); root(page).get_by_label("Purpose", exact=True).fill("A deliberately incomplete draft")
         button(page, "Create inactive draft").click(); expect(root(page).get_by_role("link", name="Open this responsibility", exact=True)).to_be_visible()
         checks.check(label + ": incomplete draft creates no watcher", fixture.record["draft"]["sources"] == [] and fixture.record["review"] is None)
         checks.check(label + ": no live effects, unexpected traffic or client errors", not fixture.writes and not fixture.unexpected and not errors,

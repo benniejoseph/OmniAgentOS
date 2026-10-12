@@ -1,0 +1,837 @@
+import 'package:dio/dio.dart';
+import 'package:flutter/material.dart';
+
+import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_page_scaffold.dart';
+import '../../app/mobile/mobile_flow_scaffold.dart';
+
+import '../../core/network/native_workspace_access.dart';
+import 'listen_bridge.dart';
+import 'listen_controller.dart';
+import 'listen_repository.dart';
+import 'listen_view.dart';
+
+class ListenDetail extends StatefulWidget {
+  const ListenDetail({super.key, required this.access, required this.id});
+  final NativeWorkspaceAccess access;
+  final String id;
+  @override
+  State<ListenDetail> createState() => _ListenDetailState();
+}
+
+class _ListenDetailState extends State<ListenDetail>
+    with WidgetsBindingObserver {
+  ListenJson? _conversation;
+  String? _error;
+  bool _loading = true;
+  int _mobileSection = 0;
+  int _generation = 0;
+  CancelToken? _cancel;
+  bool get _current => mounted && widget.access.current;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _load();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _cancel?.cancel('Conversation closed.');
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) {
+      _cancel?.cancel('Conversation hidden.');
+      _generation++;
+      if (mounted) {
+        setState(() {
+          _conversation = null;
+          _loading = true;
+        });
+      }
+    } else {
+      _load();
+    }
+  }
+
+  Future<void> _load() async {
+    if (!_current) return;
+    final generation = ++_generation;
+    _cancel?.cancel('Conversation refreshed.');
+    final cancel = _cancel = CancelToken();
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final value = await ListenRepository(widget.access)
+          .conversation(widget.id, cancel);
+      if (_current && generation == _generation) {
+        setState(() => _conversation = value);
+      }
+    } catch (error) {
+      if (_current && generation == _generation) {
+        setState(() => _error = listenError(error));
+      }
+    } finally {
+      if (_current && generation == _generation) {
+        setState(() => _loading = false);
+      }
+    }
+  }
+
+  void _showSource(ListenJson citation, List<ListenJson> turns) {
+    if (!_current) return;
+    final matching = turns
+        .where((turn) => turn['turnId'] == citation['turnId'])
+        .toList();
+    if (matching.isEmpty) return;
+    final turn = matching.first;
+    if (usesMobilePresentation()) {
+      final identity = widget.access.identity;
+      showDialog<void>(
+        context: context,
+        builder: (_) => Dialog.fullscreen(
+          child: NativePrivateWorkspace(
+            builder: (access) => MobileFlowScaffold(
+              title: 'From the conversation',
+              child: !access.current || access.identity != identity || !_current
+                  ? const Text('Reopen this conversation to read its source.')
+                  : Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        MobileStatusPill(
+                          label: _speaker(turn),
+                          icon: Icons.person_outline_rounded,
+                        ),
+                        const SizedBox(height: 12),
+                        Text(
+                          '${listenDuration(turn['startMilliseconds'])}–${listenDuration(turn['endMilliseconds'])}',
+                          style: Theme.of(context).textTheme.labelLarge,
+                        ),
+                        const SizedBox(height: 24),
+                        SelectableText(
+                          listenText(turn['text']),
+                          style: Theme.of(context).textTheme.bodyLarge
+                              ?.copyWith(height: 1.65),
+                        ),
+                      ],
+                    ),
+            ),
+          ),
+        ),
+      );
+      return;
+    }
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  'From the conversation',
+                  style: Theme.of(context).textTheme.titleLarge,
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  '${_speaker(turn)} · ${listenDuration(turn['startMilliseconds'])}–${listenDuration(turn['endMilliseconds'])}',
+                ),
+                const SizedBox(height: 16),
+                SelectableText(listenText(turn['text'])),
+                const SizedBox(height: 16),
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Done'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _cited(
+    ListenJson item,
+    List<ListenJson> turns, {
+    String? heading,
+  }) => Padding(
+    padding: const EdgeInsets.only(bottom: 20),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (heading != null)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 6),
+            child: Text(heading, style: Theme.of(context).textTheme.titleSmall),
+          ),
+        SelectableText(listenText(item['text'])),
+        if (listenRows(item['citations']).isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 4,
+              children: [
+                for (final citation in listenRows(item['citations']).take(6))
+                  TextButton.icon(
+                    style: TextButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                    ),
+                    onPressed: () => _showSource(citation, turns),
+                    icon: const Icon(Icons.format_quote_rounded, size: 16),
+                    label: Text(listenDuration(citation['startMilliseconds'])),
+                  ),
+              ],
+            ),
+          ),
+      ],
+    ),
+  );
+
+  Widget _section(
+    String title,
+    List<Widget> children, {
+    bool expanded = false,
+  }) => ExpansionTile(
+    tilePadding: EdgeInsets.zero,
+    childrenPadding: const EdgeInsets.only(top: 8),
+    initiallyExpanded: expanded,
+    title: Text(title, style: Theme.of(context).textTheme.titleMedium),
+    children: children,
+  );
+
+  @override
+  Widget build(BuildContext context) {
+    final conversation = _conversation;
+    final media = listenMap(conversation?['media']);
+    // Capture revisions wrap the typed output; accept direct output for the
+    // compact conversation read contract as well.
+    final output = media['output'] is Map ? listenMap(media['output']) : media;
+    final enrichment = listenMap(output['conversation']);
+    final clientContext = listenMap(conversation?['clientContext']);
+    final turns = listenRows(output['turns']);
+    final actions = listenRows(output['actionItems']);
+    final decisions = listenRows(output['decisions']);
+    final chapters = listenRows(output['chapters']);
+    final categories = enrichment['categories'] is List
+        ? enrichment['categories'] as List
+        : const [];
+    if (usesMobilePresentation()) {
+      return _mobileDetail(
+        conversation,
+        output,
+        enrichment,
+        clientContext,
+        turns,
+        actions,
+        decisions,
+        chapters,
+        categories,
+      );
+    }
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Conversation notes'),
+        actions: [
+          IconButton(
+            tooltip: 'Refresh notes',
+            onPressed: _loading ? null : _load,
+            icon: const Icon(Icons.refresh_rounded),
+          ),
+        ],
+      ),
+      body: !_current
+          ? const Center(
+              child: Text('Unlock your workspace to read this conversation.'),
+            )
+          : ListView(
+              padding: EdgeInsets.fromLTRB(
+                usesMobilePresentation() ? 20 : 24,
+                12,
+                usesMobilePresentation() ? 20 : 24,
+                32,
+              ),
+              children: [
+                Center(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 820),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        if (_loading) const LinearProgressIndicator(),
+                        if (_error != null)
+                          Text(
+                            _error!,
+                            style: TextStyle(
+                              color: Theme.of(context).colorScheme.error,
+                            ),
+                          ),
+                        if (conversation != null) ...[
+                          Text(
+                            listenText(conversation['title'], 'Conversation'),
+                            style: Theme.of(context).textTheme.headlineSmall,
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            '${listenDate(conversation['recordedAt'] ?? conversation['createdAt'])} · ${listenState(conversation['status'])}',
+                          ),
+                          const SizedBox(height: 16),
+                          if (listenText(clientContext['message']).isNotEmpty)
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 16),
+                              child: Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Icon(Icons.business_outlined, size: 18),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Text(
+                                      listenText(clientContext['message']),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          if (categories.isNotEmpty)
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 16),
+                              child: Wrap(
+                                spacing: 8,
+                                runSpacing: 8,
+                                children: [
+                                  for (final category
+                                      in categories.whereType<String>())
+                                    Chip(label: Text(category)),
+                                ],
+                              ),
+                            ),
+                          if (output['summary'] is Map)
+                            _cited(
+                              listenMap(output['summary']),
+                              turns,
+                              heading: 'What mattered',
+                            )
+                          else if (listenText(conversation['summary'])
+                              .isNotEmpty)
+                            SelectableText(listenText(conversation['summary']))
+                          else
+                            const Text(
+                              'Your notes are still being prepared. You can come back later; the recording is saved.',
+                            ),
+                          if (actions.isNotEmpty)
+                            _section('Follow-ups · ${actions.length}', [
+                              const Padding(
+                                padding: EdgeInsets.only(bottom: 16),
+                                child: Text(
+                                  'These are suggestions from the conversation. Check who committed to each step before treating it as your task.',
+                                ),
+                              ),
+                              for (final item in actions)
+                                _cited(
+                                  item,
+                                  turns,
+                                  heading: _actionHeading(item, turns),
+                                ),
+                            ], expanded: true),
+                          if (decisions.isNotEmpty)
+                            _section('Decisions', [
+                              for (final item in decisions) _cited(item, turns),
+                            ]),
+                          if (listenRows(enrichment['keyFacts']).isNotEmpty)
+                            _section('Context to remember', [
+                              for (final item in listenRows(
+                                enrichment['keyFacts'],
+                              ))
+                                _cited(item, turns),
+                            ]),
+                          if (listenRows(enrichment['relationships'])
+                              .isNotEmpty)
+                            _section('People & relationships', [
+                              const Padding(
+                                padding: EdgeInsets.only(bottom: 16),
+                                child: Text(
+                                  'What this conversation says about people and their connections. Names and relationships may need your correction.',
+                                ),
+                              ),
+                              for (final item in listenRows(
+                                enrichment['relationships'],
+                              ))
+                                _cited(item, turns),
+                            ]),
+                          if (listenRows(enrichment['openQuestions'])
+                              .isNotEmpty)
+                            _section('Still open', [
+                              for (final item in listenRows(
+                                enrichment['openQuestions'],
+                              ))
+                                _cited(item, turns),
+                            ]),
+                          if (chapters.isNotEmpty)
+                            _section('Topics · ${chapters.length}', [
+                              for (final item in chapters)
+                                _cited(
+                                  item,
+                                  turns,
+                                  heading: listenText(item['title']),
+                                ),
+                            ]),
+                          if (turns.isNotEmpty)
+                            _section(
+                              usesMobilePresentation()
+                                  ? 'Read the transcript'
+                                  : 'Transcript',
+                              [
+                                SizedBox(
+                                  height: usesMobilePresentation()
+                                      ? MediaQuery.sizeOf(context).height * .5
+                                      : 420,
+                                  child: ListView.builder(
+                                    itemCount: turns.length,
+                                    itemBuilder: (_, index) {
+                                      final turn = turns[index];
+                                      return Padding(
+                                        padding: const EdgeInsets.only(
+                                          bottom: 20,
+                                        ),
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.stretch,
+                                          children: [
+                                            Text(
+                                              '${_speaker(turn)} · ${listenDuration(turn['startMilliseconds'])}',
+                                              style: Theme.of(context)
+                                                  .textTheme
+                                                  .labelLarge,
+                                            ),
+                                            const SizedBox(height: 6),
+                                            SelectableText(
+                                              listenText(turn['text']),
+                                            ),
+                                          ],
+                                        ),
+                                      );
+                                    },
+                                  ),
+                                ),
+                              ],
+                            )
+                          else if (listenText(conversation['transcript'])
+                              .isNotEmpty)
+                            _section(
+                              usesMobilePresentation()
+                                  ? 'Read the transcript'
+                                  : 'Transcript',
+                              [
+                                SelectableText(
+                                  listenText(conversation['transcript']),
+                                ),
+                              ],
+                            ),
+                          const SizedBox(height: 24),
+                          Text(
+                            'Conversation notes are source material for ATLAS. Captured speech does not authorise actions or confirm someone’s identity.',
+                            style: Theme.of(context).textTheme.bodySmall
+                                ?.copyWith(
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .onSurfaceVariant,
+                                ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+    );
+  }
+
+  Widget _mobileDetail(
+    ListenJson? conversation,
+    ListenJson output,
+    ListenJson enrichment,
+    ListenJson clientContext,
+    List<ListenJson> turns,
+    List<ListenJson> actions,
+    List<ListenJson> decisions,
+    List<ListenJson> chapters,
+    List<dynamic> categories,
+  ) {
+    final theme = Theme.of(context);
+    final summary = output['summary'] is Map
+        ? listenMap(output['summary'])
+        : <String, dynamic>{'text': listenText(conversation?['summary'])};
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Conversation'),
+        actions: [
+          IconButton(
+            tooltip: 'Refresh notes',
+            onPressed: _loading ? null : _load,
+            icon: const Icon(Icons.refresh_rounded),
+          ),
+          const SizedBox(width: 8),
+        ],
+      ),
+      body: !_current
+          ? const Center(
+              child: Text('Unlock your workspace to read this conversation.'),
+            )
+          : CustomScrollView(
+              slivers: [
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (_loading) const LinearProgressIndicator(),
+                        if (_error != null)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 16),
+                            child: Text(
+                              _error!,
+                              style: TextStyle(color: theme.colorScheme.error),
+                            ),
+                          ),
+                        if (conversation != null) ...[
+                          Text(
+                            listenText(conversation['title'], 'Conversation'),
+                            style: theme.textTheme.headlineMedium,
+                          ),
+                          const SizedBox(height: 12),
+                          Text(
+                            listenDate(
+                              conversation['recordedAt'] ??
+                                  conversation['createdAt'],
+                            ),
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: theme.colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            children: [
+                              MobileStatusPill(
+                                label: listenState(conversation['status']),
+                                icon: Icons.forum_outlined,
+                              ),
+                              for (final category
+                                  in categories.whereType<String>())
+                                MobileStatusPill(label: category),
+                            ],
+                          ),
+                          if (listenText(clientContext['message'])
+                              .isNotEmpty) ...[
+                            const SizedBox(height: 16),
+                            Text(
+                              listenText(clientContext['message']),
+                              style: theme.textTheme.bodyMedium,
+                            ),
+                          ],
+                          const SizedBox(height: 24),
+                          MobileSegmentBar<int>(
+                            items: const [
+                              (value: 0, label: 'Summary', icon: null),
+                              (value: 1, label: 'Follow-ups', icon: null),
+                              (value: 2, label: 'Transcript', icon: null),
+                            ],
+                            value: _mobileSection,
+                            onChanged: (value) =>
+                                setState(() => _mobileSection = value),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+                if (conversation != null && _mobileSection == 0)
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 24),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          MobileSurface(
+                            spotlight: true,
+                            padding: const EdgeInsets.all(24),
+                            child: Builder(
+                              builder: (context) => Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    children: [
+                                      Icon(
+                                        Icons.auto_awesome_rounded,
+                                        size: 18,
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .primary,
+                                      ),
+                                      const SizedBox(width: 10),
+                                      Text(
+                                        'WHAT MATTERED',
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .labelMedium
+                                            ?.copyWith(letterSpacing: 1.4),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 20),
+                                  listenText(summary['text']).isNotEmpty
+                                      ? _cited(summary, turns)
+                                      : const Text(
+                                          'Your recording is saved. Notes are still being prepared.',
+                                        ),
+                                ],
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 20),
+                          if (decisions.isNotEmpty)
+                            _mobileNotesSection(
+                              'Decisions',
+                              Icons.check_circle_outline_rounded,
+                              [
+                                for (final item in decisions)
+                                  _cited(item, turns),
+                              ],
+                            ),
+                          if (listenRows(enrichment['keyFacts']).isNotEmpty)
+                            _mobileNotesSection(
+                              'Context to remember',
+                              Icons.lightbulb_outline_rounded,
+                              [
+                                for (final item in listenRows(
+                                  enrichment['keyFacts'],
+                                ))
+                                  _cited(item, turns),
+                              ],
+                            ),
+                          if (listenRows(enrichment['relationships'])
+                              .isNotEmpty)
+                            _mobileNotesSection(
+                              'People & relationships',
+                              Icons.people_outline_rounded,
+                              [
+                                const Padding(
+                                  padding: EdgeInsets.only(bottom: 16),
+                                  child: Text(
+                                    'Names and connections may need your correction.',
+                                  ),
+                                ),
+                                for (final item in listenRows(
+                                  enrichment['relationships'],
+                                ))
+                                  _cited(item, turns),
+                              ],
+                            ),
+                          if (listenRows(enrichment['openQuestions'])
+                              .isNotEmpty)
+                            _mobileNotesSection(
+                              'Still open',
+                              Icons.help_outline_rounded,
+                              [
+                                for (final item in listenRows(
+                                  enrichment['openQuestions'],
+                                ))
+                                  _cited(item, turns),
+                              ],
+                            ),
+                          if (chapters.isNotEmpty)
+                            _mobileNotesSection(
+                              'Topics',
+                              Icons.subject_rounded,
+                              [
+                                for (final item in chapters)
+                                  _cited(
+                                    item,
+                                    turns,
+                                    heading: listenText(item['title']),
+                                  ),
+                              ],
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                if (conversation != null && _mobileSection == 1)
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 24),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Text(
+                            actions.isEmpty
+                                ? 'No follow-ups were identified in this conversation.'
+                                : 'Suggested next steps. Check who committed to each one before treating it as your task.',
+                            style: theme.textTheme.bodyMedium?.copyWith(
+                              color: theme.colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                          const SizedBox(height: 20),
+                          for (final item in actions)
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 12),
+                              child: MobileSurface(
+                                padding: const EdgeInsets.fromLTRB(
+                                  20,
+                                  20,
+                                  20,
+                                  0,
+                                ),
+                                child: _cited(
+                                  item,
+                                  turns,
+                                  heading: _actionHeading(item, turns),
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                if (conversation != null && _mobileSection == 2)
+                  SliverPadding(
+                    padding: const EdgeInsets.symmetric(horizontal: 24),
+                    sliver: turns.isNotEmpty
+                        ? SliverList.builder(
+                            itemCount: turns.length,
+                            itemBuilder: (context, index) {
+                              final turn = turns[index];
+                              return Padding(
+                                padding: const EdgeInsets.only(bottom: 24),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      children: [
+                                        Expanded(
+                                          child: Text(
+                                            _speaker(turn),
+                                            style: theme.textTheme.titleSmall,
+                                          ),
+                                        ),
+                                        Text(
+                                          listenDuration(
+                                            turn['startMilliseconds'],
+                                          ),
+                                          style: theme.textTheme.bodySmall
+                                              ?.copyWith(
+                                                color: theme
+                                                    .colorScheme
+                                                    .onSurfaceVariant,
+                                              ),
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 10),
+                                    SelectableText(
+                                      listenText(turn['text']),
+                                      style: theme.textTheme.bodyLarge
+                                          ?.copyWith(height: 1.55),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            },
+                          )
+                        : SliverToBoxAdapter(
+                            child: SelectableText(
+                              listenText(
+                                conversation['transcript'],
+                                'The transcript is still being prepared.',
+                              ),
+                            ),
+                          ),
+                  ),
+                if (conversation != null)
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(24, 24, 24, 36),
+                      child: Text(
+                        'Conversation notes help ATLAS understand context. Captured speech does not authorise actions or confirm identity.',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+    );
+  }
+
+  Widget _mobileNotesSection(
+    String title,
+    IconData icon,
+    List<Widget> children,
+  ) => Padding(
+    padding: const EdgeInsets.only(bottom: 12),
+    child: MobileSurface(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+      child: ExpansionTile(
+        tilePadding: EdgeInsets.zero,
+        shape: const Border(),
+        collapsedShape: const Border(),
+        leading: Icon(icon, size: 22),
+        title: Text(title, style: Theme.of(context).textTheme.titleMedium),
+        childrenPadding: const EdgeInsets.only(top: 12),
+        expansionAnimationStyle: MediaQuery.disableAnimationsOf(context)
+            ? AnimationStyle.noAnimation
+            : null,
+        children: children,
+      ),
+    ),
+  );
+}
+
+String _speaker(ListenJson turn) {
+  final speaker = listenMap(turn['speaker']);
+  if (speaker['identity'] == 'known' &&
+      listenText(speaker['displayName']).isNotEmpty) {
+    return listenText(speaker['displayName']);
+  }
+  final label = listenText(speaker['label']).split('·').first.trim();
+  final number = RegExp(
+    r'^(?:speaker[ _-]*)?([a-z]|\d{1,3})$',
+    caseSensitive: false,
+  ).firstMatch(label)?.group(1);
+  final part = listenInt(turn['segmentIndex']) + 1;
+  return '${number == null ? 'Unidentified speaker' : 'Speaker $number'} · part $part';
+}
+
+String _actionHeading(ListenJson item, List<ListenJson> turns) {
+  String owner = 'Owner to confirm';
+  if (item['ownershipEvidence'] == 'explicit' &&
+      item['ownerParticipantId'] != null) {
+    final match = turns
+        .where(
+          (turn) =>
+              listenMap(turn['speaker'])['participantId'] ==
+              item['ownerParticipantId'],
+        )
+        .firstOrNull;
+    if (match != null) owner = _speaker(match);
+  }
+  return item['dueDateEvidence'] == 'explicit' && item['dueAt'] != null
+      ? '$owner · Due ${listenDate(item['dueAt'])}'
+      : owner;
+}

@@ -5,11 +5,6 @@ import {
   projectTruthfulIntegrationsOverview,
   TRUTHFUL_INTEGRATIONS_VERSION,
 } from "@/lib/connectors/truthful-overview";
-import {
-  initialSalesforceSyncCursor,
-  SALESFORCE_OBJECT_TYPES,
-  type SalesforceSyncHealth,
-} from "@/lib/customer-success/salesforce-contracts";
 import type { UsageSummary, UsageTotals } from "@/lib/usage/summary";
 
 const now = "2026-09-07T12:00:00.000Z";
@@ -95,18 +90,14 @@ describe("truthful integrations overview", () => {
         }],
       } },
       openapi: { state: "ready", value: { connectors: [], operations: [] } },
-      salesforce: { state: "ready", value: {
-        health: salesforceHealth(true),
-        writesConfigured: false,
-      } },
       usage: { state: "ready", value: usageSummary() },
-      oauthConfigured: { google: true, salesforce: false },
+      oauthConfigured: { google: true },
       catalog: connectionCatalog,
       generatedAt: now,
     });
 
     expect(overview.version).toBe(TRUTHFUL_INTEGRATIONS_VERSION);
-    expect(overview.installed).toHaveLength(6);
+    expect(overview.installed).toHaveLength(5);
     expect(overview.installed.find((item) => item.id === `google:${googleConnectionId}:gmail`)).toMatchObject({
       name: "Gmail · Personal",
       account: {
@@ -133,15 +124,6 @@ describe("truthful integrations overview", () => {
       },
       sync: { status: "not_applicable" },
       cost: { state: "unknown" },
-    });
-    expect(overview.installed.find((item) => item.name === "Salesforce")).toMatchObject({
-      connected: true,
-      permissions: { mode: "read_only", disabledOperations: 11 },
-      sync: {
-        status: "current",
-        coverage: "complete",
-        cursor: { state: "checkpointed", rawValueIncluded: false },
-      },
     });
     expect(overview.suggestions.every((item) => item.installed === false)).toBe(true);
     expect(overview.suggestions.find((item) => item.id === "slack")).toMatchObject({
@@ -177,9 +159,8 @@ describe("truthful integrations overview", () => {
         tools: [],
       } },
       openapi: { state: "ready", value: { connectors: [], operations: [] } },
-      salesforce: { state: "ready", value: { health: salesforceHealth(false), writesConfigured: false } },
       usage: { state: "ready", value: usageSummary() },
-      oauthConfigured: { google: true, salesforce: false },
+      oauthConfigured: { google: true },
       catalog: connectionCatalog,
       generatedAt: now,
     });
@@ -218,9 +199,8 @@ describe("truthful integrations overview", () => {
       }] },
       mcp: { state: "ready", value: { connectors: [], tools: [] } },
       openapi: { state: "ready", value: { connectors: [], operations: [] } },
-      salesforce: { state: "ready", value: { health: salesforceHealth(false), writesConfigured: false } },
       usage: { state: "ready", value: usageSummary() },
-      oauthConfigured: { google: true, salesforce: false },
+      oauthConfigured: { google: true },
       catalog: connectionCatalog,
       generatedAt: now,
     });
@@ -276,9 +256,8 @@ describe("truthful integrations overview", () => {
       }] },
       mcp: { state: "ready", value: { connectors: [], tools: [] } },
       openapi: { state: "ready", value: { connectors: [], operations: [] } },
-      salesforce: { state: "ready", value: { health: salesforceHealth(false), writesConfigured: false } },
       usage: { state: "ready", value: usageSummary() },
-      oauthConfigured: { google: true, salesforce: false },
+      oauthConfigured: { google: true },
       catalog: connectionCatalog,
       generatedAt: now,
     });
@@ -306,9 +285,8 @@ describe("truthful integrations overview", () => {
       oauth: unavailable,
       mcp: unavailable,
       openapi: unavailable,
-      salesforce: unavailable,
       usage: unavailable,
-      oauthConfigured: { google: true, salesforce: true },
+      oauthConfigured: { google: true },
       catalog: connectionCatalog,
       generatedAt: now,
     });
@@ -317,36 +295,8 @@ describe("truthful integrations overview", () => {
     expect(overview.installed).toEqual([]);
     expect(overview.inventory.oauth.state).toBe("unavailable");
     expect(overview.suggestions.find((item) => item.id === "google-workspace")?.state).toBe("availability_unknown");
-    expect(overview.suggestions.find((item) => item.id === "salesforce")?.state).toBe("availability_unknown");
   });
 });
-
-function salesforceHealth(connected: boolean): SalesforceSyncHealth {
-  const cursor = initialSalesforceSyncCursor();
-  for (const item of Object.values(cursor.objects)) {
-    item.phase = "current";
-    item.watermarkAt = connected ? "2026-09-07T11:59:00.000Z" : null;
-  }
-  return {
-    schemaVersion: 1 as const,
-    contractVersion: "p10.10-salesforce-read-sync:1" as const,
-    configured: connected,
-    connected,
-    connectionId: connected ? `salesforce-connection:${"a".repeat(64)}` : null,
-    workspaceId: "workspace:test",
-    status: connected ? "healthy" as const : "configuration_required" as const,
-    accessMode: "read_only" as const,
-    objectScope: [...SALESFORCE_OBJECT_TYPES],
-    purposeScope: ["customer_success.account.read", "customer_success.crm_sync"],
-    cursor: connected ? cursor : null,
-    lagSeconds: connected ? 60 : null,
-    lastSuccessfulSyncAt: connected ? "2026-09-07T11:59:00.000Z" : null,
-    lastWebhookAt: null,
-    lastReplayIdSha256: null,
-    actionableError: null,
-    evaluatedAt: now,
-  };
-}
 
 function healthyCheckpoint(at: string) {
   return {

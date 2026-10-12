@@ -58,14 +58,14 @@ function linkTo(html: string, href: string) {
 }
 
 describe("the inbox count in the app shell", () => {
-  it("offers the inbox from the header and counts it on a collapsed group", () => {
+  it("offers the inbox in Review and a counted header shortcut", () => {
     const html = renderShell("/app/command", 3);
 
     const inboxLinks = linkTo(html, "/app/approvals");
-    expect(inboxLinks).toHaveLength(1);
-    expect(inboxLinks[0]).toContain('class="notification-trigger"');
-    expect(inboxLinks[0]).toContain('aria-label="Needs you, 3 waiting"');
-    expect(html).toContain('aria-label="More, 3 waiting"');
+    expect(inboxLinks).toHaveLength(2);
+    expect(inboxLinks.filter((link) => link.includes('class="notification-trigger"'))).toHaveLength(1);
+    expect(inboxLinks.every((link) => link.includes('aria-label="Needs you, 3 waiting"'))).toBe(true);
+    expect(html).not.toContain('aria-label="More, 3 waiting"');
     expect(html).toContain('data-nav-count="3"');
   });
 

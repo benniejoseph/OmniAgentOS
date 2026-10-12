@@ -19,11 +19,7 @@
 .presence[data-companion-layout="greeting"] .summary { flex-wrap: wrap; justify-content: center; max-inline-size: 22rem; }
 .presence[data-companion-layout="greeting"] .portrait { flex-basis: 100%; inline-size: 72px; block-size: 72px; margin-block-end: .5rem; }
 .presence[data-companion-layout="greeting"] .portrait > span { margin-inline: auto; }
-.presence[data-companion-layout="greeting"] .image { inline-size: 72px; block-size: 72px; margin-inline: auto; }
 .presence[data-companion-layout="greeting"] .panel { inset-inline-start: 50%; transform: translateX(-50%); }
-.presence[data-companion-artwork="greeting"] { --atlas-greeting-height: clamp(96px, 18dvh, 144px); padding-block: clamp(.5rem, 2dvh, 1rem) .5rem; }
-.presence[data-companion-artwork="greeting"] .portrait { block-size: var(--atlas-greeting-height); }
-.presence[data-companion-artwork="greeting"] .image { inline-size: auto; block-size: var(--atlas-greeting-height); max-inline-size: 100%; max-block-size: 144px; border-radius: .5rem; }
 .summary {
   display: flex;
   align-items: center;
@@ -40,7 +36,6 @@
 .portrait { display: block; inline-size: 36px; block-size: 36px; flex: 0 0 36px; overflow: hidden; border-radius: .5rem; }
 .presence[data-companion-portrait="hidden"] .portrait,
 .presence[data-companion-portrait="unavailable"] .portrait { display: none; }
-.image { display: block; inline-size: 36px; block-size: 36px; object-fit: contain; }
 .status { display: flex; align-items: baseline; flex-wrap: wrap; column-gap: .625rem; row-gap: .125rem; min-inline-size: 0; }
 .name { color: var(--foreground); font-size: .75rem; font-weight: 600; letter-spacing: .075em; }
 .state { color: var(--muted); }
@@ -71,7 +66,6 @@
 .link:disabled { color: var(--muted); background: var(--surface-raised); opacity: 1; cursor: default; }
 .link:focus-visible, .summary:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; box-shadow: 0 0 0 3px var(--surface); }
 @media (pointer: coarse) { .link, .summary { min-block-size: 3rem; } }
-@media (max-width: 480px), (max-height: 640px) { .presence[data-companion-artwork="greeting"] { --atlas-greeting-height: 96px; padding-block: .25rem; } }
 @media (prefers-reduced-motion: reduce) { .presence, .image, .link, .summary, .chevron { animation: none; transition: none; } }
 @media (prefers-contrast: more) { .detail, .state, .identity { color: var(--foreground); } }
 @media (forced-colors: active) { .presence, .panel, .link { color: CanvasText; background: Canvas; border-color: CanvasText; box-shadow: none; } .detail, .state, .name, .identity { color: CanvasText; } .link:focus-visible, .summary:focus-visible { outline-color: Highlight; box-shadow: 0 0 0 3px Canvas; } }

@@ -1,11 +1,16 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+
+import '../../app/mobile/mobile_flow_scaffold.dart';
+
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/macos/macos_page_scaffold.dart';
 import '../../app/platform/macos_presentation.dart';
+import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_page_scaffold.dart';
 import '../../core/network/native_workspace_access.dart';
 import 'quality_contracts.dart';
 import 'quality_controller.dart';
@@ -75,7 +80,9 @@ class _NativeQualityPageState extends State<NativeQualityPage>
             _controller = controller;
             return controller == null
                 ? const Center(
-                    child: Text('Quality is unavailable for this session.'),
+                    child: Text(
+                      'Quality Checks are unavailable for this session.',
+                    ),
                   )
                 : QualityWorkspaceView(
                     key: ObjectKey(controller),
@@ -135,6 +142,37 @@ class _QualityWorkspaceViewState extends State<QualityWorkspaceView> {
     if (!controller.available) return;
     controller.select(id);
     final navigation = ++_selectionNavigation;
+    if (usesMobilePresentation()) {
+      unawaited(
+        showDialog<void>(
+          context: context,
+          useRootNavigator: false,
+          builder: (_) => Dialog.fullscreen(
+            child: ListenableBuilder(
+              listenable: controller,
+              builder: (_, _) => MobileFlowScaffold(
+                title: 'Quality evidence',
+                child:
+                    controller.available &&
+                        controller.section == section &&
+                        controller.selectedId == id
+                    ? _QualityInspector(controller: controller, embedded: true)
+                    : const Text(
+                        'This detail is no longer available. Close this view and refresh the current workspace.',
+                      ),
+              ),
+            ),
+          ),
+        ).whenComplete(() {
+          if (mounted &&
+              identical(c, controller) &&
+              controller.available &&
+              navigation == _selectionNavigation)
+            controller.select(null);
+        }),
+      );
+      return;
+    }
     if (!compact || !controller.available || controller.selectedId != id) {
       return;
     }
@@ -197,13 +235,15 @@ class _QualityWorkspaceViewState extends State<QualityWorkspaceView> {
                 final content = _content(context, wide: wide);
                 final refresh = IconButton(
                   key: const Key('quality-refresh'),
-                  tooltip: c.loading ? 'Refreshing Quality' : 'Refresh Quality',
+                  tooltip: c.loading
+                      ? 'Refreshing Quality Checks'
+                      : 'Refresh Quality Checks',
                   onPressed: c.loading ? null : c.refresh,
                   icon: const Icon(Icons.refresh_rounded),
                 );
                 return desktop
                     ? MacosPageScaffold(
-                        title: 'Quality',
+                        title: 'Quality Checks',
                         description: 'Evaluation outcomes and release evidence',
                         icon: Icons.fact_check_outlined,
                         actions: [refresh],
@@ -214,9 +254,20 @@ class _QualityWorkspaceViewState extends State<QualityWorkspaceView> {
                         inspectorCollapseBelow: 980,
                         body: content,
                       )
+                    : usesMobilePresentation()
+                    ? Column(
+                        children: [
+                          MobilePageHeader(
+                            title: 'Quality Checks',
+                            subtitle: 'Understand existing evaluation results.',
+                            actions: [refresh],
+                          ),
+                          Expanded(child: content),
+                        ],
+                      )
                     : Scaffold(
                         appBar: AppBar(
-                          title: const Text('Quality'),
+                          title: const Text('Quality Checks'),
                           actions: [refresh],
                         ),
                         body: content,
@@ -240,62 +291,137 @@ class _QualityWorkspaceViewState extends State<QualityWorkspaceView> {
         Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              'Evidence at a glance',
-              style: Theme.of(context).textTheme.titleLarge,
-            ),
-            const SizedBox(height: 6),
-            const Text(
-              'Review outcomes, background work and the server’s release assessment.',
-            ),
-            const SizedBox(height: 16),
-            Wrap(
-              spacing: 10,
-              runSpacing: 10,
-              children: [
-                _Metric(
-                  label: 'Recent runs',
-                  value: snapshot == null
-                      ? 'Not available'
-                      : '${snapshot.stats.total}',
-                  detail: 'Statistics cover up to 100 recent runs',
-                ),
-                _Metric(
-                  label: 'Latest case pass rate',
-                  value: snapshot?.stats.latestPassRate == null
-                      ? 'Not measured'
-                      : '${(snapshot!.stats.latestPassRate! * 100).toStringAsFixed(0)}%',
-                  detail: 'Execution completion does not imply a pass',
-                ),
-                _Metric(
-                  label: 'Release assessment',
-                  value:
-                      report?.status.label ??
-                      (c.release.state == QualityLoadState.restricted
-                          ? 'Restricted'
-                          : 'Not available'),
-                  detail: report == null
-                      ? 'Administrator evidence is a separate source'
-                      : report.approved
-                      ? 'Server approval: approved'
-                      : 'Server approval: withheld',
-                ),
-              ],
-            ),
-            const SizedBox(height: 20),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                for (final section in QualitySection.values)
-                  ChoiceChip(
-                    key: ValueKey('quality-tab-${section.name}'),
-                    label: Text(section.label),
-                    selected: c.section == section,
-                    onSelected: (_) => c.selectSection(section),
+            if (usesMobilePresentation())
+              MobileSurface(
+                padding: EdgeInsets.zero,
+                child: ExpansionTile(
+                  key: const PageStorageKey<String>('mobile-quality-overview'),
+                  tilePadding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 4,
                   ),
-              ],
-            ),
+                  leading: const Icon(Icons.fact_check_outlined),
+                  title: const Text('Evaluation overview'),
+                  subtitle: Text(
+                    snapshot == null
+                        ? 'Results unavailable'
+                        : '${snapshot.stats.total} recent runs',
+                  ),
+                  childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                  children: [
+                    Wrap(
+                      spacing: 10,
+                      runSpacing: 10,
+                      children: [
+                        _Metric(
+                          label: 'Recent runs',
+                          value: snapshot == null
+                              ? 'Not available'
+                              : '${snapshot.stats.total}',
+                          detail: 'Statistics cover up to 100 recent runs',
+                        ),
+                        _Metric(
+                          label: 'Latest case pass rate',
+                          value: snapshot?.stats.latestPassRate == null
+                              ? 'Not measured'
+                              : '${(snapshot!.stats.latestPassRate! * 100).toStringAsFixed(0)}%',
+                          detail: 'Execution completion does not imply a pass',
+                        ),
+                        _Metric(
+                          label: 'Release assessment',
+                          value:
+                              report?.status.label ??
+                              (c.release.state == QualityLoadState.restricted
+                                  ? 'Restricted'
+                                  : 'Not available'),
+                          detail: report == null
+                              ? 'Administrator evidence is a separate source'
+                              : report.approved
+                              ? 'Server approval: approved'
+                              : 'Server approval: withheld',
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              )
+            else ...[
+              Text(
+                'Evidence at a glance',
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+              const SizedBox(height: 6),
+              const Text(
+                'Review outcomes, background work and the server’s release assessment.',
+              ),
+              const SizedBox(height: 16),
+              Wrap(
+                spacing: 10,
+                runSpacing: 10,
+                children: [
+                  _Metric(
+                    label: 'Recent runs',
+                    value: snapshot == null
+                        ? 'Not available'
+                        : '${snapshot.stats.total}',
+                    detail: 'Statistics cover up to 100 recent runs',
+                  ),
+                  _Metric(
+                    label: 'Latest case pass rate',
+                    value: snapshot?.stats.latestPassRate == null
+                        ? 'Not measured'
+                        : '${(snapshot!.stats.latestPassRate! * 100).toStringAsFixed(0)}%',
+                    detail: 'Execution completion does not imply a pass',
+                  ),
+                  _Metric(
+                    label: 'Release assessment',
+                    value:
+                        report?.status.label ??
+                        (c.release.state == QualityLoadState.restricted
+                            ? 'Restricted'
+                            : 'Not available'),
+                    detail: report == null
+                        ? 'Administrator evidence is a separate source'
+                        : report.approved
+                        ? 'Server approval: approved'
+                        : 'Server approval: withheld',
+                  ),
+                ],
+              ),
+            ],
+            const SizedBox(height: 20),
+            if (usesMobilePresentation())
+              MobileSegmentBar<QualitySection>(
+                items: [
+                  for (final section in QualitySection.values)
+                    (
+                      value: section,
+                      label: switch (section) {
+                        QualitySection.runs => 'Runs',
+                        QualitySection.jobs => 'Jobs',
+                        QualitySection.cases => 'Cases',
+                        QualitySection.release => 'Release',
+                      },
+                      icon: null,
+                    ),
+                ],
+                value: c.section,
+                onChanged: c.selectSection,
+              )
+            else
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final section in QualitySection.values)
+                    ChoiceChip(
+                      key: ValueKey('quality-tab-${section.name}'),
+                      label: Text(section.label),
+                      selected: c.section == section,
+                      onSelected: (_) => c.selectSection(section),
+                    ),
+                ],
+              ),
             const SizedBox(height: 18),
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -356,7 +482,7 @@ class _QualityWorkspaceViewState extends State<QualityWorkspaceView> {
               ),
               const SizedBox(height: 12),
             ],
-            if (!wide && c.selectedId != null) ...[
+            if (!wide && !usesMobilePresentation() && c.selectedId != null) ...[
               Focus(
                 key: _detailKey,
                 focusNode: _detailFocus,
@@ -499,25 +625,60 @@ class _Metric extends StatelessWidget {
   });
   final String label, value, detail;
   @override
-  Widget build(BuildContext context) => ConstrainedBox(
-    constraints: const BoxConstraints(maxWidth: 300),
-    child: Card(
-      margin: EdgeInsets.zero,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(label, style: Theme.of(context).textTheme.labelLarge),
-            const SizedBox(height: 8),
-            Text(value, style: Theme.of(context).textTheme.titleLarge),
-            const SizedBox(height: 6),
-            Text(detail, style: Theme.of(context).textTheme.bodySmall),
-          ],
-        ),
-      ),
-    ),
-  );
+  Widget build(BuildContext context) => usesMobilePresentation()
+      ? SizedBox(
+          width: double.infinity,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        label,
+                        style: Theme.of(context).textTheme.labelLarge,
+                      ),
+                      Text(
+                        detail,
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Flexible(
+                  child: Text(
+                    value,
+                    textAlign: TextAlign.right,
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        )
+      : ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 300),
+          child: Card(
+            margin: EdgeInsets.zero,
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(label, style: Theme.of(context).textTheme.labelLarge),
+                  const SizedBox(height: 8),
+                  Text(value, style: Theme.of(context).textTheme.titleLarge),
+                  const SizedBox(height: 6),
+                  Text(detail, style: Theme.of(context).textTheme.bodySmall),
+                ],
+              ),
+            ),
+          ),
+        );
 }
 
 class _Notice extends StatelessWidget {
@@ -649,7 +810,13 @@ class _QualityInspector extends StatelessWidget {
             if (id != null)
               IconButton(
                 tooltip: 'Close evidence detail',
-                onPressed: () => c.select(null),
+                onPressed: () {
+                  if (usesMobilePresentation()) {
+                    Navigator.of(context).pop();
+                  } else {
+                    c.select(null);
+                  }
+                },
                 icon: const Icon(Icons.close_rounded, size: 18),
               ),
           ],

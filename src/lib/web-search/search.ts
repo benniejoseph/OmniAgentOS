@@ -1,3 +1,4 @@
+export { isLiveWebSearchExplicitlyDisabled, shouldUseLiveWebSearch } from "@/lib/web-search/intent";
 import { WEB_SEARCH_MODEL, WEB_SEARCH_TIMEOUT_MS, hasOpenAIKey } from "@/lib/config";
 import {
   classifyOpenAITerminalResponse,
@@ -7,15 +8,26 @@ import {
   attachModelProviderResponseReceipt,
   getModelProviderResponseReceipt,
   ModelProviderError,
+  preserveModelProviderResponseReceipt,
 } from "@/lib/models/types";
+import { classifyProviderError } from "@/lib/models/provider-errors";
+import { openAIMaxOutputTokens, resolveModelReasoningEffort } from "@/lib/models/reasoning-effort";
 import { estimateWebSearchCostUsd } from "@/lib/models/pricing";
 import { openAIResponseUsage } from "@/lib/openai/usage";
 import { citationIdForWebUrl } from "@/lib/rag/citations";
 import { resolveSpecializedRuntime } from "@/lib/settings/specialized-runtime";
 import { recordAiUsageSafely } from "@/lib/usage/ledger";
 import type { AiUsageScope } from "@/lib/usage/types";
+import type { Response, ResponseCreateParamsNonStreaming, ResponseFunctionWebSearch } from "openai/resources/responses/responses";
 
 export type LiveWebSearchContextSize = "low" | "medium" | "high";
+
+// The HTTP API supports max_tool_calls; SDK 6.49 declares it only on its
+// WebSocket event. Keep this documented extension explicit until the SDK catches up.
+// https://developers.openai.com/api/reference/python/resources/responses/methods/create
+type BoundedWebSearchRequest = ResponseCreateParamsNonStreaming & { max_tool_calls: number };
+const MAX_HOSTED_SEARCH_CALLS = 1;
+const INCOMPLETE_PAGE_READ_LIMITATION = "Search results are available; an additional page read did not finish. Read these pages before using detailed claims.";
 
 export type LiveWebSearchSource = {
   citationId: string;
@@ -32,23 +44,25 @@ export type LiveWebSearchResult = {
   summary: string;
   sources: LiveWebSearchSource[];
   sourceCount: number;
+  partialEvidence?: true;
+  limitations?: string[];
+  providerDiagnostics?: WebSearchProviderDiagnostics;
 };
 
-const freshnessPattern = /\b(today|tonight|yesterday|tomorrow|now|current|currently|latest|newest|recent|recently|breaking|live|real[-\s]?time|up[-\s]?to[-\s]?date|as of|this week|this month|this year|released|launch(?:ed)?|announc(?:ed|ement)|available|availability|support(?:s|ed|ing)?|compatible|price|pricing|stock|market|weather|score|schedule|deadline|version|changelog|news|president|prime minister|ceo|law|laws|regulation|policy|recommend(?:ation|ed)?|best|model|api|library|package|travel|flight|restaurant|web search|search (?:the )?web|browse|look up|verify|multiple sources|sources|citations?)\b/i;
-const noWebPattern = /\b(do not|don['’]?t|without|no)\s+(?:use\s+)?(?:the\s+)?(?:web|internet|browser|search|live search|(?:any\s+)?external tools?|any tools?)\b|\b(?:do not|don['’]?t)\s+(?:browse|search)\s+(?:the\s+)?(?:web|internet)\b|\bwithout\s+(?:browsing|searching)\s+(?:the\s+)?(?:web|internet)\b|\bfrom memory only\b|\boffline\b/i;
+/** Content-free provider evidence for diagnosing hosted search coverage. */
+export type WebSearchProviderDiagnostics = {
+  responseStatus: string;
+  incompleteReason: string | null;
+  hostedCallCount: number;
+  calls: Array<{ status: string; action: string | null; sourceCount: number; resultCount: number }>;
+  answerChars: number;
+  sourceCount: number;
+};
 
-/** The gpt-4o family does not accept the `filters` param on the hosted web_search tool. */
-function supportsWebSearchFilters(model: string) {
-  return !/^gpt-4o/i.test(model);
-}
+const webSearchFailures = new WeakMap<Error, WebSearchProviderDiagnostics>();
 
-export function shouldUseLiveWebSearch(query: string) {
-  const normalized = query.trim();
-  if (!normalized || noWebPattern.test(normalized)) {
-    return false;
-  }
-
-  return freshnessPattern.test(normalized);
+export function getWebSearchFailureDiagnostics(error: unknown) {
+  return error instanceof Error ? webSearchFailures.get(error) : undefined;
 }
 
 export async function runLiveWebSearch({
@@ -80,7 +94,12 @@ export async function runLiveWebSearch({
     deploymentConfigured: hasOpenAIKey(),
   });
   if (!runtimeModel.configured || runtimeModel.provider !== "openai") {
-    throw new Error("Live web search does not have an active model route.");
+    throw new ModelProviderError(
+      runtimeModel.warning || "Web search is not connected. Choose a Web search model and connect its provider in Settings.",
+      "openai",
+      runtimeModel.unavailableReason === "settings_unavailable" ? "unavailable" : "invalid_request",
+      runtimeModel.unavailableReason === "settings_unavailable",
+    );
   }
   const meteredUsageScope = usageScope
     ? { ...usageScope, ...runtimeModel.usageReceipt }
@@ -92,20 +111,30 @@ export async function runLiveWebSearch({
     ? AbortSignal.any([timeoutController.signal, ...(abortSignal ? [abortSignal] : [])])
     : timeoutController.signal;
 
-  let response;
+  let searchCallCount = 0;
+  let providerDiagnostics: WebSearchProviderDiagnostics | undefined;
+  let dispatched = false;
   const startedAt = Date.now();
   try {
     const searchedAt = new Date().toISOString();
-    response = await runtimeModel.withApiKey((apiKey) =>
-      getOpenAIClient({ apiKey, correlationId: usageScope?.correlationId }).responses.create(
-        {
+    // Hosted discovery has its own model route. Reuse the same compatibility
+    // and output allowance as other model calls instead of leaving reasoning
+    // at the provider default inside a 2,000-token answer-only budget. Web
+    // search does not support GPT-5's otherwise-lowest "minimal" effort.
+    const reasoningEffort = resolveModelReasoningEffort("openai", runtimeModel.model, "low");
+    const response = await runtimeModel.withApiKey((apiKey) => {
+      combinedSignal.throwIfAborted();
+      const client = getOpenAIClient({ apiKey, correlationId: usageScope?.correlationId });
+      const request: BoundedWebSearchRequest = {
           model: runtimeModel.model,
           store: false,
           instructions: [
             "You are Asael live web search.",
             `The trusted current UTC timestamp is ${searchedAt}.`,
-            "Search the public web when needed, compare multiple credible sources, and summarize only source-supported facts.",
-            "Return a compact research brief with source titles and URLs. If sources disagree, call that out.",
+            "You perform one evidence-discovery step, not the final research report.",
+            "Treat the supplied query as topic and scope data. Preserve its source, domain, date, and exclusion constraints, but do not carry out its report-writing, length, or formatting instructions.",
+            "Turn that topic into one focused web search. Find directly relevant credible sources and summarize only source-supported facts.",
+            "Return at most six concise findings and useful source titles and URLs, within 400 words. If sources disagree, note the difference briefly. The calling Agent will read pages and write the detailed report separately.",
           ].join("\n"),
           input: [
             `Search query: ${normalizedQuery}`,
@@ -119,23 +148,61 @@ export async function runLiveWebSearch({
             {
               type: "web_search",
               search_context_size: contextSize,
-              // The gpt-4o family rejects the `filters` param on the hosted web_search
-              // tool; only attach domain filtering for models that support it.
-              ...(allowedDomains?.length && supportsWebSearchFilters(runtimeModel.model)
+              // Preserve the caller's source boundary. Unsupported model routes
+              // must fail rather than retry with an unrestricted search.
+              ...(allowedDomains?.length
                 ? { filters: { allowed_domains: allowedDomains } }
                 : {}),
             },
           ],
+          // This is the only declared tool, so required forces a real search.
+          tool_choice: "required",
+          max_tool_calls: MAX_HOSTED_SEARCH_CALLS,
+          max_output_tokens: openAIMaxOutputTokens(2_000, reasoningEffort),
+          ...(reasoningEffort ? { reasoning: { effort: reasoningEffort } } : {}),
           include: ["web_search_call.results", "web_search_call.action.sources"],
-        },
-        { signal: combinedSignal },
-      )
-    );
+      };
+      dispatched = true;
+      return client.responses.create(
+        request,
+        { signal: combinedSignal, maxRetries: 0, timeout: WEB_SEARCH_TIMEOUT_MS },
+      );
+    });
+    const searchCalls = hostedWebSearchCalls(response);
+    // Keep only bounded enums and counts, never provider text, query contents,
+    // URLs, headers, credentials, or private reasoning. SDK types can lag the
+    // live API's optional action and incomplete hosted-call status.
+    providerDiagnostics = webSearchResponseDiagnostics(response);
+    const partialSearch = completedSearchWithUnfinishedPageOpen(response, searchCalls);
+    // The usage ledger's legacy query counter records hosted invocations,
+    // not the number of URLs or query strings inside one invocation.
+    searchCallCount = searchCalls.length;
     const usage = openAIResponseUsage(response.usage);
     const estimatedCostUsd = response.usage
-      ? estimateWebSearchCostUsd(runtimeModel.model, usage, 1)
+      ? estimateWebSearchCostUsd(runtimeModel.model, usage, searchCallCount)
       : undefined;
-    const responseFailure = classifyOpenAITerminalResponse(response);
+    // A partial response must not promote the unfinished page's URLs, answer
+    // annotations, or prose into evidence. Build discovery from the completed
+    // search item alone; governed web.read supplies actual page contents later.
+    const sources = extractWebSources(partialSearch ? { output: [partialSearch] } : response)
+      .slice(0, Math.min(Math.max(maxSources, 1), 20));
+    const summary = partialSearch
+      ? completedSearchDiscoveryBrief(sources)
+      : response.output_text?.trim() || "";
+    const searchFailure = !partialSearch && searchCalls.some((call) => call.status !== "completed")
+      ? "Live web search did not complete its search calls."
+      : !searchCalls.some((call) => call.action?.type === "search")
+        ? "Live web search returned no completed search call."
+        : !summary
+          ? "Live web search returned no answer."
+          : !sources.length
+            ? "Live web search returned no usable source URLs."
+            : undefined;
+    const responseFailure = classifyOpenAITerminalResponse(response) || (
+      searchFailure
+        ? new ModelProviderError(searchFailure, "openai", "unavailable", true)
+        : undefined
+    );
     if (responseFailure) {
       throw attachModelProviderResponseReceipt(responseFailure, {
         usage,
@@ -151,7 +218,7 @@ export async function runLiveWebSearch({
         status: "completed",
         provider: "openai",
         model: runtimeModel.model,
-        usage: { ...usage, searchQueryCount: 1 },
+        usage: { ...usage, searchQueryCount: searchCallCount },
         providerCallCount: 1,
         attemptCount: 1,
         failedAttemptCount: 0,
@@ -160,7 +227,43 @@ export async function runLiveWebSearch({
         providerRequestId: response.id,
       });
     }
-  } catch (error) {
+    return {
+      query: normalizedQuery,
+      searchedAt,
+      provider: "openai.responses.web_search",
+      model: runtimeModel.model,
+      summary,
+      sources,
+      sourceCount: sources.length,
+      ...(partialSearch ? {
+        partialEvidence: true as const,
+        limitations: [INCOMPLETE_PAGE_READ_LIMITATION],
+        providerDiagnostics,
+      } : {}),
+    };
+  } catch (caught) {
+    const error = allowedDomains?.length && isRejectedDomainFilterError(caught)
+      ? new ModelProviderError(
+          "The web search provider rejected the requested domain filters. Check the domains and selected Web search model in Settings; the search was not retried without filters.",
+          "openai",
+          "invalid_request",
+          false,
+          400,
+        )
+      : timeoutController.signal.aborted
+        ? preserveModelProviderResponseReceipt(caught, new ModelProviderError(
+            `Web search took longer than ${Math.ceil(WEB_SEARCH_TIMEOUT_MS / 1_000)} seconds. Try a more specific question or try again in a moment.`,
+            "openai", "timeout", false,
+          ))
+        : abortSignal?.aborted
+          ? preserveModelProviderResponseReceipt(caught, new ModelProviderError(
+              abortSignal.reason instanceof Error
+                ? abortSignal.reason.message
+                : "Web search stopped because the request was cancelled or reached its time limit.",
+              "openai", "abort", false,
+            ))
+          : classifyProviderError("openai", caught);
+    if (providerDiagnostics) webSearchFailures.set(error, providerDiagnostics);
     const responseReceipt = getModelProviderResponseReceipt(error);
     const providerFailure = error instanceof ModelProviderError ? error : undefined;
     if (meteredUsageScope) {
@@ -171,17 +274,19 @@ export async function runLiveWebSearch({
         model: runtimeModel.model,
         usage: {
           ...(responseReceipt?.usage || {}),
-          searchQueryCount: 1,
+          searchQueryCount: searchCallCount,
         },
-        providerCallCount: 1,
-        attemptCount: 1,
-        failedAttemptCount: 1,
+        providerCallCount: dispatched ? 1 : 0,
+        attemptCount: dispatched ? 1 : 0,
+        failedAttemptCount: dispatched ? 1 : 0,
         latencyMs: Date.now() - startedAt,
         estimatedCostUsd: responseReceipt?.estimatedCostUsd,
         providerRequestId: responseReceipt?.providerRequestId,
-        failureKind: combinedSignal.aborted
-          ? "abort"
-          : providerFailure?.kind || "provider_error",
+        failureKind: timeoutController.signal.aborted
+          ? "timeout"
+          : combinedSignal.aborted
+            ? "abort"
+            : providerFailure?.kind || "provider_error",
         retryable: combinedSignal.aborted
           ? false
           : providerFailure?.retryable ?? true,
@@ -191,18 +296,72 @@ export async function runLiveWebSearch({
   } finally {
     clearTimeout(timeoutId);
   }
+}
 
-  const sources = extractWebSources(response).slice(0, Math.min(Math.max(maxSources, 1), 20));
+function hostedWebSearchCalls(response: Pick<Response, "output">) {
+  return response.output.filter((item): item is ResponseFunctionWebSearch =>
+    item.type === "web_search_call"
+  );
+}
 
+/** Recover only the exact observed partial-follow-up shape, never a failed search. */
+function completedSearchWithUnfinishedPageOpen(
+  response: Response,
+  calls: ResponseFunctionWebSearch[],
+): ResponseFunctionWebSearch | undefined {
+  if (MAX_HOSTED_SEARCH_CALLS !== 1 || response.status !== "completed" || response.error ||
+    response.incomplete_details || calls.length < 2) return;
+  const [search, ...followUps] = calls;
+  if (search.status !== "completed" || search.action?.type !== "search") return;
+  const noEvidence = (value: unknown) => value == null || (Array.isArray(value) && value.length === 0);
+  if (!followUps.every((call) => {
+    const value = call as unknown as { results?: unknown; action?: { sources?: unknown } };
+    return call.status === "searching" && call.action?.type === "open_page" &&
+      noEvidence(value.results) && noEvidence(value.action?.sources);
+  })) return;
+  return search;
+}
+
+function completedSearchDiscoveryBrief(sources: readonly LiveWebSearchSource[]) {
+  return [
+    INCOMPLETE_PAGE_READ_LIMITATION,
+    "Completed search findings (discovery only):",
+    ...sources.slice(0, 6).map((source) =>
+      `- ${source.title.slice(0, 240)}${source.snippet ? `: ${source.snippet.slice(0, 400)}` : ""}`),
+  ].join("\n");
+}
+
+function webSearchResponseDiagnostics(response: Response): WebSearchProviderDiagnostics {
+  const known = (value: unknown, allowed: readonly string[]) =>
+    typeof value === "string" && allowed.includes(value) ? value : "unknown";
+  const calls = hostedWebSearchCalls(response);
   return {
-    query: normalizedQuery,
-    searchedAt: new Date().toISOString(),
-    provider: "openai.responses.web_search",
-    model: runtimeModel.model,
-    summary: response.output_text || "Live web search completed, but no summary text was returned.",
-    sources,
-    sourceCount: sources.length,
+    responseStatus: known(response.status, ["completed", "failed", "in_progress", "cancelled", "queued", "incomplete"]),
+    incompleteReason: response.incomplete_details?.reason == null
+      ? null
+      : known(response.incomplete_details.reason, ["max_output_tokens", "content_filter"]),
+    hostedCallCount: calls.length,
+    calls: calls.slice(0, 12).map((call) => {
+      const value = call as unknown as { status?: unknown; action?: { type?: unknown; sources?: unknown }; results?: unknown };
+      return {
+        status: known(value.status, ["queued", "in_progress", "searching", "completed", "failed", "incomplete"]),
+        action: value.action == null ? null : known(value.action.type, ["search", "open_page", "find_in_page"]),
+        sourceCount: Array.isArray(value.action?.sources) ? value.action.sources.length : 0,
+        resultCount: Array.isArray(value.results) ? value.results.length : 0,
+      };
+    }),
+    answerChars: response.output_text?.length || 0,
+    sourceCount: extractWebSources(response).length,
   };
+}
+
+function isRejectedDomainFilterError(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  const value = error as { status?: unknown; param?: unknown; message?: unknown };
+  return value.status === 400 && (
+    /filters|allowed_domains/.test(stringValue(value.param)) ||
+    /(?:filters|allowed_domains).*(?:unsupported|not supported)|(?:unsupported|not supported).*filters/i.test(stringValue(value.message))
+  );
 }
 
 // Cap how much web evidence is injected into the agent prompt. The production
@@ -230,6 +389,7 @@ export function formatLiveWebSearchContext(result: LiveWebSearchResult) {
     `Searched at: ${result.searchedAt}`,
     `Provider: ${result.provider}`,
     `Query: ${result.query}`,
+    ...(result.limitations?.length ? ["", "Limitations:", ...result.limitations] : []),
     "",
     "Brief:",
     summary,
@@ -239,18 +399,23 @@ export function formatLiveWebSearchContext(result: LiveWebSearchResult) {
   ].join("\n");
 }
 
-function extractWebSources(response: unknown) {
-  const sources: LiveWebSearchSource[] = [];
-  const seen = new Set<string>();
+type CollectedWebSource = { source: LiveWebSearchSource; cited: boolean };
 
-  collectWebSources(response, sources, seen);
-  return sources;
+function extractWebSources(response: { output: unknown }) {
+  const sources = new Map<string, CollectedWebSource>();
+
+  collectWebSources(response.output, sources);
+  // The full retrieved URL list can be much longer than the answer's citations.
+  // Keep those citations first when the caller limits the returned evidence.
+  return [...sources.values()]
+    .sort((left, right) => Number(right.cited) - Number(left.cited))
+    .map((item) => item.source);
 }
 
-function collectWebSources(value: unknown, sources: LiveWebSearchSource[], seen: Set<string>) {
+function collectWebSources(value: unknown, sources: Map<string, CollectedWebSource>) {
   if (Array.isArray(value)) {
     for (const item of value) {
-      collectWebSources(item, sources, seen);
+      collectWebSources(item, sources);
     }
     return;
   }
@@ -268,23 +433,40 @@ function collectWebSources(value: unknown, sources: LiveWebSearchSource[], seen:
       title: stringValue(record.title || record.name, url),
       url,
       snippet: snippet || undefined,
-    }, sources, seen);
+    }, sources, type.includes("citation"));
   }
 
   for (const child of Object.values(record)) {
-    collectWebSources(child, sources, seen);
+    collectWebSources(child, sources);
   }
 }
 
 function addSource(
   source: Omit<LiveWebSearchSource, "citationId">,
-  sources: LiveWebSearchSource[],
-  seen: Set<string>,
+  sources: Map<string, CollectedWebSource>,
+  cited: boolean,
 ) {
   const citationId = citationIdForWebUrl(source.url);
-  if (!citationId || seen.has(citationId)) return;
-  seen.add(citationId);
-  sources.push({ ...source, citationId });
+  if (!citationId) return;
+  const normalizedUrl = new URL(source.url.trim());
+  normalizedUrl.username = "";
+  normalizedUrl.password = "";
+  normalizedUrl.hash = "";
+  const url = normalizedUrl.toString();
+  const title = source.title.trim() && source.title !== source.url
+    ? source.title.trim().slice(0, 1_000)
+    : url;
+  const snippet = source.snippet?.trim().slice(0, 2_000) || undefined;
+  const existing = sources.get(citationId);
+  if (existing) {
+    if (title !== url && (existing.source.title === url || (cited && !existing.cited))) {
+      existing.source.title = title;
+    }
+    existing.source.snippet ||= snippet;
+    existing.cited ||= cited;
+    return;
+  }
+  sources.set(citationId, { source: { citationId, title, url, snippet }, cited });
 }
 
 function looksLikeWebSearchRecord(record: Record<string, unknown>) {

@@ -2,7 +2,6 @@
 
 import Link from "next/link";
 import dynamic from "next/dynamic";
-import { voiceTextDraft } from "@/components/voice/voice-text-handoff";
 import { promptQueueMutationsForOwner, readPromptQueueItems, readQueueWriteResult, type PromptQueueItem, type QueueIntent } from "@/components/command/prompt-queue-client";
 import { memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
@@ -62,15 +61,22 @@ import {
   type PrivateMediaReadiness,
   privateCaptureAssetContentUrl,
 } from "@/components/media/private-media-preview";
-import { VoiceMode } from "@/components/voice/voice-mode";
+import { ConversationVoice, type ConversationVoiceRequest } from "@/components/voice/conversation-voice";
+import type { VoiceConversationInput } from "@/lib/voice/command-input";
+import type { VoiceConversationCommandContext } from "@/lib/voice/conversation-contracts";
 import { CompanionPresence } from "@/components/companion-presence";
+import { useCompanionPersonality } from "@/components/use-companion-personality";
+import type { CompanionPersonality } from "@/lib/companion/personality";
 import { companionRunSnapshot, companionPendingWork, companionWork, createCompanionHomeGate, type CompanionWork } from "@/lib/companion/presentation";
 import {
   CommandComposerField,
   type CommandSlashAction,
 } from "@/components/command/command-composer-field";
-import { CommandModelPicker } from "@/components/command/command-model-picker";
+import { CommandModelPicker, commandModelDisplayName } from "@/components/command/command-model-picker";
 import workspaceStyles from "@/components/agent-runs-workspace.module.css";
+import { emptyResearchDraft, ResearchOptionsEditor, researchOptionsFromDraft, type ResearchDraft } from "@/components/command/research-options";
+import { ResearchPanel, readResearchProgress, researchViewFromWorkflow, researchGroundingForWorkflow } from "@/components/command/research-panel";
+import type { ResearchOptions, ResearchProgress } from "@/lib/research/contracts";
 import {
   modelRouteDegradedActivity,
   type ModelRouteDegradedEvent,
@@ -95,6 +101,7 @@ import {
 } from "@/lib/command/client-projection";
 import { startProgressiveThreadLoad } from "@/lib/command/progressive-thread-load";
 import { runStreamAnnouncement } from "@/lib/command/run-announcement";
+import { parseMarkdownTable } from "@/lib/command/markdown-table";
 import {
   approvalInboxHref,
   commandConversationHref,
@@ -172,6 +179,9 @@ type CommandProject = { id: string; title: string; status: string };
 type ThreadTurn = { id: string; role: "user" | "assistant"; content: string; createdAt: string; runId?: string };
 type RunMediaProjection = {
   runId: string;
+  threadId?: string;
+  grounding?: GroundingReport;
+  researchRun?: JsonRecord;
   companion?: CompanionWork;
   companionScope?: string;
   artifacts: CommandMediaArtifact[];
@@ -180,6 +190,12 @@ type RunMediaProjection = {
   workspaceArtifacts: CommandWorkspaceArtifact[];
   workspaceArtifactState: CommandWorkspaceArtifactState;
 };
+type TurnSourceProjection = {
+  state: "loading" | "ready" | "error";
+  grounding?: GroundingReport;
+  selection?: number;
+};
+const turnSourceKey = (threadId: string, runId: string) => JSON.stringify([threadId, runId]);
 type AgentMode = ClientAgentMode;
 type AgentId = string;
 type AgentPresentation = {
@@ -199,6 +215,7 @@ type PersonalContextConsentView = {
   notice: { text: string; sha256: string };
 };
 type AssistantComposerDraft = {
+  research: ResearchDraft;
   goal: string;
   mode: AgentMode;
   preferredAgent?: AgentPresentation;
@@ -224,7 +241,7 @@ const CONTEXT_SCOPE_OPTIONS: readonly Readonly<{
   {
     id: "agent_private",
     label: "This agent's memory",
-    description: "Use only memory owned by you and the assigned agent.",
+    description: "Use this agent's memories and About me when enabled.",
   },
   {
     id: "project",
@@ -239,7 +256,7 @@ const CONTEXT_SCOPE_OPTIONS: readonly Readonly<{
   {
     id: "session",
     label: "Conversation only",
-    description: "Use this conversation without saved memory or knowledge.",
+    description: "Use this conversation and About me when enabled. Saved memories stay excluded.",
   },
   {
     id: "current_turn",
@@ -383,6 +400,7 @@ type RunTraceStage = {
 type TabKey = "memory" | "context" | "plan" | "execute" | "evidence";
 
 type StreamEvent =
+  | { type: "research_progress"; progress: ResearchProgress }
   | { type: "run"; runId?: string; threadId?: string; missionId?: string }
   | { type: "status"; label?: string; detail?: string }
   | {
@@ -499,6 +517,9 @@ function OwnedAgentRunsWorkspace({
     refresh: refreshAccountAccess,
   } = useWorkspaceSession();
   const companionOwnerScope = ownerScope;
+  const personalityOwner = scopeAvailable && session?.context?.tenantId && session.context.actorId
+    ? { tenantId: session.context.tenantId, actorId: session.context.actorId } : undefined;
+  const { personality } = useCompanionPersonality(personalityOwner);
   const [requestScope] = useState(() => new CommandWorkspaceScope(scopeAvailable));
   const [activityRead] = useState(() => new CommandSelectionRead());
   const readJson = useCallback((path: string, init?: RequestInit) => requestScope.run(
@@ -506,7 +527,10 @@ function OwnedAgentRunsWorkspace({
   ), [requestScope]);
   const [restoredDraft] = useState(() => initialGoal || initialAgentId ? undefined : assistantComposerDrafts.get(ownerScope));
   const [goal, setGoal] = useState(initialGoal || restoredDraft?.goal || "");
+  const goalRevisionRef = useRef(0);
+  const commandReferencesRevisionRef = useRef(0);
   const [mode, setMode] = useState<AgentMode>(restoredDraft?.mode || "orchestrate");
+  const [researchDraft, setResearchDraft] = useState<ResearchDraft>(restoredDraft?.research || emptyResearchDraft);
   const initialBuiltInAgent = initialAgentId
     ? builtInAgentPresentation(initialAgentId)
     : undefined;
@@ -529,7 +553,6 @@ function OwnedAgentRunsWorkspace({
     useState<CommandModelSelectionRequest | undefined>(restoredDraft?.modelSelection);
   const preferredAgentId = preferredAgent?.id;
   const activeAssistantName = preferredAgent?.name || "Asael";
-  const [approvalRequired, setApprovalRequired] = useState(true);
   const [activeTab, setActiveTab] = useState<TabKey>("context");
   const [loading, setLoading] = useState<string>();
   const [error, setError] = useState<string>();
@@ -543,13 +566,13 @@ function OwnedAgentRunsWorkspace({
   );
   useLayoutEffect(() => {
     if (!scopeAvailable || !ownerScope || goal.length > 100_000 || commandReferences.length > 20) return;
-    const draft: AssistantComposerDraft = { goal, mode, preferredAgent, references: commandReferences,
+    const draft: AssistantComposerDraft = { goal, mode, research: researchDraft, preferredAgent, references: commandReferences,
       modelSelection: commandModelSelection, contextScope, projectId: selectedProjectId };
     if (JSON.stringify(draft).length > 300_000) return;
     assistantComposerDrafts.delete(ownerScope);
     assistantComposerDrafts.set(ownerScope, structuredClone(draft));
     while (assistantComposerDrafts.size > 8) assistantComposerDrafts.delete(assistantComposerDrafts.keys().next().value!);
-  }, [scopeAvailable, ownerScope, goal, mode, preferredAgent, commandReferences, commandModelSelection, contextScope, selectedProjectId]);
+  }, [scopeAvailable, ownerScope, goal, mode, researchDraft, preferredAgent, commandReferences, commandModelSelection, contextScope, selectedProjectId]);
   const [contextQuery, setContextQuery] = useState("");
   const [selectedContextIds, setSelectedContextIds] = useState<string[]>([]);
   const [contextPreviewToken, setContextPreviewToken] = useState("");
@@ -579,6 +602,15 @@ function OwnedAgentRunsWorkspace({
     workspaceArtifactState: "none",
   });
   const [grounding, setGrounding] = useState<GroundingReport>();
+  const [turnSources, setTurnSources] = useState<Record<string, TurnSourceProjection>>({});
+  const turnSourceReads = useRef(new Map<string, { controller: AbortController; selection: number }>());
+  const rememberTurnSources = useCallback((key: string, value: TurnSourceProjection) => {
+    setTurnSources((current) => {
+      const retained = { ...current };
+      delete retained[key];
+      return Object.fromEntries([...Object.entries(retained).slice(-99), [key, value]]);
+    });
+  }, []);
   const [activeAgentRunId, setActiveAgentRunId] = useState("");
   const [runFeedback, setRunFeedback] = useState<RunFeedback>();
   const [feedbackSaving, setFeedbackSaving] = useState(false);
@@ -591,6 +623,9 @@ function OwnedAgentRunsWorkspace({
   const [evidence, setEvidence] = useState<JsonRecord>({});
   const [evidenceState, setEvidenceState] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [workflowSyncError, setWorkflowSyncError] = useState<string>();
+  const [researchControlPending, setResearchControlPending] = useState(false);
+  const researchControlBusyRef = useRef(false);
+  const [researchControlError, setResearchControlError] = useState<string>();
   const [runSyncError, setRunSyncError] = useState<string>();
   const [runAnnouncement, setRunAnnouncement] = useState("Run workspace ready.");
   const [waitingApproval, setWaitingApproval] = useState<Extract<StreamEvent, { type: "waiting_approval" }>>();
@@ -618,6 +653,7 @@ function OwnedAgentRunsWorkspace({
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [selectedActivityRunId, setSelectedActivityRunId] = useState("");
   const abortControllerRef = useRef<AbortController | null>(null);
+  const stoppedControllerRef = useRef<AbortController | null>(null);
   const contextControllerRef = useRef<AbortController | null>(null);
   const contextVersionRef = useRef(0);
   const contextSelectionReviewedRef = useRef(false);
@@ -637,6 +673,7 @@ function OwnedAgentRunsWorkspace({
   const responseSpeechPlayerRef = useRef<StreamingPcmPlayer | null>(null);
   const agentRequestIdRef = useRef<string>("");
   const agentRequestGoalRef = useRef<string>("");
+  const agentRequestPersonalityRef = useRef<CompanionPersonality>("butler");
   const directRunStatusRef = useRef("");
   const currentRunIdRef = useRef("");
   // The run a send started, named by the response before its first event.
@@ -893,6 +930,22 @@ function OwnedAgentRunsWorkspace({
   useLayoutEffect(() => () => { homeActionGate.invalidate(); }, [companionOwnerScope, homeActionGate, role]);
   const conversationLocked = workflowInProgress || directRunInProgress;
   const workflowReport = stringPath(workflowRun, "run.result.report", "");
+  const workflowResearchGrounding = useMemo(() => researchGroundingForWorkflow(workflowRun), [workflowRun]);
+  useEffect(() => {
+    if (runMediaProjection.runId && runMediaProjection.threadId && runMediaProjection.grounding) {
+      rememberTurnSources(turnSourceKey(runMediaProjection.threadId, runMediaProjection.runId), {
+        state: "ready", grounding: runMediaProjection.grounding,
+      });
+    }
+  }, [runMediaProjection, rememberTurnSources]);
+  useEffect(() => {
+    const ownedThread = stringPath(workflowRun, "run.input.metadata.threadId", "");
+    if (activeWorkflowId && ownedThread && workflowResearchGrounding) {
+      rememberTurnSources(turnSourceKey(ownedThread, `workflow:${activeWorkflowId}`), {
+        state: "ready", grounding: workflowResearchGrounding,
+      });
+    }
+  }, [activeWorkflowId, workflowRun, workflowResearchGrounding, rememberTurnSources]);
   const currentAssistantResponse = workflowReport || agentResponse;
   const currentResponseIsLastTurn = Boolean(
     currentAssistantResponse &&
@@ -918,10 +971,6 @@ function OwnedAgentRunsWorkspace({
   const activityTerminal = workflowRun
     ? ["completed", "failed", "canceled"].includes(activeWorkflowStatus)
     : agentRunTerminal && loading !== "agent";
-  const activityCount = workflowRun
-    ? arrayPath(workflowRun, "steps").length + arrayPath(workflowRun, "events").length
-    : streamEvents.filter((event) => event.type !== "delta").length;
-
   const runPosture = useMemo(() => {
     if (workflowRun) {
       if (activeWorkflowStatus === "completed") {
@@ -960,10 +1009,10 @@ function OwnedAgentRunsWorkspace({
       return { label: "Canceled", tone: "neutral" as const };
     }
     if (loading === "agent") {
-      return { label: "Agent running", tone: "neutral" as const };
+      return { label: "Working on your request", tone: "neutral" as const };
     }
     if (agentResponse) {
-      return { label: "Evidence captured", tone: "success" as const };
+      return { label: "Response ready", tone: "success" as const };
     }
     if (workflowPlan) {
       if (reviewedPlanStatus === "failed") {
@@ -1230,6 +1279,9 @@ function OwnedAgentRunsWorkspace({
           setRunSyncError(undefined);
           setRunMediaProjection({
             runId: activeAgentRunId,
+            threadId: stringPath(payload, "run.threadId", ""),
+            grounding: asRecord(payload.run).grounding ? renderSafeGroundingReport(asRecord(payload.run).grounding) : undefined,
+            researchRun: stringPath(payload, "run.mode", "") === "research" ? asRecord(payload.run) : undefined,
             companion: companionRunSnapshot(payload.run, activeAgentRunId),
             companionScope: companionOwnerScope,
             artifacts: projectCommandMediaArtifacts(payload),
@@ -1383,7 +1435,10 @@ function OwnedAgentRunsWorkspace({
     if (!controller && !runId) return;
     homeActionGate.invalidate();
     setRunAnnouncement("Stopping the agent run.");
-    agentRequestIdRef.current = "";
+    // Before admission is known, keep the request key so a restored draft
+    // cannot create a duplicate run if the server already received it.
+    if (runId) agentRequestIdRef.current = "";
+    stoppedControllerRef.current = controller;
     controller?.abort();
     if (!runId) {
       return;
@@ -1485,6 +1540,9 @@ function OwnedAgentRunsWorkspace({
       setAgentResponse(response);
       setRunMediaProjection({
         runId,
+        threadId: stringPath(payload, "run.threadId", ""),
+        grounding: asRecord(payload.run).grounding ? renderSafeGroundingReport(asRecord(payload.run).grounding) : undefined,
+        researchRun: stringPath(payload, "run.mode", "") === "research" ? asRecord(payload.run) : undefined,
         companion: companionRunSnapshot(payload.run, runId),
         companionScope: companionOwnerScope,
         artifacts: projectCommandMediaArtifacts(payload),
@@ -1605,6 +1663,7 @@ function OwnedAgentRunsWorkspace({
     if (nextGoal === goal) {
       return;
     }
+    goalRevisionRef.current += 1;
     contextControllerRef.current?.abort();
     contextVersionRef.current += 1;
     setGoal(nextGoal);
@@ -1715,6 +1774,48 @@ function OwnedAgentRunsWorkspace({
     agentRequestIdRef.current = "";
   }
 
+  function changeResearchDraft(next: ResearchDraft) {
+    setResearchDraft(next);
+    setWorkflowPlan(undefined);
+    agentRequestIdRef.current = "";
+  }
+
+  async function refreshResearch() {
+    const lease = requestScope.capture();
+    const selection = threadLoadVersionRef.current;
+    if (!lease.current() || !activeWorkflowId) return;
+    try {
+      const next = asRecord(await readJson(`/api/workflows/${encodeURIComponent(activeWorkflowId)}`));
+      if (!lease.current() || selection !== threadLoadVersionRef.current) return;
+      if (stringPath(next, "run.id", "") !== activeWorkflowId) throw new Error("The response did not match this research.");
+      setWorkflowRun(next); setResearchControlError(undefined); setWorkflowSyncError(undefined);
+    } catch (failure) { if (lease.current() && selection === threadLoadVersionRef.current) setResearchControlError(refreshMessage(failure)); }
+  }
+
+  async function signalResearch(signal: "pause" | "resume" | "cancel") {
+    const lease = requestScope.capture();
+    if (!lease.current() || !activeWorkflowId || !researchViewFromWorkflow(workflowRun) || researchControlBusyRef.current) return;
+    if (workflowPermission) { setResearchControlError(workflowPermission); return; }
+    const selection = threadLoadVersionRef.current;
+    researchControlBusyRef.current = true;
+    setResearchControlPending(true); setResearchControlError(undefined);
+    try {
+      await readJson(`/api/workflows/${encodeURIComponent(activeWorkflowId)}/signal`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ signal }),
+      });
+      const next = asRecord(await readJson(`/api/workflows/${encodeURIComponent(activeWorkflowId)}`));
+      if (!lease.current() || selection !== threadLoadVersionRef.current) return;
+      if (stringPath(next, "run.id", "") !== activeWorkflowId) throw new Error("The response did not match this research.");
+      setWorkflowRun(next);
+      setRunAnnouncement(signal === "cancel" ? "Research stop requested." : signal === "pause" ? "Research pause requested." : "Research resume requested.");
+    } catch (failure) {
+      if (lease.current() && selection === threadLoadVersionRef.current) setResearchControlError(`${refreshMessage(failure)} Refresh the research before trying again; the request may have reached the server.`);
+    } finally {
+      researchControlBusyRef.current = false;
+      if (lease.current() && selection === threadLoadVersionRef.current) setResearchControlPending(false);
+    }
+  }
+
   function changeCommandModelSelection(
     selection: CommandModelSelectionRequest | undefined,
   ) {
@@ -1732,6 +1833,7 @@ function OwnedAgentRunsWorkspace({
       setError("Start a new conversation before changing its Project context.");
       return;
     }
+    commandReferencesRevisionRef.current += 1;
     setCommandReferences((current) => {
       const withoutSingleton = item.kind === "agent" || item.kind === "project"
         ? current.filter((candidate) => candidate.kind !== item.kind)
@@ -1767,6 +1869,7 @@ function OwnedAgentRunsWorkspace({
       setError("This conversation is already bound to its Project. Start a new conversation to change it.");
       return;
     }
+    commandReferencesRevisionRef.current += 1;
     setCommandReferences((current) => current.filter((candidate) =>
       candidate.kind !== item.kind || candidate.id !== item.id
     ));
@@ -1783,6 +1886,7 @@ function OwnedAgentRunsWorkspace({
   }
 
   function clearPreferredAgentSelection() {
+    commandReferencesRevisionRef.current += 1;
     setCommandModelSelection(undefined);
     setPreferredAgent(undefined);
     setCommandReferences((current) => current.filter((item) => item.kind !== "agent"));
@@ -1806,14 +1910,6 @@ function OwnedAgentRunsWorkspace({
       : action === "learn"
         ? "learn"
         : "research");
-  }
-
-  function changeApprovalRequired(nextValue: boolean) {
-    if (nextValue === approvalRequired) {
-      return;
-    }
-    setApprovalRequired(nextValue);
-    setWorkflowPlan(undefined);
   }
 
   async function buildContext({
@@ -1993,6 +2089,10 @@ function OwnedAgentRunsWorkspace({
   }
 
   async function buildPlan() {
+    if (mode === "research") {
+      setError("Edit the research brief in Options, then send your message. Deep research saves its plan when it starts.");
+      return;
+    }
     if (workflowActionPermission) {
       setError(workflowActionPermission);
       return;
@@ -2049,7 +2149,7 @@ function OwnedAgentRunsWorkspace({
         body: JSON.stringify({
           goal: taskQuery,
           mode,
-          requireApproval: approvalRequired,
+          requireApproval: true,
           contextScope,
           contextSelection,
           agentId: contextScope === "agent_private"
@@ -2062,8 +2162,8 @@ function OwnedAgentRunsWorkspace({
             ? initialMissionId
             : undefined,
           primaryAgentId: preferredAgentId || undefined,
-          contextReferences: commandReferences.map(
-            commandContextReferenceRequest,
+          contextReferences: commandContextReferencesForSubmission(
+            commandReferences, contextScope, selectedProjectId,
           ),
           modelSelection: commandModelSelection,
         }),
@@ -2073,6 +2173,8 @@ function OwnedAgentRunsWorkspace({
       setWorkflowPlan(nextPlan);
       setWorkflowRun(undefined);
       setWorkflowSyncError(undefined);
+      setResearchControlPending(false);
+      setResearchControlError(undefined);
       openTaskDetails("plan");
       setRunAnnouncement(
         nextPlanStatus === "planned"
@@ -2088,6 +2190,10 @@ function OwnedAgentRunsWorkspace({
   }
 
   async function startWorkflow() {
+    if (mode === "research") {
+      setError("Start research by sending your message with the research depth and brief selected in Options.");
+      return;
+    }
     if (workflowActionPermission) {
       setError(workflowActionPermission);
       return;
@@ -2164,10 +2270,10 @@ function OwnedAgentRunsWorkspace({
           goal: taskQuery,
           mode,
           planId: reviewedPlanId || undefined,
-          requireApproval: approvalRequired,
+          requireApproval: true,
           primaryAgentId: preferredAgentId || undefined,
-          contextReferences: commandReferences.map(
-            commandContextReferenceRequest,
+          contextReferences: commandContextReferencesForSubmission(
+            commandReferences, contextScope, selectedProjectId,
           ),
           modelSelection: commandModelSelection,
           metadata: {
@@ -2201,7 +2307,9 @@ function OwnedAgentRunsWorkspace({
   }
 
   async function enqueuePrompt() {
+    if (mode === "research") { setPromptQueueError("Start research after the current reply finishes. Your draft and research options are kept here."); return; }
     const prompt = goal.trim();
+    const submittedDraftRevision = goalRevisionRef.current;
     if (!prompt) {
       setPromptQueueError("Write a message before adding it to the queue.");
       return;
@@ -2220,8 +2328,8 @@ function OwnedAgentRunsWorkspace({
           mode,
           strategy: "auto",
           agentId: preferredAgentId || "atlas",
-          contextReferences: commandReferences.map(
-            commandContextReferenceRequest,
+          contextReferences: commandContextReferencesForSubmission(
+            commandReferences, contextScope, selectedProjectId,
           ),
           modelSelection: commandModelSelection,
           target: {
@@ -2234,7 +2342,9 @@ function OwnedAgentRunsWorkspace({
     });
     if (accepted) {
       // A response must not erase a draft edited while the request was pending.
-      setGoal((current) => current.trim() === prompt ? "" : current);
+      if (goalRevisionRef.current === submittedDraftRevision) {
+        setGoal((current) => current.trim() === prompt ? "" : current);
+      }
       setRunAnnouncement("Prompt saved to the queue. Its pinned context grants no execution authority.");
     }
   }
@@ -2370,7 +2480,9 @@ function OwnedAgentRunsWorkspace({
     submittedGoal?: string;
     submittedThreadId?: string;
     prepareContextAutomatically?: boolean;
-    voiceReview?: VoiceCommandReview;
+    voiceReview?: VoiceCommandReview | VoiceConversationInput;
+    voiceContext?: VoiceConversationCommandContext;
+    companionPersonality?: CompanionPersonality;
     queueItem?: PromptQueueItem;
     queueForce?: boolean;
   }): Promise<VoiceCommandReply | undefined> {
@@ -2381,28 +2493,44 @@ function OwnedAgentRunsWorkspace({
       return;
     }
     const queueItem = options?.queueItem;
+    const voiceContext = options?.voiceContext;
+    const submittedMode = voiceContext?.mode ?? mode;
+    const submittedContextScope = voiceContext?.contextScope ?? contextScope;
+    const submittedProjectId = voiceContext ? voiceContext.projectId : selectedProjectId;
+    if (!queueItem && conversationLocked) { setError("Start research or send your next message after the current work finishes. Your draft is kept here."); return; }
+    let submittedResearch: ResearchOptions | undefined;
+    if (!queueItem && submittedMode === "research") {
+      try { submittedResearch = researchOptionsFromDraft(researchDraft); }
+      catch (failure) { setError((failure as Error).message); return; }
+    }
     if (queueItem && (queueMutation.pending || queueMutation.busy)) return;
     const submittedGoal = (queueItem?.prompt ?? options?.submittedGoal ?? goal).trim();
-    const submittedCommandReferences = queueItem
+    const submittedFromComposer = !queueItem && options?.submittedGoal === undefined;
+    const submittedDraft = goal;
+    const submittedDraftRevision = goalRevisionRef.current;
+    const submittedReferencesRevision = commandReferencesRevisionRef.current;
+    const submittedCommandReferences = voiceContext?.contextReferences ?? (queueItem
       ? []
-      : commandReferences.map(commandContextReferenceRequest);
+      : commandContextReferencesForSubmission(
+          commandReferences, contextScope, selectedProjectId,
+        ));
     if (!submittedGoal) {
       setError("Write a message before asking Asael.");
       return;
     }
-    if (!queueItem && contextScope === "project" && !selectedProjectId) {
+    if (!queueItem && submittedContextScope === "project" && !submittedProjectId) {
       setError("Choose a project before using project context.");
       openTaskDetails("context");
       return;
     }
-    if (!queueItem && contextScope === "mission" && !initialMissionId) {
+    if (!queueItem && submittedContextScope === "mission" && !initialMissionId) {
       setError("Open Command from a Mission before using Mission context.");
       openTaskDetails("context");
       return;
     }
     if (
       !queueItem &&
-      contextScope === "explicit_selection" &&
+      !voiceContext && submittedContextScope === "explicit_selection" &&
       contextLoading &&
       !options?.prepareContextAutomatically
     ) {
@@ -2410,13 +2538,13 @@ function OwnedAgentRunsWorkspace({
       setRunAnnouncement("Wait for task context to finish loading, then run the task.");
       return;
     }
-    const contextSelection = !queueItem && contextScope === "explicit_selection" &&
+    const contextSelection = voiceContext ? voiceContext.contextSelection : !queueItem && submittedContextScope === "explicit_selection" &&
         contextSelectionReviewedRef.current
       ? contextSelectionForTask(submittedGoal)
       : undefined;
     if (
       !queueItem &&
-      contextScope === "explicit_selection" &&
+      !voiceContext && submittedContextScope === "explicit_selection" &&
       !contextSelection
     ) {
       if (!contextPreparedForGoal) {
@@ -2431,7 +2559,7 @@ function OwnedAgentRunsWorkspace({
       setRunAnnouncement("Review and lock the context selection before running this task.");
       return;
     }
-    const resumeRunId = queueItem ? undefined : clarificationRunId || undefined;
+    const resumeRunId = queueItem || voiceContext ? undefined : clarificationRunId || undefined;
     if (!scopeLease.current()) return;
     activityRead.cancel();
     initialThreadLoadedRef.current = true;
@@ -2450,6 +2578,8 @@ function OwnedAgentRunsWorkspace({
     setWorkflowPlan(undefined);
     setWorkflowRun(undefined);
     setWorkflowSyncError(undefined);
+    setResearchControlPending(false);
+    setResearchControlError(undefined);
     setAgentResponse("");
     setRunMediaProjection({
       runId: "",
@@ -2478,25 +2608,48 @@ function OwnedAgentRunsWorkspace({
     setRunAnnouncement("Agent run started.");
     // Sending the same message again after an interrupted attempt keeps its
     // requestId, so the server returns that attempt's outcome instead of
-    // running it twice. An edited message is a new request.
-    const requestId = agentRequestIdRef.current &&
+    // running it twice. Personality is part of that same pinned request, even
+    // if Settings changed meanwhile. An edited message is a new request.
+    const retryingMessage = Boolean(agentRequestIdRef.current && agentRequestGoalRef.current === submittedGoal);
+    const submittedPersonality = options?.companionPersonality ?? (retryingMessage ? agentRequestPersonalityRef.current : personality);
+    const requestId = options?.voiceReview?.schemaVersion === 2
+      ? `v:${options.voiceReview.sessionId}:${options.voiceReview.turnId}`
+      : agentRequestIdRef.current &&
         agentRequestGoalRef.current === submittedGoal
       ? agentRequestIdRef.current
       : crypto.randomUUID();
-    const submittedAgentId = queueItem?.agent.logicalAgentId || preferredAgentId;
+    const submittedAgentId = voiceContext?.agentId || queueItem?.agent.logicalAgentId || preferredAgentId;
     let completedResponse = "";
     let streamedResponse = "";
     let completedRunId = resumeRunId || "";
+    let voiceWorkflowId: string | undefined;
     let pendingVoiceApproval: VoiceApprovalEvidence | undefined;
     let waitingApprovalEvent: Extract<StreamEvent, { type: "waiting_approval" }> | undefined;
     agentRequestIdRef.current = requestId;
     agentRequestGoalRef.current = submittedGoal;
+    agentRequestPersonalityRef.current = submittedPersonality;
     setTurns((current) => [
       ...current,
       { id: `pending-user-${Date.now()}`, role: "user", content: submittedGoal, createdAt: new Date().toISOString() },
     ]);
+    // Clear only the submitted draft. Streaming and terminal events must never
+    // erase a follow-up the owner starts while this request is running.
+    if (submittedFromComposer) {
+      setGoal("");
+      clearEphemeralCommandReferences();
+    }
 
+    let requestAccepted = false;
     let terminalEvent: "done" | "delegated" | "clarification" | "waiting_approval" | "error" | "canceled" | undefined;
+    const restoreUnsentDraft = () => {
+      if (requestAccepted || !submittedFromComposer || !currentAttempt() ||
+        (controller.signal.aborted && stoppedControllerRef.current !== controller) ||
+        goalRevisionRef.current !== submittedDraftRevision) return;
+      setGoal((current) => current === "" ? submittedDraft : current);
+      if (commandReferencesRevisionRef.current === submittedReferencesRevision) {
+        setCommandReferences(commandReferences);
+      }
+    };
     try {
       if (!scopeLease.current()) return;
       const response = await requestScope.run(() => fetch(queueItem
@@ -2510,20 +2663,23 @@ function OwnedAgentRunsWorkspace({
               force: options?.queueForce ?? true,
             }
           : {
-              mode,
+              mode: submittedMode,
+              research: resumeRunId ? undefined : submittedResearch,
               threadId: options?.submittedThreadId || threadId || undefined,
               resumeRunId,
-              missionId: initialMissionId || undefined,
-              projectId: selectedProjectId || undefined,
+              missionId: voiceContext ? undefined : initialMissionId || undefined,
+              projectId: submittedProjectId || undefined,
               message: submittedGoal,
               requestId,
+              companionPersonality: submittedPersonality,
               strategy: "auto",
               agentId: submittedAgentId,
-              contextScope: resumeRunId ? undefined : contextScope,
+              contextScope: resumeRunId ? undefined : submittedContextScope,
               contextSelection: resumeRunId ? undefined : contextSelection,
               contextReferences: resumeRunId ? undefined : submittedCommandReferences,
               modelSelection: resumeRunId ? undefined : commandModelSelection,
               voiceInput: resumeRunId ? undefined : options?.voiceReview,
+              computerUseTarget: voiceContext?.computerUseTarget,
             }),
         signal: controller.signal,
       }), controller.signal);
@@ -2541,11 +2697,17 @@ function OwnedAgentRunsWorkspace({
         throw new Error(stringValue(body.message || body.error, `/api/agent returned ${response.status}`));
       }
       streamRunIdRef.current = response.headers.get("x-asael-run-id") || "";
+      requestAccepted = Boolean(streamRunIdRef.current);
+      if (!queueItem && !voiceContext && !submittedFromComposer &&
+        commandReferencesRevisionRef.current === submittedReferencesRevision) {
+        clearEphemeralCommandReferences();
+      }
 
       const handleStreamEvent = (event: StreamEvent) => {
         if (!currentAttempt() || controller.signal.aborted) return;
         if (event.type === "run" && event.runId) {
           if (streamRunIdRef.current && streamRunIdRef.current !== event.runId) throw new Error("The stream did not match the admitted run.");
+          requestAccepted = true;
           currentRunIdRef.current = event.runId;
           completedRunId = event.runId;
           setActiveAgentRunId(event.runId);
@@ -2555,18 +2717,26 @@ function OwnedAgentRunsWorkspace({
           }
           return;
         }
+        if (event.type === "research_progress") {
+          const progress = readResearchProgress(event.progress);
+          if (progress) setStreamEvents((current) => [...current.filter((item) => item.type !== "research_progress").slice(-198), { type: "research_progress", progress }]);
+          return;
+        }
         if (event.type === "delta" && event.text) {
+          requestAccepted = true;
           streamedResponse += event.text;
           queueDelta(event.text);
           return;
         }
         setStreamEvents((current) => [...current.slice(-199), event]);
         if (event.type === "delegated") {
+          requestAccepted = true;
           terminalEvent = "delegated";
           agentRequestIdRef.current = "";
           setClarificationRunId("");
           const acknowledgement = event.acknowledgement || "This task is continuing as a durable workflow.";
           completedResponse = acknowledgement;
+          voiceWorkflowId = event.workflowId;
           if (event.threadId) setThreadId(event.threadId);
           if (event.workflowId) setWorkflowRun({ run: { id: event.workflowId } });
           setAgentResponse(acknowledgement);
@@ -2574,11 +2744,10 @@ function OwnedAgentRunsWorkspace({
             ...current,
             { id: `assistant-${Date.now()}`, role: "assistant", content: acknowledgement, createdAt: new Date().toISOString() },
           ]);
-          setGoal("");
-          clearEphemeralCommandReferences();
           void refreshThreads();
         }
         if (event.type === "clarification") {
+          requestAccepted = true;
           terminalEvent = "clarification";
           agentRequestIdRef.current = "";
           setClarificationRunId(event.runId || currentRunIdRef.current || "");
@@ -2590,10 +2759,10 @@ function OwnedAgentRunsWorkspace({
             ...current,
             { id: `assistant-${Date.now()}`, role: "assistant", content: clarification, createdAt: new Date().toISOString() },
           ]);
-          setGoal("");
           void refreshThreads();
         }
         if (event.type === "done") {
+          requestAccepted = true;
           terminalEvent = "done";
           agentRequestIdRef.current = "";
           setClarificationRunId("");
@@ -2607,28 +2776,29 @@ function OwnedAgentRunsWorkspace({
               { id: `assistant-${Date.now()}`, role: "assistant", content: completedResponse, createdAt: new Date().toISOString(), runId: currentRunIdRef.current || undefined },
             ]);
           }
-          setGoal("");
-          clearEphemeralCommandReferences();
           void refreshThreads();
         }
         if (event.type === "waiting_approval") {
+          requestAccepted = true;
           terminalEvent = "waiting_approval";
           agentRequestIdRef.current = "";
           setClarificationRunId("");
           setWaitingApproval(event);
           waitingApprovalEvent = event;
-          clearEphemeralCommandReferences();
         }
         if (event.type === "error") {
+          restoreUnsentDraft();
           terminalEvent = "error";
           agentRequestIdRef.current = "";
           setClarificationRunId("");
           setError(event.message || "Agent run failed.");
+          completedResponse = event.message || "The task failed.";
         }
         if (event.type === "canceled") {
           terminalEvent = "canceled";
           agentRequestIdRef.current = "";
           setClarificationRunId("");
+          completedResponse = event.message || "The task was canceled.";
         }
         const announcement = runStreamAnnouncement(event);
         if (announcement) {
@@ -2687,6 +2857,7 @@ function OwnedAgentRunsWorkspace({
         void refreshRunProjection(currentRunIdRef.current);
       }
     } catch (agentError) {
+      restoreUnsentDraft();
       if (!scopeLease.current()) {
         const knownRunId = completedRunId || streamRunIdRef.current;
         if (knownRunId) setActiveAgentRunId(knownRunId);
@@ -2699,12 +2870,16 @@ function OwnedAgentRunsWorkspace({
         // stream does not cancel the durable run or replace the new selection.
         return;
       } else if (controller.signal.aborted) {
-        agentRequestIdRef.current = "";
+        if (requestAccepted) agentRequestIdRef.current = "";
         setStreamEvents((current) => [
           ...current.slice(-199),
-          { type: "status", label: "Canceled", detail: "The operator stopped this run." },
+          { type: "status", label: "Stopped", detail: requestAccepted
+            ? "The operator stopped this run."
+            : "The connection stopped before the server confirmed the message." },
         ]);
-        setRunAnnouncement("Agent run stopped.");
+        setRunAnnouncement(requestAccepted
+          ? "Agent run stopped."
+          : "Connection stopped before the run was confirmed.");
       } else {
         setError(agentError instanceof Error ? agentError.message : "Agent run failed.");
         setRunAnnouncement("Agent run failed.");
@@ -2716,6 +2891,9 @@ function OwnedAgentRunsWorkspace({
         abortControllerRef.current = null;
         setLoading(undefined);
       }
+      if (stoppedControllerRef.current === controller) {
+        stoppedControllerRef.current = null;
+      }
       if (currentAttempt() && queueItem) {
         await refreshPromptQueue().catch(() => undefined);
       }
@@ -2724,10 +2902,14 @@ function OwnedAgentRunsWorkspace({
       }
     }
     if (!currentAttempt()) return;
-    return completedResponse.trim() || pendingVoiceApproval
+    return completedResponse.trim() || pendingVoiceApproval || completedRunId
       ? {
-          text: completedResponse || "Review the exact action before it runs.",
+          text: completedResponse || (pendingVoiceApproval ? "Review the exact action before it runs." : "The task outcome is not yet confirmed. I’m following its saved status."),
+          status: pendingVoiceApproval ? "waiting_approval" : terminalEvent === "delegated" ? "accepted"
+            : terminalEvent === "done" ? "completed" : terminalEvent === "clarification" ? "waiting_clarification"
+              : terminalEvent === "error" ? "failed" : terminalEvent === "canceled" ? "canceled" : "unconfirmed",
           runId: completedRunId || undefined,
+          workflowId: voiceWorkflowId,
           agentId: submittedAgentId,
           approval: pendingVoiceApproval,
         }
@@ -2759,6 +2941,7 @@ function OwnedAgentRunsWorkspace({
         threadId: threadId || undefined,
         runId: currentRunIdRef.current || undefined,
         agentId: preferredAgentId,
+        companionPersonality: personality,
       }, {
         player,
         signal: controller.signal,
@@ -2864,6 +3047,9 @@ function OwnedAgentRunsWorkspace({
       if (stringPath(payload, "run.id", "") !== runId) throw new Error("The artifact response did not match the current run.");
       setRunMediaProjection({
         runId,
+        threadId: stringPath(payload, "run.threadId", ""),
+        grounding: asRecord(payload.run).grounding ? renderSafeGroundingReport(asRecord(payload.run).grounding) : undefined,
+        researchRun: stringPath(payload, "run.mode", "") === "research" ? asRecord(payload.run) : undefined,
         companion: companionRunSnapshot(payload.run, runId),
         companionScope: companionOwnerScope,
         artifacts: projectCommandMediaArtifacts(payload),
@@ -2953,6 +3139,47 @@ function OwnedAgentRunsWorkspace({
     }
   }
 
+  const loadTurnSources = useCallback(async (runId: string) => {
+    const selectedThread = selectedThreadRef.current;
+    if (!selectedThread || !requestScope.current()) return;
+    const selection = threadLoadVersionRef.current;
+    const key = turnSourceKey(selectedThread, runId);
+    const previous = turnSourceReads.current.get(key);
+    if (previous?.selection === selection) return;
+    previous?.controller.abort();
+    const read = { controller: new AbortController(), selection };
+    turnSourceReads.current.set(key, read);
+    const current = () => !read.controller.signal.aborted && requestScope.current() &&
+      threadLoadVersionRef.current === selection && selectedThreadRef.current === selectedThread;
+    rememberTurnSources(key, { state: "loading", selection });
+    try {
+      const workflowId = runId.startsWith("workflow:") ? runId.slice("workflow:".length) : undefined;
+      if (workflowId === "") throw new Error("The saved workflow reference is incomplete.");
+      const payload = asRecord(await readJson(workflowId
+        ? `/api/workflows/${encodeURIComponent(workflowId)}`
+        : `/api/runs/${encodeURIComponent(runId)}`, { signal: read.controller.signal }));
+      if (!current()) return;
+      const returnedThread = stringPath(payload, workflowId ? "run.input.metadata.threadId" : "run.threadId", "");
+      if (stringPath(payload, "run.id", "") !== (workflowId || runId) || returnedThread !== selectedThread) {
+        throw new Error("Saved sources did not match this conversation.");
+      }
+      const savedGrounding = workflowId
+        ? researchGroundingForWorkflow(payload)
+        : asRecord(payload.run).grounding ? renderSafeGroundingReport(asRecord(payload.run).grounding) : undefined;
+      rememberTurnSources(key, { state: "ready", grounding: savedGrounding });
+    } catch {
+      if (current()) rememberTurnSources(key, { state: "error" });
+    } finally {
+      if (turnSourceReads.current.get(key) === read) {
+        turnSourceReads.current.delete(key);
+        if (!current()) setTurnSources((stored) => {
+          if (stored[key]?.state !== "loading" || stored[key]?.selection !== selection) return stored;
+          const retained = { ...stored }; delete retained[key]; return retained;
+        });
+      }
+    }
+  }, [readJson, requestScope, rememberTurnSources]);
+
   async function loadThread(
     id: string,
     options: {
@@ -2994,7 +3221,9 @@ function OwnedAgentRunsWorkspace({
               .find((turn) => Boolean(turn.runId))
               ?.runId,
         readRun: async (runId, signal) => asRecord(await readJson(
-          `/api/runs/${encodeURIComponent(runId)}`,
+          runId.startsWith("workflow:")
+            ? `/api/workflows/${encodeURIComponent(runId.slice("workflow:".length))}`
+            : `/api/runs/${encodeURIComponent(runId)}`,
           { signal },
         )),
         isCurrent: () => requestScope.current() && threadLoadVersionRef.current === version && (options.canAdopt?.() ?? true),
@@ -3027,8 +3256,13 @@ function OwnedAgentRunsWorkspace({
           setContextLoading(false);
           setContextError(undefined);
           setWorkflowPlan(undefined);
-          setWorkflowRun(undefined);
+          setWorkflowRun(latestRunId?.startsWith("workflow:")
+            ? { run: { id: latestRunId.slice("workflow:".length), status: "loading" } }
+            : undefined);
           setWorkflowSyncError(undefined);
+          setResearchControlPending(false);
+          setResearchControlError(undefined);
+          setRunSyncError(undefined);
           if (!options.preserveActivity) {
             setAgentResponse("");
             setRunMediaProjection({
@@ -3056,11 +3290,26 @@ function OwnedAgentRunsWorkspace({
           agentRequestIdRef.current = "";
         },
         onRunReady: (runPayload, latestRunId) => {
+          if (latestRunId.startsWith("workflow:")) {
+            const workflowId = latestRunId.slice("workflow:".length);
+            if (stringPath(runPayload, "run.id", "") !== workflowId || stringPath(runPayload, "run.input.metadata.threadId", "") !== id) {
+              throw new Error("The research response did not match this conversation.");
+            }
+            setWorkflowRun(runPayload);
+            setResearchControlPending(false);
+            setResearchControlError(undefined);
+            setWorkflowSyncError(undefined);
+            setAgentResponse(stringPath(runPayload, "run.result.report", ""));
+            return;
+          }
           if (stringPath(runPayload, "run.id", "") !== latestRunId || stringPath(runPayload, "run.threadId", "") !== id) {
             throw new Error("The run response did not match this conversation.");
           }
           setRunMediaProjection({
             runId: latestRunId,
+            threadId: id,
+            grounding: asRecord(runPayload.run).grounding ? renderSafeGroundingReport(asRecord(runPayload.run).grounding) : undefined,
+            researchRun: stringPath(runPayload, "run.mode", "") === "research" ? asRecord(runPayload.run) : undefined,
             companion: companionRunSnapshot(runPayload.run, latestRunId),
             companionScope: companionOwnerScope,
             artifacts: projectCommandMediaArtifacts(runPayload),
@@ -3071,7 +3320,29 @@ function OwnedAgentRunsWorkspace({
           });
           setContextUseReceipt(contextUseReceiptFromPayload(runPayload));
           const run = asRecord(runPayload.run);
-          if (stringValue(run.status) !== "waiting_clarification") return;
+          const status = stringValue(run.status);
+          if (run.mode === "research" && ["completed", "failed", "canceled"].includes(status)) {
+            const response = stringValue(run.response);
+            const nextGrounding = run.grounding ? renderSafeGroundingReport(run.grounding) : undefined;
+            const progress = readResearchProgress(run.researchProgress);
+            currentRunIdRef.current = latestRunId;
+            directRunStatusRef.current = status;
+            setSelectedActivityRunId(latestRunId);
+            setActiveAgentRunId("");
+            setAgentResponse(response);
+            setGrounding(nextGrounding);
+            setStreamEvents([
+              { type: "run", runId: latestRunId, threadId: id },
+              ...(progress ? [{ type: "research_progress" as const, progress }] : []),
+              ...(status === "completed"
+                ? [{ type: "done" as const, response, grounding: nextGrounding }]
+                : status === "failed"
+                  ? [{ type: "error" as const, message: stringValue(run.error, "Research stopped before completion.") }]
+                  : [{ type: "canceled" as const, message: "Research was stopped." }]),
+            ]);
+            return;
+          }
+          if (status !== "waiting_clarification") return;
           const message = stringValue(
             run.response,
             "Reply to the clarification request to continue this run.",
@@ -3092,6 +3363,7 @@ function OwnedAgentRunsWorkspace({
             },
           ]);
         },
+        onRunUnavailable: (failure) => setRunSyncError(`Saved work could not be restored. Reopen the conversation to retry. ${refreshMessage(failure)}`),
         signal: controller.signal,
       });
       return adopted && !controller.signal.aborted && threadLoadVersionRef.current === version && (options.canAdopt?.() ?? true);
@@ -3134,6 +3406,11 @@ function OwnedAgentRunsWorkspace({
     } = {},
   ) {
     if (!requestScope.current()) return;
+    if (id.startsWith("workflow:")) {
+      if (options.threadId) await loadThread(options.threadId);
+      else window.location.assign(`/app/results?run=${encodeURIComponent(id)}`);
+      return;
+    }
     const selected = activityRead.begin(id);
     threadLoadVersionRef.current += 1;
     threadLoadControllerRef.current?.abort();
@@ -3178,6 +3455,8 @@ function OwnedAgentRunsWorkspace({
       setWorkflowPlan(undefined);
       setWorkflowRun(undefined);
       setWorkflowSyncError(undefined);
+      setResearchControlPending(false);
+      setResearchControlError(undefined);
       currentRunIdRef.current = id;
       directRunStatusRef.current = status;
       setSelectedActivityRunId(id);
@@ -3185,6 +3464,9 @@ function OwnedAgentRunsWorkspace({
       setAgentResponse(response);
       setRunMediaProjection({
         runId: id,
+        threadId: stringPath(payload, "run.threadId", ""),
+        grounding: asRecord(payload.run).grounding ? renderSafeGroundingReport(asRecord(payload.run).grounding) : undefined,
+        researchRun: stringPath(payload, "run.mode", "") === "research" ? asRecord(payload.run) : undefined,
         companion: companionRunSnapshot(payload.run, id),
         companionScope: companionOwnerScope,
         artifacts: projectCommandMediaArtifacts(payload),
@@ -3268,6 +3550,8 @@ function OwnedAgentRunsWorkspace({
     setWorkflowPlan(undefined);
     setWorkflowRun(undefined);
     setWorkflowSyncError(undefined);
+    setResearchControlPending(false);
+    setResearchControlError(undefined);
     setRunSyncError(undefined);
     setActiveAgentRunId("");
     setClarificationRunId("");
@@ -3597,6 +3881,8 @@ function OwnedAgentRunsWorkspace({
                   assistantName={activeAssistantName}
                   assistantRole={preferredAgent?.role}
                   projection={projectionForTurn(turn, runMediaProjection)}
+                  sourceProjection={turn.runId ? turnSources[turnSourceKey(threadId, turn.runId)] : undefined}
+                  onLoadSources={loadTurnSources}
                   onOpenActivity={openTurnActivity}
                 />
               ))}
@@ -3606,10 +3892,25 @@ function OwnedAgentRunsWorkspace({
                   terminal={activityTerminal}
                   tone={runPosture.tone}
                   summary={taskProgressSummary({ workflowRun, streamEvents, loading })}
-                  count={activityCount}
                   onOpen={() => openTaskDetails("execute")}
                 />
               ) : null}
+
+              <ResearchPanel
+                workflow={workflowRun}
+                progress={streamEvents.findLast((event) => event.type === "research_progress")?.progress}
+                disabledReason={workflowActionPermission}
+                pending={researchControlPending}
+                error={researchControlError || workflowSyncError}
+                onSignal={(signal) => void signalResearch(signal)}
+                onRefresh={() => void refreshResearch()}
+                showReport={activeWorkflowStatus === "failed" || activeWorkflowStatus === "canceled"}
+                directReport={agentResponse}
+                directGrounding={grounding}
+                directRun={runMediaProjection.researchRun}
+                directStatus={streamEvents.some((event) => event.type === "done") ? "complete" : streamEvents.some((event) => event.type === "error") ? "failed" : streamEvents.some((event) => event.type === "canceled") ? "canceled" : undefined}
+                renderReport={(content, reportGrounding) => <ConversationMessageContent content={content} grounding={reportGrounding} />}
+              />
 
               {waitingApproval?.executionId ? (
                 <div className="ml-0 max-w-2xl sm:ml-8">
@@ -3655,7 +3956,7 @@ function OwnedAgentRunsWorkspace({
                     <div className="mt-2">
                       <ConversationMessageContent
                         content={deferredAssistantResponse}
-                        grounding={grounding}
+                        grounding={workflowResearchGrounding || grounding}
                         mediaArtifacts={runMediaProjection.artifacts}
                         fileArtifacts={runMediaProjection.files}
                         fileArtifactState={runMediaProjection.fileState}
@@ -3707,7 +4008,7 @@ function OwnedAgentRunsWorkspace({
                         </summary>
                         <div className="space-y-2 border-t border-line/70 py-3">
                           {citedGroundingSources(grounding).map((source, sourceIndex) => {
-                            const sourceUrl = safeExternalUrl(source.url);
+                            const sourceUrl = safeSourceUrl(source.url);
                             return (
                               <div key={source.citationId} className="rounded-lg bg-surface px-3 py-2 text-xs">
                                 {sourceUrl ? (
@@ -3723,10 +4024,12 @@ function OwnedAgentRunsWorkspace({
                                   <p className="font-medium text-foreground">{source.title}</p>
                                 )}
                                 {source.snippet ? <p className="mt-1 line-clamp-2 leading-5 text-muted">{source.snippet}</p> : null}
-                                <p className="mt-1 font-mono text-muted">
-                                  Source {sourceIndex + 1} · [{source.citationId}] · {source.kind}
-                                  {source.confidence === undefined ? "" : ` · ${Math.round(source.confidence * 100)}%`}
-                                </p>
+                                <p className="mt-1 text-muted">Source {sourceIndex + 1}</p>
+                                <details className="mt-1 text-muted">
+                                  <summary className="cursor-pointer">Source details</summary>
+                                  <p className="mt-1 break-all font-mono">[{source.citationId}] · {source.kind}</p>
+                                  {source.confidence === undefined ? null : <p>Retrieval confidence: {Math.round(source.confidence * 100)}%</p>}
+                                </details>
                               </div>
                             );
                           })}
@@ -3737,19 +4040,21 @@ function OwnedAgentRunsWorkspace({
                       <ClaimEvidencePanel
                         content={currentAssistantResponse}
                         claimEvidence={grounding.claimEvidence}
+                        sources={citedGroundingSources(grounding)}
                       />
                     ) : null}
                     {grounding?.status === "missing" ? (
                       <p className="mt-3 rounded-lg border border-warning/25 bg-warning/5 px-3 py-2 text-xs leading-5 text-muted" role="status">
                         {grounding.claimEvidence
-                          ? "Some material claims are not supported by authorized evidence. Open Claim evidence to see which statements need verification."
-                          : "Evidence was available, but this response did not cite it. Open Evidence to review the captured sources."}
+                          ? "Some statements still need source verification. Open Source review to see which ones need checking."
+                          : "This response needs citations. Open Evidence to review the available sources."}
                       </p>
                     ) : null}
                     {grounding?.invalidIds.length ? (
-                      <p className="mt-3 rounded-lg border border-danger/25 bg-danger/5 px-3 py-2 text-xs leading-5 text-muted" role="status">
-                        Unverified source marker{grounding.invalidIds.length === 1 ? "" : "s"}: {grounding.invalidIds.map((id) => `[${id}]`).join(", ")}
-                      </p>
+                      <details className="mt-3 rounded-lg border border-warning/25 bg-warning/5 px-3 py-2 text-xs leading-5 text-muted">
+                        <summary className="cursor-pointer">Some source references could not be verified</summary>
+                        <p className="mt-1 break-all font-mono">{grounding.invalidIds.map((id) => `[${id}]`).join(", ")}</p>
+                      </details>
                     ) : null}
                     {agentResponse && activeAgentRunId && agentRunCompleted ? (
                       <RunFeedbackPanel feedback={runFeedback} saving={feedbackSaving} onSave={saveRunFeedback} />
@@ -3805,7 +4110,8 @@ function OwnedAgentRunsWorkspace({
             <GoalStage
               goal={goal}
               mode={mode}
-              approvalRequired={approvalRequired}
+              researchDraft={researchDraft}
+              onResearchChange={changeResearchDraft}
               preferredAgent={preferredAgent}
               commandReferences={commandReferences}
               commandModelScope={modelAssignmentScopeForAgent(preferredAgentId)}
@@ -3834,7 +4140,6 @@ function OwnedAgentRunsWorkspace({
               voiceConversationId={threadId || undefined}
               onGoalChange={changeGoal}
               onModeChange={changeMode}
-              onApprovalChange={changeApprovalRequired}
               onClearPreferredAgent={clearPreferredAgentSelection}
               onSelectCommandReference={selectCommandReference}
               onRemoveCommandReference={removeCommandReference}
@@ -3850,26 +4155,26 @@ function OwnedAgentRunsWorkspace({
               onPlan={() => void buildPlan()}
               onAgent={() => void runAgent({ prepareContextAutomatically: true })}
               onQueue={() => void enqueuePrompt()}
-              queueLocked={Boolean(promptQueueBusyId) || Boolean(queueUnconfirmed)}
+              queueLocked={mode === "research" || Boolean(promptQueueBusyId) || Boolean(queueUnconfirmed)}
               onVoiceConversationBound={setThreadId}
               onVoiceOpen={() => homeActionGate.invalidate()}
               isVoiceAuthorityCurrent={requestScope.current}
               voiceAuthorityScope={ownerScope}
-              onVoiceContinueInText={(transcript, voiceThreadId) => {
-                if (!requestScope.current() || (voiceThreadId && voiceThreadId !== selectedThreadRef.current)) return false;
-                changeGoal(voiceTextDraft(goal, transcript));
-                setRunAnnouncement("Voice transcript added to your editable draft. Nothing was sent. Any existing typed draft was preserved above it.");
-                return true;
+              onVoiceHistorySaved={(id) => {
+                if (!requestScope.current()) return;
+                void refreshThreadTurns(id);
+                void refreshThreads();
               }}
-              onVoiceTranscript={async (transcript, voiceConversationId, review) => {
-                const voiceGoal = transcript;
-                setThreadId(voiceConversationId);
-                changeGoal(voiceGoal);
+              onVoiceRequest={async ({ request, voiceInput, commandContext, companionPersonality }) => {
+                if (!requestScope.current() || (selectedThreadRef.current && selectedThreadRef.current !== voiceInput.conversationId)) return;
+                setThreadId(voiceInput.conversationId);
                 return await runAgent({
-                  submittedGoal: voiceGoal,
-                  submittedThreadId: voiceConversationId,
+                  submittedGoal: request,
+                  submittedThreadId: voiceInput.conversationId,
                   prepareContextAutomatically: true,
-                  voiceReview: review,
+                  voiceReview: voiceInput,
+                  voiceContext: commandContext,
+                  companionPersonality,
                 });
               }}
               onStop={stopAgent}
@@ -4511,8 +4816,8 @@ function OwnedAgentRunsWorkspace({
                     Open Results
                   </Link>
                   <Link href="/app/approvals" className="action-link">Open approvals</Link>
-                  <Link href="/app/evaluations" className="action-link">Release evidence</Link>
-                  <Link href="/app/observability" className="action-link">Monitoring</Link>
+                  <Link href="/app/settings?section=quality" className="action-link">Release evidence</Link>
+                  <Link href="/app/settings?section=monitoring" className="action-link">Monitoring</Link>
                 </div>
                 <div className="grid gap-4">
                   {contextUseReceipt ? (
@@ -4582,13 +4887,11 @@ function InlineTaskProgress({
   terminal,
   tone,
   summary,
-  count,
   onOpen,
 }: {
   terminal: boolean;
   tone: Tone;
   summary: string;
-  count: number;
   onOpen: () => void;
 }) {
   const title = terminal
@@ -4596,7 +4899,7 @@ function InlineTaskProgress({
       ? "Work stopped"
       : tone === "warning"
         ? "Waiting for input"
-        : `Worked through ${count || 1} ${count === 1 ? "update" : "updates"}`
+        : tone === "success" ? "Response ready" : "Work stopped"
     : "Asael is working";
   return (
     <article className="flex min-w-0 justify-start">
@@ -4627,12 +4930,14 @@ type TranscriptTurnProps = {
   turn: ThreadTurn;
   assistantName: string;
   assistantRole?: string;
-  /** The run's media, files, and workspace artifacts, when the turn is that run's. */
+  /** Saved sources and artifacts only when this turn belongs to their run. */
   projection?: RunMediaProjection;
+  sourceProjection?: TurnSourceProjection;
+  onLoadSources?: (runId: string) => void;
   onOpenActivity: (runId: string) => void;
 };
 
-/** A run's media, files, and workspace artifacts show on the turn it wrote. */
+/** Never lend the latest run's citation catalog or artifacts to another turn. */
 export function projectionForTurn(turn: Pick<ThreadTurn, "runId">, projection: RunMediaProjection) {
   return turn.runId && turn.runId === projection.runId ? projection : undefined;
 }
@@ -4651,6 +4956,8 @@ export function sameTranscriptTurn(previous: TranscriptTurnProps, next: Transcri
     previous.assistantName === next.assistantName &&
     previous.assistantRole === next.assistantRole &&
     previous.projection === next.projection &&
+    previous.sourceProjection === next.sourceProjection &&
+    previous.onLoadSources === next.onLoadSources &&
     previous.onOpenActivity === next.onOpenActivity
   );
 }
@@ -4660,9 +4967,14 @@ export const TranscriptTurn = memo(function TranscriptTurn({
   assistantName,
   assistantRole,
   projection,
+  sourceProjection,
+  onLoadSources,
   onOpenActivity,
 }: TranscriptTurnProps) {
   const runId = turn.runId;
+  const savedGrounding = sourceProjection?.grounding || projection?.grounding;
+  const hasReferences = /\[(?:(?:memory|knowledge|graph|web):[^\]\s]+|(?:csm|evidence_unit)_[a-zA-Z0-9_-]+)\]/.test(turn.content);
+  const canLoadSources = Boolean(runId && hasReferences && !savedGrounding && onLoadSources);
   return (
     <article className={clsx("flex", workspaceStyles.turn, turn.role === "user" ? "justify-end" : "justify-start")}>
       {turn.role === "user" ? (
@@ -4678,6 +4990,7 @@ export const TranscriptTurn = memo(function TranscriptTurn({
           </p>
           <ConversationMessageContent
             content={turn.content}
+            grounding={savedGrounding}
             mediaArtifacts={projection?.artifacts}
             fileArtifacts={projection?.files}
             fileArtifactState={projection?.fileState}
@@ -4695,6 +5008,16 @@ export const TranscriptTurn = memo(function TranscriptTurn({
               View activity
             </button>
           ) : null}
+          {canLoadSources && sourceProjection?.state !== "ready" ? (
+            <button type="button" disabled={sourceProjection?.state === "loading"}
+              onClick={() => runId && onLoadSources?.(runId)}
+              className="mt-3 inline-flex min-h-9 items-center gap-2 rounded-full px-3 text-xs font-semibold text-muted transition hover:bg-surface-raised hover:text-foreground disabled:opacity-60">
+              <Globe2 size={13} aria-hidden="true" />
+              {sourceProjection?.state === "loading" ? "Loading sources…" : sourceProjection?.state === "error" ? "Retry sources" : "Load sources"}
+            </button>
+          ) : null}
+          {sourceProjection?.state === "error" ? <p className="mt-2 text-xs text-muted" role="status">Saved sources could not be loaded. Try again.</p> : null}
+          {canLoadSources && sourceProjection?.state === "ready" ? <p className="mt-2 text-xs text-muted" role="status">No saved source catalog is available for this answer.</p> : null}
         </div>
       )}
     </article>
@@ -4736,6 +5059,9 @@ export const ConversationMessageContent = memo(function ConversationMessageConte
         ] as const)
       : [],
   );
+  const unavailableReferences = [...new Set(
+    Array.from(recoveredMedia.content.matchAll(/\[((?:(?:memory|knowledge|graph|web):[^\]\s]+|(?:csm|evidence_unit)_[a-zA-Z0-9_-]+))\]/g), (match) => match[1]),
+  )].filter((reference) => !citations.has(reference));
   let index = 0;
 
   while (index < lines.length) {
@@ -4828,6 +5154,41 @@ export const ConversationMessageContent = memo(function ConversationMessageConte
       continue;
     }
 
+    const table = parseMarkdownTable(lines, index);
+    if (table) {
+      blocks.push(
+        <div
+          key={`table-${index}`}
+          role="region"
+          aria-label="Report comparison table"
+          tabIndex={0}
+          className="my-4 max-w-full overflow-x-auto rounded-xl border border-line focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+        >
+          <table className="min-w-full border-collapse text-sm leading-6">
+            <caption className="sr-only">Report comparison</caption>
+            <thead className="bg-surface-raised">
+              <tr>{table.headers.map((header, columnIndex) => (
+                <th key={columnIndex} scope="col" style={{ textAlign: table.alignments[columnIndex] }} className="min-w-36 max-w-sm px-4 py-3 align-top font-semibold text-foreground [overflow-wrap:anywhere]">
+                  <MessageInline text={header} citations={citations} />
+                </th>
+              ))}</tr>
+            </thead>
+            <tbody>{table.rows.map((row, rowIndex) => (
+              <tr key={rowIndex} className="border-t border-line">
+                {row.map((cell, columnIndex) => (
+                  <td key={columnIndex} style={{ textAlign: table.alignments[columnIndex] }} className="min-w-36 max-w-sm px-4 py-3 align-top text-foreground [overflow-wrap:anywhere]">
+                    <MessageInline text={cell} citations={citations} />
+                  </td>
+                ))}
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>,
+      );
+      index = table.nextIndex;
+      continue;
+    }
+
     const paragraph: string[] = [line.trim()];
     index += 1;
     while (index < lines.length && lines[index].trim() && !messageBlockStarts(lines, index)) {
@@ -4844,6 +5205,15 @@ export const ConversationMessageContent = memo(function ConversationMessageConte
   return (
     <div className="min-w-0 max-w-[45rem]">
       {blocks.length ? <div className="max-w-[72ch]">{blocks}</div> : null}
+      {unavailableReferences.length ? (
+        <details className="mt-3 rounded-lg border border-line px-3 py-2 text-xs leading-5 text-muted">
+          <summary className="cursor-pointer">Unavailable source details</summary>
+          <p className="mt-2">These references could not be matched to source details for this response. They do not establish support for its statements.</p>
+          <ul className="mt-1 space-y-1 break-all font-mono">
+            {unavailableReferences.map((reference) => <li key={reference}>[{reference}]</li>)}
+          </ul>
+        </details>
+      ) : null}
       {renderedMedia.length ? (
         <div className={clsx("space-y-4", blocks.length ? "mt-5" : "mt-0")}>
           {renderedMedia.map((artifact) => (
@@ -5129,28 +5499,40 @@ function MessageInline({
   text: string;
   citations?: Map<string, { source: GroundingReport["sources"][number]; index: number }>;
 }) {
-  const tokens = text.split(/(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\(https?:\/\/[^)\s]+\)|\[(?:memory|knowledge|graph|web):[^\]\s]+\])/g);
+  const pattern = /\*\*[^*]+\*\*|(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)|\[[^\]]+\]\((?:https?:\/\/|\/)[^)\s]+\)|\[(?:(?:memory|knowledge|graph|web):[^\]\s]+|(?:csm|evidence_unit)_[a-zA-Z0-9_-]+)\]/g;
+  const tokens: string[] = [];
+  let cursor = 0;
+  for (const match of text.matchAll(pattern)) {
+    if (match.index > cursor) tokens.push(text.slice(cursor, match.index));
+    tokens.push(match[0]);
+    cursor = match.index + match[0].length;
+  }
+  if (cursor < text.length) tokens.push(text.slice(cursor));
   return (
     <>
       {tokens.map((token, index) => {
         if (token.startsWith("**") && token.endsWith("**")) {
           return <strong key={`${token}-${index}`} className="font-semibold text-foreground"><MessageInline text={token.slice(2, -2)} citations={citations} /></strong>;
         }
-        if (token.startsWith("`") && token.endsWith("`")) {
-          return <code key={`${token}-${index}`} className="rounded bg-surface-raised px-1.5 py-0.5 font-mono text-[0.88em] text-foreground">{token.slice(1, -1)}</code>;
+        const code = /^(`+)(?!`)([\s\S]*?)(?<!`)\1(?!`)$/.exec(token);
+        if (code) {
+          return <code key={`${token}-${index}`} className="rounded bg-surface-raised px-1.5 py-0.5 font-mono text-[0.88em] text-foreground">{code[2]}</code>;
         }
-        const link = /^\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)$/.exec(token);
+        const link = /^\[([^\]]+)\]\(((?:https?:\/\/|\/)[^)\s]+)\)$/.exec(token);
         if (link) {
-          return <a key={`${token}-${index}`} href={link[2]} target="_blank" rel="noreferrer noopener" className="font-medium text-primary underline decoration-primary/35 underline-offset-4 hover:decoration-primary">{link[1]}</a>;
+          const href = safeSourceUrl(link[2]);
+          return href
+            ? <a key={`${token}-${index}`} href={href} target="_blank" rel="noreferrer noopener" className="font-medium text-primary underline decoration-primary/35 underline-offset-4 hover:decoration-primary">{link[1]}</a>
+            : link[1];
         }
-        const citationId = /^\[((?:memory|knowledge|graph|web):[^\]\s]+)\]$/.exec(token)?.[1];
+        const citationId = /^\[((?:(?:memory|knowledge|graph|web):[^\]\s]+|(?:csm|evidence_unit)_[a-zA-Z0-9_-]+))\]$/.exec(token)?.[1];
         const citation = citationId ? citations?.get(citationId) : undefined;
         if (citation) {
-          const sourceUrl = safeExternalUrl(citation.source.url);
+          const sourceUrl = safeSourceUrl(citation.source.url);
           const marker = (
             <span
               className="inline-flex min-w-5 items-center justify-center rounded-md border border-primary/20 bg-primary/10 px-1.5 py-0.5 align-super font-mono text-xs font-semibold leading-none text-primary"
-              title={`${citation.source.title} · ${citation.source.kind}`}
+              title={citation.source.title}
             >
               {citation.index}
             </span>
@@ -5172,6 +5554,9 @@ function MessageInline({
             </span>
           );
         }
+        if (citationId) {
+          return <span key={`${token}-${index}`} className="mx-0.5 inline-flex rounded-md border border-warning/25 bg-warning/5 px-1.5 py-0.5 align-super text-xs leading-none text-muted" title="Source details are unavailable for this reference. This marker does not verify the statement.">Source unavailable</span>;
+        }
         return token;
       })}
     </>
@@ -5186,7 +5571,8 @@ function messageBlockStarts(lines: string[], index: number) {
     /^[-*]\s+/.test(line) ||
     /^\d+[.)]\s+/.test(line) ||
     line.startsWith(">") ||
-    /^---+$/.test(line)
+    /^---+$/.test(line) ||
+    Boolean(parseMarkdownTable(lines, index))
   );
 }
 
@@ -5853,12 +6239,12 @@ function PromptQueuePanel({
                         <p className="line-clamp-2 text-sm font-medium leading-5">{item.prompt}</p>
                       )}
                       <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
-                        <span className="font-semibold capitalize text-foreground">{item.state}</span>
-                        <span>{item.agent.logicalAgentId} v{item.agent.definitionVersion}</span>
+                        <span className="font-semibold text-foreground">{{ queued: "Queued", paused: "Paused", dispatching: "In progress", completed: "Complete", failed: "Needs attention" }[item.state]}</span>
+                        <span>{builtInAgentPresentation(item.agent.logicalAgentId)?.name || "Custom assistant"}</span>
                         <span>
-                          {item.model.providerId} · {item.model.modelId}
+                          {commandModelDisplayName(item.model)}
                           {item.model.reasoningLevel
-                            ? ` · ${item.model.reasoningLevel} thinking`
+                            ? ` · ${item.model.reasoningLevel.replaceAll("_", " ")} thinking`
                             : ""}
                         </span>
                         {item.contextReferenceCount ? (
@@ -5867,14 +6253,15 @@ function PromptQueuePanel({
                             {item.contextReferenceCount === 1 ? "" : "s"}
                           </span>
                         ) : null}
-                        {item.progressLabel ? <span>{item.progressLabel}</span> : null}
                       </div>
                       <details className="mt-2 text-xs text-muted">
-                        <summary className="cursor-pointer">Pinned target and context</summary>
+                        <summary className="cursor-pointer">Technical details</summary>
                         <div className="mt-2 space-y-1 break-all">
+                          {item.progressLabel ? <p>{item.progressLabel}</p> : null}
                           <p>Revision {item.lifecycleRevision} · {item.target.executionTarget}</p>
                           <p>Conversation: {item.target.threadId || "new conversation"} · Mission: {item.target.missionId || "none"} · Project: {item.target.projectId || "none"}</p>
-                          <p>Agent version: {item.agent.definitionVersionId} · Principal generation: {item.agent.principalGeneration}</p>
+                          <p>Agent: {item.agent.logicalAgentId} · Version: {item.agent.definitionVersionId} · Principal generation: {item.agent.principalGeneration}</p>
+                          <p>Model: {item.model.providerId} · {item.model.modelId}</p>
                           <p>Model assignment: {item.model.assignmentId || "default route"}{item.model.assignmentRevision !== null ? ` · revision ${item.model.assignmentRevision}` : ""}</p>
                           {item.context?.references.map((reference) => <p key={`${reference.kind}:${reference.id}`}>{reference.kind}: {reference.id}{reference.versionId ? ` · version ${reference.versionId}` : ""}{reference.expectedVersion ? ` · revision ${reference.expectedVersion}` : ""}{reference.bindingSha256 ? ` · digest ${reference.bindingSha256}` : ""}</p>)}
                           <p>Context receipt: {item.context?.receiptSha256 || "no pinned context"}</p>
@@ -5930,7 +6317,8 @@ function PromptQueuePanel({
 function GoalStage({
   goal,
   mode,
-  approvalRequired,
+  researchDraft,
+  onResearchChange,
   preferredAgent,
   commandReferences,
   commandModelScope,
@@ -5959,7 +6347,6 @@ function GoalStage({
   voiceConversationId,
   onGoalChange,
   onModeChange,
-  onApprovalChange,
   onClearPreferredAgent,
   onSelectCommandReference,
   onRemoveCommandReference,
@@ -5977,14 +6364,15 @@ function GoalStage({
   onVoiceOpen,
   isVoiceAuthorityCurrent,
   voiceAuthorityScope,
-  onVoiceContinueInText,
-  onVoiceTranscript,
+  onVoiceHistorySaved,
+  onVoiceRequest,
   onStop,
   onWorkflow,
 }: {
   goal: string;
   mode: AgentMode;
-  approvalRequired: boolean;
+  researchDraft: ResearchDraft;
+  onResearchChange: (value: ResearchDraft) => void;
   preferredAgent?: AgentPresentation;
   commandReferences: readonly CommandContextCatalogItem[];
   commandModelScope: ModelAssignmentScope;
@@ -6013,7 +6401,6 @@ function GoalStage({
   voiceConversationId?: string;
   onGoalChange: (value: string) => void;
   onModeChange: (value: AgentMode) => void;
-  onApprovalChange: (value: boolean) => void;
   onClearPreferredAgent: () => void;
   onSelectCommandReference: (item: CommandContextCatalogItem) => void;
   onRemoveCommandReference: (item: CommandContextCatalogItem) => void;
@@ -6033,18 +6420,41 @@ function GoalStage({
   onVoiceOpen: () => void;
   isVoiceAuthorityCurrent: () => boolean;
   voiceAuthorityScope: string;
-  onVoiceContinueInText: (text: string, conversationId?: string) => boolean;
-  onVoiceTranscript: (
-    transcript: string,
-    conversationId: string,
-    review: VoiceCommandReview,
-  ) => Promise<VoiceCommandReply | undefined>;
+  onVoiceHistorySaved: (conversationId: string) => void;
+  onVoiceRequest: (request: ConversationVoiceRequest) => Promise<VoiceCommandReply | undefined>;
   onStop: () => void;
   onWorkflow: () => void;
 }) {
+  const optionsRef = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    const closeOutside = (event: PointerEvent) => {
+      const menu = optionsRef.current;
+      if (menu?.open && event.target instanceof Node && !menu.contains(event.target)) menu.open = false;
+    };
+    const closeWithEscape = (event: KeyboardEvent) => {
+      const menu = optionsRef.current;
+      if (event.key !== "Escape" || !menu?.open) return;
+      event.preventDefault();
+      event.stopPropagation();
+      menu.open = false;
+      menu.querySelector("summary")?.focus();
+    };
+    document.addEventListener("pointerdown", closeOutside);
+    document.addEventListener("keydown", closeWithEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOutside);
+      document.removeEventListener("keydown", closeWithEscape);
+    };
+  }, []);
+  function chooseOption(action: () => void) {
+    if (optionsRef.current) optionsRef.current.open = false;
+    action();
+  }
   const goalMissing = !goal.trim();
   const activeRun = loading === "agent" || workflowInProgress;
   const draftLocked = Boolean(loading && loading !== "agent");
+  let researchInvalid = false;
+  if (mode === "research") { try { researchOptionsFromDraft(researchDraft); } catch { researchInvalid = true; } }
   const contextLabel = contextScope !== "explicit_selection"
     ? contextScopeOption(contextScope).label
     : contextLoading
@@ -6074,8 +6484,8 @@ function GoalStage({
             selected={commandReferences}
             onChange={onGoalChange}
             onSubmit={() => {
-              if (!draftLocked && !goalMissing && !runDisabledReason) {
-                if (activeRun) onQueue();
+              if (!draftLocked && !goalMissing && !runDisabledReason && !researchInvalid) {
+                if (activeRun) { if (!queueLocked) onQueue(); }
                 else onAgent();
               }
             }}
@@ -6086,26 +6496,184 @@ function GoalStage({
           </div>
 
           <div className={workspaceStyles.composerToolbar}>
+            <details ref={optionsRef} className={workspaceStyles.composerAdvanced} onBlur={(event) => {
+              if (event.relatedTarget instanceof Node && !event.currentTarget.contains(event.relatedTarget)) {
+                event.currentTarget.open = false;
+              }
+            }}>
+              <summary aria-haspopup="dialog" title="Choose an approach, review context, or plan your task">
+                <SlidersHorizontal size={15} aria-hidden="true" />
+                <span>Options</span>
+                <ChevronDown size={12} className={workspaceStyles.disclosureChevron} aria-hidden="true" />
+              </summary>
+              <div className={workspaceStyles.composerOptionsPanel} role="dialog" aria-label="Message options">
+                <div className={workspaceStyles.optionsHeading}>
+                  <span>Message options</span>
+                  <button type="button" onClick={() => {
+                    if (optionsRef.current) optionsRef.current.open = false;
+                    optionsRef.current?.querySelector("summary")?.focus();
+                  }} aria-label="Close message options" title="Close options">
+                    <X size={16} aria-hidden="true" />
+                  </button>
+                </div>
+                {preferredAgent ? (
+                  <div className={workspaceStyles.agentSelection}>
+                    <span title={preferredAgent.role}>Working with <strong>{preferredAgent.name}</strong></span>
+                    <button type="button" onClick={onClearPreferredAgent} title="Let Asael choose the best assistant for your request">
+                      Route automatically
+                    </button>
+                  </div>
+                ) : null}
+                <div className={workspaceStyles.composerOptions}>
+                  <label className={workspaceStyles.pickerControl} title="Choose how Asael approaches this message">
+                    <Sparkles size={15} aria-hidden="true" />
+                    <span className="sr-only">Approach</span>
+                    <select
+                      id="command-mode"
+                      aria-describedby="command-approach-help"
+                      value={mode}
+                      disabled={draftLocked}
+                      onChange={(event) => onModeChange(event.currentTarget.value as AgentMode)}
+                    >
+                      <option value="orchestrate">General</option>
+                      <option value="research">Research</option>
+                      <option value="execute">Act</option>
+                      <option value="learn">Knowledge</option>
+                    </select>
+                  </label>
+                  <p id="command-approach-help" className={workspaceStyles.optionHelp}>
+                    {mode === "research"
+                      ? "Compare multiple sources and build a detailed report with citations and evidence gaps."
+                      : mode === "execute"
+                        ? "Carry out a task using connected tools. Actions that need your approval still pause for review."
+                        : mode === "learn"
+                          ? "Work with knowledge, explain a topic, or learn from the context you choose."
+                          : "Let Asael choose the right approach for your question or task."}
+                  </p>
+                  {mode === "research" ? <ResearchOptionsEditor value={researchDraft} disabled={draftLocked} onChange={onResearchChange} /> : null}
+                  {contextScope === "project" ? (
+                    <label className={workspaceStyles.pickerControl} title="Choose the project whose context this conversation uses">
+                      <FileText size={15} aria-hidden="true" />
+                      <span className="sr-only">Project context</span>
+                      <select
+                        id="command-project-scope"
+                        value={projectId}
+                        disabled={draftLocked || projectSelectionLocked}
+                        onChange={(event) => onProjectChange(event.currentTarget.value)}
+                      >
+                        <option value="">Choose project</option>
+                        {projects.map((project) => (
+                          <option key={project.id} value={project.id}>{project.title}</option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : null}
+                  <div className={workspaceStyles.optionActions}>
+                    <button
+                      type="button"
+                      onClick={() => chooseOption(contextReady || contextError ? onReviewContext : onContext)}
+                      disabled={contextLoading || goalMissing || Boolean(readDisabledReason)}
+                      title={goalMissing ? "Write a message first." : readDisabledReason || "Inspect and choose the saved information Asael may use"}
+                      aria-label={`Review context: ${contextLabel}`}
+                      aria-describedby="command-context-help"
+                      data-state={contextLocked ? "locked" : contextReady || contextError ? "review" : undefined}
+                    >
+                      {contextLoading ? <Loader2 size={17} className="animate-spin" aria-hidden="true" /> : <Brain size={17} aria-hidden="true" />}
+                      <span>{contextLoading ? "Finding context" : "Review context"}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => chooseOption(onPlan)}
+                      disabled={mode === "research" || Boolean(loading) || goalMissing || Boolean(workflowDisabledReason) || workflowInProgress}
+                      title={mode === "research" ? "Edit the research brief above. Deep research saves its plan when it starts." : goalMissing ? "Write a message first." : workflowDisabledReason || "Create a step-by-step plan to review before starting work"}
+                    >
+                      {loading === "plan" ? <Loader2 size={17} className="animate-spin" aria-hidden="true" /> : <GitBranch size={17} aria-hidden="true" />}
+                      <span>Create plan</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => chooseOption(onQueue)}
+                      disabled={draftLocked || goalMissing || Boolean(runDisabledReason) || queueLocked}
+                      title={mode === "research" ? "Start research after the current reply finishes." : goalMissing ? "Write a message first." : runDisabledReason || "Save this prompt to run after the current work"}
+                      aria-label="Add prompt to queue"
+                    >
+                      <Clock3 size={17} aria-hidden="true" />
+                      <span>Add to queue</span>
+                    </button>
+                    {workflowReady || (workflowStarted && workflowInProgress) ? (
+                      <button
+                        type="button"
+                        onClick={() => chooseOption(onWorkflow)}
+                        disabled={Boolean(loading) || goalMissing || Boolean(workflowDisabledReason) || !workflowReady || workflowStarted}
+                        title="Start the reviewed plan; governed actions still require their approvals"
+                      >
+                        <Workflow size={17} aria-hidden="true" />
+                        <span>{workflowStarted ? "Workflow active" : "Start plan"}</span>
+                      </button>
+                    ) : null}
+                  </div>
+                  <p id="command-context-help" className={workspaceStyles.optionHelp}>
+                    {contextScopeOption(contextScope).description}
+                    {contextScope === "explicit_selection" ? ` ${contextLabel}.` : ""}
+                  </p>
+                  {mode === "research" ? <p className={workspaceStyles.optionHelp}>Research cannot be queued. Start research after the current reply finishes.</p> : null}
+                  <p className={workspaceStyles.optionHelp}>Use / for skills and @ to attach people, projects, or sources.</p>
+                </div>
+              </div>
+            </details>
+            <CommandModelPicker
+              scope={commandModelScope}
+              value={commandModelSelection}
+              disabled={draftLocked}
+              onChange={onCommandModelSelection}
+            />
+            <label className={workspaceStyles.pickerControl} title={contextScopeOption(contextScope).description}>
+              <Database size={15} aria-hidden="true" />
+              <span className="sr-only">Context scope</span>
+              <select
+                id="command-context-scope"
+                value={contextScope}
+                disabled={draftLocked || activeRun}
+                onChange={(event) => onContextScopeChange(event.currentTarget.value as ActiveContextScopeId)}
+              >
+                {CONTEXT_SCOPE_OPTIONS.map((option) => (
+                  <option
+                    key={option.id}
+                    value={option.id}
+                    disabled={(option.id === "personal" && !personalContextAvailable) ||
+                      (option.id === "mission" && !missionContextAvailable)}
+                  >
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
             <div className={workspaceStyles.composerActions}>
-              <VoiceMode
+              <ConversationVoice
                 onOpen={onVoiceOpen}
                 isAuthorityCurrent={isVoiceAuthorityCurrent}
                 authorityScope={voiceAuthorityScope}
-                onContinueInText={onVoiceContinueInText}
-                disabled={draftLocked || contextLoading || Boolean(voiceDisabledReason)}
+                disabled={activeRun || researchInvalid || draftLocked || contextLoading || Boolean(voiceDisabledReason)}
                 disabledReason={voiceDisabledReason}
                 agentName={preferredAgent?.name || "Asael"}
-                agentVoice={preferredAgent?.voice}
                 conversationId={voiceConversationId}
-                mode={mode}
+                configuration={{
+                  agentId: preferredAgent?.id || "atlas",
+                  projectId: projectId || undefined,
+                  mode,
+                  contextScope,
+                  contextReferences: commandContextReferencesForSubmission(commandReferences, contextScope, projectId),
+                }}
+                modelSelectionKey={JSON.stringify(commandModelSelection || null)}
                 onConversationBound={onVoiceConversationBound}
-                onTranscript={onVoiceTranscript}
+                onRequest={onVoiceRequest}
+                onHistorySaved={onVoiceHistorySaved}
               />
               {activeRun ? <button
                 type="button"
                 onClick={onQueue}
                 disabled={draftLocked || goalMissing || Boolean(runDisabledReason) || queueLocked}
-                title={goalMissing ? "Write a message first." : "Add to the persistent prompt queue"}
+                title={mode === "research" ? "Start research after the current reply finishes." : goalMissing ? "Write a message first." : "Add to the persistent prompt queue"}
                 className="grid shrink-0 place-items-center rounded-full bg-primary/10 text-primary transition hover:bg-primary/15 disabled:cursor-not-allowed"
                 aria-label="Add prompt to queue"
               >
@@ -6119,7 +6687,7 @@ function GoalStage({
                 <button
                   type="button"
                   onClick={onAgent}
-                  disabled={draftLocked || goalMissing || Boolean(runDisabledReason)}
+                  disabled={researchInvalid || draftLocked || goalMissing || Boolean(runDisabledReason)}
                   title={goalMissing ? "Write a message first." : runDisabledReason}
                   className={workspaceStyles.sendButton}
                   aria-label={hasConversation ? "Send follow-up" : "Send message"}
@@ -6128,150 +6696,9 @@ function GoalStage({
                 </button>
               )}
             </div>
-            <details className={workspaceStyles.composerAdvanced}>
-              <summary>
-                <SlidersHorizontal size={13} aria-hidden="true" />
-                <span>Options</span>
-                {preferredAgent ? <span className={workspaceStyles.optionSelection}>{preferredAgent.name}</span> : null}
-                {!approvalRequired ? <span className={workspaceStyles.approvalNotice}>Approvals off</span> : null}
-                <ChevronDown size={12} className={workspaceStyles.disclosureChevron} aria-hidden="true" />
-                <span className={workspaceStyles.composerHint}>/ Skills <span aria-hidden="true">·</span> @ Context</span>
-              </summary>
-              {preferredAgent ? (
-                <div className={workspaceStyles.agentSelection}>
-                  <span title={`${preferredAgent.visualIdentity} Voice: ${preferredAgent.voice}`}>
-                    Working with <strong>{preferredAgent.name}</strong> · {preferredAgent.role}
-                  </span>
-                  <button type="button" onClick={onClearPreferredAgent} className="min-h-8 rounded-full px-2 text-xs font-semibold text-primary hover:bg-primary/10">
-                    Route automatically
-                  </button>
-                </div>
-              ) : null}
-            <div className={workspaceStyles.composerOptions}>
-              <label className="sr-only" htmlFor="command-mode">Approach</label>
-              <select
-                id="command-mode"
-                value={mode}
-                disabled={draftLocked}
-                onChange={(event) => onModeChange(event.currentTarget.value as AgentMode)}
-                className="min-h-8 shrink-0 rounded-full border-0 bg-surface-raised px-2.5 text-xs font-semibold text-muted outline-none hover:text-foreground"
-              >
-                <option value="orchestrate">General</option>
-                <option value="research">Research</option>
-                <option value="execute">Act</option>
-                <option value="learn">Knowledge</option>
-              </select>
-              <CommandModelPicker
-                scope={commandModelScope}
-                value={commandModelSelection}
-                disabled={draftLocked}
-                onChange={onCommandModelSelection}
-              />
-              {contextScope === "project" ? (
-                <>
-                  <label className="sr-only" htmlFor="command-project-scope">Project context</label>
-                  <select
-                    id="command-project-scope"
-                    value={projectId}
-                    disabled={draftLocked || projectSelectionLocked}
-                    onChange={(event) => onProjectChange(event.currentTarget.value)}
-                    className="min-h-8 max-w-44 shrink-0 rounded-full border-0 bg-surface-raised px-2.5 text-xs font-semibold text-muted outline-none hover:text-foreground"
-                  >
-                    <option value="">Choose project</option>
-                    {projects.map((project) => (
-                      <option key={project.id} value={project.id}>{project.title}</option>
-                    ))}
-                  </select>
-                </>
-              ) : null}
-              <button
-                type="button"
-                onClick={() => onApprovalChange(!approvalRequired)}
-                disabled={draftLocked}
-                className={clsx(
-                  "inline-flex min-h-8 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-xs font-semibold transition",
-                  approvalRequired ? "bg-primary/10 text-primary" : "bg-surface-raised text-muted hover:text-foreground",
-                )}
-                aria-pressed={approvalRequired}
-                aria-label={`Approvals ${approvalRequired ? "on" : "off"}`}
-                title={`Approvals ${approvalRequired ? "on" : "off"}`}
-              >
-                <ShieldCheck size={12} aria-hidden="true" />
-                <span>Approvals {approvalRequired ? "on" : "off"}</span>
-              </button>
-              <label className="sr-only" htmlFor="command-context-scope">Context scope</label>
-              <select
-                id="command-context-scope"
-                value={contextScope}
-                disabled={draftLocked}
-                onChange={(event) => onContextScopeChange(
-                  event.currentTarget.value as ActiveContextScopeId,
-                )}
-                className="min-h-8 shrink-0 rounded-full border-0 bg-surface-raised px-2.5 text-xs font-semibold text-muted outline-none hover:text-foreground"
-              >
-                {CONTEXT_SCOPE_OPTIONS.map((option) => (
-                  <option
-                    key={option.id}
-                    value={option.id}
-                    disabled={(option.id === "personal" && !personalContextAvailable) ||
-                      (option.id === "mission" && !missionContextAvailable)}
-                  >
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-              <button
-                type="button"
-                onClick={contextReady || contextError ? onReviewContext : onContext}
-                disabled={contextLoading || goalMissing || Boolean(readDisabledReason)}
-                title={goalMissing ? "Write a message first." : readDisabledReason}
-                aria-label={`Context: ${contextLabel}`}
-                className={clsx(
-                  "inline-flex min-h-8 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-xs font-semibold transition",
-                  contextLocked ? "bg-success/10 text-success" : contextReady || contextError ? "bg-warning/10 text-warning" : "bg-surface-raised text-muted hover:text-foreground",
-                )}
-              >
-                {contextLoading ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <Brain size={13} aria-hidden="true" />}
-                <span>{contextLabel}</span>
-              </button>
-              <button
-                type="button"
-                onClick={onPlan}
-                disabled={Boolean(loading) || goalMissing || Boolean(workflowDisabledReason) || workflowInProgress}
-                title={goalMissing ? "Write a message first." : workflowDisabledReason}
-                aria-label="Create a plan"
-                className="inline-flex min-h-8 shrink-0 items-center gap-1.5 rounded-full bg-surface-raised px-2.5 text-xs font-semibold text-muted transition hover:text-foreground disabled:opacity-50"
-              >
-                {loading === "plan" ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <GitBranch size={13} aria-hidden="true" />}
-                <span>Plan</span>
-              </button>
-              {workflowReady || (workflowStarted && workflowInProgress) ? (
-                <button
-                  type="button"
-                  onClick={onWorkflow}
-                  disabled={Boolean(loading) || goalMissing || Boolean(workflowDisabledReason) || !workflowReady || workflowStarted}
-                  className="inline-flex min-h-8 shrink-0 items-center gap-1.5 rounded-full bg-primary/10 px-2.5 text-xs font-semibold text-primary disabled:opacity-50"
-                >
-                  <Workflow size={13} aria-hidden="true" />
-                  {workflowStarted ? "Workflow active" : "Start plan"}
-                </button>
-              ) : null}
-              <button
-                type="button"
-                onClick={onQueue}
-                disabled={draftLocked || goalMissing || Boolean(runDisabledReason) || queueLocked}
-                title={goalMissing ? "Write a message first." : "Add to the persistent prompt queue"}
-                className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-full bg-surface-raised px-3 text-xs font-semibold text-muted transition hover:text-foreground disabled:cursor-not-allowed"
-                aria-label="Add prompt to queue"
-              >
-                <Clock3 size={14} aria-hidden="true" />
-                Add to queue
-              </button>
-            </div>
-            </details>
           </div>
         </div>
-        {workflowInProgress ? <p className="mt-1.5 px-2 text-center text-xs leading-4 text-muted">This conversation is locked while active work finishes. New messages can be added to the persistent queue.</p> : null}
+        {workflowInProgress ? <p className="mt-1.5 px-2 text-center text-xs leading-4 text-muted">{mode === "research" ? "Start research after the current work finishes. Your next draft stays here. Open a new conversation to work on something else." : "This conversation is locked while active work finishes. New messages can be added to the persistent queue."}</p> : null}
       </div>
     </section>
   );
@@ -6696,6 +7123,7 @@ function evidenceRow(item: JsonRecord, titleKey: string, statusKey: string) {
 }
 
 function streamEventLabel(event: StreamEvent) {
+  if (event.type === "research_progress") return `Research: ${event.progress.stage}. ${event.progress.searches} searches and ${event.progress.sourcesRead} sources read.`;
   if (event.type === "status") {
     return event.detail ? `${event.label || "Status"}: ${event.detail}` : event.label || "Status update.";
   }
@@ -6836,14 +7264,90 @@ function taskProgressSummary({
   if (workflowRun) {
     const steps = arrayPath(workflowRun, "steps");
     const completed = steps.filter((step) => ["completed", "skipped"].includes(stringValue(step.status))).length;
-    const current = steps.find((step) => stringValue(step.stepKey) === stringPath(workflowRun, "run.currentStep", ""));
-    if (current) return `${stringValue(current.label, "Workflow stage")} · ${completed} of ${steps.length} stages complete`;
-    const status = stringPath(workflowRun, "run.status", "starting").replaceAll("_", " ");
-    return steps.length ? `${completed} of ${steps.length} stages complete · ${status}` : `Workflow ${status}`;
+    const status = stringPath(workflowRun, "run.status", "starting");
+    if (status === "completed") return "Your plan is complete";
+    if (status === "failed") return "The plan could not finish. Open activity for details";
+    if (status === "canceled") return "The plan was stopped";
+    if (status === "waiting_approval") return "Review the next action to continue";
+    if (status === "paused") return "Your plan is paused";
+    if (status === "queued") return "Your plan is queued";
+    return steps.length ? `${completed} of ${steps.length} steps complete` : "Preparing your plan";
   }
-  const latest = [...streamEvents].reverse().find((event) => event.type !== "delta");
-  if (latest) return streamEventLabel(latest);
-  return loading === "agent" ? "Starting the task…" : "Task activity is available.";
+  const latest = streamEvents.at(-1);
+  if (latest) return assistantProgressLabel(latest);
+  return loading === "agent" ? "Preparing your response" : "Task activity is available";
+}
+
+/** The conversation shows the task phase; exact routing and receipts stay in Activity. */
+function assistantProgressLabel(event: StreamEvent): string {
+  if (event.type === "status") {
+    const label = event.label?.trim().toLowerCase() || "";
+    const phases: Record<string, string> = {
+      starting: "Preparing your response",
+      "starting workflow": "Preparing your plan",
+      "planning research": "Planning your research",
+      "gathering research evidence": "Searching for sources",
+      "reading research sources": "Reading your sources",
+      "writing research report": "Writing your research report",
+      "live web search": "Searching the web",
+      "live web unavailable": "Live web sources are unavailable",
+      "retrieving memory": "Finding relevant saved context",
+      "retrieving personal context": "Finding relevant personal context",
+      "project memory isolated": "Project context is unavailable for this request",
+      "this mac connected": "Your Mac is connected",
+      "this mac evidence isolated": "Keeping this task within your selected Mac context",
+      "computer use model unavailable": "Computer actions are unavailable right now",
+      "dev fallback": "Preview response — no AI model is connected",
+      "reasoning model selected": "Preparing your response",
+      "fast model selected": "Preparing your response",
+      "workspace capabilities ready": "Preparing your response",
+      "tool budget reached": "The task reached its action limit",
+      "tool call budget enforced": "The task reached its action limit",
+      "tool approval required": "Review the next action to continue",
+      "tool calls refused": "An action could not proceed",
+      "answer cut off": "The response stopped before it was complete",
+      "finishing within budget": "Wrapping up within the task limit",
+      "resuming after approval": "Continuing your task",
+      reconnecting: "Reconnecting to your task",
+      "read retry scheduled": "Retrying a source read",
+      "loop v2 recovery": "Resuming your task",
+      "loop v2 clarification received": "Continuing with your clarification",
+      "run no longer active": "This task is no longer running",
+      canceled: "The task was stopped",
+      stopped: "The connection stopped. Open activity for details",
+    };
+    if (phases[label]) return phases[label];
+    if (label.startsWith("retrieving shared ")) return "Finding relevant shared context";
+    return "Working on your request";
+  }
+  if (event.type === "tool") {
+    if (event.status === "approval_required") return "Review the next action to continue";
+    if (event.status === "blocked") return "An action needs your attention";
+    if (event.status === "dry_run") return "Action preview ready; no changes were made";
+    if (event.status === "failed") return "A task step could not finish. Open activity for details";
+    if (event.status === "executed") return event.toolId === "web.search"
+      ? "Web search finished" : event.toolId === "web.read" ? "Source read finished" : "Task step finished";
+    if (event.status === "running") return event.toolId === "web.search"
+      ? "Searching the web" : event.toolId === "web.read" ? "Reading a web source" : "Working on your request";
+    return "Updating task progress";
+  }
+  if (event.type === "delta") return "Writing your response";
+  if (event.type === "memory") return "Saved context is ready";
+  if (event.type === "run" || event.type === "harness" || event.type === "model") return "Preparing your response";
+  if (event.type === "council_member") return event.status === "failed"
+    ? "A specialist review could not finish" : event.status === "completed" ? "Specialist review finished" : "Reviewing the response";
+  if (event.type === "council_verdict") return event.status === "passed"
+    ? "Response review finished" : event.status === "revised" ? "The response was revised after review" : "The response needs further review";
+  if (event.type === "waiting_approval") return "Review the next action to continue";
+  if (event.type === "budget_exhausted") return "The task reached its limit. Review activity to continue";
+  if (event.type === "model_route_degraded") return event.outcome === "deployment_environment"
+    ? "Using another available model" : "Your selected model needs attention";
+  if (event.type === "delegated") return "Your task is continuing in the background";
+  if (event.type === "clarification") return "A little more information is needed to continue";
+  if (event.type === "done") return "Response ready";
+  if (event.type === "canceled") return "The task was stopped";
+  if (event.type === "error") return "The task could not finish. Open activity for details";
+  return "Working on your request";
 }
 
 function activityTitle(event: StreamEvent) {
@@ -6924,19 +7428,27 @@ function workflowEventLabel(type: string) {
 function ClaimEvidencePanel({
   content,
   claimEvidence,
+  sources,
 }: {
   content: string;
   claimEvidence: NonNullable<GroundingReport["claimEvidence"]>;
+  sources: GroundingReport["sources"];
 }) {
   const coverage = claimEvidence.coverage;
+  const citations = new Map(sources.map((source, index) => [source.citationId, { source, index: index + 1 }] as const));
   return (
     <details className="mt-3 rounded-xl border border-line/80 bg-background px-3">
       <summary className="flex min-h-10 cursor-pointer items-center justify-between gap-3 text-xs font-semibold">
-        <span>Claim evidence</span>
+        <span>Source review</span>
         <span className="text-muted">
-          {coverage.supportedMaterialClaimCount}/{coverage.materialClaimCount} supported
+          {coverage.materialClaimCount === 0 ? "No key statements to check"
+            : coverage.coverageBps === 10_000 ? "Key statements supported" : "Sources need review"}
         </span>
       </summary>
+      <p className="border-t border-line/70 pt-3 text-xs leading-5 text-muted">
+        {coverage.supportedMaterialClaimCount} of {coverage.materialClaimCount} key statements have verified source support.
+        Recommendations and paraphrases may still need review.
+      </p>
       <ol className="max-h-96 space-y-2 overflow-y-auto border-t border-line/70 py-3">
         {claimEvidence.claims.map((claim) => {
           const claimText = content.slice(
@@ -6946,7 +7458,7 @@ function ClaimEvidencePanel({
           return (
             <li key={claim.claimId} className="rounded-lg bg-surface px-3 py-2.5 text-xs">
               <div className="flex items-start justify-between gap-3">
-                <p className="min-w-0 leading-5 text-foreground">{claimText}</p>
+                <p className="min-w-0 leading-5 text-foreground"><MessageInline text={claimText} citations={citations} /></p>
                 <span className={clsx(
                   "shrink-0 rounded-full px-2 py-1 text-xs font-semibold uppercase tracking-wide",
                   claimSupportTone(claim.supportState),
@@ -6976,7 +7488,7 @@ function claimSupportLabel(state: ClaimSupportState) {
         ? "Disputed"
         : state === "stale"
           ? "Stale"
-          : "Unsupported";
+          : "Needs checking";
 }
 
 function claimSupportTone(state: ClaimSupportState) {
@@ -6990,14 +7502,14 @@ function claimSupportTone(state: ClaimSupportState) {
 function groundingLabel(grounding: GroundingReport) {
   const coverage = grounding.claimEvidence?.coverage;
   if (coverage) {
-    if (coverage.materialClaimCount === 0) return "No material claims";
-    if (coverage.coverageBps === 10_000) return "Claims supported";
-    return `${coverage.supportedMaterialClaimCount}/${coverage.materialClaimCount} claims supported`;
+    if (coverage.materialClaimCount === 0) return "No key statements to verify";
+    if (coverage.coverageBps === 10_000) return "Key statements supported";
+    return "Sources need review";
   }
   if (grounding.status === "verified") return "Sources cited";
   if (grounding.status === "not_required") return "No citations required";
-  if (grounding.status === "invalid") return "Invalid source";
-  return "Citation needed";
+  if (grounding.status === "invalid") return "Sources need review";
+  return "Sources needed";
 }
 
 function renderSafeGroundingReport(value: unknown): GroundingReport | undefined {
@@ -7099,9 +7611,18 @@ function citedGroundingSources(grounding: GroundingReport) {
     values.findIndex((candidate) => candidate.citationId === source.citationId) === index);
 }
 
-function safeExternalUrl(value?: string) {
+function safeSourceUrl(value?: string) {
   if (!value) return undefined;
+  if (/[\\\u0000-\u0020\u007f]/.test(value)) return undefined;
   try {
+    if (value.startsWith("/") && !value.startsWith("//")) {
+      const local = new URL(value, "https://asael.invalid");
+      const appPage = local.pathname.startsWith("/app/");
+      const privateFile = /^\/api\/capture\/assets\/[A-Za-z0-9_-]+$/.test(local.pathname) &&
+        local.searchParams.get("content") === "1";
+      return local.origin === "https://asael.invalid" && (appPage || privateFile)
+        ? `${local.pathname}${local.search}${local.hash}` : undefined;
+    }
     const url = new URL(value);
     if (url.username || url.password) return undefined;
     return url.protocol === "http:" || url.protocol === "https:"
@@ -7125,16 +7646,27 @@ function builtInAgentPresentation(agentId: AgentId) {
   } satisfies AgentPresentation;
 }
 
-function commandContextReferenceRequest(
-  item: CommandContextCatalogItem,
-): CommandContextReference {
-  return {
-    kind: item.kind,
-    id: item.id,
-    expectedVersion: item.expectedVersion,
-    versionId: item.versionId,
-    bindingSha256: item.bindingSha256,
-  };
+function commandContextReferencesForSubmission(
+  items: readonly CommandContextCatalogItem[],
+  contextScope: ActiveContextScopeId,
+  selectedProjectId: string,
+): CommandContextReference[] {
+  const projectId = contextScope === "project" ? selectedProjectId : "";
+  const references: CommandContextReference[] = items
+    .filter((item) => !projectId || item.kind !== "project" || item.id === projectId)
+    .map((item) => ({
+      kind: item.kind,
+      id: item.id,
+      expectedVersion: item.expectedVersion,
+      versionId: item.versionId,
+      bindingSha256: item.bindingSha256,
+    }));
+  // A Project selected through the scope picker or Work handoff is just as
+  // explicit as an @Project attachment. The server still resolves its access.
+  if (projectId && !references.some((item) => item.kind === "project" && item.id === projectId)) {
+    references.push({ kind: "project", id: projectId });
+  }
+  return references;
 }
 
 function commandReferenceKindLabel(kind: CommandContextCatalogItem["kind"]) {

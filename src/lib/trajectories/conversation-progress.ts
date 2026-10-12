@@ -314,6 +314,7 @@ function eventTitle(event: DomainEvent, category: ConversationProgressCategory) 
   if (event.type === "run.error") return "Task stopped";
   if (event.type === "run.canceled") return "Task canceled";
   if (event.type === "voice.command_reviewed") return "Voice command reviewed";
+  if (event.type === "voice.command_dispatched") return "Spoken request started";
   if (event.type === "voice.command_inferred") return "Voice command gated";
   if (event.type === "voice.speech_streamed") return "Result spoken";
   if (event.type === "voice.speech_interrupted") return "Speech interrupted";
@@ -374,6 +375,9 @@ function eventSummary(event: DomainEvent, category: ConversationProgressCategory
     const band = safeToken(payload?.confidenceBand) || "reviewed";
     const method = safeToken(payload?.reviewMethod) || "visible review";
     return `Transcript ${band} · confirmed through ${method}.`;
+  }
+  if (event.type === "voice.command_dispatched") {
+    return "Sent from your live conversation. Actions that need approval still wait for your confirmation.";
   }
   if (event.type === "voice.command_inferred") {
     return payload?.inference === "voice_history_truncated"

@@ -2,69 +2,58 @@
 
 This document is the Stitch-compatible design handoff for the Flutter product.
 
-## ATLAS revamp in progress
+## Current visual system
 
-The owner selected the original ATLAS eagle and authorized the warm-neutral /
-graphite revamp on 3 October 2026. The current target for new and migrated
-surfaces is [the ATLAS system specification](.design/asael-ace-revamp/SYSTEM_SPEC.md).
-It takes precedence over the older emerald palette and typography below.
-The first web slice covers shared tokens, navigation, theme controls, Today and
-Command. Other web pages and Flutter/macOS surfaces still need their individual
-migration and validation; global token inheritance alone does not complete them.
-Keep the platform behavior and governed action requirements in this document.
-The ATLAS raster study is reference art; its production model, rig and clips are
-still outstanding.
+The warm-neutral and graphite system is the shared production direction for
+web and native UI. Its authoritative tokens and interaction rules are in
+[the ATLAS system specification](.design/asael-ace-revamp/SYSTEM_SPEC.md).
+Use the existing web CSS variables and native theme; do not introduce page-specific
+palettes, control shapes or typography. Work, Assistant and Activity share these
+controls, readable status language and compact row patterns.
+
+The owner requested the original raster mascot be replaced on 7 October 2026.
+ATLAS uses an original Scout character with an ivory shell, charcoal face,
+expressive eyes, articulated hands and restrained gold details. Its authored
+Lottie gestures use LottieFiles character references; the earlier eagle studies
+remain historical design references, not the production asset direction.
 
 ## Direction
 
 **Scene:** One owner checks a long-running agent system throughout the day, often one-handed on a phone and later at a wide desktop, under changing ambient light. The interface must remain calm, exact, and immediately legible while work is moving.
 
-**Visual thesis:** A precision console made from quiet graphite and clean mineral surfaces, with emerald reserved for agency and amber reserved for human attention.
+**Visual thesis:** A precision console made from quiet graphite and clean mineral surfaces, with a restrained gold accent and semantic colors for attention and outcomes.
 
 **Color strategy:** Restrained. Neutral surfaces carry the product; semantic colors communicate action, risk, status, and evidence. Decorative color is not used.
 
+## Product language
+
+Use familiar names and plain-language status messages in everyday screens.
+Show document titles, client names, readable model names, and meaningful next
+steps. Keep internal IDs, hashes, event names, routing messages, storage fields,
+and implementation terminology in the backend or explicitly opened diagnostics.
+Do not replace missing evidence with a reassuring claim: explain what needs
+review in ordinary language, with source details available on demand. Preserve
+user-entered names and the underlying identity, permissions, and evidence.
+
 ## Themes
 
-### Light
+### Light and dark
 
-- Canvas `#F7F9FA`
-- Surface `#FFFFFF`
-- Raised surface `#F0F4F3`
-- Ink `#10201E`
-- Muted ink `#536864`
-- Hairline `#D5DFDC`
-- Primary `#087A5B`
-- Primary container `#C9F4E4`
-- Attention `#9A6700`
-- Danger `#B4232C`
+The production palette is the shared semantic contract in
+[the system specification](.design/asael-ace-revamp/SYSTEM_SPEC.md#1-semantic-color-contract).
+Light uses warm near-white `#FAF9F6`, white surfaces, charcoal `#242321`, and
+gold `#806019`. Dark uses graphite `#191A1B`, `#222325` surfaces, light ink
+`#F4F1EA`, and gold `#E2BD74`. Success, warning, danger and information use their
+existing semantic tokens with readable text and icons.
 
-### Dark
-
-- Canvas `#0C1211`
-- Surface `#121B19`
-- Raised surface `#1A2522`
-- Ink `#E8F1EE`
-- Muted ink `#A8BAB5`
-- Hairline `#30413C`
-- Primary `#51D0A2`
-- Primary container `#164C3C`
-- Attention `#F0BE58`
-- Danger `#FF7A82`
-
-Both themes meet WCAG 2.2 AA for body copy and preserve semantic meaning without relying on color alone.
+Components consume tokens rather than copying these colors. All new UI supports
+both themes, keyboard focus, reduced motion, responsive layout and readable
+empty/error states. Global token inheritance alone does not establish that a
+screen has been visually verified.
 
 ## Typography
 
-Use the platform sans family throughout. Headings use weight 700 and modest negative tracking. Operational labels use weight 600, never decorative all-caps sentences. Monospace is reserved for IDs, timestamps, code, model names, and signed evidence.
-
-| Role | Size | Weight | Line height |
-| --- | ---: | ---: | ---: |
-| Display | 36 | 700 | 1.12 |
-| Page title | 28 | 700 | 1.18 |
-| Section title | 20 | 700 | 1.25 |
-| Body | 15 | 400 | 1.45 |
-| Label | 13 | 600 | 1.30 |
-| Detail | 12 | 500 | 1.35 |
+Use Geist Sans on web and the system sans on native. Headings and operational labels use weight 600 with modest heading tracking. Use the system specification’s 28px page, 20px section, 16px item, 14px UI and 13px supporting scale. Monospace is reserved for actual code and explicit technical details; readable model names and timestamps use normal UI type.
 
 ## Shape and Spacing
 
@@ -76,10 +65,38 @@ Use the platform sans family throughout. Headings use weight 700 and modest nega
 
 ## Layout
 
-- Compact `<600dp`: five primary destinations, contextual bottom sheets, drill-down detail.
+- Compact `<600dp`: four primary destinations, contextual bottom sheets, drill-down detail.
 - Medium `600–1023dp`: navigation rail and flexible two-column content.
 - Expanded `>=1024dp`: extended rail, master-detail workspaces, persistent evidence inspector where useful.
-- Content width is capped at 1440dp. Reading text is capped near 72 characters.
+- Assistant and Work use the available screen width with responsive controls.
+  Other reading surfaces may cap content at 1440dp; long prose stays readable.
+
+## Installed mobile application
+
+Android and iOS use an explicit `usesMobilePresentation()` boundary and their
+own phone composition. The full rationale and platform research are in
+[the mobile design guide](docs/native-mobile-design.md). Preserve the web color
+contract while adapting navigation, density and interaction to touch.
+
+`MobileAppTheme` adapts the shared colour contract for native phones: system
+sans hierarchy, tonal fields, quiet grouped surfaces and 48dp interaction
+targets. Use `MobileSurface`, `MobileSegmentBar` and `MobileStatusPill` for
+consistent content groups and choices. Dark spotlight surfaces supply their own
+text and icon theme. Phone-specific layouts must still read real feature state.
+
+- Five labeled primary destinations: Today, Assistant, Capture, Work and Library.
+  Library groups all remaining features and preferences. It is a local navigation
+  index and must not eagerly mount or fetch every workspace.
+- One feature header per page, generous touch targets, focused detail views,
+  compact filter/choice sheets and a keyboard-aware bottom composer. Keep tab
+  navigation and drafts when switching; hide the bottom dock during text input.
+- Common collections are lazy rows/slivers. Use content height rather than
+  fixed desktop cards; preserve text scaling, reduced motion and safe areas.
+- Settings uses grouped preferences and a selected detail. Work and knowledge
+  use list-to-detail composition. Technical inputs remain available when required
+  for an exact approval, but are not the primary labels for everyday records.
+- On tablets at 840dp and wider, the same primary destinations use a rail.
+  Web breakpoints and installed Mac presentation retain their separate rules.
 
 ## Installed macOS application
 
@@ -113,12 +130,12 @@ The macOS route families are:
 - **Work:** Today command desk, Conversation cockpit, focused Capture intake,
   Project browser/detail/Build Studio, Meeting agenda/detail, and Results ledger.
 - **Knowledge:** practical indexed Memory browser with stable pan/zoom graph,
-  Agent roster/capabilities/outcomes, Customer Accounts and Customer 360, and the
-  market research terminal.
+  Agent roster/capabilities/outcomes, and the market research terminal.
 - **Review:** attention Inbox and approval detail, trusted read-only Payments,
-  Quality Checks, and evidence inspectors.
-- **Control:** Workflows, Integrations, Tools, Monitoring, Security, model/provider
-  Settings, and a signed-installation Devices & Security ledger.
+  and evidence inspectors.
+- **Control:** Workflows, Integrations, Tools, Security, and Settings containing
+  model/provider configuration, Quality Checks, Monitoring, and a signed-installation
+  Devices & Security ledger.
 - **Lifecycle:** native sign-in, protected-session bootstrap, Quick Entry, auxiliary
   windows, empty/loading/error/offline states, and narrow-window inspector sheets.
 
@@ -132,6 +149,17 @@ The macOS route families are:
 - **Risk decision:** consequence, reversibility, requester, trust evidence, and explicit verb-object actions.
 - **Resource state:** skeleton, useful empty guidance, stale state, partial error, full error, forbidden, offline.
 
+## Conversational personality
+
+Under Companion settings, offer **Butler** (British poise and dry wit) and
+**Playful** (quick wit and friendly banter), with short original writing samples.
+Describe the choice as saved on this device, applying to the next message or new
+voice conversation. Keep it separate from appearance, expressive intensity and
+motion. The shared character and delivery rules are defined in
+[ATLAS personality](docs/research/atlas-personality.md). No personality selection
+starts audio or work. Use friendly product language; omit internal versions and
+request fields from the controls.
+
 ## Motion
 
 - Standard duration 180ms; emphasized state change 240ms; micro-feedback 120ms.
@@ -140,17 +168,44 @@ The macOS route families are:
 - Repeated lists do not animate every row on every refresh.
 - Animations stop when offscreen, avoid blur filters and layout thrash, and collapse to crossfades or instant changes when reduced motion is enabled.
 
+### Voice companion
+
+Voice has two owner-selected appearances: **Companion**, a compact dock with a
+readable Scout face, short caption, and Mute/End controls; and **Perch**, a larger
+free-standing Scout with a temporary caption and the same discoverable controls.
+The choice lives under Settings → Companion → Voice appearance. It is saved for
+the current account on this device; changing it never restarts the conversation.
+Companion is the default. Both appearances share the same voice controller,
+microphone state, agent context, and accessibility/motion preferences.
+
+Make Scout expressive through clear eyes, eyelids, mouth, head tilt and hand
+gestures at the actual display size. Listening and thinking get distinct finite
+entry gestures. During an explicitly started voice conversation, Balanced and
+Expressive allow these reactions; the speaking clip may repeat only while real
+reply audio is playing. Interruption immediately yields the speaking pose to
+listening. Quiet, Reduced, Off, system reduced motion and native low-power mode
+retain static state portraits. There is no continuous idle loop. A visible Mac
+voice companion must not disappear merely because another application has focus.
+
+Microphone-off status remains separate from speech output: ATLAS may continue
+speaking while input is muted. Ending a call is never a task-completion signal.
+The character supplements readable status and controls, which remain useful when
+the character is hidden. Captions use real conversation text; presentation never
+invents audio levels, progress percentages, or phoneme synchronization.
+
 ## Page Families
 
-- **Today:** editorial priority strip plus operational agenda, with attention surfaced before activity.
+- **Today:** a personal welcome and one useful next action, followed by the daily brief, focus list and agenda. Decisions and overdue work take priority. Collapse completed tasks and omit empty secondary sections; preserve visible unavailable states. ATLAS follows owner visibility and motion preferences.
 - **Talk:** transcript as the dominant plane; stage, tools, plan, citations, and evidence remain adjacent.
 - **Capture:** one strong composer that expands by modality; upload/index progress stays inline.
 - **Missions and Projects:** state rail, task progression, attempts, artifacts, and proof in responsive master-detail.
 - **Inbox:** decision queue ordered by risk and urgency; each item explains consequence before action.
 - **Results:** evidence ledger with filters, verification state, and compact inspectors.
-- **Agents and Knowledge:** searchable workspace with relationship map and structured inspector.
+- **Agents and Knowledge:** a named collection map built from the authorized memory and source catalog. Category branches explain where each saved record belongs; they must not imply inferred factual relationships. Offer title search, collection focus and direct access to the existing inspector. Keep relationship exploration secondary: one selected item, at most 12 direct connections, bounded name disclosure and predictable pan/zoom. Keep technical types and IDs in optional details. Make Delete memory discoverable, then explain the exact permanent impact before the final action.
 - **Administration:** dense domain navigation, health summary, resource list, and progressive configuration detail.
 
 ## Prohibited Patterns
 
 No decorative glass, gradient text, nested card grids, oversized rounded containers, ornamental animation, ambiguous loading zeros, or color-only status. The authenticated product never uses marketing hero composition.
+
+Navigation starts with Today, Assistant, Work, Memory and Capabilities. History brings Results and Timeline together lower in the menu. Connections live inside Capabilities; Quality Checks and Monitoring are categories inside Settings, with no separate workspace-navigation entries. Open those operational surfaces only when selected; entering Settings must not run checks or monitoring actions. Motion should clarify selection, expansion and focus, stop after the transition and respect reduced-motion preferences. Security begins with Your access, Your data and Recent decisions; technical identifiers and maintenance controls require deliberate expansion.

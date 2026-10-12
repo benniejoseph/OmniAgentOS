@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   hasDatabaseUrl,
   runWithDatabaseTenantScope,
+  runWithDatabaseSystemScope,
   withDatabaseRequestScope,
 } from "@/lib/db/client";
 import {
@@ -13,10 +14,7 @@ import { getAlertDeliveryStats, runScheduledAlertDispatch } from "@/lib/diagnost
 import { serverErrorResponse } from "@/lib/http/errors";
 import { runObservabilitySloMonitor } from "@/lib/observability/slo-monitor";
 import { createRequestTelemetry, recordRuntimeEventSafely } from "@/lib/observability/store";
-import {
-  processAgentResumeQueue,
-  processAllTenantAgentResumeQueues,
-} from "@/lib/orchestration/resume-queue";
+import { scheduleAgentResumeQueueDrain } from "@/lib/orchestration/resume-queue";
 import { recoverInterruptedLoopV2Runs } from "@/lib/orchestration/loop-v2-recovery";
 import { reconcileMissionProjections } from "@/lib/missions/reconcile";
 import { repairStuckAgentRuns } from "@/lib/runs/store";
@@ -69,7 +67,7 @@ import { dispatchMobilePushDeliveries } from "@/lib/mobile/push-store";
 import { processDomainMobilePushProducers } from "@/lib/mobile/push-producers";
 import { processActiveProjectExecutions } from "@/lib/projects/execution";
 import { syncDuePersonalProviders } from "@/lib/connectors/personal-sync";
-import { syncDueSalesforceConnections } from "@/lib/customer-success/salesforce-sync";
+import { listDuePersonalSyncTenantIds } from "@/lib/connectors/oauth-store";
 import {
   processAllTenantDurableSpecialistQueues,
   processDurableSpecialistQueue,
@@ -82,9 +80,9 @@ import { emptyResponsibilityScheduleSummary, processDueResponsibilities } from "
 import { emptyResponsibilityNotificationSummary, processDueResponsibilityNotifications } from "@/lib/responsibilities/notification-delivery";
 
 export const runtime = "nodejs";
-// Workflow steps run gpt-5 planning/execution that can exceed 60s; 300s is the
-// Vercel Pro ceiling (silently capped to 60s on Hobby).
-export const maxDuration = 300;
+// Foreground ticks keep their short dispatch budget. after() may finish one
+// approved continuation within the same 25-minute budget as a direct run.
+export const maxDuration = 1800;
 export const GET = withDatabaseRequestScope(GETHandler);
 export const POST = withDatabaseRequestScope(POSTHandler);
 
@@ -469,10 +467,10 @@ async function POSTHandler(request: Request) {
         limit: parsed.data.limit || 5,
         tenantId: context.tenantId,
       }),
-      processAgentResumeQueue({
-        limit: parsed.data.limit || 5,
+      Promise.resolve(scheduleAgentResumeQueueDrain({
         tenantId: context.tenantId,
-      }),
+        routeMaxDurationSeconds: maxDuration,
+      })),
       processDurableSpecialistQueue({
         limit: Math.min(parsed.data.limit || 2, 2),
         tenantId: context.tenantId,
@@ -519,10 +517,6 @@ async function POSTHandler(request: Request) {
         request.signal,
         AbortSignal.timeout(90_000),
       ]),
-    });
-    const salesforceSyncs = await syncDueSalesforceConnections({
-      tenantId: context.tenantId,
-      limit: 2,
     });
     const moltbookHeartbeats = await processDueMoltbookHeartbeats({
       tenantId: context.tenantId,
@@ -600,7 +594,9 @@ async function POSTHandler(request: Request) {
       },
     });
     return Response.json({
-      queue,
+      // A tenant-wide wake can advance another owner’s queued research.
+      // Return counts only; exact workflow reads enforce owner visibility.
+      queue: { ...queue, jobs: [] },
       workflowSchedules,
       responsibilitySchedules,
       responsibilityNotifications,
@@ -615,7 +611,6 @@ async function POSTHandler(request: Request) {
       mobilePush,
       projectExecutions,
       connectedSourceSyncs,
-      salesforceSyncs,
       moltbookHeartbeats,
       moltbookAutonomy,
       slo,
@@ -673,6 +668,7 @@ function summarizeScheduledOutcome(
     workflowRequeued: scheduled.queue?.requeued || 0,
     workflowWaiting: scheduled.queue?.waiting || 0,
     agentResumesLeased: scheduled.agentResumes?.leased || 0,
+    agentResumesScheduled: scheduled.agentResumes?.scheduled || 0,
     agentResumesCompleted: scheduled.agentResumes?.completed || 0,
     agentResumesDeferred: scheduled.agentResumes?.deferred || 0,
     agentResumesFailed: scheduled.agentResumes?.failed || 0,
@@ -786,6 +782,25 @@ function normalizeWorkerTarget(value: string | null) {
   }
 }
 
+function scheduleAgentResumesAfterResponse(tenantIds: readonly string[]) {
+  const tenantId = tenantIds[0];
+  const scheduled = tenantId
+    ? scheduleAgentResumeQueueDrain({
+        tenantId,
+        routeMaxDurationSeconds: maxDuration,
+      }).scheduled || 0
+    : 0;
+  return {
+    tenantIds: tenantId ? [tenantId] : [],
+    tenantResults: [],
+    scheduled,
+    leased: 0,
+    completed: 0,
+    deferred: 0,
+    failed: 0,
+  };
+}
+
 async function runAllTenantScheduledWork({
   lane,
   trigger,
@@ -862,8 +877,8 @@ async function runAllTenantScheduledWork({
   }
   const dispatchTenants = runFast || runBackground
     ? await listRunnableOperationDispatchTenants({
-        workflowLimit: runFast ? queueLimit : 0,
-        agentResumeLimit: runFast ? queueLimit : 0,
+        workflowLimit: runFast || runBackground ? queueLimit : 0,
+        agentResumeLimit: runBackground ? 1 : 0,
         agentExecuteLimit: runFast ? queueLimit : 0,
         backgroundLimit: runBackground ? Math.min(queueLimit, 3) : 0,
       })
@@ -884,12 +899,14 @@ async function runAllTenantScheduledWork({
     runFast
       ? scrubExpiredLocalComputerObservations({ limit: 100 })
       : Promise.resolve({ scrubbed: 0, moreAvailable: false }),
-    runFast
-      ? processAllTenantWorkflowQueues({
+    // Long research phases use the background delivery budget. Queue leases
+    // prevent the fast and background lanes from running the same tick.
+    runFast || runBackground
+      ? runWithDatabaseSystemScope("Dispatch authenticated all-tenant workflow queue work.", () => processAllTenantWorkflowQueues({
           limit: queueLimit,
           timeBudgetMs: dispatchBudgetMs,
           tenantIds: dispatchTenants.workflowTenantIds,
-        })
+        }))
       : Promise.resolve({
           requested: 0,
           leased: 0,
@@ -902,20 +919,9 @@ async function runAllTenantScheduledWork({
           tenantIds: [],
           tenantResults: [],
         }),
-    runFast
-      ? processAllTenantAgentResumeQueues({
-          limit: queueLimit,
-          timeBudgetMs: dispatchBudgetMs,
-          tenantIds: dispatchTenants.agentResumeTenantIds,
-        })
-      : Promise.resolve({
-          tenantIds: [],
-          tenantResults: [],
-          leased: 0,
-          completed: 0,
-          deferred: 0,
-          failed: 0,
-        }),
+    Promise.resolve(scheduleAgentResumesAfterResponse(
+      runBackground ? dispatchTenants.agentResumeTenantIds : [],
+    )),
     runFast
       ? processAllTenantDurableSpecialistQueues({
           limit: queueLimit,
@@ -951,6 +957,35 @@ async function runAllTenantScheduledWork({
   let memoryDeletionScrubs:
     Awaited<ReturnType<typeof processPendingMemoryDeletionScrubs>> | undefined;
   let page: string[] = [];
+  const connectedSourceSyncs: Array<{
+    tenantId: string; results: Awaited<ReturnType<typeof syncDuePersonalProviders>>;
+    error?: string;
+  }> = [];
+  // Connected accounts must not wait behind old evaluation tenants in the
+  // general maintenance cursor. Reserve at most a minute for a due-source
+  // pass, preserving the rest of the maintenance budget and all sync leases.
+  if (runMaintenance && deadlineAt - Date.now() > 10_000) {
+    const syncDeadlineAt = Math.min(deadlineAt - 5_000, Date.now() + 60_000);
+    try {
+      const sourceTenants = await listDuePersonalSyncTenantIds(2);
+      for (const tenantId of sourceTenants) {
+        if (syncDeadlineAt - Date.now() < 5_000) break;
+        try {
+          const results = await runWithDatabaseTenantScope(tenantId, () =>
+            syncDuePersonalProviders({ tenantId, limit: 1,
+              abortSignal: AbortSignal.timeout(Math.max(1, syncDeadlineAt - Date.now())),
+            }),
+          );
+          connectedSourceSyncs.push({ tenantId, results });
+        } catch (error) {
+          connectedSourceSyncs.push({ tenantId, results: [], error: safeTenantMaintenanceError(error) });
+        }
+      }
+    } catch (error) {
+      console.error(JSON.stringify({ level: "error", msg: "connected_source_scheduling_failed",
+        error: safeTenantMaintenanceError(error) }));
+    }
+  }
   // System-scope work shares a deliberately small maintenance pool. Keep
   // these operations ordered so a graph rebuild cannot make the other jobs
   // wait for a connection they cannot acquire.
@@ -1000,7 +1035,6 @@ async function runAllTenantScheduledWork({
     mobilePushProviderAccepted: number;
     projectExecutionsProcessed: number;
     connectedSourcesSynced: number;
-    salesforceConnectionsSynced: number;
     moltbookHeartbeatsProcessed: number;
     moltbookAutonomyCyclesProcessed: number;
     dailyAgentLearning: Awaited<
@@ -1070,6 +1104,7 @@ async function runAllTenantScheduledWork({
   return {
     scope: "all_tenants" as const,
     lane,
+    connectedSourceSyncs,
     localComputerObservationScrub,
     queue,
     agentResumes,
@@ -1163,7 +1198,6 @@ async function runTenantMaintenance({
     mobilePushProviderAccepted: number;
     projectExecutionsProcessed: number;
     connectedSourcesSynced: number;
-    salesforceConnectionsSynced: number;
     moltbookHeartbeatsProcessed: number;
     moltbookAutonomyCyclesProcessed: number;
     dailyAgentLearning: Awaited<
@@ -1198,7 +1232,6 @@ async function runTenantMaintenance({
     mobilePushProviderAccepted: 0,
     projectExecutionsProcessed: 0,
     connectedSourcesSynced: 0,
-    salesforceConnectionsSynced: 0,
     moltbookHeartbeatsProcessed: 0,
     moltbookAutonomyCyclesProcessed: 0,
     dailyAgentLearning: emptyDailyAgentLearningSummary(),
@@ -1360,19 +1393,6 @@ async function runTenantMaintenance({
       }));
     }
   }
-  if (deadlineAt - Date.now() > 5_000) {
-    const abortSignal = AbortSignal.timeout(
-      Math.max(1, deadlineAt - Date.now() - 5_000),
-    );
-    result.connectedSourcesSynced = (
-      await syncDuePersonalProviders({ tenantId, limit: 1, abortSignal })
-    ).filter((item) => item.status === "healthy").length;
-  }
-  if (Date.now() < deadlineAt) {
-    result.salesforceConnectionsSynced = (
-      await syncDueSalesforceConnections({ tenantId, limit: 2 })
-    ).filter((item) => item.status === "healthy").length;
-  }
   if (Date.now() < deadlineAt) {
     result.moltbookHeartbeatsProcessed = (
       await processDueMoltbookHeartbeats({ tenantId, limit: 2 })
@@ -1434,7 +1454,6 @@ function failedTenantMaintenance(
     mobilePushProviderAccepted: 0,
     projectExecutionsProcessed: 0,
     connectedSourcesSynced: 0,
-    salesforceConnectionsSynced: 0,
     moltbookHeartbeatsProcessed: 0,
     moltbookAutonomyCyclesProcessed: 0,
     dailyAgentLearning: emptyDailyAgentLearningSummary(),

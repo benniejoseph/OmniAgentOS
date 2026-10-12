@@ -17,11 +17,11 @@ beforeEach(() => {
 
 describe("cohesive Today route", () => {
   it("returns a private bounded projection", async () => {
-    const response = await GET(new Request("http://localhost/api/today/agenda?workLimit=8&approvalLimit=6&meetingLimit=20&accountLimit=10"));
+    const response = await GET(new Request("http://localhost/api/today/agenda?workLimit=8&approvalLimit=6&meetingLimit=20"));
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("private, no-store");
     expect(mocks.show).toHaveBeenCalledWith(expect.any(Object), {
-      workLimit: 8, approvalLimit: 6, meetingLimit: 20, accountLimit: 10,
+      workLimit: 8, approvalLimit: 6, meetingLimit: 20,
     });
   });
 

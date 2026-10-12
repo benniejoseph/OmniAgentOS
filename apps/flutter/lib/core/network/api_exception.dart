@@ -16,8 +16,9 @@ class ApiException implements Exception {
     final localRefusal = error.error;
     if (error.type == DioExceptionType.cancel &&
         error.response == null &&
-        localRefusal is NativeAuthorityVerificationException) {
-      return localRefusal;
+        (localRefusal is NativeAuthorityVerificationException ||
+            localRefusal is NativeSessionExpiredException)) {
+      return localRefusal as ApiException;
     }
     final data = error.response?.data;
     String? message;
@@ -80,6 +81,16 @@ class NativeAuthorityVerificationException extends ApiException {
   const NativeAuthorityVerificationException([
     super.message = 'Current workspace access could not be verified. Reopen the workspace or sign in again.',
   ]) : super(diagnosticCode: 'native_authority_refused');
+}
+
+/// The rejected refresh left no local credentials. This is a local session
+/// transition, not an HTTP response or a temporary connection failure.
+class NativeSessionExpiredException extends ApiException {
+  const NativeSessionExpiredException()
+    : super(
+        'Your sign-in has expired. Sign in again.',
+        diagnosticCode: 'native_session_expired',
+      );
 }
 
 class ApiConflictException extends ApiException {

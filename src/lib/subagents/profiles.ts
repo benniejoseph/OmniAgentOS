@@ -9,6 +9,7 @@ const READ_ONLY_TOOLS = [
   "memory.search",
   "knowledge.search",
   "web.search",
+  "web.read",
   "runs.list",
 ];
 

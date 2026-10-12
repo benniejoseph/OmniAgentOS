@@ -11,7 +11,7 @@ function fixture(): TruthfulIntegrationsOverview {
     disclosure: { catalogSuggestions: "separate_from_installed", credentialValuesIncluded: false,
       rawCursorValuesIncluded: false, providerContentIncluded: false, costBasis: "recorded_attributable_usage_only" },
     summary: { installed: 1, working: 1, degraded: 0, actionRequired: 0, unavailable: 0, suggestions: 1 },
-    inventory: { oauth: inventory(), mcp: inventory(), openapi: inventory(), salesforce: inventory(), usage: inventory() },
+    inventory: { oauth: inventory(), mcp: inventory(), openapi: inventory(), usage: inventory() },
     installed: [{
       id: "google:0f5c2a8e-6d3b-4c1a-9e7f-2b8d4a6c1e90:gmail", name: "Gmail", kind: "google_service", adapter: "native", category: "communication",
       installation: "installed", state: "working", configured: true, connected: true, manageable: true,
@@ -100,7 +100,7 @@ describe("compact integration overview parser", () => {
       [["installed", 0, "sync", "coverageDetail"], 500], [["installed", 0, "sync", "cursor", "detail"], 500],
       [["installed", 0, "cost", "detail"], 500], [["installed", 0, "nextAction"], 500],
       [["suggestions", 0, "id"], 160], [["suggestions", 0, "name"], 160], [["suggestions", 0, "detail"], 500], [["suggestions", 0, "capabilities", 0], 100],
-      ...["oauth", "mcp", "openapi", "salesforce", "usage"].map((name): [Path, number] => [["inventory", name, "detail"], 240]),
+      ...["oauth", "mcp", "openapi", "usage"].map((name): [Path, number] => [["inventory", name, "detail"], 240]),
     ];
     for (const [path, maximum] of bounded) {
       for (const text of ["", " ", "x", "x".repeat(maximum), "x".repeat(maximum + 1), ` ${"x".repeat(maximum)} `, "\u0000", "💡".repeat(maximum / 2)]) {
@@ -168,7 +168,7 @@ describe("compact integration overview parser", () => {
     const suggestion = root.suggestions.element.shape;
     const fields: [string, readonly string[]][] = [
       ["state", root.state.options],
-      ...["oauth", "mcp", "openapi", "salesforce", "usage"].map((key): [string, readonly string[]] => [`inventory.${key}.state`, root.inventory.shape.oauth.shape.state.options]),
+      ...["oauth", "mcp", "openapi", "usage"].map((key): [string, readonly string[]] => [`inventory.${key}.state`, root.inventory.shape.oauth.shape.state.options]),
       ["installed.0.kind", item.kind.options], ["installed.0.adapter", item.adapter.options], ["installed.0.category", item.category.options],
       ["installed.0.installation", item.installation.options], ["installed.0.state", item.state.options],
       ["installed.0.account.purpose", item.account.unwrap().shape.purpose.options], ["installed.0.permissions.mode", item.permissions.shape.mode.options],

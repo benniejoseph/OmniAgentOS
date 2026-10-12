@@ -19,9 +19,6 @@ import {
   listOpenApiOperations,
 } from "@/lib/connectors/openapi-store";
 import { listMcpConnectors, listMcpTools } from "@/lib/connectors/store";
-import { resolveSalesforceRequestAccess } from "@/lib/customer-success/salesforce-access";
-import { getSalesforceSyncHealth } from "@/lib/customer-success/salesforce-store";
-import { getSalesforceWriteConfiguration } from "@/lib/customer-success/salesforce-write-contracts";
 import { runWithDatabaseActorScope } from "@/lib/db/client";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { loadUsageSummary } from "@/lib/usage/summary";
@@ -40,15 +37,8 @@ type TruthfulIntegrationsDependencies = Readonly<{
     connectors: Awaited<ReturnType<typeof listOpenApiConnectors>>;
     operations: Awaited<ReturnType<typeof listOpenApiOperations>>;
   }>;
-  loadSalesforce: (
-    caller: AppServiceCaller,
-    workspaceId: string | undefined,
-  ) => Promise<{
-    health: Awaited<ReturnType<typeof getSalesforceSyncHealth>>;
-    writesConfigured: boolean;
-  }>;
   loadUsage: typeof loadUsageSummary;
-  oauthConfigured: (provider: "google" | "salesforce") => boolean;
+  oauthConfigured: (provider: "google") => boolean;
   catalog: TruthfulIntegrationsInput["catalog"];
   now: () => Date;
 }>;
@@ -63,20 +53,6 @@ const defaultDependencies: TruthfulIntegrationsDependencies = Object.freeze({
     connectors: await listOpenApiConnectors(100, { tenantId }),
     operations: await listOpenApiOperations(undefined, { tenantId }),
   }),
-  loadSalesforce: async (caller, workspaceId) => {
-    const access = await resolveSalesforceRequestAccess(caller.context, {
-      workspaceId,
-      mode: "read",
-      correlationId: crypto.randomUUID(),
-    });
-    return {
-      health: await getSalesforceSyncHealth(
-        access.readAuthority,
-        oauthConfigured("salesforce"),
-      ),
-      writesConfigured: getSalesforceWriteConfiguration().configured,
-    };
-  },
   loadUsage: loadUsageSummary,
   oauthConfigured,
   catalog: connectionCatalog,
@@ -88,7 +64,7 @@ export async function showTruthfulIntegrationsService(
   input: z.input<typeof truthfulIntegrationsServiceInputSchema>,
   dependencies: TruthfulIntegrationsDependencies = defaultDependencies,
 ) {
-  const value = truthfulIntegrationsServiceInputSchema.parse(input);
+  truthfulIntegrationsServiceInputSchema.parse(input);
   const authorized = authorizeAppServiceCall(
     caller,
     getAppServiceOperationContract("app.integrations.overview.show"),
@@ -98,7 +74,7 @@ export async function showTruthfulIntegrationsService(
     caller.context.tenantId,
     actorBinding?.readableOwnerActorIds || [caller.context.actorId],
     async () => {
-      const [oauth, mcp, openapi, salesforce, usage] = await Promise.all([
+      const [oauth, mcp, openapi, usage] = await Promise.all([
         optionalSource("oauth", () => dependencies.listOAuth({
           tenantId: caller.context.tenantId,
           actorId: caller.context.actorId,
@@ -106,7 +82,6 @@ export async function showTruthfulIntegrationsService(
         })),
         optionalSource("mcp", () => dependencies.loadMcp(caller.context.tenantId)),
         optionalSource("openapi", () => dependencies.loadOpenApi(caller.context.tenantId)),
-        optionalSource("salesforce", () => dependencies.loadSalesforce(caller, value.workspaceId)),
         optionalSource("usage", () => dependencies.loadUsage({
           tenantId: caller.context.tenantId,
           now: dependencies.now(),
@@ -116,11 +91,9 @@ export async function showTruthfulIntegrationsService(
         oauth,
         mcp,
         openapi,
-        salesforce,
         usage,
         oauthConfigured: {
           google: dependencies.oauthConfigured("google"),
-          salesforce: dependencies.oauthConfigured("salesforce"),
         },
         catalog: dependencies.catalog,
         generatedAt: dependencies.now().toISOString(),
@@ -134,7 +107,7 @@ export async function showTruthfulIntegrationsService(
 }
 
 async function optionalSource<T>(
-  source: "oauth" | "mcp" | "openapi" | "salesforce" | "usage",
+  source: "oauth" | "mcp" | "openapi" | "usage",
   load: () => Promise<T>,
 ): Promise<IntegrationSource<T>> {
   try {
@@ -161,12 +134,11 @@ function safeErrorCode(error: unknown) {
   return /^[A-Za-z0-9_.:-]{1,80}$/.test(code) ? code : undefined;
 }
 
-function sourceLabel(source: "oauth" | "mcp" | "openapi" | "salesforce" | "usage") {
+function sourceLabel(source: "oauth" | "mcp" | "openapi" | "usage") {
   return ({
     oauth: "OAuth",
     mcp: "MCP",
     openapi: "OpenAPI",
-    salesforce: "Salesforce",
     usage: "Usage",
   })[source];
 }

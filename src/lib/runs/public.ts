@@ -42,9 +42,10 @@ export function publicAgentRun(run: AgentRunRecord) {
  */
 export function agentRunOutcomeEvent(
   run: AgentRunRecord,
-  options: { canceledMessage?: string } = {},
+  options: { canceledMessage?: string; workflowHandoff?: Extract<AgentEvent, { type: "delegated" }> } = {},
 ): AgentEvent | undefined {
   if (run.status === "completed") {
+    if (options.workflowHandoff) return options.workflowHandoff;
     return {
       type: "done",
       response: run.response || "",

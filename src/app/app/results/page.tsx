@@ -1,10 +1,2 @@
-import type { Metadata } from "next";
-import { ResultsCenter } from "@/components/results-center";
-
-export const metadata: Metadata = {
-  title: "Results",
-};
-
-export default function ResultsPage() {
-  return <ResultsCenter />;
-}
+// Result links retain their exact run query while using the shared History view.
+export { metadata, default } from "../history/page";

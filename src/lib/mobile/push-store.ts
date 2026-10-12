@@ -9,10 +9,12 @@ import { appendScopedDomainEvent } from "@/lib/events/store";
 import {
   createMobilePushEnvelope,
   GENERIC_NOTIFICATION_TARGET_MIN_NATIVE_CONTRACT_VERSION,
+  RESEARCH_NOTIFICATION_TARGET_MIN_NATIVE_CONTRACT_VERSION,
   mobilePushDedupeKey,
   mobilePushEnvelopeSchema,
   mobilePushReceiptRequestSchema,
   mobilePushTargetSchema,
+  MOBILE_PUSH_TARGET_KINDS,
   type MobilePushPreviewPolicy,
   type MobilePushReceiptInput,
   type MobilePushTarget,
@@ -372,6 +374,10 @@ export async function enqueueMobilePush(input: {
         ${target.kind !== "notification"}::BOOLEAN
         OR session.client_contract_version >= ${GENERIC_NOTIFICATION_TARGET_MIN_NATIVE_CONTRACT_VERSION}
       )
+      AND (
+        ${target.kind !== "research"}::BOOLEAN
+        OR session.client_contract_version >= ${RESEARCH_NOTIFICATION_TARGET_MIN_NATIVE_CONTRACT_VERSION}
+      )
       AND (${input.registrationId || null}::TEXT IS NULL OR registration.id = ${input.registrationId || null})
     ORDER BY registration.id COLLATE "C"
     LIMIT 20
@@ -728,7 +734,7 @@ export async function getMobilePushDeliveryState(
       AND registration.mobile_session_id = ${native.sessionId}
     LIMIT 1
   `;
-  if (!deliveryRows[0]) return undefined;
+  if (!deliveryRows[0] || !supportedDeliveryRow(deliveryRows[0])) return undefined;
   const receiptRows = await getSql()`
     SELECT * FROM omni_mobile_push_delivery_receipts
     WHERE tenant_id = ${context.tenantId}
@@ -758,7 +764,7 @@ async function getMobilePushDeliveryStateForRegistration(
       AND registration_id = ${registration.id}
     LIMIT 1
   `;
-  if (!deliveryRows[0]) return undefined;
+  if (!deliveryRows[0] || !supportedDeliveryRow(deliveryRows[0])) return undefined;
   const receiptRows = await getSql()`
     SELECT * FROM omni_mobile_push_delivery_receipts
     WHERE tenant_id = ${context.tenantId}
@@ -834,7 +840,7 @@ export async function recordMobilePushDeliveryReceipt(
       LIMIT 1
       FOR UPDATE OF delivery
     `;
-    const current = currentRows[0]
+    const current = currentRows[0] && supportedDeliveryRow(currentRows[0])
       ? deliveryFromRow(currentRows[0])
       : undefined;
     if (!current) return undefined;
@@ -983,7 +989,7 @@ export async function getMobilePushAcknowledgementCandidate(
       )
     LIMIT 1
   `;
-  return rows[0] ? deliveryFromRow(rows[0]) : undefined;
+  return rows[0] && supportedDeliveryRow(rows[0]) ? deliveryFromRow(rows[0]) : undefined;
 }
 
 async function leaseNextPushDelivery(tenantId: string, deliveryId?: string) {
@@ -995,6 +1001,7 @@ async function leaseNextPushDelivery(tenantId: string, deliveryId?: string) {
       FROM omni_mobile_push_deliveries
       WHERE tenant_id = ${tenantId}
         AND status = 'queued'
+        AND cause_kind = ANY(${MOBILE_PUSH_TARGET_KINDS}::TEXT[])
         AND run_at <= NOW()
         AND (${deliveryId || null}::TEXT IS NULL OR id = ${deliveryId || null})
       ORDER BY run_at, created_at, id COLLATE "C"
@@ -1012,7 +1019,7 @@ async function leaseNextPushDelivery(tenantId: string, deliveryId?: string) {
     WHERE delivery.id = next_deliveries.id
     RETURNING delivery.*
   `;
-  return rows[0] ? deliveryFromRow(rows[0]) : undefined;
+  return rows[0] && supportedDeliveryRow(rows[0]) ? deliveryFromRow(rows[0]) : undefined;
 }
 
 async function activeRegistrationForDelivery(delivery: MobilePushDelivery) {
@@ -1236,6 +1243,11 @@ function registrationFromRow(row: Record<string, unknown>): MobilePushRegistrati
     createdAt: dateValue(row.created_at),
     updatedAt: dateValue(row.updated_at),
   };
+}
+
+// Retired destinations remain in history but cannot be delivered or acknowledged.
+function supportedDeliveryRow(row: Record<string, unknown>): boolean {
+  return MOBILE_PUSH_TARGET_KINDS.some((kind) => kind === row.cause_kind);
 }
 
 function deliveryFromRow(row: Record<string, unknown>): MobilePushDelivery {

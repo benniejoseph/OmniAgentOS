@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { shouldUseLiveWebSearch } from "@/lib/web-search/search";
+import { isLiveWebSearchExplicitlyDisabled, shouldUseLiveWebSearch } from "@/lib/web-search/search";
 
 describe("live web search routing", () => {
+  it("exposes explicit opt-out independently of whether a query needs freshness", () => {
+    expect(isLiveWebSearchExplicitlyDisabled("Explain photosynthesis offline.")).toBe(true);
+    expect(isLiveWebSearchExplicitlyDisabled("Use my notes without any tools.")).toBe(true);
+    expect(isLiveWebSearchExplicitlyDisabled("Explain photosynthesis.")).toBe(false);
+    expect(isLiveWebSearchExplicitlyDisabled("Search the web for recent findings.")).toBe(false);
+  });
   it("honors explicit external-tool and web-search refusals", () => {
     expect(shouldUseLiveWebSearch("Verify this citation, but do not use external tools.")).toBe(false);
     expect(shouldUseLiveWebSearch("Verify this citation, but do not use any external tools or web search.")).toBe(false);

@@ -5,6 +5,12 @@ import '../domain/app_session.dart';
 import 'biometric_session_lock_controller.dart';
 
 class SessionController extends AsyncNotifier<AppSession?> {
+  bool _showSignIn = false;
+
+  /// A submitted sign-in stays on its form while loading or showing an error.
+  /// Restoring an existing session still uses the protected bootstrap screen.
+  bool get showSignIn => _showSignIn;
+
   @override
   Future<AppSession?> build() {
     final repository = ref.read(sessionRepositoryProvider);
@@ -18,21 +24,26 @@ class SessionController extends AsyncNotifier<AppSession?> {
   /// fails. A sign-in or sign-out in progress sets the state itself.
   void _showSignedOut() {
     if (state.value == null) return;
+    _showSignIn = false;
     ref.read(biometricSessionLockControllerProvider).resetAfterSessionCleared();
     state = const AsyncData(null);
   }
 
   Future<bool> signIn(String email, String password) async {
+    _showSignIn = true;
     state = const AsyncLoading();
-    state = await AsyncValue.guard(
+    final result = await AsyncValue.guard(
       () => ref
           .read(sessionRepositoryProvider)
           .signIn(email: email, password: password),
     );
-    return !state.hasError;
+    if (!result.hasError) _showSignIn = false;
+    state = result;
+    return !result.hasError;
   }
 
   Future<void> signOut() async {
+    _showSignIn = false;
     state = const AsyncLoading();
     try {
       await ref.read(sessionRepositoryProvider).signOut();
@@ -45,6 +56,7 @@ class SessionController extends AsyncNotifier<AppSession?> {
   }
 
   Future<void> retry() async {
+    _showSignIn = false;
     state = const AsyncLoading();
     state = await AsyncValue.guard(
       () => ref.read(sessionRepositoryProvider).restore(),
@@ -52,6 +64,7 @@ class SessionController extends AsyncNotifier<AppSession?> {
   }
 
   Future<void> migrateLegacyCredentials() async {
+    _showSignIn = false;
     state = const AsyncLoading();
     state = await AsyncValue.guard(
       () => ref.read(sessionRepositoryProvider).migrateLegacyCredentials(),

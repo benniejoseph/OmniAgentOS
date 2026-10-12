@@ -1,11 +1,16 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+
+import '../../app/mobile/mobile_flow_scaffold.dart';
+
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/macos/macos_page_scaffold.dart';
 import '../../app/platform/macos_presentation.dart';
+import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_page_scaffold.dart';
 import '../../core/network/native_workspace_access.dart';
 import 'monitoring_contracts.dart';
 import 'monitoring_controller.dart';
@@ -135,6 +140,40 @@ class _MonitoringWorkspaceViewState extends State<MonitoringWorkspaceView> {
     if (!controller.available) return;
     controller.select(id);
     final navigation = ++_selectionNavigation;
+    if (usesMobilePresentation()) {
+      unawaited(
+        showDialog<void>(
+          context: context,
+          useRootNavigator: false,
+          builder: (_) => Dialog.fullscreen(
+            child: ListenableBuilder(
+              listenable: controller,
+              builder: (_, _) => MobileFlowScaffold(
+                title: 'Service details',
+                child:
+                    controller.available &&
+                        controller.section == section &&
+                        controller.selectedId == id
+                    ? _MonitoringInspector(
+                        controller: controller,
+                        embedded: true,
+                      )
+                    : const Text(
+                        'This detail is no longer available. Close this view and refresh the current workspace.',
+                      ),
+              ),
+            ),
+          ),
+        ).whenComplete(() {
+          if (mounted &&
+              identical(c, controller) &&
+              controller.available &&
+              navigation == _selectionNavigation)
+            controller.select(null);
+        }),
+      );
+      return;
+    }
     if (!compact || !controller.available || controller.selectedId != id) {
       return;
     }
@@ -215,6 +254,18 @@ class _MonitoringWorkspaceViewState extends State<MonitoringWorkspaceView> {
                         inspectorCollapseBelow: 980,
                         body: _content(context, wide: wide),
                       )
+                    : usesMobilePresentation()
+                    ? Column(
+                        children: [
+                          MobilePageHeader(
+                            title: 'Monitoring',
+                            subtitle:
+                                'Service health and issues needing attention.',
+                            actions: [refresh],
+                          ),
+                          Expanded(child: _content(context, wide: false)),
+                        ],
+                      )
                     : Scaffold(
                         appBar: AppBar(
                           title: const Text('Monitoring'),
@@ -240,56 +291,126 @@ class _MonitoringWorkspaceViewState extends State<MonitoringWorkspaceView> {
         Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              'Operations at a glance',
-              style: Theme.of(context).textTheme.titleLarge,
-            ),
-            const SizedBox(height: 6),
-            const Text(
-              'Read current health, measurements and delivery outcomes in one place.',
-            ),
-            const SizedBox(height: 16),
-            _HealthStrip(controller: c),
-            const SizedBox(height: 12),
-            Wrap(
-              spacing: 10,
-              runSpacing: 10,
-              children: [
-                _Metric(
-                  'SLO assessment',
-                  c.slo.data?.assessment ?? _sourceLabel(c.slo.state),
-                  'Measurements cover the last 24 hours',
-                ),
-                _Metric(
-                  'Active incidents',
-                  c.incidents.data == null
-                      ? _sourceLabel(c.incidents.state)
-                      : '${c.incidents.data!.active}',
-                  'Statistics sample up to 500 recent incidents',
-                ),
-                _Metric(
-                  'Failed deliveries',
-                  c.alerts.data == null
-                      ? _sourceLabel(c.alerts.state)
-                      : '${c.alerts.data!.failed}',
-                  'Statistics sample up to 200 recent deliveries',
-                ),
-              ],
-            ),
-            const SizedBox(height: 20),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                for (final section in MonitoringSection.values)
-                  ChoiceChip(
-                    key: ValueKey('monitoring-tab-${section.name}'),
-                    label: Text(section.label),
-                    selected: c.section == section,
-                    onSelected: (_) => c.selectSection(section),
+            if (usesMobilePresentation())
+              MobileSurface(
+                padding: EdgeInsets.zero,
+                child: ExpansionTile(
+                  key: const PageStorageKey<String>(
+                    'mobile-monitoring-overview',
                   ),
-              ],
-            ),
+                  tilePadding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 4,
+                  ),
+                  leading: const Icon(Icons.monitor_heart_outlined),
+                  title: const Text('Health overview'),
+                  subtitle: Text(
+                    c.health.data == null
+                        ? _sourceLabel(c.health.state)
+                        : _label(c.health.data!.status.name),
+                  ),
+                  childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                  children: [
+                    _HealthStrip(controller: c),
+                    Wrap(
+                      spacing: 10,
+                      runSpacing: 10,
+                      children: [
+                        _Metric(
+                          'SLO assessment',
+                          c.slo.data?.assessment ?? _sourceLabel(c.slo.state),
+                          'Measurements cover the last 24 hours',
+                        ),
+                        _Metric(
+                          'Active incidents',
+                          c.incidents.data == null
+                              ? _sourceLabel(c.incidents.state)
+                              : '${c.incidents.data!.active}',
+                          'Statistics sample up to 500 recent incidents',
+                        ),
+                        _Metric(
+                          'Failed deliveries',
+                          c.alerts.data == null
+                              ? _sourceLabel(c.alerts.state)
+                              : '${c.alerts.data!.failed}',
+                          'Statistics sample up to 200 recent deliveries',
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              )
+            else ...[
+              Text(
+                'Operations at a glance',
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+              const SizedBox(height: 6),
+              const Text(
+                'Read current health, measurements and delivery outcomes in one place.',
+              ),
+              const SizedBox(height: 16),
+              _HealthStrip(controller: c),
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 10,
+                runSpacing: 10,
+                children: [
+                  _Metric(
+                    'SLO assessment',
+                    c.slo.data?.assessment ?? _sourceLabel(c.slo.state),
+                    'Measurements cover the last 24 hours',
+                  ),
+                  _Metric(
+                    'Active incidents',
+                    c.incidents.data == null
+                        ? _sourceLabel(c.incidents.state)
+                        : '${c.incidents.data!.active}',
+                    'Statistics sample up to 500 recent incidents',
+                  ),
+                  _Metric(
+                    'Failed deliveries',
+                    c.alerts.data == null
+                        ? _sourceLabel(c.alerts.state)
+                        : '${c.alerts.data!.failed}',
+                    'Statistics sample up to 200 recent deliveries',
+                  ),
+                ],
+              ),
+            ],
+            const SizedBox(height: 20),
+            if (usesMobilePresentation())
+              MobileSegmentBar<MonitoringSection>(
+                items: [
+                  for (final section in MonitoringSection.values)
+                    (
+                      value: section,
+                      label: switch (section) {
+                        MonitoringSection.slo => 'Service levels',
+                        MonitoringSection.incidents => 'Issues',
+                        MonitoringSection.alerts => 'Deliveries',
+                        MonitoringSection.timeline => 'Timeline',
+                      },
+                      icon: null,
+                    ),
+                ],
+                value: c.section,
+                onChanged: c.selectSection,
+              )
+            else
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final section in MonitoringSection.values)
+                    ChoiceChip(
+                      key: ValueKey('monitoring-tab-${section.name}'),
+                      label: Text(section.label),
+                      selected: c.section == section,
+                      onSelected: (_) => c.selectSection(section),
+                    ),
+                ],
+              ),
             const SizedBox(height: 18),
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -348,7 +469,7 @@ class _MonitoringWorkspaceViewState extends State<MonitoringWorkspaceView> {
               ),
               const SizedBox(height: 12),
             ],
-            if (!wide && c.selectedId != null) ...[
+            if (!wide && !usesMobilePresentation() && c.selectedId != null) ...[
               Focus(
                 key: _detailKey,
                 focusNode: _detailFocus,
@@ -638,24 +759,59 @@ class _Metric extends StatelessWidget {
   const _Metric(this.label, this.value, this.detail);
   final String label, value, detail;
   @override
-  Widget build(BuildContext context) => ConstrainedBox(
-    constraints: const BoxConstraints(maxWidth: 260),
-    child: Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(label, style: Theme.of(context).textTheme.labelLarge),
-            const SizedBox(height: 8),
-            Text(value, style: Theme.of(context).textTheme.titleLarge),
-            const SizedBox(height: 6),
-            Text(detail, style: Theme.of(context).textTheme.bodySmall),
-          ],
-        ),
-      ),
-    ),
-  );
+  Widget build(BuildContext context) => usesMobilePresentation()
+      ? SizedBox(
+          width: double.infinity,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        label,
+                        style: Theme.of(context).textTheme.labelLarge,
+                      ),
+                      Text(
+                        detail,
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Flexible(
+                  child: Text(
+                    value,
+                    textAlign: TextAlign.right,
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        )
+      : ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 260),
+          child: Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(label, style: Theme.of(context).textTheme.labelLarge),
+                  const SizedBox(height: 8),
+                  Text(value, style: Theme.of(context).textTheme.titleLarge),
+                  const SizedBox(height: 6),
+                  Text(detail, style: Theme.of(context).textTheme.bodySmall),
+                ],
+              ),
+            ),
+          ),
+        );
 }
 
 class _Notice extends StatelessWidget {
@@ -770,7 +926,13 @@ class _MonitoringInspector extends StatelessWidget {
           if (id != null)
             IconButton(
               tooltip: 'Close evidence detail',
-              onPressed: () => c.select(null),
+              onPressed: () {
+                if (usesMobilePresentation()) {
+                  Navigator.of(context).pop();
+                } else {
+                  c.select(null);
+                }
+              },
               icon: const Icon(Icons.close_rounded, size: 18),
             ),
         ],

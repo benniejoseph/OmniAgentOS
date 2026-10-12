@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
+import { assertOwnerLiveAuthorization } from "./release-owner-live-authorization.mjs";
 
 export const RELEASE_REPOSITORY = "benniejoseph/OmniAgentOS";
 export const RELEASE_BRANCH = "main";
@@ -36,11 +37,13 @@ export function parseExactGitRevision(value, label = "revision") {
  *
  * @param {{
  *   revision: string;
+ *   ownerLiveAuthorization?: { candidateRevision: string; previousRevision: string; reason: string; expiresAt: string };
  *   readGitHub?: (endpoint: string, options?: { jq?: string }) => Promise<unknown>;
  * }} input
  */
 export async function verifyReleaseProvenance({
   revision,
+  ownerLiveAuthorization,
   readGitHub = readGitHubWithCli,
 }) {
   const sha = parseExactGitRevision(revision, "release revision");
@@ -49,6 +52,15 @@ export async function verifyReleaseProvenance({
     { jq: "{status, ahead_by, behind_by}" },
   );
   const { behindBy } = assessReleaseComparison(comparison, sha);
+  if (ownerLiveAuthorization) {
+    assertOwnerLiveAuthorization(ownerLiveAuthorization, { candidateRevision: sha });
+    if (comparison.status !== "identical" || comparison.behind_by !== 0) {
+      throw new Error(`Owner-authorized release ${sha} must be the current ${RELEASE_REPOSITORY} ${RELEASE_BRANCH} tip.`);
+    }
+    // Deferred means unverified, never green. Only the explicit, expiring
+    // per-release authorization can select this path.
+    return { revision: sha, behindBy, checks: [] };
+  }
   const checkRuns = await readGitHub(
     `repos/${RELEASE_REPOSITORY}/commits/${sha}/check-runs?filter=latest&per_page=100`,
   );

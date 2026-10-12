@@ -5,6 +5,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/network/native_workspace_access.dart';
+import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_page_scaffold.dart';
+import '../../app/mobile/mobile_flow_scaffold.dart';
 import 'portable_archive_contracts.dart';
 import 'portable_archive_controller.dart';
 import 'portable_archive_providers.dart';
@@ -117,6 +120,127 @@ class _PortableArchivePanelViewState extends State<PortableArchivePanelView> {
     super.dispose();
   }
 
+  Widget _mobileArchive(PortableArchiveController c) => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      const MobileSurface(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(Icons.inventory_2_outlined, size: 30),
+            SizedBox(height: 12),
+            Text(
+              'Keep a copy of your workspace',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
+            ),
+            SizedBox(height: 8),
+            Text(
+              'Your conversations, memories and other portable records in one verified archive. Original attachments are not included. Maximum size: 16 MB.',
+            ),
+          ],
+        ),
+      ),
+      const SizedBox(height: 20),
+      if (c.needsSeparateDestination) ...[
+        const Text(
+          '1. Choose where to save',
+          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          'Android creates an empty destination first. Return and unlock Asael normally, then choose Verify & save below. No private data is downloaded while you choose the destination.',
+        ),
+        const SizedBox(height: 12),
+        OutlinedButton.icon(
+          onPressed: c.busy ? null : c.chooseDestination,
+          icon: const Icon(Icons.folder_open_rounded),
+          label: Text(
+            c.destination == null
+                ? 'Choose save location'
+                : 'Choose a different location',
+          ),
+        ),
+        const SizedBox(height: 8),
+        if (c.destination != null)
+          MobileStatusPill(
+            label: 'Selected: ${c.destination!.filename}',
+            icon: Icons.insert_drive_file_outlined,
+          )
+        else
+          TextButton.icon(
+            onPressed: c.busy ? null : c.refreshDestination,
+            icon: const Icon(Icons.refresh_rounded),
+            label: const Text('Check selected location'),
+          ),
+        const SizedBox(height: 24),
+        const Text(
+          '2. Verify & save',
+          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          'Asael downloads a fresh archive, checks its owner and integrity, then writes the exact verified file.',
+        ),
+        const SizedBox(height: 12),
+        FilledButton.icon(
+          key: const Key('portable-archive-save'),
+          onPressed: c.busy || c.destination == null ? null : c.verifyAndSave,
+          icon: const Icon(Icons.download_outlined),
+          label: const Text('Verify & save archive'),
+        ),
+        const SizedBox(height: 12),
+        if (c.phase != PortableArchivePhase.idle)
+          Semantics(liveRegion: true, child: Text(_status(c.phase))),
+        if (c.busy)
+          const Padding(
+            padding: EdgeInsets.only(top: 10),
+            child: LinearProgressIndicator(),
+          ),
+        if (c.error != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 12),
+            child: Text(
+              c.error!,
+              style: TextStyle(color: Theme.of(context).colorScheme.error),
+            ),
+          ),
+        if (c.receipt != null) ...[
+          const SizedBox(height: 20),
+          MobileSurface(child: _Receipt(receipt: c.receipt!)),
+        ],
+        const SizedBox(height: 16),
+        const MobileDetailsDisclosure(
+          title: 'What this archive includes',
+          child: Text(
+            'The archive contains portable records, not original attachments. Integrity checks confirm its internal consistency, not a digital signature or a complete historical backup. A failed save can leave a partial file at the destination. Once a write begins, signing out cannot remove that file. Destination access expires after 20 minutes or after one save.',
+          ),
+        ),
+      ] else ...[
+        const Text(
+          'Secure destination selection is not available on this device. Use the browser to export your data.',
+        ),
+        const SizedBox(height: 12),
+      ],
+      const SizedBox(height: 16),
+      const MobileDetailsDisclosure(
+        title: 'Import or restore an archive',
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Import requires a separate review of the restore plan. This app currently supports verified export; use the browser for restore controls.',
+            ),
+            SizedBox(height: 12),
+            NativeWorkspaceBrowserButton(
+              path: '/app/settings',
+              label: 'Open restore controls',
+            ),
+          ],
+        ),
+      ),
+    ],
+  );
+
   bool get _desktop =>
       !kIsWeb &&
       {
@@ -141,6 +265,7 @@ class _PortableArchivePanelViewState extends State<PortableArchivePanelView> {
           ),
         );
       }
+      if (usesMobilePresentation()) return _mobileArchive(c);
       final desktop = _desktop && c.savingSupported;
       return Card(
         key: ValueKey((c, 'portable-archive-panel')),

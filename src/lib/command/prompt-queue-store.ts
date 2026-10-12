@@ -841,8 +841,8 @@ export async function validatePromptQueueDispatch(input: {
     threadId: candidate.target.threadId,
     missionId: candidate.target.missionId,
     projectId: candidate.target.projectId,
-    computerUseTarget: candidate.target.executionTarget === "local_macos"
-      ? "local_macos"
+    computerUseTarget: ["local_macos", "local_android"].includes(candidate.target.executionTarget)
+      ? candidate.target.executionTarget as "local_macos" | "local_android"
       : null,
     contextReferences: candidate.context?.references || null,
     modelSelection: candidate.model.commandSelection || null,
@@ -1170,7 +1170,7 @@ async function resolvePins(input: {
   prompt: string;
   mode: "orchestrate" | "research" | "execute" | "learn";
   agentId: string;
-  executionTarget: "asael" | "local_macos";
+  executionTarget: "asael" | "local_macos" | "local_android";
   commandModelSelection?: CommandModelSelectionRequest;
 }) {
   const identity = await resolveAgentIdentityForExecution({
@@ -1178,7 +1178,7 @@ async function resolvePins(input: {
     actorId: input.actorId,
     agentId: input.agentId,
   });
-  const computerUse = input.executionTarget === "local_macos";
+  const computerUse = ["local_macos", "local_android"].includes(input.executionTarget);
   const deployment = selectAgentModel({
     message: input.prompt,
     mode: input.mode,

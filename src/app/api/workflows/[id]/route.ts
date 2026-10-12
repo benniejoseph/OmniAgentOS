@@ -31,6 +31,7 @@ async function GETHandler(
   if (statusOnly) {
     const status = await getWorkflowRunStatus(id, {
       tenantId: securityContext.tenantId,
+      actorId: securityContext.actorId,
     });
     if (!status) {
       return Response.json(

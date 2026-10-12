@@ -118,9 +118,12 @@ const waitingParses: Array<() => void> = [];
 export async function parseDocumentContained(
   request: DocumentParseRequest,
   limits: Partial<DocumentParseLimits> = {},
+  options: { signal?: AbortSignal } = {},
 ): Promise<DocumentParseResult> {
   const settings: DocumentParseLimits = { ...DEFAULT_DOCUMENT_PARSE_LIMITS, ...limits };
-  await acquireParseSlot();
+  const signal = options.signal;
+  signal?.throwIfAborted();
+  await acquireParseSlot(signal);
   let slotHeld = true;
   const releaseSlot = () => {
     if (!slotHeld) return;
@@ -129,6 +132,7 @@ export async function parseDocumentContained(
   };
   let worker: Worker;
   try {
+    signal?.throwIfAborted();
     worker = new Worker(new URL("./document-parse.worker.ts", import.meta.url), {
       workerData: { kind: DOCUMENT_PARSE_WORKER_KIND, request },
       env: {},
@@ -142,6 +146,7 @@ export async function parseDocumentContained(
     });
   } catch (error) {
     releaseSlot();
+    if (signal?.aborted) throw signal.reason || new Error("Document extraction was cancelled.");
     console.error("Document parser worker could not start.", workerErrorName(error));
     throw new DocumentParseError("Document extraction is temporarily unavailable.", 503, "extraction_unavailable");
   }
@@ -159,6 +164,7 @@ export async function parseDocumentContained(
       settled = true;
       clearTimeout(timeout);
       clearInterval(watchdog);
+      signal?.removeEventListener("abort", onAbort);
       void worker.terminate();
       setTimeout(releaseSlot, WORKER_EXIT_GRACE_MS).unref();
       if ("result" in outcome) resolve(outcome.result);
@@ -175,6 +181,8 @@ export async function parseDocumentContained(
         ),
       });
     };
+    const onAbort = () => settle({ error: signal?.reason instanceof Error
+      ? signal.reason : new Error("Document extraction was cancelled.") });
     const timeout = setTimeout(() => stopAtResourceLimit("timeout"), settings.timeoutMs);
     const watchdog = setInterval(() => {
       if (process.memoryUsage.rss() - baselineRss > settings.rssGrowthLimitBytes) stopAtResourceLimit("rss");
@@ -216,15 +224,32 @@ export async function parseDocumentContained(
       if (!settled) console.error("Document parser worker exited without a result.", exitCode);
       settle({ error: new Error("Document parser exited without a result.") });
     });
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) onAbort();
   });
 }
 
-async function acquireParseSlot() {
+async function acquireParseSlot(signal?: AbortSignal) {
+  signal?.throwIfAborted();
   if (activeParses < MAX_CONCURRENT_DOCUMENT_PARSES) {
     activeParses += 1;
     return;
   }
-  await new Promise<void>((resolve) => waitingParses.push(resolve));
+  await new Promise<void>((resolve, reject) => {
+    const grant = () => {
+      signal?.removeEventListener("abort", cancel);
+      resolve();
+    };
+    const cancel = () => {
+      const index = waitingParses.indexOf(grant);
+      if (index >= 0) waitingParses.splice(index, 1);
+      signal?.removeEventListener("abort", cancel);
+      reject(signal?.reason || new Error("Document extraction was cancelled while waiting."));
+    };
+    waitingParses.push(grant);
+    signal?.addEventListener("abort", cancel, { once: true });
+    if (signal?.aborted) cancel();
+  });
 }
 
 function releaseParseSlot() {

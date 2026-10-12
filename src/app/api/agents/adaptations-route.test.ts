@@ -117,17 +117,25 @@ describe("P7.6 Agent adaptation route", () => {
       .toBe(400);
   });
 
-  it("binds comparisons to owner tasks and an idempotency key, requiring native v48", async () => {
+  it("binds comparisons to owner tasks and an idempotency key, requiring native v56", async () => {
     const body = { action: "compare", adaptationId: adaptations[0].adaptationId, suite: { cases: [1, 2, 3].map((i) => ({ id: `case-${i}`, task: `Explain independent example ${i}.`, assertions: { allOf: ["Next step:"], noneOf: [], minLength: 1, maxLength: 500 } })) } };
     expect((await post(body)).status).toBe(200);
     expect(mocks.compare).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey: "adaptation-one", suite: body.suite, owner: expect.objectContaining({ canonicalActorId: "actor:11111111-1111-4111-8111-111111111111" }) }));
     mocks.compare.mockClear();
-    mocks.authorizeRequest.mockResolvedValue({ ...auth, source: "mobile", native: { clientContractVersion: 47 } });
+    mocks.authorizeRequest.mockResolvedValue({ ...auth, source: "mobile", native: { clientContractVersion: 55 } });
     expect((await post(body)).status).toBe(409); expect(mocks.compare).not.toHaveBeenCalled();
-    mocks.authorizeRequest.mockResolvedValue({ ...auth, source: "mobile", native: { clientContractVersion: 48 } });
+    mocks.authorizeRequest.mockResolvedValue({ ...auth, source: "mobile", native: { clientContractVersion: 56 } });
     expect((await post(body)).status).toBe(200);
     expect((await post({ ...body, suite: { cases: body.suite.cases.slice(0, 2) } })).status).toBe(400);
     expect((await post({ ...body, ownerActorId: "someone-else" })).status).toBe(400);
+  });
+
+  it("accepts the published body bound and rejects an oversized request before mutation", async () => {
+    const json = JSON.stringify({ action: "refresh" });
+    expect((await postRaw(json.padEnd(49_152, " "))).status).toBe(200);
+    mocks.observe.mockClear();
+    expect((await postRaw(json.padEnd(49_153, " "))).status).toBe(413);
+    expect(mocks.observe).not.toHaveBeenCalled();
   });
 
   it("exposes an explicit rollback action", async () => {
@@ -144,9 +152,13 @@ describe("P7.6 Agent adaptation route", () => {
 });
 
 function post(body: unknown) {
+  return postRaw(JSON.stringify(body));
+}
+
+function postRaw(body: string) {
   return POST(new Request("http://asael.test/api/agents/scout/adaptations", {
     method: "POST",
     headers: { "content-type": "application/json", "idempotency-key": "adaptation-one" },
-    body: JSON.stringify(body),
+    body,
   }), { params: Promise.resolve({ id: "scout" }) });
 }

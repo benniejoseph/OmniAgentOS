@@ -1,6 +1,11 @@
 import 'package:flutter/material.dart';
+
+import 'meetings_mobile_flow.dart';
+
 import 'package:flutter/services.dart';
 
+import '../../app/mobile/mobile_page_scaffold.dart';
+import '../../app/platform/mobile_presentation.dart';
 import 'meetings.dart';
 import 'meetings_action_controller.dart';
 import 'meetings_action_widgets.dart';
@@ -38,6 +43,7 @@ class _MeetingsViewState extends State<MeetingsView>
   String? selectedId;
   final searchController = TextEditingController();
   bool preparing = false;
+  bool _showCalendar = false;
   Future<bool> _refresh() async {
     await widget.controller.refresh();
     return widget.controller.readable &&
@@ -173,6 +179,7 @@ class _MeetingsViewState extends State<MeetingsView>
         final selected = controller.meetings
             .where((meeting) => meeting.id == selectedId)
             .firstOrNull;
+        if (usesMobilePresentation()) return _mobileAgenda(rows);
         return Scaffold(
           appBar: AppBar(
             title: const Text('Meetings'),
@@ -409,6 +416,274 @@ class _MeetingsViewState extends State<MeetingsView>
       },
     ),
   );
+
+  Widget _mobileAgenda(List<Meeting> rows) {
+    final controller = widget.controller;
+    final locale = MaterialLocalizations.of(context);
+    final agenda = [...rows]..sort((a, b) => a.startAt.compareTo(b.startAt));
+    final upcoming = controller.readable
+        ? agenda
+              .where(
+                (meeting) =>
+                    meeting.isActive && meeting.startAt.isAfter(DateTime.now()),
+              )
+              .firstOrNull
+        : null;
+    final remaining = agenda
+        .where((meeting) => meeting.id != upcoming?.id)
+        .toList();
+    return RefreshIndicator(
+      onRefresh: () async {
+        await _refresh();
+      },
+      child: CustomScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+        slivers: [
+          SliverToBoxAdapter(
+            child: MobilePageHeader(
+              title: 'Meetings',
+              subtitle: 'Your day, in conversations.',
+              actions: [
+                if (widget.calendar != null)
+                  IconButton(
+                    tooltip: 'Calendar connections',
+                    onPressed: () =>
+                        setState(() => _showCalendar = !_showCalendar),
+                    icon: const Icon(Icons.calendar_month_outlined),
+                  ),
+                if (widget.actions != null)
+                  IconButton.filled(
+                    tooltip: 'Create meeting',
+                    onPressed:
+                        !preparing &&
+                            widget.actions!.disabledReason('create') == null &&
+                            controller.context?.canWrite == true &&
+                            controller.error == null
+                        ? _createMeeting
+                        : null,
+                    icon: const Icon(Icons.add_rounded),
+                  ),
+              ],
+            ),
+          ),
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+            sliver: SliverToBoxAdapter(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  if (_showCalendar && widget.calendar != null)
+                    MeetingCalendarPanel(
+                      controller: widget.calendar!,
+                      active: widget.active,
+                    ),
+                  if (widget.actions != null)
+                    MeetingActionFeedback(
+                      actions: widget.actions!,
+                      refresh: _refresh,
+                      onOpen: widget.onOpen,
+                    ),
+                  if (preparing) const LinearProgressIndicator(),
+                  if (!controller.readable)
+                    const MeetingNotice(
+                      'Unlock or restore your current account to read meetings.',
+                    ),
+                  if (controller.error != null)
+                    MeetingNotice(
+                      controller.hasLoaded
+                          ? 'Your agenda could not refresh. Previously loaded meetings are shown.'
+                          : 'Your agenda is unavailable. Try refreshing.',
+                      action: 'Retry',
+                      onAction: controller.loading ? null : controller.refresh,
+                      error: true,
+                    ),
+                  TextField(
+                    controller: searchController,
+                    textInputAction: TextInputAction.search,
+                    decoration: const InputDecoration(
+                      hintText: 'Find a conversation',
+                      prefixIcon: Icon(Icons.search_rounded),
+                    ),
+                    onChanged: (value) => setState(() => search = value),
+                  ),
+                  const SizedBox(height: 16),
+                  MobileSegmentBar<String>(
+                    items: const [
+                      (value: 'active', label: 'Active', icon: null),
+                      (value: 'all', label: 'All', icon: null),
+                      (value: 'completed', label: 'Finished', icon: null),
+                      (value: 'cancelled', label: 'Cancelled', icon: null),
+                    ],
+                    value: filter,
+                    onChanged: (value) => setState(() => filter = value),
+                  ),
+                  if (controller.loading) const LinearProgressIndicator(),
+                  if (controller.atBound)
+                    const Padding(
+                      padding: EdgeInsets.only(top: 12),
+                      child: Text(
+                        'This is your recent agenda. More meetings may exist.',
+                      ),
+                    ),
+                  if (controller.hasLoaded && rows.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 36),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Icon(Icons.event_note_outlined, size: 40),
+                          const SizedBox(height: 16),
+                          Text(
+                            'A clear space for the next conversation.',
+                            style: Theme.of(context).textTheme.titleLarge,
+                          ),
+                          const SizedBox(height: 8),
+                          const Text(
+                            'Create a meeting, or change your search to find a saved conversation.',
+                          ),
+                        ],
+                      ),
+                    ),
+                  if (upcoming != null) ...[
+                    const SizedBox(height: 24),
+                    MobileSurface(
+                      spotlight: true,
+                      padding: const EdgeInsets.all(22),
+                      child: Builder(
+                        builder: (context) {
+                          final start = upcoming.startAt.toLocal();
+                          return Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const MobileStatusPill(
+                                label: 'Up next',
+                                icon: Icons.schedule_rounded,
+                              ),
+                              const SizedBox(height: 18),
+                              Text(
+                                upcoming.title,
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .headlineSmall,
+                              ),
+                              const SizedBox(height: 10),
+                              Text(
+                                '${locale.formatMediumDate(start)} · ${locale.formatTimeOfDay(TimeOfDay.fromDateTime(start))}',
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                '${upcoming.participants.length} people${upcoming.location.isEmpty ? '' : ' · ${upcoming.location}'}',
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              const SizedBox(height: 20),
+                              FilledButton.icon(
+                                onPressed: () => widget.onOpen(upcoming),
+                                icon: const Icon(Icons.arrow_forward_rounded),
+                                label: const Text('Open meeting brief'),
+                              ),
+                            ],
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+          SliverList.builder(
+            itemCount: controller.readable ? remaining.length : 0,
+            itemBuilder: (context, index) {
+              final meeting = remaining[index],
+                  date = remaining[index].startAt.toLocal();
+              final theme = Theme.of(context);
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  if (index == 0 ||
+                      !DateUtils.isSameDay(
+                        remaining[index - 1].startAt.toLocal(),
+                        date,
+                      ))
+                    MobileSectionHeader(title: locale.formatFullDate(date)),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        SizedBox(
+                          width: 60,
+                          child: Padding(
+                            padding: const EdgeInsets.only(top: 18),
+                            child: Text(
+                              locale.formatTimeOfDay(
+                                TimeOfDay.fromDateTime(date),
+                              ),
+                              style: theme.textTheme.labelMedium,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Material(
+                            color: theme.colorScheme.surface,
+                            borderRadius: BorderRadius.circular(18),
+                            clipBehavior: Clip.antiAlias,
+                            child: InkWell(
+                              onTap: () => widget.onOpen(meeting),
+                              child: Padding(
+                                padding: const EdgeInsets.all(18),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      meeting.title,
+                                      style: theme.textTheme.titleMedium,
+                                    ),
+                                    const SizedBox(height: 8),
+                                    Text(
+                                      '${meeting.participants.length} people · ${meetingLabel(meeting.status)}',
+                                      style: theme.textTheme.bodySmall,
+                                    ),
+                                    if (meeting.location.isNotEmpty) ...[
+                                      const SizedBox(height: 5),
+                                      Text(
+                                        meeting.location,
+                                        maxLines: 2,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: theme.textTheme.bodySmall,
+                                      ),
+                                    ],
+                                    if (meeting.evidence.isNotEmpty) ...[
+                                      const SizedBox(height: 12),
+                                      Text(
+                                        '${meeting.evidence.length} saved sources',
+                                        style: theme.textTheme.labelSmall
+                                            ?.copyWith(
+                                              color: theme.colorScheme.primary,
+                                            ),
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+          const SliverPadding(padding: EdgeInsets.only(bottom: 24)),
+        ],
+      ),
+    );
+  }
 }
 
 class MeetingDetailView extends StatefulWidget {
@@ -631,7 +906,7 @@ class _MeetingDetailViewState extends State<MeetingDetailView>
           listenable: actions,
           builder: (context, _) =>
               !actions.available || actions.owner?.key != frozen.ownerKey
-              ? AlertDialog(
+              ? meetingReviewDialog(
                   title: const Text('Review unavailable'),
                   content: const Text(
                     'Private evidence is hidden because Meeting access changed.',
@@ -643,7 +918,7 @@ class _MeetingDetailViewState extends State<MeetingDetailView>
                     ),
                   ],
                 )
-              : AlertDialog(
+              : meetingReviewDialog(
                   title: const Text('Create exact follow-up proposal'),
                   content: SingleChildScrollView(
                     child: Column(
@@ -752,21 +1027,23 @@ class _MeetingDetailViewState extends State<MeetingDetailView>
         if (widget.actions != null) widget.actions!,
       ]),
       builder: (context, _) => Scaffold(
-        appBar: AppBar(
-          title: const Text('Meeting evidence'),
-          actions: [
-            IconButton(
-              tooltip: 'Refresh meeting and proposals',
-              onPressed:
-                  controller.detailLoading ||
-                      controller.commitmentsLoading ||
-                      !controller.readable
-                  ? null
-                  : controller.refresh,
-              icon: const Icon(Icons.refresh),
-            ),
-          ],
-        ),
+        appBar: usesMobilePresentation()
+            ? null
+            : AppBar(
+                title: const Text('Meeting evidence'),
+                actions: [
+                  IconButton(
+                    tooltip: 'Refresh meeting and proposals',
+                    onPressed:
+                        controller.detailLoading ||
+                            controller.commitmentsLoading ||
+                            !controller.readable
+                        ? null
+                        : controller.refresh,
+                    icon: const Icon(Icons.refresh),
+                  ),
+                ],
+              ),
         body: SafeArea(
           top: false,
           child: Align(
@@ -776,6 +1053,25 @@ class _MeetingDetailViewState extends State<MeetingDetailView>
               child: ListView(
                 padding: EdgeInsets.all(widget.desktop ? 28 : 20),
                 children: [
+                  if (usesMobilePresentation())
+                    MobilePageHeader(
+                      title: 'Meeting',
+                      leading: Navigator.canPop(context)
+                          ? BackButton(onPressed: () => Navigator.pop(context))
+                          : null,
+                      actions: [
+                        IconButton(
+                          tooltip: 'Refresh meeting',
+                          onPressed:
+                              controller.detailLoading ||
+                                  controller.commitmentsLoading ||
+                                  !controller.readable
+                              ? null
+                              : controller.refresh,
+                          icon: const Icon(Icons.refresh_rounded),
+                        ),
+                      ],
+                    ),
                   if (widget.actions != null)
                     MeetingActionFeedback(
                       actions: widget.actions!,

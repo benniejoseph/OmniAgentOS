@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 
 import '../../generated/native_contract.g.dart';
+import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_page_scaffold.dart';
+
 import 'agent_governance.dart';
 import 'agent_adaptation_comparison_view.dart';
 
@@ -230,7 +233,7 @@ class _ReleasePanel extends StatelessWidget {
     final evaluations = release.evaluations;
     final mutable = canManage && release.state == 'active';
     return _GovernanceCard(
-      title: 'Release channel',
+      title: usesMobilePresentation() ? 'Released versions' : 'Release channel',
       icon: Icons.rocket_launch_outlined,
       trailing: _StatusPill(release.state),
       children: [
@@ -272,11 +275,13 @@ class _ReleasePanel extends StatelessWidget {
               ListTile(
                 contentPadding: EdgeInsets.zero,
                 dense: true,
-                title: SelectableText(version.definitionVersionId),
+                title: usesMobilePresentation()
+                    ? Text('Version ${version.definitionVersion}')
+                    : SelectableText(version.definitionVersionId),
                 subtitle: Text(
                   version.active
-                      ? 'Active release'
-                      : 'Published ${_shortTime(version.publishedAt)}',
+                      ? 'Active release${usesMobilePresentation() ? '\n${version.definitionVersionId}' : ''}'
+                      : 'Published ${_shortTime(version.publishedAt)}${usesMobilePresentation() ? '\n${version.definitionVersionId}' : ''}',
                 ),
                 trailing: mutable && !version.active && busy == null
                     ? TextButton(
@@ -475,7 +480,7 @@ class _AdaptationPanel extends StatelessWidget {
                           comparison: adaptation.comparison!,
                         ),
                       if (canManage &&
-                          NativeContract.currentVersion >= 48 &&
+                          NativeContract.currentVersion >= 56 &&
                           adaptation.state == 'evaluated' &&
                           adaptation.evaluationVerdict == 'passed' &&
                           adaptation.observedDefinitionVersion ==
@@ -563,31 +568,57 @@ class _GovernanceCard extends StatelessWidget {
   final Widget? trailing;
 
   @override
-  Widget build(BuildContext context) => Container(
-    width: double.infinity,
-    padding: const EdgeInsets.all(13),
-    decoration: BoxDecoration(
-      border: Border.all(color: Theme.of(context).dividerColor),
-      borderRadius: BorderRadius.circular(11),
-    ),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            Icon(icon, size: 18),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(title, style: Theme.of(context).textTheme.titleSmall),
-            ),
-            ?trailing,
-          ],
-        ),
-        const SizedBox(height: 11),
-        ...children,
-      ],
-    ),
-  );
+  Widget build(BuildContext context) => usesMobilePresentation()
+      ? MobileSurface(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(icon, size: 22),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      title,
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                  ),
+                  ?trailing,
+                ],
+              ),
+              const SizedBox(height: 16),
+              ...children,
+            ],
+          ),
+        )
+      : Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(13),
+          decoration: BoxDecoration(
+            border: Border.all(color: Theme.of(context).dividerColor),
+            borderRadius: BorderRadius.circular(11),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(icon, size: 18),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      title,
+                      style: Theme.of(context).textTheme.titleSmall,
+                    ),
+                  ),
+                  ?trailing,
+                ],
+              ),
+              const SizedBox(height: 11),
+              ...children,
+            ],
+          ),
+        );
 }
 
 class _ValueLine extends StatelessWidget {

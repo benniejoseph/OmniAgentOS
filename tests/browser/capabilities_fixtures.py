@@ -133,7 +133,7 @@ def overview(empty=False):
     data = {"version": "p11.7-truthful-integrations:1", "generatedAt": STAMP, "state": "empty" if empty else "partial",
             "disclosure": {"catalogSuggestions": "separate_from_installed", "credentialValuesIncluded": False, "rawCursorValuesIncluded": False, "providerContentIncluded": False, "costBasis": "recorded_attributable_usage_only"},
             "summary": {"installed": 0 if empty else 1, "working": 0, "degraded": 0 if empty else 1, "actionRequired": 0, "unavailable": 0, "suggestions": 1},
-            "inventory": {key: {"state": "ready", "detail": "Fixture bounded inventory loaded."} for key in ("oauth", "mcp", "openapi", "salesforce", "usage")},
+            "inventory": {key: {"state": "ready", "detail": "Fixture bounded inventory loaded."} for key in ("oauth", "mcp", "openapi", "usage")},
             "installed": [] if empty else [installed], "suggestions": [{"id": "fixture-suggestion", "name": "Future fixture system", "adapter": "openapi", "category": "data", "state": "configuration_required", "capabilities": ["Read metadata"], "installed": False, "detail": "A catalog suggestion grants no access."}]}
     return {"overview": data}
 

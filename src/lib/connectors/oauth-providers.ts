@@ -17,7 +17,7 @@ export {
 } from "@/lib/connectors/google-workspace-capabilities";
 export { GOOGLE_CALENDAR_EVENTS_SCOPE as GOOGLE_CALENDAR_WRITE_SCOPE } from "@/lib/connectors/google-workspace-capabilities";
 
-export type OAuthProvider = "google" | "salesforce";
+export type OAuthProvider = "google";
 export type GoogleConnectionPurpose = "personal" | "work";
 export type GoogleConnectorAccountPolicy = Readonly<{
   purpose: GoogleConnectionPurpose;
@@ -45,7 +45,6 @@ export class OAuthProviderError extends Error {
 }
 
 const oauthReturnPaths = new Set([
-  "/app/accounts",
   "/app/capture",
   "/app/connectors",
 ]);
@@ -59,19 +58,10 @@ export const oauthProviders = {
     clientSecretEnv: "GOOGLE_OAUTH_CLIENT_SECRET",
     scopes: GOOGLE_WORKSPACE_OAUTH_SCOPES,
   },
-  salesforce: {
-    label: "Salesforce",
-    authorizeUrl: "https://login.salesforce.com/services/oauth2/authorize",
-    tokenUrl: "https://login.salesforce.com/services/oauth2/token",
-    revokeUrl: "https://login.salesforce.com/services/oauth2/revoke",
-    clientIdEnv: "SALESFORCE_OAUTH_CLIENT_ID",
-    clientSecretEnv: "SALESFORCE_OAUTH_CLIENT_SECRET",
-    scopes: ["api", "refresh_token"],
-  },
 } as const;
 
 export function isOAuthProvider(value: string): value is OAuthProvider {
-  return value === "google" || value === "salesforce";
+  return value === "google";
 }
 export function oauthConfigured(provider: OAuthProvider) {
   const config = oauthProviders[provider];
@@ -267,12 +257,6 @@ export async function exchangeOAuthCode(
   if (!response.ok || typeof result.access_token !== "string") {
     throw oauthProviderFailure(response.status, "exchange");
   }
-  if (
-    provider === "salesforce" &&
-    !isSalesforceInstanceUrl(result.instance_url)
-  ) {
-    throw new Error("Salesforce returned an invalid instance authority.");
-  }
   if (provider === "google") {
     const identity = await validateGoogleConnectorIdentity(
       result,
@@ -324,22 +308,13 @@ export async function refreshOAuthAccess(provider: OAuthProvider, refreshToken: 
   if (!response.ok || typeof result.access_token !== "string") {
     throw oauthProviderFailure(response.status, "refresh", config.label);
   }
-  if (
-    provider === "salesforce" &&
-    result.instance_url !== undefined &&
-    !isSalesforceInstanceUrl(result.instance_url)
-  ) {
-    throw new Error("Salesforce returned an invalid instance authority.");
-  }
   return { ...result, refresh_token: typeof result.refresh_token === "string" ? result.refresh_token : refreshToken };
 }
 
 export async function revokeOAuthAccess(provider: OAuthProvider, token: string) {
   if (!token) return false;
   const response = await fetch(
-    provider === "google"
-      ? "https://oauth2.googleapis.com/revoke"
-      : oauthProviders.salesforce.revokeUrl,
+    "https://oauth2.googleapis.com/revoke",
     {
     method: "POST",
     headers: {
@@ -352,27 +327,6 @@ export async function revokeOAuthAccess(provider: OAuthProvider, token: string) 
   );
   if (!response.ok) throw new Error(`${oauthProviders[provider].label} access could not be revoked. Try again.`);
   return true;
-}
-
-export function isSalesforceInstanceUrl(value: unknown): value is string {
-  if (typeof value !== "string" || value.length > 500) return false;
-  try {
-    const url = new URL(value);
-    const host = url.hostname.toLowerCase();
-    return url.protocol === "https:" &&
-      url.username === "" &&
-      url.password === "" &&
-      url.pathname === "/" &&
-      url.search === "" &&
-      url.hash === "" &&
-      (
-        host.endsWith(".salesforce.com") ||
-        host.endsWith(".salesforce.mil") ||
-        host.endsWith(".cloudforce.com")
-      );
-  } catch {
-    return false;
-  }
 }
 
 async function validateGoogleConnectorIdentity(
