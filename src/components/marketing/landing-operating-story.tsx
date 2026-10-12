@@ -3,8 +3,7 @@ import styles from "./public-surface.module.css";
 
 export function ProductFacts() {
   return <section aria-label="Product facts" className={styles.container}><ul className={styles.facts}>
-    {productFacts.filter((fact) => fact.value !== "Live").map((fact) => <li key={fact.label}><span className={styles.factValue}>{fact.value}</span><span className={styles.support}>{fact.label}</span></li>)}
-    <li><span className={styles.factValue}>Private</span><span className={styles.support}>Approved accounts only</span></li>
+    {productFacts.map((fact) => <li key={fact.label}><span className={styles.factValue}>{fact.value}</span><span className={styles.support}>{fact.label}</span></li>)}
   </ul></section>;
 }
 export function OperatingLoop() {

@@ -49,6 +49,16 @@ const RETIRED_ROUTES_EXPIRE_ON = "2026-10-17";
 export const COMPLEXITY_REGISTRY: readonly ComplexityEntry[] = Object.freeze((
   [
     {
+      id: "responsibility-native-v47-compatibility",
+      kind: "version",
+      owner: "responsibilities",
+      summary: "v47 clients retain meeting tracking while v48 adds a closed work-item source shape.",
+      exitMetric: "Native v47 is outside the supported client window and telemetry shows no accepted v47 responsibility requests; then remove this compatibility gate and its tests.",
+      reviewedOn: "2026-10-12",
+      expiresOn: "2027-01-10",
+      paths: ["src/lib/mobile/responsibility-compatibility.ts", "src/lib/mobile/responsibility-compatibility.test.ts"],
+    },
+    {
       id: "run-checkpoint-shadow",
       kind: "shadow",
       owner: "runs",

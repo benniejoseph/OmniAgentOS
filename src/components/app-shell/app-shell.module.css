@@ -197,7 +197,7 @@
   border-color: var(--line);
   padding: 0.25rem 0.5rem calc(0.25rem + env(safe-area-inset-bottom, 0px));
   background: var(--background);
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   scroll-padding-inline: 0.5rem;
 }
 
@@ -333,4 +333,13 @@
   .mobilePanel {
     box-shadow: none;
   }
+}
+
+.compactMore > summary::-webkit-details-marker {
+  display: none;
+}
+
+.compactMore > summary:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
 }

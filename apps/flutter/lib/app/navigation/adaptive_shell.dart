@@ -132,7 +132,7 @@ class AdaptiveShell extends StatelessWidget {
             icon: const Icon(Icons.search_rounded, size: 21),
           ),
           IconButton(
-            tooltip: 'Attention inbox',
+            tooltip: 'Needs you',
             onPressed: () => _select(destinationIndex('/inbox')),
             icon: const Icon(Icons.notifications_none_rounded, size: 21),
           ),
@@ -431,7 +431,7 @@ class _WorkspaceDrawer extends StatelessWidget {
                         AsaelWordmark(),
                         SizedBox(height: 4),
                         Text(
-                          'Your second brain',
+                          'Your personal partner',
                           style: TextStyle(fontSize: 13),
                         ),
                       ],
@@ -688,7 +688,7 @@ class _BrandMark extends StatelessWidget {
             children: [
               AsaelWordmark(compact: true),
               SizedBox(height: 4),
-              Text('Your second brain', style: TextStyle(fontSize: 13)),
+              Text('Your personal partner', style: TextStyle(fontSize: 13)),
             ],
           ),
         ),

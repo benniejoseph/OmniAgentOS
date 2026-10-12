@@ -1,3 +1,4 @@
+import { compatibleResponsibilityValue } from "@/lib/mobile/responsibility-compatibility";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { exactQuery, responsibilityDenial, responsibilityFailure, responsibilityHeaders } from "@/lib/responsibilities/http";
 import { getResponsibilityObservations } from "@/lib/responsibilities/observation-service";
@@ -16,6 +17,6 @@ async function GETHandler(request: Request, route: RouteContext) {
     const query = exactQuery(request, ["limit"]);
     const raw = query.get("limit");
     if (raw !== null && !/^(?:[1-9]|[1-9][0-9]|100)$/.test(raw)) throw new ResponsibilityError("The observation limit must be 1–100.", 400, "responsibility_query_invalid");
-    return Response.json(await getResponsibilityObservations(context, id, raw === null ? 25 : Number(raw)), { headers: responsibilityHeaders });
+    return Response.json(compatibleResponsibilityValue(context, await getResponsibilityObservations(context, id, raw === null ? 25 : Number(raw))), { headers: responsibilityHeaders });
   } catch (error) { return responsibilityFailure(error); }
 }

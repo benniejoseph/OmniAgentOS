@@ -20,14 +20,14 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   metadataBase: new URL(ASAEL_PUBLIC_ORIGIN),
   title: {
-    default: "Asael — Personal Agent Arsenal",
+    default: "Asael — Your personal AI partner",
     template: "%s | Asael",
   },
-  description: "A private second brain and adaptive personal agent arsenal.",
+  description: "A personal AI partner for real work across your life and projects.",
   applicationName: "Asael",
   openGraph: {
-    title: "Asael — Personal Agent Arsenal",
-    description: "A private second brain and adaptive personal agent arsenal.",
+    title: "Asael — Your personal AI partner",
+    description: "A personal AI partner for real work across your life and projects.",
     images: [{ url: "/asael-logo.png", width: 1200, height: 800, alt: "Asael" }],
   },
 };

@@ -32,7 +32,7 @@ describe("Responsibility owner-facing presentation", () => {
   });
   it("shows explicit inactivity, finite dimensions, descriptive stops and frozen controls", () => {
     const html = renderToStaticMarkup(createElement(DraftEditor, { detail, canManage: true, frozen: true, references: { state: "error", error: "Unavailable" }, save: vi.fn(), preview: vi.fn(), refreshReferences: vi.fn() }));
-    expect(html).toContain("Saving or reviewing keeps the draft inactive.");
+    expect(html).toContain("Saving a draft keeps it inactive.");
     expect(html).toContain("<fieldset disabled="); expect(html).toContain("Maximum checks"); expect(html).toContain("Cost (micro USD)");
     expect(html).toContain("Zero means no budget"); expect(html).toContain("descriptive stop conditions"); expect(html).not.toContain("Activate this exact pilot");
     expect(normalizedDraft({ ...draft, purpose: "  purpose  ", stopConditions: [" first ", ""] })).toMatchObject({ purpose: "purpose", stopConditions: ["first"] });
@@ -51,7 +51,7 @@ describe("Responsibility owner-facing presentation", () => {
     expect(html).toContain("Activation status is unknown"); expect(html).not.toContain("Activate this exact pilot");
     const view: RuntimeView = { current: null, disclosure: RESPONSIBILITY_PILOT_DISCLOSURE, wakes: [], receipts: [], coverage: { limit: 40, total: null, hasMoreWakes: false, hasMoreReceipts: false }, dispatchReadiness: "not_observed", deliverySupported: false };
     const inactive = renderToStaticMarkup(createElement(RuntimePanel, { resource: { state: "ready", value: view }, record: current, enabled: true, frozen: false, refresh: vi.fn(), preview: vi.fn(), control: vi.fn() }));
-    expect(inactive).toContain("no activation recorded"); expect(inactive).toContain("Dispatch readiness has not been observed"); expect(inactive).toContain("Free-text success and stop conditions");
+    expect(inactive).toContain("no activation recorded"); expect(inactive).toContain("the check history below confirms when they run"); expect(inactive).toContain("Free-text success and stop conditions");
   });
   it("shows material/cosmetic policy and baseline absence without inventing delivery or observations", () => {
     const view: ObservationView = { receipts: [], baseline: null, hasMore: false, policy: RESPONSIBILITY_MEETING_COMPARISON_POLICY, coverage: { kind: "bounded_recent", limit: 25, returned: 0, total: null } };

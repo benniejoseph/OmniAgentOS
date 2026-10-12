@@ -12,6 +12,68 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('paid comparison recovers an unresolved exact suite with its original journal key', () async {
+    final api = _Api(), recovery = MemorySpecialistRecoveryStore();
+    final client = SpecialistApiClient(
+      _access(api),
+      _store(),
+      recovery,
+      'agents',
+    );
+    final body = {
+      'action': 'compare',
+      'adaptationId': 'exact-guidance',
+      'suite': {
+        'cases': ['owner task suite'],
+      },
+    };
+    api.failWrite = true;
+    await expectLater(
+      client.postJson(
+        '/api/agents/one/adaptations',
+        data: body,
+        headers: {'Idempotency-Key': 'original'},
+      ),
+      throwsStateError,
+    );
+    expect(api.comparisonWrites, 1);
+    expect(api.writes, 0);
+    expect(client.journal.single['state'], 'unknown');
+    client.close();
+    final recreated = SpecialistApiClient(
+      _access(api),
+      _store(),
+      recovery,
+      'agents',
+    );
+    api.failWrite = false;
+    await expectLater(
+      recreated.postJson(
+        '/api/agents/one/adaptations',
+        data: {
+          ...body,
+          'suite': {
+            'cases': ['different suite'],
+          },
+        },
+        headers: {'Idempotency-Key': 'new-different'},
+      ),
+      throwsStateError,
+    );
+    expect(api.comparisonWrites, 1);
+    final receipt = await recreated.postJson(
+      '/api/agents/one/adaptations',
+      data: body,
+      headers: {'Idempotency-Key': 'new-generated'},
+    );
+    expect(api.comparisonWrites, 2);
+    expect(api.comparisonKeys, ['original', 'original']);
+    expect(recreated.journal, hasLength(1));
+    await recreated.acceptParsedResponse(receipt);
+    expect(recreated.journal.single['state'], 'accepted');
+    recreated.close();
+  });
+
   test('unknown decisions survive recreation and require fresh inspection plus an explicit new decision', () async {
     final api = _Api(),
         recovery = MemorySpecialistRecoveryStore(),
@@ -124,7 +186,8 @@ NativeWorkspaceAccess _access(
 
 class _Api extends ApiClient {
   _Api() : super(Dio(), Dio(), _store());
-  int reads = 0, writes = 0;
+  int reads = 0, writes = 0, comparisonWrites = 0;
+  final comparisonKeys = <String>[];
   bool failWrite = false;
   Future<void>? admission;
   final admitted = Completer<void>();
@@ -140,6 +203,20 @@ class _Api extends ApiClient {
     authority.requireCurrent(apiBaseUrl);
     reads++;
     return {'agents': <Object?>[], 'builtIns': <Object?>[]};
+  }
+
+  @override
+  Future<SpecialistJson> postJsonAuthorizedComparisonOnce(
+    String path, {
+    required NativeRequestAuthority authority,
+    required SpecialistJson data,
+    required SpecialistJson headers,
+  }) async {
+    authority.requireCurrent(apiBaseUrl);
+    comparisonWrites++;
+    comparisonKeys.add(headers['Idempotency-Key'] as String);
+    if (failWrite) throw StateError('Response unavailable after dispatch.');
+    return {'adaptations': [], 'definitionVersion': 2};
   }
 
   @override

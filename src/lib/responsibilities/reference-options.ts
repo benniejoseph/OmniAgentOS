@@ -13,6 +13,7 @@ import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import { parseCanonicalWorkItemV1 } from "@/lib/workspaces/contracts";
 import type { SavedProcedure } from "@/lib/workflows/saved-procedures";
 import { exactIdSchema, type ResponsibilitySource } from "./contracts";
+import { WORK_ITEM_FOLLOWTHROUGH_PROCEDURE } from "./work-item-source";
 import { readOwnedResponsibilityProcedures } from "./procedure-reference";
 import { ResponsibilityError, type ResponsibilityOwner } from "./state";
 
@@ -104,7 +105,7 @@ async function readProcedures(context: SecurityContext, owner: ResponsibilityOwn
     const rows = await getSql().transaction((sql: SqlClient) => readOwnedResponsibilityProcedures(sql, owner, { lock: false, now: new Date().toISOString() })) as readonly SavedProcedure[];
     const counts = new Map<string, number>(); for (const row of rows) counts.set(row.id, (counts.get(row.id) ?? 0) + 1);
     const unique = rows.filter((row) => counts.get(row.id) === 1);
-    return { state: "available", items: unique.slice(0, LIMIT).map((row) => ({ id: row.id, label: label(row.aliases[0], row.id) })), hasMore: unique.length > LIMIT };
+    return { state: "available", items: [{ id: WORK_ITEM_FOLLOWTHROUGH_PROCEDURE, label: "Follow this work item" }, ...unique.filter((row) => row.id !== WORK_ITEM_FOLLOWTHROUGH_PROCEDURE).slice(0, LIMIT - 1).map((row) => ({ id: row.id, label: label(row.aliases[0], row.id) }))], hasMore: unique.length > LIMIT - 1 };
   });
 }
 async function readAgents(context: SecurityContext, owner: ResponsibilityOwner): Promise<Available<LabelledId>> {

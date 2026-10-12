@@ -11,10 +11,11 @@ import type { SecurityContext } from "@/lib/security/types";
 import { getOwnedThread } from "@/lib/threads/store";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import { getGovernedTool } from "@/lib/tools/registry";
-import { buildWorkflowProcedureSnapshot, listSavedProcedures, type SavedProcedure } from "@/lib/workflows/saved-procedures";
+import { buildResponsibilityWorkItemProcedure, buildWorkflowProcedureSnapshot, listSavedProcedures, type SavedProcedure } from "@/lib/workflows/saved-procedures";
 import { parseCanonicalWorkItemV1 } from "@/lib/workspaces/contracts";
 import { responsibilityPinsSchema, type ResponsibilityPins, type ResponsibilityRecord, type ResponsibilitySource } from "./contracts";
 import { ResponsibilityError, type ResponsibilityOwner } from "./state";
+import { readOwnedWorkItemWithSql, workItemSourceReadSchema, WORK_ITEM_FOLLOWTHROUGH_PROCEDURE } from "./work-item-source";
 import { readOwnedResponsibilityProcedures } from "./procedure-reference";
 
 /** Metadata-only authorization/pinning. This neither retrieves source bodies nor invokes a tool. */
@@ -40,15 +41,19 @@ export async function resolveResponsibilityPins(context: SecurityContext, owner:
     const projectionSha256 = canonicalJsonSha256(projected);
     if (projected.tenantId !== owner.tenantId || projected.workspaceId !== work.workspaceId || projected.projectId !== work.projectId ||
       projected.workItemId !== work.workItemId || !projected.ownerActorIds.includes(owner.actorId) || rows[0].projection_sha256 !== projectionSha256) throw unavailable();
-    const privateProcedures = hasDatabaseUrl() ? await getSql().transaction((sql: SqlClient) =>
+    const builtin = draft.procedureId === WORK_ITEM_FOLLOWTHROUGH_PROCEDURE;
+    if (builtin && (draft.sources.length !== 1 || draft.sources[0].kind !== "work_item" || draft.sources[0].id !== work.workItemId ||
+      draft.sources[0].workspaceId !== work.workspaceId || draft.sources[0].projectId !== work.projectId)) throw unavailable();
+    const privateProcedures = !builtin && hasDatabaseUrl() ? await getSql().transaction((sql: SqlClient) =>
       readOwnedResponsibilityProcedures(sql, owner, { lock: false, now: new Date().toISOString() })) as readonly SavedProcedure[] : [];
     // Legacy previews remain compatible; only exact owner-private procedures
     // can later satisfy the separate runtime activation contract. Ambiguity
     // across the two read lanes still fails closed below.
-    const procedures = [...await listSavedProcedures({ tenantId: owner.tenantId, actorId: context.actorId }), ...privateProcedures];
+    const procedures = builtin ? [] : [...await listSavedProcedures({ tenantId: owner.tenantId, actorId: context.actorId }), ...privateProcedures];
     const matches = procedures.filter((procedure) => procedure.id === draft.procedureId);
-    if (matches.length !== 1) throw unavailable();
-    const snapshot = buildWorkflowProcedureSnapshot(matches[0], matches[0].aliases[0]);
+    if (!builtin && matches.length !== 1) throw unavailable();
+    const snapshot = builtin ? buildResponsibilityWorkItemProcedure({ ...work, tenantId: owner.tenantId, ownerActorId: owner.actorId })
+      : buildWorkflowProcedureSnapshot(matches[0], matches[0].aliases[0]);
     const { governedToolOperationClass } = await import("@/lib/tools/executor");
     const tools = snapshot.toolBindings.map((binding) => {
       const tool = getGovernedTool(binding.toolId);
@@ -79,6 +84,15 @@ async function sourceDigest(context: SecurityContext, source: ResponsibilitySour
   // deliberately project actorId back to this exact request actor. It is not
   // the source's authored owner and must not be accepted as a new owner grant.
   const owner = { tenantId: context.tenantId, actorId: context.actorId, requestActorBinding: canonicalRequestActorBindingFromSecurityContext(context) };
+  if (source.kind === "work_item") {
+    const canonical = canonicalAuthUserActorFromSecurityContext(context);
+    if (!canonical) throw unavailable();
+    const read = (sql: SqlClient) => readOwnedWorkItemWithSql(sql, { tenantId: context.tenantId, actorId: canonical.actorId },
+      { workspaceId: source.workspaceId, projectId: source.projectId, workItemId: source.id }, new Date().toISOString());
+    const sql = getSql();
+    const value = await (sql.transactionScoped ? read(sql) : sql.transaction(read));
+    return workItemSourceReadSchema.parse(value).revisionSha256;
+  }
   if (source.kind === "thread") {
     const thread = await getOwnedThread(source.id, owner);
     if (!thread || thread.id !== source.id || thread.tenantId !== context.tenantId || thread.actorId !== context.actorId) throw unavailable();

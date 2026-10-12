@@ -157,3 +157,18 @@ themes, 320px and 200% text. Long panels use scrolled viewport captures with poi
 checks before and after; element captures must not resize touch contexts.
 Historical content availability and durable unknown-result recovery across page
 reload remain separate server/native acceptance gates.
+
+
+`responsibility_work_item.py` covers work-item quick setup, exact saved review,
+work pilot acknowledgement, lost-response same-key recovery and separately
+enabled owner inbox delivery. Desktop and phone each allow exactly five
+intercepted writes. Both themes plus 320px/200% text produce axe and screenshot
+evidence. Every tracking effect is synthetic; PostgreSQL integration separately
+proves actual source checks, completion/reopening, overdue changes and delivery.
+The work-family CI job runs this suite serially beside the retained meeting lane.
+
+The Agents adaptation browser flow also exercises three independently authored
+text examples and four paired comparison receipts: tie, regression, incomplete
+and improved. Only the improved result exposes activation. Model output remains
+escaped text; unknown cost remains unknown. These fixtures do not call a model
+or activate guidance.

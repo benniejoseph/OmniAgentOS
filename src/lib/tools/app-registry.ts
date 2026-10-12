@@ -453,6 +453,9 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   mutationTool("app.projects.builder.stop", "Stop app workspace", "Stop the exact project's build sandbox while retaining its immutable activity receipts.", requiredObjectSchema({
     projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" },
   }, ["projectId", "sessionId"]), { riskLevel: 2, approvalRequired: true, reversible: false }),
+  readTool("app.work_items.show", "Show work item", "Read one exact owned work item, its current status, deadline, linked outputs, and authorized dependency states. Completion is not independent outcome verification.", requiredObjectSchema({
+    workspaceId: { type: "string" }, projectId: { type: "string" }, workItemId: { type: "string" },
+  }, ["workspaceId", "projectId", "workItemId"])),
   mutationTool("app.work_items.create", "Create project work item", "Create one work item in an exact active project.", requiredObjectSchema({
     projectId: opaqueId("Exact owning project ID."),
     title: text(1, 240),
@@ -692,9 +695,17 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   mutationTool("app.agents.adaptations.refresh", "Refresh agent adaptations", "Observe correction-backed evidence and refresh proposed adaptations for one custom agent.", requiredObjectSchema({
     agentId: opaqueId("Exact custom-agent ID."),
   }, ["agentId"]), { reversible: true }),
-  mutationTool("app.agents.adaptations.manage", "Manage agent adaptation", "Evaluate, activate, or roll back one exact correction-backed agent adaptation.", requiredObjectSchema({
+  mutationTool("app.agents.adaptations.manage", "Manage agent adaptation", "Check eligibility, compare guidance on owner-supplied text examples, activate measured improvement, or roll back one exact adaptation. Comparison makes bounded model calls without tools or retrieval.", requiredObjectSchema({
     agentId: opaqueId("Exact custom-agent ID."), adaptationId: { type: "string", pattern: "^agent-adaptation:[a-f0-9]{64}$" },
-    action: { type: "string", enum: ["evaluate", "activate", "rollback"] },
+    action: { type: "string", enum: ["evaluate", "compare", "activate", "rollback"] },
+    suite: requiredObjectSchema({ cases: { type: "array", minItems: 3, maxItems: 10, items: requiredObjectSchema({
+      id: { type: "string", pattern: "^[a-zA-Z0-9_-]{1,40}$" }, task: text(10, 2_000),
+      assertions: requiredObjectSchema({
+        allOf: { type: "array", maxItems: 5, items: text(1, 120) },
+        noneOf: { type: "array", maxItems: 5, items: text(1, 120) },
+        minLength: integer(1, 8_000), maxLength: integer(1, 8_000),
+      }, ["allOf", "noneOf", "minLength", "maxLength"]),
+    }, ["id", "task", "assertions"]) } }, ["cases"]),
   }, ["agentId", "adaptationId", "action"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
   readTool("app.skills.list", "List skills", "List built-in and custom skills readable by the current actor.", objectSchema({})),
   readTool("app.skills.show", "Show skill", "Read one exact built-in or custom skill.", requiredObjectSchema({ id: opaqueId("Exact skill ID.") }, ["id"])),

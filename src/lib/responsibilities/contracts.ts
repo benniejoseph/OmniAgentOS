@@ -11,6 +11,7 @@ const text = (max: number) => z.string().max(max).refine((value) => value.trim()
 
 export const responsibilitySourceSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("meeting"), id: exactIdSchema, workspaceId: exactIdSchema }).strict(),
+  z.object({ kind: z.literal("work_item"), id: exactIdSchema, workspaceId: exactIdSchema, projectId: exactIdSchema }).strict(),
   z.object({ kind: z.literal("thread"), id: z.string().uuid() }).strict(),
   z.object({ kind: z.literal("capture_asset"), id: exactIdSchema }).strict(),
 ]);
@@ -35,7 +36,13 @@ export const responsibilityDraftSchema = z.object({
   notificationRule: z.object({ kind: z.literal("material_change_only"), destination: z.literal("owner_in_app"), quietOnNoChange: z.literal(true) }).strict().nullable(),
   successCondition: text(1_000), stopConditions: z.array(text(500).refine((value) => value.length > 0)).max(8),
   work: responsibilityWorkSchema.nullable(), procedureId: exactIdSchema.nullable(), agentId: exactIdSchema.nullable(),
-}).strict();
+}).strict().superRefine((value, context) => {
+  const workSource = value.sources.find((source) => source.kind === "work_item");
+  if (workSource && (value.sources.length !== 1 || (value.work !== null &&
+    (workSource.id !== value.work.workItemId || workSource.workspaceId !== value.work.workspaceId || workSource.projectId !== value.work.projectId)))) {
+    context.addIssue({ code: "custom", message: "Follow-through must watch the same single work item selected for this responsibility." });
+  }
+});
 
 export const responsibilityCreateSchema = z.object({ action: z.literal("create"), expectedRevision: z.literal(0), draft: responsibilityDraftSchema }).strict();
 export const responsibilityChangeSchema = z.discriminatedUnion("action", [
@@ -69,7 +76,7 @@ export type ResponsibilityPins = z.infer<typeof responsibilityPinsSchema>;
 export type ResponsibilityRecord = z.infer<typeof responsibilityRecordSchema>;
 export type ResponsibilityMutation = z.infer<typeof responsibilityMutationSchema>;
 export type ResponsibilityPreview = { state: "ready"; draftSha256: string; reviewSha256: string; pins: ResponsibilityPins; authorityEffect: "none"; activationSupported: false };
-export function sourceKey(source: ResponsibilitySource) { return JSON.stringify([source.kind, source.id, "workspaceId" in source ? source.workspaceId : null]); }
+export function sourceKey(source: ResponsibilitySource) { return JSON.stringify([source.kind, source.id, "workspaceId" in source ? source.workspaceId : null, ...("projectId" in source ? [source.projectId] : [])]); }
 
 export const RESPONSIBILITY_COMPATIBILITY = Object.freeze({
   schemaVersion: 1, supportedActions: ["create", "update", "review"] as const,

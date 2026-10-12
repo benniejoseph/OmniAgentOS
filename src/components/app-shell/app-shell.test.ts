@@ -64,7 +64,7 @@ describe("the inbox count in the app shell", () => {
     const inboxLinks = linkTo(html, "/app/approvals");
     expect(inboxLinks).toHaveLength(1);
     expect(inboxLinks[0]).toContain('class="notification-trigger"');
-    expect(inboxLinks[0]).toContain('aria-label="Inbox, 3 waiting"');
+    expect(inboxLinks[0]).toContain('aria-label="Needs you, 3 waiting"');
     expect(html).toContain('aria-label="More, 3 waiting"');
     expect(html).toContain('data-nav-count="3"');
   });
@@ -75,7 +75,7 @@ describe("the inbox count in the app shell", () => {
     expect(html).not.toContain("notification-trigger");
     const inboxLinks = linkTo(html, "/app/approvals");
     expect(inboxLinks).toHaveLength(1);
-    expect(inboxLinks[0]).toContain('aria-label="Inbox, 3 waiting"');
+    expect(inboxLinks[0]).toContain('aria-label="Needs you, 3 waiting"');
     expect(inboxLinks[0]).toContain('aria-current="page"');
     expect(inboxLinks[0]).toContain("bg-primary-ink text-primary");
     expect(html).not.toContain('aria-label="More, 3 waiting"');
@@ -100,14 +100,14 @@ describe("the inbox count in the other navigations", () => {
     }));
 
     const inbox = linkTo(html, "/app/approvals")[0] ?? "";
-    expect(inbox).toContain('aria-label="Inbox, 12 waiting"');
+    expect(inbox).toContain('aria-label="Needs you, 12 waiting"');
     expect(inbox).toContain("absolute right-1 top-1");
     expect(inbox).toContain('data-nav-count="12"');
     expect(linkTo(html, "/app/command")[0]).toContain('aria-label="Assistant"');
     expect(html.match(/data-nav-count/g)).toHaveLength(1);
 
     const none = renderToStaticMarkup(createElement(CompactNavigation, { pathname: "/app/command" }));
-    expect(linkTo(none, "/app/approvals")[0]).toContain('aria-label="Inbox"');
+    expect(linkTo(none, "/app/approvals")[0]).toContain('aria-label="Needs you"');
     expect(none).not.toContain("data-nav-count");
   });
 
@@ -119,7 +119,7 @@ describe("the inbox count in the other navigations", () => {
     }));
 
     const inbox = linkTo(html, "/app/approvals")[0] ?? "";
-    expect(inbox).toContain('aria-label="Inbox, 5 waiting"');
+    expect(inbox).toContain('aria-label="Needs you, 5 waiting"');
     expect(inbox).toContain('data-nav-count="5"');
     expect(inbox).toContain("bg-primary text-primary-ink");
     expect(html.match(/data-nav-count/g)).toHaveLength(1);
@@ -157,5 +157,31 @@ describe("the desktop navigation width", () => {
     expect(expanded).toContain("lg:pl-60");
     expect(expanded).not.toContain("lg:pl-20");
     expect(expanded).toContain('aria-label="Collapse workspace navigation"');
+  });
+});
+
+
+describe("personal partner shell", () => {
+  it("keeps four primary places and Needs you above the secondary disclosure", () => {
+    const html = renderToStaticMarkup(createElement(CompactNavigation, { pathname: "/app/command", inboxCount: 2 }));
+    const beforeMore = html.slice(0, html.indexOf("<details"));
+    for (const href of ["/app", "/app/command", "/app/projects", "/app/memory", "/app/approvals"]) {
+      expect(linkTo(beforeMore, href)).toHaveLength(1);
+    }
+    expect(linkTo(beforeMore, "/app/automation")).toHaveLength(0);
+    expect(html).toContain('aria-label="More workspaces"');
+    expect(html).not.toContain('href="/app/payments"');
+  });
+
+  it("keeps the active specialist visible without duplicating it in More", () => {
+    const html = renderToStaticMarkup(createElement(CompactNavigation, { pathname: "/app/responsibilities/check-1" }));
+    expect(linkTo(html, "/app/responsibilities")).toHaveLength(1);
+    expect(linkTo(html.slice(0, html.indexOf("<details")), "/app/responsibilities")[0]).toContain('aria-current="page"');
+  });
+
+  it("retains a truthful title for legacy payment deep links", () => {
+    const html = renderShell("/app/payments", undefined);
+    expect(html).toContain(">Payments</p>");
+    expect(linkTo(html, "/app/payments")).toHaveLength(0);
   });
 });

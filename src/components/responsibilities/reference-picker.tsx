@@ -1,13 +1,13 @@
 "use client";
-import { sourceKey, type References, type ResponsibilityDraft } from "./model";
+import { sourceKey, workItemTrackingDraft, type References, type ResponsibilityDraft } from "./model";
 import type { Resource } from "./controller";
 import styles from "./responsibilities.module.css";
 
 export function ReferencePicker({ draft, onChange, resource, refresh }: { draft: ResponsibilityDraft; onChange: (value: ResponsibilityDraft) => void; resource: Resource<References>; refresh: () => void }) {
   const groups = resource.state === "ready" ? resource.value?.groups : undefined;
   return <section className={styles.stack} aria-labelledby="responsibility-references">
-    <h3 id="responsibility-references">Authorized references</h3>
-    <p>Choose from currently readable metadata. Review checks every selected reference again and pins its exact revision. The meeting pilot supports one owner-private native meeting.</p>
+    <h3 id="responsibility-references">What should Asael follow?</h3>
+    <p>Track a work item’s progress, deadline and linked outputs, or changes to a meeting. Asael checks access again before every check.</p>
     <button type="button" onClick={refresh} disabled={resource.state === "loading"}>{resource.state === "loading" ? "Loading references…" : "Refresh available references"}</button>
     {resource.state === "error" && <p role="status">References unavailable. {resource.error} Your selected IDs remain in this draft.</p>}
     {groups && <>
@@ -25,6 +25,12 @@ export function ReferencePicker({ draft, onChange, resource, refresh }: { draft:
         {draft.work && !groups.work.items.some((item) => workValue(item) === workValue(draft.work!)) && <option value={workValue(draft.work)}>Saved reference · {draft.work.workItemId} (not in this page)</option>}
         {groups.work.items.map((item) => <option key={workValue(item)} value={workValue(item)}>{item.label || item.workItemId} · {item.workItemId}</option>)}
       </select></label>
+      {draft.work && <div className={styles.notice}>
+        <p>Set up checks for this task and inbox updates for meaningful changes. New schedules default to daily checks for a week; your existing schedule and limits are preserved.</p>
+        <button type="button" onClick={() => onChange(workItemTrackingDraft(draft,
+          groups.work.items.find((item) => workValue(item) === workValue(draft.work!))?.label || "this work item"))}>Set up work-item tracking</button>
+        <small>Creates a draft with a built-in read-only routine. Saving it does not start checks or send notifications.</small>
+      </div>}
       {(["procedures", "agents"] as const).map((key) => {
         const field = key === "procedures" ? "procedureId" : "agentId"; const group = groups[key];
         return <label key={key}>{key === "procedures" ? "Owner-private procedure" : "Agent"}<GroupStatus group={group} label={key} />

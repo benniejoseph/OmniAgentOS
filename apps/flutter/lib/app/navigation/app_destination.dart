@@ -35,8 +35,9 @@ const appDestinations = <AppDestination>[
     icon: Icons.grid_view_outlined,
     selectedIcon: Icons.grid_view_rounded,
     eyebrow: 'YOUR DAY',
-    description: 'Your work, decisions, and recent results.',
+    description: 'What matters today, what changed, and what needs you.',
     group: AppDestinationGroup.workspace,
+    primary: true,
   ),
   AppDestination(
     label: 'Assistant',
@@ -58,12 +59,12 @@ const appDestinations = <AppDestination>[
     group: AppDestinationGroup.workspace,
   ),
   AppDestination(
-    label: 'Work',
+    label: 'My work',
     path: '/projects',
     icon: Icons.folder_copy_outlined,
     selectedIcon: Icons.folder_copy_rounded,
     eyebrow: 'DURABLE WORK',
-    description: 'Plan, execute, review, and verify durable work.',
+    description: 'Projects, commitments, and work Asael carries forward.',
     group: AppDestinationGroup.workspace,
     primary: true,
   ),
@@ -75,7 +76,6 @@ const appDestinations = <AppDestination>[
     eyebrow: 'WORK AND UPDATES',
     description: 'Authorized work, decisions, updates and history.',
     group: AppDestinationGroup.workspace,
-    primary: true,
   ),
   AppDestination(
     label: 'Responsibilities',
@@ -83,16 +83,16 @@ const appDestinations = <AppDestination>[
     icon: Icons.event_repeat_outlined,
     selectedIcon: Icons.event_repeat,
     eyebrow: 'BOUNDED CHECKS',
-    description: 'Review finite checks, evidence, limits and inbox delivery.',
+    description: 'Ongoing checks and follow-through on your commitments.',
     group: AppDestinationGroup.workspace,
   ),
   AppDestination(
-    label: 'Memory',
+    label: 'Library',
     path: '/knowledge',
     icon: Icons.account_tree_outlined,
     selectedIcon: Icons.account_tree_rounded,
     eyebrow: 'DURABLE CONTEXT',
-    description: 'What your second brain knows and remembers.',
+    description: 'Saved sources, memories, and the evidence behind them.',
     group: AppDestinationGroup.workspace,
     primary: true,
   ),
@@ -142,7 +142,6 @@ const appDestinations = <AppDestination>[
     description:
         'Skills, Extensions, Connections, and Automations in one workspace.',
     group: AppDestinationGroup.automation,
-    primary: true,
   ),
   AppDestination(
     label: 'Automations',
@@ -166,12 +165,12 @@ const appDestinations = <AppDestination>[
     macosVisible: false,
   ),
   AppDestination(
-    label: 'Inbox',
+    label: 'Needs you',
     path: '/inbox',
     icon: Icons.inbox_outlined,
     selectedIcon: Icons.inbox_rounded,
     eyebrow: 'ATTENTION QUEUE',
-    description: 'Review actions that need your attention.',
+    description: 'Your inbox for approvals and actions that need attention.',
     group: AppDestinationGroup.review,
   ),
   AppDestination(
@@ -182,6 +181,9 @@ const appDestinations = <AppDestination>[
     eyebrow: 'TRUSTED SURFACE',
     description: 'Review exact purchase mandates and payment evidence.',
     group: AppDestinationGroup.review,
+    // Keep the branch and deep links while payment execution is unavailable.
+    macosVisible: false,
+    adaptiveVisible: false,
   ),
   AppDestination(
     label: 'Results',

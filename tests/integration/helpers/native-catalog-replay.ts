@@ -1,5 +1,79 @@
 import type postgres from "postgres";
 import { expect } from "vitest";
+import { databaseSchemaMigrations } from "@/lib/db/client";
+import { ensureAgentAdaptationLifecycleV1 } from "@/lib/db/schema/agents";
+import { applySqlMigrationFile, readSqlMigrationFile } from "@/lib/db/sql-migration-files";
+import type { SqlClient } from "@/lib/db/sql-types";
+
+/** Only disposable migration fixtures may remove empty comparison evidence.
+ * Capture the original trigger declaration without rerunning its old RLS or ACLs. */
+export async function removeEmptyAgentTextComparisonsForReplay(sql: postgres.TransactionSql) {
+  expect(await sql`SELECT
+    (SELECT count(*)::int FROM public.omni_agent_adaptation_comparisons) AS comparisons,
+    (SELECT count(*)::int FROM public.omni_agent_adaptations WHERE comparison IS NOT NULL) AS measured
+  `).toEqual([{ comparisons: 0, measured: 0 }]);
+  const declarations: string[] = [];
+  const capture = Object.assign(async (strings: TemplateStringsArray, ...params: unknown[]) => {
+    expect(params).toHaveLength(0);
+    const statement = strings.join("");
+    if (statement.trimStart().startsWith("CREATE OR REPLACE FUNCTION omni_protect_agent_adaptation_v1()")) declarations.push(statement);
+    return [];
+  }, {
+    query: async () => [], unsafe: async () => [], transaction: async () => undefined,
+    transactionScoped: true,
+  }) satisfies SqlClient;
+  await ensureAgentAdaptationLifecycleV1(capture);
+  expect(declarations).toHaveLength(1);
+  await sql.unsafe(declarations[0]);
+  await sql`DROP TABLE public.omni_agent_adaptation_comparisons`;
+  await sql`DROP FUNCTION public.omni_protect_adaptation_comparison_v1()`;
+  await sql`ALTER TABLE public.omni_agent_adaptations DROP COLUMN comparison`;
+  await sql`DELETE FROM omni_schema_version WHERE version=247`;
+}
+
+async function readReplayMigration(version: number, file: string) {
+  const row = databaseSchemaMigrations.find((migration) => migration.version === version);
+  if (!row) throw new Error(`Replay migration ${version} is missing.`);
+  return { row, migration: await readSqlMigrationFile({ file, sha256: row.checksum, migrations: [row] }) };
+}
+
+/** Restore the exact245 boundary on an empty, disposable personal-partner lane. */
+export async function removeEmptyPersonalPartnerMigrationsForReplay(sql: postgres.TransactionSql) {
+  await removeEmptyAgentTextComparisonsForReplay(sql);
+  expect(await sql`SELECT
+    (SELECT count(*)::int FROM public.omni_responsibility_lifecycles WHERE snapshot->'configuration'->'source'->>'kind'='work_item') AS work_items,
+    (SELECT count(*)::int FROM public.omni_responsibility_notification_admissions WHERE snapshot->'configuration'->'source'->>'kind'='work_item') AS admissions
+  `).toEqual([{ work_items: 0, admissions: 0 }]);
+  for (const [version, file, name] of [
+    [218, "20261004110000_responsibility_runtime.sql", "omni_protect_responsibility_runtime_head_v1"],
+    [219, "20261004113000_responsibility_notifications.sql", "omni_protect_responsibility_notification_head_v1"],
+  ] as const) {
+    const { migration } = await readReplayMigration(version, file);
+    const statements = migration.statements.filter((statement) => statement.trimStart().startsWith(`CREATE FUNCTION public.${name}()`));
+    expect(statements).toHaveLength(1);
+    await sql.unsafe(statements[0].replace("CREATE FUNCTION", "CREATE OR REPLACE FUNCTION"));
+  }
+  await sql`DELETE FROM omni_schema_version WHERE version=246`;
+}
+
+/** Reinstall246/247 after a historical connector replay has reached245. */
+export async function replayPersonalPartnerMigrations(sql: postgres.TransactionSql) {
+  const adapter: Parameters<typeof applySqlMigrationFile>[0] = { unsafe: async (statement, params) => {
+    const values = (params ?? []).map((value) => {
+      if (typeof value !== "string") throw new Error("Migration settings must be strings.");
+      return value;
+    });
+    return sql.unsafe<Record<string, unknown>[]>(statement, values);
+  } };
+  for (const [version, file] of [
+    [246, "20261012110000_responsibility_work_item_followthrough.sql"],
+    [247, "20261012113000_agent_text_comparisons.sql"],
+  ] as const) {
+    const { row, migration } = await readReplayMigration(version, file);
+    await applySqlMigrationFile(adapter, migration, [row], []);
+  }
+}
+
 
 /** Restore243 only when this disposable fixture has no GitHub upgrade evidence. */
 export async function removeNativeGithubUpgradesForReplay(sql: postgres.TransactionSql) {

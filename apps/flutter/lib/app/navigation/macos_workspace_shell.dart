@@ -629,7 +629,7 @@ class _MacosGlobalToolbar extends StatelessWidget {
               icon: const Icon(Icons.open_in_new_rounded),
             ),
             IconButton(
-              tooltip: 'Attention inbox (⌘⇧I)',
+              tooltip: 'Needs you (⌘⇧I)',
               onPressed: onOpenInbox,
               icon: const Icon(Icons.notifications_none_rounded),
             ),

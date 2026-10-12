@@ -9,7 +9,6 @@ import {
   ChartCandlestick,
   Cable,
   CheckCircle2,
-  CreditCard,
   Database,
   FileText,
   FolderKanban,
@@ -90,7 +89,7 @@ export const appNav: AppNavItem[] = [
   {
     href: "/app/command",
     label: "Assistant",
-    shortLabel: "Ask",
+    shortLabel: "Assistant",
     description: "Ask Asael a question or hand off a task.",
     icon: TerminalSquare,
   },
@@ -98,7 +97,7 @@ export const appNav: AppNavItem[] = [
     href: "/app",
     label: "Today",
     shortLabel: "Today",
-    description: "Your work, decisions, and recent results.",
+    description: "What matters today, what changed, and what needs you.",
     icon: Activity,
   },
   {
@@ -110,24 +109,17 @@ export const appNav: AppNavItem[] = [
   },
   {
     href: "/app/projects",
-    label: "Work",
-    shortLabel: "Work",
-    description: "Plan, execute, review, and verify durable work.",
+    label: "My work",
+    shortLabel: "My work",
+    description: "Projects, commitments, and the work Asael carries forward.",
     icon: FolderKanban,
   },
   {
     href: "/app/approvals",
-    label: "Inbox",
-    shortLabel: "Inbox",
-    description: "Review actions that need your attention.",
+    label: "Needs you",
+    shortLabel: "Needs you",
+    description: "Your inbox for approvals and actions that need your attention.",
     icon: CheckCircle2,
-  },
-  {
-    href: "/app/payments",
-    label: "Payments",
-    shortLabel: "Payments",
-    description: "Review and cryptographically authorize exact purchase mandates.",
-    icon: CreditCard,
   },
   {
     href: "/app/results",
@@ -151,13 +143,13 @@ export const appNav: AppNavItem[] = [
   {
     href: "/app/responsibilities",
     label: "Responsibilities",
-    description: "Review bounded follow-through, exact evidence, limits, and lifecycle.",
+    description: "Ongoing checks and follow-through on your commitments.",
     icon: CalendarDays,
   },
   {
     href: "/app/memory",
-    label: "Memory",
-    description: "What your second brain knows and remembers.",
+    label: "Library",
+    description: "Saved sources, memories, and the evidence behind what Asael remembers.",
     icon: Brain,
   },
   {
@@ -194,9 +186,9 @@ export const appNav: AppNavItem[] = [
   },
 ];
 
-// The five everyday destinations stay reachable on mobile. More retains every
-// existing specialist, review and settings destination without changing URLs.
-export const primaryNavHrefs = ["/app/command", "/app/projects", "/app/activity", "/app/memory", "/app/automation"];
+// Four everyday places; specialist and setup tools remain in More and search.
+// Disabled payment execution keeps its legacy route outside general navigation.
+export const primaryNavHrefs = ["/app", "/app/command", "/app/projects", "/app/memory"];
 export const primaryNavItems = primaryNavHrefs.map((href) => {
   const item = appNav.find((entry) => entry.href === href);
   if (!item) throw new Error(`Missing primary navigation item for ${href}`);
@@ -211,8 +203,7 @@ export const appNavGroups: AppNavGroup[] = [
   {
     label: "More",
     collapsible: true,
-    items: ["/app", "/app/capture"].map((href) => appNav.find((item) => item.href === href)!)
-      .concat(appNav.filter((item) => !primaryNavHrefs.includes(item.href) && item.href !== "/app" && item.href !== "/app/capture")),
+    items: appNav.filter((item) => !primaryNavHrefs.includes(item.href)),
   },
 ];
 

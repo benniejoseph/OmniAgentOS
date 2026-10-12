@@ -5,7 +5,7 @@ import { createExecutionScope } from "@/lib/security/execution-scope";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import { instantSchema, responsibilityIdSchema } from "./contracts";
 import { buildRuntimeReceipt, changeResponsibilityLifecycle, verifyLifecycle, verifyRuntimeReceipt, verifyWake } from "./lifecycle-state";
-import { RESPONSIBILITY_PILOT_DISCLOSURE, RESPONSIBILITY_RUNTIME_CONTRACT, responsibilityLifecycleRequestSchema,
+import { RESPONSIBILITY_WORK_ITEM_PILOT_DISCLOSURE, RESPONSIBILITY_PILOT_DISCLOSURE, RESPONSIBILITY_RUNTIME_CONTRACT, responsibilityLifecycleRequestSchema,
   type ResponsibilityLifecycle, type ResponsibilityRuntimeReceipt, type ResponsibilityWake } from "./runtime-contracts";
 import { nextPilotDue, resolveResponsibilityPilot } from "./runtime-references";
 import { idempotencySha256, notFound, ResponsibilityError, storageInvalid, verifiedRecord, type ResponsibilityOwner } from "./state";
@@ -55,7 +55,7 @@ export async function readResponsibilityRuntime(owner: ResponsibilityOwner, id: 
       ORDER BY created_at DESC, id ASC LIMIT 41`;
     const receipts = await sql`SELECT receipt FROM omni_responsibility_runtime_receipts WHERE tenant_id = ${owner.tenantId} AND actor_id = ${owner.actorId} AND responsibility_id = ${id}
       ORDER BY revision DESC LIMIT 41`;
-    const base = { schemaVersion: 1, contract: RESPONSIBILITY_RUNTIME_CONTRACT, current, disclosure: RESPONSIBILITY_PILOT_DISCLOSURE,
+    const base = { schemaVersion: 1, contract: RESPONSIBILITY_RUNTIME_CONTRACT, current, disclosure: record.draft.sources[0]?.kind === "work_item" ? RESPONSIBILITY_WORK_ITEM_PILOT_DISCLOSURE : RESPONSIBILITY_PILOT_DISCLOSURE,
       wakes: rows.slice(0, 40).map((row) => wakeFromRow(row, owner, id)), receipts: receipts.slice(0, 40).map((row) => verifyRuntimeReceipt(row.receipt)),
       coverage: { limit: 40, total: null, hasMoreWakes: rows.length > 40, hasMoreReceipts: receipts.length > 40 },
       dispatchReadiness: "not_observed" as const, deliverySupported: false };

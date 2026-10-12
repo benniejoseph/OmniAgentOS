@@ -12,7 +12,7 @@ import re
 import time
 from urllib.parse import parse_qs, quote, urlsplit
 from playwright.sync_api import expect, sync_playwright
-from agents_fixtures import A, B, ADAPTATION, GRANT, LONG, OTHER_TASK, RUN, SKILL, TASK, TEXT, AgentFixtures, agent_path, definition, evaluated
+from agents_fixtures import A, B, ADAPTATION, GRANT, LONG, OTHER_TASK, RUN, SKILL, TASK, TEXT, AgentFixtures, agent_path, definition, evaluated, COMPARISON_SUITE, COMPARISON_OUTPUT, comparison_result
 from fixtures import STAMP
 from run import Checks, REPO, navigate, preview, select_theme
 
@@ -269,9 +269,37 @@ def exact_effects(page, fixture, checks):
         "verdict": "passed", "evaluatedAt": STAMP, "evaluationSha256": "f" * 64}})
     fixture.expect_effect(agent_path(suffix="/adaptations"), "POST", {"action": "evaluate", "adaptationId": ADAPTATION}, {"definitionVersion": 1, "adaptations": [next_adaptation]})
     fixture.adaptations = [next_adaptation]
-    adaptation(page).get_by_role("button", name="Evaluate", exact=True).click()
-    expect(adaptation(page).get_by_role("button", name="Activate", exact=True)).to_be_enabled()
-    checks.check("Exact evaluation permits reviewed activation but does not activate", len(fixture.writes) == 4 and fixture.writes[-1]["body"]["action"] == "evaluate")
+    adaptation(page).get_by_role("button", name="Check eligibility", exact=True).click()
+    expect(adaptation(page).get_by_role("button", name="Run 6 model calls and compare", exact=True)).to_be_enabled()
+    checks.check("Eligibility alone cannot activate guidance", adaptation(page).get_by_role("button", name="Activate tested guidance", exact=True).count() == 0 and len(fixture.writes) == 4)
+    for index, case in enumerate(COMPARISON_SUITE["cases"]):
+        group = adaptation(page).get_by_role("group", name=f"Example {index + 1}", exact=True)
+        group.get_by_role("textbox", name="Task", exact=True).fill(case["task"])
+        group.get_by_role("textbox", name="Must include (one phrase per line, up to 5)", exact=True).fill("Next step:")
+        group.get_by_role("textbox", name="Must avoid (one phrase per line, up to 5)", exact=True).fill("blocked")
+    for ordinal, verdict in enumerate(("no_change", "regressed", "incomplete", "improved"), 1):
+        next_adaptation = comparison_result(next_adaptation, verdict, ordinal)
+        hold = f"paired-comparison-{ordinal}"
+        fixture.expect_effect(agent_path(suffix="/adaptations"), "POST", {"action": "compare", "adaptationId": ADAPTATION, "suite": COMPARISON_SUITE},
+            {"definitionVersion": 1, "adaptations": [next_adaptation]}, hold=hold)
+        adaptation(page).get_by_role("button", name="Run 6 model calls and compare", exact=True).click()
+        until(page, lambda: hold in fixture.held, "Paired comparison was not held")
+        expect(adaptation(page).get_by_role("textbox", name="Task", exact=True).first).to_be_disabled()
+        checks.check(f"{verdict}: no activation during comparison", adaptation(page).get_by_role("button", name="Activate tested guidance", exact=True).count() == 0)
+        fixture.adaptations = [next_adaptation]; fixture.release(hold)
+        result = adaptation(page).get_by_role("region", name="Text comparison results", exact=True)
+        expect(result.get_by_text(verdict.replace("_", " ") + ":", exact=False).first).to_be_visible()
+        expect(result.get_by_text("Cost unknown", exact=False)).to_be_visible()
+        if verdict != "improved":
+            expect(adaptation(page).get_by_role("button", name="Run 6 model calls and compare", exact=True)).to_be_enabled()
+            checks.check(f"{verdict}: cannot activate", adaptation(page).get_by_role("button", name="Activate tested guidance", exact=True).count() == 0)
+        else:
+            expect(adaptation(page).get_by_role("button", name="Activate tested guidance", exact=True)).to_be_enabled()
+            result.locator("summary").first.click()
+            expect(result.get_by_text(COMPARISON_OUTPUT, exact=True).first).to_be_visible()
+            checks.check("Comparison output is rendered as escaped untrusted text", result.locator("img,script").count() == 0 and not page.evaluate("Boolean(window.__comparisonInjected)"))
+            checks.check("Paired examples unlock activation only on measured improvement", len(fixture.writes) == 8)
+
     next_release = evaluated(fixture.release_record)
     fixture.expect_effect(agent_path(suffix="/release"), "POST", {"action": "evaluate", "definitionVersion": 2}, {"release": next_release}, hold="release-evaluation")
     release_panel(page).get_by_role("button", name="Evaluate v2", exact=True).click()
@@ -291,7 +319,7 @@ def exact_effects(page, fixture, checks):
     fixture.release("release-promotion")
     expect(release_panel(page).get_by_text("Version 2 is now active.", exact=True)).to_be_visible()
     expect(adaptation(page).get_by_text("Observed on release v1. Refresh evidence for v2.", exact=True)).to_be_visible()
-    checks.check("Exact release promotion invalidates old adaptation activation", adaptation(page).get_by_role("button", name="Activate", exact=True).count() == 0)
+    checks.check("Exact release promotion invalidates old adaptation activation", adaptation(page).get_by_role("button", name="Activate tested guidance", exact=True).count() == 0)
     old_grant = copy.deepcopy(fixture.grants[0])
     fixture.expect_effect(agent_path(suffix="/grants/" + quote(GRANT, safe="")), "DELETE", None, {"revoked": True, "target": {"agentId": A, "grant": old_grant["record"]}, "targetSha256": "f" * 64}, hold="grant-revoke")
     confirmations = []
@@ -303,7 +331,7 @@ def exact_effects(page, fixture, checks):
     fixture.release("grant-revoke")
     expect(grants(page).get_by_text("Revocation confirmed for " + GRANT, exact=False)).to_be_visible()
     expect(grants(page).get_by_text("No explicit grants were returned", exact=False)).to_be_visible()
-    checks.check("Exact grant receipt confirms local request then rechecks complete list", len(fixture.writes) == 7)
+    checks.check("Exact grant receipt confirms local request then rechecks complete list", len(fixture.writes) == 11)
 
 
 def dispose_effect(page, fixture, checks, origin):
@@ -399,7 +427,7 @@ def exercise(browser, origin, credentials, checks, coarse):
         view(page, "Live work")
         expect(root(page).get_by_role("heading", name="No delegated work yet", exact=True)).to_be_visible()
         checks.check(label + ": empty successful reads establish empty explicitly", True)
-        checks.check(label + ": exact intercepted effect budget", len(fixture.writes) == (0 if coarse else 8) and not fixture.effects)
+        checks.check(label + ": exact intercepted effect budget", len(fixture.writes) == (0 if coarse else 12) and not fixture.effects)
         checks.check(label + ": no unexpected writes, external, popup, download, microphone or playback", not fixture.unexpected and not page.evaluate("window.__agentsForbidden"), fixture.unexpected)
         checks.check(label + ": no uncaught browser errors", not errors, errors)
         return {"viewport": label, "reads": fixture.requests, "syntheticEffects": fixture.writes, "releases": fixture.releases, "unexpected": fixture.unexpected, "errors": errors}
@@ -435,7 +463,7 @@ def main():
         failure = str(error); print(f"Agents browser check failed: {failure}", flush=True)
     finally:
         (args.output / "report.json").write_text(json.dumps({"checks": checks.results, "contexts": contexts, "failure": failure,
-            "boundary": "Real isolated auth and actual Agents route. Synthetic read fixtures; exactly eight locally fulfilled desktop effects maximum: two task cancellation attempts, two profile PATCHes, one adaptation evaluation, one release evaluation, one promotion and one grant revocation. Zero phone effects. All writes/external/media outside exact plans blocked. Held routes settle or abort before context close. Moltbook and Settings composition are excluded; no provider, Agent execution, creation, Trash, retirement or adaptation activation. Compatibility profile writes have no server expected-version CAS and grants have no expected-principal-generation field; this suite makes no cross-client concurrency claim. Axe scope is Agents workspace, with viewport-only captures."}, indent=2))
+            "boundary": "Real isolated auth and actual Agents route. Synthetic read fixtures; exactly twelve locally fulfilled desktop effects maximum: two task cancellation attempts, two profile PATCHes, one adaptation eligibility check, four paired-text comparison fixtures (tie, regression, incomplete, improved), one release evaluation, one promotion and one grant revocation. Zero phone effects. All writes/external/media outside exact plans blocked. Held routes settle or abort before context close. Moltbook and Settings composition are excluded; no provider, Agent execution, creation, Trash, retirement or adaptation activation. Compatibility profile writes have no server expected-version CAS and grants have no expected-principal-generation field; this suite makes no cross-client concurrency claim. Axe scope is Agents workspace, with viewport-only captures."}, indent=2))
     return 1 if failure else 0
 
 

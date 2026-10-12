@@ -1507,5 +1507,19 @@
     "checksum": "3d1e2f480d424d4f6da66008744928f883ee06745e32b147a26953c73c7c09f0",
     "file": "20261006110000_native_provider_function_acl_repair.sql",
     "sha256": "3d1e2f480d424d4f6da66008744928f883ee06745e32b147a26953c73c7c09f0"
+  },
+  {
+    "version": 246,
+    "name": "responsibility_work_item_followthrough_v1",
+    "checksum": "d06e01433542116390082bed7170750b3021d6b96c95102b9579bde09ad951d0",
+    "file": "20261012110000_responsibility_work_item_followthrough.sql",
+    "sha256": "d06e01433542116390082bed7170750b3021d6b96c95102b9579bde09ad951d0"
+  },
+  {
+    "version": 247,
+    "name": "agent_text_comparisons_v1",
+    "checksum": "53acaf455f91e3f362df647a9b2d61cd70735bc12d74d90d3196830e078704a7",
+    "file": "20261012113000_agent_text_comparisons.sql",
+    "sha256": "53acaf455f91e3f362df647a9b2d61cd70735bc12d74d90d3196830e078704a7"
   }
 ]

@@ -42,10 +42,10 @@ describe("the header way into the inbox", () => {
 
     expect(html).toContain('href="/app/approvals"');
     expect(html).toContain('class="notification-trigger"');
-    expect(html).toContain('aria-label="Inbox, 3 waiting"');
-    expect(html).toContain('title="Inbox"');
+    expect(html).toContain('aria-label="Needs you, 3 waiting"');
+    expect(html).toContain('title="Needs you — approval inbox"');
     expect(html).toContain('<span aria-hidden="true">3</span>');
-    expect(render(250)).toContain('aria-label="Inbox, 99+ waiting"');
+    expect(render(250)).toContain('aria-label="Needs you, 99+ waiting"');
   });
 
   it("is absent with nothing waiting or inside the inbox", () => {
@@ -53,7 +53,7 @@ describe("the header way into the inbox", () => {
     expect(render(undefined)).toBe("");
     expect(render(3, "/app/approvals")).toBe("");
     expect(render(3, "/app/approvals/history")).toBe("");
-    expect(render(3, "/app/approvals-archive")).toContain("Inbox, 3 waiting");
+    expect(render(3, "/app/approvals-archive")).toContain("Needs you, 3 waiting");
   });
 });
 

@@ -51,7 +51,28 @@ export function emptyDraft(): ResponsibilityDraft {
 export function finitePilotLimits(): NonNullable<ResponsibilityDraft["limits"]> {
   return { maxChecks: 7, maxNotifications: 0, cumulative: { modelTurns: 0, tokens: 0, costMicrousd: 0, wallTimeMs: 210_000, toolCalls: 7, browserActions: 0, agents: 7, fanOut: 0, retries: 0, replans: 0 } };
 }
-export function sourceKey(source: ResponsibilitySource) { return JSON.stringify([source.kind, source.id, "workspaceId" in source ? source.workspaceId : null]); }
+export function sourceKey(source: ResponsibilitySource) { return JSON.stringify([source.kind, source.id, "workspaceId" in source ? source.workspaceId : null, "projectId" in source ? source.projectId : null]); }
+export const WORK_ITEM_PROCEDURE = "responsibility.work_item.followthrough.v1";
+/** A previewable draft only: saving, review, activation and inbox delivery keep
+ * their existing distinct server-authorized transitions. */
+export function workItemTrackingDraft(draft: ResponsibilityDraft, label: string, now = new Date()): ResponsibilityDraft {
+  if (!draft.work) return draft;
+  const startsAt = new Date(now); startsAt.setUTCSeconds(0, 0);
+  return {
+    ...draft,
+    purpose: draft.purpose || `Follow through on ${label || "this work item"}`.slice(0, 2000),
+    desiredOutcome: draft.desiredOutcome || "Keep me informed when the deadline, progress, dependencies, or linked outputs change.",
+    successCondition: draft.successCondition || "Review completion against the required deliverable. Marked done and linked files alone do not verify the outcome.",
+    stopConditions: draft.stopConditions.length ? draft.stopConditions : ["The tracking period expires or I stop tracking."],
+    sources: [{ kind: "work_item", id: draft.work.workItemId, workspaceId: draft.work.workspaceId, projectId: draft.work.projectId }],
+    procedureId: WORK_ITEM_PROCEDURE,
+    agentId: draft.agentId || "atlas",
+    cadence: draft.cadence || { frequency: "daily", interval: 1, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+      startsAt: startsAt.toISOString(), expiresAt: new Date(startsAt.getTime() + 7 * 86_400_000).toISOString(), missedPolicy: "skip" },
+    limits: draft.limits || { ...finitePilotLimits(), maxNotifications: 7 },
+    notificationRule: draft.notificationRule || { kind: "material_change_only", destination: "owner_in_app", quietOnNoChange: true },
+  };
+}
 export function responsibilityHref(id: string) { return `/app/responsibilities/${encodeURIComponent(id)}`; }
 export function responsibilityApi(id: string) { return `/api/responsibilities/${encodeURIComponent(id)}`; }
 export function readableCode(value: string) { return value.replace(/^responsibility_/, "").replaceAll("_", " "); }

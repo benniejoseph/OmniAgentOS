@@ -1,5 +1,7 @@
 import 'package:flutter/foundation.dart';
 
+import 'agent_adaptation_comparison.dart';
+
 typedef AgentGovernanceJson = Map<String, dynamic>;
 
 @immutable
@@ -13,6 +15,35 @@ class AgentGovernanceSnapshot {
   final AgentReleaseProjection release;
   final int definitionVersion;
   final List<AgentAdaptationProjection> adaptations;
+
+  /// A delayed refresh may not erase a confirmed experiment at the same
+  /// definition and lifecycle revision. New definitions and transitions remain
+  /// governed by their own current snapshot.
+  bool retainsComparisonEvidenceFrom(AgentGovernanceSnapshot previous) {
+    if (release.agentId != previous.release.agentId ||
+        definitionVersion < previous.definitionVersion) {
+      return false;
+    }
+    if (definitionVersion > previous.definitionVersion) return true;
+    for (final prior in previous.adaptations) {
+      if (prior.comparison == null) continue;
+      final matches = adaptations
+          .where((item) => item.adaptationId == prior.adaptationId)
+          .toList();
+      if (matches.length != 1) return false;
+      final next = matches.single;
+      if (next.lifecycleRevision < prior.lifecycleRevision) return false;
+      if (next.lifecycleRevision == prior.lifecycleRevision &&
+          (next.effectSha256 != prior.effectSha256 ||
+              next.comparison == null ||
+              next.comparison!.startedAt.isBefore(
+                prior.comparison!.startedAt,
+              ))) {
+        return false;
+      }
+    }
+    return true;
+  }
 }
 
 @immutable
@@ -263,6 +294,7 @@ class AgentAdaptationProjection {
     required this.evaluationVerdict,
     required this.evaluationSha256,
     required this.updatedAt,
+    this.comparison,
   });
 
   final String adaptationId,
@@ -277,6 +309,14 @@ class AgentAdaptationProjection {
   final String? evaluationVerdict, evaluationSha256;
   final int lifecycleRevision, observedDefinitionVersion, evidenceCount;
   final double confidence;
+  final AgentAdaptationComparison? comparison;
+
+  bool canActivateAt(int currentVersion, DateTime now) =>
+      state == 'evaluated' &&
+      evaluationVerdict == 'passed' &&
+      observedDefinitionVersion == currentVersion &&
+      comparison?.verdict == 'improved' &&
+      comparison!.isFreshAt(now);
 
   factory AgentAdaptationProjection.fromJson(
     AgentGovernanceJson value, {
@@ -350,6 +390,14 @@ class AgentAdaptationProjection {
       authorityImpact: authorityImpact,
       evaluationVerdict: evaluationVerdict,
       evaluationSha256: evaluationSha256,
+      comparison: value['comparison'] == null
+          ? null
+          : AgentAdaptationComparison.fromJson(
+              value['comparison'],
+              adaptationId: _requiredText(value, 'adaptationId'),
+              observedDefinitionVersion: observedDefinitionVersion,
+              effectSha256: _sha256(effect, 'effectSha256'),
+            ),
       updatedAt: _timestamp(value, 'updatedAt'),
     );
   }

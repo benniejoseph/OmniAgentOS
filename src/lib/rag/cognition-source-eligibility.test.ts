@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { chunkText, normalizeTextForChunking } from "@/lib/rag/chunk";
 import {
   createKnowledgeDocument,
@@ -22,6 +22,8 @@ describe("actor-owned cognition source eligibility", () => {
   let previousDatabaseUrl: string | undefined;
 
   beforeEach(async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-10T00:00:00.000Z"));
     previousDataDirectory = process.env.OMNIAGENT_DATA_DIR;
     previousDatabaseUrl = process.env.DATABASE_URL;
     dataDirectory = await mkdtemp(path.join(tmpdir(), "asael-cognition-source-"));
@@ -30,6 +32,7 @@ describe("actor-owned cognition source eligibility", () => {
   });
 
   afterEach(async () => {
+    vi.useRealTimers();
     if (previousDataDirectory === undefined) {
       delete process.env.OMNIAGENT_DATA_DIR;
     } else {

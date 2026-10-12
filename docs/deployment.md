@@ -2755,3 +2755,24 @@ Markets reads select stored snapshots without provider effects; calendar and
 provider refresh remain explicit actions. Market analysis metadata excludes
 opaque chart plug-in state. Protected native recovery is bounded per namespace
 and shared across macOS engines through the existing host broker.
+
+
+## Personal partner candidate (2026-10-12)
+
+Native v48 and migrations 246–247 form one release candidate. Migration 246
+extends the exact Responsibility runtime/notification trigger lanes for canonical
+work-item tracking. Migration 247 adds the owner-private text comparison ledger,
+comparison pointer and new-activation requirement. Apply them in manifest order
+after 245, using the existing backup, isolated replay, verification and paired
+web/worker release procedure. Previous v47 contract files remain byte-frozen;
+v46 is retained as an archive and falls outside the supported mutation window.
+
+This candidate is not a claim that the prior v47 rollout or any native binary
+has been promoted. Preserve the existing rollout prerequisites above. Before
+promotion, verify the new actor policy/table inventory, current v48 client
+handshake, v47 meeting behavior and explicit work-item upgrade response. Do not
+roll back to an older server by dropping comparison history or altering saved
+runtime receipts. New guidance activation now needs measured improvement;
+legacy active guidance retains rollback. No live model credentials are required
+for isolated regression tests, and fixture results do not establish provider
+quality or production readiness.

@@ -1,3 +1,4 @@
+import { compatibleResponsibilityValue, requireCompatibleResponsibilityRecord } from "@/lib/mobile/responsibility-compatibility";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { parseJsonBody } from "@/lib/http/body";
 import { requireIdempotencyKey, requiredRequestIdempotencyKey } from "@/lib/http/idempotency-key";
@@ -18,7 +19,7 @@ async function GETHandler(request: Request, route: RouteContext) {
   try {
     const query = exactQuery(request, ["view"]);
     if (query.has("view") && query.get("view") !== "activation") throw new ResponsibilityError("The responsibility view is unsupported.", 400, "responsibility_query_invalid");
-    return Response.json(await getResponsibilityLifecycle(context, id, query.get("view") === "activation"), { headers: responsibilityHeaders });
+    return Response.json(compatibleResponsibilityValue(context, await getResponsibilityLifecycle(context, id, query.get("view") === "activation")), { headers: responsibilityHeaders });
   } catch (error) { return responsibilityFailure(error); }
 }
 async function POSTHandler(request: Request, route: RouteContext) {
@@ -28,6 +29,8 @@ async function POSTHandler(request: Request, route: RouteContext) {
   catch (error) { return responsibilityDenial(error); }
   try {
     exactQuery(request, []);
-    return Response.json(await changeResponsibilityLifecycleService(context, id, await parseJsonBody(request, 4096), requiredRequestIdempotencyKey(request)), { headers: responsibilityHeaders });
+    const body = compatibleResponsibilityValue(context, await parseJsonBody(request, 4096));
+    await requireCompatibleResponsibilityRecord(context, id, "lifecycle");
+    return Response.json(await changeResponsibilityLifecycleService(context, id, body, requiredRequestIdempotencyKey(request)), { headers: responsibilityHeaders });
   } catch (error) { return responsibilityFailure(error); }
 }

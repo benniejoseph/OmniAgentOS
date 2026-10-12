@@ -44,7 +44,7 @@ describe("frontend performance budgets", () => {
     expect(metadata.size).toBeLessThanOrEqual(budgets.heroImageMaxBytes);
     expect(markMetadata.size).toBeLessThanOrEqual(8_000);
     const markup = renderToStaticMarkup(createElement(LandingHero));
-    expect(markup).toContain('<h1 id="landing-title">Give agents goals. Keep the controls.</h1>');
+    expect(markup).toContain('<h1 id="landing-title">Make room for the work that matters.</h1>');
     expect(markup).toContain('href="/login"');
     expect(markup).toContain('href="/demo"');
     expect(markup).toContain('href="/docs"');

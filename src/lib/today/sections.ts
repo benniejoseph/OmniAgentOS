@@ -11,7 +11,10 @@ export const TODAY_SECTION_KEYS = Object.freeze([
 ] as const);
 
 export type TodaySectionKey = (typeof TODAY_SECTION_KEYS)[number];
-export const DEFAULT_TODAY_SECTIONS: readonly TodaySectionKey[] = TODAY_SECTION_KEYS;
+// Defaults apply only when a person has not saved their own section choices.
+export const DEFAULT_TODAY_SECTIONS: readonly TodaySectionKey[] = Object.freeze([
+  "focus", "agenda", "approvals", "work",
+]);
 
 export function normalizeTodaySections(value: unknown): readonly TodaySectionKey[] {
   if (!Array.isArray(value)) return DEFAULT_TODAY_SECTIONS;

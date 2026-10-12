@@ -1,5 +1,6 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import {
   AudioLines,
   CheckCircle2,
@@ -23,7 +24,7 @@ import {
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { clsx } from "clsx";
 import { ConnectedSources, type OAuthGrantItem, type OAuthProviderItem } from "@/components/capture/connected-sources";
-import { LongRecordingStudio, type LongRecordingDraft } from "@/components/capture/long-recording-studio";
+import type { LongRecordingDraft } from "@/components/capture/long-recording-studio";
 import { VisualStudio } from "@/components/capture/visual-studio";
 import { permissionMessage, useWorkspaceSession } from "@/components/app-shell/session-context";
 import { WorkspaceLibrary } from "@/components/workspace-library";
@@ -49,6 +50,11 @@ import { useContentSearchLocation } from "@/components/app-shell/content-search-
 import { recordingIdFromLocation } from "@/components/capture/recording-selection";
 import { createReindexGate, freezeReindexSubmission, readReindexReceipt, reindexReceiptLabel, runReindexBatch, type ReindexRow } from "@/components/capture/reindex-state";
 import styles from "./capture-workspace.module.css";
+
+const LongRecordingStudio = dynamic(
+  () => import("@/components/capture/long-recording-studio").then((module) => module.LongRecordingStudio),
+  { loading: () => <p role="status" className={styles.readStatus}>Loading recording studio…</p> },
+);
 
 type DocumentItem = {
   id: string;

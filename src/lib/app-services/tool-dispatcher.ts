@@ -1,3 +1,4 @@
+import { showWorkItemService } from "./work-items";
 import {
   controlProjectExecutionService,
   createProjectService,
@@ -351,6 +352,7 @@ export async function executeFirstPartyAppTool(input: {
     "app.projects.builder.release.production": () => releaseProjectBuilderProductionService(caller, input.toolInput as never),
     "app.projects.builder.release.refresh": () => refreshProjectBuilderProductionReleaseService(caller, input.toolInput as never),
     "app.projects.builder.stop": () => stopProjectBuilderService(caller, input.toolInput as never),
+    "app.work_items.show": () => showWorkItemService(caller, input.toolInput),
     "app.work_items.create": () => createWorkItemService(caller, input.toolInput as never),
     "app.work_items.update": () => updateWorkItemService(caller, input.toolInput as never),
     "app.memory.list": () => listMemoryService(caller, input.toolInput as never),

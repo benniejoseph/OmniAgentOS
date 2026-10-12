@@ -35,6 +35,18 @@ ResponsibilityJson get source => {
   'id': 'meeting:a',
   'workspaceId': 'workspace:owner',
 };
+ResponsibilityJson get workItemSource => {
+  'kind': 'work_item',
+  'id': 'work-a',
+  'workspaceId': 'workspace:owner',
+  'projectId': 'project-a',
+};
+ResponsibilityJson get workItemChoice => {
+  'workspaceId': 'workspace:owner',
+  'projectId': 'project-a',
+  'workItemId': 'work-a',
+  'label': 'Launch proposal',
+};
 ResponsibilityJson get counters => {
   for (final key in responsibilityBudgetDimensions) key: 0,
 };
@@ -170,41 +182,62 @@ Future<ResponsibilityJson> draftResult(
   };
 }
 
-Future<ResponsibilityJson> runtimeConfiguration() => sealed({
-  'schemaVersion': 1,
-  'pilot': responsibilityPilot,
-  'responsibilityRevision': 2,
-  'reviewSha256': hashA,
-  'draftSha256': hashA,
-  'pins': pins,
-  'source': source,
-  'tool': {
-    'id': 'app.meetings.show',
-    'input': {'workspaceId': 'workspace:owner', 'meetingId': 'meeting:a'},
-    'contractSha256': hashA,
-  },
-  'cadence': fullDraft['cadence'],
-  'maximumChecks': 7,
-  'cumulativeLimits': responsibilityMap(fullDraft['limits'])['cumulative'],
-  'checkReservation': {
-    ...counters,
-    'toolCalls': 1,
-    'agents': 1,
-    'wallTimeMs': 30000,
-  },
-  'comparisonPolicySha256': hashA,
-  'stops': ['expiry', 'meeting_started', 'meeting_canceled'],
-  'notificationAuthority': 'none',
-  'approvalAuthority': 'none',
-  'mutationAuthority': 'none',
-}, 'configurationSha256');
+Future<ResponsibilityJson> runtimeConfiguration({bool workItem = false}) =>
+    sealed({
+      'schemaVersion': 1,
+      'pilot': workItem ? responsibilityWorkItemPilot : responsibilityPilot,
+      'responsibilityRevision': 2,
+      'reviewSha256': hashA,
+      'draftSha256': hashA,
+      'pins': workItem
+          ? {
+              ...pins,
+              'sources': [
+                {'source': workItemSource, 'revisionSha256': hashA},
+              ],
+              'procedure': {
+                ...responsibilityMap(pins['procedure']),
+                'id': responsibilityWorkItemProcedure,
+              },
+            }
+          : pins,
+      'source': workItem ? workItemSource : source,
+      'tool': {
+        'id': workItem ? 'app.work_items.show' : 'app.meetings.show',
+        'input': workItem
+            ? {
+                'workspaceId': 'workspace:owner',
+                'projectId': 'project-a',
+                'workItemId': 'work-a',
+              }
+            : {'workspaceId': 'workspace:owner', 'meetingId': 'meeting:a'},
+        'contractSha256': hashA,
+      },
+      'cadence': fullDraft['cadence'],
+      'maximumChecks': 7,
+      'cumulativeLimits': responsibilityMap(fullDraft['limits'])['cumulative'],
+      'checkReservation': {
+        ...counters,
+        'toolCalls': 1,
+        'agents': 1,
+        'wallTimeMs': 30000,
+      },
+      'comparisonPolicySha256': hashA,
+      'stops': workItem
+          ? ['expiry']
+          : ['expiry', 'meeting_started', 'meeting_canceled'],
+      'notificationAuthority': 'none',
+      'approvalAuthority': 'none',
+      'mutationAuthority': 'none',
+    }, 'configurationSha256');
 Future<ResponsibilityJson> runtimeHead({
   int revision = 1,
   int generation = 1,
   String state = 'active',
   String reason = 'owner_activated',
+  bool workItem = false,
 }) async {
-  final configuration = await runtimeConfiguration();
+  final configuration = await runtimeConfiguration(workItem: workItem);
   return {
     'schemaVersion': 1,
     'contract': responsibilityRuntimeContract,
@@ -235,8 +268,10 @@ ResponsibilityJson runtimeView([ResponsibilityJson? head]) => {
   'contract': responsibilityRuntimeContract,
   'current': head,
   'disclosure': {
-    'pilot': responsibilityPilot,
-    'source': 'One current owner-private Meeting.',
+    'pilot': head == null
+        ? responsibilityPilot
+        : responsibilityMap(head['configuration'])['pilot'],
+    'source': 'One exact authorized source.',
     'comparison': 'Deterministic structured metadata.',
     'cadence': 'Daily or weekly, skipped missed instants.',
     'stops': 'Expiry, meeting start or cancellation.',
@@ -259,6 +294,7 @@ Future<ResponsibilityJson> runtimeResult(
 ) async {
   final action = input['action'],
       snapshot = await runtimeHead(
+        workItem: input['acknowledgePilot'] == responsibilityWorkItemPilot,
         revision: (input['expectedRevision'] as int) + 1,
         generation: (input['expectedGeneration'] as int) + 1,
         state: action == 'pause'
@@ -437,12 +473,14 @@ Future<ResponsibilityJson> notificationResult(
   };
 }
 
-Future<ResponsibilityJson> observationView() async => {
+Future<ResponsibilityJson> observationView({bool workItem = false}) async => {
   'schemaVersion': 1,
   'contract': responsibilityObservationContract,
   'policy': await sealed({
     'schemaVersion': 1,
-    'id': 'responsibility-meeting-comparison:1',
+    'id': workItem
+        ? 'responsibility-work-item-comparison:1'
+        : 'responsibility-meeting-comparison:1',
     'maximumSourceAgeSeconds': 3600,
     'firstObservation': 'establish_baseline_without_notification',
     'advancement': 'complete_current_authorized_evidence_only',
@@ -465,10 +503,13 @@ Future<ResponsibilityJson> observationView() async => {
     'total': null,
   },
 };
-Future<ResponsibilityJson> observationOutcome(String outcome) async {
-  final view = await observationView(),
+Future<ResponsibilityJson> observationOutcome(
+  String outcome, {
+  bool workItem = false,
+}) async {
+  final view = await observationView(workItem: workItem),
       policySha = responsibilityMap(
-        (await observationView())['policy'],
+        (await observationView(workItem: workItem))['policy'],
       )['policySha256'];
   final target = {
     'tenantId': testOwner.tenantId,
@@ -488,11 +529,12 @@ Future<ResponsibilityJson> observationOutcome(String outcome) async {
       'facts',
       'commitments',
       'uninterpretedText',
+      if (workItem) ...responsibilityWorkCategories,
     ])
       field: hashA,
   }, 'semanticSha256');
   final evidence = {
-    'kind': 'meeting_revision',
+    'kind': workItem ? 'work_item_revision' : 'meeting_revision',
     'id': 'evidence:one',
     'revisionId': 'revision:one',
     'revisionSha256': hashA,
@@ -509,7 +551,7 @@ Future<ResponsibilityJson> observationOutcome(String outcome) async {
     'observedAt': now,
     'sources': [
       {
-        'source': source,
+        'source': workItem ? workItemSource : source,
         'state': complete ? 'accepted' : 'unavailable',
         'reason': complete ? null : 'missing',
         'revisionId': complete ? 'revision:one' : null,
@@ -548,7 +590,7 @@ Future<ResponsibilityJson> observationOutcome(String outcome) async {
           'policySha256': policySha,
           'previousBaselineSha256': hashA,
           'observationId': observation['id'],
-          'categories': ['meeting_time'],
+          'categories': [workItem ? 'work_overdue' : 'meeting_time'],
           'evidence': [evidence],
           'previousSemanticSha256': hashA,
           'semanticSha256': semantic['semanticSha256'],
@@ -579,7 +621,9 @@ Future<ResponsibilityJson> observationOutcome(String outcome) async {
             : outcome == 'no_change'
             ? 'equivalent_evidence'
             : outcome == 'material_change'
-            ? 'meeting_time'
+            ? workItem
+                  ? 'work_overdue'
+                  : 'meeting_time'
             : 'missing',
       ],
       'nextBaseline': baseline,

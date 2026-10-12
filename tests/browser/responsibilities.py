@@ -42,9 +42,9 @@ def exercise_notifications(page, fixture, checks, label, coarse):
     fixture.release("enable-outstanding")
     expect(button(page, "Retry exact submitted request")).to_be_visible()
     button(page, "Retry exact submitted request").click()
-    expect(root(page).get_by_text(re.compile(r"Recovered immutable receipt · enable"))).to_be_visible()
+    expect(root(page).get_by_text("Recovered your saved confirmation.", exact=True)).to_be_visible()
     expect(panel.get_by_text(re.compile(r"In-app notification history unavailable\..*Synthetic notification history unavailable"))).to_be_visible()
-    expect(root(page).get_by_role("heading", name="Accepted receipt", exact=True)).to_be_focused()
+    expect(root(page).get_by_role("heading", name="Saved confirmation", exact=True)).to_be_focused()
     calls = [item for item in fixture.mutations if item["body"]["action"] == "enable"]
     checks.check(label + ": lost enable response recovers exact key/body and preserves receipt/focus on failed GET", len(calls) == 2 and calls[0] == calls[1] and len(fixture.notification_receipts) == 1)
     fixture.fail_notification_refresh = False; button(page, "Refresh in-app notifications").click()
@@ -72,7 +72,7 @@ def exercise_notifications(page, fixture, checks, label, coarse):
     expect(panel.get_by_text("held", exact=True)).to_be_visible()
     button(page, "Stop in-app notifications").click(); expect(button(page, "Retry exact submitted request")).to_be_visible()
     button(page, "Retry exact submitted request").click()
-    expect(root(page).get_by_text(re.compile(r"Recovered immutable receipt · stop"))).to_be_visible()
+    expect(root(page).get_by_text("Recovered your saved confirmation.", exact=True)).to_be_visible()
     expect(panel.get_by_text(re.compile(r"In-app notification history unavailable\..*Synthetic notification history unavailable"))).to_be_visible()
     calls = [item for item in fixture.mutations if item["body"]["action"] == "stop"]
     checks.check(label + ": exact stop recovery cancels hold once and preserves delivered use", len(calls) == 2 and calls[0] == calls[1] and fixture.notification_current["used"] == 1 and fixture.notification_current["reserved"] == 0 and fixture.notification_candidates[0]["reason"] == "owner_stopped")
@@ -115,7 +115,7 @@ def exercise(browser, origin, credentials, checks, coarse):
         expect(purpose).to_have_value("Edited purpose retained until saved")
         expect(button(page, "Check exact references for review")).to_be_disabled()
         button(page, "Save inactive draft").click()
-        expect(root(page).get_by_role("heading", name="Accepted receipt", exact=True)).to_be_visible()
+        expect(root(page).get_by_role("heading", name="Saved confirmation", exact=True)).to_be_visible()
         expect(button(page, "Check exact references for review")).to_be_enabled()
         button(page, "Check exact references for review").click()
         expect(button(page, "Accept this exact inactive review")).to_be_visible()
@@ -129,7 +129,7 @@ def exercise(browser, origin, credentials, checks, coarse):
         expect(button(page, "Retry exact submitted request")).to_be_visible()
         expect(purpose).to_be_disabled()
         button(page, "Retry exact submitted request").click()
-        expect(root(page).get_by_text(re.compile(r"Recovered immutable receipt · activate"))).to_be_visible()
+        expect(root(page).get_by_text("Recovered your saved confirmation.", exact=True)).to_be_visible()
         expect(root(page).get_by_text(re.compile(r"Lifecycle unavailable\. Synthetic refresh unavailable"))).to_be_visible()
         calls = [item for item in fixture.mutations if item["body"]["action"] == "activate"]
         checks.check(label + ": lost activation response recovers one exact receipt", len(calls) == 2 and calls[0] == calls[1] and len(fixture.runtime_receipts) == 1)

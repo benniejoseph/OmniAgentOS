@@ -7,7 +7,7 @@ import type { ResponsibilityLifecycle } from "./runtime-contracts";
 import { assertSamePilot, resolveResponsibilityPilot, resolveRuntimeOwnerContext } from "./runtime-references";
 import { ResponsibilityError, type ResponsibilityOwner } from "./state";
 
-/** Revalidates only the reviewed native Meeting lane. The current source may
+/** Revalidates the reviewed Meeting or canonical WorkItem lane. The current source may
  * have advanced; an older pending change still names its own immutable proof.
  * This read neither creates preferences nor grants a push/provider destination. */
 export async function resolveNotificationReferences(sql: SqlClient, owner: ResponsibilityOwner, record: ResponsibilityRecord, runtime: ResponsibilityLifecycle, now: string,

@@ -35,8 +35,8 @@ export function InboxHeaderLink({ count, pathname }: { count?: number; pathname:
     <Link
       href={INBOX_HREF}
       className="notification-trigger"
-      aria-label={navItemAccessibleName("Inbox", badge)}
-      title="Inbox"
+      aria-label={navItemAccessibleName("Needs you", badge)}
+      title="Needs you — approval inbox"
     >
       <Inbox size={17} aria-hidden="true" />
       <span aria-hidden="true">{badge}</span>

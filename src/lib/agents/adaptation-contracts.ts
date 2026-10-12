@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { adaptationComparisonSchema, parseAdaptationComparison } from "@/lib/agents/adaptation-comparison-contracts";
 import { sourceContractSha256 } from "@/lib/sources/contracts";
 
 export const AGENT_ADAPTATION_SCHEMA_VERSION = 1 as const;
@@ -147,6 +148,7 @@ export const agentAdaptationV1Schema = z.object({
   confidence: confidenceSchema,
   effect: agentAdaptationEffectV1Schema,
   evaluation: agentAdaptationEvaluationV1Schema.nullable(),
+  comparison: adaptationComparisonSchema.optional(),
   activationVersion: positiveVersionSchema.nullable(),
   activatedAt: timestampSchema.nullable(),
   rolledBackAt: timestampSchema.nullable(),
@@ -174,6 +176,12 @@ export const agentAdaptationV1Schema = z.object({
       path: ["state"],
       message: "Agent adaptation lifecycle coordinates are inconsistent.",
     });
+  }
+  if (value.comparison) {
+    try {
+      const comparison = parseAdaptationComparison(value.comparison);
+      if (comparison.adaptationId !== value.adaptationId || comparison.pins.candidateEffectSha256 !== value.effect.effectSha256 || comparison.pins.definitionVersion !== value.observedDefinitionVersion) throw new Error("Comparison binding mismatch.");
+    } catch { context.addIssue({ code: "custom", path: ["comparison"], message: "Comparison evidence is invalid." }); }
   }
   const evidence = canonicalEvidence(value.evidence);
   const { effectSha256, ...effectBody } = value.effect;
@@ -342,6 +350,7 @@ export function activateAgentAdaptationV1(
   if (current.state !== "evaluated" || current.evaluation?.verdict !== "passed") {
     throw new Error("Only a passed Agent adaptation evaluation can be activated.");
   }
+  if (current.comparison?.verdict !== "improved") throw new Error("Activation requires a completed text comparison with improvement and no regressions.");
   const timestamp = canonicalTimestamp(activatedAt || Date.now());
   return parseAgentAdaptationV1({
     ...current,

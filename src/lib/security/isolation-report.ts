@@ -108,6 +108,7 @@ const RESTRICTIVE_ACTOR_POLICIES = new Map<string, string>([
     "omni_a2a_task_mappings",
     "omni_a2a_tool_call_claims",
     "omni_agent_adaptations",
+    "omni_agent_adaptation_comparisons",
     "omni_agent_definition_versions",
     "omni_agent_learning_cycles",
     "omni_agent_learning_observations",

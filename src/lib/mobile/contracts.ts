@@ -72,10 +72,10 @@ import {
 import { voiceCommandInputSchema } from "@/lib/voice/command-input";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 47 as const;
-// v43/v44 remain byte-frozen. v45 adds only bounded new OpenAPI import,
-// exact preparation/action recovery and terminal staging abandonment.
-export const NATIVE_API_PREVIOUS_VERSION = 46 as const;
+export const NATIVE_API_CURRENT_VERSION = 48 as const;
+// v46/v47 remain byte-frozen. v48 adds work-item tracking and measured
+// text comparisons; both changes retain their existing operation paths.
+export const NATIVE_API_PREVIOUS_VERSION = 47 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -2446,6 +2446,17 @@ const v47Operations: readonly NativeOperation[] = [
     }),
 ];
 
+const v48Operations: readonly NativeOperation[] = v47Operations.map((entry) => {
+  if (entry.id.startsWith("responsibilities.")) return {
+    ...entry, summary: `${entry.summary} v48 also supports canonical work-item tracking; v47 receives an explicit upgrade error for work-item records.`,
+  };
+  if (entry.id === "agents.adaptations.manage") return {
+    ...entry, summary: "Check eligibility, compare current and proposed guidance on owner-supplied text examples, activate measured improvement, or roll back one adaptation.",
+    requestBodyMaxBytes: 49_152,
+  };
+  return entry;
+});
+
 const nativeCompanionPreferencesResponseSchema = z.object({
   schemaVersion: z.literal(1), contract: z.literal(COMPANION_PREFERENCES_CONTRACT),
   snapshot: z.object({
@@ -2647,6 +2658,7 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 45) return v45Operations;
   if (version === 46) return v46Operations;
   if (version === 47) return v47Operations;
+  if (version === 48) return v48Operations;
   return undefined;
 }
 

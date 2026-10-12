@@ -226,7 +226,9 @@ describe("native API contracts", () => {
     const previous = JSON.parse(await readFile(new URL(`../../../public/native-contracts/v${NATIVE_API_PREVIOUS_VERSION}/openapi.json`, import.meta.url), "utf8"));
     const current = JSON.parse(await readFile(new URL(`../../../public/native-contracts/v${NATIVE_API_CURRENT_VERSION}/openapi.json`, import.meta.url), "utf8"));
     for (const operation of nativeOperationsForVersion(32)!.filter(({ id }) => id.startsWith("responsibilities."))) {
-      expect(current.paths[operation.path][operation.method.toLowerCase()], operation.id).toEqual(previous.paths[operation.path][operation.method.toLowerCase()]);
+      const currentOperation = current.paths[operation.path][operation.method.toLowerCase()];
+      const previousOperation = previous.paths[operation.path][operation.method.toLowerCase()];
+      expect({ ...currentOperation, summary: previousOperation.summary }, operation.id).toEqual(previousOperation);
     }
     for (const operation of nativeOperationsForVersion(32)!.filter((item) => item.id.startsWith("responsibilities."))) {
       const wire = current.paths[operation.path][operation.method.toLowerCase()];
@@ -259,8 +261,8 @@ describe("native API contracts", () => {
   it("retains exactly the current and previous rollout versions", () => {
     // Tripwire: a native contract bump must be a deliberate, reviewed change.
     // The other tests follow these constants.
-    expect(NATIVE_API_CURRENT_VERSION).toBe(47);
-    expect(NATIVE_API_PREVIOUS_VERSION).toBe(46);
+    expect(NATIVE_API_CURRENT_VERSION).toBe(48);
+    expect(NATIVE_API_PREVIOUS_VERSION).toBe(47);
     expect(NATIVE_API_SUPPORTED_VERSIONS).toEqual([
       NATIVE_API_CURRENT_VERSION,
       NATIVE_API_PREVIOUS_VERSION,
@@ -515,6 +517,7 @@ describe("native API contracts", () => {
       46: added("connectors.native.mcpDiscoveries.submit", "connectors.native.mcpDiscoveries.read", "connectors.native.mcpDiscoveries.close"),
       45: added("connectors.native.openapiImportPreparations.submit", "connectors.native.openapiImportPreparations.read", "connectors.native.openapiImportPreparations.abandon", "connectors.native.openapiImports.submit", "connectors.native.openapiImports.read"),
       47: added("connectors.native.githubUpgrades.review", "connectors.native.githubUpgrades.submit", "connectors.native.githubUpgrades.read", "connectors.native.githubUpgrades.close"),
+      48: added(),
     });
     // v20 and v23 changed only request and push schemas.
     expect(nativeOperationsForVersion(20)).toEqual(nativeOperationsForVersion(19));
@@ -753,21 +756,21 @@ describe("native API contracts", () => {
     });
   });
 
-  it("retains every published v45 and v46 document byte for byte", async () => {
+  it("retains every published v46 and v47 document byte for byte", async () => {
     const frozen = {
-      "45": {
-        "openapi.json": "0550a5cd1cc7df01168164ec8e68710e90743c2145d2a6db2162127f7ab22123", // gitleaks:allow -- public artifact integrity digest
-        "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
-        "fixtures.json": "066eb546a3043a1bb16f89f8bea771f00f43b9b80cf91bf77d0eca43a7dd7d6e", // gitleaks:allow -- public artifact integrity digest
-        "manifest.json": "cd5c20e3cffeb331d0f4ce7c4288604ac3e9f1d0e327292e3ce2bfdfad40a5a9", // gitleaks:allow -- public artifact integrity digest
-      },
-      "46": {
-        "openapi.json": "338f0ffe6f4e2051a87b85d77f8aec605bb639b7c06de232b4989a69e15a1233", // gitleaks:allow -- public artifact integrity digest
-        "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest
-        "fixtures.json": "7dbf329ac4ad5f51c78fb00012421d4c6e9832e204b4744d7eb06bbf542f79f7", // gitleaks:allow -- public artifact integrity digest
-        "manifest.json": "80df210e108bcaa7f281504f154b50c7e53cdc3c13cd0b65553c486ce1f2657c", // gitleaks:allow -- public artifact integrity digest
-      },
-    };
+  "46": {
+    "openapi.json": "338f0ffe6f4e2051a87b85d77f8aec605bb639b7c06de232b4989a69e15a1233",
+    "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9",
+    "fixtures.json": "7dbf329ac4ad5f51c78fb00012421d4c6e9832e204b4744d7eb06bbf542f79f7",
+    "manifest.json": "80df210e108bcaa7f281504f154b50c7e53cdc3c13cd0b65553c486ce1f2657c"
+  },
+  "47": {
+    "openapi.json": "cc783eff3bf60b6a198607c4fce70c8d87b12bbbccec5b1909106e67084f6b24",
+    "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9",
+    "fixtures.json": "738bc72f1a1ff8d175549b00903437bb265f28adce74d92500970a65889f9eba",
+    "manifest.json": "7213892e4b6e4143e8f87dec58fffac88fef3a1cc7b610ea24dd99687be30dae"
+  }
+};
     for (const [version, documents] of Object.entries(frozen)) {
       for (const [name, digest] of Object.entries(documents)) {
         const document = await readFile(new URL(`../../../public/native-contracts/v${version}/${name}`, import.meta.url), "utf8");

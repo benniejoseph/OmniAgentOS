@@ -16,7 +16,7 @@ import type { McpToolRecord } from "@/lib/connectors/types";
 import * as client from "@/lib/connectors/mcp-client";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
-import { removeNativeGithubUpgradesForReplay } from "./helpers/native-catalog-replay";
+import { removeEmptyPersonalPartnerMigrationsForReplay, replayPersonalPartnerMigrations, removeNativeGithubUpgradesForReplay } from "./helpers/native-catalog-replay";
 
 const databaseUrl = process.env.DATABASE_URL;
 const integration = databaseUrl && process.env.OMNIAGENT_INTEGRATION_DATABASE_RESET === "true" ? describe : describe.skip;
@@ -218,7 +218,7 @@ integration("native GitHub upgrade244 serving-role and shared-provider proof", (
     const migration = await readSqlMigrationFile({ file: "20261006103000_native_github_upgrades.sql",
       sha256: v244.checksum, migrations: [v244] });
     await expect(admin.begin(async (sql) => {
-      await sql`DELETE FROM omni_schema_version WHERE version IN (243,244,245)`;
+      await sql`DELETE FROM omni_schema_version WHERE version IN (243,244,245,246,247)`;
       const adapter: Parameters<typeof applySqlMigrationFile>[0] = { unsafe: async (statement, params) => {
         const values = (params ?? []).map((value) => {
           if (typeof value !== "string") throw new Error("Migration settings must be strings.");
@@ -278,6 +278,7 @@ integration("native GitHub upgrade244 serving-role and shared-provider proof", (
       sha256: v245.checksum, migrations: [v245] });
     let verified = false;
     await expect(admin.begin(async (sql) => {
+      await removeEmptyPersonalPartnerMigrationsForReplay(sql);
       await removeNativeGithubUpgradesForReplay(sql);
       await sql`DELETE FROM omni_schema_version WHERE version IN (244,245)`;
       for (const role of ["anon", "authenticated", "service_role"]) {
@@ -319,6 +320,7 @@ integration("native GitHub upgrade244 serving-role and shared-provider proof", (
         { proname: "omni_native_provider_singleflight_v1", owner: after[1].owner,
           grantees: [after[1].owner], runtime_execute: false },
       ]);
+      await replayPersonalPartnerMigrations(sql);
       verified = true;
       throw new Error("Rollback production-default ACL fixture");
     })).rejects.toThrow("Rollback production-default ACL fixture");

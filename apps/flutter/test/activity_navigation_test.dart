@@ -26,11 +26,10 @@ void main() {
       final primary = destinationIndices(primary: true)
           .map((index) => appDestinations[index]);
       expect(primary.map((item) => item.label), [
+        'Today',
         'Assistant',
-        'Work',
-        'Activity',
-        'Memory',
-        'Capabilities',
+        'My work',
+        'Library',
       ]);
       expect(appDestinations.map((item) => item.path).toSet(), {
         '/today',
@@ -56,6 +55,16 @@ void main() {
         '/settings',
         '/search',
       });
+      for (final visible in [
+        destinationIndices(adaptiveVisible: true),
+        destinationIndices(macosVisible: true),
+      ]) {
+        expect(
+          visible.map((index) => appDestinations[index].path),
+          isNot(contains('/payments')),
+        );
+      }
+      expect(appDestinations[destinationIndex('/inbox')].label, 'Needs you');
       expect(DesktopHostBridge.isWorkspaceRoute('/activity'), isTrue);
       expect(
         DesktopHostBridge.isWorkspaceRoute('https://outside.invalid/activity'),
@@ -72,7 +81,7 @@ void main() {
   );
 
   for (final width in [320.0, 390.0]) {
-    testWidgets('five primary destinations and More fit $width at 200% text', (
+    testWidgets('four primary destinations and More fit $width at 200% text', (
       tester,
     ) async {
       tester.view.physicalSize = Size(width, 1000);
@@ -115,11 +124,10 @@ void main() {
       );
       await tester.pumpAndSettle();
       for (final label in [
+        'Today',
         'Assistant',
-        'Work',
-        'Activity',
-        'Memory',
-        'Capabilities',
+        'My work',
+        'Library',
         'More',
       ]) {
         final control = find.widgetWithText(TextButton, label);
@@ -145,9 +153,9 @@ void main() {
       await tester.tap(capture);
       await tester.pumpAndSettle();
       expect(find.text('Body Capture'), findsOneWidget);
-      await tester.tap(find.widgetWithText(TextButton, 'Activity'));
+      await tester.tap(find.widgetWithText(TextButton, 'Today'));
       await tester.pumpAndSettle();
-      expect(find.text('Body Activity'), findsOneWidget);
+      expect(find.text('Body Today'), findsOneWidget);
       expect(tester.takeException(), isNull);
     }, variant: TargetPlatformVariant.only(TargetPlatform.android));
   }

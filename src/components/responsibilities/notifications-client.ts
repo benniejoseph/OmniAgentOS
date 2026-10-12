@@ -1,4 +1,4 @@
-import { object, responsibilityId, sha256 } from "./client";
+import { object, responsibilityId, sha256, source } from "./client";
 import { sameJson, type Owner } from "./model";
 import { NOTIFICATIONS_CONTRACT, type NotificationAdmission, type NotificationConfiguration, type NotificationControlRequest, type NotificationsResult, type NotificationsView, type ResponsibilityNotificationCandidate, type ResponsibilityNotificationReceipt } from "./notifications-model";
 
@@ -10,7 +10,6 @@ const digest = (value: unknown): value is string => typeof value === "string" &&
 const date = (value: unknown): value is string => text(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
 const member = (value: unknown, choices: readonly string[]) => typeof value === "string" && choices.includes(value);
 const keys = (value: Record<string, unknown>, required: string, optional = "") => required.split(" ").every((key) => Object.hasOwn(value, key)) && Object.keys(value).every((key) => `${required} ${optional}`.split(" ").includes(key));
-const exactId = (value: unknown): value is string => text(value) && /^[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$/.test(value);
 const owned = (value: Record<string, unknown>, owner: Owner, id: string) => value.tenantId === owner.tenantId && typeof value.actorId === "string" && /^actor:[a-f0-9-]{36}$/.test(value.actorId) && (!owner.actorId || value.actorId === owner.actorId) && value.responsibilityId === id && responsibilityId(id);
 const envelope = (value: unknown): value is Record<string, unknown> => object(value) && value.schemaVersion === 1 && value.contract === NOTIFICATIONS_CONTRACT && value.externalDelivery === false && text(value.disclosure, 4000);
 const nullableId = (value: unknown, expression: RegExp) => value === null || typeof value === "string" && expression.test(value);
@@ -18,7 +17,8 @@ const nullableId = (value: unknown, expression: RegExp) => value === null || typ
 async function configuration(value: unknown, owner: Owner, id: string): Promise<NotificationConfiguration> {
   if (!object(value) || !keys(value, "schemaVersion tenantId actorId responsibilityId policy runtimeConfigurationSha256 responsibilityRevision reviewSha256 draftSha256 source destination quietOnNoChange maximumNotifications expiresAt configurationSha256") || value.schemaVersion !== 1 || !owned(value, owner, id) ||
     value.policy !== "owner_in_app_material_change_v1" || !digest(value.runtimeConfigurationSha256) || !revision(value.responsibilityRevision) || !digest(value.reviewSha256) || !digest(value.draftSha256) ||
-    !object(value.source) || !keys(value.source, "kind id workspaceId") || value.source.kind !== "meeting" || !exactId(value.source.id) || !exactId(value.source.workspaceId) ||
+    !object(value.source) || !source(value.source) || !["meeting", "work_item"].includes(value.source.kind) ||
+    !keys(value.source, value.source.kind === "work_item" ? "kind id workspaceId projectId" : "kind id workspaceId") ||
     value.destination !== "owner_in_app" || value.quietOnNoChange !== true || !revision(value.maximumNotifications) || value.maximumNotifications > 1000 || !date(value.expiresAt)) return fail();
   const { configurationSha256, ...body } = value;
   if (configurationSha256 !== await sha256(body)) return fail();

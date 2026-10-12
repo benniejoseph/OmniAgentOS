@@ -1,3 +1,4 @@
+import { withMeasuredComparison } from "@/lib/agents/adaptation-comparison.test-fixtures";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -38,14 +39,14 @@ describe("P7.6 Agent adaptation contract", () => {
     expect(JSON.stringify(adaptation)).not.toContain("owner@example.test");
   });
 
-  it("requires a passed exact-version evaluation before activation", () => {
+  it("requires exact-version eligibility and a measured comparison before activation", () => {
     const evaluated = evaluateAgentAdaptationV1(
       observed(3),
       3,
       "2026-09-07T05:01:00.000Z",
     );
     const active = activateAgentAdaptationV1(
-      evaluated,
+      withMeasuredComparison(evaluated),
       7,
       "2026-09-07T05:02:00.000Z",
     );
@@ -80,7 +81,7 @@ describe("P7.6 Agent adaptation contract", () => {
     expect(() => activateAgentAdaptationV1(held, 1)).toThrow();
 
     const active = activateAgentAdaptationV1(
-      evaluateAgentAdaptationV1(observed(), 1),
+      withMeasuredComparison(evaluateAgentAdaptationV1(observed(), 1)),
       1,
     );
     const rolledBack = rollbackAgentAdaptationV1(

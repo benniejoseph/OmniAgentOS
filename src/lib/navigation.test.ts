@@ -1,32 +1,33 @@
 import { describe, expect, it } from "vitest";
 import { appNav, appNavGroups, primaryNavItems } from "@/lib/navigation";
 
-describe("everyday workspace navigation", () => {
-  it("exposes the working Activity destination beside Assistant, Work, Memory and Capabilities", () => {
+describe("personal partner navigation", () => {
+  it("puts the four everyday places in a consistent order", () => {
     expect(primaryNavItems.map(({ label, href }) => [label, href])).toEqual([
-      ["Assistant", "/app/command"], ["Work", "/app/projects"],
-      ["Activity", "/app/activity"], ["Memory", "/app/memory"],
-      ["Capabilities", "/app/automation"],
+      ["Today", "/app"], ["Assistant", "/app/command"],
+      ["My work", "/app/projects"], ["Library", "/app/memory"],
     ]);
   });
 
-  it("retains every catalog destination exactly once across Workspace and More", () => {
+  it("keeps active specialist destinations reachable exactly once in More", () => {
     const destinations = appNavGroups.flatMap(({ items }) => items.map(({ href }) => href));
     expect(destinations.toSorted()).toEqual(appNav.map(({ href }) => href).toSorted());
     expect(new Set(destinations).size).toBe(destinations.length);
     const more = appNavGroups.find(({ label }) => label === "More")!;
     expect(more.collapsible).toBe(true);
     expect(more.items.map(({ href }) => href)).toEqual(expect.arrayContaining([
-      "/app", "/app/capture", "/app/approvals", "/app/results", "/app/workflows", "/app/responsibilities",
+      "/app/capture", "/app/approvals", "/app/activity", "/app/results",
+      "/app/automation", "/app/workflows", "/app/responsibilities",
       "/app/connectors", "/app/meetings", "/app/accounts", "/app/markets",
-      "/app/agents", "/app/payments", "/app/evaluations", "/app/observability",
+      "/app/agents", "/app/evaluations", "/app/observability",
       "/app/security", "/app/settings",
     ]));
+    expect(more.items.some(({ href }) => primaryNavItems.some((item) => item.href === href))).toBe(false);
   });
 
-  it("exposes Responsibilities once in More and command search without replacing Work or Activity", () => {
-    expect(appNav.filter(({ href }) => href === "/app/responsibilities").map(({ label }) => label)).toEqual(["Responsibilities"]);
-    expect(appNavGroups.find(({ label }) => label === "More")?.items.some(({ href }) => href === "/app/responsibilities")).toBe(true);
-    expect(primaryNavItems.map(({ href }) => href)).toEqual(expect.arrayContaining(["/app/projects", "/app/activity"]));
+  it("uses one Needs you inbox and keeps disabled Payments out of navigation and command search", () => {
+    expect(appNav.filter(({ href }) => href === "/app/approvals").map(({ label }) => label)).toEqual(["Needs you"]);
+    expect(appNav.some(({ href }) => href === "/app/payments")).toBe(false);
+    expect(appNav.filter(({ href }) => href === "/app/responsibilities")).toHaveLength(1);
   });
 });

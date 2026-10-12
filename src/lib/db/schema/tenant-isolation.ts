@@ -94,6 +94,7 @@ export const tenantRootPolicyTables = [
   "omni_agent_release_channels",
   "omni_agent_release_evaluations",
   "omni_agent_adaptations",
+  "omni_agent_adaptation_comparisons",
   "omni_agent_learning_observations",
   "omni_agent_learning_cycles",
   "omni_delegation_tasks",

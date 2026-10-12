@@ -119,7 +119,7 @@ class _MacosKnowledgeViewState extends State<MacosKnowledgeView> {
       final selectedNode = _findNode(state?.nodes ?? const [], _selectedNodeId);
 
       return MacosPageScaffold(
-        title: 'Knowledge',
+        title: 'Library',
         description: 'Browse what Asael remembers, inspect its sources, and trace relationships.',
         icon: Icons.account_tree_outlined,
         actions: [

@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
+import '../../generated/native_contract.g.dart';
 import 'agent_governance.dart';
+import 'agent_adaptation_comparison_view.dart';
 
 typedef AgentGovernanceLoad = Future<AgentGovernanceSnapshot> Function();
 typedef AgentGovernanceMutation = Future<AgentGovernanceSnapshot> Function(
@@ -37,6 +39,7 @@ class _AgentGovernanceViewState extends State<AgentGovernanceView> {
   Object? _error;
   bool _loading = false;
   String? _action;
+  int _generation = 0;
 
   @override
   void initState() {
@@ -49,7 +52,13 @@ class _AgentGovernanceViewState extends State<AgentGovernanceView> {
   @override
   void didUpdateWidget(covariant AgentGovernanceView oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.agentId != widget.agentId) {
+    if (oldWidget.agentId != widget.agentId ||
+        oldWidget.canRead != widget.canRead ||
+        oldWidget.canManage != widget.canManage ||
+        oldWidget.builtIn != widget.builtIn) {
+      _generation++;
+      _loading = false;
+      _action = null;
       _snapshot = null;
       _error = null;
       if (widget.canRead && !widget.builtIn) {
@@ -59,19 +68,33 @@ class _AgentGovernanceViewState extends State<AgentGovernanceView> {
   }
 
   Future<void> _load() async {
-    if (_loading) return;
+    if (_loading || !mounted) return;
+    final generation = _generation;
     setState(() {
       _loading = true;
       _error = null;
     });
     try {
       final value = await widget.load();
-      if (mounted) setState(() => _snapshot = value);
+      if (mounted && generation == _generation) {
+        _acceptSnapshot(value);
+      }
     } catch (error) {
-      if (mounted) setState(() => _error = error);
+      if (mounted && generation == _generation) setState(() => _error = error);
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted && generation == _generation) {
+        setState(() => _loading = false);
+      }
     }
+  }
+
+  void _acceptSnapshot(AgentGovernanceSnapshot value) {
+    if (_snapshot != null && !value.retainsComparisonEvidenceFrom(_snapshot!)) {
+      throw const FormatException(
+        'The refresh contains older comparison evidence. The confirmed result is retained; refresh again to reconcile.',
+      );
+    }
+    setState(() => _snapshot = value);
   }
 
   Future<void> _release(AgentGovernanceJson action) async =>
@@ -88,18 +111,21 @@ class _AgentGovernanceViewState extends State<AgentGovernanceView> {
     String key,
     Future<AgentGovernanceSnapshot> Function() action,
   ) async {
-    if (_action != null) return;
+    if (_action != null || !widget.canManage) return;
+    final generation = _generation;
     setState(() {
       _action = key;
       _error = null;
     });
     try {
       final value = await action();
-      if (mounted) setState(() => _snapshot = value);
+      if (mounted && generation == _generation) {
+        _acceptSnapshot(value);
+      }
     } catch (error) {
-      if (mounted) setState(() => _error = error);
+      if (mounted && generation == _generation) setState(() => _error = error);
     } finally {
-      if (mounted) setState(() => _action = null);
+      if (mounted && generation == _generation) setState(() => _action = null);
     }
   }
 
@@ -164,6 +190,7 @@ class _AgentGovernanceViewState extends State<AgentGovernanceView> {
           canManage: widget.canManage,
           busy: _action,
           onAction: _adapt,
+          failed: _error != null,
         ),
         const SizedBox(height: 8),
         Align(
@@ -257,7 +284,7 @@ class _ReleasePanel extends StatelessWidget {
                           'action': 'evaluate',
                           'definitionVersion': version.definitionVersion,
                         }),
-                        child: const Text('Evaluate'),
+                        child: const Text('Check eligibility'),
                       )
                     : version.active
                     ? const Icon(Icons.check_circle_outline, size: 18)
@@ -371,16 +398,17 @@ class _AdaptationPanel extends StatelessWidget {
     required this.canManage,
     required this.busy,
     required this.onAction,
+    required this.failed,
   });
 
   final AgentGovernanceSnapshot snapshot;
-  final bool canManage;
+  final bool canManage, failed;
   final String? busy;
   final ValueChanged<AgentGovernanceJson> onAction;
 
   @override
   Widget build(BuildContext context) => _GovernanceCard(
-    title: 'Observed adaptations',
+    title: 'Learning from corrections',
     icon: Icons.auto_awesome_outlined,
     trailing: canManage
         ? IconButton(
@@ -408,81 +436,112 @@ class _AdaptationPanel extends StatelessWidget {
                   color: Theme.of(context).colorScheme.surfaceContainerLow,
                   borderRadius: BorderRadius.circular(9),
                 ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            _label(adaptation.state),
-                            style: Theme.of(context).textTheme.labelLarge,
-                          ),
-                        ),
-                        Text('${(adaptation.confidence * 100).round()}%'),
-                      ],
-                    ),
-                    const SizedBox(height: 5),
-                    Text(adaptation.guidance),
-                    const SizedBox(height: 6),
-                    Text(
-                      '${adaptation.evidenceCount} evidence items · observed against definition v${adaptation.observedDefinitionVersion} · authority impact: ${adaptation.authorityImpact}',
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
-                    const SizedBox(height: 5),
-                    SelectableText(
-                      adaptation.adaptationId,
-                      style: Theme.of(context).textTheme.labelSmall,
-                    ),
-                    SelectableText(
-                      adaptation.effectSha256,
-                      style: Theme.of(context).textTheme.labelSmall,
-                    ),
-                    if (canManage) ...[
-                      const SizedBox(height: 8),
-                      Wrap(
-                        spacing: 7,
-                        runSpacing: 7,
+                child: Material(
+                  type: MaterialType.transparency,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
                         children: [
-                          if (adaptation.state == 'observed' &&
-                              adaptation.observedDefinitionVersion ==
-                                  snapshot.definitionVersion)
-                            OutlinedButton(
-                              onPressed: busy == null
-                                  ? () => onAction({
-                                      'action': 'evaluate',
-                                      'adaptationId': adaptation.adaptationId,
-                                    })
-                                  : null,
-                              child: const Text('Evaluate'),
+                          Expanded(
+                            child: Text(
+                              _label(adaptation.state),
+                              style: Theme.of(context).textTheme.labelLarge,
                             ),
-                          if (adaptation.state == 'evaluated' &&
-                              adaptation.observedDefinitionVersion ==
-                                  snapshot.definitionVersion &&
-                              adaptation.evaluationVerdict == 'passed')
-                            FilledButton.tonal(
-                              onPressed: busy == null
-                                  ? () => onAction({
-                                      'action': 'activate',
-                                      'adaptationId': adaptation.adaptationId,
-                                    })
-                                  : null,
-                              child: const Text('Activate guidance'),
-                            ),
-                          if (adaptation.state == 'active')
-                            OutlinedButton(
-                              onPressed: busy == null
-                                  ? () => onAction({
-                                      'action': 'rollback',
-                                      'adaptationId': adaptation.adaptationId,
-                                    })
-                                  : null,
-                              child: const Text('Roll back'),
-                            ),
+                          ),
                         ],
                       ),
+                      const SizedBox(height: 5),
+                      Text(adaptation.guidance),
+                      Text(
+                        'Correction evidence confidence: ${(adaptation.confidence * 100).round()}%',
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        '${adaptation.evidenceCount} evidence items · observed against definition v${adaptation.observedDefinitionVersion} · authority impact: ${adaptation.authorityImpact}',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                      const SizedBox(height: 5),
+                      ExpansionTile(
+                        title: const Text('Guidance details'),
+                        children: [
+                          SelectableText(
+                            '${adaptation.adaptationId}\n${adaptation.effectSha256}',
+                          ),
+                        ],
+                      ),
+                      if (adaptation.comparison != null)
+                        AgentAdaptationComparisonEvidence(
+                          comparison: adaptation.comparison!,
+                        ),
+                      if (canManage &&
+                          NativeContract.currentVersion >= 48 &&
+                          adaptation.state == 'evaluated' &&
+                          adaptation.evaluationVerdict == 'passed' &&
+                          adaptation.observedDefinitionVersion ==
+                              snapshot.definitionVersion)
+                        AgentAdaptationComparisonForm(
+                          key: ValueKey(adaptation.adaptationId),
+                          busy: busy != null,
+                          failed: failed,
+                          comparisonId: adaptation.comparison?.comparisonId,
+                          onCompare: (suite) => onAction({
+                            'action': 'compare',
+                            'adaptationId': adaptation.adaptationId,
+                            'suite': suite,
+                          }),
+                        ),
+                      if (canManage) ...[
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 7,
+                          runSpacing: 7,
+                          children: [
+                            if (adaptation.state == 'observed' &&
+                                adaptation.observedDefinitionVersion ==
+                                    snapshot.definitionVersion)
+                              OutlinedButton(
+                                onPressed: busy == null
+                                    ? () => onAction({
+                                        'action': 'evaluate',
+                                        'adaptationId': adaptation.adaptationId,
+                                      })
+                                    : null,
+                                child: const Text('Check eligibility'),
+                              ),
+                            if (adaptation.state == 'evaluated' &&
+                                adaptation.observedDefinitionVersion ==
+                                    snapshot.definitionVersion &&
+                                adaptation.evaluationVerdict == 'passed')
+                              FilledButton.tonal(
+                                onPressed:
+                                    busy == null &&
+                                        adaptation.canActivateAt(
+                                          snapshot.definitionVersion,
+                                          DateTime.now().toUtc(),
+                                        )
+                                    ? () => onAction({
+                                        'action': 'activate',
+                                        'adaptationId': adaptation.adaptationId,
+                                      })
+                                    : null,
+                                child: const Text('Activate guidance'),
+                              ),
+                            if (adaptation.state == 'active')
+                              OutlinedButton(
+                                onPressed: busy == null
+                                    ? () => onAction({
+                                        'action': 'rollback',
+                                        'adaptationId': adaptation.adaptationId,
+                                      })
+                                    : null,
+                                child: const Text('Roll back'),
+                              ),
+                          ],
+                        ),
+                      ],
                     ],
-                  ],
+                  ),
                 ),
               ),
             ],

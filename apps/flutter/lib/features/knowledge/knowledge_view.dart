@@ -79,7 +79,7 @@ class _KnowledgeViewState extends State<KnowledgeView>
       return Scaffold(
         appBar: AppBar(
           title: const Text(
-            'Memory',
+            'Library',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
           ),

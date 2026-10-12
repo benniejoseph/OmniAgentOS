@@ -4,6 +4,7 @@ import 'package:asael/core/storage/secure_session_store.dart';
 import 'package:asael/features/customers/macos_customer_detail_view.dart';
 import 'package:asael/features/customers/accounts_contracts.dart';
 import 'package:asael/features/customers/accounts_providers.dart';
+import 'package:asael/features/customers/accounts_recovery_store.dart';
 import 'package:asael/features/customers/accounts_workspace.dart';
 import 'package:asael/features/auth/application/session_controller.dart';
 import 'package:asael/features/auth/application/biometric_session_lock_controller.dart';
@@ -126,6 +127,9 @@ void main() {
       ProviderScope(
         overrides: [
           apiClientProvider.overrideWithValue(api),
+          accountsRecoveryStoreProvider.overrideWithValue(
+            MemoryAccountsRecoveryStore(),
+          ),
           sessionControllerProvider.overrideWith(_CustomerSessions.new),
           biometricSessionLockControllerProvider.overrideWith(
             (ref) =>

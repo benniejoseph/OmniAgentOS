@@ -1,4 +1,6 @@
-# Tenure — Business Model
+# Historical enterprise business hypothesis
+
+> Archived direction, 2026-10-12. This document records an earlier enterprise concept, not the current product promise or roadmap. Asael now prioritizes a personal AI partner for one owner. See [the current product direction](PRODUCT.md). Pricing and authority claims below are historical hypotheses.
 
 ## The problem we sell against
 

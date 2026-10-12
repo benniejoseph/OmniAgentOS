@@ -1,3 +1,4 @@
+import { verifyWorkItemSourceRead } from "./work-item-source";
 import { randomUUID } from "node:crypto";
 import { getSql, runWithManagedDatabaseTransaction } from "@/lib/db/client";
 import type { SqlClient } from "@/lib/db/sql-types";
@@ -84,11 +85,18 @@ export async function tickResponsibilityWorkflow(detail: WorkflowRunDetail, opti
           context: resolved.context, requestActorBinding: actorBinding, executionScope: authority!.executionScope,
           dryRun: false, requireReadOnly: true, idempotencyKey: wake.id, abortSignal: signal, responsibilityAdmission: admission });
         signal.throwIfAborted();
-        const output = object(executed.result); const meeting = parseMeetingRevision(output.meeting);
-        if (executed.record.status !== "executed" || executed.record.id !== governedToolExecutionId(owner.tenantId, wake.id) ||
-          !meeting || meeting.ownerActorId !== owner.actorId || meeting.meetingId !== current.configuration.source.id ||
-          meeting.workspaceId !== current.configuration.source.workspaceId || meeting.tenantId !== owner.tenantId ||
-          resolved.evidence.state !== "available" || meeting.meetingSha256 !== resolved.evidence.revisionSha256) throw storageInvalid();
+        const output = object(executed.result);
+        if (executed.record.status !== "executed" || executed.record.id !== governedToolExecutionId(owner.tenantId, wake.id) || resolved.evidence.state !== "available") throw storageInvalid();
+        if (current.configuration.source.kind === "work_item") {
+          const source = current.configuration.source;
+          const { serviceReceipt: _serviceReceipt, ...sourceOutput } = output;
+          const read = verifyWorkItemSourceRead(sourceOutput, owner, { workspaceId: source.workspaceId, projectId: source.projectId, workItemId: source.id });
+          if (read.revisionSha256 !== resolved.evidence.revisionSha256) throw storageInvalid();
+        } else {
+          const meeting = parseMeetingRevision(output.meeting);
+          if (!meeting || meeting.ownerActorId !== owner.actorId || meeting.meetingId !== current.configuration.source.id ||
+            meeting.workspaceId !== current.configuration.source.workspaceId || meeting.tenantId !== owner.tenantId || meeting.meetingSha256 !== resolved.evidence.revisionSha256) throw storageInvalid();
+        }
         const baselineRows = await sql`SELECT snapshot FROM omni_responsibility_baselines WHERE tenant_id = ${owner.tenantId} AND actor_id = ${owner.actorId} AND responsibility_id = ${current.responsibilityId} FOR UPDATE`;
         if (baselineRows.length > 1) throw storageInvalid();
         const baseline = baselineRows[0] ? responsibilityBaselineSchema.parse(baselineRows[0].snapshot) : null;

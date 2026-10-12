@@ -4,7 +4,7 @@ import { appendScopedDomainEvent } from "@/lib/events/store";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import { instantSchema } from "./contracts";
-import { RESPONSIBILITY_MEETING_COMPARISON_POLICY } from "./comparison-policy";
+import { responsibilityComparisonPolicy } from "./comparison-policy";
 import {
   responsibilityBaselineSchema, responsibilityObservationReceiptSchema, responsibilityObservationRequestSchema,
   type ResponsibilityBaseline, type ResponsibilityObservationReceipt, type ResponsibilityObservationRequest, type ResponsibilityObservationResult,
@@ -14,7 +14,7 @@ import { idempotencySha256, notFound, ResponsibilityError, storageInvalid, verif
 
 export type TransactionalObservationReader = (input: Parameters<AuthoritativeResponsibilityReader>[0], sql: SqlClient) => Promise<unknown>;
 export type ResponsibilityObservationStore = {
-  history(owner: ResponsibilityOwner, id: string, limit: number): Promise<{ receipts: ResponsibilityObservationReceipt[]; baseline: ResponsibilityBaseline | null; hasMore: boolean }>;
+  history(owner: ResponsibilityOwner, id: string, limit: number): Promise<{ receipts: ResponsibilityObservationReceipt[]; baseline: ResponsibilityBaseline | null; hasMore: boolean; policy?: ReturnType<typeof responsibilityComparisonPolicy> }>;
   observe(owner: ResponsibilityOwner, request: ResponsibilityObservationRequest, key: string, read: TransactionalObservationReader, now: string): Promise<ResponsibilityObservationResult>;
 };
 
@@ -29,13 +29,13 @@ export async function readResponsibilityObservationHistory(owner: Responsibility
   if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw conflict("responsibility_limit_invalid", 400);
   return scoped(owner, async () => await getSql().transaction(async (sql: SqlClient) => {
     await lockOwner(sql, owner);
-    await readDraft(sql, owner, id);
+    const record = await readDraft(sql, owner, id);
     const rows = await sql`SELECT * FROM omni_responsibility_observations
       WHERE tenant_id = ${owner.tenantId} AND actor_id = ${owner.actorId} AND responsibility_id = ${id}
       ORDER BY saved_at DESC, id ASC LIMIT ${limit + 1}`;
-    return { receipts: rows.slice(0, limit).map((row) => receiptFromRow(row, owner, id)),
+    return { policy: responsibilityComparisonPolicy(record.draft.sources), receipts: rows.slice(0, limit).map((row) => receiptFromRow(row, owner, id)),
       baseline: await readBaseline(sql, owner, id), hasMore: rows.length > limit };
-  }) as { receipts: ResponsibilityObservationReceipt[]; baseline: ResponsibilityBaseline | null; hasMore: boolean });
+  }) as { receipts: ResponsibilityObservationReceipt[]; baseline: ResponsibilityBaseline | null; hasMore: boolean; policy?: ReturnType<typeof responsibilityComparisonPolicy> });
 }
 
 /** Internal admission only: all reads run inside the owner/CAS transaction.
@@ -69,7 +69,7 @@ export async function recordResponsibilityObservationWithSql(sql: SqlClient, own
     }
     const record = await readDraft(sql, owner, request.responsibilityId);
     if (record.state !== "reviewed" || !record.review || record.revision !== request.expectedResponsibilityRevision || record.review.reviewSha256 !== request.expectedReviewSha256 ||
-      request.policySha256 !== RESPONSIBILITY_MEETING_COMPARISON_POLICY.policySha256) throw conflict("responsibility_observation_review_changed");
+      request.policySha256 !== responsibilityComparisonPolicy(record.draft.sources).policySha256) throw conflict("responsibility_observation_review_changed");
     const baseline = await readBaseline(sql, owner, record.id);
     if ((baseline?.revision ?? 0) !== request.expectedBaselineRevision) throw conflict("responsibility_baseline_revision_conflict");
     // The managed SQL client owns transaction control. A non-SQL adapter

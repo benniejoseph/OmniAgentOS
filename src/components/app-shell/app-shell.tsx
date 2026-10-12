@@ -9,13 +9,14 @@ import {
   LogIn,
   LogOut,
   Menu,
+  MoreHorizontal,
   PanelLeftClose,
   PanelLeftOpen,
   UserRound,
   X,
 } from "lucide-react";
 import { clsx } from "clsx";
-import { appNav, appNavGroups, primaryNavItems } from "@/lib/navigation";
+import { appNav, appNavGroups, primaryNavItems, type AppNavItem } from "@/lib/navigation";
 import { CommandPalette } from "@/components/app-shell/command-palette";
 import { IntentPrefetchLink as Link } from "@/components/app-shell/intent-prefetch-link";
 import {
@@ -291,7 +292,7 @@ export function AppShell({
                 )}
               </button>
               <div className="min-w-0">
-                <p className="truncate text-sm font-semibold">{activeItem?.label || "Workspace"}</p>
+                <p className="truncate text-sm font-semibold">{activeItem?.label || (isActivePath(pathname, "/app/payments") ? "Payments" : "Workspace")}</p>
               </div>
             </div>
             <div className={clsx("flex items-center gap-2", styles.headerActions)}>
@@ -308,7 +309,7 @@ export function AppShell({
         </main>
       </div>
 
-      <nav ref={mobileDockRef} className={clsx("fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t lg:hidden", styles.mobileDock)} aria-label="Everyday workspace navigation">
+      <nav ref={mobileDockRef} className={clsx("fixed inset-x-0 bottom-0 z-30 grid grid-cols-4 border-t lg:hidden", styles.mobileDock)} aria-label="Everyday workspace navigation">
         {primaryNavItems.map((item) => {
           const Icon = item.icon;
           const active = isActivePath(pathname, item.href);
@@ -448,43 +449,53 @@ export function MobileNavigation({
 }
 
 export function CompactNavigation({ pathname, inboxCount }: { pathname: string; inboxCount?: number }) {
+  const secondary = appNavGroups.flatMap((group) => group.collapsible ? group.items : []);
+  const attention = secondary.find((item) => item.href === "/app/approvals")!;
+  const activeSecondary = secondary.find((item) => item !== attention && isActivePath(pathname, item.href));
+  const more = secondary.filter((item) => item !== attention && item !== activeSecondary);
+
   return (
     <>
-      {appNavGroups.map((group, groupIndex) => (
-        <div
-          key={group.label}
-          role="group"
-          aria-label={group.label}
-          className={clsx("space-y-1", groupIndex > 0 && "border-t border-line/70 pt-3")}
-        >
-          {group.items.map((item) => {
-            const Icon = item.icon;
-            const active = isActivePath(pathname, item.href);
-            const badge = navBadgeLabel(item.href, inboxCount);
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                aria-label={navItemAccessibleName(item.label, badge)}
-                aria-current={active ? "page" : undefined}
-                title={`${item.label} — ${item.description}`}
-                className={clsx(
-                  "group relative grid min-h-11 w-full place-items-center rounded-md transition",
-                  styles.compactLink,
-                  active
-                    ? "bg-primary text-primary-ink shadow-sm"
-                    : "text-muted hover:bg-surface-raised hover:text-foreground",
-                )}
-              >
-                <Icon size={18} aria-hidden="true" />
-                <span className={styles.compactLabel} aria-hidden="true">{item.label}</span>
-                <NavCountPill badge={badge} active={active} compact />
-              </Link>
-            );
-          })}
-        </div>
-      ))}
+      <div role="group" aria-label="Workspace" className="space-y-1">
+        {primaryNavItems.map((item) => <CompactNavLink key={item.href} item={item} pathname={pathname} />)}
+      </div>
+      <div role="group" aria-label="Needs you and more" className="space-y-1 border-t border-line/70 pt-3">
+        <CompactNavLink item={attention} pathname={pathname} inboxCount={inboxCount} />
+        {activeSecondary ? <CompactNavLink item={activeSecondary} pathname={pathname} /> : null}
+        <details className={styles.compactMore}>
+          <summary className="grid min-h-11 cursor-pointer list-none place-items-center rounded-md text-muted transition hover:bg-surface-raised hover:text-foreground" aria-label="More workspaces" title="More workspaces">
+            <MoreHorizontal size={18} aria-hidden="true" />
+            <span className="text-xs">More</span>
+          </summary>
+          <div className="mt-1 space-y-1">
+            {more.map((item) => <CompactNavLink key={item.href} item={item} pathname={pathname} />)}
+          </div>
+        </details>
+      </div>
     </>
+  );
+}
+
+function CompactNavLink({ item, pathname, inboxCount }: { item: AppNavItem; pathname: string; inboxCount?: number }) {
+  const Icon = item.icon;
+  const active = isActivePath(pathname, item.href);
+  const badge = navBadgeLabel(item.href, inboxCount);
+  return (
+    <Link
+      href={item.href}
+      aria-label={navItemAccessibleName(item.label, badge)}
+      aria-current={active ? "page" : undefined}
+      title={`${item.label} — ${item.description}`}
+      className={clsx(
+        "group relative grid min-h-11 w-full place-items-center rounded-md transition",
+        styles.compactLink,
+        active ? "bg-primary text-primary-ink shadow-sm" : "text-muted hover:bg-surface-raised hover:text-foreground",
+      )}
+    >
+      <Icon size={18} aria-hidden="true" />
+      <span className={styles.compactLabel} aria-hidden="true">{item.label}</span>
+      <NavCountPill badge={badge} active={active} compact />
+    </Link>
   );
 }
 

@@ -1,6 +1,6 @@
 # Asael
 
-[Asael](https://asael.bennierichard.com) is an enterprise AI agent platform: a governed tool-calling agent with durable workflows, long-term memory and RAG, MCP/OpenAPI connectors, approvals, observability, and signed release evidence — built on Next.js, OpenAI, and Neon Postgres.
+[Asael](https://asael.bennierichard.com) is a private personal AI partner for real work across life and projects. It combines an Assistant, durable work, source-backed memory, connected tools, and explicit decisions about consequential actions. The primary workspace has four destinations: **Today, Assistant, My work, and Library**. Built on Next.js, supported model providers, and PostgreSQL.
 
 ## Quickstart
 
@@ -15,7 +15,7 @@ cp .env.example .env.local
 npm run dev
 ```
 
-Open http://localhost:3000, go to **Work**, and give it a goal. The example config keeps local authentication disabled; production always enables it. Without `OPENAI_API_KEY` the app streams a clearly labeled simulated response; with it, the agent runs a real tool loop. Press **⌘K** or **Ctrl+K** to jump between workspaces.
+Open http://localhost:3000, go to **Assistant**, and give it a goal. The example config keeps local authentication disabled; production always enables it. Without `OPENAI_API_KEY` the app streams a clearly labeled simulated response; with it, the agent runs a real tool loop. Press **⌘K** or **Ctrl+K** to jump between workspaces.
 
 ## How it works
 
@@ -31,9 +31,13 @@ Tool records are intentionally mutable while an approval moves from pending to a
 
 Agent turns use a full conversation array instead of OpenAI `previous_response_id`, which keeps the loop compatible with Zero Data Retention. When a tool needs approval, the conversation, pending call, instructions, and completed outputs are persisted; approval resumes that same run from the saved continuation.
 
-### Earned autonomy
+### Follow-through and measured improvement
 
-Approvals get cheaper as the agent proves itself. Every gateable action class accrues a trust profile; once it reaches a clean-streak threshold, reversible risk&lt;3 actions can graduate from "approve each" to "auto with alert" (opt-in via `OMNIAGENT_GRADUATED_AUTONOMY=true`). Any failure or rejection resets the streak; irreversible and risk-3 actions never graduate. See [docs/vision/PRODUCT.md](docs/vision/PRODUCT.md). Trust profiles are visible at `/api/trust` and on each approval card.
+Responsibilities can follow one owned canonical work item through daily or weekly checks. A built-in routine checks status, deadlines, overdue state, priority, owners, readable dependencies and linked outputs. The first check establishes a quiet baseline. Later meaningful changes can produce owner inbox updates when separately enabled. Tracking is bounded by time and cumulative limits. A task marked done is not proof of a verified outcome.
+
+Proposed agent guidance can be compared with current guidance on 3–10 owner-supplied text examples. Both variants use the same tasks, model, agent definition and literal scoring rules, without tools or retrieval. New activation requires an additional passing case, no case regressions, and unchanged current configuration. These examples provide bounded text evidence, not proof that an agent improves on every task. Comparisons use real model calls and may incur charges; a repeated request recovers the same stored attempt.
+
+Trust history is useful evidence, but does not by itself authorize an action. Current runtime policies, explicit grants, tool approval and scoped execution remain decisive. See [the product direction](docs/vision/PRODUCT.md).
 
 ### Agent quality evals
 

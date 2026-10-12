@@ -907,7 +907,7 @@ function MemoryWorkspace({ searchAvailable }: { searchAvailable: boolean }) {
     <section className={styles.shell} aria-labelledby="memory-page-title">
       <header className={styles.hero}>
         <div className={styles.heroCopy}>
-          <h1 id="memory-page-title">Memory</h1>
+          <h1 id="memory-page-title">Library</h1>
           <span>Inspect what Asael remembers and the sources behind it.</span>
         </div>
         <div className={styles.heroActions}>
@@ -936,7 +936,7 @@ function MemoryWorkspace({ searchAvailable }: { searchAvailable: boolean }) {
       {error ? <div className={styles.error} role="alert"><CircleAlert size={17} aria-hidden="true" /><span>{error}</span><button type="button" onClick={() => setError(undefined)}>Dismiss</button></div> : null}
       <p className={styles.announcement} role="status">{announcement}</p>
 
-      <nav className={styles.tabs} aria-label="Memory workspace">
+      <nav className={styles.tabs} aria-label="Library views">
         <Tab active={view === "memory"} onClick={() => selectView("memory")} icon={<Brain size={17} />} label="Memory" count={overview?.summary.durableMemories} />
         <Tab active={view === "knowledge"} onClick={() => selectView("knowledge")} icon={<BookOpen size={17} />} label="Knowledge" count={overview?.summary.knowledgeDocuments} />
         <Tab

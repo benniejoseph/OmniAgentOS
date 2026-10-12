@@ -609,7 +609,7 @@ class ResponsibilityController extends ChangeNotifier {
         'configurationSha256': responsibilityMap(
           ready!['configuration'],
         )['configurationSha256'],
-        'acknowledgePilot': responsibilityPilot,
+        'acknowledgePilot': responsibilityMap(ready['configuration'])['pilot'],
       },
     }, id: selectedId);
   }

@@ -44,7 +44,7 @@ void main() {
 
     expect(find.text('Today'), findsOneWidget);
     expect(
-      find.text('Your work, decisions, and recent results.'),
+      find.text('What matters today, what changed, and what needs you.'),
       findsOneWidget,
     );
     expect(find.byType(Card), findsOneWidget);
@@ -54,7 +54,7 @@ void main() {
     expect(
       destinationIndices(primary: true)
           .map((index) => appDestinations[index].path),
-      ['/talk', '/projects', '/activity', '/knowledge', '/automation'],
+      ['/today', '/talk', '/projects', '/knowledge'],
     );
     expect(
       destinationIndices(group: AppDestinationGroup.system)

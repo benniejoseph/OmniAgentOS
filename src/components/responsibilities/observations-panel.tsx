@@ -20,16 +20,22 @@ export function ObservationsPanel({ resource, refresh }: { resource: Resource<Ob
         const { plan } = receipt; const observation = plan.observation;
         return <li key={observation.id}><h4>{readableCode(plan.outcome)}</h4><p>{observation.observedAt} · observation {readableCode(observation.state)}</p>
           <p>{plan.outcome === "no_change" ? "No material change. Quiet; no new notification candidate." : plan.outcome === "baseline_established" ? "Initial accepted baseline. No notification candidate." : plan.outcome === "material_change" ? "A material change was recorded. Check the separate in-app notification history for any admitted delivery." : "Evidence was not sufficient to advance the accepted baseline."}</p>
+          {plan.change && <p>Changed: {plan.change.categories.map(changeLabel).join(", ")}. {plan.change.categories.includes("work_status") && "A task marked done still needs its deliverable checked."}</p>}
           {plan.reasons.length > 0 && <ul>{plan.reasons.map((reason, index) => <li key={`${index}-${reason}`}>{readableCode(reason)}</li>)}</ul>}
           <p>Observation delivery field: {plan.change ? readableCode(plan.change.deliveryState) : "not requested"}. This immutable observation does not itself authorize delivery.</p>
-          <ul>{observation.sources.map((item, index) => <li key={`${item.source.id}-${index}`}><p className={styles.identity}>{item.source.kind} · {item.source.id} · {item.state}{item.reason ? ` · ${readableCode(item.reason)}` : ""}</p>
+          <details><summary>Source evidence</summary><ul>{observation.sources.map((item, index) => <li key={`${item.source.id}-${index}`}><p className={styles.identity}>{item.source.kind} · {item.source.id} · {item.state}{item.reason ? ` · ${readableCode(item.reason)}` : ""}</p>
             <p>Source updated: {item.sourceUpdatedAt ?? "unknown"} · fresh until: {item.freshUntil ?? "unknown"}</p>
             {item.evidence.length === 0 ? <p>No accepted evidence references.</p> : <ul>{item.evidence.map((evidence, position) => <li key={`${evidence.id}-${position}`} className={styles.identity}>{evidence.kind} · {evidence.id} · revision {evidence.revisionId ?? "unavailable"}</li>)}</ul>}
-          </li>)}</ul>
+          </li>)}</ul></details>
           <details><summary>Exact observation receipt</summary><pre>{JSON.stringify(receipt, null, 2)}</pre></details>
         </li>;
       })}</ol>}
       <p className={styles.support}>{value.coverage.returned} newest receipts shown, limit {value.coverage.limit}. Total unavailable.{value.hasMore ? " Older observations exist beyond this window." : ""}</p>
     </>}
   </section>;
+}
+function changeLabel(category: string) {
+  const labels: Record<string, string> = { work_status: "task status", work_deadline: "deadline", work_overdue: "overdue state",
+    work_priority: "priority", work_owners: "owners", work_dependencies: "dependencies", work_outputs: "linked outputs" };
+  return labels[category] ?? readableCode(category);
 }

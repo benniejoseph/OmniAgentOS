@@ -32,6 +32,7 @@ beforeEach(() => {
 
 describe("cohesive Today application service", () => {
   it("composes every selected source under the authenticated caller", async () => {
+    dependencies.loadToday.mockResolvedValue(todayFixture([...DEFAULT_TODAY_SECTIONS, "customers", "active_agents", "memory", "conversations", "consumption"]));
     const result = await showCohesiveTodayService(caller, {
       workspaceId: "workspace:personal:test", workLimit: 8, approvalLimit: 6,
       meetingLimit: 20, accountLimit: 10,

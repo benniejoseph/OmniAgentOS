@@ -6,13 +6,13 @@ product
 
 ## Users
 
-Asael is a private personal operating system for one owner who wants a coordinated arsenal of AI agents to handle research, building, planning, administration, and creative work. The owner gives the system an outcome, watches specialist agents collaborate, corrects their work, and decides which actions may affect external systems.
+Asael is a personal AI partner for one owner who wants help carrying real work across life and projects. The owner describes an outcome, gives useful context, reviews decisions when needed, and comes back to progress and evidence. Specialist agents and workflows support that relationship.
 
 ## Product Purpose
 
 Asael turns personal goals into adaptive, durable work. It combines specialist agents, long-term memory, tools, approvals, recovery, and evidence so repeated reversible work becomes easier while novel or consequential actions remain supervised. Success means the owner can quickly answer four questions: what is working, what needs me, what did the system learn, and can I trust the result?
 
-The authenticated product is primary. Marketing and documentation support adoption but must not compete with the core workflow. The deeper product thesis and earned-autonomy model live in `docs/vision/PRODUCT.md`.
+The authenticated product is primary. Marketing and documentation support adoption but must not compete with the core workflow. The product direction, shipped boundaries and development priorities live in `docs/vision/PRODUCT.md`.
 
 ## Brand Personality
 
