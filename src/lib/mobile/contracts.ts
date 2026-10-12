@@ -1,3 +1,4 @@
+import { nativeCsmSchemas } from "@/lib/mobile/csm-contracts";
 import { localAndroidDeviceUpdateSchema, localAndroidCommandSchema, localAndroidCompletionRequestSchema } from "@/lib/local-computer/android-contracts";
 import { z } from "zod";
 import { researchOptionsSchema, researchProgressSchema } from "@/lib/research/contracts";
@@ -74,12 +75,13 @@ import { conversationVoiceTurnsRequestSchema, conversationVoiceTurnsResponseSche
 import { nativeListenSchemas } from "@/lib/capture/listen-contracts";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 54 as const;
-// v54 adds explicit phone listening and narrowly scoped background recording imports.
-export const NATIVE_API_PREVIOUS_VERSION = 53 as const;
+export const NATIVE_API_CURRENT_VERSION = 55 as const;
+// v55 adds owner-scoped mobile CSM briefs, role notes and exact source links.
+export const NATIVE_API_PREVIOUS_VERSION = 54 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
+  53,
   52,
 ] as const;
 
@@ -402,6 +404,7 @@ export const nativeBootstrapResponseSchema = nativePublicIdentitySchema.extend({
       supportedVersions: z.tuple([
         z.literal(NATIVE_API_CURRENT_VERSION),
         z.literal(NATIVE_API_PREVIOUS_VERSION),
+        z.literal(53),
         z.literal(52),
       ]),
       discoveryPath: z.literal("/api/mobile/contracts"),
@@ -2380,6 +2383,7 @@ const nativeCompanionPreferencesResponseSchema = z.object({
 }).strict();
 
 export const nativeContractSchemas = Object.freeze({
+  ...nativeCsmSchemas,
   ...nativeListenSchemas,
   NativeEvidenceRunResponse: z.object({
     run: z.object({
@@ -2517,6 +2521,7 @@ export const nativeContractSchemas = Object.freeze({
     supportedVersions: z.tuple([
       z.literal(NATIVE_API_CURRENT_VERSION),
       z.literal(NATIVE_API_PREVIOUS_VERSION),
+      z.literal(53),
       z.literal(52),
     ]),
     versions: z.array(z.object({
@@ -2526,11 +2531,22 @@ export const nativeContractSchemas = Object.freeze({
       openapi: z.string(),
       events: z.string(),
       fixtures: z.string(),
-    }).strict()).length(3),
+    }).strict()).length(4),
   }).strict(),
 });
 
 export function nativeOperationsForVersion(version: number): readonly NativeOperation[] | undefined {
+  if (version === 55) return [...nativeOperationsForVersion(54)!,
+    operation("csm.clients.list", "GET", "/api/csm/clients", "Read your current client briefs.", "bearer", undefined, "NativeCsmClientListResponse"),
+    operation("csm.client.get", "GET", "/api/projects/{id}/csm", "Read one authorized client brief and its exact source links.", "bearer", undefined, "NativeCsmClientResponse"),
+    operation("csm.client.save", "PUT", "/api/projects/{id}/csm", "Save the reviewed client brief against its inspected revision.", "bearer", "NativeCsmProfileRequest", "NativeCsmClientResponse", { requestBodyMaxBytes: 32000 }),
+    operation("csm.client.sources.link", "POST", "/api/projects/{id}/csm/sources", "Link an inspected Library version to this client.", "bearer", "NativeCsmSourceRequest", "NativeCsmClientResponse", { requestBodyMaxBytes: 4000 }),
+    operation("csm.client.sources.unlink", "DELETE", "/api/projects/{id}/csm/sources", "Remove a client source link without deleting its original.", "bearer", "NativeCsmSourceDeleteRequest", "NativeCsmClientResponse", { requestBodyMaxBytes: 4000 }),
+    operation("csm.role.get", "GET", "/api/csm/role-context", "Read your private CSM role notes and sources.", "bearer", undefined, "NativeCsmRoleResponse"),
+    operation("csm.role.save", "PUT", "/api/csm/role-context", "Save your CSM role notes against their inspected revision.", "bearer", "NativeCsmRoleRequest", "NativeCsmRoleResponse", { requestBodyMaxBytes: 100000 }),
+    operation("csm.role.sources.link", "POST", "/api/csm/role-context/sources", "Link an inspected private Library source to your role context.", "bearer", "NativeCsmSourceRequest", "NativeCsmRoleResponse", { requestBodyMaxBytes: 4000 }),
+    operation("csm.role.sources.unlink", "DELETE", "/api/csm/role-context/sources", "Remove a role source link without deleting its original.", "bearer", "NativeCsmSourceDeleteRequest", "NativeCsmRoleResponse", { requestBodyMaxBytes: 4000 }),
+  ];
   if (version === 54) return [...nativeOperationsForVersion(53)!,
     operation("listen.grant", "POST", "/api/mobile/listen/grant", "Enable or revoke this phone's background transcript, source-memory and Knowledge processing. Captured instructions never authorize commands.", "bearer", "NativeListenGrantRequest", "NativeListenGrantResponse", { requestBodyMaxBytes: 4096 }),
     operation("listen.ingest", "POST", "/api/mobile/listen/ingest", "Upload only owned recording chunks using a Listen grant. JSON start/complete/status or multipart segment; never returns transcript content. Audio is removed after processing.", "listen", "NativeListenIngestRequest", "NativeListenIngestResponse", { requestBodyMaxBytes: 3211264, successStatuses: [200, 202], errorStatuses: [400, 401, 403, 404, 409, 410, 413, 415, 503] }),
@@ -2617,7 +2633,7 @@ export function nativeContractDiscovery() {
     previousVersion: NATIVE_API_PREVIOUS_VERSION,
     supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [
       typeof NATIVE_API_CURRENT_VERSION, typeof NATIVE_API_PREVIOUS_VERSION,
-      52,
+      53, 52,
     ],
     versions: NATIVE_API_SUPPORTED_VERSIONS.map((version) => ({
       version,

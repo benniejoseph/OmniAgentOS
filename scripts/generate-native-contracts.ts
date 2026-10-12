@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
+import { CSM_AGENT_TEMPLATE } from "../src/lib/csm/template";
 import {
   NATIVE_API_CONTRACT_ID,
   NATIVE_API_CURRENT_VERSION,
@@ -19,6 +20,13 @@ const checkOnly = process.argv.includes("--check");
 // Product retirement keeps these prior public artifacts byte-frozen. The v47
 // compatibility publication is withdrawn narrowly from its archived original.
 const frozenDocumentSha256ByVersion = Object.freeze({
+  54: Object.freeze({
+    "openapi.json": "aa67baafd9c3b5be5da61b06128be97a7e7873bb474c32fae458a23427e2d482", // gitleaks:allow -- public artifact integrity digest
+    "events.schema.json": "86aa365fcc455ed5d8ca2e1861a646d614af6080cbbd743035ed0503ad71c0e7", // gitleaks:allow -- public artifact integrity digest
+    "fixtures.json": "7410245f163715c941c042a119aedaf3a40e25d144f54d93fcb9827478fe8b54", // gitleaks:allow -- public artifact integrity digest
+    "manifest.json": "e96b390bf576e2fddb24978039efbcec830197894c8ac0ff65459a7fd9df831f", // gitleaks:allow -- public artifact integrity digest
+  }),
+
   53: Object.freeze({
     "openapi.json": "441a3e1bc68ad9258245c02c5dd9bb6a6f5c4e3dc32c92822452e1d4492f2a14", // gitleaks:allow -- public artifact integrity digest
     "events.schema.json": "86aa365fcc455ed5d8ca2e1861a646d614af6080cbbd743035ed0503ad71c0e7", // gitleaks:allow -- public artifact integrity digest
@@ -214,6 +222,10 @@ async function generate() {
     expected.set(path.join(directory, "fixtures.json"), fixturesText);
     expected.set(path.join(directory, "manifest.json"), stableJson(manifest));
   }
+  expected.set(
+    path.join(repositoryRoot, "apps", "flutter", "lib", "features", "csm", "csm_agent_template.dart"),
+    `// GENERATED FILE. Source: src/lib/csm/template.ts. Run npm run generate:native-contracts.\nimport 'dart:convert';\n\nMap<String, dynamic> csmAgentTemplate() => Map<String, dynamic>.from(jsonDecode(${JSON.stringify(JSON.stringify(CSM_AGENT_TEMPLATE)).replaceAll("$", "\\$")}));\n`,
+  );
   expected.set(
     path.join(repositoryRoot, "apps", "flutter", "lib", "generated", "native_contract.g.dart"),
     renderDartContract(nativeOperationsForVersion(NATIVE_API_CURRENT_VERSION) || []),

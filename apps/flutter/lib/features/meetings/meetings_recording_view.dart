@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
 
+import 'meetings_mobile_flow.dart';
+import '../../app/platform/mobile_presentation.dart';
+
 import 'meetings.dart';
 import 'meetings_recording_contracts.dart';
 import 'meetings_recording_controller.dart';
@@ -434,7 +437,7 @@ class _RecordingReviewDialogState extends State<_RecordingReviewDialog> {
     listenable: widget.controller,
     builder: (context, _) {
       if (!_current) {
-        return AlertDialog(
+        return meetingReviewDialog(
           title: const Text('Recording review unavailable'),
           content: const Text(
             'Current account, Meeting, or device access changed.',
@@ -448,7 +451,7 @@ class _RecordingReviewDialogState extends State<_RecordingReviewDialog> {
         );
       }
       final review = widget.review, record = review.recording;
-      return AlertDialog(
+      return meetingReviewDialog(
         // At large text sizes, the title must share the content viewport so
         // the reviewed retention text stays reachable above the action bar.
         scrollable: true,
@@ -461,7 +464,9 @@ class _RecordingReviewDialogState extends State<_RecordingReviewDialog> {
             children: [
               SelectableText(record['title'] as String),
               Text(
-                '${record['segmentCount']} segments · ${record['durationMs']} ms · ${record['byteCount']} bytes',
+                usesMobilePresentation()
+                    ? '${((record['durationMs'] as num) / 60000).toStringAsFixed(1)} min · ${((record['byteCount'] as num) / (1024 * 1024)).toStringAsFixed(1)} MB · ${record['segmentCount']} parts'
+                    : '${record['segmentCount']} segments · ${record['durationMs']} ms · ${record['byteCount']} bytes',
               ),
               Text(
                 '${record['cachedTranscripts']} verified segment transcripts available for reuse.',

@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/network/native_workspace_access.dart';
 import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_flow_scaffold.dart';
+import 'meetings_mobile_flow.dart';
 import '../capture/entity_options.dart';
 import '../capture/library_view.dart';
 
@@ -171,18 +173,23 @@ Future<void> showMeetingEditor(
 }) async {
   await showDialog<void>(
     context: context,
-    builder: (_) => Dialog(
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 720),
-        child: MeetingEditor(
-          actions: actions,
-          workspaceId: workspaceId,
-          base: base,
-          stillCurrent: stillCurrent,
-          refresh: refresh,
-        ),
-      ),
-    ),
+    builder: (_) {
+      final editor = MeetingEditor(
+        actions: actions,
+        workspaceId: workspaceId,
+        base: base,
+        stillCurrent: stillCurrent,
+        refresh: refresh,
+      );
+      return usesMobilePresentation()
+          ? Dialog.fullscreen(child: editor)
+          : Dialog(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 720),
+                child: editor,
+              ),
+            );
+    },
   );
   await actions.flushDraft();
 }
@@ -583,27 +590,40 @@ class _MeetingEditorState extends State<MeetingEditor> {
           )
         : Form(
             key: form,
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(24),
+            child: MeetingEditorLayout(
+              title: widget.base == null ? 'New meeting' : 'Edit meeting',
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Semantics(
-                    header: true,
-                    child: Text(
-                      widget.base == null
-                          ? 'Create meeting'
-                          : 'Review meeting changes',
-                      style: Theme.of(context).textTheme.titleLarge,
+                  if (!usesMobilePresentation())
+                    Semantics(
+                      header: true,
+                      child: Text(
+                        widget.base == null
+                            ? 'Create meeting'
+                            : 'Review meeting changes',
+                        style: Theme.of(context).textTheme.titleLarge,
+                      ),
                     ),
-                  ),
-                  MeetingValue('Workspace', widget.workspaceId),
+                  if (usesMobilePresentation())
+                    MobileDetailsDisclosure(
+                      child: MeetingValue('Workspace', widget.workspaceId),
+                    )
+                  else
+                    MeetingValue('Workspace', widget.workspaceId),
                   if (widget.base != null)
-                    MeetingValue(
-                      'Exact edit base',
-                      '${widget.base!.revisionId}\n${widget.base!.sha256}',
-                    ),
+                    usesMobilePresentation()
+                        ? MobileDetailsDisclosure(
+                            child: MeetingValue(
+                              'Edited version',
+                              '${widget.base!.revisionId}\n${widget.base!.sha256}',
+                            ),
+                          )
+                        : MeetingValue(
+                            'Exact edit base',
+                            '${widget.base!.revisionId}\n${widget.base!.sha256}',
+                          ),
                   const Text(
                     'This local draft is stored encrypted on this device. A saved meeting is not a calendar invitation, recording consent, or a sent message.',
                   ),
@@ -742,30 +762,30 @@ class _MeetingEditorState extends State<MeetingEditor> {
                     MeetingNotice(widget.actions.error!, error: true),
                   if (widget.actions.disabledReason(action) != null)
                     MeetingNotice(widget.actions.disabledReason(action)!),
-                  Wrap(
-                    spacing: 12,
-                    children: [
-                      TextButton(
-                        onPressed: () => Navigator.of(context).pop(),
-                        child: const Text('Close draft'),
-                      ),
-                      FilledButton(
-                        onPressed:
-                            widget.actions.disabledReason(action) == null &&
-                                reviewed &&
-                                !staleDraft &&
-                                widget.stillCurrent()
-                            ? _submit
-                            : null,
-                        child: Text(
-                          widget.actions.busy
-                              ? 'Submitting meeting…'
-                              : widget.base == null
-                              ? 'Create reviewed meeting'
-                              : 'Save reviewed revision',
-                        ),
-                      ),
-                    ],
+                ],
+              ),
+              footer: Wrap(
+                spacing: 12,
+                children: [
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: const Text('Close draft'),
+                  ),
+                  FilledButton(
+                    onPressed:
+                        widget.actions.disabledReason(action) == null &&
+                            reviewed &&
+                            !staleDraft &&
+                            widget.stillCurrent()
+                        ? _submit
+                        : null,
+                    child: Text(
+                      widget.actions.busy
+                          ? 'Submitting meeting…'
+                          : widget.base == null
+                          ? 'Create reviewed meeting'
+                          : 'Save reviewed revision',
+                    ),
                   ),
                 ],
               ),
@@ -778,24 +798,45 @@ class _MeetingEditorState extends State<MeetingEditor> {
     required int max,
     int lines = 1,
     bool required = true,
-  }) => Padding(
-    padding: const EdgeInsets.symmetric(vertical: 8),
-    child: TextFormField(
-      controller: control,
-      maxLength: max,
-      minLines: lines,
-      maxLines: lines == 1 ? 1 : 8,
-      enabled: canEdit,
-      decoration: InputDecoration(labelText: label),
-      validator: (value) => required && (value == null || value.trim().isEmpty)
-          ? '$label is required.'
-          : null,
-      onChanged: (_) {
-        _save();
-        setState(() {});
-      },
-    ),
-  );
+  }) =>
+      usesMobilePresentation() &&
+          (identical(control, start) ||
+              identical(control, end) ||
+              identical(control, actualStart) ||
+              identical(control, actualEnd))
+      ? MeetingDateTimeField(
+          controller: control,
+          label: label.split('·').first.trim(),
+          optional: !required,
+          isCurrent: () =>
+              mounted &&
+              canEdit &&
+              widget.actions.owner?.key == ownerKey &&
+              widget.stillCurrent(),
+          onChanged: (_) {
+            _save();
+            setState(() {});
+          },
+        )
+      : Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: TextFormField(
+            controller: control,
+            maxLength: max,
+            minLines: lines,
+            maxLines: lines == 1 ? 1 : 8,
+            enabled: canEdit,
+            decoration: InputDecoration(labelText: label),
+            validator: (value) =>
+                required && (value == null || value.trim().isEmpty)
+                ? '$label is required.'
+                : null,
+            onChanged: (_) {
+              _save();
+              setState(() {});
+            },
+          ),
+        );
 }
 
 Future<void> showMeetingFollowUpReview(
@@ -809,19 +850,24 @@ Future<void> showMeetingFollowUpReview(
 }) async {
   await showDialog<void>(
     context: context,
-    builder: (_) => Dialog(
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 760),
-        child: MeetingFollowUpEditor(
-          actions: actions,
-          meeting: meeting,
-          snapshot: snapshot,
-          proposal: proposal,
-          stillCurrent: stillCurrent,
-          refresh: refresh,
-        ),
-      ),
-    ),
+    builder: (_) {
+      final editor = MeetingFollowUpEditor(
+        actions: actions,
+        meeting: meeting,
+        snapshot: snapshot,
+        proposal: proposal,
+        stillCurrent: stillCurrent,
+        refresh: refresh,
+      );
+      return usesMobilePresentation()
+          ? Dialog.fullscreen(child: editor)
+          : Dialog(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 760),
+                child: editor,
+              ),
+            );
+    },
   );
   await actions.flushDraft();
 }
@@ -1020,21 +1066,22 @@ class _MeetingFollowUpEditorState extends State<MeetingFollowUpEditor> {
               'This private review is hidden because Meeting access changed. Close and reopen it from the current workspace.',
             ),
           )
-        : SingleChildScrollView(
-            padding: const EdgeInsets.all(24),
+        : MeetingEditorLayout(
+            title: 'Review follow-up',
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Semantics(
-                  header: true,
-                  child: Text(
-                    usesMobilePresentation()
-                        ? 'Review follow-up'
-                        : 'Review exact follow-up',
-                    style: Theme.of(context).textTheme.titleLarge,
+                if (!usesMobilePresentation())
+                  Semantics(
+                    header: true,
+                    child: Text(
+                      usesMobilePresentation()
+                          ? 'Review follow-up'
+                          : 'Review exact follow-up',
+                      style: Theme.of(context).textTheme.titleLarge,
+                    ),
                   ),
-                ),
                 SelectableText(
                   widget.proposal.title,
                   style: Theme.of(context).textTheme.bodyLarge,
@@ -1090,19 +1137,37 @@ class _MeetingFollowUpEditorState extends State<MeetingFollowUpEditor> {
                           _save();
                         },
                 ),
-                TextField(
-                  controller: due,
-                  maxLength: 30,
-                  enabled: !widget.actions.busy,
-                  decoration: const InputDecoration(
-                    labelText: 'Due · UTC ISO (optional)',
-                    helperText: 'Leave blank to explicitly record no due date.',
+                if (usesMobilePresentation())
+                  MeetingDateTimeField(
+                    controller: due,
+                    label: 'Due date',
+                    optional: true,
+                    isCurrent: () =>
+                        mounted &&
+                        widget.actions.available &&
+                        widget.actions.owner?.key == ownerKey &&
+                        !widget.actions.busy &&
+                        widget.stillCurrent(),
+                    onChanged: (_) {
+                      _save();
+                      setState(() {});
+                    },
+                  )
+                else
+                  TextField(
+                    controller: due,
+                    maxLength: 30,
+                    enabled: !widget.actions.busy,
+                    decoration: const InputDecoration(
+                      labelText: 'Due · UTC ISO (optional)',
+                      helperText:
+                          'Leave blank to explicitly record no due date.',
+                    ),
+                    onChanged: (_) {
+                      _save();
+                      setState(() {});
+                    },
                   ),
-                  onChanged: (_) {
-                    _save();
-                    setState(() {});
-                  },
-                ),
                 CheckboxListTile(
                   contentPadding: EdgeInsets.zero,
                   value: communication,
@@ -1217,44 +1282,44 @@ class _MeetingFollowUpEditorState extends State<MeetingFollowUpEditor> {
                   MeetingNotice(widget.actions.error!, error: true),
                 if (widget.actions.disabledReason('resolve') != null)
                   MeetingNotice(widget.actions.disabledReason('resolve')!),
-                Wrap(
-                  spacing: 12,
-                  runSpacing: 8,
-                  children: [
-                    TextButton(
-                      onPressed: () => Navigator.of(context).pop(),
-                      child: const Text('Close review'),
-                    ),
-                    OutlinedButton(
-                      onPressed:
-                          confirmed &&
-                              widget.stillCurrent() &&
-                              widget.actions.disabledReason('resolve') == null
-                          ? () => _submit('dismissed')
-                          : null,
-                      child: Text(
-                        usesMobilePresentation()
-                            ? 'Dismiss proposal'
-                            : 'Dismiss exact proposal',
-                      ),
-                    ),
-                    FilledButton(
-                      onPressed:
-                          confirmed &&
-                              widget.stillCurrent() &&
-                              participantId != null &&
-                              widget.actions.disabledReason('resolve') == null
-                          ? () => _submit('confirmed')
-                          : null,
-                      child: Text(
-                        usesMobilePresentation()
-                            ? communication
-                                  ? 'Create task & email draft'
-                                  : 'Create task'
-                            : 'Confirm Work item and selected draft',
-                      ),
-                    ),
-                  ],
+              ],
+            ),
+            footer: Wrap(
+              spacing: 12,
+              runSpacing: 8,
+              children: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('Close review'),
+                ),
+                OutlinedButton(
+                  onPressed:
+                      confirmed &&
+                          widget.stillCurrent() &&
+                          widget.actions.disabledReason('resolve') == null
+                      ? () => _submit('dismissed')
+                      : null,
+                  child: Text(
+                    usesMobilePresentation()
+                        ? 'Dismiss proposal'
+                        : 'Dismiss exact proposal',
+                  ),
+                ),
+                FilledButton(
+                  onPressed:
+                      confirmed &&
+                          widget.stillCurrent() &&
+                          participantId != null &&
+                          widget.actions.disabledReason('resolve') == null
+                      ? () => _submit('confirmed')
+                      : null,
+                  child: Text(
+                    usesMobilePresentation()
+                        ? communication
+                              ? 'Create task & email draft'
+                              : 'Create task'
+                        : 'Confirm Work item and selected draft',
+                  ),
                 ),
               ],
             ),

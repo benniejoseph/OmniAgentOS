@@ -1,5 +1,12 @@
 import 'package:flutter/material.dart';
+
+import 'adaptive_control_dialog.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_page_scaffold.dart';
+import '../../app/mobile/mobile_flow_scaffold.dart';
 
 import 'personal_profile_controller.dart';
 import 'personal_profile_repository.dart';
@@ -46,7 +53,7 @@ class _PersonalProfileEditorState extends State<_PersonalProfileEditor> {
     if (c.dirty) {
       final confirmed = await showDialog<bool>(
         context: context,
-        builder: (context) => AlertDialog(
+        builder: (context) => AdaptiveControlDialog(
           title: const Text('Reload your saved profile?'),
           content: const Text(
             'This replaces your unsaved changes with the latest version saved to your account.',
@@ -76,7 +83,7 @@ class _PersonalProfileEditorState extends State<_PersonalProfileEditor> {
     final c = widget.controller;
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (context) => AdaptiveControlDialog(
         title: const Text('Clear your About me profile?'),
         content: const Text(
           'This removes these profile details from future conversations across your devices. Existing chats, saved memories and client documents stay in their own spaces.',
@@ -226,6 +233,151 @@ class _PersonalProfileEditorState extends State<_PersonalProfileEditor> {
     );
   }
 
+  Widget _mobileProfile(PersonalProfileController c) {
+    final theme = Theme.of(context);
+    final saved = c.saved;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const Text(
+          'Help ATLAS understand how you live and work. These details are yours to edit or remove.',
+        ),
+        const SizedBox(height: 16),
+        if (c.loading) const LinearProgressIndicator(),
+        if (saved != null) ...[
+          MobileSegmentBar<bool>(
+            items: const [
+              (
+                value: false,
+                label: 'Your profile',
+                icon: Icons.person_outline_rounded,
+              ),
+              (value: true, label: 'Edit', icon: Icons.edit_outlined),
+            ],
+            value: _editing,
+            onChanged: (value) => setState(() => _editing = value),
+          ),
+          const SizedBox(height: 16),
+          MobileSurface(
+            padding: EdgeInsets.zero,
+            child: _editing
+                ? SwitchListTile.adaptive(
+                    key: const ValueKey('about-me-enabled'),
+                    title: const Text('Use in conversations'),
+                    subtitle: Text(
+                      c.enabled ? 'Applies after you save.' : 'Keep this profile saved without adding it to conversations.',
+                    ),
+                    value: c.enabled,
+                    onChanged: c.editable ? c.setEnabled : null,
+                  )
+                : ListTile(
+                    leading: Icon(
+                      saved.enabled
+                          ? Icons.check_circle_outline_rounded
+                          : Icons.pause_circle_outline_rounded,
+                    ),
+                    title: Text(
+                      saved.enabled
+                          ? 'Used in conversations'
+                          : 'Saved, with recall paused',
+                    ),
+                    subtitle: const Text(
+                      'Applies to your next message or a new voice conversation.',
+                    ),
+                  ),
+          ),
+          for (final group in const [
+            ('You & your work', ['name', 'role', 'workingContext']),
+            ('Preferences & direction', ['preferences', 'goals', 'interests']),
+          ]) ...[
+            Padding(
+              padding: const EdgeInsets.only(top: 24, bottom: 10),
+              child: Text(group.$1, style: theme.textTheme.titleMedium),
+            ),
+            MobileSurface(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  for (final field in personalProfileFields.where(
+                    (field) => group.$2.contains(field.key),
+                  ))
+                    _editing ? _field(field) : _savedField(field),
+                ],
+              ),
+            ),
+          ],
+          const SizedBox(height: 16),
+          const MobileDetailsDisclosure(
+            title: 'How ATLAS uses this profile',
+            child: Text(
+              'This profile is shared across your devices. Current message only, No extra context and Reviewed saved context leave it out. Work role notes, client files, memories and connected mail remain in their own spaces; this profile does not connect accounts or enable automatic memory recall.',
+            ),
+          ),
+        ],
+        if (c.error != null || c.notice != null) ...[
+          const SizedBox(height: 12),
+          Semantics(
+            liveRegion: true,
+            child: Text(
+              c.error ?? c.notice!,
+              style: TextStyle(
+                color: c.error != null ? theme.colorScheme.error : null,
+              ),
+            ),
+          ),
+        ],
+        if (saved != null && _editing) ...[
+          const SizedBox(height: 16),
+          FilledButton.icon(
+            key: const ValueKey('about-me-save'),
+            onPressed: c.canSave ? c.save : null,
+            icon: c.saving
+                ? const SizedBox.square(
+                    dimension: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.check_rounded),
+            label: Text(c.saving ? 'Saving…' : 'Save changes'),
+          ),
+        ],
+        if (c.dirty)
+          const Padding(
+            padding: EdgeInsets.only(top: 8),
+            child: Text('Unsaved changes'),
+          ),
+        if (!c.dirty && saved?.updatedAt != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Text(
+              'Saved ${_date(saved!.updatedAt!)}',
+              style: theme.textTheme.bodySmall,
+            ),
+          ),
+        const SizedBox(height: 12),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            TextButton.icon(
+              onPressed: c.busy ? null : _reload,
+              icon: const Icon(Icons.refresh_rounded),
+              label: const Text('Reload saved profile'),
+            ),
+            if (saved != null &&
+                (saved.profile.values.any((value) => value.isNotEmpty) ||
+                    c.draft.values.any((value) => value.isNotEmpty)))
+              TextButton.icon(
+                key: const ValueKey('about-me-forget'),
+                onPressed: c.editable ? _forget : null,
+                icon: const Icon(Icons.delete_outline_rounded),
+                label: const Text('Clear profile'),
+              ),
+          ],
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: widget.controller,
@@ -238,6 +390,7 @@ class _PersonalProfileEditorState extends State<_PersonalProfileEditor> {
           _fields[field.key]!.text = c.draft[field.key] ?? '';
         }
       }
+      if (usesMobilePresentation()) return _mobileProfile(c);
       final theme = Theme.of(context);
       final scheme = theme.colorScheme;
       return Container(

@@ -9,7 +9,7 @@ import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 export const runtime = "nodejs";
 async function mutate(request: Request) {
   let context;
-  try { context = await authorizeRequest({ request, action: "write.memory", resourceType: "memory" }); }
+  try { context = await authorizeRequest({ request, action: "write.memory", nativeMutationCapability: "csm.role.write", resourceType: "memory" }); }
   catch (error) { return forbiddenResponse(error); }
   let body: unknown;
   try { body = await parseJsonBody(request, 4_000); }

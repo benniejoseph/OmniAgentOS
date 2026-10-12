@@ -5,6 +5,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/platform/mobile_presentation.dart';
 import '../../app/mobile/mobile_page_scaffold.dart';
+import '../settings/adaptive_control_dialog.dart';
+import '../integrations/connector_view.dart';
 
 import '../auth/application/session_controller.dart';
 import '../../core/network/native_workspace_access.dart';
@@ -592,9 +594,15 @@ class _PortableCapabilitiesState extends State<_PortableCapabilities> {
                   resource: snapshot.mcp,
                   count: snapshot.mcp.data?.length,
                 ),
-                const NativeWorkspaceBrowserButton(
-                  path: '/app/connectors',
-                  label: 'Manage connections in browser',
+                OutlinedButton.icon(
+                  onPressed: () => Navigator.of(context).push<void>(
+                    MaterialPageRoute(
+                      builder: (_) =>
+                          const NativeConnectorWorkspace(showBackButton: true),
+                    ),
+                  ),
+                  icon: const Icon(Icons.tune_rounded),
+                  label: const Text('Manage connections'),
                 ),
               ],
             ),
@@ -808,7 +816,7 @@ class _PortablePluginControls extends StatelessWidget {
     final install = await showDialog<bool>(
       context: context,
       useRootNavigator: false,
-      builder: (context) => AlertDialog(
+      builder: (context) => AdaptiveControlDialog(
         title: Text('Review ${preview.name}'),
         content: SingleChildScrollView(
           child: Column(
@@ -845,7 +853,7 @@ class _PortablePluginControls extends StatelessWidget {
     final confirmed = await showDialog<bool>(
       context: context,
       useRootNavigator: false,
-      builder: (context) => AlertDialog(
+      builder: (context) => AdaptiveControlDialog(
         title: Text('Uninstall ${plugin.name}?'),
         content: SelectableText(
           'Installation: ${plugin.installationId}\nRevision: ${plugin.revision}\nManifest: ${plugin.manifestSha256}\nThis removes this exact installed plugin.',

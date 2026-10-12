@@ -1,9 +1,15 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+
+import 'mobile_connection_presentation.dart';
+
+import '../settings/adaptive_control_dialog.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/network/native_workspace_access.dart';
+import '../../app/platform/mobile_presentation.dart';
 import 'connector_contracts.dart';
 import 'connector_credential_rotation_contracts.dart';
 import 'connector_credential_rotation_controller.dart';
@@ -207,9 +213,10 @@ class _ConnectorCredentialRotationPanelState
         key: PageStorageKey(('credential-rotation-list', c)),
         padding: const EdgeInsets.all(20),
         children: [
-          Text(
-            'Save or replace an MCP bearer credential',
-            style: Theme.of(context).textTheme.headlineSmall,
+          ConnectionFlowHeading(
+            title: 'Save or replace an MCP bearer credential',
+            mobileTitle: 'Update the saved token',
+            icon: Icons.key_rounded,
           ),
           const SizedBox(height: 8),
           const Text(
@@ -243,7 +250,11 @@ class _ConnectorCredentialRotationPanelState
           if (c.error != null) _error(c.error!),
           if (c.readError != null) _error(c.readError!),
           if (c.sequence != null) _recovery(),
-          if (c.reviewed != null) ..._review(),
+          if (c.reviewed != null)
+            if (usesMobilePresentation())
+              ConnectionReviewGroup(children: _review())
+            else
+              ..._review(),
           if (c.reviewed == null && !c.reading)
             const Text(
               'Open an existing MCP connection to prepare a credential. Protected recovery remains available here even when a connection is absent from the list.',
@@ -452,7 +463,7 @@ class _ConnectorCredentialRotationPanelState
       return await showDialog<bool>(
             context: context,
             useRootNavigator: false,
-            builder: (context) => AlertDialog(
+            builder: (context) => AdaptiveControlDialog(
               scrollable: true,
               title: Text(title),
               content: body,

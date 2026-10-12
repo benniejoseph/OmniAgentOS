@@ -2,9 +2,15 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+
+import 'mobile_connection_presentation.dart';
+
+import '../settings/adaptive_control_dialog.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/network/native_workspace_access.dart';
+import '../../app/platform/mobile_presentation.dart';
 import 'connector_contracts.dart';
 import 'connector_control_contracts.dart';
 import 'connector_github_upgrade_contracts.dart';
@@ -198,9 +204,10 @@ class _ConnectorGithubUpgradePanelState
         key: PageStorageKey(('github-upgrade-list', c)),
         padding: const EdgeInsets.all(20),
         children: [
-          Text(
-            'Expand official GitHub MCP tools',
-            style: Theme.of(context).textTheme.headlineSmall,
+          ConnectionFlowHeading(
+            title: 'Expand official GitHub MCP tools',
+            mobileTitle: 'Update GitHub tools',
+            icon: Icons.code_rounded,
           ),
           const SizedBox(height: 8),
           const Text(
@@ -450,7 +457,7 @@ class _ConnectorGithubUpgradePanelState
                     widget.routeCurrent &&
                     _viewEpoch == epoch &&
                     _workspaceWasVisible;
-                return AlertDialog(
+                return AdaptiveControlDialog(
                   scrollable: true,
                   title: Text(title),
                   content: live

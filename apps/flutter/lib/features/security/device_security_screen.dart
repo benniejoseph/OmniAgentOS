@@ -8,6 +8,7 @@ import '../../app/mobile/mobile_page_scaffold.dart';
 import '../../app/theme/macos_app_theme.dart';
 import '../../core/network/native_workspace_access.dart';
 import '../push/mobile_push.dart';
+import '../settings/adaptive_control_dialog.dart';
 import 'device_security.dart';
 import 'device_security_providers.dart';
 
@@ -217,15 +218,32 @@ class DeviceSecurityScreen extends ConsumerWidget {
     final confirmed = await showDialog<bool>(
       context: context,
       useRootNavigator: false,
-      builder: (dialogContext) => AlertDialog(
+      builder: (dialogContext) => AdaptiveControlDialog(
         icon: Icon(
           wiping ? Icons.phonelink_erase_rounded : Icons.logout_rounded,
         ),
         title: Text(wiping ? 'Wipe ${device.name}?' : 'Revoke ${device.name}?'),
-        content: Text(
-          wiping
-              ? 'The session will be revoked now. When that installation next connects, Asael will erase its local credentials and acknowledge completion.'
-              : 'This installation must sign in again before it can access the workspace.',
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (usesMobilePresentation()) ...[
+              Text('${device.platform} · ${device.versionLabel}'),
+              const SizedBox(height: 8),
+              Text('Last seen ${device.lastSeenAt.toLocal()}'),
+              const SizedBox(height: 16),
+            ],
+            Text(
+              wiping
+                  ? 'The session will be revoked now. When that installation next connects, Asael will erase its local credentials and acknowledge completion.'
+                  : 'This installation must sign in again before it can access the workspace.',
+            ),
+            if (usesMobilePresentation()) ...[
+              const SizedBox(height: 16),
+              const Text('Exact device session'),
+              SelectableText(device.id),
+            ],
+          ],
         ),
         actions: [
           TextButton(

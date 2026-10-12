@@ -2,6 +2,9 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+
+import '../settings/adaptive_control_dialog.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/network/native_workspace_access.dart';
@@ -22,10 +25,11 @@ import 'connector_providers.dart';
 import 'connector_trash_view.dart';
 
 class NativeConnectorWorkspace extends StatelessWidget {
-  const NativeConnectorWorkspace({super.key});
+  const NativeConnectorWorkspace({super.key, this.showBackButton = false});
+  final bool showBackButton;
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: usesMobilePresentation()
+    appBar: usesMobilePresentation() && !showBackButton
         ? null
         : AppBar(title: const Text('Connector controls')),
     body: NativePrivateWorkspace(
@@ -802,7 +806,7 @@ class _ConnectorControlPanelState extends State<ConnectorControlPanel>
     final confirmed = await showDialog<bool>(
       context: context,
       useRootNavigator: false,
-      builder: (dialogContext) => AlertDialog(
+      builder: (dialogContext) => AdaptiveControlDialog(
         scrollable: true,
         title: Text(connectorActionLabel(action)),
         content: Column(

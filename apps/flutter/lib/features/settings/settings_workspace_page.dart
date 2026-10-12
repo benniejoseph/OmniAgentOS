@@ -23,8 +23,11 @@ class SettingsWorkspacePage extends StatelessWidget {
     if (section != 'quality' && section != 'monitoring') {
       return NativePrivateWorkspace(
         ownNavigator: true,
-        builder: (access) =>
-            ModelSettingsView(api: access.api, authority: access.authority),
+        builder: (access) => ModelSettingsView(
+          api: access.api,
+          authority: access.authority,
+          initialSection: section,
+        ),
       );
     }
 

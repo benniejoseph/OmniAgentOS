@@ -27,6 +27,7 @@ import '../../features/auth/presentation/session_bootstrap_screen.dart';
 import '../../features/capture/capture.dart';
 import '../../features/capture/capture_providers.dart';
 import '../../features/capture/library_view.dart';
+import '../../features/csm/csm_workspace.dart';
 import '../../features/listen/capture_listen_workspace.dart';
 import '../../features/computer_use/local_computer.dart';
 import '../../features/computer_use/android_phone.dart';
@@ -510,6 +511,11 @@ class ProviderBoundTalkRoute extends ConsumerWidget {
     companionController: ref.watch(
       companionControllerProvider.select((value) => value),
     ),
+    draftHandoff: quickEntry || ambientVoice
+        ? null
+        : ref.watch(csmDraftProvider),
+    onDraftHandoffHandled: (id) =>
+        ref.read(csmDraftProvider.notifier).handled(id),
     requestedThreadId: companionThreadId(requestedThreadId),
     onThreadAdopted: (id) {
       // Same mounted Conversation, retained composer; only adopt confirmed ID.

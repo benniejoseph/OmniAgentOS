@@ -3,9 +3,9 @@
 
 abstract final class NativeContract {
   static const id = 'asael.native-api';
-  static const currentVersion = 54;
-  static const previousVersion = 53;
-  static const supportedVersions = <int>[54, 53, 52];
+  static const currentVersion = 55;
+  static const previousVersion = 54;
+  static const supportedVersions = <int>[55, 54, 53, 52];
   static const discoveryPath = '/api/mobile/contracts';
   static const operationIds = <String>{
     'auth.login',
@@ -278,6 +278,15 @@ abstract final class NativeContract {
     'listen.ingest',
     'listen.conversations.list',
     'listen.conversations.get',
+    'csm.clients.list',
+    'csm.client.get',
+    'csm.client.save',
+    'csm.client.sources.link',
+    'csm.client.sources.unlink',
+    'csm.role.get',
+    'csm.role.save',
+    'csm.role.sources.link',
+    'csm.role.sources.unlink',
   };
 
   static bool supports(int version) => supportedVersions.contains(version);
@@ -1070,6 +1079,15 @@ abstract final class NativePaths {
   static const listenIngest = '/api/mobile/listen/ingest';
   static const listenConversationsList = '/api/mobile/listen/conversations';
   static String listenConversationsGet(String id) => '/api/mobile/listen/conversations/${Uri.encodeComponent(id)}';
+  static const csmClientsList = '/api/csm/clients';
+  static String csmClientGet(String id) => '/api/projects/${Uri.encodeComponent(id)}/csm';
+  static String csmClientSave(String id) => '/api/projects/${Uri.encodeComponent(id)}/csm';
+  static String csmClientSourcesLink(String id) => '/api/projects/${Uri.encodeComponent(id)}/csm/sources';
+  static String csmClientSourcesUnlink(String id) => '/api/projects/${Uri.encodeComponent(id)}/csm/sources';
+  static const csmRoleGet = '/api/csm/role-context';
+  static const csmRoleSave = '/api/csm/role-context';
+  static const csmRoleSourcesLink = '/api/csm/role-context/sources';
+  static const csmRoleSourcesUnlink = '/api/csm/role-context/sources';
 }
 
 abstract final class NativeConversationEvents {

@@ -1,5 +1,9 @@
 import 'package:flutter/material.dart';
 
+import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_flow_scaffold.dart';
+import '../../app/mobile/mobile_page_scaffold.dart';
+
 import 'knowledge.dart';
 import 'knowledge_build_contracts.dart';
 import 'knowledge_maintenance_contracts.dart';
@@ -258,29 +262,56 @@ class _KnowledgeOperationsState extends State<KnowledgeOperations>
         padding: const EdgeInsets.all(16),
         children: [
           Text(
-            'Private Memory actions',
+            usesMobilePresentation()
+                ? 'Organise memory'
+                : 'Private Memory actions',
             style: Theme.of(context).textTheme.titleLarge,
           ),
           const Text(
             'Review a complete current plan before each action. A saved acceptance is evidence of that action; current Memory and processing status are read separately.',
           ),
           const SizedBox(height: 12),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              for (final item in const {
-                'maintenance': 'Maintenance',
-                'graph': 'Rebuild private graph',
-                'build': 'Build source maps',
-              }.entries)
-                ChoiceChip(
-                  label: Text(item.value),
-                  selected: _kind == item.key,
-                  onSelected: _saving ? null : (_) => _select(item.key),
+          if (usesMobilePresentation())
+            MobileSegmentBar<String>(
+              value: _kind,
+              items: const [
+                (
+                  value: 'maintenance',
+                  label: 'Tidy up',
+                  icon: Icons.auto_fix_high_outlined,
                 ),
-            ],
-          ),
+                (
+                  value: 'graph',
+                  label: 'Refresh map',
+                  icon: Icons.hub_outlined,
+                ),
+                (
+                  value: 'build',
+                  label: 'Understand a source',
+                  icon: Icons.description_outlined,
+                ),
+              ],
+              onChanged: (value) {
+                if (!_saving) _select(value);
+              },
+            )
+          else
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final item in const {
+                  'maintenance': 'Maintenance',
+                  'graph': 'Rebuild private graph',
+                  'build': 'Build source maps',
+                }.entries)
+                  ChoiceChip(
+                    label: Text(item.value),
+                    selected: _kind == item.key,
+                    onSelected: _saving ? null : (_) => _select(item.key),
+                  ),
+              ],
+            ),
           const SizedBox(height: 12),
           if (!_supported)
             const Text(
@@ -298,32 +329,84 @@ class _KnowledgeOperationsState extends State<KnowledgeOperations>
             const Text(
               'Build source maps for one current document. This uses the configured model and may incur provider charges. Generated claims remain unconfirmed until you separately review them in Source maps. Unknown provider work will be held without an automatic retry.',
             ),
-            ExpansionTile(
-              title: const Text('Choose a loaded source document'),
-              children: [
-                for (final document
-                    in controller.state?.knowledge ?? const <KnowledgeItem>[])
-                  ListTile(
-                    title: Text(document.title),
-                    subtitle: Text(document.id),
-                    onTap: _saving ? null : () => _selectDocument(document.id),
-                  ),
-                const Padding(
-                  padding: EdgeInsets.all(12),
-                  child: Text(
-                    'Only the loaded catalogue is shown. You can also inspect an exact document ID below. Eligibility is checked by the current source read.',
-                  ),
+            if (usesMobilePresentation()) ...[
+              const SizedBox(height: 16),
+              DropdownButtonFormField<String>(
+                key: ValueKey('build-source-${_document.text}'),
+                initialValue:
+                    (controller.state?.knowledge ?? const <KnowledgeItem>[])
+                        .any((item) => item.id == _document.text)
+                    ? _document.text
+                    : null,
+                isExpanded: true,
+                decoration: const InputDecoration(
+                  labelText: 'Choose a source',
+                  prefixIcon: Icon(Icons.description_outlined),
                 ),
-              ],
-            ),
-            TextField(
-              controller: _document,
-              enabled: !_saving,
-              decoration: const InputDecoration(
-                labelText: 'Exact source document ID',
+                items: [
+                  for (final source
+                      in controller.state?.knowledge ?? const <KnowledgeItem>[])
+                    DropdownMenuItem(
+                      value: source.id,
+                      child: Text(
+                        source.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                ],
+                onChanged: _saving
+                    ? null
+                    : (value) {
+                        if (value != null) _selectDocument(value);
+                      },
               ),
-              onChanged: (_) => setState(_reset),
-            ),
+              const SizedBox(height: 8),
+              const Text('Choose from the sources loaded in this collection.'),
+            ] else
+              ExpansionTile(
+                title: const Text('Choose a loaded source document'),
+                children: [
+                  for (final document
+                      in controller.state?.knowledge ?? const <KnowledgeItem>[])
+                    ListTile(
+                      title: Text(document.title),
+                      subtitle: usesMobilePresentation()
+                          ? null
+                          : Text(document.id),
+                      onTap: _saving
+                          ? null
+                          : () => _selectDocument(document.id),
+                    ),
+                  const Padding(
+                    padding: EdgeInsets.all(12),
+                    child: Text(
+                      'Only the loaded catalogue is shown. You can also inspect an exact document ID below. Eligibility is checked by the current source read.',
+                    ),
+                  ),
+                ],
+              ),
+            if (usesMobilePresentation())
+              MobileDetailsDisclosure(
+                title: 'Open another source by reference',
+                child: TextField(
+                  controller: _document,
+                  enabled: !_saving,
+                  decoration: const InputDecoration(
+                    labelText: 'Exact source document ID',
+                  ),
+                  onChanged: (_) => setState(_reset),
+                ),
+              )
+            else
+              TextField(
+                controller: _document,
+                enabled: !_saving,
+                decoration: const InputDecoration(
+                  labelText: 'Exact source document ID',
+                ),
+                onChanged: (_) => setState(_reset),
+              ),
           ],
           const SizedBox(height: 12),
           OutlinedButton(

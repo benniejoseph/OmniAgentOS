@@ -1,6 +1,9 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+
+import '../../app/mobile/mobile_flow_scaffold.dart';
+
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -139,6 +142,37 @@ class _QualityWorkspaceViewState extends State<QualityWorkspaceView> {
     if (!controller.available) return;
     controller.select(id);
     final navigation = ++_selectionNavigation;
+    if (usesMobilePresentation()) {
+      unawaited(
+        showDialog<void>(
+          context: context,
+          useRootNavigator: false,
+          builder: (_) => Dialog.fullscreen(
+            child: ListenableBuilder(
+              listenable: controller,
+              builder: (_, _) => MobileFlowScaffold(
+                title: 'Quality evidence',
+                child:
+                    controller.available &&
+                        controller.section == section &&
+                        controller.selectedId == id
+                    ? _QualityInspector(controller: controller, embedded: true)
+                    : const Text(
+                        'This detail is no longer available. Close this view and refresh the current workspace.',
+                      ),
+              ),
+            ),
+          ),
+        ).whenComplete(() {
+          if (mounted &&
+              identical(c, controller) &&
+              controller.available &&
+              navigation == _selectionNavigation)
+            controller.select(null);
+        }),
+      );
+      return;
+    }
     if (!compact || !controller.available || controller.selectedId != id) {
       return;
     }
@@ -448,7 +482,7 @@ class _QualityWorkspaceViewState extends State<QualityWorkspaceView> {
               ),
               const SizedBox(height: 12),
             ],
-            if (!wide && c.selectedId != null) ...[
+            if (!wide && !usesMobilePresentation() && c.selectedId != null) ...[
               Focus(
                 key: _detailKey,
                 focusNode: _detailFocus,
@@ -776,7 +810,13 @@ class _QualityInspector extends StatelessWidget {
             if (id != null)
               IconButton(
                 tooltip: 'Close evidence detail',
-                onPressed: () => c.select(null),
+                onPressed: () {
+                  if (usesMobilePresentation()) {
+                    Navigator.of(context).pop();
+                  } else {
+                    c.select(null);
+                  }
+                },
                 icon: const Icon(Icons.close_rounded, size: 18),
               ),
           ],

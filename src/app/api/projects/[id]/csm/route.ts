@@ -22,7 +22,7 @@ export const GET = withDatabaseRequestScope(async (request: Request, route: Rout
 export const PUT = withDatabaseRequestScope(requireIdempotencyKey(async (request: Request, route: Route) => {
   const { id } = await route.params;
   let context;
-  try { context = await authorizeRequest({ request, action: "write.memory", resourceType: "shared_memory", resourceId: id }); }
+  try { context = await authorizeRequest({ request, action: "write.memory", nativeMutationCapability: "csm.context.write", resourceType: "shared_memory", resourceId: id }); }
   catch (error) { return forbiddenResponse(error); }
   let body: unknown;
   try { body = await parseJsonBody(request, 32_000); }

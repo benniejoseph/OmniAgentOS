@@ -22,8 +22,15 @@ class CompanionSettingsSection extends ConsumerWidget {
 }
 
 class CompanionSettingsEditor extends StatefulWidget {
-  const CompanionSettingsEditor({super.key, required this.controller});
+  const CompanionSettingsEditor({
+    super.key,
+    required this.controller,
+    this.initialMobileTab = 0,
+    this.showMobileTabs = true,
+  });
   final CompanionController controller;
+  final int initialMobileTab;
+  final bool showMobileTabs;
   @override
   State<CompanionSettingsEditor> createState() =>
       _CompanionSettingsEditorState();
@@ -36,7 +43,7 @@ class _CompanionSettingsEditorState extends State<CompanionSettingsEditor> {
   final pickerFocus = FocusNode(debugLabel: 'Choose home conversation');
   final refreshFocus = FocusNode(debugLabel: 'Refresh Companion preferences');
   bool pickerOpen = false;
-  int _mobileTab = 0;
+  late int _mobileTab = widget.initialMobileTab;
   @override
   void dispose() {
     saveFocus.dispose();
@@ -156,7 +163,7 @@ class _CompanionSettingsEditorState extends State<CompanionSettingsEditor> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if (mobile) ...[
+            if (mobile && widget.showMobileTabs) ...[
               MobileSegmentBar<int>(
                 items: [
                   const (
@@ -179,7 +186,7 @@ class _CompanionSettingsEditorState extends State<CompanionSettingsEditor> {
                 onChanged: (value) => setState(() => _mobileTab = value),
               ),
               const SizedBox(height: 24),
-            ] else ...[
+            ] else if (!mobile) ...[
               const Text(
                 'Companion',
                 style: TextStyle(fontSize: 24, fontWeight: FontWeight.w600),

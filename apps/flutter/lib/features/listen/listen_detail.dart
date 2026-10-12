@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 
 import '../../app/platform/mobile_presentation.dart';
 import '../../app/mobile/mobile_page_scaffold.dart';
+import '../../app/mobile/mobile_flow_scaffold.dart';
 
 import '../../core/network/native_workspace_access.dart';
 import 'listen_bridge.dart';
@@ -91,6 +92,42 @@ class _ListenDetailState extends State<ListenDetail>
         .toList();
     if (matching.isEmpty) return;
     final turn = matching.first;
+    if (usesMobilePresentation()) {
+      final identity = widget.access.identity;
+      showDialog<void>(
+        context: context,
+        builder: (_) => Dialog.fullscreen(
+          child: NativePrivateWorkspace(
+            builder: (access) => MobileFlowScaffold(
+              title: 'From the conversation',
+              child: !access.current || access.identity != identity || !_current
+                  ? const Text('Reopen this conversation to read its source.')
+                  : Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        MobileStatusPill(
+                          label: _speaker(turn),
+                          icon: Icons.person_outline_rounded,
+                        ),
+                        const SizedBox(height: 12),
+                        Text(
+                          '${listenDuration(turn['startMilliseconds'])}–${listenDuration(turn['endMilliseconds'])}',
+                          style: Theme.of(context).textTheme.labelLarge,
+                        ),
+                        const SizedBox(height: 24),
+                        SelectableText(
+                          listenText(turn['text']),
+                          style: Theme.of(context).textTheme.bodyLarge
+                              ?.copyWith(height: 1.65),
+                        ),
+                      ],
+                    ),
+            ),
+          ),
+        ),
+      );
+      return;
+    }
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,

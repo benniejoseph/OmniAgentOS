@@ -1,9 +1,15 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+
+import 'mobile_connection_presentation.dart';
+
+import '../settings/adaptive_control_dialog.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/network/native_workspace_access.dart';
+import '../../app/platform/mobile_presentation.dart';
 import 'connector_contracts.dart';
 import 'connector_control_contracts.dart';
 import 'connector_credential_removal_contracts.dart';
@@ -151,9 +157,10 @@ class _ConnectorCredentialRemovalPanelState
         key: PageStorageKey(('credential-removal-list', c, c.owner.key)),
         padding: const EdgeInsets.all(20),
         children: [
-          Text(
-            'Remove a saved MCP credential',
-            style: Theme.of(context).textTheme.headlineSmall,
+          ConnectionFlowHeading(
+            title: 'Remove a saved MCP credential',
+            mobileTitle: 'Remove a saved credential',
+            icon: Icons.key_off_outlined,
           ),
           const SizedBox(height: 8),
           const Text(
@@ -373,7 +380,7 @@ class _ConnectorCredentialRemovalPanelState
       confirmed = await showDialog<bool>(
         context: context,
         useRootNavigator: false,
-        builder: (dialogContext) => AlertDialog(
+        builder: (dialogContext) => AdaptiveControlDialog(
           scrollable: true,
           title: const Text('Remove saved credential?'),
           content: Column(

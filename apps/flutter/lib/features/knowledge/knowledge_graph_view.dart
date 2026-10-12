@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
 
+import '../../app/platform/mobile_presentation.dart';
+import 'knowledge_labels.dart';
+
 import '../../core/network/api_exception.dart';
 import 'knowledge.dart';
 import 'knowledge_contracts.dart';
@@ -209,7 +212,9 @@ class _KnowledgeGraphExplorerState extends State<KnowledgeGraphExplorer>
         padding: const EdgeInsets.all(16),
         children: [
           Text(
-            'Your private graph',
+            usesMobilePresentation()
+                ? 'Explore connections'
+                : 'Your private graph',
             style: Theme.of(context).textTheme.titleLarge,
           ),
           const Text(
@@ -340,9 +345,18 @@ class _KnowledgeGraphExplorerState extends State<KnowledgeGraphExplorer>
           for (final item in (raw['graph'] as Map)[kind] as List)
             Card(
               child: ListTile(
-                title: Text('${item['id']}'),
+                title: Text(
+                  usesMobilePresentation()
+                      ? memoryFriendlyLabel('${item['kind']}')
+                      : '${item['id']}',
+                ),
+                trailing: usesMobilePresentation()
+                    ? const Icon(Icons.chevron_right_rounded)
+                    : null,
                 subtitle: Text(
-                  '${item['kind']} · ${item['sourceCount']} source references',
+                  usesMobilePresentation()
+                      ? '${item['sourceCount']} sources · Open to read details'
+                      : '${item['kind']} · ${item['sourceCount']} source references',
                 ),
                 onTap: () => _select(
                   kind == 'nodes' ? 'node' : 'entity',
@@ -406,9 +420,17 @@ class _GraphFields extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final data = value;
+    final displayLabel = usesMobilePresentation()
+        ? memoryFriendlyLabel(
+            label.replaceAllMapped(
+              RegExp(r'([a-z])([A-Z])'),
+              (match) => '${match[1]} ${match[2]}',
+            ),
+          )
+        : label;
     if (data is Map) {
       return ExpansionTile(
-        title: Text(label),
+        title: Text(displayLabel),
         initiallyExpanded: expanded,
         childrenPadding: const EdgeInsets.only(left: 8, bottom: 12),
         children: [
@@ -419,7 +441,7 @@ class _GraphFields extends StatelessWidget {
     }
     if (data is List) {
       return ExpansionTile(
-        title: Text('$label · ${data.length}'),
+        title: Text('$displayLabel · ${data.length}'),
         initiallyExpanded: expanded,
         childrenPadding: const EdgeInsets.only(left: 8),
         children: [
@@ -432,7 +454,7 @@ class _GraphFields extends StatelessWidget {
       alignment: Alignment.centerLeft,
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 4),
-        child: SelectableText('$label: ${data ?? 'not available'}'),
+        child: SelectableText('$displayLabel: ${data ?? 'not available'}'),
       ),
     );
   }

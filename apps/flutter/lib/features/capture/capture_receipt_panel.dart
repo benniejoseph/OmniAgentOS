@@ -42,7 +42,7 @@ class _CaptureReceiptPanelState extends State<CaptureReceiptPanel> {
     if (mobile && receipt == null) return const SizedBox.shrink();
     return Material(
       color: Theme.of(context).colorScheme.surfaceContainerLow,
-      borderRadius: BorderRadius.circular(12),
+      borderRadius: BorderRadius.circular(mobile ? 16 : 12),
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
@@ -92,7 +92,7 @@ class _CaptureReceiptPanelState extends State<CaptureReceiptPanel> {
                     'Original metadata has not been freshly verified. Refresh before saving.',
                   ),
                 if (asset.error != null) SelectableText(asset.error!),
-              ] else if (controller.receiptJob?.documentId != null)
+              ] else if (!mobile && controller.receiptJob?.documentId != null)
                 SelectableText(
                   'Returned document: ${controller.receiptJob!.documentId}',
                 ),
@@ -116,6 +116,10 @@ class _CaptureReceiptPanelState extends State<CaptureReceiptPanel> {
                   children: [
                     SelectableText('Job: ${receipt.jobId}'),
                     if (receipt.source != null) SelectableText(receipt.source!),
+                    if (controller.receiptJob?.documentId != null)
+                      SelectableText(
+                        'Document: ${controller.receiptJob!.documentId}',
+                      ),
                     if (asset != null)
                       SelectableText(
                         'Asset: ${asset.id}\n${asset.byteCount} bytes · ${asset.mediaType}\nContent SHA-256: ${asset.contentSha256}',
@@ -195,7 +199,7 @@ class _CaptureReceiptPanelState extends State<CaptureReceiptPanel> {
                 alignment: Alignment.centerLeft,
                 child: TextButton(
                   onPressed: widget.onOpenKnowledge,
-                  child: const Text('Open Knowledge'),
+                  child: Text(mobile ? 'Open Memory' : 'Open Knowledge'),
                 ),
               ),
           ],

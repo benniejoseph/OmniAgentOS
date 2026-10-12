@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../app/platform/mobile_presentation.dart';
 import '../../app/mobile/mobile_page_scaffold.dart';
+import '../../app/mobile/mobile_flow_scaffold.dart';
 
 import '../companion/companion_models.dart';
 import '../companion/companion_presence.dart';
@@ -624,6 +625,17 @@ class _ExpandedReviewTranscriptState extends State<_ExpandedReviewTranscript> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
+    if (usesMobilePresentation()) {
+      return Dialog.fullscreen(
+        child: MobileFlowScaffold(
+          title: 'Your voice request',
+          child: SelectableText(
+            widget.text,
+            style: theme.textTheme.bodyLarge?.copyWith(height: 1.6),
+          ),
+        ),
+      );
+    }
     final available = MediaQuery.sizeOf(context);
     final width = math
         .min(620.0, math.max(320.0, available.width - 16))

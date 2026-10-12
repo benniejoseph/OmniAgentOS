@@ -2,9 +2,15 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+
+import 'mobile_connection_presentation.dart';
+
+import '../settings/adaptive_control_dialog.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/network/native_workspace_access.dart';
+import '../../app/platform/mobile_presentation.dart';
 import 'connector_contracts.dart';
 import 'connector_trash_contracts.dart';
 import 'connector_trash_controller.dart';
@@ -161,9 +167,10 @@ class _ConnectorTrashPanelState extends State<ConnectorTrashPanel>
         key: PageStorageKey(('connector-trash-list', c, c.owner.key)),
         padding: const EdgeInsets.all(20),
         children: [
-          Text(
-            'Connector Trash and recovery',
-            style: Theme.of(context).textTheme.headlineSmall,
+          ConnectionFlowHeading(
+            title: 'Connector Trash and recovery',
+            mobileTitle: 'Restore a connection',
+            icon: Icons.restore_from_trash_outlined,
           ),
           const SizedBox(height: 8),
           const Text(
@@ -407,7 +414,7 @@ class _ConnectorTrashPanelState extends State<ConnectorTrashPanel>
       confirmed = await showDialog<bool>(
         context: context,
         useRootNavigator: false,
-        builder: (dialogContext) => AlertDialog(
+        builder: (dialogContext) => AdaptiveControlDialog(
           scrollable: true,
           title: const Text('Move this connection to Trash?'),
           content: Column(
