@@ -1,7 +1,7 @@
 name: asael
 description: Asael command center for mobile and desktop.
 publish_to: 'none'
-version: 1.29.0+92
+version: 1.29.1+93
 
 environment:
   sdk: ^3.13.0

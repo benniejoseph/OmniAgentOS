@@ -4,6 +4,28 @@ Production uses Node.js 24.x and npm 11.x across local metadata, CI, and the wor
 
 ## Required production configuration
 
+Listen call syncing also requires migration **251**,
+`20261012123000_listen_media_owner_scope.sql` (`listen_media_owner_scope_v1`).
+It repairs the rejected media-head write after an upload closes: the existing
+canonical owner policy additionally recognizes only an exact accepted Listen
+source and its current verified account identity. It preserves tenant/actor
+isolation, native meeting ownership, source tombstones and the **272** tenant
+tables. Apply it after migration 250 through the same encrypted-backup procedure;
+the phone can retry its saved uploads without changing their source identities.
+The paired server update also displays pending transcription as valid processing
+metadata and records content-free completion-stage diagnostics. Closing a Listen
+upload, restoring/queuing its exact processing job and creating its media head now
+commit together, so workers cannot claim an incomplete admission. A pre-fix
+orphan can recover only while its media head is absent; existing terminal media
+and segment transcription attempts are not restarted. Native contract v54 and
+the installed phone upload protocol are unchanged.
+Keep `/api/mobile/listen/ingest` behind a temporary retryable admission hold
+until the migration and corrected paired release are both live. Drain requests
+already in flight before applying the migration. The old completion handler must
+not create a head against an exhausted orphan job between those stages. Do not
+use 401/403 for this hold: Android interprets them as expired processing access.
+Remove only the owned hold after the exact web/worker candidate is verified.
+
 Phone Listen and nightly call notes introduce native contract **v54** and migration
 **250**, `20261010180000_listen_capture.sql` (`listen_capture_v1`). Apply the
 additive migration through the existing encrypted-backup/quiescence procedure,

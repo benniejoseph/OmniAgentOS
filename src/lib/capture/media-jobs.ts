@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { getSql, hasDatabaseUrl } from "@/lib/db/client";
+import { appendScopedDomainEvent } from "@/lib/events/store";
 import { requireLegacyCaptureProcessing, withCaptureNativeProcessingFence } from "@/lib/capture/native-processing-fence";
 import {
   captureMediaProcessingRequestSchema,
@@ -15,12 +17,15 @@ import {
   getCaptureMediaHead,
   markCaptureMediaProcessingStatus,
   markCaptureMediaRawAudioDeleted,
+  queueCaptureMediaProcessing,
 } from "@/lib/capture/media-store";
 import {
+  CaptureRecordingError,
   getCaptureRecording,
   getCaptureSegmentAudio,
   markCaptureRecordingIngestQueued,
   markCaptureRecordingIndexed,
+  prepareCaptureRecordingMediaProcessing,
   purgeCaptureRecordingRawAudio,
   saveCaptureRecordingProcessedTranscript,
   updateCaptureSegmentTranscription,
@@ -32,7 +37,9 @@ import type {
 } from "@/lib/capture/types";
 import {
   enqueueOperationJob,
+  getOperationJob,
   requeueOperationJobByDedupeKey,
+  storageDedupeKey,
   updateOperationJobPayload,
   type OperationJobRecord,
 } from "@/lib/operations/job-queue";
@@ -138,6 +145,8 @@ export async function enqueueCaptureMediaProcessingJob(input: {
   recording: CaptureRecordingDetail;
   request: CaptureMediaProcessingRequest;
   executionScope: ExecutionScope;
+  /** Close the accepted Listen upload and persist its head in this job's transaction. */
+  queueListenMediaHead?: true;
 }) {
   return withCaptureNativeProcessingFence({ ...input, recordingId: input.recording.id }, async () => {
   requireExecutionOwner(input.tenantId, input.actorId, input.executionScope);
@@ -158,7 +167,37 @@ export async function enqueueCaptureMediaProcessingJob(input: {
     sourceAudioManifestSha256,
   });
   const requestHash = sha256Json(request);
-  const job = await enqueueOperationJob({
+  if (input.queueListenMediaHead) {
+    if (!hasDatabaseUrl() || !isListenProcessing(input.recording)) {
+      throw new Error("Atomic Listen admission requires its accepted database recording.");
+    }
+    const current = await getCaptureRecording(input.recording.id, input);
+    if (!current || !isListenProcessing(current)) {
+      throw new CaptureRecordingError("This conversation is no longer available.", 410, "recording_unavailable");
+    }
+    const [accepted] = await getSql()`SELECT public.omni_listen_media_owner_v1(
+      ${input.tenantId}, ${input.actorId}, ${current.id}, TRUE) AS allowed`;
+    if (accepted?.allowed !== true) throw new Error("Listen processing requires its exact current accepted source.");
+    if (!current.segments.length || current.segmentCount !== input.recording.segmentCount ||
+      current.segments.length !== current.segmentCount ||
+      current.segments.some((segment, index) => segment.segmentIndex !== index) ||
+      captureRecordingAudioManifestSha256(current) !== sourceAudioManifestSha256) {
+      throw new CaptureRecordingError("Some recording chunks are still waiting to sync.", 409, "listen_chunks_missing");
+    }
+    const existingHead = await getCaptureMediaHead(current.id, input);
+    if (existingHead) {
+      const admitted = await getOperationJob(existingHead.operationJobId, input);
+      if (!admitted || admitted.type !== "capture.media.recording.process" || admitted.payload.actorId !== input.actorId) {
+        throw new Error("Listen media head does not match its accepted processing job.");
+      }
+      assertQueuedRequest(admitted, requestHash);
+      return admitted;
+    }
+    // The shared store joins this already managed transaction; it does not
+    // adopt a second manager. Closing the source rolls back if admission fails.
+    await prepareCaptureRecordingMediaProcessing(current.id, input);
+  }
+  let job = await enqueueOperationJob({
     tenantId: input.tenantId,
     type: "capture.media.recording.process",
     dedupeKey: `capture.media.recording:${input.recording.id}:${requestHash}`,
@@ -174,13 +213,74 @@ export async function enqueueCaptureMediaProcessingJob(input: {
     dedupeMode: "idempotent",
   });
   assertQueuedRequest(job, requestHash);
+  if (input.queueListenMediaHead) {
+    // A pre-fix orphan may already be queued. Lock it before checking its
+    // current state, so a worker cannot claim it ahead of the new media head.
+    const locked = await getSql()`SELECT id FROM omni_operation_jobs
+      WHERE id = ${job.id} AND tenant_id = ${input.tenantId}
+        AND type = 'capture.media.recording.process'
+        AND dedupe_key = ${storageDedupeKey(input.tenantId, `capture.media.recording:${input.recording.id}:${requestHash}`)}
+        AND payload ->> 'actorId' = ${input.actorId}
+        AND payload ->> 'requestHash' = ${requestHash}
+      FOR UPDATE`;
+    const currentJob = locked.length === 1 ? await getOperationJob(job.id, input) : null;
+    if (!currentJob || (currentJob.status !== "queued" && currentJob.status !== "failed")) {
+      // In particular, let an already-running pre-head lease settle. Creating
+      // its head mid-lease could strand a terminal job behind an admitted head.
+      throw new Error("Listen processing is finishing a previous admission attempt. Sync will retry.");
+    }
+    job = currentJob;
+    assertQueuedRequest(job, requestHash);
+    if (job.payload.request !== undefined && sha256Json(job.payload.request) !== requestHash) {
+      throw new Error("Listen processing request differs from its accepted digest.");
+    }
+    if (job.status === "failed" || job.payload.request === undefined) {
+      const sql = getSql();
+      const recoveredAt = new Date().toISOString();
+      const restored = await sql`
+        UPDATE omni_operation_jobs job
+        SET payload = job.payload || ${JSON.stringify({ request,
+          listenAdmissionRecovery: { restoredAt: recoveredAt, previousAttempt: job.attempt, reason: "missing_media_head" },
+        })}::jsonb,
+          updated_at = ${recoveredAt}
+        WHERE job.id = ${job.id} AND job.tenant_id = ${input.tenantId}
+          AND job.type = 'capture.media.recording.process' AND job.status = ${job.status}
+          AND job.attempt = ${job.attempt}
+          AND job.dedupe_key = ${storageDedupeKey(input.tenantId, `capture.media.recording:${input.recording.id}:${requestHash}`)}
+          AND job.payload ->> 'actorId' = ${input.actorId}
+          AND job.payload ->> 'requestHash' = ${requestHash}
+          AND public.omni_listen_media_owner_v1(${input.tenantId}, ${input.actorId}, ${input.recording.id}, TRUE)
+          AND NOT EXISTS (
+            SELECT 1 FROM omni_capture_media_heads head
+            WHERE head.tenant_id = ${input.tenantId} AND head.owner_actor_id = ${input.actorId}
+              AND head.recording_id = ${input.recording.id}
+          )
+        RETURNING job.id
+      `;
+      if (restored.length !== 1) throw new Error("Listen processing admission changed before its exact retry could be restored.");
+      await appendScopedDomainEvent({
+        id: `listen_media_recovery_${sha256Json({ jobId: job.id, requestHash, attempt: job.attempt })}`,
+        streamId: `capture-media:${input.recording.id}`,
+        type: "capture_media.admission_recovered",
+        executionScope: input.executionScope,
+        payload: { schemaVersion: 1, operationJobId: job.id, requestHash,
+          previousAttempt: job.attempt, reason: "missing_media_head" },
+      }, { sql });
+    }
+  }
   if (job.status === "failed") {
+    if (isListenProcessing(input.recording) && !input.queueListenMediaHead) return job;
     const [requeued] = await requeueOperationJobByDedupeKey(
       job.dedupeKey || `capture.media.recording:${input.recording.id}:${requestHash}`,
       "Retrying durable recording media processing.",
       { tenantId: input.tenantId },
     );
-    return requeued || job;
+    if (input.queueListenMediaHead && !requeued) throw new Error("Listen processing changed before its exact job could be queued.");
+    job = requeued || job;
+  }
+  if (input.queueListenMediaHead) {
+    await queueCaptureMediaProcessing({ tenantId: input.tenantId, actorId: input.actorId,
+      executionScope: input.executionScope, request: processing, operationJobId: job.id });
   }
   return job;
   });

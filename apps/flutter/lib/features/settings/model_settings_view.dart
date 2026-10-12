@@ -328,6 +328,18 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
                           color: Theme.of(context).colorScheme.onSurfaceVariant,
                         ),
                       ),
+                      if (appAndroidDeviceBridge.supported) ...[
+                        const SizedBox(height: 16),
+                        const _Surface(
+                          child: Padding(
+                            padding: EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 4,
+                            ),
+                            child: ListenSettingsLink(),
+                          ),
+                        ),
+                      ],
                       const SizedBox(height: 16),
                       Wrap(
                         spacing: 9,
@@ -640,8 +652,6 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
                         if (appAndroidDeviceBridge.supported) ...[
                           const SizedBox(height: 24),
                           const AndroidPhoneSettings(),
-                          const SizedBox(height: 16),
-                          const ListenSettingsLink(),
                         ],
                         const SizedBox(height: 24),
                         Row(

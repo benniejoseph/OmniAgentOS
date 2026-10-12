@@ -1542,5 +1542,12 @@
     "checksum": "7bafada2e72418b3cdee84df711e76b42107025f1198322cc5cfa6fdd5c832dc",
     "file": "20261010180000_listen_capture.sql",
     "sha256": "7bafada2e72418b3cdee84df711e76b42107025f1198322cc5cfa6fdd5c832dc"
+  },
+  {
+    "version": 251,
+    "name": "listen_media_owner_scope_v1",
+    "checksum": "ad82f1c2f762cc8a591293c6bcc33b498f8dadb70724e5bb2c0601c5a2ec9d83",
+    "file": "20261012123000_listen_media_owner_scope.sql",
+    "sha256": "ad82f1c2f762cc8a591293c6bcc33b498f8dadb70724e5bb2c0601c5a2ec9d83"
   }
 ]

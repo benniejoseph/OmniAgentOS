@@ -108,6 +108,12 @@ class _ListenWorkspaceState extends ConsumerState<ListenWorkspace>
     final controller = ref.watch(listenControllerProvider);
     final scheme = Theme.of(context).colorScheme;
     final active = controller.activeSession;
+    final uploadState = listenText(controller.status?['uploadState']);
+    final uploadMessage = listenText(controller.status?['uploadMessage']);
+    final showSyncStatus =
+        controller.supported &&
+        {'idle', 'uploading', 'needs_access', 'error'}.contains(uploadState) &&
+        (uploadState != 'idle' || uploadMessage.isNotEmpty);
     final local = listenRows(controller.status?['sessions'])
         .where(
           (row) => !{
@@ -169,6 +175,13 @@ class _ListenWorkspaceState extends ConsumerState<ListenWorkspace>
                       style: Theme.of(context).textTheme.titleMedium,
                     ),
                     const SizedBox(height: 20),
+                    if (showSyncStatus) ...[
+                      _ListenSyncStatus(
+                        state: uploadState,
+                        message: uploadMessage,
+                      ),
+                      const SizedBox(height: 16),
+                    ],
                     if (controller.supported)
                       ListenSurface(
                         child: active == null
@@ -412,6 +425,73 @@ class _ListenWorkspaceState extends ConsumerState<ListenWorkspace>
                     ],
                   ],
                 ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ListenSyncStatus extends StatelessWidget {
+  const _ListenSyncStatus({required this.state, required this.message});
+
+  final String state;
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final needsAttention = state == 'error' || state == 'needs_access';
+    final presentation = switch (state) {
+      'uploading' => (
+        title: 'Syncing conversations',
+        icon: Icons.cloud_upload_outlined,
+        fallback: 'Saving your conversations for processing.',
+      ),
+      'needs_access' => (
+        title: 'Reconnect to continue syncing',
+        icon: Icons.sync_problem_rounded,
+        fallback: 'Processing access needs to be renewed. Your saved audio remains on this phone.',
+      ),
+      'error' => (
+        title: 'Sync interrupted',
+        icon: Icons.cloud_off_outlined,
+        fallback: 'Saved on this phone. Sync will retry when the connection is available.',
+      ),
+      _ => (
+        title: 'Conversation sync',
+        icon: Icons.cloud_outlined,
+        fallback: '',
+      ),
+    };
+    return Semantics(
+      liveRegion: true,
+      child: ListenSurface(
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(
+              presentation.icon,
+              color: needsAttention ? scheme.error : scheme.onSurfaceVariant,
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    presentation.title,
+                    style: Theme.of(context).textTheme.titleSmall
+                        ?.copyWith(color: needsAttention ? scheme.error : null),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    message.isEmpty ? presentation.fallback : message,
+                    style: TextStyle(color: scheme.onSurfaceVariant),
+                  ),
+                ],
               ),
             ),
           ],
