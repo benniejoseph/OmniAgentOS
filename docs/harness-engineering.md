@@ -355,6 +355,17 @@ Bind structured receipt objects directly to JSONB parameters in tagged PostgreSQ
 queries. Passing `JSON.stringify(receipt)` through the driver's JSON serializer
 can persist a JSON string instead of the required object. Keep the SQL shape and
 binding checks active so malformed acceptance cannot commit.
+The same rule applies to JSONB merge patches: object concatenation with an encoded
+string produces an array and can erase a job's actor binding when the next reader
+rejects that shape. Recovery must check that the committed payload remains an
+object with its exact actor, request hash and execution scope; do not infer a
+replacement owner from a malformed historical payload.
+
+A valid short transcript may produce a blank generated summary. Require nonempty
+summary text in both the provider schema and local schema. If the provider still
+returns an empty string, use explicitly labeled excerpts from real transcript
+turns with their exact citations and a warning, rather than repeat a paid
+generation or fabricate facts. Other malformed output must still fail validation.
 
 When a native integration fixture rebuilds a generic preview or request, parse it
 through the endpoint's narrow schema before passing it to a typed store. Preserve
