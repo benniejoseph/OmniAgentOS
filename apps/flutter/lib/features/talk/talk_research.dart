@@ -2,6 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_page_scaffold.dart';
+
 import 'talk_rich_message.dart';
 
 Map<String, dynamic> _record(Object? value) =>
@@ -356,6 +359,11 @@ class TalkResearchOptionsBar extends StatelessWidget {
           ),
           if (enabled) ...[
             SegmentedButton<String>(
+              direction:
+                  usesMobilePresentation() &&
+                      MediaQuery.textScalerOf(context).scale(14) > 20
+                  ? Axis.vertical
+                  : Axis.horizontal,
               segments: const [
                 ButtonSegment(value: 'quick', label: Text('Quick')),
                 ButtonSegment(value: 'deep', label: Text('Deep')),
@@ -369,10 +377,18 @@ class TalkResearchOptionsBar extends StatelessWidget {
               tooltip: 'Research questions and sources',
               icon: const Icon(Icons.tune_rounded),
               onPressed: () async {
-                final next = await showDialog<TalkResearchOptions>(
-                  context: context,
-                  builder: (_) => _ResearchOptionsDialog(options: options),
-                );
+                final next = usesMobilePresentation()
+                    ? await showMobileSheet<TalkResearchOptions>(
+                        context: context,
+                        title: 'Shape your research',
+                        builder: (_) =>
+                            _ResearchOptionsDialog(options: options),
+                      )
+                    : await showDialog<TalkResearchOptions>(
+                        context: context,
+                        builder: (_) =>
+                            _ResearchOptionsDialog(options: options),
+                      );
                 if (next != null) onChanged(next);
               },
             ),
@@ -416,68 +432,63 @@ class _ResearchOptionsDialogState extends State<_ResearchOptionsDialog> {
   }
 
   @override
-  Widget build(BuildContext context) => AlertDialog(
-    title: const Text('Shape your research'),
-    content: SizedBox(
-      width: 520,
-      child: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text(
-              'Leave these blank and Asael will build a plan from your message.',
-              style: Theme.of(context).textTheme.bodyMedium,
-            ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: questions,
-              minLines: 3,
-              maxLines: 6,
-              maxLength: widget.options.depth == 'deep' ? 3005 : 1502,
-              decoration: InputDecoration(
-                labelText: 'Questions to answer',
-                helperText:
-                    'One per line · up to ${widget.options.depth == 'deep' ? 6 : 3} questions',
-                alignLabelWithHint: true,
-              ),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: guidance,
-              minLines: 2,
-              maxLines: 4,
-              maxLength: 1500,
-              decoration: const InputDecoration(
-                labelText: 'Preferred sources',
-                hintText: 'For example: official docs and recent independent research',
-                alignLabelWithHint: true,
-              ),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: domains,
-              minLines: 2,
-              maxLines: 4,
-              maxLength: 2540,
-              autocorrect: false,
-              decoration: const InputDecoration(
-                labelText: 'Limit to these websites',
-                hintText: 'salesforce.com\nhelp.salesforce.com',
-                helperText: 'Optional · up to 10 domains, one per line',
-                alignLabelWithHint: true,
-              ),
-            ),
-            if (error != null)
-              Text(
-                error!,
-                style: TextStyle(color: Theme.of(context).colorScheme.error),
-              ),
-          ],
+  Widget build(BuildContext context) {
+    final fields = Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          'Leave these blank and Asael will build a plan from your message.',
+          style: Theme.of(context).textTheme.bodyMedium,
         ),
-      ),
-    ),
-    actions: [
+        const SizedBox(height: 16),
+        TextField(
+          controller: questions,
+          minLines: 3,
+          maxLines: 6,
+          maxLength: widget.options.depth == 'deep' ? 3005 : 1502,
+          decoration: InputDecoration(
+            labelText: 'Questions to answer',
+            helperText:
+                'One per line · up to ${widget.options.depth == 'deep' ? 6 : 3} questions',
+            alignLabelWithHint: true,
+          ),
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          controller: guidance,
+          minLines: 2,
+          maxLines: 4,
+          maxLength: 1500,
+          decoration: const InputDecoration(
+            labelText: 'Preferred sources',
+            hintText:
+                'For example: official docs and recent independent research',
+            alignLabelWithHint: true,
+          ),
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          controller: domains,
+          minLines: 2,
+          maxLines: 4,
+          maxLength: 2540,
+          autocorrect: false,
+          decoration: const InputDecoration(
+            labelText: 'Limit to these websites',
+            hintText: 'salesforce.com\nhelp.salesforce.com',
+            helperText: 'Optional · up to 10 domains, one per line',
+            alignLabelWithHint: true,
+          ),
+        ),
+        if (error != null)
+          Text(
+            error!,
+            style: TextStyle(color: Theme.of(context).colorScheme.error),
+          ),
+      ],
+    );
+    final actions = <Widget>[
       TextButton(
         onPressed: () => Navigator.pop(context),
         child: const Text('Cancel'),
@@ -508,8 +519,26 @@ class _ResearchOptionsDialogState extends State<_ResearchOptionsDialog> {
         },
         child: const Text('Save preferences'),
       ),
-    ],
-  );
+    ];
+    if (usesMobilePresentation())
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          fields,
+          const SizedBox(height: 16),
+          Wrap(alignment: WrapAlignment.end, spacing: 8, children: actions),
+        ],
+      );
+    return AlertDialog(
+      title: const Text('Shape your research'),
+      content: SizedBox(
+        width: 520,
+        child: SingleChildScrollView(child: fields),
+      ),
+      actions: actions,
+    );
+  }
 }
 
 class TalkResearchPanel extends StatelessWidget {
@@ -552,7 +581,11 @@ class TalkResearchPanel extends StatelessWidget {
     return Card(
       margin: EdgeInsets.zero,
       child: ExpansionTile(
-        initiallyExpanded: true,
+        initiallyExpanded:
+            !usesMobilePresentation() || report != null || error != null,
+        expansionAnimationStyle: MediaQuery.disableAnimationsOf(context)
+            ? AnimationStyle.noAnimation
+            : null,
         leading: const Icon(Icons.travel_explore_rounded),
         title: Text(label),
         subtitle: Text(

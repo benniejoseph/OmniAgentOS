@@ -237,6 +237,17 @@ const appDestinations = <AppDestination>[
     description: 'Find conversations, work, private memory and saved sources.',
     group: AppDestinationGroup.workspace,
   ),
+  AppDestination(
+    label: 'Library',
+    path: '/library',
+    icon: Icons.widgets_outlined,
+    selectedIcon: Icons.widgets_rounded,
+    eyebrow: 'YOUR SPACES',
+    description: 'Your knowledge, tools and preferences.',
+    group: AppDestinationGroup.workspace,
+    macosVisible: false,
+    adaptiveVisible: false,
+  ),
 ];
 
 int destinationIndex(String path) =>

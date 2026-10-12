@@ -2,6 +2,10 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+
+import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_page_scaffold.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/platform/desktop_host_bridge.dart';
@@ -219,7 +223,9 @@ class _VoiceConversationSurfaceState
           constraints: const BoxConstraints(minWidth: 180),
           iconSize: 17,
           style: IconButton.styleFrom(
-            minimumSize: const Size(32, 32),
+            minimumSize: usesMobilePresentation()
+                ? const Size(48, 48)
+                : const Size(32, 32),
             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
           ),
           icon: const Icon(Icons.more_horiz_rounded),
@@ -307,10 +313,15 @@ class _VoiceConversationSurfaceState
   Widget _controls({required bool canCollapse, required bool expanded}) {
     final scheme = Theme.of(context).colorScheme;
     final style = TextButton.styleFrom(
-      minimumSize: const Size(32, 32),
+      minimumSize: usesMobilePresentation()
+          ? const Size(48, 48)
+          : const Size(32, 32),
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-      textStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+      textStyle: TextStyle(
+        fontSize: usesMobilePresentation() ? 15 : 12,
+        fontWeight: FontWeight.w600,
+      ),
     );
     return Wrap(
       spacing: 4,
@@ -367,7 +378,9 @@ class _VoiceConversationSurfaceState
           IconButton(
             tooltip: expanded ? 'Collapse captions' : 'Show captions',
             style: IconButton.styleFrom(
-              minimumSize: const Size(32, 32),
+              minimumSize: usesMobilePresentation()
+                  ? const Size(48, 48)
+                  : const Size(32, 32),
               tapTargetSize: MaterialTapTargetSize.shrinkWrap,
             ),
             iconSize: 17,
@@ -523,6 +536,138 @@ class _VoiceConversationSurfaceState
     );
   }
 
+  Widget _mobileConversation(VoiceAppearanceController appearance) {
+    final scheme = Theme.of(context).colorScheme;
+    return SafeArea(
+      child: Column(
+        children: [
+          MobilePageHeader(
+            title: 'ATLAS',
+            subtitle: 'Voice conversation',
+            leading: IconButton(
+              tooltip: 'Back to Asael',
+              onPressed: () => Navigator.of(context).maybePop(),
+              icon: const Icon(Icons.arrow_back_rounded),
+            ),
+            actions: [
+              PopupMenuButton<VoiceAppearance>(
+                tooltip: 'Voice appearance',
+                icon: const Icon(Icons.more_horiz_rounded),
+                enabled: appearance.available,
+                onSelected: (value) =>
+                    unawaited(appearance.setAppearance(value)),
+                itemBuilder: (_) => [
+                  for (final option in VoiceAppearance.values)
+                    CheckedPopupMenuItem(
+                      value: option,
+                      checked: option == appearance.appearance,
+                      child: Text(option.label),
+                    ),
+                ],
+              ),
+            ],
+          ),
+          Expanded(
+            child: LayoutBuilder(
+              builder: (context, constraints) => SingleChildScrollView(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 28,
+                  vertical: 20,
+                ),
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(
+                    minHeight: math.max(0, constraints.maxHeight - 40),
+                  ),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      _portrait(
+                        appearance.appearance == VoiceAppearance.perch
+                            ? 180
+                            : 132,
+                      ),
+                      const SizedBox(height: 24),
+                      Semantics(
+                        liveRegion: true,
+                        child: Text(
+                          _status,
+                          textAlign: TextAlign.center,
+                          style: Theme.of(context).textTheme.headlineSmall
+                              ?.copyWith(
+                                color: _error != null
+                                    ? scheme.error
+                                    : scheme.onSurface,
+                              ),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        _microphoneStatus,
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.bodyMedium
+                            ?.copyWith(color: scheme.onSurfaceVariant),
+                      ),
+                      const SizedBox(height: 24),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(20),
+                        decoration: BoxDecoration(
+                          color: scheme.surfaceContainerLow,
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              _detail,
+                              style: Theme.of(context).textTheme.bodyLarge
+                                  ?.copyWith(height: 1.5),
+                            ),
+                            if (voice.historyNotice case final notice?)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 12),
+                                child: Text(notice),
+                              ),
+                            if (voice.workNotice case final notice?)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 12),
+                                child: Text(notice),
+                              ),
+                            if (voice.commandContext?['computerUseTarget'] ==
+                                'local_android')
+                              const Padding(
+                                padding: EdgeInsets.only(top: 12),
+                                child: Text(
+                                  'Working with Asael and this phone. Stop is always available in your notification.',
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
+            child: _controls(canCollapse: false, expanded: true),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(28, 4, 28, 20),
+            child: Text(
+              'Keep talking while using other apps. Mute or end from your notification.',
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodySmall
+                  ?.copyWith(color: scheme.onSurfaceVariant),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final appearance = ref.watch(voiceAppearanceProvider);
@@ -537,6 +682,8 @@ class _VoiceConversationSurfaceState
         scale <= 1.15;
     final details = _expanded || !canCollapse;
     _presentWindow(appearance.appearance, details, scale);
+    if (usesMobilePresentation())
+      return Scaffold(body: _mobileConversation(appearance));
     final presentation = appearance.appearance == VoiceAppearance.perch
         ? _perch(appearance, details, canCollapse)
         : _companion(appearance, details, canCollapse);

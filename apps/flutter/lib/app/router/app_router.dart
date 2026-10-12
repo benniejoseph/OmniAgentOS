@@ -26,6 +26,7 @@ import '../../features/auth/presentation/login_screen.dart';
 import '../../features/auth/presentation/session_bootstrap_screen.dart';
 import '../../features/capture/capture.dart';
 import '../../features/capture/capture_providers.dart';
+import '../../features/capture/library_view.dart';
 import '../../features/listen/capture_listen_workspace.dart';
 import '../../features/computer_use/local_computer.dart';
 import '../../features/computer_use/android_phone.dart';
@@ -68,6 +69,7 @@ import '../../features/today/today_providers.dart';
 import '../navigation/adaptive_shell.dart';
 import '../navigation/app_destination.dart';
 import '../navigation/destination_placeholder.dart';
+import '../navigation/mobile_library_page.dart';
 import '../platform/macos_presentation.dart';
 
 Widget _nativeAdminWorkspace(String moduleId) => NativePrivateWorkspace(
@@ -695,6 +697,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                           child: Text('This workspace link is invalid.'),
                         )
                       : switch (destination.path) {
+                          '/library' => const MobileLibraryPage(),
                           '/search' => const NativeContentSearchPage(),
                           '/today' =>
                             usesMacosPresentation()
@@ -734,6 +737,8 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                                             'This Library link is invalid.',
                                           ),
                                         )
+                                : state.uri.queryParameters['tab'] == 'library'
+                                ? const NativeLibraryPage()
                                 : CaptureListenWorkspace(
                                     listening:
                                         state.uri.queryParameters['section'] ==

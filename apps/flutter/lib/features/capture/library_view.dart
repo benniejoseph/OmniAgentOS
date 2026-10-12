@@ -3,8 +3,11 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../core/network/native_workspace_access.dart';
+import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_page_scaffold.dart';
 import 'entity_options.dart';
 import 'library_contracts.dart';
 import 'library_controller.dart';
@@ -76,11 +79,26 @@ class NativeLibraryPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(
+      leading: usesMobilePresentation()
+          ? IconButton(
+              tooltip: 'Back',
+              icon: const Icon(Icons.arrow_back_rounded),
+              onPressed: () {
+                if (Navigator.of(context).canPop()) {
+                  Navigator.of(context).pop();
+                } else {
+                  context.go('/library');
+                }
+              },
+            )
+          : null,
       title: Text(
         selectForMeeting
             ? 'Choose a Meeting source'
             : selectForCommand
             ? 'Choose current Library context'
+            : usesMobilePresentation()
+            ? 'Saved files'
             : 'Library',
       ),
     ),
@@ -279,6 +297,274 @@ class _LibraryViewState extends State<LibraryView> with WidgetsBindingObserver {
       label: Text(label),
     ),
   );
+  Widget _mobileLibrary(
+    BuildContext context,
+    LibraryController c,
+    List<LibraryItem> rows,
+  ) {
+    final page = c.page;
+    return RefreshIndicator(
+      onRefresh: () => c.load(),
+      child: CustomScrollView(
+        key: const Key('library-scroll'),
+        physics: const AlwaysScrollableScrollPhysics(),
+        slivers: [
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    widget.selectForMeeting
+                        ? 'Choose a ready source for your meeting.'
+                        : widget.onSelectedCurrent != null
+                        ? 'Bring a saved source into this conversation.'
+                        : 'Your notes, documents and recordings in one place.',
+                  ),
+                  const SizedBox(height: 16),
+                  TextField(
+                    key: const Key('library-search'),
+                    controller: _search,
+                    maxLength: 240,
+                    textInputAction: TextInputAction.search,
+                    onSubmitted: (value) => c.search(value, _kind),
+                    decoration: InputDecoration(
+                      hintText: 'Find a saved source',
+                      counterText: '',
+                      prefixIcon: const Icon(Icons.search_rounded),
+                      suffixIcon: IconButton(
+                        tooltip: 'Search saved files',
+                        onPressed: () => c.search(_search.text, _kind),
+                        icon: const Icon(Icons.arrow_forward_rounded),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      PopupMenuButton<String>(
+                        tooltip: 'Filter source type',
+                        initialValue: _kind ?? 'all',
+                        onSelected: (value) {
+                          setState(() => _kind = value == 'all' ? null : value);
+                          c.search(_search.text, _kind);
+                        },
+                        itemBuilder: (_) => [
+                          const PopupMenuItem(
+                            value: 'all',
+                            child: Text('All types'),
+                          ),
+                          for (final kind in libraryKinds)
+                            PopupMenuItem(
+                              value: kind,
+                              child: Text(kind.replaceAll('_', ' ')),
+                            ),
+                        ],
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(Icons.filter_list_rounded, size: 20),
+                              const SizedBox(width: 8),
+                              Text(_kind?.replaceAll('_', ' ') ?? 'All types'),
+                              const Icon(Icons.expand_more_rounded),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const Spacer(),
+                      IconButton(
+                        tooltip: 'Refresh saved files',
+                        onPressed: c.listLoading ? null : () => c.load(),
+                        icon: const Icon(Icons.refresh_rounded),
+                      ),
+                    ],
+                  ),
+                  if (page != null)
+                    Text(
+                      '${page.total}${page.lowerBound ? '+' : ''} matching sources${c.listLoading || c.listError != null ? ' · last loaded' : ''}',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  if (c.listLoading)
+                    const LinearProgressIndicator(minHeight: 2),
+                  if (c.listError != null)
+                    LibraryReadNotice(
+                      c.listError!,
+                      retry: () => c.load(),
+                      stale: page != null,
+                    ),
+                ],
+              ),
+            ),
+          ),
+          if (rows.isEmpty && !c.listLoading)
+            const SliverToBoxAdapter(
+              child: Padding(
+                padding: EdgeInsets.all(24),
+                child: Text(
+                  'No saved sources match this view. Try a different search or add something in Capture.',
+                ),
+              ),
+            ),
+          SliverPadding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            sliver: SliverList.builder(
+              itemCount: rows.length,
+              itemBuilder: (_, index) {
+                final row = rows[index];
+                return Column(
+                  children: [
+                    ListTile(
+                      contentPadding: const EdgeInsets.symmetric(vertical: 8),
+                      leading: Icon(
+                        row.kind.contains('image')
+                            ? Icons.image_outlined
+                            : row.kind.contains('audio') ||
+                                  row.kind.contains('recording')
+                            ? Icons.audio_file_outlined
+                            : Icons.description_outlined,
+                      ),
+                      title: Text(
+                        row.title,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      subtitle: Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Text(
+                          '${row.kind.replaceAll('_', ' ')} · ${row.raw['status'].toString().replaceAll('_', ' ')}',
+                        ),
+                      ),
+                      trailing: row.exactAvailable
+                          ? const Icon(Icons.chevron_right_rounded)
+                          : null,
+                      selected: c.selectedId == row.id,
+                      onTap: row.exactAvailable ? () => _open(row.id) : null,
+                    ),
+                    const Divider(height: 1),
+                  ],
+                );
+              },
+            ),
+          ),
+          if (page != null)
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.all(20),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: c.hasPrevious && !c.listLoading
+                            ? c.previous
+                            : null,
+                        child: const Text('Previous'),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed:
+                            page.nextOffset != null &&
+                                page.nextOffset! <= 10000 &&
+                                !c.listLoading
+                            ? c.next
+                            : null,
+                        child: const Text('Next'),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          if (c.selectedId != null)
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.all(20),
+                child: Focus(
+                  key: _detailKey,
+                  focusNode: _detailFocus,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              'Source details',
+                              style: Theme.of(context).textTheme.titleLarge,
+                            ),
+                          ),
+                          IconButton(
+                            tooltip: 'Close source details',
+                            onPressed: () {
+                              c.clearSelection();
+                              _listFocus.requestFocus();
+                            },
+                            icon: const Icon(Icons.close_rounded),
+                          ),
+                        ],
+                      ),
+                      if (c.detailLoading) const LinearProgressIndicator(),
+                      if (c.detailError != null)
+                        LibraryReadNotice(
+                          c.detailError!,
+                          retry: () => c.select(c.selectedId!),
+                          stale: c.detail != null,
+                        ),
+                      if (c.detail != null) _detail(context, c.detail!, c),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: ExpansionTile(
+                title: const Text('More ways to browse'),
+                tilePadding: EdgeInsets.zero,
+                expansionAnimationStyle: MediaQuery.disableAnimationsOf(context)
+                    ? AnimationStyle.noAnimation
+                    : null,
+                children: [
+                  TextField(
+                    key: const Key('library-exact-id'),
+                    controller: _exactId,
+                    maxLength: 320,
+                    decoration: const InputDecoration(
+                      labelText: 'Saved source reference',
+                    ),
+                    onSubmitted: (value) => _open(value.trim()),
+                  ),
+                  if (_formError != null) Text(_formError!),
+                  TextButton(
+                    onPressed: () => _open(_exactId.text.trim()),
+                    child: const Text('Open source'),
+                  ),
+                  TextButton(
+                    onPressed: () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => const NativeEntityOptionsPage(),
+                      ),
+                    ),
+                    child: const Text('Browse related work'),
+                  ),
+                  if (page != null)
+                    Text(
+                      'Search checks the sources you can access. Counts ${page.countsLowerBound ? 'are a lower bound' : 'cover the returned search window'}.',
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: widget.controller,
@@ -311,6 +597,7 @@ class _LibraryViewState extends State<LibraryView> with WidgetsBindingObserver {
               )
               .toList() ??
           const <LibraryItem>[];
+      if (usesMobilePresentation()) return _mobileLibrary(context, c, rows);
       return SingleChildScrollView(
         key: const Key('library-scroll'),
         padding: const EdgeInsets.all(24),
@@ -606,25 +893,73 @@ class _LibraryViewState extends State<LibraryView> with WidgetsBindingObserver {
         const Text(
           'This is the last loaded current record. Refresh it before relying on its current version.',
         ),
-      LibraryValue('Source', '${item.authority}\n${item.sourceId}'),
-      LibraryValue('State', item.raw['status']),
-      LibraryValue(
-        'Scope',
-        '${item.scope['visibility']} · ${item.scope['permissionBasis']}',
-      ),
-      LibraryValue('Owner', item.scope['ownerActorId']),
-      for (final key in ['workspaceId', 'projectId', 'workItemId', 'missionId'])
-        if (item.scope[key] != null) LibraryValue(key, item.scope[key]),
-      LibraryValue(
-        'Current version',
-        '${item.versionId}\nVersion ${item.version['versionNumber']} of ${item.raw['versionCount']} known',
-      ),
-      LibraryValue(
-        'Source revision',
-        item.version['sourceRevisionId'] ??
-            'No revision ID in this source projection',
-      ),
-      LibraryValue('Content SHA-256', item.version['contentSha256']),
+      if (usesMobilePresentation()) ...[
+        LibraryValue(
+          'Status',
+          item.raw['status'].toString().replaceAll('_', ' '),
+        ),
+        Text(
+          'Version ${item.version['versionNumber']} · ${item.raw['versionCount']} saved versions',
+        ),
+        ExpansionTile(
+          tilePadding: EdgeInsets.zero,
+          title: const Text('Source and access details'),
+          expansionAnimationStyle: MediaQuery.disableAnimationsOf(context)
+              ? AnimationStyle.noAnimation
+              : null,
+          children: [
+            LibraryValue('Source', '${item.authority}\n${item.sourceId}'),
+            LibraryValue('State', item.raw['status']),
+            LibraryValue(
+              'Scope',
+              '${item.scope['visibility']} · ${item.scope['permissionBasis']}',
+            ),
+            LibraryValue('Owner', item.scope['ownerActorId']),
+            for (final key in [
+              'workspaceId',
+              'projectId',
+              'workItemId',
+              'missionId',
+            ])
+              if (item.scope[key] != null) LibraryValue(key, item.scope[key]),
+            LibraryValue(
+              'Current version',
+              '${item.versionId}\nVersion ${item.version['versionNumber']} of ${item.raw['versionCount']} known',
+            ),
+            LibraryValue(
+              'Source revision',
+              item.version['sourceRevisionId'] ??
+                  'No revision ID in this source projection',
+            ),
+            LibraryValue('Content SHA-256', item.version['contentSha256']),
+          ],
+        ),
+      ] else ...[
+        LibraryValue('Source', '${item.authority}\n${item.sourceId}'),
+        LibraryValue('State', item.raw['status']),
+        LibraryValue(
+          'Scope',
+          '${item.scope['visibility']} · ${item.scope['permissionBasis']}',
+        ),
+        LibraryValue('Owner', item.scope['ownerActorId']),
+        for (final key in [
+          'workspaceId',
+          'projectId',
+          'workItemId',
+          'missionId',
+        ])
+          if (item.scope[key] != null) LibraryValue(key, item.scope[key]),
+        LibraryValue(
+          'Current version',
+          '${item.versionId}\nVersion ${item.version['versionNumber']} of ${item.raw['versionCount']} known',
+        ),
+        LibraryValue(
+          'Source revision',
+          item.version['sourceRevisionId'] ??
+              'No revision ID in this source projection',
+        ),
+        LibraryValue('Content SHA-256', item.version['contentSha256']),
+      ],
       LibraryValue(
         'Content description',
         '${item.version['byteCount']} bytes · ${item.version['mediaType']}',

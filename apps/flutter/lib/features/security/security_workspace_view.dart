@@ -6,6 +6,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/macos/macos_page_scaffold.dart';
 import '../../app/platform/macos_presentation.dart';
+import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_page_scaffold.dart';
 import '../../core/network/native_workspace_access.dart';
 import 'security_contracts.dart';
 import 'security_controller.dart';
@@ -217,6 +219,18 @@ class _SecurityWorkspaceViewState extends State<SecurityWorkspaceView> {
                         inspectorCollapseBelow: 980,
                         body: _content(context, wide: wide),
                       )
+                    : usesMobilePresentation()
+                    ? Column(
+                        children: [
+                          MobilePageHeader(
+                            title: 'Security',
+                            subtitle:
+                                'Your access, your data and your decisions.',
+                            actions: [refresh],
+                          ),
+                          Expanded(child: _content(context, wide: false)),
+                        ],
+                      )
                     : Scaffold(
                         appBar: AppBar(
                           title: const Text('Security'),
@@ -303,19 +317,39 @@ class _SecurityWorkspaceViewState extends State<SecurityWorkspaceView> {
               ],
             ),
             const SizedBox(height: 20),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                for (final section in SecuritySection.values)
-                  ChoiceChip(
-                    key: ValueKey('security-tab-${section.name}'),
-                    label: Text(section.label),
-                    selected: c.section == section,
-                    onSelected: (_) => _section(section),
-                  ),
-              ],
-            ),
+            if (usesMobilePresentation())
+              DropdownButtonFormField<SecuritySection>(
+                initialValue: c.section,
+                isExpanded: true,
+                decoration: const InputDecoration(
+                  labelText: 'View',
+                  prefixIcon: Icon(Icons.view_agenda_outlined),
+                ),
+                items: [
+                  for (final section in SecuritySection.values)
+                    DropdownMenuItem(
+                      value: section,
+                      child: Text(section.label),
+                    ),
+                ],
+                onChanged: (section) {
+                  if (section != null) _section(section);
+                },
+              )
+            else
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final section in SecuritySection.values)
+                    ChoiceChip(
+                      key: ValueKey('security-tab-${section.name}'),
+                      label: Text(section.label),
+                      selected: c.section == section,
+                      onSelected: (_) => _section(section),
+                    ),
+                ],
+              ),
             const SizedBox(height: 18),
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -705,24 +739,59 @@ class _Metric extends StatelessWidget {
   const _Metric(this.label, this.value, this.detail);
   final String label, value, detail;
   @override
-  Widget build(BuildContext context) => ConstrainedBox(
-    constraints: const BoxConstraints(maxWidth: 260),
-    child: Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(label, style: Theme.of(context).textTheme.labelLarge),
-            const SizedBox(height: 8),
-            Text(value, style: Theme.of(context).textTheme.titleLarge),
-            const SizedBox(height: 6),
-            Text(detail, style: Theme.of(context).textTheme.bodySmall),
-          ],
-        ),
-      ),
-    ),
-  );
+  Widget build(BuildContext context) => usesMobilePresentation()
+      ? SizedBox(
+          width: double.infinity,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        label,
+                        style: Theme.of(context).textTheme.labelLarge,
+                      ),
+                      Text(
+                        detail,
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Flexible(
+                  child: Text(
+                    value,
+                    textAlign: TextAlign.right,
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        )
+      : ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 260),
+          child: Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(label, style: Theme.of(context).textTheme.labelLarge),
+                  const SizedBox(height: 8),
+                  Text(value, style: Theme.of(context).textTheme.titleLarge),
+                  const SizedBox(height: 6),
+                  Text(detail, style: Theme.of(context).textTheme.bodySmall),
+                ],
+              ),
+            ),
+          ),
+        );
 }
 
 class _Notice extends StatelessWidget {

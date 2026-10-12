@@ -1,6 +1,8 @@
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 
+import '../../app/platform/mobile_presentation.dart';
+
 import '../../core/network/native_workspace_access.dart';
 import 'listen_bridge.dart';
 import 'listen_controller.dart';
@@ -203,7 +205,12 @@ class _ListenDetailState extends State<ListenDetail>
               child: Text('Unlock your workspace to read this conversation.'),
             )
           : ListView(
-              padding: const EdgeInsets.fromLTRB(24, 12, 24, 48),
+              padding: EdgeInsets.fromLTRB(
+                usesMobilePresentation() ? 20 : 24,
+                12,
+                usesMobilePresentation() ? 20 : 24,
+                32,
+              ),
               children: [
                 Center(
                   child: ConstrainedBox(
@@ -329,45 +336,57 @@ class _ListenDetailState extends State<ListenDetail>
                                 ),
                             ]),
                           if (turns.isNotEmpty)
-                            _section('Transcript', [
-                              SizedBox(
-                                height: 420,
-                                child: ListView.builder(
-                                  itemCount: turns.length,
-                                  itemBuilder: (_, index) {
-                                    final turn = turns[index];
-                                    return Padding(
-                                      padding: const EdgeInsets.only(
-                                        bottom: 20,
-                                      ),
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.stretch,
-                                        children: [
-                                          Text(
-                                            '${_speaker(turn)} · ${listenDuration(turn['startMilliseconds'])}',
-                                            style: Theme.of(context)
-                                                .textTheme
-                                                .labelLarge,
-                                          ),
-                                          const SizedBox(height: 6),
-                                          SelectableText(
-                                            listenText(turn['text']),
-                                          ),
-                                        ],
-                                      ),
-                                    );
-                                  },
+                            _section(
+                              usesMobilePresentation()
+                                  ? 'Read the transcript'
+                                  : 'Transcript',
+                              [
+                                SizedBox(
+                                  height: usesMobilePresentation()
+                                      ? MediaQuery.sizeOf(context).height * .5
+                                      : 420,
+                                  child: ListView.builder(
+                                    itemCount: turns.length,
+                                    itemBuilder: (_, index) {
+                                      final turn = turns[index];
+                                      return Padding(
+                                        padding: const EdgeInsets.only(
+                                          bottom: 20,
+                                        ),
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.stretch,
+                                          children: [
+                                            Text(
+                                              '${_speaker(turn)} · ${listenDuration(turn['startMilliseconds'])}',
+                                              style: Theme.of(context)
+                                                  .textTheme
+                                                  .labelLarge,
+                                            ),
+                                            const SizedBox(height: 6),
+                                            SelectableText(
+                                              listenText(turn['text']),
+                                            ),
+                                          ],
+                                        ),
+                                      );
+                                    },
+                                  ),
                                 ),
-                              ),
-                            ])
+                              ],
+                            )
                           else if (listenText(conversation['transcript'])
                               .isNotEmpty)
-                            _section('Transcript', [
-                              SelectableText(
-                                listenText(conversation['transcript']),
-                              ),
-                            ]),
+                            _section(
+                              usesMobilePresentation()
+                                  ? 'Read the transcript'
+                                  : 'Transcript',
+                              [
+                                SelectableText(
+                                  listenText(conversation['transcript']),
+                                ),
+                              ],
+                            ),
                           const SizedBox(height: 24),
                           Text(
                             'Conversation notes are source material for ATLAS. Captured speech does not authorise actions or confirm someone’s identity.',

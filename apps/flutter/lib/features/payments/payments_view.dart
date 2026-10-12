@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
 import '../../core/network/api_client.dart';
+import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_page_scaffold.dart';
 import '../../core/network/native_workspace_access.dart';
 import '../../generated/native_contract.g.dart';
 import 'payment_read_state.dart';
@@ -27,6 +29,7 @@ class _PaymentsViewState extends State<PaymentsView> {
   Json? get authenticators => _authenticators.value;
   Json? get transactions => _transactions.value;
   bool loading = true;
+  int _mobileSection = 0;
 
   Future<Json> _read(String path) => widget.authority == null
       ? widget.api.getJsonFresh(path)
@@ -95,6 +98,13 @@ class _PaymentsViewState extends State<PaymentsView> {
             .whereType<Map>()
             .toList();
     final trustPolicy = reviews?['trustPolicy'] is Map;
+    if (usesMobilePresentation())
+      return _mobilePayments(
+        reviewItems,
+        credentials,
+        transactionItems,
+        trustPolicy,
+      );
     return RefreshIndicator(
       onRefresh: _load,
       child: CustomScrollView(
@@ -217,6 +227,148 @@ class _PaymentsViewState extends State<PaymentsView> {
           ),
         ],
       ),
+    );
+  }
+
+  Widget _mobilePayments(
+    List<Map> reviewItems,
+    List<Map> credentials,
+    List<Map> transactionItems,
+    bool trustPolicy,
+  ) {
+    final source = switch (_mobileSection) {
+      1 => _transactions,
+      2 => _authenticators,
+      _ => _reviews,
+    };
+    final items = switch (_mobileSection) {
+      1 => transactionItems,
+      2 => credentials,
+      _ => reviewItems,
+    };
+    return Column(
+      children: [
+        MobilePageHeader(
+          title: 'Payments',
+          subtitle: 'Review purchases and their status.',
+          actions: [
+            IconButton(
+              tooltip: 'Refresh payments',
+              onPressed: loading ? null : _load,
+              icon: const Icon(Icons.refresh_rounded),
+            ),
+          ],
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+          child: Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final (index, label) in [
+                'To review',
+                'History',
+                'Signers',
+              ].indexed)
+                ChoiceChip(
+                  label: Text(label),
+                  selected: _mobileSection == index,
+                  onSelected: (_) => setState(() => _mobileSection = index),
+                ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: RefreshIndicator(
+            onRefresh: _load,
+            child: CustomScrollView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              slivers: [
+                const SliverToBoxAdapter(
+                  child: Padding(
+                    padding: EdgeInsets.fromLTRB(20, 4, 20, 16),
+                    child: Text(
+                      'This phone shows payment information only. Open the secure browser workspace to review purchase terms or manage a signer.',
+                    ),
+                  ),
+                ),
+                const SliverToBoxAdapter(
+                  child: Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 20),
+                    child: NativeWorkspaceBrowserButton(
+                      path: '/app/payments',
+                      label: 'Open secure payment workspace',
+                    ),
+                  ),
+                ),
+                if (_readiness.error != null)
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 20),
+                      child: _sourceNotice('Payment readiness', _readiness),
+                    ),
+                  ),
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
+                    child: ExpansionTile(
+                      tilePadding: EdgeInsets.zero,
+                      title: const Text('Signing availability'),
+                      children: [
+                        _BoundaryNotice(
+                          trustPolicy: trustPolicy,
+                          readiness: readiness,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                if (source.error != null)
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 20),
+                      child: _sourceNotice('This payment view', source),
+                    ),
+                  ),
+                if (source.loading)
+                  const SliverToBoxAdapter(child: LinearProgressIndicator()),
+                if (source.value != null && items.isEmpty)
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Text(
+                        source.current
+                            ? switch (_mobileSection) {
+                                1 => 'No payment history is recorded.',
+                                2 => 'No payment signer is registered.',
+                                _ => 'No purchase is waiting for review.',
+                              }
+                            : 'The last available result had no entries. Refresh for the current status.',
+                      ),
+                    ),
+                  ),
+                SliverPadding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 32),
+                  sliver: SliverList.builder(
+                    itemCount: items.length,
+                    itemBuilder: (_, index) {
+                      final value = Json.from(items[index]);
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 12),
+                        child: switch (_mobileSection) {
+                          1 => _TransactionRow(value: value),
+                          2 => _CredentialRow(value: value),
+                          _ => _ReviewCard(review: value),
+                        },
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -385,14 +537,18 @@ class _CredentialRow extends StatelessWidget {
       '${value['attestationFormat'] ?? 'Signer'} · ${_humanize(value['state']?.toString() ?? 'unknown')}',
     ),
     subtitle: Text(
-      'AAGUID ${value['aaguid'] ?? 'unavailable'}',
+      usesMobilePresentation()
+          ? 'Hardware-backed payment signer'
+          : 'AAGUID ${value['aaguid'] ?? 'unavailable'}',
       maxLines: 1,
       overflow: TextOverflow.ellipsis,
     ),
-    trailing: Text(
-      _short(value['credentialId']?.toString()),
-      style: const TextStyle(fontFamily: 'monospace', fontSize: 10),
-    ),
+    trailing: usesMobilePresentation()
+        ? null
+        : Text(
+            _short(value['credentialId']?.toString()),
+            style: const TextStyle(fontFamily: 'monospace', fontSize: 10),
+          ),
   );
 }
 
@@ -409,7 +565,9 @@ class _TransactionRow extends StatelessWidget {
     ),
     subtitle: Text(
       value['merchantName']?.toString() ??
-          value['transactionId']?.toString() ??
+          (usesMobilePresentation()
+              ? 'Payment record'
+              : value['transactionId']?.toString()) ??
           'Evidence-derived transaction',
     ),
     trailing: value['totalAmountMinor'] == null

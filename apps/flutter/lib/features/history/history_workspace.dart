@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_page_scaffold.dart';
+
 /// Keeps the existing Results and Activity routes and their owner-scoped
 /// controllers, while presenting them as two views of the same work history.
 class HistoryWorkspace extends StatelessWidget {
@@ -14,6 +17,38 @@ class HistoryWorkspace extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (usesMobilePresentation())
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const MobilePageHeader(
+            title: 'History',
+            subtitle: 'What happened. What came out of it.',
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+            child: SegmentedButton<bool>(
+              segments: const [
+                ButtonSegment(
+                  value: false,
+                  label: Text('Results'),
+                  icon: Icon(Icons.description_outlined),
+                ),
+                ButtonSegment(
+                  value: true,
+                  label: Text('Timeline'),
+                  icon: Icon(Icons.history_rounded),
+                ),
+              ],
+              selected: {timeline},
+              showSelectedIcon: false,
+              onSelectionChanged: (selection) =>
+                  context.go(selection.first ? '/activity' : '/results'),
+            ),
+          ),
+          Expanded(child: child),
+        ],
+      );
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final motion = MediaQuery.disableAnimationsOf(context)

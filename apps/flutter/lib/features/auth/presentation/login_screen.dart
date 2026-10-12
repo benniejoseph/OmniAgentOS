@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../app/brand/asael_mark.dart';
 import '../../../app/macos/macos_page_scaffold.dart';
 import '../../../app/platform/macos_presentation.dart';
+import '../../../app/platform/mobile_presentation.dart';
 import '../../../app/theme/macos_workspace_backdrop.dart';
 import '../application/session_controller.dart';
 
@@ -39,6 +40,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     final session = ref.watch(sessionControllerProvider);
     if (usesMacosPresentation()) {
       return _buildMacosLogin(context, session);
+    }
+    if (usesMobilePresentation()) {
+      return _buildMobileLogin(context, session);
     }
     return Scaffold(
       body: LayoutBuilder(
@@ -93,6 +97,155 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
             ],
           );
         },
+      ),
+    );
+  }
+
+  Widget _buildMobileLogin(BuildContext context, AsyncValue<Object?> session) {
+    final theme = Theme.of(context);
+    return Scaffold(
+      body: SafeArea(
+        child: CustomScrollView(
+          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+          slivers: [
+            SliverFillRemaining(
+              hasScrollBody: false,
+              child: Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 480),
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(24, 32, 24, 32),
+                    child: AutofillGroup(
+                      child: Form(
+                        key: _formKey,
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            const Row(
+                              children: [
+                                AsaelMark(size: 44),
+                                SizedBox(width: 12),
+                                AsaelWordmark(),
+                              ],
+                            ),
+                            const SizedBox(height: 40),
+                            Text(
+                              'Welcome back',
+                              style: theme.textTheme.headlineMedium,
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              'Sign in to your private workspace.',
+                              style: theme.textTheme.bodyLarge,
+                            ),
+                            const SizedBox(height: 28),
+                            TextFormField(
+                              controller: _email,
+                              keyboardType: TextInputType.emailAddress,
+                              autocorrect: false,
+                              autofillHints: const [AutofillHints.email],
+                              textInputAction: TextInputAction.next,
+                              decoration: const InputDecoration(
+                                labelText: 'Email',
+                                prefixIcon: Icon(Icons.alternate_email_rounded),
+                              ),
+                              validator: (value) =>
+                                  value != null && value.contains('@')
+                                  ? null
+                                  : 'Enter a valid email',
+                            ),
+                            const SizedBox(height: 16),
+                            TextFormField(
+                              controller: _password,
+                              obscureText: _obscure,
+                              autocorrect: false,
+                              enableSuggestions: false,
+                              autofillHints: const [AutofillHints.password],
+                              textInputAction: TextInputAction.done,
+                              onFieldSubmitted: (_) {
+                                if (!session.isLoading) _submit();
+                              },
+                              decoration: InputDecoration(
+                                labelText: 'Password',
+                                prefixIcon: const Icon(
+                                  Icons.lock_outline_rounded,
+                                ),
+                                suffixIcon: IconButton(
+                                  tooltip: _obscure
+                                      ? 'Show password'
+                                      : 'Hide password',
+                                  onPressed: () =>
+                                      setState(() => _obscure = !_obscure),
+                                  icon: Icon(
+                                    _obscure
+                                        ? Icons.visibility_outlined
+                                        : Icons.visibility_off_outlined,
+                                  ),
+                                ),
+                              ),
+                              validator: (value) => (value?.length ?? 0) >= 8
+                                  ? null
+                                  : 'Use at least 8 characters',
+                            ),
+                            if (session.hasError) ...[
+                              const SizedBox(height: 16),
+                              Semantics(
+                                liveRegion: true,
+                                child: Text(
+                                  'Sign-in couldn’t be completed. Check your details and connection, then try again.',
+                                  style: TextStyle(
+                                    color: theme.colorScheme.error,
+                                  ),
+                                ),
+                              ),
+                            ],
+                            const SizedBox(height: 24),
+                            FilledButton.icon(
+                              style: FilledButton.styleFrom(
+                                minimumSize: const Size.fromHeight(54),
+                              ),
+                              onPressed: session.isLoading ? null : _submit,
+                              icon: session.isLoading
+                                  ? const SizedBox.square(
+                                      dimension: 18,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
+                                    )
+                                  : const Icon(Icons.arrow_forward_rounded),
+                              label: Text(
+                                session.isLoading ? 'Signing in…' : 'Sign in',
+                              ),
+                            ),
+                            const SizedBox(height: 20),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(
+                                  Icons.lock_outline_rounded,
+                                  size: 16,
+                                  color: theme.colorScheme.onSurfaceVariant,
+                                ),
+                                const SizedBox(width: 8),
+                                Flexible(
+                                  child: Text(
+                                    'Protected on this device',
+                                    style: theme.textTheme.bodySmall,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

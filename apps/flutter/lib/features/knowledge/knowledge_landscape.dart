@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../../app/mobile/mobile_page_scaffold.dart';
+import '../../app/platform/mobile_presentation.dart';
 import 'knowledge.dart';
 import 'knowledge_labels.dart';
 
@@ -100,6 +102,7 @@ class _KnowledgeLandscapeState extends State<KnowledgeLandscape> {
       final visible = groups
           .where((group) => _category == null || _category == group.key)
           .toList();
+      if (usesMobilePresentation()) return _mobileMap(matching, groups);
       return LayoutBuilder(
         builder: (context, constraints) {
           final wide = constraints.maxWidth >= 760;
@@ -311,6 +314,255 @@ class _KnowledgeLandscapeState extends State<KnowledgeLandscape> {
       );
     },
   );
+
+  Widget _mobileMap(
+    List<_Entry> entries,
+    List<MapEntry<String, List<_Entry>>> groups,
+  ) {
+    final scheme = Theme.of(context).colorScheme;
+    final selected = groups
+        .where((group) => group.key == _category)
+        .firstOrNull;
+    return CustomScrollView(
+      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+      slivers: [
+        SliverPadding(
+          padding: const EdgeInsets.fromLTRB(20, 4, 20, 16),
+          sliver: SliverToBoxAdapter(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (final sources in [false, true])
+                      ChoiceChip(
+                        label: Text(sources ? 'Sources' : 'Memories'),
+                        selected: _sources == sources,
+                        onSelected: (_) => setState(() {
+                          _sources = sources;
+                          _category = _selected = null;
+                          _search.clear();
+                        }),
+                      ),
+                    if (widget.onShowConnections != null)
+                      ActionChip(
+                        avatar: const Icon(Icons.hub_outlined, size: 18),
+                        label: const Text('Connections'),
+                        onPressed: widget.onShowConnections,
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _search,
+                  decoration: const InputDecoration(
+                    hintText: 'Find a title or collection',
+                    prefixIcon: Icon(Icons.search_rounded),
+                  ),
+                  onChanged: (_) =>
+                      setState(() => _category = _selected = null),
+                ),
+                const SizedBox(height: 16),
+                if (widget.controller.loading) const LinearProgressIndicator(),
+                if (widget.controller.error != null)
+                  Text(
+                    'This map could not refresh. Previously loaded titles may still appear.',
+                    style: TextStyle(color: scheme.error),
+                  ),
+                if (selected == null)
+                  Container(
+                    padding: const EdgeInsets.all(20),
+                    decoration: BoxDecoration(
+                      color: scheme.surfaceContainerLow,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 56,
+                          height: 56,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            border: Border.all(color: scheme.primary, width: 2),
+                          ),
+                          child: Icon(
+                            _sources
+                                ? Icons.menu_book_outlined
+                                : Icons.psychology_outlined,
+                            color: scheme.primary,
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                _sources
+                                    ? 'Your source map'
+                                    : 'Your memory map',
+                                style: Theme.of(context).textTheme.titleMedium,
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                '${entries.length} loaded items · ${groups.length} collections',
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  )
+                else
+                  TextButton.icon(
+                    onPressed: () =>
+                        setState(() => _category = _selected = null),
+                    icon: const Icon(Icons.arrow_back_rounded),
+                    label: Text(
+                      'All collections · ${_collection(selected.key).label}',
+                    ),
+                  ),
+                if (groups.isEmpty && !widget.controller.loading)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 32),
+                    child: Text(
+                      'Save a memory or source to build your map. Try a broader search if you expected an item here.',
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+        if (selected == null)
+          SliverPadding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            sliver: SliverList.builder(
+              itemCount: groups.length,
+              itemBuilder: (context, index) {
+                final group = groups[index],
+                    collection = _collection(groups[index].key);
+                return Padding(
+                  padding: const EdgeInsets.only(left: 27),
+                  child: Container(
+                    decoration: BoxDecoration(
+                      border: Border(
+                        left: BorderSide(color: scheme.outlineVariant),
+                      ),
+                    ),
+                    padding: const EdgeInsets.fromLTRB(20, 0, 0, 16),
+                    child: Material(
+                      color: scheme.surfaceContainerLow,
+                      borderRadius: BorderRadius.circular(12),
+                      clipBehavior: Clip.antiAlias,
+                      child: InkWell(
+                        onTap: () => setState(() => _category = group.key),
+                        child: Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              Row(
+                                children: [
+                                  Icon(
+                                    collection.icon,
+                                    size: 22,
+                                    color: scheme.primary,
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Text(
+                                      collection.label,
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .titleMedium,
+                                    ),
+                                  ),
+                                  const Icon(
+                                    Icons.chevron_right_rounded,
+                                    size: 20,
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 12),
+                              Text(
+                                '${group.value.length} saved items',
+                                style: Theme.of(context).textTheme.bodySmall,
+                              ),
+                              const SizedBox(height: 8),
+                              LinearProgressIndicator(
+                                value: entries.isEmpty
+                                    ? 0
+                                    : group.value.length / entries.length,
+                                minHeight: 3,
+                                semanticsLabel:
+                                    '${collection.label} share of this loaded map',
+                              ),
+                              const SizedBox(height: 12),
+                              Text(
+                                group.value
+                                    .take(2)
+                                    .map((entry) => entry.title)
+                                    .join(' · '),
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          )
+        else
+          SliverList.builder(
+            itemCount: selected.value.length,
+            itemBuilder: (context, index) {
+              final entry = selected.value[index];
+              return MobileActionTile(
+                icon: _collection(entry.category).icon,
+                title: entry.title,
+                subtitle: '${entry.detail} · ${memoryFriendlyDate(entry.date)}',
+                onTap: entry.memory != null && widget.onOpenMemory != null
+                    ? () => widget.onOpenMemory!(entry.memory!)
+                    : entry.source != null && widget.onOpenSource != null
+                    ? () => widget.onOpenSource!(entry.source!)
+                    : null,
+              );
+            },
+          ),
+        SliverPadding(
+          padding: const EdgeInsets.all(20),
+          sliver: SliverToBoxAdapter(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Text(
+                  'Branches organise saved items by category. They do not assert factual relationships. Connections opens the separately recorded links.',
+                ),
+                if (_sources
+                    ? widget.controller.canLoadMoreKnowledge
+                    : widget.controller.canLoadMoreMemory)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 16),
+                    child: OutlinedButton(
+                      onPressed: _sources
+                          ? widget.controller.loadMoreKnowledge
+                          : widget.controller.loadMoreMemory,
+                      child: const Text('Add more items to the map'),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
 
   Widget _selection(BuildContext context, _Entry entry) {
     final scheme = Theme.of(context).colorScheme;

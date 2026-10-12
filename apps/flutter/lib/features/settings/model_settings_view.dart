@@ -4,6 +4,8 @@ import 'package:go_router/go_router.dart';
 
 import '../../app/macos/macos_page_scaffold.dart';
 import '../../app/platform/macos_presentation.dart';
+import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_page_scaffold.dart';
 import '../../app/theme/macos_app_theme.dart';
 import '../../core/network/api_client.dart';
 import '../../core/network/native_workspace_access.dart';
@@ -83,6 +85,7 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
   bool ambientVoiceSaving = false;
   int macosSection = 0;
   String macosQuery = '';
+  String? _mobileSection;
   int _readGeneration = 0;
   bool _saveUncertain = false;
 
@@ -290,6 +293,14 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
         assignments: assignments,
         activeProviders: activeProviders,
         configured: configured,
+        platform: platform,
+        vault: vault,
+      );
+    }
+    if (usesMobilePresentation()) {
+      return _buildMobileSettings(
+        providers: providers,
+        assignments: assignments,
         platform: platform,
         vault: vault,
       );
@@ -725,6 +736,245 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
                     ],
                   ),
                 ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMobileSettings({
+    required List<Json> providers,
+    required List<Json> assignments,
+    required Json platform,
+    required Json vault,
+  }) {
+    final section = _mobileSection;
+    final title = switch (section) {
+      'profile' => 'About me',
+      'companion' => 'ATLAS & voice',
+      'phone' => 'This phone',
+      'models' => 'AI models',
+      'providers' => 'AI connections',
+      'data' => 'Your data',
+      'advanced' => 'Workspace details',
+      _ => 'Settings',
+    };
+    void open(String value) => setState(() => _mobileSection = value);
+    final content = switch (section) {
+      'profile' => const PersonalProfileSettings(),
+      'companion' => const CompanionSettingsSection(),
+      'phone' => const AndroidPhoneSettings(),
+      'models' => Column(
+        children: [
+          const Text(
+            'Choose the AI used for each kind of work. Changes apply across your workspace.',
+          ),
+          const SizedBox(height: 16),
+          for (final scope in _assignmentOrder) ...[
+            _AssignmentRow(
+              scope: scope,
+              assignment: assignments
+                  .where((item) => item['scope'] == scope)
+                  .firstOrNull,
+              saving: saving == scope,
+              onTap: () => _edit(scope),
+            ),
+            const Divider(height: 1),
+          ],
+        ],
+      ),
+      'providers' => Column(
+        children: [
+          const Text('Available AI services and their connection status.'),
+          const SizedBox(height: 16),
+          if (providers.isEmpty && !loading)
+            const Text('No AI connections are available in this view.'),
+          for (final provider in providers) ...[
+            _ProviderRow(provider: provider),
+            const Divider(height: 1),
+          ],
+          const SizedBox(height: 16),
+          const NativeWorkspaceBrowserButton(
+            path: '/app/settings',
+            label: 'Manage AI connections in browser',
+          ),
+        ],
+      ),
+      'data' => const PortableArchivePanel(),
+      'advanced' => Column(
+        children: [
+          _StatusRow(
+            icon: Icons.lock_outline_rounded,
+            title: 'Sign-in protection',
+            value: snapshot == null
+                ? 'Not available'
+                : platform['authEnforced'] == true
+                ? 'Required'
+                : 'Development mode',
+            ok: platform['authEnforced'] == true,
+          ),
+          _StatusRow(
+            icon: Icons.storage_outlined,
+            title: 'Workspace storage',
+            value: snapshot == null
+                ? 'Not available'
+                : platform['databaseConfigured'] == true
+                ? 'Connected'
+                : 'Setup needed',
+            ok: platform['databaseConfigured'] == true,
+          ),
+          _StatusRow(
+            icon: Icons.key_outlined,
+            title: 'Credential vault',
+            value: snapshot == null
+                ? 'Not available'
+                : vault['configured'] == true
+                ? 'Ready'
+                : 'Setup needed',
+            ok: vault['configured'] == true,
+          ),
+          const SizedBox(height: 20),
+          const NativeWorkspaceBrowserButton(
+            path: '/app/settings',
+            label: 'Open advanced settings in browser',
+          ),
+        ],
+      ),
+      _ => null,
+    };
+    return PopScope(
+      canPop: section == null,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && section != null) setState(() => _mobileSection = null);
+      },
+      child: Column(
+        children: [
+          MobilePageHeader(
+            title: title,
+            subtitle: section == null ? 'Make Asael yours.' : null,
+            leading: section == null
+                ? null
+                : IconButton(
+                    tooltip: 'Back to Settings',
+                    onPressed: () => setState(() => _mobileSection = null),
+                    icon: const Icon(Icons.arrow_back_rounded),
+                  ),
+            actions: [
+              IconButton(
+                tooltip: 'Refresh settings',
+                onPressed: loading ? null : _load,
+                icon: const Icon(Icons.refresh_rounded),
+              ),
+            ],
+          ),
+          Expanded(
+            child: RefreshIndicator(
+              onRefresh: _load,
+              child: ListView(
+                key: ValueKey('mobile-settings-$section'),
+                padding: const EdgeInsets.only(bottom: 32),
+                physics: const AlwaysScrollableScrollPhysics(),
+                children: [
+                  if (error != null)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 20),
+                      child: _SettingsError(error: error!, retry: _load),
+                    ),
+                  if (loading && snapshot == null)
+                    const LinearProgressIndicator(),
+                  if (content != null)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      child: content,
+                    )
+                  else ...[
+                    const MobileSectionHeader(title: 'Your everyday companion'),
+                    if (appAndroidDeviceBridge.supported) ...[
+                      MobileActionTile(
+                        icon: Icons.nightlight_outlined,
+                        title: 'Nightly call notes',
+                        subtitle:
+                            'Recorded calls, summaries and daily schedule',
+                        onTap: () => context.go('/settings?section=listening'),
+                      ),
+                      MobileActionTile(
+                        icon: Icons.phone_android_rounded,
+                        title: 'This phone',
+                        subtitle: 'Phone control and screen access',
+                        onTap: () => open('phone'),
+                      ),
+                    ],
+                    MobileActionTile(
+                      icon: Icons.face_retouching_natural_outlined,
+                      title: 'ATLAS & voice',
+                      subtitle: 'Personality, appearance and motion',
+                      onTap: () => open('companion'),
+                    ),
+                    MobileActionTile(
+                      icon: Icons.person_outline_rounded,
+                      title: 'About me',
+                      subtitle: 'The context you want ATLAS to remember',
+                      onTap: () => open('profile'),
+                    ),
+                    const MobileSectionHeader(title: 'Intelligence & privacy'),
+                    MobileActionTile(
+                      icon: Icons.auto_awesome_outlined,
+                      title: 'AI models',
+                      subtitle: 'Choose the right model for each task',
+                      onTap: () => open('models'),
+                    ),
+                    MobileActionTile(
+                      icon: Icons.hub_outlined,
+                      title: 'AI connections',
+                      subtitle: 'Services available to your agents',
+                      onTap: () => open('providers'),
+                    ),
+                    MobileActionTile(
+                      icon: Icons.inventory_2_outlined,
+                      title: 'Your data',
+                      subtitle: 'Archive and data portability',
+                      onTap: () => open('data'),
+                    ),
+                    MobileActionTile(
+                      icon: Icons.shield_outlined,
+                      title: 'Security',
+                      subtitle: 'Your access, data and recent decisions',
+                      onTap: () => context.go('/security'),
+                    ),
+                    MobileActionTile(
+                      icon: Icons.devices_rounded,
+                      title: 'Devices & app lock',
+                      subtitle:
+                          'Signed-in devices, notifications and local unlock',
+                      onTap: () => context.push('/devices'),
+                    ),
+                    const MobileSectionHeader(
+                      title: 'Workspace health',
+                      description:
+                          'These pages open only when you choose them.',
+                    ),
+                    MobileActionTile(
+                      icon: Icons.fact_check_outlined,
+                      title: 'Quality Checks',
+                      subtitle: 'Review existing evaluation results',
+                      onTap: () => context.go('/settings?section=quality'),
+                    ),
+                    MobileActionTile(
+                      icon: Icons.monitor_heart_outlined,
+                      title: 'Monitoring',
+                      subtitle: 'Service health and issues needing attention',
+                      onTap: () => context.go('/settings?section=monitoring'),
+                    ),
+                    MobileActionTile(
+                      icon: Icons.tune_rounded,
+                      title: 'Workspace details',
+                      subtitle: 'Storage, sign-in and advanced settings',
+                      onTap: () => open('advanced'),
+                    ),
+                  ],
+                ],
               ),
             ),
           ),

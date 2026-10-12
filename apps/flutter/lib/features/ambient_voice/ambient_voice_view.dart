@@ -2,6 +2,9 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_page_scaffold.dart';
+
 import '../companion/companion_models.dart';
 import '../companion/companion_presence.dart';
 import '../companion/companion_presentation.dart';
@@ -163,6 +166,101 @@ class AmbientVoiceSurface extends StatelessWidget {
       dark ? scheme.surfaceContainerHigh : scheme.surface,
     );
 
+    if (usesMobilePresentation())
+      return Scaffold(
+        body: SafeArea(
+          child: Column(
+            children: [
+              MobilePageHeader(
+                title: 'Talk to ATLAS',
+                actions: [
+                  IconButton(
+                    tooltip: 'Close voice',
+                    onPressed: onClose,
+                    icon: const Icon(Icons.close_rounded),
+                  ),
+                ],
+              ),
+              Expanded(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.all(24),
+                  child: Column(
+                    children: [
+                      CompanionPortrait(
+                        visible: companionPreferences?.visible == true,
+                        preferences: companionPreferences,
+                        state: _portraitState,
+                      ),
+                      const SizedBox(height: 24),
+                      Semantics(
+                        liveRegion: true,
+                        child: Text(
+                          title,
+                          style: theme.textTheme.headlineSmall,
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      if (bandLabel != null)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 12),
+                          child: Text(bandLabel),
+                        ),
+                      if (reviewing)
+                        _ReviewTranscript(
+                          text: recognized,
+                          color: presentation.color,
+                          style: theme.textTheme.bodyLarge,
+                        )
+                      else
+                        SelectableText(
+                          supportingText,
+                          textAlign: TextAlign.center,
+                          style: theme.textTheme.bodyLarge?.copyWith(
+                            height: 1.5,
+                          ),
+                        ),
+                      if (speechNotice != null)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 16),
+                          child: Text(speechNotice!),
+                        ),
+                      if (microphoneActive)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 20),
+                          child: _VoiceTrace(
+                            level: level,
+                            phase: phase,
+                            color: presentation.color,
+                            reducedMotion: true,
+                          ),
+                        ),
+                      if (attestationNeeded)
+                        _ReviewAttestation(
+                          attested: reviewAttested,
+                          onChanged: onReviewAttested,
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.all(24),
+                child: _PrimaryAction(
+                  phase: replyReady ? AmbientVoicePhase.asleep : phase,
+                  consentRequired: consentRequired,
+                  useThisMac: useThisMac,
+                  color: presentation.color,
+                  onMicrophonePressed: onMicrophonePressed,
+                  onSend: attestationNeeded && !reviewAttested ? null : onSend,
+                  onStop: onStop,
+                  onReviewApproval: onReviewApproval,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
     return Scaffold(
       backgroundColor: Colors.transparent,
       body: Focus(
@@ -757,6 +855,9 @@ class _PrimaryAction extends StatelessWidget {
         onPressed: action,
         tooltip: tooltip,
         style: IconButton.styleFrom(
+          minimumSize: usesMobilePresentation()
+              ? const Size(64, 64)
+              : const Size(48, 48),
           backgroundColor: color,
           foregroundColor: scheme.surface,
           disabledBackgroundColor: color.withValues(alpha: .32),

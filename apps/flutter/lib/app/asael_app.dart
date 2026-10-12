@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'brand/asael_mark.dart';
+import 'platform/mobile_presentation.dart';
 import 'router/app_router.dart';
 import 'theme/app_theme.dart';
 import 'theme/app_theme_mode_controller.dart';
@@ -339,92 +340,186 @@ class _BiometricSessionLockLayer extends StatelessWidget {
           Positioned.fill(
             child: Material(
               color: scheme.surface,
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: RadialGradient(
-                    center: const Alignment(0, -0.35),
-                    radius: 1.15,
-                    colors: [
-                      scheme.primaryContainer.withValues(alpha: 0.34),
-                      scheme.surface,
-                    ],
-                  ),
-                ),
-                child: Center(
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 420),
-                    child: Padding(
-                      padding: const EdgeInsets.all(28),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const AsaelMark(size: 48),
-                          const SizedBox(height: 22),
-                          Text(
-                            state.busy &&
-                                    state.phase ==
-                                        BiometricSessionLockPhase.locking
-                                ? 'Securing Asael'
-                                : 'Welcome back',
-                            style: Theme.of(context).textTheme.headlineSmall,
-                            textAlign: TextAlign.center,
-                          ),
-                          const SizedBox(height: 10),
-                          Text(
-                            state.busy
-                                ? 'Keeping your workspace mounted while protected access changes.'
-                                : 'Your workspace is still exactly where you left it. Use Touch ID to release protected access.',
-                            style: Theme.of(context).textTheme.bodyMedium
-                                ?.copyWith(color: scheme.onSurfaceVariant),
-                            textAlign: TextAlign.center,
-                          ),
-                          if (state.recoveryMessage case final message?) ...[
-                            const SizedBox(height: 14),
-                            Text(
-                              message,
-                              style: Theme.of(context).textTheme.bodySmall
-                                  ?.copyWith(color: scheme.error),
-                              textAlign: TextAlign.center,
-                            ),
+              child: usesMobilePresentation()
+                  ? _MobileWorkspaceLock(state: state, onUnlock: onUnlock)
+                  : DecoratedBox(
+                      decoration: BoxDecoration(
+                        gradient: RadialGradient(
+                          center: const Alignment(0, -0.35),
+                          radius: 1.15,
+                          colors: [
+                            scheme.primaryContainer.withValues(alpha: 0.34),
+                            scheme.surface,
                           ],
-                          const SizedBox(height: 22),
-                          FilledButton.icon(
-                            onPressed: state.canUnlock
-                                ? () => unawaited(onUnlock())
-                                : null,
-                            icon: state.busy
-                                ? const SizedBox.square(
-                                    dimension: 16,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                    ),
-                                  )
-                                : const Icon(Icons.fingerprint_rounded),
-                            label: Text(
-                              state.phase == BiometricSessionLockPhase.unlocking
-                                  ? 'Unlocking…'
-                                  : state.phase ==
-                                        BiometricSessionLockPhase.locking
-                                  ? 'Securing…'
-                                  : 'Unlock Asael',
+                        ),
+                      ),
+                      child: Center(
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(maxWidth: 420),
+                          child: Padding(
+                            padding: const EdgeInsets.all(28),
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const AsaelMark(size: 48),
+                                const SizedBox(height: 22),
+                                Text(
+                                  state.busy &&
+                                          state.phase ==
+                                              BiometricSessionLockPhase.locking
+                                      ? 'Securing Asael'
+                                      : 'Welcome back',
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .headlineSmall,
+                                  textAlign: TextAlign.center,
+                                ),
+                                const SizedBox(height: 10),
+                                Text(
+                                  state.busy
+                                      ? 'Keeping your workspace mounted while protected access changes.'
+                                      : 'Your workspace is still exactly where you left it. Use Touch ID to release protected access.',
+                                  style: Theme.of(context).textTheme.bodyMedium
+                                      ?.copyWith(
+                                        color: scheme.onSurfaceVariant,
+                                      ),
+                                  textAlign: TextAlign.center,
+                                ),
+                                if (state.recoveryMessage
+                                    case final message?) ...[
+                                  const SizedBox(height: 14),
+                                  Text(
+                                    message,
+                                    style: Theme.of(context).textTheme.bodySmall
+                                        ?.copyWith(color: scheme.error),
+                                    textAlign: TextAlign.center,
+                                  ),
+                                ],
+                                const SizedBox(height: 22),
+                                FilledButton.icon(
+                                  onPressed: state.canUnlock
+                                      ? () => unawaited(onUnlock())
+                                      : null,
+                                  icon: state.busy
+                                      ? const SizedBox.square(
+                                          dimension: 16,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                          ),
+                                        )
+                                      : const Icon(Icons.fingerprint_rounded),
+                                  label: Text(
+                                    state.phase ==
+                                            BiometricSessionLockPhase.unlocking
+                                        ? 'Unlocking…'
+                                        : state.phase ==
+                                              BiometricSessionLockPhase.locking
+                                        ? 'Securing…'
+                                        : 'Unlock Asael',
+                                  ),
+                                ),
+                                const SizedBox(height: 12),
+                                Text(
+                                  'No page reload or server reconnect is required.',
+                                  style: Theme.of(context).textTheme.labelMedium
+                                      ?.copyWith(
+                                        color: scheme.onSurfaceVariant,
+                                      ),
+                                  textAlign: TextAlign.center,
+                                ),
+                              ],
                             ),
                           ),
-                          const SizedBox(height: 12),
-                          Text(
-                            'No page reload or server reconnect is required.',
-                            style: Theme.of(context).textTheme.labelMedium
-                                ?.copyWith(color: scheme.onSurfaceVariant),
-                            textAlign: TextAlign.center,
-                          ),
-                        ],
+                        ),
                       ),
                     ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _MobileWorkspaceLock extends StatelessWidget {
+  const _MobileWorkspaceLock({required this.state, required this.onUnlock});
+  final BiometricSessionLockState state;
+  final Future<void> Function() onUnlock;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final message = switch (state.failure) {
+      BiometricSessionLockFailure.unavailable => 'Device authentication is unavailable. Check your phone’s security settings and try again.',
+      BiometricSessionLockFailure.notRecognized =>
+        'Asael stayed locked. Try unlocking again when you’re ready.',
+      BiometricSessionLockFailure.protectedStorageUnavailable => 'Protected storage didn’t respond. Your workspace is still locked; try again.',
+      null => null,
+    };
+    return SafeArea(
+      child: CustomScrollView(
+        slivers: [
+          SliverFillRemaining(
+            hasScrollBody: false,
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 440),
+                child: Padding(
+                  padding: const EdgeInsets.all(28),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      const Center(child: AsaelMark(size: 56)),
+                      const SizedBox(height: 28),
+                      Text(
+                        state.busy ? 'Securing your workspace' : 'Welcome back',
+                        textAlign: TextAlign.center,
+                        style: theme.textTheme.headlineMedium,
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        state.busy
+                            ? 'Your private workspace is protected.'
+                            : 'Unlock Asael to pick up where you left off.',
+                        textAlign: TextAlign.center,
+                        style: theme.textTheme.bodyLarge,
+                      ),
+                      if (message != null) ...[
+                        const SizedBox(height: 16),
+                        Semantics(
+                          liveRegion: true,
+                          child: Text(
+                            message,
+                            textAlign: TextAlign.center,
+                            style: TextStyle(color: theme.colorScheme.error),
+                          ),
+                        ),
+                      ],
+                      const SizedBox(height: 28),
+                      FilledButton.icon(
+                        style: FilledButton.styleFrom(
+                          minimumSize: const Size.fromHeight(54),
+                        ),
+                        onPressed: state.canUnlock
+                            ? () => unawaited(onUnlock())
+                            : null,
+                        icon: const Icon(Icons.fingerprint_rounded),
+                        label: Text(
+                          state.phase == BiometricSessionLockPhase.unlocking
+                              ? 'Unlocking…'
+                              : state.busy
+                              ? 'Securing…'
+                              : 'Unlock Asael',
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ),
             ),
           ),
-      ],
+        ],
+      ),
     );
   }
 }
@@ -544,6 +639,48 @@ class _ReconnectStatusLayer extends StatelessWidget {
         ),
         _ => (Icons.cloud_done_rounded, '', scheme.surface),
       };
+      if (usesMobilePresentation()) {
+        final phoneMessage = switch (phase) {
+          ReconnectPhase.offline =>
+            'You’re offline. Some information may be out of date.',
+          ReconnectPhase.reconciling => 'Back online. Syncing your changes…',
+          ReconnectPhase.degraded => 'Some information couldn’t refresh.',
+          _ => message,
+        };
+        return Stack(
+          children: [
+            Positioned.fill(child: child!),
+            if (visible)
+              Positioned(
+                top: MediaQuery.paddingOf(context).top + 8,
+                left: 12,
+                right: 12,
+                child: Semantics(
+                  liveRegion: true,
+                  child: Material(
+                    color: color,
+                    borderRadius: BorderRadius.circular(12),
+                    child: Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Row(
+                        children: [
+                          Icon(icon, size: 20),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              phoneMessage,
+                              style: Theme.of(context).textTheme.bodyMedium,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        );
+      }
       return Stack(
         children: [
           Positioned.fill(child: child!),
