@@ -5,6 +5,8 @@ import '../../../app/brand/asael_mark.dart';
 import '../../../app/macos/macos_page_scaffold.dart';
 import '../../../app/platform/macos_presentation.dart';
 import '../../../app/platform/mobile_presentation.dart';
+import '../../companion/atlas_player.dart';
+import '../../companion/companion_models.dart';
 import '../../../app/theme/macos_workspace_backdrop.dart';
 import '../application/session_controller.dart';
 
@@ -129,14 +131,26 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                                 AsaelWordmark(),
                               ],
                             ),
-                            const SizedBox(height: 40),
+                            const SizedBox(height: 28),
+                            const Center(
+                              child: ExcludeSemantics(
+                                child: AtlasPortrait(
+                                  size: 144,
+                                  preferences: CompanionPreferences(
+                                    intensity: 'quiet',
+                                    motion: 'off',
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 24),
                             Text(
-                              'Welcome back',
+                              'Welcome to your space',
                               style: theme.textTheme.headlineMedium,
                             ),
                             const SizedBox(height: 8),
                             Text(
-                              'Sign in to your private workspace.',
+                              'Your conversations, ideas and work. Together with ATLAS.',
                               style: theme.textTheme.bodyLarge,
                             ),
                             const SizedBox(height: 28),

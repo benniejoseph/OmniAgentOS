@@ -28,7 +28,10 @@ class VoiceAppearanceSettings extends ConsumerWidget {
         const SizedBox(height: 12),
         LayoutBuilder(
           builder: (context, constraints) {
-            final stacked = constraints.maxWidth < 480;
+            final stacked = usesMobilePresentation()
+                ? constraints.maxWidth < 310 ||
+                      MediaQuery.textScalerOf(context).scale(1) > 1.3
+                : constraints.maxWidth < 480;
             final cards = [
               for (final appearance in VoiceAppearance.values)
                 SizedBox(
@@ -82,52 +85,53 @@ class _AppearanceChoice extends StatelessWidget {
         button: true,
         selected: selected,
         child: Material(
-          color: selected
-              ? scheme.secondaryContainer
-              : scheme.surfaceContainerLow,
-          borderRadius: BorderRadius.circular(12),
+          color: selected ? scheme.secondaryContainer : scheme.surface,
+          borderRadius: BorderRadius.circular(16),
           clipBehavior: Clip.antiAlias,
           child: InkWell(
             onTap: onTap,
             child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Row(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  ExcludeSemantics(
-                    child: AtlasPortrait(
-                      state: perch ? 'listening' : 'available',
-                      size: 64,
-                      preferences: const CompanionPreferences(
-                        intensity: 'quiet',
-                        motion: 'off',
+                  Center(
+                    child: ExcludeSemantics(
+                      child: AtlasPortrait(
+                        state: perch ? 'listening' : 'available',
+                        size: 104,
+                        preferences: const CompanionPreferences(
+                          intensity: 'quiet',
+                          motion: 'off',
+                        ),
                       ),
                     ),
                   ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
+                  const SizedBox(height: 14),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
                           appearance.label,
                           style: theme.textTheme.titleMedium,
                         ),
-                        const SizedBox(height: 4),
-                        Text(
-                          perch
-                              ? 'A little more character, with floating captions.'
-                              : 'A compact dock, always close at hand.',
-                          style: theme.textTheme.bodySmall,
-                        ),
-                      ],
-                    ),
+                      ),
+                      const SizedBox(width: 6),
+                      Icon(
+                        selected
+                            ? Icons.check_circle_rounded
+                            : Icons.circle_outlined,
+                        size: 20,
+                        color: scheme.primary,
+                      ),
+                    ],
                   ),
-                  const SizedBox(width: 8),
-                  Icon(
-                    selected
-                        ? Icons.check_circle_rounded
-                        : Icons.circle_outlined,
-                    size: 22,
+                  const SizedBox(height: 6),
+                  Text(
+                    perch
+                        ? 'A little more character.'
+                        : 'Always close at hand.',
+                    style: theme.textTheme.bodySmall,
                   ),
                 ],
               ),

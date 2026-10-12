@@ -78,6 +78,12 @@ own phone composition. The full rationale and platform research are in
 [the mobile design guide](docs/native-mobile-design.md). Preserve the web color
 contract while adapting navigation, density and interaction to touch.
 
+`MobileAppTheme` adapts the shared colour contract for native phones: system
+sans hierarchy, tonal fields, quiet grouped surfaces and 48dp interaction
+targets. Use `MobileSurface`, `MobileSegmentBar` and `MobileStatusPill` for
+consistent content groups and choices. Dark spotlight surfaces supply their own
+text and icon theme. Phone-specific layouts must still read real feature state.
+
 - Five labeled primary destinations: Today, Assistant, Capture, Work and Library.
   Library groups all remaining features and preferences. It is a local navigation
   index and must not eagerly mount or fetch every workspace.

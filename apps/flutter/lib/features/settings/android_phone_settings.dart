@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/platform/android_device_bridge.dart';
+import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_page_scaffold.dart';
 import '../computer_use/android_phone.dart';
 
 class AndroidPhoneSettings extends ConsumerStatefulWidget {
@@ -48,11 +50,22 @@ class _AndroidPhoneSettingsState extends ConsumerState<AndroidPhoneSettings>
           children: [
             Row(
               children: [
-                const Icon(Icons.phone_android_rounded),
+                if (usesMobilePresentation())
+                  Container(
+                    width: 52,
+                    height: 52,
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).colorScheme.secondaryContainer,
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: const Icon(Icons.phone_android_rounded, size: 28),
+                  )
+                else
+                  const Icon(Icons.phone_android_rounded),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
-                    'This phone',
+                    usesMobilePresentation() ? 'Phone control' : 'This phone',
                     style: Theme.of(context).textTheme.titleMedium,
                   ),
                 ),
@@ -64,6 +77,16 @@ class _AndroidPhoneSettingsState extends ConsumerState<AndroidPhoneSettings>
                   ),
               ],
             ),
+            if (usesMobilePresentation()) ...[
+              const SizedBox(height: 16),
+              MobileStatusPill(
+                label: enabled ? 'Ready for your requests' : 'Not active',
+                icon: enabled
+                    ? Icons.check_circle_outline_rounded
+                    : Icons.pause_circle_outline_rounded,
+              ),
+              const SizedBox(height: 8),
+            ],
             const SizedBox(height: 8),
             Text(
               enabled

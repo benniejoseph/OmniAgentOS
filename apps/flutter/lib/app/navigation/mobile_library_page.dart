@@ -142,16 +142,20 @@ class _MobileLibraryPageState extends State<MobileLibraryPage> {
         SliverToBoxAdapter(
           child: MobilePageHeader(
             title: 'Library',
-            subtitle: 'Your knowledge, tools and preferences.',
             actions: [
               IconButton(
-                tooltip: 'Search your content',
-                onPressed: () => context.push('/search'),
-                icon: const Icon(Icons.search_rounded),
+                tooltip: 'Settings',
+                onPressed: () => context.push('/settings'),
+                icon: const Icon(Icons.tune_rounded),
               ),
             ],
           ),
         ),
+        if (query.isEmpty)
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(20, 4, 20, 4),
+            sliver: SliverToBoxAdapter(child: _collections(context)),
+          ),
         SliverPadding(
           padding: const EdgeInsets.symmetric(horizontal: 20),
           sliver: SliverToBoxAdapter(
@@ -177,21 +181,157 @@ class _MobileLibraryPageState extends State<MobileLibraryPage> {
         for (final group in groups)
           if (group.items.isNotEmpty) ...[
             SliverToBoxAdapter(child: MobileSectionHeader(title: group.title)),
-            SliverList.builder(
-              itemCount: group.items.length,
-              itemBuilder: (context, index) {
-                final item = group.items[index];
-                return MobileActionTile(
-                  icon: item.icon,
-                  title: item.title,
-                  subtitle: item.subtitle,
-                  onTap: () => context.push(item.path),
-                );
-              },
+            SliverPadding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              sliver: SliverToBoxAdapter(
+                child: MobileSurface(
+                  padding: EdgeInsets.zero,
+                  child: Column(
+                    children: [
+                      for (final item in group.items)
+                        if (query.isNotEmpty ||
+                            !const [
+                              '/knowledge',
+                              '/capture?tab=library',
+                              '/activity',
+                            ].contains(item.path))
+                          MobileActionTile(
+                            icon: item.icon,
+                            title: item.title,
+                            subtitle: item.subtitle,
+                            onTap: () => context.push(item.path),
+                          ),
+                    ],
+                  ),
+                ),
+              ),
             ),
           ],
         const SliverToBoxAdapter(child: SizedBox(height: 24)),
       ],
     );
   }
+
+  Widget _collections(BuildContext context) {
+    final compact =
+        MediaQuery.sizeOf(context).width < 360 ||
+        MediaQuery.textScalerOf(context).scale(16) > 21;
+    final memory = _collection(
+      context,
+      title: 'Memory',
+      subtitle: 'The things worth remembering',
+      icon: Icons.psychology_outlined,
+      path: '/knowledge',
+      spotlight: true,
+      large: true,
+    );
+    final files = _collection(
+      context,
+      title: 'Saved files',
+      subtitle: 'Notes, scans & documents',
+      icon: Icons.folder_open_rounded,
+      path: '/capture?tab=library',
+    );
+    final history = _collection(
+      context,
+      title: 'History',
+      subtitle: 'Results & recent activity',
+      icon: Icons.history_rounded,
+      path: '/activity',
+    );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (compact) ...[
+          memory,
+          const SizedBox(height: 12),
+          files,
+          const SizedBox(height: 12),
+          history,
+        ] else
+          IntrinsicHeight(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Expanded(child: memory),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    children: [files, const SizedBox(height: 12), history],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        const SizedBox(height: 12),
+        TextButton.icon(
+          onPressed: () => context.push('/search'),
+          icon: const Icon(Icons.search_rounded, size: 18),
+          label: const Text('Search your saved content'),
+        ),
+      ],
+    );
+  }
+
+  Widget _collection(
+    BuildContext context, {
+    required String title,
+    required String subtitle,
+    required IconData icon,
+    required String path,
+    bool spotlight = false,
+    bool large = false,
+  }) => MobileSurface(
+    spotlight: spotlight,
+    padding: EdgeInsets.zero,
+    child: Builder(
+      builder: (tileContext) {
+        final theme = Theme.of(tileContext);
+        return InkWell(
+          onTap: () => context.push(path),
+          child: Padding(
+            padding: EdgeInsets.all(large ? 20 : 16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Row(
+                  children: [
+                    Icon(
+                      icon,
+                      color: theme.colorScheme.secondary,
+                      size: large ? 30 : 22,
+                    ),
+                    const Spacer(),
+                    Icon(
+                      Icons.north_east_rounded,
+                      size: 16,
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ],
+                ),
+                Padding(
+                  padding: EdgeInsets.only(top: large ? 42 : 14),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        title,
+                        style: large
+                            ? theme.textTheme.headlineSmall
+                            : theme.textTheme.titleMedium,
+                      ),
+                      const SizedBox(height: 5),
+                      Text(subtitle, style: theme.textTheme.bodySmall),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    ),
+  );
 }

@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../app/platform/mobile_presentation.dart';
+
 import 'companion_personality.dart';
 
 class CompanionPersonalitySettings extends ConsumerWidget {
@@ -79,13 +81,24 @@ class _PersonalityChoice extends StatelessWidget {
       label: '${personality.label}. ${personality.description}.',
       child: Material(
         color: selected
-            ? scheme.primaryContainer.withValues(alpha: .25)
+            ? (usesMobilePresentation()
+                  ? scheme.secondaryContainer
+                  : scheme.primaryContainer.withValues(alpha: .25))
             : scheme.surface,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(
+            usesMobilePresentation() ? 16 : 12,
+          ),
           side: BorderSide(
             color: selected ? scheme.primary : scheme.outlineVariant,
-            width: selected ? 1.5 : 1,
+            width: usesMobilePresentation()
+                ? 0
+                : selected
+                ? 1.5
+                : 1,
+            style: usesMobilePresentation()
+                ? BorderStyle.none
+                : BorderStyle.solid,
           ),
         ),
         clipBehavior: Clip.antiAlias,

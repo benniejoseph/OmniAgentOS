@@ -2,9 +2,11 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../app/platform/mobile_presentation.dart';
 import '../../app/mobile/mobile_page_scaffold.dart';
+import '../../app/theme/mobile_app_theme.dart';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -537,133 +539,259 @@ class _VoiceConversationSurfaceState
   }
 
   Widget _mobileConversation(VoiceAppearanceController appearance) {
-    final scheme = Theme.of(context).colorScheme;
-    return SafeArea(
-      child: Column(
-        children: [
-          MobilePageHeader(
-            title: 'ATLAS',
-            subtitle: 'Voice conversation',
-            leading: IconButton(
-              tooltip: 'Back to Asael',
-              onPressed: () => Navigator.of(context).maybePop(),
-              icon: const Icon(Icons.arrow_back_rounded),
-            ),
-            actions: [
-              PopupMenuButton<VoiceAppearance>(
-                tooltip: 'Voice appearance',
-                icon: const Icon(Icons.more_horiz_rounded),
-                enabled: appearance.available,
-                onSelected: (value) =>
-                    unawaited(appearance.setAppearance(value)),
-                itemBuilder: (_) => [
-                  for (final option in VoiceAppearance.values)
-                    CheckedPopupMenuItem(
-                      value: option,
-                      checked: option == appearance.appearance,
-                      child: Text(option.label),
-                    ),
-                ],
-              ),
-            ],
-          ),
-          Expanded(
-            child: LayoutBuilder(
-              builder: (context, constraints) => SingleChildScrollView(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 28,
-                  vertical: 20,
-                ),
-                child: ConstrainedBox(
-                  constraints: BoxConstraints(
-                    minHeight: math.max(0, constraints.maxHeight - 40),
-                  ),
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      _portrait(
-                        appearance.appearance == VoiceAppearance.perch
-                            ? 180
-                            : 132,
-                      ),
-                      const SizedBox(height: 24),
-                      Semantics(
-                        liveRegion: true,
-                        child: Text(
-                          _status,
-                          textAlign: TextAlign.center,
-                          style: Theme.of(context).textTheme.headlineSmall
-                              ?.copyWith(
-                                color: _error != null
-                                    ? scheme.error
-                                    : scheme.onSurface,
-                              ),
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        _microphoneStatus,
-                        textAlign: TextAlign.center,
-                        style: Theme.of(context).textTheme.bodyMedium
-                            ?.copyWith(color: scheme.onSurfaceVariant),
-                      ),
-                      const SizedBox(height: 24),
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.all(20),
-                        decoration: BoxDecoration(
-                          color: scheme.surfaceContainerLow,
-                          borderRadius: BorderRadius.circular(16),
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              _detail,
-                              style: Theme.of(context).textTheme.bodyLarge
-                                  ?.copyWith(height: 1.5),
+    final dark = MobileAppTheme.dark(
+      highContrast: MediaQuery.highContrastOf(context),
+    );
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: SystemUiOverlayStyle.light,
+      child: Theme(
+        data: dark,
+        child: Builder(
+          builder: (context) {
+            final scheme = Theme.of(context).colorScheme;
+            return ColoredBox(
+              color: dark.scaffoldBackgroundColor,
+              child: SafeArea(
+                child: Column(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+                      child: Row(
+                        children: [
+                          IconButton(
+                            tooltip: 'Back to Asael',
+                            onPressed: () => Navigator.of(context).maybePop(),
+                            icon: const Icon(Icons.arrow_back_rounded),
+                          ),
+                          Expanded(
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  'ATLAS',
+                                  style: dark.textTheme.titleMedium?.copyWith(
+                                    letterSpacing: 1.5,
+                                  ),
+                                ),
+                                const SizedBox(height: 3),
+                                Text(
+                                  'Voice conversation',
+                                  style: dark.textTheme.bodySmall?.copyWith(
+                                    color: scheme.onSurfaceVariant,
+                                  ),
+                                ),
+                              ],
                             ),
-                            if (voice.historyNotice case final notice?)
-                              Padding(
-                                padding: const EdgeInsets.only(top: 12),
-                                child: Text(notice),
+                          ),
+                          PopupMenuButton<VoiceAppearance>(
+                            tooltip: 'Voice appearance',
+                            icon: const Icon(Icons.more_horiz_rounded),
+                            enabled: appearance.available,
+                            onSelected: (value) =>
+                                unawaited(appearance.setAppearance(value)),
+                            itemBuilder: (_) => [
+                              for (final option in VoiceAppearance.values)
+                                CheckedPopupMenuItem(
+                                  value: option,
+                                  checked: option == appearance.appearance,
+                                  child: Text(option.label),
+                                ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                    Expanded(
+                      child: LayoutBuilder(
+                        builder: (context, constraints) => SingleChildScrollView(
+                          padding: const EdgeInsets.fromLTRB(28, 24, 28, 20),
+                          child: ConstrainedBox(
+                            constraints: BoxConstraints(
+                              minHeight: math.max(
+                                0,
+                                constraints.maxHeight - 44,
                               ),
-                            if (voice.workNotice case final notice?)
-                              Padding(
-                                padding: const EdgeInsets.only(top: 12),
-                                child: Text(notice),
-                              ),
-                            if (voice.commandContext?['computerUseTarget'] ==
-                                'local_android')
-                              const Padding(
-                                padding: EdgeInsets.only(top: 12),
-                                child: Text(
-                                  'Working with Asael and this phone. Stop is always available in your notification.',
+                            ),
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.all(22),
+                                  decoration: BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    color: scheme.primary.withValues(
+                                      alpha: .05,
+                                    ),
+                                    border: Border.all(
+                                      color: scheme.primary.withValues(
+                                        alpha: .15,
+                                      ),
+                                    ),
+                                  ),
+                                  child: _portrait(
+                                    appearance.appearance ==
+                                            VoiceAppearance.perch
+                                        ? 200
+                                        : 160,
+                                  ),
+                                ),
+                                const SizedBox(height: 30),
+                                Semantics(
+                                  liveRegion: true,
+                                  child: Text(
+                                    _status,
+                                    textAlign: TextAlign.center,
+                                    style: dark.textTheme.headlineMedium
+                                        ?.copyWith(
+                                          color: _error != null
+                                              ? scheme.error
+                                              : scheme.onSurface,
+                                        ),
+                                  ),
+                                ),
+                                const SizedBox(height: 12),
+                                MobileStatusPill(
+                                  label: _microphoneStatus,
+                                  icon: voice.muted
+                                      ? Icons.mic_off_rounded
+                                      : Icons.mic_none_rounded,
+                                  color: scheme.primary,
+                                ),
+                                const SizedBox(height: 28),
+                                Text(
+                                  _detail,
+                                  textAlign: TextAlign.center,
+                                  style: dark.textTheme.bodyLarge?.copyWith(
+                                    height: 1.65,
+                                    color: scheme.onSurfaceVariant,
+                                  ),
+                                ),
+                                if (voice.historyNotice case final notice?)
+                                  Padding(
+                                    padding: const EdgeInsets.only(top: 16),
+                                    child: Text(
+                                      notice,
+                                      textAlign: TextAlign.center,
+                                      style: dark.textTheme.bodySmall,
+                                    ),
+                                  ),
+                                if (voice.workNotice case final notice?)
+                                  Padding(
+                                    padding: const EdgeInsets.only(top: 16),
+                                    child: Text(
+                                      notice,
+                                      textAlign: TextAlign.center,
+                                      style: dark.textTheme.bodySmall,
+                                    ),
+                                  ),
+                                if (voice
+                                        .commandContext?['computerUseTarget'] ==
+                                    'local_android')
+                                  Padding(
+                                    padding: const EdgeInsets.only(top: 16),
+                                    child: Text(
+                                      'Working with Asael and this phone. Stop is always available in your notification.',
+                                      textAlign: TextAlign.center,
+                                      style: dark.textTheme.bodySmall,
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(24, 16, 24, 12),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          if (voice.waitingForApproval) ...[
+                            OutlinedButton.icon(
+                              onPressed: _reviewingApproval
+                                  ? null
+                                  : () => unawaited(_reviewApproval()),
+                              icon: const Icon(Icons.fact_check_outlined),
+                              label: const Text('Review action'),
+                            ),
+                            const SizedBox(height: 12),
+                          ],
+                          Row(
+                            children: [
+                              Expanded(
+                                child: Semantics(
+                                  label: _microphoneStatus,
+                                  child: FilledButton.tonalIcon(
+                                    style: FilledButton.styleFrom(
+                                      minimumSize: const Size(48, 64),
+                                    ),
+                                    onPressed: voice.active || _connecting
+                                        ? voice.ready
+                                              ? () =>
+                                                    voice.setMuted(!voice.muted)
+                                              : null
+                                        : widget.onStart,
+                                    icon: Icon(
+                                      voice.active || _connecting
+                                          ? voice.muted
+                                                ? Icons.mic_off_rounded
+                                                : Icons.mic_rounded
+                                          : Icons.mic_none_rounded,
+                                      size: 25,
+                                    ),
+                                    label: Text(
+                                      voice.active || _connecting
+                                          ? voice.muted
+                                                ? 'Unmute'
+                                                : 'Mute'
+                                          : 'Start',
+                                    ),
+                                  ),
                                 ),
                               ),
-                          ],
+                              const SizedBox(width: 14),
+                              Expanded(
+                                child: FilledButton.icon(
+                                  style: FilledButton.styleFrom(
+                                    minimumSize: const Size(48, 64),
+                                    backgroundColor: scheme.errorContainer,
+                                    foregroundColor: scheme.onErrorContainer,
+                                  ),
+                                  onPressed: widget.onEnd,
+                                  icon: Icon(
+                                    voice.active || _connecting
+                                        ? Icons.call_end_rounded
+                                        : Icons.close_rounded,
+                                    size: 25,
+                                  ),
+                                  label: Text(
+                                    voice.active || _connecting
+                                        ? 'End'
+                                        : 'Close',
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(32, 0, 32, 24),
+                      child: Text(
+                        'Mute or end from here or your notification.',
+                        textAlign: TextAlign.center,
+                        style: dark.textTheme.bodySmall?.copyWith(
+                          color: scheme.onSurfaceVariant,
                         ),
                       ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
               ),
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
-            child: _controls(canCollapse: false, expanded: true),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(28, 4, 28, 20),
-            child: Text(
-              'Keep talking while using other apps. Mute or end from your notification.',
-              textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.bodySmall
-                  ?.copyWith(color: scheme.onSurfaceVariant),
-            ),
-          ),
-        ],
+            );
+          },
+        ),
       ),
     );
   }

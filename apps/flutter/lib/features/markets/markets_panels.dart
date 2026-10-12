@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_page_scaffold.dart';
 
 typedef Json = Map<String, dynamic>;
 
@@ -855,83 +856,144 @@ class _PriceCanvas extends StatelessWidget {
   final double? last, change;
   final String? asOf, source;
   @override
-  Widget build(BuildContext context) => Container(
-    width: double.infinity,
-    padding: const EdgeInsets.all(18),
-    decoration: BoxDecoration(
-      color: usesMobilePresentation()
-          ? Theme.of(context).colorScheme.surfaceContainerLow
-          : const Color(0xFF061C1E),
-      borderRadius: BorderRadius.circular(16),
-      border: Border.all(
-        color: usesMobilePresentation()
-            ? Theme.of(context).colorScheme.outlineVariant
-            : const Color(0xFF1E5752),
-      ),
-    ),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          last?.toStringAsFixed(2) ?? 'Price unavailable',
-          style: TextStyle(
-            color: usesMobilePresentation()
-                ? Theme.of(context).colorScheme.onSurface
-                : const Color(0xFFF3F8EF),
-            fontSize: 25,
-            fontWeight: FontWeight.w700,
+  Widget build(BuildContext context) => usesMobilePresentation()
+      ? MobileSurface(
+          spotlight: true,
+          padding: const EdgeInsets.all(22),
+          child: Builder(
+            builder: (context) {
+              final theme = Theme.of(context);
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'SAVED PRICE',
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      letterSpacing: 1.4,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    last?.toStringAsFixed(2) ?? 'Price unavailable',
+                    style: theme.textTheme.headlineLarge?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    change == null
+                        ? 'Choose a saved snapshot to see the price.'
+                        : '${change! >= 0 ? '+' : ''}${change!.toStringAsFixed(2)}% over the displayed period',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.primary,
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  Semantics(
+                    label:
+                        '${values.length} saved closing prices. Exact values are available in price evidence.',
+                    child: SizedBox(
+                      height: 150,
+                      width: double.infinity,
+                      child: RepaintBoundary(
+                        child: CustomPaint(
+                          painter: _LinePainter(
+                            values,
+                            gridColor: theme.colorScheme.outlineVariant
+                                .withValues(alpha: .5),
+                            lineColor: theme.colorScheme.primary,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 18),
+                  Text(
+                    '${_shortDate(asOf)}${source == null ? '' : ' · $source'}',
+                    style: theme.textTheme.bodySmall,
+                  ),
+                ],
+              );
+            },
           ),
-        ),
-        const SizedBox(height: 6),
-        Wrap(
-          spacing: 16,
-          runSpacing: 8,
-          children: [
-            Text(
-              change == null
-                  ? (source ?? 'Select a stored snapshot')
-                  : '${change! >= 0 ? '+' : ''}${change!.toStringAsFixed(2)}% · ${source ?? 'snapshot'}',
-              style: TextStyle(
-                color: usesMobilePresentation()
-                    ? Theme.of(context).colorScheme.secondary
-                    : const Color(0xFF78E4C7),
-              ),
+        )
+      : Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(18),
+          decoration: BoxDecoration(
+            color: usesMobilePresentation()
+                ? Theme.of(context).colorScheme.surfaceContainerLow
+                : const Color(0xFF061C1E),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: usesMobilePresentation()
+                  ? Theme.of(context).colorScheme.outlineVariant
+                  : const Color(0xFF1E5752),
             ),
-            Text(
-              _shortDate(asOf),
-              style: TextStyle(
-                color: usesMobilePresentation()
-                    ? Theme.of(context).colorScheme.onSurfaceVariant
-                    : const Color(0xFFB6D3CE),
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 16),
-        Semantics(
-          label:
-              '${values.length} stored closing prices. Exact OHLC values are available in the snapshot inspector.',
-          child: SizedBox(
-            height: 160,
-            width: double.infinity,
-            child: RepaintBoundary(
-              child: CustomPaint(
-                painter: _LinePainter(
-                  values,
-                  gridColor: usesMobilePresentation()
-                      ? Theme.of(context).colorScheme.outlineVariant
-                      : const Color(0xFF123B3C),
-                  lineColor: usesMobilePresentation()
-                      ? Theme.of(context).colorScheme.secondary
-                      : const Color(0xFF72E0C0),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                last?.toStringAsFixed(2) ?? 'Price unavailable',
+                style: TextStyle(
+                  color: usesMobilePresentation()
+                      ? Theme.of(context).colorScheme.onSurface
+                      : const Color(0xFFF3F8EF),
+                  fontSize: 25,
+                  fontWeight: FontWeight.w700,
                 ),
               ),
-            ),
+              const SizedBox(height: 6),
+              Wrap(
+                spacing: 16,
+                runSpacing: 8,
+                children: [
+                  Text(
+                    change == null
+                        ? (source ?? 'Select a stored snapshot')
+                        : '${change! >= 0 ? '+' : ''}${change!.toStringAsFixed(2)}% · ${source ?? 'snapshot'}',
+                    style: TextStyle(
+                      color: usesMobilePresentation()
+                          ? Theme.of(context).colorScheme.secondary
+                          : const Color(0xFF78E4C7),
+                    ),
+                  ),
+                  Text(
+                    _shortDate(asOf),
+                    style: TextStyle(
+                      color: usesMobilePresentation()
+                          ? Theme.of(context).colorScheme.onSurfaceVariant
+                          : const Color(0xFFB6D3CE),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              Semantics(
+                label:
+                    '${values.length} stored closing prices. Exact OHLC values are available in the snapshot inspector.',
+                child: SizedBox(
+                  height: 160,
+                  width: double.infinity,
+                  child: RepaintBoundary(
+                    child: CustomPaint(
+                      painter: _LinePainter(
+                        values,
+                        gridColor: usesMobilePresentation()
+                            ? Theme.of(context).colorScheme.outlineVariant
+                            : const Color(0xFF123B3C),
+                        lineColor: usesMobilePresentation()
+                            ? Theme.of(context).colorScheme.secondary
+                            : const Color(0xFF72E0C0),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
           ),
-        ),
-      ],
-    ),
-  );
+        );
 }
 
 class _LinePainter extends CustomPainter {

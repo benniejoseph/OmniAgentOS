@@ -317,27 +317,18 @@ class _ContentSearchViewState extends State<ContentSearchView>
                 ),
               ),
               const SizedBox(height: 12),
-              SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: Row(
-                  children: [
-                    ChoiceChip(
-                      label: const Text('All'),
-                      selected: _mobileFilter == null,
-                      onSelected: (_) => setState(() => _mobileFilter = null),
+              MobileSegmentBar<ContentSearchProvider?>(
+                items: [
+                  (value: null, label: 'All', icon: Icons.search_rounded),
+                  for (final provider in ContentSearchProvider.values)
+                    (
+                      value: provider,
+                      label: provider.label,
+                      icon: _icon(provider),
                     ),
-                    for (final provider in ContentSearchProvider.values)
-                      Padding(
-                        padding: const EdgeInsets.only(left: 8),
-                        child: ChoiceChip(
-                          label: Text(provider.label),
-                          selected: _mobileFilter == provider,
-                          onSelected: (_) =>
-                              setState(() => _mobileFilter = provider),
-                        ),
-                      ),
-                  ],
-                ),
+                ],
+                value: _mobileFilter,
+                onChanged: (value) => setState(() => _mobileFilter = value),
               ),
               const SizedBox(height: 12),
               if (c.loading)
@@ -417,12 +408,18 @@ class _ContentSearchViewState extends State<ContentSearchView>
         itemCount: group.items.length,
         itemBuilder: (context, index) {
           final item = group.items[index];
-          return MobileActionTile(
-            key: ValueKey((provider, item.id)),
-            icon: _icon(provider),
-            title: item.title,
-            subtitle: item.detail.isEmpty ? null : item.detail,
-            onTap: c.available ? () => widget.onOpen(item.target) : null,
+          return Padding(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+            child: MobileSurface(
+              padding: EdgeInsets.zero,
+              child: MobileActionTile(
+                key: ValueKey((provider, item.id)),
+                icon: _icon(provider),
+                title: item.title,
+                subtitle: item.detail.isEmpty ? null : item.detail,
+                onTap: c.available ? () => widget.onOpen(item.target) : null,
+              ),
+            ),
           );
         },
       ),

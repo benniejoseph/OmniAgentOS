@@ -128,23 +128,21 @@ class _AutomationStudioViewState extends ConsumerState<AutomationStudioView> {
             ),
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
-              child: Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  ChoiceChip(
-                    avatar: const Icon(Icons.schedule_outlined, size: 18),
-                    label: const Text('Automations'),
-                    selected: _tabIndex == 0,
-                    onSelected: (_) => _selectTab(0),
+              child: MobileSegmentBar<int>(
+                items: const [
+                  (
+                    value: 0,
+                    label: 'Automations',
+                    icon: Icons.schedule_outlined,
                   ),
-                  ChoiceChip(
-                    avatar: const Icon(Icons.extension_outlined, size: 18),
-                    label: const Text('Skills & connections'),
-                    selected: _tabIndex == 1,
-                    onSelected: (_) => _selectTab(1),
+                  (
+                    value: 1,
+                    label: 'Skills & connections',
+                    icon: Icons.extension_outlined,
                   ),
                 ],
+                value: _tabIndex,
+                onChanged: _selectTab,
               ),
             ),
           ],
@@ -198,9 +196,10 @@ class _PortableAutomations extends StatelessWidget {
       children: [
         _PortableSectionHeader(
           icon: Icons.bolt_outlined,
-          title: 'Triggers',
-          description:
-              'Schedules and external events that begin repeatable work.',
+          title: usesMobilePresentation() ? 'Schedules & events' : 'Triggers',
+          description: usesMobilePresentation()
+              ? 'The work you have set in motion.'
+              : 'Schedules and external events that begin repeatable work.',
           count: triggers.data?.length,
         ),
         const SizedBox(height: 10),
@@ -328,8 +327,10 @@ class _PortableScheduleSheetState extends State<_PortableScheduleSheet> {
                         widget.trigger.name,
                         style: Theme.of(context).textTheme.titleLarge,
                       ),
-                      const Text(
-                        'Occurrences, receipts, and PolicyLease outcomes',
+                      Text(
+                        usesMobilePresentation()
+                            ? 'Recent activity and saved evidence'
+                            : 'Occurrences, receipts, and PolicyLease outcomes',
                       ),
                     ],
                   ),
@@ -393,9 +394,10 @@ class _PortableScheduleDetail extends StatelessWidget {
         ),
       _PortableSectionHeader(
         icon: Icons.event_repeat_outlined,
-        title: 'Occurrences',
-        description:
-            'Exact trigger occurrences and their bound authority digest.',
+        title: usesMobilePresentation() ? 'Scheduled activity' : 'Occurrences',
+        description: usesMobilePresentation()
+            ? 'What happened when this schedule ran.'
+            : 'Exact trigger occurrences and their bound authority digest.',
         count: detail.occurrences.length,
       ),
       if (detail.occurrences.isEmpty)
@@ -403,10 +405,13 @@ class _PortableScheduleDetail extends StatelessWidget {
       else
         for (final occurrence in detail.occurrences)
           _PortableEvidenceCard(
-            title: occurrence.id,
+            title: usesMobilePresentation()
+                ? '${_plain(occurrence.status)} · attempt ${occurrence.attemptCount}'
+                : occurrence.id,
             subtitle:
                 '${_plain(occurrence.status)} · attempt ${occurrence.attemptCount}',
             fields: {
+              if (usesMobilePresentation()) 'Occurrence': occurrence.id,
               'Workflow run': occurrence.workflowRunId ?? 'Not created',
               'Authority SHA-256': occurrence.authoritySha256.isEmpty
                   ? 'Unavailable'
@@ -430,9 +435,17 @@ class _PortableScheduleDetail extends StatelessWidget {
       else
         for (final receipt in detail.receipts)
           _PortableEvidenceCard(
-            title: receipt.id,
-            subtitle: '${_plain(receipt.status)} · ${receipt.occurrenceId}',
+            title: usesMobilePresentation()
+                ? '${_plain(receipt.status)} receipt'
+                : receipt.id,
+            subtitle: usesMobilePresentation()
+                ? 'Saved evidence for this schedule'
+                : '${_plain(receipt.status)} · ${receipt.occurrenceId}',
             fields: {
+              if (usesMobilePresentation()) ...{
+                'Receipt': receipt.id,
+                'Occurrence': receipt.occurrenceId,
+              },
               'Receipt SHA-256': receipt.receiptSha256.isEmpty
                   ? 'Unavailable'
                   : receipt.receiptSha256,
@@ -444,22 +457,40 @@ class _PortableScheduleDetail extends StatelessWidget {
       const SizedBox(height: 20),
       _PortableSectionHeader(
         icon: Icons.policy_outlined,
-        title: 'PolicyLease outcomes',
-        description: 'Content-free evidence only. A history record never grants authority.',
+        title: usesMobilePresentation()
+            ? 'Action permissions'
+            : 'PolicyLease outcomes',
+        description: usesMobilePresentation()
+            ? 'Permission decisions made for scheduled actions.'
+            : 'Content-free evidence only. A history record never grants authority.',
         count: detail.policyLeasesAvailable ? detail.policyLeases.length : null,
       ),
       if (!detail.policyLeasesAvailable)
-        const _PortableInlineEmpty(
-          'PolicyLease history is unavailable on this installation.',
+        _PortableInlineEmpty(
+          usesMobilePresentation()
+              ? 'Action permission history is unavailable on this device.'
+              : 'PolicyLease history is unavailable on this installation.',
         )
       else if (detail.policyLeases.isEmpty)
-        const _PortableInlineEmpty('No PolicyLease outcomes are recorded.')
+        _PortableInlineEmpty(
+          usesMobilePresentation()
+              ? 'No action permission decisions are recorded.'
+              : 'No PolicyLease outcomes are recorded.',
+        )
       else
         for (final lease in detail.policyLeases)
           _PortableEvidenceCard(
-            title: lease.leaseId,
-            subtitle: '${_plain(lease.status)} · ${lease.toolId}',
+            title: usesMobilePresentation()
+                ? _plain(lease.status)
+                : lease.leaseId,
+            subtitle: usesMobilePresentation()
+                ? 'Action permission record'
+                : '${_plain(lease.status)} · ${lease.toolId}',
             fields: {
+              if (usesMobilePresentation()) ...{
+                'Permission record': lease.leaseId,
+                'Tool': lease.toolId,
+              },
               'Occurrence': lease.occurrenceId,
               'Execution': lease.executionId,
               'Lease SHA-256': lease.leaseSha256,
@@ -535,24 +566,15 @@ class _PortableCapabilitiesState extends State<_PortableCapabilities> {
       final header = Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          DropdownButtonFormField<int>(
-            initialValue: _category,
-            isExpanded: true,
-            decoration: const InputDecoration(
-              labelText: 'Explore capabilities',
-            ),
-            items: [
-              for (final (index, label) in [
-                'Skills',
-                'Connections',
-                'Tools',
-                'Extensions',
-              ].indexed)
-                DropdownMenuItem(value: index, child: Text(label)),
+          MobileSegmentBar<int>(
+            items: const [
+              (value: 0, label: 'Skills', icon: Icons.psychology_outlined),
+              (value: 1, label: 'Connections', icon: Icons.link_rounded),
+              (value: 2, label: 'Tools', icon: Icons.build_outlined),
+              (value: 3, label: 'Extensions', icon: Icons.extension_outlined),
             ],
-            onChanged: (value) {
-              if (value != null) setState(() => _category = value);
-            },
+            value: _category,
+            onChanged: (value) => setState(() => _category = value),
           ),
           const SizedBox(height: 12),
           switch (_category) {
@@ -696,39 +718,60 @@ class _PortableInspection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (usesMobilePresentation()) {
-      return ExpansionTile(
-        key: PageStorageKey<String>('mobile-capability:$identity'),
-        tilePadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        leading: const Icon(Icons.extension_outlined),
-        title: Text(title),
-        subtitle: Text(status.replaceAll('_', ' ')),
-        childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-        children: [
-          if (value['description'] case final String description)
-            Align(alignment: Alignment.centerLeft, child: Text(description)),
-          if (value['purpose'] case final String purpose)
-            Align(alignment: Alignment.centerLeft, child: Text(purpose)),
-          ExpansionTile(
-            tilePadding: EdgeInsets.zero,
-            title: const Text('Technical details'),
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 10),
+        child: MobileSurface(
+          padding: EdgeInsets.zero,
+          child: ExpansionTile(
+            key: PageStorageKey<String>('mobile-capability:$identity'),
+            tilePadding: const EdgeInsets.symmetric(
+              horizontal: 12,
+              vertical: 8,
+            ),
+            leading: const Icon(Icons.extension_outlined),
+            title: Text(title),
+            subtitle: Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: MobileStatusPill(label: _plain(status)),
+              ),
+            ),
+            childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
             children: [
-              Builder(
-                builder: (_) {
-                  final detail = const JsonEncoder.withIndent('  ')
-                      .convert(value);
-                  return Align(
-                    alignment: Alignment.centerLeft,
-                    child: SelectableText(
-                      detail.length > 16000
-                          ? '${detail.substring(0, 16000)}\nDisplay limited. Open the browser workspace for the full record.'
-                          : detail,
-                    ),
-                  );
-                },
+              if (value['description'] case final String description)
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(description),
+                ),
+              if (value['purpose'] case final String purpose)
+                Align(alignment: Alignment.centerLeft, child: Text(purpose)),
+              ExpansionTile(
+                key: PageStorageKey<String>(
+                  'mobile-capability-technical:$identity',
+                ),
+                tilePadding: EdgeInsets.zero,
+                title: const Text('Technical details'),
+                children: [
+                  Builder(
+                    builder: (_) {
+                      final detail = const JsonEncoder.withIndent('  ')
+                          .convert(value);
+                      return Align(
+                        alignment: Alignment.centerLeft,
+                        child: SelectableText(
+                          detail.length > 16000
+                              ? '${detail.substring(0, 16000)}\nDisplay limited. Open the browser workspace for the full record.'
+                              : detail,
+                        ),
+                      );
+                    },
+                  ),
+                ],
               ),
             ],
           ),
-        ],
+        ),
       );
     }
     final detail = const JsonEncoder.withIndent('  ').convert(value);
@@ -901,7 +944,9 @@ class _CapabilityCard<T> extends StatelessWidget {
       child: ListTile(
         leading: Icon(icon),
         title: Text(title),
-        subtitle: Text(resource.error ?? label),
+        subtitle: usesMobilePresentation() && resource.error == null
+            ? null
+            : Text(resource.error ?? label),
         trailing: resource.isLoading
             ? const SizedBox.square(
                 dimension: 18,

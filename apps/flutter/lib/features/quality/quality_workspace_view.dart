@@ -257,67 +257,122 @@ class _QualityWorkspaceViewState extends State<QualityWorkspaceView> {
         Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              'Evidence at a glance',
-              style: Theme.of(context).textTheme.titleLarge,
-            ),
-            const SizedBox(height: 6),
-            const Text(
-              'Review outcomes, background work and the server’s release assessment.',
-            ),
-            const SizedBox(height: 16),
-            Wrap(
-              spacing: 10,
-              runSpacing: 10,
-              children: [
-                _Metric(
-                  label: 'Recent runs',
-                  value: snapshot == null
-                      ? 'Not available'
-                      : '${snapshot.stats.total}',
-                  detail: 'Statistics cover up to 100 recent runs',
+            if (usesMobilePresentation())
+              MobileSurface(
+                padding: EdgeInsets.zero,
+                child: ExpansionTile(
+                  key: const PageStorageKey<String>('mobile-quality-overview'),
+                  tilePadding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 4,
+                  ),
+                  leading: const Icon(Icons.fact_check_outlined),
+                  title: const Text('Evaluation overview'),
+                  subtitle: Text(
+                    snapshot == null
+                        ? 'Results unavailable'
+                        : '${snapshot.stats.total} recent runs',
+                  ),
+                  childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                  children: [
+                    Wrap(
+                      spacing: 10,
+                      runSpacing: 10,
+                      children: [
+                        _Metric(
+                          label: 'Recent runs',
+                          value: snapshot == null
+                              ? 'Not available'
+                              : '${snapshot.stats.total}',
+                          detail: 'Statistics cover up to 100 recent runs',
+                        ),
+                        _Metric(
+                          label: 'Latest case pass rate',
+                          value: snapshot?.stats.latestPassRate == null
+                              ? 'Not measured'
+                              : '${(snapshot!.stats.latestPassRate! * 100).toStringAsFixed(0)}%',
+                          detail: 'Execution completion does not imply a pass',
+                        ),
+                        _Metric(
+                          label: 'Release assessment',
+                          value:
+                              report?.status.label ??
+                              (c.release.state == QualityLoadState.restricted
+                                  ? 'Restricted'
+                                  : 'Not available'),
+                          detail: report == null
+                              ? 'Administrator evidence is a separate source'
+                              : report.approved
+                              ? 'Server approval: approved'
+                              : 'Server approval: withheld',
+                        ),
+                      ],
+                    ),
+                  ],
                 ),
-                _Metric(
-                  label: 'Latest case pass rate',
-                  value: snapshot?.stats.latestPassRate == null
-                      ? 'Not measured'
-                      : '${(snapshot!.stats.latestPassRate! * 100).toStringAsFixed(0)}%',
-                  detail: 'Execution completion does not imply a pass',
-                ),
-                _Metric(
-                  label: 'Release assessment',
-                  value:
-                      report?.status.label ??
-                      (c.release.state == QualityLoadState.restricted
-                          ? 'Restricted'
-                          : 'Not available'),
-                  detail: report == null
-                      ? 'Administrator evidence is a separate source'
-                      : report.approved
-                      ? 'Server approval: approved'
-                      : 'Server approval: withheld',
-                ),
-              ],
-            ),
+              )
+            else ...[
+              Text(
+                'Evidence at a glance',
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+              const SizedBox(height: 6),
+              const Text(
+                'Review outcomes, background work and the server’s release assessment.',
+              ),
+              const SizedBox(height: 16),
+              Wrap(
+                spacing: 10,
+                runSpacing: 10,
+                children: [
+                  _Metric(
+                    label: 'Recent runs',
+                    value: snapshot == null
+                        ? 'Not available'
+                        : '${snapshot.stats.total}',
+                    detail: 'Statistics cover up to 100 recent runs',
+                  ),
+                  _Metric(
+                    label: 'Latest case pass rate',
+                    value: snapshot?.stats.latestPassRate == null
+                        ? 'Not measured'
+                        : '${(snapshot!.stats.latestPassRate! * 100).toStringAsFixed(0)}%',
+                    detail: 'Execution completion does not imply a pass',
+                  ),
+                  _Metric(
+                    label: 'Release assessment',
+                    value:
+                        report?.status.label ??
+                        (c.release.state == QualityLoadState.restricted
+                            ? 'Restricted'
+                            : 'Not available'),
+                    detail: report == null
+                        ? 'Administrator evidence is a separate source'
+                        : report.approved
+                        ? 'Server approval: approved'
+                        : 'Server approval: withheld',
+                  ),
+                ],
+              ),
+            ],
             const SizedBox(height: 20),
             if (usesMobilePresentation())
-              DropdownButtonFormField<QualitySection>(
-                initialValue: c.section,
-                isExpanded: true,
-                decoration: const InputDecoration(
-                  labelText: 'View',
-                  prefixIcon: Icon(Icons.view_agenda_outlined),
-                ),
+              MobileSegmentBar<QualitySection>(
                 items: [
                   for (final section in QualitySection.values)
-                    DropdownMenuItem(
+                    (
                       value: section,
-                      child: Text(section.label),
+                      label: switch (section) {
+                        QualitySection.runs => 'Runs',
+                        QualitySection.jobs => 'Jobs',
+                        QualitySection.cases => 'Cases',
+                        QualitySection.release => 'Release',
+                      },
+                      icon: null,
                     ),
                 ],
-                onChanged: (section) {
-                  if (section != null) c.selectSection(section);
-                },
+                value: c.section,
+                onChanged: c.selectSection,
               )
             else
               Wrap(

@@ -7,6 +7,8 @@ import '../../../app/brand/asael_mark.dart';
 import '../../../app/macos/macos_page_scaffold.dart';
 import '../../../app/platform/macos_presentation.dart';
 import '../../../app/platform/mobile_presentation.dart';
+import '../../companion/atlas_player.dart';
+import '../../companion/companion_models.dart';
 import '../../../app/theme/macos_workspace_backdrop.dart';
 import '../../../core/auth/biometric_gate.dart';
 import '../../../core/storage/secure_session_store.dart';
@@ -219,7 +221,17 @@ class _MobileSessionBootstrap extends StatelessWidget {
                       mainAxisSize: MainAxisSize.min,
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        const Center(child: AsaelMark(size: 56)),
+                        const Center(
+                          child: ExcludeSemantics(
+                            child: AtlasPortrait(
+                              size: 144,
+                              preferences: CompanionPreferences(
+                                intensity: 'quiet',
+                                motion: 'off',
+                              ),
+                            ),
+                          ),
+                        ),
                         const SizedBox(height: 28),
                         Text(
                           title,

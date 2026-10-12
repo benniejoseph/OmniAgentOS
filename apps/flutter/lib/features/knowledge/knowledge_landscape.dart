@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../../app/mobile/mobile_page_scaffold.dart';
@@ -28,6 +30,7 @@ class _KnowledgeLandscapeState extends State<KnowledgeLandscape> {
   final _search = TextEditingController();
   bool _sources = false;
   String? _category, _selected;
+  int _mapPage = 0;
   @override
   void dispose() {
     _search.dispose();
@@ -323,6 +326,10 @@ class _KnowledgeLandscapeState extends State<KnowledgeLandscape> {
     final selected = groups
         .where((group) => group.key == _category)
         .firstOrNull;
+    final page = _mapPage
+        .clamp(0, groups.isEmpty ? 0 : (groups.length - 1) ~/ 6)
+        .toInt();
+    final visible = groups.skip(page * 6).take(6).toList();
     return CustomScrollView(
       keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
       slivers: [
@@ -332,193 +339,131 @@ class _KnowledgeLandscapeState extends State<KnowledgeLandscape> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
+                Row(
                   children: [
-                    for (final sources in [false, true])
-                      ChoiceChip(
-                        label: Text(sources ? 'Sources' : 'Memories'),
-                        selected: _sources == sources,
-                        onSelected: (_) => setState(() {
-                          _sources = sources;
+                    Expanded(
+                      child: MobileSegmentBar<bool>(
+                        items: const [
+                          (value: false, label: 'Memories', icon: null),
+                          (value: true, label: 'Sources', icon: null),
+                        ],
+                        value: _sources,
+                        onChanged: (value) => setState(() {
+                          _sources = value;
                           _category = _selected = null;
                           _search.clear();
+                          _mapPage = 0;
                         }),
                       ),
+                    ),
                     if (widget.onShowConnections != null)
-                      ActionChip(
-                        avatar: const Icon(Icons.hub_outlined, size: 18),
-                        label: const Text('Connections'),
+                      IconButton(
+                        tooltip: 'Explore recorded connections',
                         onPressed: widget.onShowConnections,
+                        icon: const Icon(Icons.hub_outlined),
                       ),
                   ],
                 ),
-                const SizedBox(height: 12),
+                const SizedBox(height: 16),
                 TextField(
                   controller: _search,
                   decoration: const InputDecoration(
                     hintText: 'Find a title or collection',
                     prefixIcon: Icon(Icons.search_rounded),
                   ),
-                  onChanged: (_) =>
-                      setState(() => _category = _selected = null),
+                  onChanged: (_) => setState(() {
+                    _category = _selected = null;
+                    _mapPage = 0;
+                  }),
                 ),
-                const SizedBox(height: 16),
+                const SizedBox(height: 20),
                 if (widget.controller.loading) const LinearProgressIndicator(),
                 if (widget.controller.error != null)
                   Text(
-                    'This map could not refresh. Previously loaded titles may still appear.',
+                    'The map could not refresh. Previously loaded titles are shown.',
                     style: TextStyle(color: scheme.error),
                   ),
-                if (selected == null)
-                  Container(
-                    padding: const EdgeInsets.all(20),
-                    decoration: BoxDecoration(
-                      color: scheme.surfaceContainerLow,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Row(
-                      children: [
-                        Container(
-                          width: 56,
-                          height: 56,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            border: Border.all(color: scheme.primary, width: 2),
-                          ),
-                          child: Icon(
-                            _sources
-                                ? Icons.menu_book_outlined
-                                : Icons.psychology_outlined,
-                            color: scheme.primary,
-                          ),
-                        ),
-                        const SizedBox(width: 16),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                _sources
-                                    ? 'Your source map'
-                                    : 'Your memory map',
-                                style: Theme.of(context).textTheme.titleMedium,
-                              ),
-                              const SizedBox(height: 4),
-                              Text(
-                                '${entries.length} loaded items · ${groups.length} collections',
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                  )
-                else
+                if (selected == null) ...[
+                  Text(
+                    'A place for every thought',
+                    style: Theme.of(context).textTheme.titleLarge,
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    '${entries.length} saved ${_sources ? 'sources' : 'memories'} in this view. Tap a collection to explore.',
+                  ),
+                ] else
                   TextButton.icon(
                     onPressed: () =>
                         setState(() => _category = _selected = null),
                     icon: const Icon(Icons.arrow_back_rounded),
-                    label: Text(
-                      'All collections · ${_collection(selected.key).label}',
-                    ),
+                    label: const Text('All collections'),
                   ),
                 if (groups.isEmpty && !widget.controller.loading)
                   const Padding(
                     padding: EdgeInsets.symmetric(vertical: 32),
                     child: Text(
-                      'Save a memory or source to build your map. Try a broader search if you expected an item here.',
+                      'Your map starts with something worth remembering. Save a memory or source, or try a broader search.',
                     ),
                   ),
               ],
             ),
           ),
         ),
-        if (selected == null)
-          SliverPadding(
-            padding: const EdgeInsets.symmetric(horizontal: 20),
-            sliver: SliverList.builder(
-              itemCount: groups.length,
-              itemBuilder: (context, index) {
-                final group = groups[index],
-                    collection = _collection(groups[index].key);
-                return Padding(
-                  padding: const EdgeInsets.only(left: 27),
-                  child: Container(
-                    decoration: BoxDecoration(
-                      border: Border(
-                        left: BorderSide(color: scheme.outlineVariant),
-                      ),
+        if (selected == null && visible.isNotEmpty)
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: _MobileCollectionConstellation(
+                label: _sources ? 'Sources' : 'Memory',
+                groups: [
+                  for (final group in visible)
+                    (
+                      key: group.key,
+                      label: _collection(group.key).label,
+                      icon: _collection(group.key).icon,
+                      count: group.value.length,
                     ),
-                    padding: const EdgeInsets.fromLTRB(20, 0, 0, 16),
-                    child: Material(
-                      color: scheme.surfaceContainerLow,
-                      borderRadius: BorderRadius.circular(12),
-                      clipBehavior: Clip.antiAlias,
-                      child: InkWell(
-                        onTap: () => setState(() => _category = group.key),
-                        child: Padding(
-                          padding: const EdgeInsets.all(16),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.stretch,
-                            children: [
-                              Row(
-                                children: [
-                                  Icon(
-                                    collection.icon,
-                                    size: 22,
-                                    color: scheme.primary,
-                                  ),
-                                  const SizedBox(width: 12),
-                                  Expanded(
-                                    child: Text(
-                                      collection.label,
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .titleMedium,
-                                    ),
-                                  ),
-                                  const Icon(
-                                    Icons.chevron_right_rounded,
-                                    size: 20,
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 12),
-                              Text(
-                                '${group.value.length} saved items',
-                                style: Theme.of(context).textTheme.bodySmall,
-                              ),
-                              const SizedBox(height: 8),
-                              LinearProgressIndicator(
-                                value: entries.isEmpty
-                                    ? 0
-                                    : group.value.length / entries.length,
-                                minHeight: 3,
-                                semanticsLabel:
-                                    '${collection.label} share of this loaded map',
-                              ),
-                              const SizedBox(height: 12),
-                              Text(
-                                group.value
-                                    .take(2)
-                                    .map((entry) => entry.title)
-                                    .join(' · '),
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                );
-              },
+                ],
+                onSelect: (value) => setState(() => _category = value),
+              ),
             ),
-          )
-        else
+          ),
+        if (selected == null && groups.length > 6)
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  IconButton(
+                    tooltip: 'Previous collections',
+                    onPressed: page > 0
+                        ? () => setState(() => _mapPage = page - 1)
+                        : null,
+                    icon: const Icon(Icons.chevron_left_rounded),
+                  ),
+                  Text(
+                    'Collections ${page * 6 + 1}–${math.min((page + 1) * 6, groups.length)} of ${groups.length}',
+                  ),
+                  IconButton(
+                    tooltip: 'More collections',
+                    onPressed: (page + 1) * 6 < groups.length
+                        ? () => setState(() => _mapPage = page + 1)
+                        : null,
+                    icon: const Icon(Icons.chevron_right_rounded),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        if (selected != null) ...[
+          SliverToBoxAdapter(
+            child: MobileSectionHeader(
+              title: _collection(selected.key).label,
+              description: _collection(selected.key).description,
+            ),
+          ),
           SliverList.builder(
             itemCount: selected.value.length,
             itemBuilder: (context, index) {
@@ -535,14 +480,24 @@ class _KnowledgeLandscapeState extends State<KnowledgeLandscape> {
               );
             },
           ),
+        ],
         SliverPadding(
           padding: const EdgeInsets.all(20),
           sliver: SliverToBoxAdapter(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Text(
-                  'Branches organise saved items by category. They do not assert factual relationships. Connections opens the separately recorded links.',
+                if (widget.onShowConnections != null)
+                  MobileActionTile(
+                    icon: Icons.hub_outlined,
+                    title: 'Follow a connection',
+                    subtitle: 'Explore relationships recorded in your sources.',
+                    onTap: widget.onShowConnections,
+                  ),
+                const SizedBox(height: 12),
+                Text(
+                  'This map groups saved items by collection. Lines here show organisation, not factual relationships.',
+                  style: Theme.of(context).textTheme.bodySmall,
                 ),
                 if (_sources
                     ? widget.controller.canLoadMoreKnowledge
@@ -553,7 +508,7 @@ class _KnowledgeLandscapeState extends State<KnowledgeLandscape> {
                       onPressed: _sources
                           ? widget.controller.loadMoreKnowledge
                           : widget.controller.loadMoreMemory,
-                      child: const Text('Add more items to the map'),
+                      child: const Text('Add more saved items to the map'),
                     ),
                   ),
               ],
@@ -742,6 +697,183 @@ class _KnowledgeLandscapeState extends State<KnowledgeLandscape> {
             ),
     );
   }
+}
+
+/// Stable collection positions avoid force simulation and unreadable label clouds.
+class _MobileCollectionConstellation extends StatelessWidget {
+  const _MobileCollectionConstellation({
+    required this.label,
+    required this.groups,
+    required this.onSelect,
+  });
+  final String label;
+  final List<({String key, String label, IconData icon, int count})> groups;
+  final ValueChanged<String> onSelect;
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) {
+      final theme = Theme.of(context), width = constraints.maxWidth;
+      final textScale = MediaQuery.textScalerOf(context).scale(14) / 14;
+      final height = 450.0 + math.max(0.0, textScale - 1) * 160;
+      final center = Offset(width / 2, height / 2);
+      final positions = <Offset>[
+        for (var i = 0; i < groups.length; i++)
+          Offset(
+            center.dx +
+                math.sin(i * math.pi * 2 / groups.length) * (width / 2 - 59),
+            center.dy -
+                math.cos(i * math.pi * 2 / groups.length) * (height / 2 - 65),
+          ),
+      ];
+      return SizedBox(
+        height: height,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(24),
+          child: InteractiveViewer(
+            minScale: 1,
+            maxScale: 2.5,
+            child: SizedBox(
+              width: width,
+              height: height,
+              child: Stack(
+                children: [
+                  Positioned.fill(
+                    child: CustomPaint(
+                      painter: _CollectionThreadsPainter(
+                        center,
+                        positions,
+                        theme.colorScheme.primary.withValues(alpha: .22),
+                      ),
+                    ),
+                  ),
+                  Positioned(
+                    left: center.dx - 45,
+                    top: center.dy - 45,
+                    child: Container(
+                      width: 90,
+                      height: 90,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: theme.colorScheme.primaryContainer,
+                      ),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(
+                            Icons.auto_awesome_outlined,
+                            color: theme.colorScheme.primary,
+                            size: 25,
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            label,
+                            style: theme.textTheme.labelLarge,
+                            textAlign: TextAlign.center,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  for (var i = 0; i < groups.length; i++)
+                    Positioned(
+                      left: positions[i].dx - 54,
+                      top: positions[i].dy - 56 * textScale,
+                      width: 108,
+                      child: Semantics(
+                        button: true,
+                        label:
+                            '${groups[i].label}, ${groups[i].count} saved items',
+                        child: Material(
+                          color: Colors.transparent,
+                          child: InkWell(
+                            borderRadius: BorderRadius.circular(20),
+                            onTap: () => onSelect(groups[i].key),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 3,
+                                vertical: 8,
+                              ),
+                              child: Column(
+                                children: [
+                                  Container(
+                                    width: 52,
+                                    height: 52,
+                                    decoration: BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      color: theme.colorScheme.surface,
+                                      border: Border.all(
+                                        color: theme.colorScheme.outlineVariant,
+                                      ),
+                                    ),
+                                    child: Icon(
+                                      groups[i].icon,
+                                      color: theme.colorScheme.primary,
+                                      size: 23,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    groups[i].label,
+                                    textAlign: TextAlign.center,
+                                    maxLines: 3,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: theme.textTheme.labelMedium,
+                                  ),
+                                  const SizedBox(height: 3),
+                                  Text(
+                                    '${groups[i].count}',
+                                    style: theme.textTheme.bodySmall,
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    },
+  );
+}
+
+class _CollectionThreadsPainter extends CustomPainter {
+  const _CollectionThreadsPainter(this.center, this.points, this.color);
+  final Offset center;
+  final List<Offset> points;
+  final Color color;
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = color
+      ..strokeWidth = 1.2
+      ..style = PaintingStyle.stroke;
+    for (final point in points) {
+      final path = Path()
+        ..moveTo(center.dx, center.dy)
+        ..quadraticBezierTo(
+          (center.dx + point.dx) / 2 + (point.dy - center.dy) * .12,
+          (center.dy + point.dy) / 2,
+          point.dx,
+          point.dy,
+        );
+      canvas.drawPath(path, paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _CollectionThreadsPainter oldDelegate) =>
+      oldDelegate.center != center ||
+      oldDelegate.color != color ||
+      oldDelegate.points.length != points.length ||
+      !List.generate(
+        points.length,
+        (index) => oldDelegate.points[index] == points[index],
+      ).every((equal) => equal);
 }
 
 class _Entry {

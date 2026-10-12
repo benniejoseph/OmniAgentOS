@@ -706,17 +706,66 @@ class _MarketWorkspaceState extends State<_MarketWorkspace> {
         ),
     ],
   );
+  Future<void> _mobileMarketChoices(
+    List<MarketJson> instruments,
+  ) => showMobileSheet<void>(
+    context: context,
+    title: 'Market & timeframe',
+    builder: (_) => ListenableBuilder(
+      listenable: c,
+      builder: (context, _) => Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          for (final row in instruments)
+            ListTile(
+              title: Text(row['label'] as String),
+              trailing: row['instrumentId'] == c.instrumentId
+                  ? const Icon(Icons.check_circle_rounded)
+                  : const Icon(Icons.circle_outlined),
+              selected: row['instrumentId'] == c.instrumentId,
+              onTap: () =>
+                  c.selectMarket(row['instrumentId'] as String, c.interval),
+            ),
+          const SizedBox(height: 20),
+          Text(
+            'Price interval',
+            style: Theme.of(context).textTheme.titleMedium,
+          ),
+          const SizedBox(height: 12),
+          MobileSegmentBar<String>(
+            items: const [
+              (value: '5min', label: '5 min', icon: null),
+              (value: '15min', label: '15 min', icon: null),
+              (value: '1h', label: '1 hour', icon: null),
+            ],
+            value: c.interval,
+            onChanged: (value) => c.selectMarket(c.instrumentId, value),
+          ),
+          const SizedBox(height: 24),
+          OutlinedButton.icon(
+            onPressed: c.loading.contains('bars') ? null : c.providerRefresh,
+            icon: const Icon(Icons.cloud_download_outlined),
+            label: const Text('Update saved prices'),
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Updates the saved price evidence. Prices are not streamed live.',
+          ),
+        ],
+      ),
+    ),
+  );
+
   Widget _mobileWorkspace(List<MarketJson> instruments) {
     final selected = instruments
         .where((row) => row['instrumentId'] == c.instrumentId)
         .firstOrNull;
     final snapshot = c.data('snapshot');
-    const sections = ['Brief', 'Events', 'Structure', 'Simulations', 'Outlook'];
     return Column(
       children: [
         MobilePageHeader(
           title: 'Markets',
-          subtitle: 'Research, context and evidence.',
+          subtitle: 'See the context. Find your perspective.',
           actions: [
             IconButton(
               tooltip: 'Refresh market evidence',
@@ -730,85 +779,52 @@ class _MarketWorkspaceState extends State<_MarketWorkspace> {
             key: const PageStorageKey('mobile-markets'),
             padding: const EdgeInsets.fromLTRB(20, 0, 20, 32),
             children: [
-              if (instruments.isNotEmpty)
-                DropdownButtonFormField<String>(
-                  initialValue: selected == null ? null : c.instrumentId,
-                  isExpanded: true,
-                  decoration: const InputDecoration(
-                    labelText: 'Market',
-                    prefixIcon: Icon(Icons.public_rounded),
-                  ),
-                  items: [
-                    for (final row in instruments)
-                      DropdownMenuItem(
-                        value: row['instrumentId'] as String,
-                        child: Text(row['label'] as String),
+              Row(
+                children: [
+                  Expanded(
+                    child: Align(
+                      alignment: Alignment.centerLeft,
+                      child: TextButton.icon(
+                        onPressed: () => _mobileMarketChoices(instruments),
+                        icon: const Icon(Icons.public_rounded, size: 20),
+                        label: Text(
+                          '${selected?['label'] ?? 'Choose market'} · ${switch (c.interval) {
+                            '5min' => '5 min',
+                            '15min' => '15 min',
+                            _ => '1 hour',
+                          }}',
+                        ),
                       ),
-                  ],
-                  onChanged: (value) {
-                    if (value != null) c.selectMarket(value, c.interval);
-                  },
-                ),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Market and timeframe',
+                    onPressed: () => _mobileMarketChoices(instruments),
+                    icon: const Icon(Icons.tune_rounded),
+                  ),
+                ],
+              ),
               if (selected?['identityWarning'] case final String warning)
                 Padding(
-                  padding: const EdgeInsets.only(top: 8),
+                  padding: const EdgeInsets.only(bottom: 8),
                   child: Text(
                     warning,
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ),
-              const SizedBox(height: 12),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  for (final interval in ['5min', '15min', '1h'])
-                    ChoiceChip(
-                      label: Text(switch (interval) {
-                        '5min' => '5 min',
-                        '15min' => '15 min',
-                        _ => '1 hour',
-                      }),
-                      selected: c.interval == interval,
-                      onSelected: (_) =>
-                          c.selectMarket(c.instrumentId, interval),
-                    ),
-                  OutlinedButton.icon(
-                    onPressed: c.loading.contains('bars')
-                        ? null
-                        : c.providerRefresh,
-                    icon: const Icon(Icons.cloud_download_outlined, size: 18),
-                    label: const Text('Update prices'),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Text(
-                snapshot == null
-                    ? 'Choose or fetch saved price evidence below.'
-                    : 'Evidence as of ${snapshot['asOf']}',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-              const SizedBox(height: 4),
-              const Text(
-                'Stored evidence, not a live price feed. Research does not execute trades.',
-                style: TextStyle(fontSize: 12),
-              ),
               if (c.failures['bars'] != null) notice(c.failures['bars']!),
               if (c.loading.contains('bars')) const LinearProgressIndicator(),
-              const SizedBox(height: 20),
-              DropdownButtonFormField<int>(
-                key: ValueKey(('mobile-market-section', c.tab)),
-                initialValue: c.tab,
-                isExpanded: true,
-                decoration: const InputDecoration(labelText: 'Explore'),
-                items: [
-                  for (final (index, label) in sections.indexed)
-                    DropdownMenuItem(value: index, child: Text(label)),
+              const SizedBox(height: 8),
+              MobileSegmentBar<int>(
+                items: const [
+                  (value: 0, label: 'Overview', icon: null),
+                  (value: 4, label: 'Outlook', icon: null),
+                  (value: 1, label: 'Events', icon: null),
+                  (value: 2, label: 'Structure', icon: null),
+                  (value: 3, label: 'Simulations', icon: null),
                 ],
-                onChanged: (value) {
-                  if (value != null) c.selectTab(value);
-                },
+                value: c.tab,
+                onChanged: c.selectTab,
               ),
               const SizedBox(height: 20),
               switch (c.tab) {
@@ -817,30 +833,47 @@ class _MarketWorkspaceState extends State<_MarketWorkspace> {
                 3 => backtests(),
                 4 => journal(),
                 _ => Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     state(
                       'overview',
                       ready: (data) =>
                           marketOverviewPanel(overview: data, bars: snapshot),
                     ),
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 20),
+                    MobileSurface(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const MobileStatusPill(
+                            label: 'Research perspective',
+                            icon: Icons.explore_outlined,
+                          ),
+                          const SizedBox(height: 16),
+                          Text(
+                            'The bigger picture',
+                            style: Theme.of(context).textTheme.titleLarge,
+                          ),
+                          const SizedBox(height: 8),
+                          const Text(
+                            'Read your saved daily and weekly outlooks, then follow the evidence behind each scenario.',
+                          ),
+                          const SizedBox(height: 16),
+                          FilledButton.tonalIcon(
+                            onPressed: () => c.selectTab(4),
+                            icon: const Icon(Icons.arrow_forward_rounded),
+                            label: const Text('Daily & weekly outlook'),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 16),
                     if (snapshot != null)
                       TextButton.icon(
                         onPressed: () => inspect('Price evidence', snapshot),
                         icon: const Icon(Icons.fact_check_outlined),
                         label: const Text('See price source'),
                       ),
-                    ListTile(
-                      contentPadding: EdgeInsets.zero,
-                      leading: const Icon(Icons.explore_outlined),
-                      title: const Text('Daily & weekly outlook'),
-                      subtitle: const Text(
-                        'Saved scenarios, evidence and outcomes',
-                      ),
-                      trailing: const Icon(Icons.chevron_right_rounded),
-                      onTap: () => c.selectTab(4),
-                    ),
                     ExpansionTile(
                       tilePadding: EdgeInsets.zero,
                       title: const Text('Saved price history'),
@@ -849,6 +882,11 @@ class _MarketWorkspaceState extends State<_MarketWorkspace> {
                   ],
                 ),
               },
+              const SizedBox(height: 20),
+              Text(
+                'Saved evidence, not live prices. Research does not execute trades.',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
               if (c.intents.isNotEmpty ||
                   c.recoveryError != null ||
                   !c.recoveryReady) ...[

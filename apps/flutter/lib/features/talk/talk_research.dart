@@ -342,67 +342,201 @@ class TalkResearchOptionsBar extends StatelessWidget {
   final ValueChanged<bool> onToggle;
   final ValueChanged<TalkResearchOptions> onChanged;
   @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.only(bottom: 8),
-    child: Align(
-      alignment: Alignment.centerLeft,
-      child: Wrap(
-        spacing: 8,
-        runSpacing: 8,
-        crossAxisAlignment: WrapCrossAlignment.center,
-        children: [
-          FilterChip(
-            avatar: const Icon(Icons.travel_explore_rounded, size: 17),
-            label: const Text('Research'),
-            selected: enabled,
-            onSelected: onToggle,
-          ),
-          if (enabled) ...[
-            SegmentedButton<String>(
-              direction:
-                  usesMobilePresentation() &&
-                      MediaQuery.textScalerOf(context).scale(14) > 20
-                  ? Axis.vertical
-                  : Axis.horizontal,
-              segments: const [
-                ButtonSegment(value: 'quick', label: Text('Quick')),
-                ButtonSegment(value: 'deep', label: Text('Deep')),
-              ],
-              selected: {options.depth},
-              showSelectedIcon: false,
-              onSelectionChanged: (value) =>
-                  onChanged(options.withDepth(value.first)),
+  Widget build(BuildContext context) {
+    if (usesMobilePresentation()) {
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 8),
+        child: Row(
+          children: [
+            Expanded(
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: OutlinedButton.icon(
+                  onPressed: () => _openMobileResearch(context),
+                  icon: const Icon(Icons.travel_explore_rounded, size: 19),
+                  label: Text(
+                    enabled
+                        ? 'Research · ${options.depth == 'deep' ? 'Deep' : 'Quick'}'
+                        : 'Research',
+                  ),
+                ),
+              ),
             ),
-            IconButton(
-              tooltip: 'Research questions and sources',
-              icon: const Icon(Icons.tune_rounded),
-              onPressed: () async {
-                final next = usesMobilePresentation()
-                    ? await showMobileSheet<TalkResearchOptions>(
-                        context: context,
-                        title: 'Shape your research',
-                        builder: (_) =>
-                            _ResearchOptionsDialog(options: options),
-                      )
-                    : await showDialog<TalkResearchOptions>(
-                        context: context,
-                        builder: (_) =>
-                            _ResearchOptionsDialog(options: options),
-                      );
-                if (next != null) onChanged(next);
+            if (enabled)
+              IconButton(
+                tooltip: 'Turn off research',
+                onPressed: () => onToggle(false),
+                icon: const Icon(Icons.close_rounded, size: 20),
+              ),
+          ],
+        ),
+      );
+    }
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            FilterChip(
+              avatar: const Icon(Icons.travel_explore_rounded, size: 17),
+              label: const Text('Research'),
+              selected: enabled,
+              onSelected: onToggle,
+            ),
+            if (enabled) ...[
+              SegmentedButton<String>(
+                direction:
+                    usesMobilePresentation() &&
+                        MediaQuery.textScalerOf(context).scale(14) > 20
+                    ? Axis.vertical
+                    : Axis.horizontal,
+                segments: const [
+                  ButtonSegment(value: 'quick', label: Text('Quick')),
+                  ButtonSegment(value: 'deep', label: Text('Deep')),
+                ],
+                selected: {options.depth},
+                showSelectedIcon: false,
+                onSelectionChanged: (value) =>
+                    onChanged(options.withDepth(value.first)),
+              ),
+              IconButton(
+                tooltip: 'Research questions and sources',
+                icon: const Icon(Icons.tune_rounded),
+                onPressed: () async {
+                  final next = usesMobilePresentation()
+                      ? await showMobileSheet<TalkResearchOptions>(
+                          context: context,
+                          title: 'Shape your research',
+                          builder: (_) =>
+                              _ResearchOptionsDialog(options: options),
+                        )
+                      : await showDialog<TalkResearchOptions>(
+                          context: context,
+                          builder: (_) =>
+                              _ResearchOptionsDialog(options: options),
+                        );
+                  if (next != null) onChanged(next);
+                },
+              ),
+              Text(
+                options.depth == 'deep'
+                    ? 'Detailed report · continues in the background'
+                    : 'Focused report · a smaller search budget',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openMobileResearch(BuildContext context) async {
+    var active = enabled;
+    var selected = options;
+    await showMobileSheet<void>(
+      context: context,
+      title: 'Research',
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (context, update) => Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            SwitchListTile.adaptive(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Research this message'),
+              subtitle: const Text(
+                'Find sources and bring the evidence together.',
+              ),
+              value: active,
+              onChanged: (value) {
+                update(() => active = value);
+                onToggle(value);
               },
             ),
-            Text(
-              options.depth == 'deep'
-                  ? 'Detailed report · continues in the background'
-                  : 'Focused report · a smaller search budget',
-              style: Theme.of(context).textTheme.bodySmall,
+            const SizedBox(height: 12),
+            for (final choice in const [
+              (
+                depth: 'quick',
+                title: 'Quick',
+                detail: 'A focused report with a smaller search budget.',
+                icon: Icons.bolt_outlined,
+              ),
+              (
+                depth: 'deep',
+                title: 'Deep',
+                detail: 'A detailed report that continues in the background.',
+                icon: Icons.layers_outlined,
+              ),
+            ])
+              Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: MobileSurface(
+                  padding: EdgeInsets.zero,
+                  child: Semantics(
+                    selected: selected.depth == choice.depth,
+                    child: ListTile(
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 10,
+                      ),
+                      leading: Icon(
+                        choice.icon,
+                        color: Theme.of(context).colorScheme.primary,
+                      ),
+                      title: Text(choice.title),
+                      subtitle: Text(choice.detail),
+                      trailing: Icon(
+                        selected.depth == choice.depth
+                            ? Icons.radio_button_checked_rounded
+                            : Icons.radio_button_unchecked_rounded,
+                        color: selected.depth == choice.depth
+                            ? Theme.of(context).colorScheme.primary
+                            : null,
+                      ),
+                      onTap: () {
+                        final next = selected.withDepth(choice.depth);
+                        final enableResearch = !active;
+                        update(() {
+                          selected = next;
+                          active = true;
+                        });
+                        onChanged(next);
+                        if (enableResearch) onToggle(true);
+                      },
+                    ),
+                  ),
+                ),
+              ),
+            const SizedBox(height: 6),
+            OutlinedButton.icon(
+              onPressed: () async {
+                final next = await showMobileSheet<TalkResearchOptions>(
+                  context: context,
+                  title: 'Questions & sources',
+                  builder: (_) => _ResearchOptionsDialog(options: selected),
+                );
+                if (next == null || !context.mounted) return;
+                update(() => selected = next);
+                onChanged(next);
+              },
+              icon: const Icon(Icons.tune_rounded, size: 19),
+              label: const Text('Questions & sources'),
+            ),
+            const SizedBox(height: 8),
+            FilledButton(
+              onPressed: () => Navigator.of(sheetContext).pop(),
+              child: const Text('Done'),
             ),
           ],
-        ],
+        ),
       ),
-    ),
-  );
+    );
+  }
 }
 
 class _ResearchOptionsDialog extends StatefulWidget {
@@ -640,24 +774,7 @@ class TalkResearchPanel extends StatelessWidget {
                   workflow?.terminal == true &&
                   workflow!.draft.isNotEmpty)
                 TextButton(
-                  onPressed: () => showDialog<void>(
-                    context: context,
-                    builder: (context) => AlertDialog(
-                      title: const Text('Unfinished draft'),
-                      content: SizedBox(
-                        width: 700,
-                        child: SingleChildScrollView(
-                          child: TalkRichMessage(text: workflow!.draft),
-                        ),
-                      ),
-                      actions: [
-                        TextButton(
-                          onPressed: () => Navigator.pop(context),
-                          child: const Text('Close'),
-                        ),
-                      ],
-                    ),
-                  ),
+                  onPressed: () => _openDraft(context, workflow!.draft),
                   child: const Text('Read saved draft'),
                 ),
               if (onRefresh != null)
@@ -711,6 +828,55 @@ class TalkResearchPanel extends StatelessWidget {
       ),
     );
   }
+
+  Future<void> _openDraft(
+    BuildContext context,
+    String draft,
+  ) => showDialog<void>(
+    context: context,
+    builder: (context) => usesMobilePresentation()
+        ? Dialog.fullscreen(
+            child: Scaffold(
+              appBar: AppBar(
+                title: const Text('Saved draft'),
+                leading: IconButton(
+                  tooltip: 'Close draft',
+                  icon: const Icon(Icons.close_rounded),
+                  onPressed: () => Navigator.pop(context),
+                ),
+              ),
+              body: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(24, 12, 24, 32),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text(
+                      'This research stopped before the report was complete.',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                    TalkRichMessage(text: draft),
+                  ],
+                ),
+              ),
+            ),
+          )
+        : AlertDialog(
+            title: const Text('Unfinished draft'),
+            content: SizedBox(
+              width: 700,
+              child: SingleChildScrollView(child: TalkRichMessage(text: draft)),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Close'),
+              ),
+            ],
+          ),
+  );
 
   Future<void> _copyReport(BuildContext context, String text) async {
     await Clipboard.setData(ClipboardData(text: text));

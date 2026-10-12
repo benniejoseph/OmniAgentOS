@@ -132,24 +132,28 @@ class _ActivityViewState extends State<ActivityView> {
           SliverToBoxAdapter(
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 20),
-              child: Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  for (final option in ActivityGroup.values)
-                    if (option == ActivityGroup.all ||
-                        option == group ||
-                        !known ||
-                        snapshot!.countFor(option) > 0)
-                      ChoiceChip(
-                        selected: group == option,
-                        label: Text(option.label),
-                        onSelected: (_) {
-                          setState(_clearDetail);
-                          controller.select(option);
-                        },
-                      ),
-                ],
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: [
+                    for (final option in ActivityGroup.values)
+                      if (option == ActivityGroup.all ||
+                          option == group ||
+                          !known ||
+                          snapshot!.countFor(option) > 0)
+                        Padding(
+                          padding: const EdgeInsets.only(right: 8),
+                          child: ChoiceChip(
+                            selected: group == option,
+                            label: Text(option.label),
+                            onSelected: (_) {
+                              setState(_clearDetail);
+                              controller.select(option);
+                            },
+                          ),
+                        ),
+                  ],
+                ),
               ),
             ),
           ),
@@ -236,47 +240,123 @@ class _ActivityViewState extends State<ActivityView> {
                           ),
                         ),
                       ),
-                    ListTile(
-                      contentPadding: const EdgeInsets.symmetric(vertical: 8),
-                      leading: Icon(
-                        failed || attention
-                            ? Icons.error_outline_rounded
-                            : item.group == ActivityGroup.working
-                            ? Icons.timelapse_rounded
-                            : item.source == 'notifications'
-                            ? Icons.notifications_none_rounded
-                            : item.canonicalStatus == 'succeeded'
-                            ? Icons.check_circle_outline_rounded
-                            : Icons.chat_bubble_outline_rounded,
-                        color: color,
-                      ),
-                      title: Text(
-                        _title(item),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      subtitle: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+                    InkWell(
+                      onTap: () => widget.onOpen(item.nativeLocation),
+                      borderRadius: BorderRadius.circular(16),
+                      child: Stack(
                         children: [
-                          Text(
-                            '${_state(item)} · ${MaterialLocalizations.of(context).formatTimeOfDay(TimeOfDay.fromDateTime(item.at.toLocal()))}',
-                            style: TextStyle(color: color),
-                          ),
-                          if (item.summary.trim().isNotEmpty)
-                            Padding(
-                              padding: const EdgeInsets.only(top: 4),
-                              child: Text(
-                                _summary(item),
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                              ),
+                          Positioned(
+                            left: 9,
+                            top: 0,
+                            bottom: 0,
+                            child: Container(
+                              width: 1,
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .outlineVariant,
                             ),
+                          ),
+                          Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 16),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Container(
+                                  width: 19,
+                                  height: 19,
+                                  decoration: BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .surface,
+                                    border: Border.all(color: color, width: 2),
+                                  ),
+                                  child: Icon(
+                                    failed
+                                        ? Icons.close_rounded
+                                        : attention
+                                        ? Icons.priority_high_rounded
+                                        : item.group == ActivityGroup.working
+                                        ? Icons.more_horiz_rounded
+                                        : item.canonicalStatus == 'succeeded'
+                                        ? Icons.check_rounded
+                                        : Icons.circle_outlined,
+                                    size: 12,
+                                    color: color,
+                                  ),
+                                ),
+                                const SizedBox(width: 14),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Row(
+                                        children: [
+                                          Expanded(
+                                            child: Text(
+                                              _state(item),
+                                              style: Theme.of(context)
+                                                  .textTheme
+                                                  .labelMedium
+                                                  ?.copyWith(color: color),
+                                            ),
+                                          ),
+                                          Text(
+                                            MaterialLocalizations.of(context)
+                                                .formatTimeOfDay(
+                                                  TimeOfDay.fromDateTime(
+                                                    item.at.toLocal(),
+                                                  ),
+                                                ),
+                                            style: Theme.of(context)
+                                                .textTheme
+                                                .bodySmall,
+                                          ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 7),
+                                      Text(
+                                        _title(item),
+                                        maxLines: 3,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .titleMedium,
+                                      ),
+                                      if (item.summary.trim().isNotEmpty) ...[
+                                        const SizedBox(height: 6),
+                                        Text(
+                                          _summary(item),
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .bodyMedium
+                                              ?.copyWith(
+                                                color: Theme.of(context)
+                                                    .colorScheme
+                                                    .onSurfaceVariant,
+                                              ),
+                                        ),
+                                      ],
+                                    ],
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                const Padding(
+                                  padding: EdgeInsets.only(top: 22),
+                                  child: Icon(
+                                    Icons.chevron_right_rounded,
+                                    size: 18,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
                         ],
                       ),
-                      trailing: const Icon(Icons.chevron_right_rounded),
-                      onTap: () => widget.onOpen(item.nativeLocation),
                     ),
-                    const Divider(height: 1),
                   ],
                 );
               },

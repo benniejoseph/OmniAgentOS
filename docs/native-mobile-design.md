@@ -1,6 +1,42 @@
 # Asael mobile experience
 
-12 October 2026. Android and iOS presentation, version 1.30.0.
+12 October 2026. Android and iOS presentation, version 1.31.0.
+
+## Design revision after phone feedback
+
+The 1.30.0 release added mobile navigation but retained too much of the shared
+desktop information hierarchy. This revision changes the actual compositions:
+one personal brief and agenda on Today, a conversation-led Assistant, intentional
+capture modes, a project notebook, content-first Memory, and grouped preferences.
+The dedicated `MobileAppTheme` adapts typography, fields, surfaces and touch
+controls while inheriting the existing colour contract. Web and Mac retain their
+own theme and presentation boundary.
+
+The design work is recorded in the [Asael mobile Stitch project](https://stitch.withgoogle.com/projects/8430793197862040849).
+It contains 35 reference screens: five primary destinations, ten settings and
+control screens, twelve Work and knowledge screens, and eight voice, capture,
+research and recovery flows. Implementation uses the compositions with the
+current native field and action contracts; it is not an import of generated
+HTML or a promise of every fictional feature shown in a reference.
+Stitch screens are design references with synthetic examples. Generated claims
+about hardware, subscriptions, encryption, permission readiness, model names or
+health metrics are not product requirements and must not be copied into the app.
+Only existing native data and governed actions can populate the implemented UI.
+
+Pinterest references inspected during this revision:
+
+- [Daily planner and task flows](https://in.pinterest.com/pin/34691859628693056/):
+  clear personal entry point, one prominent focus, short agenda rows, and focused
+  task editing. Asael retains its own palette and factual task data.
+- [Recording interface reference](https://in.pinterest.com/pin/292171094593870801/):
+  a dedicated recording stage, useful elapsed time and sparse reachable controls.
+  Asael retains its existing consent and real recording state.
+
+Reusable phone controls are in `app/mobile/mobile_page_scaffold.dart`:
+`MobileSurface`, `MobileSegmentBar`, `MobileStatusPill`, headers and grouped action
+rows. Short option sheets scroll with the keyboard. Segments scroll when text
+scaling or long category names cannot fit. Spotlight surfaces provide their own
+readable dark theme rather than assuming surrounding text colours.
 
 ## Product direction
 
@@ -20,7 +56,11 @@ The mobile shell does not add a duplicate page title above each feature. Feature
 
 Keep the production palette exactly: light canvas #FAF9F6, white surface, charcoal #242321, gold #806019; dark canvas #191A1B, surface #222325, ink #F4F1EA and gold #E2BD74. Consume AppTheme and its semantic tokens, not page-specific color constants. Status has a readable label, not a color-only dot. Preserve high contrast and text scaling.
 
-Use system sans typography, 24dp page titles, 20dp sections, 16dp primary rows and reading text, 14dp controls and 13dp supporting text. Screen gutters are generally 20dp, with 12–16dp inside grouped content. Controls retain at least 48dp touch targets. A row grows with its content; fixed-height cards must not clip larger text.
+Use system sans typography, 30dp primary page titles, 20–24dp detail headings,
+16dp primary rows and reading text, 14–15dp controls and 13dp supporting text.
+Screen gutters are generally 20dp, with 12–16dp inside grouped content. Controls
+retain at least 48dp touch targets. A row grows with its content; fixed-height
+cards must not clip larger text.
 
 Gold identifies selected navigation, useful actions and ATLAS details. Lists use hierarchy, spacing and dividers; there is no repeated ornamental card grid. No decorative blur or animated background. Motion is finite, normally 180–220ms, respects the system preference and never delays access to content. ATLAS animation remains tied to its real state and existing power/lifecycle preferences.
 
@@ -63,3 +103,12 @@ The decisions above adapt primary platform guidance to Asael rather than reprodu
 - [Flutter performance practices](https://docs.flutter.dev/perf/best-practices): local rebuilds, lazy collections and avoiding expensive rendering operations.
 
 Validation for this release uses compilation, signed builds and focused on-device inspection. Test suites and audits are deferred at the owner’s request. No frame-rate or memory improvement is claimed without measurement.
+
+The optional `tool/mobile_design_preview.dart` entrypoint renders the actual
+Library and shared phone components without application bootstrap, sessions,
+repositories or device bridges. Other preview pages are explicitly sample
+compositions. It can be compiled with `flutter build web --release --no-pub
+--target=tool/mobile_design_preview.dart --output=build/mobile-design-preview`.
+This provides visual checks for light/dark and larger text without disabling
+Android's protected screenshot boundary. It does not validate live feature
+data, recording, authentication or the complete installed application.

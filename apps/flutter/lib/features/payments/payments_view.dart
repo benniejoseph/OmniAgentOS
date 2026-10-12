@@ -261,21 +261,14 @@ class _PaymentsViewState extends State<PaymentsView> {
         ),
         Padding(
           padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
-          child: Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              for (final (index, label) in [
-                'To review',
-                'History',
-                'Signers',
-              ].indexed)
-                ChoiceChip(
-                  label: Text(label),
-                  selected: _mobileSection == index,
-                  onSelected: (_) => setState(() => _mobileSection = index),
-                ),
+          child: MobileSegmentBar<int>(
+            items: const [
+              (value: 0, label: 'To review', icon: Icons.receipt_long_outlined),
+              (value: 1, label: 'History', icon: Icons.history_rounded),
+              (value: 2, label: 'Signers', icon: Icons.key_outlined),
             ],
+            value: _mobileSection,
+            onChanged: (value) => setState(() => _mobileSection = value),
           ),
         ),
         Expanded(
@@ -287,17 +280,25 @@ class _PaymentsViewState extends State<PaymentsView> {
                 const SliverToBoxAdapter(
                   child: Padding(
                     padding: EdgeInsets.fromLTRB(20, 4, 20, 16),
-                    child: Text(
-                      'This phone shows payment information only. Open the secure browser workspace to review purchase terms or manage a signer.',
-                    ),
-                  ),
-                ),
-                const SliverToBoxAdapter(
-                  child: Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 20),
-                    child: NativeWorkspaceBrowserButton(
-                      path: '/app/payments',
-                      label: 'Open secure payment workspace',
+                    child: MobileSurface(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          MobileStatusPill(
+                            label: 'Read-only on this phone',
+                            icon: Icons.visibility_outlined,
+                          ),
+                          SizedBox(height: 12),
+                          Text(
+                            'Review purchase terms and manage payment signers in your secure browser workspace.',
+                          ),
+                          SizedBox(height: 14),
+                          NativeWorkspaceBrowserButton(
+                            path: '/app/payments',
+                            label: 'Open payment workspace',
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 ),

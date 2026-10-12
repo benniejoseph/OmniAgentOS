@@ -254,61 +254,111 @@ class _MonitoringWorkspaceViewState extends State<MonitoringWorkspaceView> {
         Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              'Operations at a glance',
-              style: Theme.of(context).textTheme.titleLarge,
-            ),
-            const SizedBox(height: 6),
-            const Text(
-              'Read current health, measurements and delivery outcomes in one place.',
-            ),
-            const SizedBox(height: 16),
-            _HealthStrip(controller: c),
-            const SizedBox(height: 12),
-            Wrap(
-              spacing: 10,
-              runSpacing: 10,
-              children: [
-                _Metric(
-                  'SLO assessment',
-                  c.slo.data?.assessment ?? _sourceLabel(c.slo.state),
-                  'Measurements cover the last 24 hours',
+            if (usesMobilePresentation())
+              MobileSurface(
+                padding: EdgeInsets.zero,
+                child: ExpansionTile(
+                  key: const PageStorageKey<String>(
+                    'mobile-monitoring-overview',
+                  ),
+                  tilePadding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 4,
+                  ),
+                  leading: const Icon(Icons.monitor_heart_outlined),
+                  title: const Text('Health overview'),
+                  subtitle: Text(
+                    c.health.data == null
+                        ? _sourceLabel(c.health.state)
+                        : _label(c.health.data!.status.name),
+                  ),
+                  childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                  children: [
+                    _HealthStrip(controller: c),
+                    Wrap(
+                      spacing: 10,
+                      runSpacing: 10,
+                      children: [
+                        _Metric(
+                          'SLO assessment',
+                          c.slo.data?.assessment ?? _sourceLabel(c.slo.state),
+                          'Measurements cover the last 24 hours',
+                        ),
+                        _Metric(
+                          'Active incidents',
+                          c.incidents.data == null
+                              ? _sourceLabel(c.incidents.state)
+                              : '${c.incidents.data!.active}',
+                          'Statistics sample up to 500 recent incidents',
+                        ),
+                        _Metric(
+                          'Failed deliveries',
+                          c.alerts.data == null
+                              ? _sourceLabel(c.alerts.state)
+                              : '${c.alerts.data!.failed}',
+                          'Statistics sample up to 200 recent deliveries',
+                        ),
+                      ],
+                    ),
+                  ],
                 ),
-                _Metric(
-                  'Active incidents',
-                  c.incidents.data == null
-                      ? _sourceLabel(c.incidents.state)
-                      : '${c.incidents.data!.active}',
-                  'Statistics sample up to 500 recent incidents',
-                ),
-                _Metric(
-                  'Failed deliveries',
-                  c.alerts.data == null
-                      ? _sourceLabel(c.alerts.state)
-                      : '${c.alerts.data!.failed}',
-                  'Statistics sample up to 200 recent deliveries',
-                ),
-              ],
-            ),
+              )
+            else ...[
+              Text(
+                'Operations at a glance',
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+              const SizedBox(height: 6),
+              const Text(
+                'Read current health, measurements and delivery outcomes in one place.',
+              ),
+              const SizedBox(height: 16),
+              _HealthStrip(controller: c),
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 10,
+                runSpacing: 10,
+                children: [
+                  _Metric(
+                    'SLO assessment',
+                    c.slo.data?.assessment ?? _sourceLabel(c.slo.state),
+                    'Measurements cover the last 24 hours',
+                  ),
+                  _Metric(
+                    'Active incidents',
+                    c.incidents.data == null
+                        ? _sourceLabel(c.incidents.state)
+                        : '${c.incidents.data!.active}',
+                    'Statistics sample up to 500 recent incidents',
+                  ),
+                  _Metric(
+                    'Failed deliveries',
+                    c.alerts.data == null
+                        ? _sourceLabel(c.alerts.state)
+                        : '${c.alerts.data!.failed}',
+                    'Statistics sample up to 200 recent deliveries',
+                  ),
+                ],
+              ),
+            ],
             const SizedBox(height: 20),
             if (usesMobilePresentation())
-              DropdownButtonFormField<MonitoringSection>(
-                initialValue: c.section,
-                isExpanded: true,
-                decoration: const InputDecoration(
-                  labelText: 'View',
-                  prefixIcon: Icon(Icons.view_agenda_outlined),
-                ),
+              MobileSegmentBar<MonitoringSection>(
                 items: [
                   for (final section in MonitoringSection.values)
-                    DropdownMenuItem(
+                    (
                       value: section,
-                      child: Text(section.label),
+                      label: switch (section) {
+                        MonitoringSection.slo => 'Service levels',
+                        MonitoringSection.incidents => 'Issues',
+                        MonitoringSection.alerts => 'Deliveries',
+                        MonitoringSection.timeline => 'Timeline',
+                      },
+                      icon: null,
                     ),
                 ],
-                onChanged: (section) {
-                  if (section != null) c.selectSection(section);
-                },
+                value: c.section,
+                onChanged: c.selectSection,
               )
             else
               Wrap(

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../app/platform/mobile_presentation.dart';
 import '../../core/network/native_workspace_access.dart';
 import '../capture/library_view.dart';
 
@@ -792,18 +793,28 @@ class _TalkCommandComposerState extends State<TalkCommandComposer> {
             decoration: InputDecoration(
               hintText: widget.hintText,
               filled: true,
-              fillColor: Theme.of(context).colorScheme.surfaceContainerLowest,
+              fillColor: usesMobilePresentation()
+                  ? Theme.of(context).colorScheme.surface
+                  : Theme.of(context).colorScheme.surfaceContainerLowest,
               contentPadding: const EdgeInsets.symmetric(
                 horizontal: 16,
                 vertical: 16,
               ),
               border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(16),
+                borderRadius: BorderRadius.circular(
+                  usesMobilePresentation() ? 28 : 16,
+                ),
               ),
               enabledBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(16),
+                borderRadius: BorderRadius.circular(
+                  usesMobilePresentation() ? 28 : 16,
+                ),
                 borderSide: BorderSide(
-                  color: Theme.of(context).colorScheme.outlineVariant,
+                  color:
+                      usesMobilePresentation() &&
+                          !MediaQuery.highContrastOf(context)
+                      ? Colors.transparent
+                      : Theme.of(context).colorScheme.outlineVariant,
                 ),
               ),
               prefixIcon: IconButton(

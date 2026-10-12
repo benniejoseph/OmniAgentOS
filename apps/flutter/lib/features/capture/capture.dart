@@ -71,6 +71,7 @@ class _CaptureViewState extends State<CaptureView> {
   bool dropping = false;
   bool picking = false;
   CaptureMode mode = CaptureMode.note;
+  bool _mobileEditorOpen = false;
   late CaptureRecordingController recording;
   int _scopeGeneration = 0, _intakeEpoch = 0;
   bool get _busy =>
@@ -119,6 +120,7 @@ class _CaptureViewState extends State<CaptureView> {
     batchFiles.clear();
     dropSummary = null;
     picking = dropping = false;
+    _mobileEditorOpen = false;
   }
 
   void _authorityChanged() {
@@ -552,8 +554,18 @@ class _CaptureViewState extends State<CaptureView> {
     });
   }
 
-  Widget _mobileForm(CaptureController controller) {
-    final scheme = Theme.of(context).colorScheme;
+  Widget _mobileStudio(CaptureController controller) {
+    final theme = Theme.of(context);
+    final hasDraft =
+        title.text.isNotEmpty ||
+        note.text.isNotEmpty ||
+        tags.text.isNotEmpty ||
+        attachment != null ||
+        batchFiles.isNotEmpty;
+    void open(CaptureMode next) => setState(() {
+      mode = next;
+      _mobileEditorOpen = true;
+    });
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -564,16 +576,204 @@ class _CaptureViewState extends State<CaptureView> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  Text('Capture', style: theme.textTheme.headlineLarge),
+                  const SizedBox(height: 8),
+                  Text(
+                    'A place for every thought.',
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            IconButton.filledTonal(
+              tooltip: 'Saved sources',
+              onPressed: controller.available
+                  ? () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => const NativeLibraryPage(),
+                      ),
+                    )
+                  : null,
+              icon: const Icon(Icons.folder_open_outlined),
+            ),
+          ],
+        ),
+        const SizedBox(height: 28),
+        MobileSurface(
+          spotlight: true,
+          padding: EdgeInsets.zero,
+          child: Builder(
+            builder: (context) => InkWell(
+              borderRadius: BorderRadius.circular(16),
+              onTap: _busy ? null : () => context.go('/capture?section=listen'),
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.graphic_eq_rounded,
+                          size: 30,
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
+                        const Spacer(),
+                        const Icon(Icons.arrow_outward_rounded, size: 22),
+                      ],
+                    ),
+                    const SizedBox(height: 24),
+                    Text(
+                      'Be in the moment.',
+                      style: Theme.of(context).textTheme.headlineSmall,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Turn conversations into notes, people and next steps.',
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        height: 1.5,
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                    const MobileStatusPill(
+                      label: 'Open Listen',
+                      icon: Icons.mic_none_rounded,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 24),
+        Text(
+          'What would you like to keep?',
+          style: theme.textTheme.titleMedium,
+        ),
+        const SizedBox(height: 14),
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final wide =
+                constraints.maxWidth >= 340 &&
+                MediaQuery.textScalerOf(context).scale(14) < 22;
+            final width = wide
+                ? (constraints.maxWidth - 12) / 2
+                : constraints.maxWidth;
+            return Wrap(
+              spacing: 12,
+              runSpacing: 12,
+              children: [
+                SizedBox(
+                  width: width,
+                  child: _MobileCaptureChoice(
+                    icon: Icons.edit_note_rounded,
+                    title: 'Write a note',
+                    subtitle: 'Ideas, links, reminders',
+                    onTap: _busy ? null : () => open(CaptureMode.note),
+                  ),
+                ),
+                SizedBox(
+                  width: width,
+                  child: _MobileCaptureChoice(
+                    icon: Icons.document_scanner_outlined,
+                    title: 'Scan a moment',
+                    subtitle: 'A page, slide or photo',
+                    onTap: _busy
+                        ? null
+                        : () {
+                            open(CaptureMode.upload);
+                            pickImage(ImageSource.camera, CaptureKind.scan);
+                          },
+                  ),
+                ),
+                SizedBox(
+                  width: width,
+                  child: _MobileCaptureChoice(
+                    icon: Icons.file_upload_outlined,
+                    title: 'Add files',
+                    subtitle: 'Documents and media',
+                    onTap: _busy ? null : () => open(CaptureMode.upload),
+                  ),
+                ),
+                SizedBox(
+                  width: width,
+                  child: _MobileCaptureChoice(
+                    icon: Icons.mic_none_rounded,
+                    title: 'Voice note',
+                    subtitle: 'Say what’s on your mind',
+                    onTap: _busy ? null : () => open(CaptureMode.record),
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
+        if (hasDraft) ...[
+          const SizedBox(height: 20),
+          MobileActionTile(
+            icon: Icons.edit_outlined,
+            title: 'Continue your capture',
+            subtitle: 'Your unfinished draft is still here',
+            onTap: () => setState(() => _mobileEditorOpen = true),
+          ),
+        ],
+        if (!controller.available || !controller.canWrite) ...[
+          const SizedBox(height: 20),
+          Text(
+            !controller.available ? 'Unlock Asael to save something new.' : 'You can read saved sources. Write access is needed to add new ones.',
+          ),
+        ],
+        if (controller.error != null) ...[
+          const SizedBox(height: 16),
+          Text(
+            'Something needs your attention. Open your capture to review it.',
+            style: TextStyle(color: theme.colorScheme.error),
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _mobileForm(CaptureController controller) {
+    final scheme = Theme.of(context).colorScheme;
+    if (!_mobileEditorOpen) {
+      return _mobileStudio(controller);
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            IconButton(
+              tooltip: 'Back to Capture',
+              onPressed: _busy
+                  ? null
+                  : () => setState(() => _mobileEditorOpen = false),
+              icon: const Icon(Icons.arrow_back_rounded),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
                   Semantics(
                     header: true,
                     child: Text(
-                      'Capture',
-                      style: Theme.of(context).textTheme.headlineMedium,
+                      mode == CaptureMode.note
+                          ? 'New note'
+                          : mode == CaptureMode.record
+                          ? 'Voice note'
+                          : 'Add files',
+                      style: Theme.of(context).textTheme.titleLarge,
                     ),
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    'Keep an idea. Bring it to life later.',
+                    'Keep the thought. ATLAS keeps the context.',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ],
@@ -593,44 +793,28 @@ class _CaptureViewState extends State<CaptureView> {
           ],
         ),
         const SizedBox(height: 12),
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            ChoiceChip(
-              selected: mode == CaptureMode.note,
-              avatar: const Icon(Icons.edit_note_rounded, size: 20),
-              label: const Text('Note'),
-              onSelected: _busy
-                  ? null
-                  : (_) => setState(() => mode = CaptureMode.note),
+        MobileSegmentBar<CaptureMode>(
+          items: const [
+            (
+              value: CaptureMode.note,
+              label: 'Note',
+              icon: Icons.edit_note_rounded,
             ),
-            ActionChip(
-              avatar: const Icon(Icons.document_scanner_outlined, size: 20),
-              label: const Text('Scan'),
-              onPressed: _busy
-                  ? null
-                  : () {
-                      setState(() => mode = CaptureMode.upload);
-                      pickImage(ImageSource.camera, CaptureKind.scan);
-                    },
+            (
+              value: CaptureMode.upload,
+              label: 'Files',
+              icon: Icons.attach_file_rounded,
             ),
-            ChoiceChip(
-              selected: mode == CaptureMode.upload,
-              avatar: const Icon(Icons.attach_file_rounded, size: 20),
-              label: const Text('Files'),
-              onSelected: _busy
-                  ? null
-                  : (_) => setState(() => mode = CaptureMode.upload),
-            ),
-            ActionChip(
-              avatar: const Icon(Icons.hearing_rounded, size: 20),
-              label: const Text('Listen'),
-              onPressed: _busy
-                  ? null
-                  : () => context.go('/capture?section=listen'),
+            (
+              value: CaptureMode.record,
+              label: 'Voice note',
+              icon: Icons.mic_none_rounded,
             ),
           ],
+          value: mode,
+          onChanged: (value) {
+            if (!_busy) setState(() => mode = value);
+          },
         ),
         const SizedBox(height: 20),
         if (!controller.available)
@@ -735,7 +919,7 @@ class _CaptureViewState extends State<CaptureView> {
           key: const Key('capture-note'),
           controller: note,
           enabled: !_busy,
-          minLines: mode == CaptureMode.note ? 6 : 3,
+          minLines: mode == CaptureMode.note ? 9 : 3,
           maxLines: 12,
           maxLength: 20000,
           decoration: InputDecoration(
@@ -743,6 +927,17 @@ class _CaptureViewState extends State<CaptureView> {
                 ? 'An idea, a thought, something to remember…'
                 : 'What should ATLAS know about this?',
             alignLabelWithHint: true,
+            filled: true,
+            fillColor: scheme.surface,
+            contentPadding: const EdgeInsets.all(24),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(16),
+              borderSide: BorderSide.none,
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(16),
+              borderSide: BorderSide.none,
+            ),
             counterText: '',
           ),
         ),
@@ -1169,6 +1364,44 @@ class _CaptureViewState extends State<CaptureView> {
 String _fileSize(int bytes) => bytes >= 1024 * 1024
     ? '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB'
     : '${(bytes / 1024).ceil()} KB';
+
+class _MobileCaptureChoice extends StatelessWidget {
+  const _MobileCaptureChoice({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    this.onTap,
+  });
+  final IconData icon;
+  final String title, subtitle;
+  final VoidCallback? onTap;
+  @override
+  Widget build(BuildContext context) => MobileSurface(
+    padding: EdgeInsets.zero,
+    child: InkWell(
+      borderRadius: BorderRadius.circular(16),
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(icon, size: 28, color: Theme.of(context).colorScheme.primary),
+            const SizedBox(height: 24),
+            Text(title, style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 6),
+            Text(
+              subtitle,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
 
 class _CaptureLegacyRecoveryPanel extends StatelessWidget {
   const _CaptureLegacyRecoveryPanel({required this.controller});

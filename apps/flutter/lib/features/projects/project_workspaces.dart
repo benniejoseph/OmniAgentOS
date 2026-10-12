@@ -361,7 +361,13 @@ class _ProjectCollectionWorkspaceState
     },
   );
   Widget _mobileCollection(ProjectsController c, List<Project> values) {
-    final scheme = Theme.of(context).colorScheme;
+    final focus = _search.text.isEmpty && _filter == 'All projects'
+        ? values.where((project) => project.status == 'active').firstOrNull
+        : null;
+    final next = focus?.tasks.where((task) => !task.done).firstOrNull;
+    final remaining = values
+        .where((project) => project.id != focus?.id)
+        .toList();
     return RefreshIndicator(
       onRefresh: () async {
         if (c.canRead && !c.acting) await c.refresh();
@@ -373,7 +379,7 @@ class _ProjectCollectionWorkspaceState
           SliverToBoxAdapter(
             child: MobilePageHeader(
               title: 'Work',
-              subtitle: 'Your projects, next steps and progress.',
+              subtitle: 'Make room for what matters.',
               actions: [
                 if (widget.onOpenResponsibilities != null)
                   IconButton(
@@ -381,7 +387,7 @@ class _ProjectCollectionWorkspaceState
                     onPressed: widget.onOpenResponsibilities,
                     icon: const Icon(Icons.event_repeat_outlined),
                   ),
-                IconButton.filledTonal(
+                IconButton.filled(
                   tooltip: 'New project',
                   onPressed: c.canCreate ? () => _create(context) : null,
                   icon: const Icon(Icons.add_rounded),
@@ -400,7 +406,7 @@ class _ProjectCollectionWorkspaceState
                     focusNode: _searchFocus,
                     textInputAction: TextInputAction.search,
                     decoration: InputDecoration(
-                      hintText: 'Find a project',
+                      hintText: 'Find your work',
                       prefixIcon: const Icon(Icons.search_rounded),
                       suffixIcon: IconButton(
                         tooltip: 'Filter and sort projects',
@@ -410,56 +416,145 @@ class _ProjectCollectionWorkspaceState
                     ),
                     onChanged: (_) => setState(() => _page = 0),
                   ),
-                  const SizedBox(height: 12),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 4,
-                    children: [
-                      for (final filter in [
-                        'All projects',
-                        'In flight',
-                        'Needs attention',
-                      ])
-                        ChoiceChip(
-                          label: Text(
-                            filter == 'All projects' ? 'All' : filter,
-                          ),
-                          selected: _filter == filter,
-                          onSelected: (_) => setState(() => _filter = filter),
-                        ),
-                      if (![
-                        'All projects',
-                        'In flight',
-                        'Needs attention',
-                      ].contains(_filter))
-                        InputChip(
-                          label: Text(_filter),
-                          onDeleted: () =>
-                              setState(() => _filter = 'All projects'),
-                        ),
+                  const SizedBox(height: 16),
+                  MobileSegmentBar<String>(
+                    items: const [
+                      (value: 'All projects', label: 'All work', icon: null),
+                      (value: 'Active', label: 'Active', icon: null),
+                      (
+                        value: 'Needs attention',
+                        label: 'Needs you',
+                        icon: null,
+                      ),
+                      (value: 'Completed', label: 'Done', icon: null),
                     ],
+                    value: _filter,
+                    onChanged: (value) => setState(() => _filter = value),
                   ),
+                  if (_filter == 'In flight')
+                    InputChip(
+                      label: const Text('In flight'),
+                      onDeleted: () => setState(() => _filter = 'All projects'),
+                    ),
                   if (c.loading) const LinearProgressIndicator(),
                   if (c.error != null)
                     _Notice(projectFailure(c.error!), danger: true),
                   if (c.receipt != null) _Notice(c.receipt!),
                   if (c.acting) const _Notice('Creating your project…'),
                   if (!c.canRead || !c.fresh) _Notice(c.readLabel),
-                  if (c.loaded)
-                    Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                      child: Text(
-                        '${values.length} matching projects in this loaded collection',
-                        style: Theme.of(context).textTheme.bodySmall,
+                  if (focus != null) ...[
+                    const SizedBox(height: 24),
+                    MobileSurface(
+                      spotlight: true,
+                      padding: const EdgeInsets.all(22),
+                      child: Builder(
+                        builder: (context) {
+                          final theme = Theme.of(context);
+                          return Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      'PICK UP WHERE YOU LEFT OFF',
+                                      style: theme.textTheme.labelSmall
+                                          ?.copyWith(letterSpacing: 1.2),
+                                    ),
+                                  ),
+                                  const Icon(
+                                    Icons.auto_stories_outlined,
+                                    size: 22,
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 20),
+                              Text(
+                                focus.title,
+                                style: theme.textTheme.headlineSmall,
+                              ),
+                              if (focus.objective.isNotEmpty) ...[
+                                const SizedBox(height: 8),
+                                Text(
+                                  focus.objective,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: theme.textTheme.bodyMedium,
+                                ),
+                              ],
+                              const SizedBox(height: 20),
+                              MobileStatusPill(
+                                label: _workLabel(
+                                  focus.activeExecution
+                                      ? focus.executionStatus
+                                      : focus.status,
+                                ),
+                              ),
+                              if (focus.tasks.isNotEmpty) ...[
+                                const SizedBox(height: 20),
+                                LinearProgressIndicator(
+                                  value: focus.progress,
+                                  minHeight: 4,
+                                  borderRadius: BorderRadius.circular(4),
+                                  semanticsLabel: 'Task progress',
+                                  semanticsValue:
+                                      '${focus.completedTasks} of ${focus.tasks.length}',
+                                ),
+                                const SizedBox(height: 8),
+                                Text(
+                                  '${focus.completedTasks} of ${focus.tasks.length} tasks complete',
+                                  style: theme.textTheme.bodySmall,
+                                ),
+                              ],
+                              if (next != null) ...[
+                                const SizedBox(height: 20),
+                                Text(
+                                  'NEXT STEP',
+                                  style: theme.textTheme.labelSmall?.copyWith(
+                                    letterSpacing: 1.2,
+                                  ),
+                                ),
+                                const SizedBox(height: 6),
+                                Text(
+                                  next.title,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: theme.textTheme.titleMedium,
+                                ),
+                              ],
+                              const SizedBox(height: 18),
+                              FilledButton.icon(
+                                onPressed: () => widget.onOpen(focus),
+                                icon: const Icon(Icons.arrow_forward_rounded),
+                                label: const Text('Open project'),
+                              ),
+                            ],
+                          );
+                        },
                       ),
                     ),
+                  ],
                   if (c.loaded && values.isEmpty)
                     Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 32),
-                      child: Text(
-                        c.projects.isEmpty
-                            ? 'Start a project with an outcome. ATLAS can help you turn it into a plan.'
-                            : 'No projects match. Try another name or filter.',
+                      padding: const EdgeInsets.symmetric(vertical: 40),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Icon(Icons.auto_stories_outlined, size: 40),
+                          const SizedBox(height: 18),
+                          Text(
+                            c.projects.isEmpty
+                                ? 'Every good project starts with an idea.'
+                                : 'No work matches yet.',
+                            style: Theme.of(context).textTheme.titleLarge,
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            c.projects.isEmpty
+                                ? 'Add an outcome. Build the plan with ATLAS, then take it one step at a time.'
+                                : 'Try another name or filter.',
+                          ),
+                        ],
                       ),
                     ),
                   if (!c.loaded && !c.loading)
@@ -472,96 +567,106 @@ class _ProjectCollectionWorkspaceState
               ),
             ),
           ),
+          if (remaining.isNotEmpty)
+            SliverToBoxAdapter(
+              child: MobileSectionHeader(
+                title: focus == null ? 'Your projects' : 'More work',
+                trailing: Text(
+                  '${remaining.length}',
+                  style: Theme.of(context).textTheme.labelLarge,
+                ),
+              ),
+            ),
           SliverPadding(
-            padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 28),
             sliver: SliverList.builder(
-              itemCount: values.length,
-              itemBuilder: (context, index) {
-                final project = values[index];
-                final next = project.tasks
-                    .where((task) => !task.done)
-                    .firstOrNull;
-                return Padding(
-                  padding: const EdgeInsets.only(bottom: 12),
-                  child: Material(
-                    color: scheme.surfaceContainerLow,
-                    borderRadius: BorderRadius.circular(12),
-                    clipBehavior: Clip.antiAlias,
-                    child: InkWell(
-                      onTap: () => widget.onOpen(project),
-                      child: Padding(
-                        padding: const EdgeInsets.all(16),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            Row(
-                              children: [
-                                Expanded(
-                                  child: Text(
-                                    project.title,
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .titleMedium,
-                                  ),
-                                ),
-                                const SizedBox(width: 12),
-                                const Icon(
-                                  Icons.arrow_outward_rounded,
-                                  size: 20,
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 6),
-                            Text(
-                              project.objective,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            const SizedBox(height: 16),
-                            Text(
-                              _workLabel(
-                                project.activeExecution
-                                    ? project.executionStatus
-                                    : project.status,
-                              ),
-                              style: Theme.of(context).textTheme.labelLarge
-                                  ?.copyWith(color: scheme.primary),
-                            ),
-                            if (project.tasks.isNotEmpty) ...[
-                              const SizedBox(height: 8),
-                              LinearProgressIndicator(
-                                value:
-                                    project.completedTasks /
-                                    project.tasks.length,
-                                semanticsLabel: 'Completed tasks',
-                                semanticsValue:
-                                    '${project.completedTasks} of ${project.tasks.length}',
-                                minHeight: 3,
-                              ),
-                              const SizedBox(height: 8),
-                              Text(
-                                '${project.completedTasks} of ${project.tasks.length} tasks complete',
-                                style: Theme.of(context).textTheme.bodySmall,
-                              ),
-                            ],
-                            if (next != null) ...[
-                              const Divider(height: 24),
-                              Text(
-                                'Next · ${next.title}',
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ],
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                );
-              },
+              itemCount: remaining.length,
+              itemBuilder: (context, index) =>
+                  _mobileProjectRow(remaining[index]),
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _mobileProjectRow(Project project) {
+    final theme = Theme.of(context);
+    final next = project.tasks.where((task) => !task.done).firstOrNull;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Material(
+        color: theme.colorScheme.surface,
+        borderRadius: BorderRadius.circular(18),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: () => widget.onOpen(project),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: 4,
+                  height: 44,
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.primary.withValues(alpha: .5),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                ),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        project.title,
+                        style: theme.textTheme.titleMedium,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 5),
+                      Text(
+                        next == null
+                            ? _workLabel(
+                                project.activeExecution
+                                    ? project.executionStatus
+                                    : project.status,
+                              )
+                            : next.title,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodySmall,
+                      ),
+                      if (project.tasks.isNotEmpty) ...[
+                        const SizedBox(height: 12),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: LinearProgressIndicator(
+                                value: project.progress,
+                                minHeight: 3,
+                                borderRadius: BorderRadius.circular(3),
+                                semanticsLabel: 'Completed tasks',
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Text(
+                              '${project.completedTasks}/${project.tasks.length}',
+                              style: theme.textTheme.labelSmall,
+                            ),
+                          ],
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                const Icon(Icons.chevron_right_rounded, size: 20),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -994,27 +1099,59 @@ class _ProjectDocumentWorkspaceState extends State<ProjectDocumentWorkspace> {
   Widget build(BuildContext context) {
     final p = c.project;
     final mobile = usesMobilePresentation();
-    final tabs = SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      padding: const EdgeInsets.all(12),
-      child: SegmentedButton<int>(
-        key: const Key('macos-project-detail-tabs'),
-        segments: [
-          const ButtonSegment(value: 0, label: Text('Plan')),
-          ButtonSegment(value: 1, label: Text(mobile ? 'Tasks' : 'Execution')),
-          ButtonSegment(value: 2, label: Text(mobile ? 'Files' : 'Artifacts')),
-          const ButtonSegment(value: 3, label: Text('Build')),
-        ],
-        selected: {_tab},
-        onSelectionChanged: (values) {
-          setState(() {
-            _tab = values.first;
-            _buildVisited |= _tab == 3;
-          });
-          widget.onBuilderLocationChanged?.call(_tab == 3, _selectedArtifact);
-        },
-      ),
-    );
+    final tabs = mobile
+        ? Padding(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+            child: MobileSegmentBar<int>(
+              items: const [
+                (value: 0, label: 'Plan', icon: null),
+                (value: 1, label: 'Tasks', icon: null),
+                (value: 2, label: 'Files', icon: null),
+                (value: 3, label: 'Build', icon: null),
+              ],
+              value: _tab,
+              onChanged: (value) {
+                setState(() {
+                  _tab = value;
+                  _buildVisited |= value == 3;
+                });
+                widget.onBuilderLocationChanged?.call(
+                  value == 3,
+                  _selectedArtifact,
+                );
+              },
+            ),
+          )
+        : SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.all(12),
+            child: SegmentedButton<int>(
+              key: const Key('macos-project-detail-tabs'),
+              segments: [
+                const ButtonSegment(value: 0, label: Text('Plan')),
+                ButtonSegment(
+                  value: 1,
+                  label: Text(mobile ? 'Tasks' : 'Execution'),
+                ),
+                ButtonSegment(
+                  value: 2,
+                  label: Text(mobile ? 'Files' : 'Artifacts'),
+                ),
+                const ButtonSegment(value: 3, label: Text('Build')),
+              ],
+              selected: {_tab},
+              onSelectionChanged: (values) {
+                setState(() {
+                  _tab = values.first;
+                  _buildVisited |= _tab == 3;
+                });
+                widget.onBuilderLocationChanged?.call(
+                  _tab == 3,
+                  _selectedArtifact,
+                );
+              },
+            ),
+          );
     final body = p == null
         ? ListView(
             padding: const EdgeInsets.all(20),
@@ -1070,7 +1207,7 @@ class _ProjectDocumentWorkspaceState extends State<ProjectDocumentWorkspace> {
               ? Column(
                   children: [
                     MobilePageHeader(
-                      title: 'Project',
+                      title: p?.title ?? 'Work',
                       leading: Navigator.canPop(context)
                           ? BackButton(onPressed: () => Navigator.pop(context))
                           : null,
@@ -1095,8 +1232,40 @@ class _ProjectDocumentWorkspaceState extends State<ProjectDocumentWorkspace> {
     padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
     keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
     children: [
-      _header(p, 'mobile-plan'),
-      const SizedBox(height: 20),
+      MobileSurface(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            MobileStatusPill(
+              label: _workLabel(
+                p.activeExecution ? p.executionStatus : p.status,
+              ),
+            ),
+            const SizedBox(height: 16),
+            SelectableText(
+              p.objective,
+              style: Theme.of(context).textTheme.bodyLarge
+                  ?.copyWith(height: 1.5),
+            ),
+            if (p.tasks.isNotEmpty) ...[
+              const SizedBox(height: 20),
+              LinearProgressIndicator(
+                value: p.progress,
+                minHeight: 4,
+                borderRadius: BorderRadius.circular(4),
+              ),
+              const SizedBox(height: 8),
+              Text('${p.completedTasks} of ${p.tasks.length} tasks complete'),
+            ],
+          ],
+        ),
+      ),
+      if (c.loading) const LinearProgressIndicator(),
+      if (c.readError != null) _Notice(c.readError!, danger: true),
+      if (c.blocked != null) _Notice(c.blocked!),
+      if (c.actionError != null) _Notice(c.actionError!, danger: true),
+      if (c.acting) _Notice('${c.action}…'),
+      const SizedBox(height: 28),
       Text(
         'Shape the next step',
         style: Theme.of(context).textTheme.titleMedium,
@@ -1137,6 +1306,11 @@ class _ProjectDocumentWorkspaceState extends State<ProjectDocumentWorkspace> {
         label: const Text('Add a task'),
       ),
       const SizedBox(height: 16),
+      _details(
+        identity: 'mobile-project-context-${p.id}',
+        title: 'Project status & details',
+        children: [_header(p, 'mobile-plan-details')],
+      ),
       _details(
         identity: 'mobile-project-manage-${p.id}',
         title: 'Manage project',
@@ -1980,92 +2154,150 @@ class _ProjectDocumentWorkspaceState extends State<ProjectDocumentWorkspace> {
           controller.access?.scope == scope &&
           controller.access?.closed != true,
       builder: (ctx) => StatefulBuilder(
-        builder: (_, update) => AlertDialog(
-          title: const Text('Add project task'),
-          scrollable: true,
-          content: SizedBox(
-            width: 480,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(
-                  key: const Key('macos-project-task-title'),
-                  controller: title,
-                  autofocus: true,
-                  maxLength: 240,
-                  decoration: const InputDecoration(labelText: 'Task'),
-                  onChanged: (v) {
-                    controller.taskTitle = v;
-                    update(() {});
-                  },
+        builder: (_, update) {
+          final form = Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                key: const Key('macos-project-task-title'),
+                controller: title,
+                autofocus: true,
+                maxLength: 240,
+                decoration: const InputDecoration(labelText: 'Task'),
+                onChanged: (v) {
+                  controller.taskTitle = v;
+                  update(() {});
+                },
+              ),
+              TextField(
+                controller: detail,
+                maxLength: 1000,
+                minLines: 2,
+                maxLines: 6,
+                decoration: InputDecoration(
+                  labelText: usesMobilePresentation()
+                      ? 'Details and what done looks like'
+                      : 'Context or acceptance criteria',
                 ),
-                TextField(
-                  controller: detail,
-                  maxLength: 1000,
-                  minLines: 2,
-                  maxLines: 6,
-                  decoration: const InputDecoration(
-                    labelText: 'Context or acceptance criteria',
+                onChanged: (v) => controller.taskDetail = v,
+              ),
+              DropdownButtonFormField<String>(
+                initialValue: controller.taskPriority,
+                isExpanded: true,
+                decoration: const InputDecoration(labelText: 'Priority'),
+                items: [
+                  for (final v in ['low', 'medium', 'high'])
+                    DropdownMenuItem(
+                      value: v,
+                      child: Text(usesMobilePresentation() ? _workLabel(v) : v),
+                    ),
+                ],
+                onChanged: (v) {
+                  if (v != null) controller.taskPriority = v;
+                },
+              ),
+              DropdownButtonFormField<String>(
+                initialValue: controller.taskAgent,
+                isExpanded: true,
+                decoration: InputDecoration(
+                  labelText: usesMobilePresentation()
+                      ? 'Assistant'
+                      : 'Executing Agent',
+                ),
+                items: [
+                  for (final v in [
+                    'atlas',
+                    'scout',
+                    'forge',
+                    'sentinel',
+                    'mnemosyne',
+                  ])
+                    DropdownMenuItem(
+                      value: v,
+                      child: Text(usesMobilePresentation() ? _workLabel(v) : v),
+                    ),
+                ],
+                onChanged: (v) {
+                  if (v != null) controller.taskAgent = v;
+                },
+              ),
+              const Text('Closing retains the local task draft.'),
+            ],
+          );
+          void discard() {
+            controller.taskTitle = controller.taskDetail = '';
+            Navigator.pop(ctx, false);
+          }
+
+          final save = FilledButton(
+            key: const Key('macos-project-task-submit'),
+            onPressed: title.text.trim().isEmpty || !controller.writable
+                ? null
+                : () => Navigator.pop(ctx, true),
+            child: const Text('Add task'),
+          );
+          if (usesMobilePresentation()) {
+            return Dialog.fullscreen(
+              child: Scaffold(
+                body: SafeArea(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      MobilePageHeader(
+                        title: 'A new step',
+                        subtitle: p.title,
+                        actions: [
+                          IconButton(
+                            tooltip: 'Close and keep draft',
+                            onPressed: () => Navigator.pop(ctx, false),
+                            icon: const Icon(Icons.close_rounded),
+                          ),
+                        ],
+                      ),
+                      Expanded(
+                        child: SingleChildScrollView(
+                          padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+                          keyboardDismissBehavior:
+                              ScrollViewKeyboardDismissBehavior.onDrag,
+                          child: form,
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
+                        child: Row(
+                          children: [
+                            TextButton(
+                              onPressed: discard,
+                              child: const Text('Discard draft'),
+                            ),
+                            const SizedBox(width: 16),
+                            Expanded(child: save),
+                          ],
+                        ),
+                      ),
+                    ],
                   ),
-                  onChanged: (v) => controller.taskDetail = v,
                 ),
-                DropdownButtonFormField<String>(
-                  initialValue: controller.taskPriority,
-                  isExpanded: true,
-                  decoration: const InputDecoration(labelText: 'Priority'),
-                  items: [
-                    for (final v in ['low', 'medium', 'high'])
-                      DropdownMenuItem(value: v, child: Text(v)),
-                  ],
-                  onChanged: (v) {
-                    if (v != null) controller.taskPriority = v;
-                  },
-                ),
-                DropdownButtonFormField<String>(
-                  initialValue: controller.taskAgent,
-                  isExpanded: true,
-                  decoration: const InputDecoration(
-                    labelText: 'Executing Agent',
-                  ),
-                  items: [
-                    for (final v in [
-                      'atlas',
-                      'scout',
-                      'forge',
-                      'sentinel',
-                      'mnemosyne',
-                    ])
-                      DropdownMenuItem(value: v, child: Text(v)),
-                  ],
-                  onChanged: (v) {
-                    if (v != null) controller.taskAgent = v;
-                  },
-                ),
-                const Text('Closing retains the local task draft.'),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                controller.taskTitle = controller.taskDetail = '';
-                Navigator.pop(ctx, false);
-              },
-              child: const Text('Discard draft'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Close'),
-            ),
-            FilledButton(
-              key: const Key('macos-project-task-submit'),
-              onPressed: title.text.trim().isEmpty || !controller.writable
-                  ? null
-                  : () => Navigator.pop(ctx, true),
-              child: const Text('Add task'),
-            ),
-          ],
-        ),
+              ),
+            );
+          }
+          return AlertDialog(
+            title: const Text('Add project task'),
+            scrollable: true,
+            content: SizedBox(width: 480, child: form),
+            actions: [
+              TextButton(
+                onPressed: discard,
+                child: const Text('Discard draft'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Close'),
+              ),
+              save,
+            ],
+          );
+        },
       ),
     );
     title.dispose();

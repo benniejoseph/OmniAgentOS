@@ -4,6 +4,17 @@ Production uses Node.js 24.x and npm 11.x across local metadata, CI, and the wor
 
 ## Required production configuration
 
+Mobile presentation **1.31.0+96** (Android arm64 version code **2096**) is a
+native-only release. It keeps contract **v54**, migrations **250–251**, and the
+compatible deployed web/worker unchanged. Build and distribute the signed
+Android update with the existing signing identity and a data-preserving
+installation. Do not reinstall or clear app storage to update the interface.
+Saved sessions, capture drafts, recording consent, phone-control permissions,
+the chosen calls folder and the existing nightly schedule retain their current
+owners and storage. Android screenshot protection stays enabled; the separate
+local design preview does not load live data. See the
+[mobile design guide](native-mobile-design.md) for screen coverage and limits.
+
 Listen call syncing also requires migration **251**,
 `20261012123000_listen_media_owner_scope.sql` (`listen_media_owner_scope_v1`).
 It repairs the rejected media-head write after an upload closes: the existing

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/network/native_workspace_access.dart';
+import '../../app/platform/mobile_presentation.dart';
 import '../capture/entity_options.dart';
 import '../capture/library_view.dart';
 
@@ -1028,7 +1029,9 @@ class _MeetingFollowUpEditorState extends State<MeetingFollowUpEditor> {
                 Semantics(
                   header: true,
                   child: Text(
-                    'Review exact follow-up',
+                    usesMobilePresentation()
+                        ? 'Review follow-up'
+                        : 'Review exact follow-up',
                     style: Theme.of(context).textTheme.titleLarge,
                   ),
                 ),
@@ -1036,16 +1039,34 @@ class _MeetingFollowUpEditorState extends State<MeetingFollowUpEditor> {
                   widget.proposal.title,
                   style: Theme.of(context).textTheme.bodyLarge,
                 ),
-                MeetingValue('Proposal', widget.proposal.id),
-                MeetingValue('Proposal SHA-256', widget.proposal.sha256),
-                MeetingValue(
-                  'Evidence meeting revision',
-                  widget.proposal.meetingRevisionId,
-                ),
-                MeetingValue(
-                  'Work project',
-                  widget.proposal.proposal['projectId'] as String,
-                ),
+                if (usesMobilePresentation())
+                  MeetingDisclosure(
+                    'Source details',
+                    children: [
+                      MeetingValue('Proposal', widget.proposal.id),
+                      MeetingValue('Proposal SHA-256', widget.proposal.sha256),
+                      MeetingValue(
+                        'Evidence meeting revision',
+                        widget.proposal.meetingRevisionId,
+                      ),
+                      MeetingValue(
+                        'Work project',
+                        widget.proposal.proposal['projectId'] as String,
+                      ),
+                    ],
+                  )
+                else ...[
+                  MeetingValue('Proposal', widget.proposal.id),
+                  MeetingValue('Proposal SHA-256', widget.proposal.sha256),
+                  MeetingValue(
+                    'Evidence meeting revision',
+                    widget.proposal.meetingRevisionId,
+                  ),
+                  MeetingValue(
+                    'Work project',
+                    widget.proposal.proposal['projectId'] as String,
+                  ),
+                ],
                 const Text(
                   'Confirmation creates a Work item. An optional email draft remains subject to a separate governed delivery action. These child effects are recorded sequentially; an interrupted response can require reconciliation.',
                 ),
@@ -1211,7 +1232,11 @@ class _MeetingFollowUpEditorState extends State<MeetingFollowUpEditor> {
                               widget.actions.disabledReason('resolve') == null
                           ? () => _submit('dismissed')
                           : null,
-                      child: const Text('Dismiss exact proposal'),
+                      child: Text(
+                        usesMobilePresentation()
+                            ? 'Dismiss proposal'
+                            : 'Dismiss exact proposal',
+                      ),
                     ),
                     FilledButton(
                       onPressed:
@@ -1221,7 +1246,13 @@ class _MeetingFollowUpEditorState extends State<MeetingFollowUpEditor> {
                               widget.actions.disabledReason('resolve') == null
                           ? () => _submit('confirmed')
                           : null,
-                      child: const Text('Confirm Work item and selected draft'),
+                      child: Text(
+                        usesMobilePresentation()
+                            ? communication
+                                  ? 'Create task & email draft'
+                                  : 'Create task'
+                            : 'Confirm Work item and selected draft',
+                      ),
                     ),
                   ],
                 ),
