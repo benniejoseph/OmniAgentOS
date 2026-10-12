@@ -13,6 +13,11 @@ Android's folder request. Enable automatic processing to start with that day's
 calls. **Check now** imports eligible new calls immediately; the daily check is
 scheduled for 11:30 PM India time. No historical folder-wide import is implied.
 
+Nightly call notes appears near the top of Android Settings. You can also open
+**Today → Listen** and use the clock icon. Listen shows upload progress and
+connection/retry messages separately from the cloud's conversation-processing
+status, so a saved phone recording is not mistaken for completed cloud notes.
+
 Processed conversations appear in mobile and Mac Capture and in the web Capture
 workspace's **Conversation notes**. Each has a transcript, summary, topic labels,
 supported facts, relationships mentioned, decisions, open questions and follow-ups.

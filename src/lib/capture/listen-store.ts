@@ -4,8 +4,8 @@ import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/
 import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import type { SecurityContext } from "@/lib/security/types";
 import { getOperationJob } from "@/lib/operations/job-queue";
-import { createCaptureRecording, getCaptureRecording, prepareCaptureRecordingMediaProcessing, saveCaptureSegment } from "./recordings";
-import { getCaptureMediaHead, queueCaptureMediaProcessing } from "./media-store";
+import { createCaptureRecording, getCaptureRecording, saveCaptureSegment } from "./recordings";
+import { getCaptureMediaHead } from "./media-store";
 import { enqueueCaptureMediaProcessingJob } from "./media-jobs";
 import { listenStartSchema, LISTEN_PROCESSING_TERMS, ListenError, type ListenStart } from "./listen-contracts";
 import { listenDigest, requireListenDatabase, type ListenAuthority } from "./listen-grants";
@@ -81,12 +81,21 @@ export async function completeListenRecording(authority: ListenAuthority, record
   const head = await getCaptureMediaHead(recordingId, context);
   if (head) return statusForRecording(context, original);
   const executionScope = scope(authority, recordingId, "complete");
-  const recording = await prepareCaptureRecordingMediaProcessing(recordingId, { ...context, executionScope });
-  const processing = { schemaVersion: 1 as const, recordingId, languageHints: [] as string[], speakerMappings: [],
-    rawAudioRetention: { mode: "delete_after_processing" as const } };
-  const job = await enqueueCaptureMediaProcessingJob({ ...context, recording, request: processing, executionScope });
-  await queueCaptureMediaProcessing({ ...context, executionScope, request: processing, operationJobId: job.id });
-  return { recordingId, status: "processing" as const, error: null, receivedSegments: recording.segmentCount };
+  try {
+    const processing = { schemaVersion: 1 as const, recordingId, languageHints: [] as string[], speakerMappings: [],
+      rawAudioRetention: { mode: "delete_after_processing" as const } };
+    await enqueueCaptureMediaProcessingJob({ ...context, recording: original, request: processing,
+      executionScope, queueListenMediaHead: true });
+    return statusForRecording(context, await requireOwnedListenRecording(context, recordingId));
+  } catch (error) {
+    const code = error instanceof Error ? (error as Error & { code?: unknown }).code : undefined;
+    // Database error messages may contain row contents. Log only the fixed
+    // pipeline stage and SQLSTATE, with no source identifiers or audio data.
+    console.error(JSON.stringify({ event: "listen.completion_failed", stage: "admit_processing",
+      databaseError: error instanceof Error && error.name === "PostgresError",
+      ...(typeof code === "string" && /^[0-9A-Z]{5}$/.test(code) ? { sqlState: code } : {}) }));
+    throw error;
+  }
 }
 
 export async function listenRecordingStatus(context: SecurityContext, recordingId: string) {
