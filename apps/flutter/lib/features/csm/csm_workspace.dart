@@ -184,6 +184,7 @@ class _CsmWorkState extends State<_CsmWork> {
       Expanded(
         child: switch (tab) {
           'projects' => ProjectCollectionWorkspace(
+            mobileTitle: 'Projects',
             controller: widget.projects,
             onOpen: widget.onOpen,
             onOpenResponsibilities: widget.onOpenResponsibilities,
@@ -253,7 +254,7 @@ class _CsmWorkState extends State<_CsmWork> {
                           ),
                           title: Text(client.project.title),
                           subtitle: Text(
-                            '${client.profile['role'] == 'lead' ? 'Lead CSM' : 'Secondary CSM'} · ${client.sourceCount} ${client.sourceCount == 1 ? 'source' : 'sources'}${client.profile['nextReviewDate'] == null ? '' : '\nReview ${client.profile['nextReviewDate']}'}',
+                            '${client.profile['role'] == 'lead' ? 'Lead CSM' : 'Secondary CSM'} · ${client.sourceCount} ${client.sourceCount == 1 ? 'source' : 'sources'}${client.profile['nextReviewDate'] == null ? '' : '\nReview ${_friendlyDate(context, client.profile['nextReviewDate'])}'}',
                           ),
                           trailing: const Icon(Icons.chevron_right_rounded),
                           onTap: () => open(client.project),
@@ -280,11 +281,12 @@ class _CsmDetail extends ConsumerStatefulWidget {
     required this.access,
     this.project,
     this.onOpenTasks,
+    this.onClose,
     this.embedded = false,
   });
   final NativeWorkspaceAccess access;
   final Project? project;
-  final VoidCallback? onOpenTasks;
+  final VoidCallback? onOpenTasks, onClose;
   final bool embedded;
   @override
   ConsumerState<_CsmDetail> createState() => _CsmDetailState();
@@ -600,7 +602,10 @@ class _CsmDetailState extends ConsumerState<_CsmDetail> {
             if ((s.profile['leadCsm'] as String).isNotEmpty)
               _DetailField('Lead CSM', s.profile['leadCsm']),
             if (s.profile['nextReviewDate'] != null)
-              _DetailField('Next review', s.profile['nextReviewDate']),
+              _DetailField(
+                'Next review',
+                _friendlyDate(context, s.profile['nextReviewDate']),
+              ),
             const SizedBox(height: 8),
             Text(
               'Prepare with ATLAS',
@@ -714,10 +719,22 @@ class _CsmDetailState extends ConsumerState<_CsmDetail> {
     );
     if (widget.embedded) return body;
     return Scaffold(
-      appBar: AppBar(title: Text(widget.project?.title ?? 'My CSM role')),
+      appBar: AppBar(
+        leading: widget.onClose == null
+            ? null
+            : BackButton(onPressed: widget.onClose),
+        title: Text(widget.project?.title ?? 'My CSM role'),
+      ),
       body: SafeArea(top: false, child: body),
     );
   }
+}
+
+String _friendlyDate(BuildContext context, Object? value) {
+  final date = value is String ? DateTime.tryParse(value) : null;
+  return date == null
+      ? 'Not scheduled'
+      : MaterialLocalizations.of(context).formatMediumDate(date);
 }
 
 String _planLabel(Object? value) => switch (value) {
@@ -920,7 +937,20 @@ class _CsmEditorState extends State<_CsmEditor> {
                         'stakeholders': 'People & responsibilities',
                         'nextReviewDate': 'Next review',
                       }.entries)
-                        _DetailField(entry.value, latest.profile[entry.key]),
+                        _DetailField(entry.value, switch (entry.key) {
+                          'role' =>
+                            latest.profile['role'] == 'lead'
+                                ? 'Lead CSM'
+                                : 'Secondary CSM',
+                          'successPlan' => _planLabel(
+                            latest.profile['successPlan'],
+                          ),
+                          'nextReviewDate' => _friendlyDate(
+                            context,
+                            latest.profile['nextReviewDate'],
+                          ),
+                          _ => latest.profile[entry.key],
+                        }),
                     ],
                   ),
           ),
@@ -1044,7 +1074,11 @@ class _CsmEditorState extends State<_CsmEditor> {
               contentPadding: EdgeInsets.zero,
               leading: const Icon(Icons.event_outlined),
               title: const Text('Next review'),
-              subtitle: Text(reviewDate ?? 'Choose a date'),
+              subtitle: Text(
+                reviewDate == null
+                    ? 'Choose a date'
+                    : _friendlyDate(context, reviewDate),
+              ),
               trailing: reviewDate == null
                   ? const Icon(Icons.chevron_right_rounded)
                   : IconButton(
@@ -1278,7 +1312,11 @@ class MobileClientBriefEntry extends ConsumerWidget {
                         ownNavigator: true,
                         builder: (current) =>
                             current.identity == access.identity
-                            ? _CsmDetail(access: current, project: project)
+                            ? _CsmDetail(
+                                access: current,
+                                project: project,
+                                onClose: () => Navigator.of(context).pop(),
+                              )
                             : const SizedBox.shrink(),
                       ),
                     ),

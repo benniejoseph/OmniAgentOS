@@ -28,11 +28,13 @@ class ProjectCollectionWorkspace extends StatefulWidget {
     required this.onOpen,
     this.onOpenResponsibilities,
     this.desktop = false,
+    this.mobileTitle = 'Work',
   });
   final ProjectsController controller;
   final ValueChanged<Project> onOpen;
   final VoidCallback? onOpenResponsibilities;
   final bool desktop;
+  final String mobileTitle;
   @override
   State<ProjectCollectionWorkspace> createState() =>
       _ProjectCollectionWorkspaceState();
@@ -379,7 +381,7 @@ class _ProjectCollectionWorkspaceState
         slivers: [
           SliverToBoxAdapter(
             child: MobilePageHeader(
-              title: 'Work',
+              title: widget.mobileTitle,
               subtitle: 'Make room for what matters.',
               actions: [
                 if (widget.onOpenResponsibilities != null)

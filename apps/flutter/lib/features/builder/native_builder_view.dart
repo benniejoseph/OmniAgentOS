@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/mobile/mobile_page_scaffold.dart';
+import '../../app/mobile/mobile_flow_scaffold.dart';
 import '../../app/platform/mobile_presentation.dart';
 import 'builder_contracts.dart';
 import 'builder_controller.dart';
@@ -192,28 +193,88 @@ class _NativeBuilderWorkspaceState extends State<NativeBuilderWorkspace>
     String detail,
     Future<void> Function() action,
   ) async {
-    final basis = c.decisionBasis;
+    final basis = c.decisionBasis, generation = c.access.generation;
+    bool reviewedTargetCurrent() =>
+        mounted &&
+        widget.active &&
+        c.available &&
+        c.decisionBasis == basis &&
+        c.access.generation == generation;
     final accepted = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text(label),
-        content: SingleChildScrollView(child: SelectableText(detail)),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: Text(label),
-          ),
-        ],
-      ),
+      builder: (context) => usesMobilePresentation()
+          ? Dialog.fullscreen(
+              child: ListenableBuilder(
+                listenable: c,
+                builder: (context, _) {
+                  final current = reviewedTargetCurrent();
+                  return MobileFlowScaffold(
+                    title: current ? label : 'Review needs refreshing',
+                    onClose: () => Navigator.pop(context, false),
+                    child: current
+                        ? Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              const Icon(Icons.fact_check_outlined, size: 36),
+                              const SizedBox(height: 24),
+                              Text(
+                                'Review this action',
+                                style: Theme.of(context).textTheme.titleLarge,
+                              ),
+                              const SizedBox(height: 12),
+                              // Keep the complete reviewed consequence and exact target
+                              // visible; presentation never replaces the approval payload.
+                              SelectableText(
+                                detail,
+                                style: Theme.of(context).textTheme.bodyLarge,
+                              ),
+                            ],
+                          )
+                        : const Text(
+                            'The workspace, sign-in or reviewed target changed. Close this review and refresh before continuing.',
+                          ),
+                    footer: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        if (current)
+                          FilledButton(
+                            onPressed: () {
+                              if (reviewedTargetCurrent())
+                                Navigator.pop(context, true);
+                            },
+                            child: Text(label),
+                          ),
+                        TextButton(
+                          onPressed: () => Navigator.pop(context, false),
+                          child: Text(current ? 'Cancel' : 'Close review'),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            )
+          : AlertDialog(
+              title: Text(label),
+              content: SingleChildScrollView(child: SelectableText(detail)),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context, false),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.pop(context, true),
+                  child: Text(label),
+                ),
+              ],
+            ),
     );
     if (!mounted || accepted != true || !c.available) {
       return;
     }
-    if (basis != c.decisionBasis) {
+    if (basis != c.decisionBasis ||
+        (usesMobilePresentation() && !reviewedTargetCurrent())) {
       setState(
         () => _uiError = 'The reviewed target changed. Inspect its current exact identity before confirming again.',
       );
@@ -754,9 +815,63 @@ class _NativeBuilderWorkspaceState extends State<NativeBuilderWorkspace>
             ],
           ),
         ),
+        if (session != null &&
+            _mobilePane == 1 &&
+            c.canvas == 'code' &&
+            c.selectedFile != null)
+          _mobileCodeFooter(),
       ],
     );
   }
+
+  Widget _mobileCodeFooter() => Material(
+    color: Theme.of(context).colorScheme.surface,
+    child: SafeArea(
+      top: false,
+      minimum: const EdgeInsets.fromLTRB(20, 10, 20, 12),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            c.dirty ? 'Unsaved changes' : 'Saved version loaded',
+            style: Theme.of(context).textTheme.labelMedium,
+          ),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              Expanded(
+                child: FilledButton.icon(
+                  onPressed:
+                      c.canChangeWorkspace &&
+                          c.dirty &&
+                          c.fileMatchesSession &&
+                          !c.fileLoading
+                      ? () => _run(c.saveFile)
+                      : null,
+                  icon: const Icon(Icons.save_outlined),
+                  label: const Text('Save file'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              IconButton.filledTonal(
+                tooltip: 'Delete this file',
+                onPressed:
+                    c.canChangeWorkspace && !c.dirty && c.fileMatchesSession
+                    ? () => _confirm(
+                        'Delete file',
+                        'Delete ${c.selectedFile!.path} at SHA-256 ${c.selectedFile!.sha256} from sandbox ${c.snapshot!.session!.id}?',
+                        c.deleteFile,
+                      )
+                    : null,
+                icon: const Icon(Icons.delete_outline_rounded),
+              ),
+            ],
+          ),
+        ],
+      ),
+    ),
+  );
 
   Widget _browser() => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -981,12 +1096,30 @@ class _NativeBuilderWorkspaceState extends State<NativeBuilderWorkspace>
           ),
         ],
         if (c.canvas == 'code') ...[
-          BuilderIdentity(
-            'Exact file',
-            c.selectedFile?.path ?? 'No complete file loaded',
-          ),
-          if (c.selectedFile != null)
-            BuilderIdentity('Loaded SHA-256', c.selectedFile!.sha256),
+          if (usesMobilePresentation()) ...[
+            Text(
+              c.selectedFile?.path.split('/').last ?? 'Choose a file',
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
+            if (c.selectedFile != null)
+              MobileDetailsDisclosure(
+                title: 'File and version details',
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    BuilderIdentity('Path', c.selectedFile!.path),
+                    BuilderIdentity('Loaded SHA-256', c.selectedFile!.sha256),
+                  ],
+                ),
+              ),
+          ] else ...[
+            BuilderIdentity(
+              'Exact file',
+              c.selectedFile?.path ?? 'No complete file loaded',
+            ),
+            if (c.selectedFile != null)
+              BuilderIdentity('Loaded SHA-256', c.selectedFile!.sha256),
+          ],
           if (c.dirty)
             const BuilderNotice(
               'Unsaved source edit. The original SHA-256 remains the write precondition.',
@@ -999,8 +1132,8 @@ class _NativeBuilderWorkspaceState extends State<NativeBuilderWorkspace>
             controller: _editor,
             readOnly: c.acting || !c.access.writable || c.selectedFile == null,
             maxLength: 500000,
-            minLines: 12,
-            maxLines: 26,
+            minLines: usesMobilePresentation() ? 10 : 12,
+            maxLines: usesMobilePresentation() ? 20 : 26,
             keyboardType: TextInputType.multiline,
             autocorrect: false,
             enableSuggestions: false,
@@ -1012,32 +1145,33 @@ class _NativeBuilderWorkspaceState extends State<NativeBuilderWorkspace>
             ),
             onChanged: c.editDraft,
           ),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              BuilderActionButton(
-                'Save file',
-                c.canChangeWorkspace &&
-                        c.dirty &&
-                        c.fileMatchesSession &&
-                        !c.fileLoading
-                    ? () => _run(c.saveFile)
-                    : null,
-                primary: true,
-              ),
-              BuilderActionButton(
-                'Delete file',
-                c.canChangeWorkspace && !c.dirty && c.fileMatchesSession
-                    ? () => _confirm(
-                        'Delete file',
-                        'Delete ${c.selectedFile!.path} at SHA-256 ${c.selectedFile!.sha256} from sandbox ${c.snapshot!.session!.id}?',
-                        c.deleteFile,
-                      )
-                    : null,
-              ),
-            ],
-          ),
+          if (!usesMobilePresentation())
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                BuilderActionButton(
+                  'Save file',
+                  c.canChangeWorkspace &&
+                          c.dirty &&
+                          c.fileMatchesSession &&
+                          !c.fileLoading
+                      ? () => _run(c.saveFile)
+                      : null,
+                  primary: true,
+                ),
+                BuilderActionButton(
+                  'Delete file',
+                  c.canChangeWorkspace && !c.dirty && c.fileMatchesSession
+                      ? () => _confirm(
+                          'Delete file',
+                          'Delete ${c.selectedFile!.path} at SHA-256 ${c.selectedFile!.sha256} from sandbox ${c.snapshot!.session!.id}?',
+                          c.deleteFile,
+                        )
+                      : null,
+                ),
+              ],
+            ),
           if (c.conflictingFile != null) ...[
             const BuilderNotice(
               'The saved source or sandbox changed. Your local draft is retained. Inspect the current file before selecting a revision.',
@@ -1161,285 +1295,399 @@ class _NativeBuilderWorkspaceState extends State<NativeBuilderWorkspace>
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Text(
-          'Repository handoff',
-          style: Theme.of(context).textTheme.titleLarge,
-        ),
-        if (!githubReady)
-          BuilderNotice(
-            'GitHub App setup required. Missing: ${(snapshot.github['missing'] as List).join(', ')}',
-          ),
-        BuilderActionButton(
-          'Load authorized repositories',
-          githubReady && !c.acting && !c.repositoriesLoading
-              ? () => _run(c.loadRepositories)
-              : null,
-        ),
-        if (c.repositoriesError != null)
-          BuilderNotice(
-            'Repositories unavailable. ${c.repositoriesError}',
-            error: true,
-          ),
-        if (c.repositoriesLoading)
-          const LinearProgressIndicator(
-            semanticsLabel: 'Reading authorized repositories',
-          ),
-        if (c.repositories.isEmpty &&
-            c.repositoriesError == null &&
-            !c.repositoriesLoading)
-          const Text(
-            'No repository options loaded. Empty availability is not an authorization grant.',
-          ),
-        DropdownButtonFormField<String>(
-          key: ValueKey(c.repositoryId),
-          initialValue: c.repositoryId,
-          isExpanded: true,
-          decoration: const InputDecoration(labelText: 'Repository'),
-          items: [
-            if (missingRepo)
-              DropdownMenuItem(
-                value: c.repositoryId,
-                child: const Text('Exact repository unavailable'),
-              ),
-            ...c.repositories.map(
-              (row) => DropdownMenuItem(
-                value: row.id,
-                child: Text(
-                  '${row.label} · ${row.private ? 'private' : 'public'}',
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-            ),
-          ],
-          onChanged: c.acting
-              ? null
-              : (id) {
-                  if (id != null) {
-                    c.choose(repositoryChoice: id);
-                  }
-                },
-        ),
-        if (c.repositoryId != null)
-          BuilderIdentity('Repository ID', c.repositoryId!),
-        if (binding != null) ...[
-          BuilderIdentity('Binding', binding.id),
-          BuilderIdentity('Exact base commit', binding.text('baseSha')),
-          Text(
-            'Binding revision ${binding.number('revision')} · ${binding.text('defaultBranch')}',
-          ),
-        ],
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
+        _deliverySection(
+          'Repository',
+          'Choose the project source',
+          Icons.folder_open_outlined,
+          expanded: binding == null,
           children: [
+            if (!usesMobilePresentation())
+              Text(
+                'Repository handoff',
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+            if (!githubReady)
+              BuilderNotice(
+                'GitHub App setup required. Missing: ${(snapshot.github['missing'] as List).join(', ')}',
+              ),
             BuilderActionButton(
-              'Bind repository',
-              c.canChangeWorkspace &&
-                      !c.dirty &&
-                      !missingRepo &&
-                      c.repositoryId != null &&
-                      c.repositoriesError == null
-                  ? () => _run(c.bindRepository)
+              'Load authorized repositories',
+              githubReady && !c.acting && !c.repositoriesLoading
+                  ? () => _run(c.loadRepositories)
                   : null,
             ),
-            BuilderActionButton(
-              'Open bound repository revision',
-              c.canChangeWorkspace && !c.dirty && binding != null
-                  ? () => _confirm(
-                      'Open bound repository revision',
-                      'Replace sandbox files with ${binding.text('repositoryFullName')} at commit ${binding.text('baseSha')}? A recovery checkpoint is sealed first.',
-                      c.checkoutRepository,
-                    )
-                  : null,
-            ),
-          ],
-        ),
-        TextField(
-          controller: _branch,
-          enabled: !c.acting,
-          maxLength: 120,
-          decoration: const InputDecoration(labelText: 'New branch'),
-          onChanged: (value) => c.editHandoff(nextBranch: value),
-        ),
-        TextField(
-          controller: _title,
-          enabled: !c.acting,
-          maxLength: 180,
-          decoration: const InputDecoration(
-            labelText: 'Draft pull request title',
-          ),
-          onChanged: (value) => c.editHandoff(nextTitle: value),
-        ),
-        TextField(
-          controller: _note,
-          enabled: !c.acting,
-          maxLength: 8000,
-          minLines: 3,
-          maxLines: 6,
-          decoration: const InputDecoration(labelText: 'Review note'),
-          onChanged: (value) => c.editHandoff(nextNote: value),
-        ),
-        BuilderActionButton(
-          'Secret-scan and open draft PR',
-          c.canChangeWorkspace &&
-                  !c.dirty &&
-                  binding != null &&
-                  c.deliveryVerification != null &&
-                  c.title.trim().length >= 3 &&
-                  c.branch.trim().isNotEmpty
-              ? () => _confirm(
-                  'Open draft pull request',
-                  'Create a new branch ${c.branch.trim()} in ${binding.text('repositoryFullName')} using checkpoint ${snapshot.checkpoint?.id} and verification ${c.deliveryVerification?.id}? The default branch is not written directly.',
-                  c.createPullRequest,
-                )
-              : null,
-          primary: true,
-        ),
-        ...snapshot
-            .records('delivery')
-            .map(
-              (record) => ExpansionTile(
-                key: builderStorageKey(c, 'delivery:${record.id}'),
-                title: Text('${record.text('branchName')} · ${record.status}'),
-                children: [
-                  BuilderIdentity('Delivery', record.id),
-                  BuilderIdentity(
-                    'Commit',
-                    record.text('commitSha').isEmpty
-                        ? 'Not acknowledged'
-                        : record.text('commitSha'),
+            if (c.repositoriesError != null)
+              BuilderNotice(
+                'Repositories unavailable. ${c.repositoriesError}',
+                error: true,
+              ),
+            if (c.repositoriesLoading)
+              const LinearProgressIndicator(
+                semanticsLabel: 'Reading authorized repositories',
+              ),
+            if (c.repositories.isEmpty &&
+                c.repositoriesError == null &&
+                !c.repositoriesLoading)
+              const Text(
+                'No repository options loaded. Empty availability is not an authorization grant.',
+              ),
+            DropdownButtonFormField<String>(
+              key: ValueKey(c.repositoryId),
+              initialValue: c.repositoryId,
+              isExpanded: true,
+              decoration: const InputDecoration(labelText: 'Repository'),
+              items: [
+                if (missingRepo)
+                  DropdownMenuItem(
+                    value: c.repositoryId,
+                    child: const Text('Exact repository unavailable'),
                   ),
-                  BuilderIdentity('Checkpoint', record.text('checkpointId')),
-                  BuilderIdentity(
-                    'Verification',
-                    record.text('verificationId'),
-                  ),
-                  if (builderExternalUri(record.raw['pullRequestUrl']) != null)
-                    BuilderActionButton(
-                      'Open exact pull request',
-                      widget.externalOpener != null && c.fresh
-                          ? () => _open(
-                              builderExternalUri(record.raw['pullRequestUrl'])!,
-                            )
-                          : null,
+                ...c.repositories.map(
+                  (row) => DropdownMenuItem(
+                    value: row.id,
+                    child: Text(
+                      '${row.label} · ${row.private ? 'private' : 'public'}',
+                      overflow: TextOverflow.ellipsis,
                     ),
-                ],
+                  ),
+                ),
+              ],
+              onChanged: c.acting
+                  ? null
+                  : (id) {
+                      if (id != null) {
+                        c.choose(repositoryChoice: id);
+                      }
+                    },
+            ),
+            if (usesMobilePresentation() && binding != null) ...[
+              const SizedBox(height: 12),
+              Text(
+                binding.text('repositoryFullName'),
+                style: Theme.of(context).textTheme.titleMedium,
               ),
-            ),
-        const SizedBox(height: 20),
-        if (preview != null &&
-            builderExternalUri(preview.raw['deploymentUrl']) != null)
-          BuilderActionButton(
-            'Open selected deployment',
-            widget.externalOpener != null && c.fresh
-                ? () => _open(builderExternalUri(preview.raw['deploymentUrl'])!)
-                : null,
-          ),
-        Text(
-          'Preview and production',
-          style: Theme.of(context).textTheme.titleLarge,
-        ),
-        if (!vercelReady)
-          BuilderNotice(
-            'Vercel setup required. Missing: ${(snapshot.vercel['missing'] as List).join(', ')}',
-          ),
-        BuilderIdentity(
-          'Current sealed checkpoint',
-          snapshot.checkpoint?.id ?? 'No current seal',
-        ),
-        BuilderIdentity(
-          'Selected current passing delivery verification',
-          c.deliveryVerification?.id ?? 'No matching passing Sentinel review',
-        ),
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            BuilderActionButton(
-              'Create verified preview',
-              c.canChangeWorkspace &&
-                      !c.dirty &&
-                      vercelReady &&
-                      c.deliveryVerification != null
-                  ? () => _confirm(
-                      'Create verified preview',
-                      'Upload checkpoint ${snapshot.checkpoint?.id} and verification ${c.deliveryVerification?.id} to an isolated Vercel preview?',
-                      c.deployPreview,
-                    )
-                  : null,
-            ),
-            BuilderActionButton(
-              'Refresh selected preview evidence',
-              c.writable && preview != null
-                  ? () => _run(() => c.refreshEvidence('deployment'))
-                  : null,
-            ),
-            BuilderActionButton(
-              'Prepare production review',
-              c.canChangeWorkspace && !c.dirty && preview?.status == 'ready'
-                  ? () => _run(c.prepareRelease)
-                  : null,
+              Text('Branch: ${binding.text('defaultBranch')}'),
+            ],
+            _deliveryReferences('Repository version details', [
+              if (c.repositoryId != null)
+                BuilderIdentity('Repository ID', c.repositoryId!),
+              if (binding != null) ...[
+                BuilderIdentity('Binding', binding.id),
+                BuilderIdentity('Exact base commit', binding.text('baseSha')),
+                Text(
+                  'Binding revision ${binding.number('revision')} · ${binding.text('defaultBranch')}',
+                ),
+              ],
+            ]),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                BuilderActionButton(
+                  'Bind repository',
+                  c.canChangeWorkspace &&
+                          !c.dirty &&
+                          !missingRepo &&
+                          c.repositoryId != null &&
+                          c.repositoriesError == null
+                      ? () => _run(c.bindRepository)
+                      : null,
+                ),
+                BuilderActionButton(
+                  'Open bound repository revision',
+                  c.canChangeWorkspace && !c.dirty && binding != null
+                      ? () => _confirm(
+                          'Open bound repository revision',
+                          'Replace sandbox files with ${binding.text('repositoryFullName')} at commit ${binding.text('baseSha')}? A recovery checkpoint is sealed first.',
+                          c.checkoutRepository,
+                        )
+                      : null,
+                ),
+              ],
             ),
           ],
         ),
-        if (release != null) ...[
-          BuilderIdentity('Selected production release', release.id),
-          if (builderExternalUri(release.raw['deploymentUrl']) != null)
+        _deliverySection(
+          'Share changes',
+          'Branch, review note and draft pull request',
+          Icons.merge_type_rounded,
+          expanded: binding != null,
+          children: [
+            TextField(
+              controller: _branch,
+              enabled: !c.acting,
+              maxLength: 120,
+              decoration: const InputDecoration(labelText: 'New branch'),
+              onChanged: (value) => c.editHandoff(nextBranch: value),
+            ),
+            TextField(
+              controller: _title,
+              enabled: !c.acting,
+              maxLength: 180,
+              decoration: const InputDecoration(
+                labelText: 'Draft pull request title',
+              ),
+              onChanged: (value) => c.editHandoff(nextTitle: value),
+            ),
+            TextField(
+              controller: _note,
+              enabled: !c.acting,
+              maxLength: 8000,
+              minLines: 3,
+              maxLines: 6,
+              decoration: const InputDecoration(labelText: 'Review note'),
+              onChanged: (value) => c.editHandoff(nextNote: value),
+            ),
             BuilderActionButton(
-              'Open selected production deployment',
-              widget.externalOpener != null && c.fresh
-                  ? () =>
-                        _open(builderExternalUri(release.raw['deploymentUrl'])!)
+              'Secret-scan and open draft PR',
+              c.canChangeWorkspace &&
+                      !c.dirty &&
+                      binding != null &&
+                      c.deliveryVerification != null &&
+                      c.title.trim().length >= 3 &&
+                      c.branch.trim().isNotEmpty
+                  ? () => _confirm(
+                      'Open draft pull request',
+                      'Create a new branch ${c.branch.trim()} in ${binding.text('repositoryFullName')} using checkpoint ${snapshot.checkpoint?.id} and verification ${c.deliveryVerification?.id}? The default branch is not written directly.',
+                      c.createPullRequest,
+                    )
                   : null,
+              primary: true,
             ),
-          BuilderIdentity('Release digest', release.text('releaseDigest')),
-          Text('Review expires ${release.text('expiresAt')}'),
-          if (release.text('deploymentId') != preview?.id)
-            const BuilderNotice(
-              'This release belongs to a different selected preview. Select its exact deployment before confirming production.',
-            ),
-          if (release.object('migrationEvidence')['status'] != 'not_declared')
-            const BuilderNotice(
-              'Database migration files are declared. Production is blocked by the existing release policy.',
-            ),
-          TextField(
-            controller: _confirmation,
-            enabled: !c.acting && c.access.writable,
-            decoration: const InputDecoration(
-              labelText: 'Type RELEASE for this exact review',
-            ),
-            autocorrect: false,
-            enableSuggestions: false,
-            onChanged: c.confirm,
-          ),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
+            ...snapshot
+                .records('delivery')
+                .map(
+                  (record) => ExpansionTile(
+                    key: builderStorageKey(c, 'delivery:${record.id}'),
+                    title: Text(
+                      '${record.text('branchName')} · ${record.status}',
+                    ),
+                    children: [
+                      BuilderIdentity('Delivery', record.id),
+                      BuilderIdentity(
+                        'Commit',
+                        record.text('commitSha').isEmpty
+                            ? 'Not acknowledged'
+                            : record.text('commitSha'),
+                      ),
+                      BuilderIdentity(
+                        'Checkpoint',
+                        record.text('checkpointId'),
+                      ),
+                      BuilderIdentity(
+                        'Verification',
+                        record.text('verificationId'),
+                      ),
+                      if (builderExternalUri(record.raw['pullRequestUrl']) !=
+                          null)
+                        BuilderActionButton(
+                          'Open exact pull request',
+                          widget.externalOpener != null && c.fresh
+                              ? () => _open(
+                                  builderExternalUri(
+                                    record.raw['pullRequestUrl'],
+                                  )!,
+                                )
+                              : null,
+                        ),
+                    ],
+                  ),
+                ),
+          ],
+        ),
+        const SizedBox(height: 20),
+        _deliverySection(
+          'Preview & release',
+          'Review the current build before publishing',
+          Icons.rocket_launch_outlined,
+          expanded: release != null || preview != null,
+          children: [
+            if (preview != null &&
+                builderExternalUri(preview.raw['deploymentUrl']) != null)
               BuilderActionButton(
-                'Release exact preview to production',
-                c.canRelease
-                    ? () => _confirm(
-                        'Release exact preview to production',
-                        'Release ${release.id} with digest ${release.text('releaseDigest')} from preview ${release.text('deploymentId')}? This is a production action.',
-                        c.releaseProduction,
+                'Open selected deployment',
+                widget.externalOpener != null && c.fresh
+                    ? () => _open(
+                        builderExternalUri(preview.raw['deploymentUrl'])!,
                       )
                     : null,
-                primary: true,
               ),
-              BuilderActionButton(
-                'Refresh selected production evidence',
-                c.writable
-                    ? () => _run(() => c.refreshEvidence('release'))
-                    : null,
+            if (!usesMobilePresentation())
+              Text(
+                'Preview and production',
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+            if (!vercelReady)
+              BuilderNotice(
+                'Vercel setup required. Missing: ${(snapshot.vercel['missing'] as List).join(', ')}',
+              ),
+            if (usesMobilePresentation())
+              BuilderNotice(
+                c.deliveryVerification != null
+                    ? 'A matching passing review is available for the current checkpoint.'
+                    : 'A matching passing review is required before creating a preview or draft pull request.',
+              ),
+            _deliveryReferences('Build review details', [
+              BuilderIdentity(
+                'Current sealed checkpoint',
+                snapshot.checkpoint?.id ?? 'No current seal',
+              ),
+              BuilderIdentity(
+                'Selected current passing delivery verification',
+                c.deliveryVerification?.id ??
+                    'No matching passing Sentinel review',
+              ),
+            ]),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                BuilderActionButton(
+                  'Create verified preview',
+                  c.canChangeWorkspace &&
+                          !c.dirty &&
+                          vercelReady &&
+                          c.deliveryVerification != null
+                      ? () => _confirm(
+                          'Create verified preview',
+                          'Upload checkpoint ${snapshot.checkpoint?.id} and verification ${c.deliveryVerification?.id} to an isolated Vercel preview?',
+                          c.deployPreview,
+                        )
+                      : null,
+                ),
+                BuilderActionButton(
+                  'Refresh selected preview evidence',
+                  c.writable && preview != null
+                      ? () => _run(() => c.refreshEvidence('deployment'))
+                      : null,
+                ),
+                BuilderActionButton(
+                  'Prepare production review',
+                  c.canChangeWorkspace && !c.dirty && preview?.status == 'ready'
+                      ? () => _run(c.prepareRelease)
+                      : null,
+                ),
+              ],
+            ),
+            if (release != null) ...[
+              if (!usesMobilePresentation())
+                BuilderIdentity('Selected production release', release.id),
+              if (builderExternalUri(release.raw['deploymentUrl']) != null)
+                BuilderActionButton(
+                  'Open selected production deployment',
+                  widget.externalOpener != null && c.fresh
+                      ? () => _open(
+                          builderExternalUri(release.raw['deploymentUrl'])!,
+                        )
+                      : null,
+                ),
+              _deliveryReferences('Production review details', [
+                if (usesMobilePresentation())
+                  BuilderIdentity('Selected production release', release.id),
+                BuilderIdentity(
+                  'Release digest',
+                  release.text('releaseDigest'),
+                ),
+              ]),
+              Text(
+                'Review expires ${usesMobilePresentation() ? builderDisplayTime(context, release.text('expiresAt')) : release.text('expiresAt')}',
+              ),
+              if (release.text('deploymentId') != preview?.id)
+                const BuilderNotice(
+                  'This release belongs to a different selected preview. Select its exact deployment before confirming production.',
+                ),
+              if (release.object('migrationEvidence')['status'] !=
+                  'not_declared')
+                const BuilderNotice(
+                  'Database migration files are declared. Production is blocked by the existing release policy.',
+                ),
+              TextField(
+                controller: _confirmation,
+                enabled: !c.acting && c.access.writable,
+                decoration: const InputDecoration(
+                  labelText: 'Type RELEASE for this exact review',
+                ),
+                autocorrect: false,
+                enableSuggestions: false,
+                onChanged: c.confirm,
+              ),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  BuilderActionButton(
+                    'Release exact preview to production',
+                    c.canRelease
+                        ? () => _confirm(
+                            'Release exact preview to production',
+                            'Release ${release.id} with digest ${release.text('releaseDigest')} from preview ${release.text('deploymentId')}? This is a production action.',
+                            c.releaseProduction,
+                          )
+                        : null,
+                    primary: true,
+                  ),
+                  BuilderActionButton(
+                    'Refresh selected production evidence',
+                    c.writable
+                        ? () => _run(() => c.refreshEvidence('release'))
+                        : null,
+                  ),
+                ],
+              ),
+              const BuilderNotice(
+                'Rollback is recorded evidence only. The published API has no rollback action. Provider status is refreshed on explicit request; this view does not silently poll with mutation requests.',
               ),
             ],
-          ),
-          const BuilderNotice(
-            'Rollback is recorded evidence only. The published API has no rollback action. Provider status is refreshed on explicit request; this view does not silently poll with mutation requests.',
-          ),
-        ],
+          ],
+        ),
       ],
     );
   }
+
+  Widget _deliverySection(
+    String title,
+    String subtitle,
+    IconData icon, {
+    required List<Widget> children,
+    bool expanded = false,
+  }) {
+    if (!usesMobilePresentation())
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: children,
+      );
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: MobileSurface(
+        child: ExpansionTile(
+          key: builderStorageKey(c, 'phone-delivery-$title'),
+          initiallyExpanded: expanded,
+          leading: Icon(icon),
+          title: Text(title, style: Theme.of(context).textTheme.titleMedium),
+          subtitle: Text(subtitle),
+          tilePadding: EdgeInsets.zero,
+          childrenPadding: const EdgeInsets.only(top: 16),
+          expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
+          expansionAnimationStyle: MediaQuery.disableAnimationsOf(context)
+              ? AnimationStyle.noAnimation
+              : null,
+          children: children,
+        ),
+      ),
+    );
+  }
+
+  Widget _deliveryReferences(String title, List<Widget> children) =>
+      usesMobilePresentation()
+      ? MobileDetailsDisclosure(
+          title: title,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: children,
+          ),
+        )
+      : Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: children,
+        );
 }

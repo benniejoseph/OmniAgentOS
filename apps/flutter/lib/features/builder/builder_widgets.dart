@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
 
+import '../../app/platform/mobile_presentation.dart';
+import '../../app/mobile/mobile_flow_scaffold.dart';
+
 import 'builder_contracts.dart';
 import 'builder_controller.dart';
 
@@ -128,7 +131,13 @@ class BuilderRecordSelector extends StatelessWidget {
               (record) => DropdownMenuItem(
                 value: record.id,
                 child: Text(
-                  '${record.status.isEmpty ? record.kind : record.status} · ${record.id}',
+                  usesMobilePresentation()
+                      ? _builderRecordLabel(
+                          context,
+                          record,
+                          records.indexOf(record) + 1,
+                        )
+                      : '${record.status.isEmpty ? record.kind : record.status} · ${record.id}',
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
@@ -142,7 +151,14 @@ class BuilderRecordSelector extends StatelessWidget {
                 }
               : null,
         ),
-        if (value != null) BuilderIdentity('Exact selected identity', value!),
+        if (value != null)
+          if (usesMobilePresentation())
+            MobileDetailsDisclosure(
+              title: 'Selected record details',
+              child: BuilderIdentity('Exact selected identity', value!),
+            )
+          else
+            BuilderIdentity('Exact selected identity', value!),
         if (missing)
           const BuilderNotice(
             'The exact selected record is outside this bounded snapshot or is no longer available. Choose another record explicitly.',
@@ -312,4 +328,45 @@ class BuilderEvidencePanel extends StatelessWidget {
       ],
     );
   }
+}
+
+String builderDisplayTime(BuildContext context, String value) {
+  final date = DateTime.tryParse(value)?.toLocal();
+  if (date == null) return value;
+  final localizations = MaterialLocalizations.of(context);
+  return '${localizations.formatMediumDate(date)} · ${localizations.formatTimeOfDay(TimeOfDay.fromDateTime(date))}';
+}
+
+String _builderRecordLabel(
+  BuildContext context,
+  BuilderRecord record,
+  int ordinal,
+) {
+  String? named;
+  for (final key in ['label', 'title', 'branchName', 'repositoryFullName']) {
+    final value = record.raw[key];
+    if (value is String && value.trim().isNotEmpty) {
+      named = value.trim();
+      break;
+    }
+  }
+  final kind = switch (record.kind) {
+    'deployment' => 'Preview',
+    'release' => 'Release',
+    'verification' => 'Check',
+    'checkpoint' => 'Checkpoint',
+    'delivery' => 'Pull request',
+    _ => 'Record',
+  };
+  final state = record.status.replaceAll('_', ' ');
+  final date =
+      record.raw['createdAt'] ??
+      record.raw['updatedAt'] ??
+      record.raw['occurredAt'];
+  return [
+    named ?? '$kind $ordinal',
+    if (state.isNotEmpty) '${state[0].toUpperCase()}${state.substring(1)}',
+    if (date is String && DateTime.tryParse(date) != null)
+      builderDisplayTime(context, date),
+  ].join(' · ');
 }
