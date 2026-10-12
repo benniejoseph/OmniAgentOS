@@ -24,7 +24,7 @@ beforeEach(() => {
   directory = realpathSync(mkdtempSync(path.join(tmpdir(), "asael-signing-key-cli-")));
   repository = path.join(directory, "repository");
   mkdirSync(path.join(repository, "scripts"), { recursive: true });
-  for (const script of ["release-signing-key.mjs", "release-manifest.mjs", "release-provenance.mjs"]) {
+  for (const script of ["release-signing-key.mjs", "release-manifest.mjs", "release-provenance.mjs", "release-owner-live-authorization.mjs"]) {
     copyFileSync(path.resolve("scripts", script), path.join(repository, "scripts", script));
   }
 });

@@ -729,33 +729,36 @@ class _ProjectContext extends StatelessWidget {
   final List<({int completed, String id, String title, int total})> projects;
 
   @override
-  Widget build(BuildContext context) => Column(
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: [
-      const MacosSectionHeader(
-        title: 'Continue a project',
-        description: 'Open the work you already started.',
-      ),
-      const SizedBox(height: 8),
-      for (final project in projects.take(6))
-        ListTile(
-          dense: true,
-          contentPadding: EdgeInsets.zero,
-          onTap: () =>
-              context.push('/projects/${Uri.encodeComponent(project.id)}'),
-          title: Text(
-            project.title,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-          ),
-          subtitle: Text(
-            project.total == 0
-                ? 'Open project'
-                : '${project.completed} of ${project.total} tasks complete',
-          ),
-          trailing: const Icon(Icons.chevron_right_rounded, size: 17),
+  Widget build(BuildContext context) => Material(
+    type: MaterialType.transparency,
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const MacosSectionHeader(
+          title: 'Continue a project',
+          description: 'Open the work you already started.',
         ),
-    ],
+        const SizedBox(height: 8),
+        for (final project in projects.take(6))
+          ListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            onTap: () =>
+                context.push('/projects/${Uri.encodeComponent(project.id)}'),
+            title: Text(
+              project.title,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+            subtitle: Text(
+              project.total == 0
+                  ? 'Open project'
+                  : '${project.completed} of ${project.total} tasks complete',
+            ),
+            trailing: const Icon(Icons.chevron_right_rounded, size: 17),
+          ),
+      ],
+    ),
   );
 }
 
@@ -764,37 +767,40 @@ class _ConversationContext extends StatelessWidget {
   final List<({String id, String title})> threads;
 
   @override
-  Widget build(BuildContext context) => Column(
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: [
-      const MacosSectionHeader(
-        title: 'Resume a conversation',
-        description: 'Pick up where you left off.',
-      ),
-      const SizedBox(height: 8),
-      for (final thread in threads.take(7))
-        ListTile(
-          dense: true,
-          contentPadding: EdgeInsets.zero,
-          onTap: () => context.go(
-            Uri(
-              path: '/talk',
-              queryParameters: {'thread': thread.id},
-            ).toString(),
-          ),
-          leading: Icon(
-            Icons.chat_bubble_outline_rounded,
-            size: 17,
-            color: Theme.of(context).colorScheme.onSurfaceVariant,
-          ),
-          title: Text(
-            thread.title,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-          ),
-          trailing: const Icon(Icons.chevron_right_rounded, size: 17),
+  Widget build(BuildContext context) => Material(
+    type: MaterialType.transparency,
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const MacosSectionHeader(
+          title: 'Resume a conversation',
+          description: 'Pick up where you left off.',
         ),
-    ],
+        const SizedBox(height: 8),
+        for (final thread in threads.take(7))
+          ListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            onTap: () => context.go(
+              Uri(
+                path: '/talk',
+                queryParameters: {'thread': thread.id},
+              ).toString(),
+            ),
+            leading: Icon(
+              Icons.chat_bubble_outline_rounded,
+              size: 17,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+            title: Text(
+              thread.title,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+            trailing: const Icon(Icons.chevron_right_rounded, size: 17),
+          ),
+      ],
+    ),
   );
 }
 

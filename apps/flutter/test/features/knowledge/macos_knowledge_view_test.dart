@@ -172,7 +172,7 @@ void main() {
 
     expect(find.byKey(const Key('macos-knowledge-inspector')), findsOneWidget);
     expect(find.byType(FloatingActionButton), findsNothing);
-    expect(find.text('Memory and claim'), findsOneWidget);
+    expect(find.text('Status'), findsNWidgets(2));
     expect(find.text(_memoryOne.content), findsWidgets);
 
     await tester.tap(find.byKey(const Key('macos-memory-row-m2')));
@@ -201,7 +201,7 @@ void main() {
     await tester.pump();
     expect(find.byKey(const Key('macos-source-row-s1')), findsOneWidget);
     expect(find.byKey(const Key('macos-source-row-s2')), findsNothing);
-  });
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
   testWidgets('uses a stable interactive relationship workspace', (
     tester,
@@ -235,7 +235,7 @@ void main() {
     await tester.tap(find.byKey(const Key('macos-knowledge-rebuild-graph')));
     await tester.pumpAndSettle();
     expect(repository.rebuilds, 1);
-  });
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 }
 
 Widget _app(Widget child) =>

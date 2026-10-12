@@ -483,34 +483,60 @@ class SpecialistApiClient extends ApiClient with ChangeNotifier {
       _ready &&
           recoveryError == null &&
           !_writing &&
-          _journal.length < 32 &&
+          _journal.length <= 32 &&
           _nativeDecision?['pending'] == null,
       'Inspect protected decision recovery before another specialist action.',
     );
-    final key = specialistText(
-          headers?['Idempotency-Key'] ?? headers?['idempotency-key'],
-        ),
-        body = specialistFreeze(data ?? {}),
-        route = Uri.parse(path).path;
-    specialistRequire(
-      !_journal.any((row) => row['key'] == key),
-      'This exact key already has a protected decision record. Inspect it before choosing a separate decision.',
+    var key = specialistText(
+      headers?['Idempotency-Key'] ?? headers?['idempotency-key'],
     );
-    final target = _target(route);
-    specialistRequire(
-      !_journal.any(
-        (row) =>
-            row['target'] == target &&
-            row['state'] != 'accepted' &&
-            row['newDecisionAcknowledgedAt'] == null,
-      ),
-      'A previous exact decision has an unresolved outcome. Inspect its current resource before explicitly choosing another decision.',
-    );
+    final body = specialistFreeze(data ?? {}),
+        route = Uri.parse(path).path,
+        target = _target(Uri.parse(path).path);
     _writing = true;
     late final SpecialistJson intent;
+    var recoveringComparison = false;
     try {
       final digest = await specialistSha(body);
       _require(operation, mutation: true);
+      // Explicitly submitting the same unresolved comparison recovers its
+      // original server receipt. No timer, refresh, or auth retry invokes this.
+      if (operation == 'agents.adaptations.manage' &&
+          body['action'] == 'compare') {
+        final previous = _journal
+            .where(
+              (row) =>
+                  row['operation'] == operation &&
+                  row['path'] == route &&
+                  row['bodySha256'] == digest &&
+                  row['state'] != 'accepted' &&
+                  row['newDecisionAcknowledgedAt'] == null,
+            )
+            .toList();
+        specialistRequire(previous.length <= 1);
+        if (previous.isNotEmpty) {
+          key = specialistText(previous.single['key']);
+          recoveringComparison = true;
+        }
+      }
+      specialistRequire(
+        recoveringComparison || _journal.length < 32,
+        'Dismiss an accepted decision receipt before a new specialist action.',
+      );
+      specialistRequire(
+        !_journal.any((row) => row['key'] == key && !recoveringComparison),
+        'This exact key already has a protected decision record. Inspect it before choosing a separate decision.',
+      );
+      specialistRequire(
+        !_journal.any(
+          (row) =>
+              row['target'] == target &&
+              row['state'] != 'accepted' &&
+              row['newDecisionAcknowledgedAt'] == null &&
+              !(recoveringComparison && row['key'] == key),
+        ),
+        'A previous exact decision has an unresolved outcome. Inspect its current resource before explicitly choosing another decision.',
+      );
       intent = specialistFreeze({
         'operation': operation,
         'method': method,
@@ -529,7 +555,12 @@ class SpecialistApiClient extends ApiClient with ChangeNotifier {
       _writing = false;
       rethrow;
     }
-    _journal.add(intent);
+    if (recoveringComparison) {
+      final index = _journal.indexWhere((row) => row['key'] == key);
+      _journal[index] = intent;
+    } else {
+      _journal.add(intent);
+    }
     _emit();
     try {
       await _save();
@@ -547,6 +578,15 @@ class SpecialistApiClient extends ApiClient with ChangeNotifier {
           data: body,
           headers: {'Idempotency-Key': key},
         ),
+        _
+            when operation == 'agents.adaptations.manage' &&
+                body['action'] == 'compare' =>
+          await access!.api.postJsonAuthorizedComparisonOnce(
+            path,
+            authority: _authority,
+            data: body,
+            headers: {'Idempotency-Key': key},
+          ),
         _ => await access!.api.postJsonAuthorized(
           path,
           authority: _authority,

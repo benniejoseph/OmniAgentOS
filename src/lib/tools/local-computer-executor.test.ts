@@ -283,7 +283,7 @@ describe("governed local Mac tools", () => {
     expect(result).toMatchObject({
       record: {
         status: "failed",
-        reason: expect.stringContaining("fresh visual evidence"),
+        reason: expect.stringContaining("did not include fresh evidence"),
       },
       result: null,
     });
@@ -613,7 +613,7 @@ describe("governed local Mac tools", () => {
     ] as const) {
       const review = await activate(bundleId, key, objective);
       expect(review.record.status, key).toBe("approval_required");
-      expect(review.record.reason, key).toContain("apps named in your request");
+      expect(review.record.reason, key).toContain("your approval to open an app that you did not name in this request");
       pending.push(review.record);
     }
     expect(mocks.executeLocalComputerCommand).toHaveBeenCalledTimes(7);

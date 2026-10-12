@@ -9,7 +9,6 @@ import {
   ChartCandlestick,
   Cable,
   CheckCircle2,
-  CreditCard,
   Database,
   FileText,
   FolderKanban,
@@ -91,7 +90,7 @@ export const appNav: AppNavItem[] = [
     href: "/app",
     label: "Today",
     shortLabel: "Today",
-    description: "Your work, decisions, and recent results.",
+    description: "What matters today, what changed, and what needs you.",
     icon: House,
   },
   {
@@ -103,24 +102,17 @@ export const appNav: AppNavItem[] = [
   },
   {
     href: "/app/projects",
-    label: "Work",
-    shortLabel: "Work",
-    description: "Client context, Success Paths, evidence, and next actions.",
+    label: "My work",
+    shortLabel: "My work",
+    description: "Projects, commitments, and the work Asael carries forward.",
     icon: FolderKanban,
   },
   {
     href: "/app/approvals",
-    label: "Inbox",
-    shortLabel: "Inbox",
-    description: "Review actions that need your attention.",
+    label: "Needs you",
+    shortLabel: "Needs you",
+    description: "Your inbox for approvals and actions that need your attention.",
     icon: CheckCircle2,
-  },
-  {
-    href: "/app/payments",
-    label: "Payments",
-    shortLabel: "Payments",
-    description: "Review and cryptographically authorize exact purchase mandates.",
-    icon: CreditCard,
   },
   {
     href: "/app/results",
@@ -149,8 +141,8 @@ export const appNav: AppNavItem[] = [
   },
   {
     href: "/app/memory",
-    label: "Memory",
-    description: "What your second brain knows and remembers.",
+    label: "Library",
+    description: "Saved sources, memories, and the evidence behind what Asael remembers.",
     icon: Brain,
   },
   {
@@ -187,9 +179,9 @@ export const appNav: AppNavItem[] = [
   },
 ];
 
-// The five everyday destinations stay reachable on mobile. More retains every
-// existing specialist, review and settings destination without changing URLs.
-export const primaryNavHrefs = ["/app", "/app/command", "/app/projects", "/app/memory", "/app/automation"];
+// Four everyday places; specialist and setup tools remain in More and search.
+// Disabled payment execution keeps its legacy route outside general navigation.
+export const primaryNavHrefs = ["/app", "/app/command", "/app/projects", "/app/memory"];
 export const primaryNavItems = primaryNavHrefs.map((href) => {
   const item = appNav.find((entry) => entry.href === href);
   if (!item) throw new Error(`Missing primary navigation item for ${href}`);
@@ -202,7 +194,7 @@ export const appNavGroups: AppNavGroup[] = [
   {
     label: "More",
     collapsible: true,
-    items: ["/app/capture", "/app/meetings", "/app/responsibilities", "/app/agents", "/app/markets", "/app/payments"].map(appNavItem),
+    items: ["/app/capture", "/app/meetings", "/app/responsibilities", "/app/agents", "/app/markets", "/app/automation"].map(appNavItem),
   },
   {
     label: "Settings",

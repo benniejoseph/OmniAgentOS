@@ -21,7 +21,7 @@ export function NotificationsPanel({ resource, record, enabled, frozen, refresh,
   const canEnable = available && !current && exact && acknowledged === acknowledgement;
   return <section className={styles.panel} aria-labelledby="responsibility-notifications-heading">
     <h2 className={styles.heading} id="responsibility-notifications-heading">In-app notifications</h2>
-    <p className={styles.reading}>A saved notification request and a meeting pilot activation do not enable delivery. Review and enable the separate owner inbox destination below.</p>
+    <p className={styles.reading}>Saving a draft and starting tracking do not enable delivery. Review and enable the separate owner inbox destination below.</p>
     <div className={styles.actions}><button type="button" className={styles.button} onClick={refresh} disabled={resource.state === "loading" || frozen}>Refresh in-app notifications</button>
       <button type="button" className={styles.button} onClick={preview} disabled={!enabled || frozen || resource.state === "loading" || record.state !== "reviewed" || Boolean(current)}>Review in-app notification delivery</button></div>
     {!enabled && <p className={styles.support}>A current saved draft and workflow management permission are required to change notification admission.</p>}
@@ -48,7 +48,7 @@ export function NotificationsPanel({ resource, record, enabled, frozen, refresh,
         <h3 className={styles.subheading}>Exact inbox delivery review</h3>
         <p>At most {ready.configuration.maximumNotifications} confirmed in-app notifications before {ready.configuration.expiresAt}. Quiet hours hold a finite pending change; no change produces no notification.</p>
         <dl className={styles.metadata}><div><dt>Owner</dt><dd>{ready.configuration.tenantId} · {ready.configuration.actorId}</dd></div>
-          <div><dt>Meeting source</dt><dd>{ready.configuration.source.workspaceId} · {ready.configuration.source.id}</dd></div>
+          <div><dt>{ready.configuration.source.kind === "work_item" ? "Work item" : "Meeting source"}</dt><dd>{ready.configuration.source.workspaceId} · {ready.configuration.source.kind === "work_item" && `${ready.configuration.source.projectId} · `}{ready.configuration.source.id}</dd></div>
           <div><dt>Reviewed runtime</dt><dd>Revision {ready.expectedRuntimeRevision} · generation {ready.expectedRuntimeGeneration}</dd></div>
           <div><dt>Configuration SHA-256</dt><dd>{ready.configuration.configurationSha256}</dd></div></dl>
         <details><summary>Full reviewed notification configuration</summary><pre>{JSON.stringify(ready.configuration, null, 2)}</pre></details>
@@ -62,7 +62,7 @@ export function NotificationsPanel({ resource, record, enabled, frozen, refresh,
         expectedRuntimeGeneration: ready.expectedRuntimeGeneration, configurationSha256: ready.configuration.configurationSha256, acknowledgeDestination: "owner_in_app" }); }}>Enable exact in-app notifications</button>
       <button type="button" className={styles.button} disabled={!available || !current || current.state === "ended"} onClick={() => { if (available && current && current.state !== "ended") control({ action: "stop", expectedRevision: current.revision, expectedGeneration: current.generation }); }}>Stop in-app notifications</button>
     </div>
-    <p className={styles.support}>{!current ? "First read a fresh delivery review and acknowledge it to enable. " : ""}Stopping cancels pending and held changes permanently, preserves confirmed deliveries, and does not change the meeting check lifecycle. No email, push or browser OS notification is enabled here.</p>
+    <p className={styles.support}>{!current ? "First read a fresh delivery review and acknowledge it to enable. " : ""}Stopping cancels pending and held changes permanently, preserves confirmed deliveries, and does not stop the scheduled checks. No email, push or browser OS notification is enabled here.</p>
     {value && <>
       <h3 className={styles.subheading}>Recent notification candidates</h3>
       {value.candidates.length === 0 ? <p>No notification candidates were returned in this bounded history.</p> : <ul className={styles.rows}>{value.candidates.map((candidate) => <li key={candidate.id}>

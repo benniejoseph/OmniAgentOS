@@ -43,4 +43,5 @@
 @keyframes reveal { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
 @media(max-width: 48rem) { .glance { gap: 1rem; } .dataGrid { grid-template-columns: minmax(0,1fr); gap: 2rem; } }
 @media(max-width: 36rem) { .overview { padding: 1rem; } .glance, .permissions, .advancedGrid { grid-template-columns: minmax(0,1fr); } .glance > div { grid-template-columns: 1fr 1fr; } .glance small { grid-column: 2; } .tabs button { padding-inline: .75rem; } .tabs svg { display: none; } }
+@media(pointer: coarse) { .tabs button, .filter { min-block-size: 3rem; } }
 @media(prefers-reduced-motion: reduce) { .sectionBody { animation: none; } .tabs button { transition: none; } }

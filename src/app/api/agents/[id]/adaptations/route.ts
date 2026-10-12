@@ -1,3 +1,4 @@
+import { adaptationComparisonSuiteSchema } from "@/lib/agents/adaptation-comparison-contracts";
 import { z } from "zod";
 
 import {
@@ -20,6 +21,7 @@ import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
+export const maxDuration = 180;
 export const GET = withDatabaseRequestScope(GETHandler);
 export const POST = withDatabaseRequestScope(requireIdempotencyKey(POSTHandler));
 
@@ -27,6 +29,7 @@ const privateNoStoreHeaders = { "cache-control": "private, no-store" };
 const adaptationIdSchema = z.string().regex(/^agent-adaptation:[a-f0-9]{64}$/);
 const adaptationActionSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("refresh") }).strict(),
+  z.object({ action: z.literal("compare"), adaptationId: adaptationIdSchema, suite: adaptationComparisonSuiteSchema }).strict(),
   z.object({ action: z.literal("evaluate"), adaptationId: adaptationIdSchema })
     .strict(),
   z.object({ action: z.literal("activate"), adaptationId: adaptationIdSchema })
@@ -78,7 +81,7 @@ async function POSTHandler(
   }
   let body: unknown;
   try {
-    body = await parseJsonBody(request, 2_000);
+    body = await parseJsonBody(request, 49_152);
   } catch (error) {
     return jsonBodyErrorResponse(error);
   }
@@ -89,6 +92,7 @@ async function POSTHandler(
       details: parsed.error.flatten(),
     }, { status: 400, headers: privateNoStoreHeaders });
   }
+  if (parsed.data.action === "compare" && auth.source === "mobile" && (auth.native?.clientContractVersion || 0) < 56) return Response.json({ error: "Text comparison requires native contract v56." }, { status: 409, headers: privateNoStoreHeaders });
   const { id } = await context.params;
   const owner = adaptationOwner(auth);
   if (!owner) return canonicalActorUnavailableResponse();
@@ -96,7 +100,7 @@ async function POSTHandler(
     const caller = createRequestMutationAppServiceCaller(request, auth, { purpose: `agent.adaptation.${parsed.data.action}`, causationId: id });
     const result = parsed.data.action === "refresh"
       ? await refreshAgentAdaptationsService(caller, { agentId: id })
-      : await manageAgentAdaptationService(caller, { agentId: id, action: parsed.data.action, adaptationId: parsed.data.adaptationId });
+      : await manageAgentAdaptationService(caller, { agentId: id, ...parsed.data });
     return Response.json({ ...result.data, serviceReceipt: result.receipt }, { headers: privateNoStoreHeaders });
   } catch (error) {
     return adaptationErrorResponse(error);

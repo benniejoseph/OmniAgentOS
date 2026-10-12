@@ -62,9 +62,27 @@ const workflowProcedureSnapshotV2Schema = workflowProcedureSnapshotV2BodySchema.
   snapshotSha256: z.string().regex(/^[a-f0-9]{64}$/),
 }).strict();
 
+const responsibilityBuiltinSourceSchema = z.object({
+  kind: z.literal("responsibility_builtin"), id: z.literal("responsibility.work_item.followthrough.v1"),
+  tenantId: canonicalIdSchema, ownerActorId: canonicalIdSchema,
+  workspaceId: canonicalIdSchema, projectId: canonicalIdSchema, workItemId: canonicalIdSchema,
+}).strict();
+const workflowProcedureSnapshotV3BodySchema = z.object({
+  schemaVersion: z.literal(3), id: z.literal("responsibility.work_item.followthrough.v1"),
+  matchedAlias: z.string().trim().min(1).max(240), aliases: z.array(z.string().trim().min(1).max(240)).length(1),
+  source: responsibilityBuiltinSourceSchema, toolBindings: z.array(toolBindingSchema).length(1),
+}).strict();
+const workflowProcedureSnapshotV3Schema = workflowProcedureSnapshotV3BodySchema.extend({ snapshotSha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict().superRefine((value, context) => {
+  const binding = value.toolBindings[0];
+  if (binding.toolId !== "app.work_items.show" || stableJson(binding.input) !== stableJson({ workspaceId: value.source.workspaceId, projectId: value.source.projectId, workItemId: value.source.workItemId })) {
+    context.addIssue({ code: "custom", message: "The built-in follow-through recipe requires its exact work-item read." });
+  }
+});
+
 const workflowProcedureSnapshotSchema = z.discriminatedUnion("schemaVersion", [
   workflowProcedureSnapshotV1Schema,
   workflowProcedureSnapshotV2Schema,
+  workflowProcedureSnapshotV3Schema,
 ]);
 
 export type SavedProcedureToolBinding = Readonly<{
@@ -105,7 +123,19 @@ export type WorkflowProcedureSnapshotV2 = Readonly<{
   snapshotSha256: string;
 }>;
 
-export type WorkflowProcedureSnapshot = WorkflowProcedureSnapshotV1 | WorkflowProcedureSnapshotV2;
+export type WorkflowProcedureSnapshotV3 = Readonly<z.infer<typeof workflowProcedureSnapshotV3Schema>>;
+export type WorkflowProcedureSnapshot = WorkflowProcedureSnapshotV1 | WorkflowProcedureSnapshotV2 | WorkflowProcedureSnapshotV3;
+
+/** Code-defined recipe. Exact owner/work scope and tool input are part of its
+ * reviewed snapshot; constructing it neither saves memory nor activates work. */
+export function buildResponsibilityWorkItemProcedure(input: Omit<z.infer<typeof responsibilityBuiltinSourceSchema>, "kind" | "id">): WorkflowProcedureSnapshotV3 {
+  const id = "responsibility.work_item.followthrough.v1" as const;
+  const alias = "Follow this work item";
+  const source = responsibilityBuiltinSourceSchema.parse({ ...input, kind: "responsibility_builtin", id });
+  const body = workflowProcedureSnapshotV3BodySchema.parse({ schemaVersion: 3, id, matchedAlias: alias, aliases: [alias], source,
+    toolBindings: [{ toolId: "app.work_items.show", input: { workspaceId: source.workspaceId, projectId: source.projectId, workItemId: source.workItemId } }] });
+  return freezeSnapshot({ ...body, snapshotSha256: sha256(body) }) as WorkflowProcedureSnapshotV3;
+}
 
 /**
  * Procedures saved as workspace memory, for reviewed schedules only.
@@ -295,7 +325,7 @@ function freezeSnapshot(value: z.infer<typeof workflowProcedureSnapshotSchema>):
           source: Object.freeze({ ...value.source }),
           acceptanceCriteria: Object.freeze([...value.acceptanceCriteria]),
         }
-      : {}),
+      : value.schemaVersion === 3 ? { source: Object.freeze({ ...value.source }) } : {}),
   };
   return Object.freeze(snapshot) as WorkflowProcedureSnapshot;
 }

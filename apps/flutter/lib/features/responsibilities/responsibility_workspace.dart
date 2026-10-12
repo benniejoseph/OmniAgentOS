@@ -9,6 +9,7 @@ import '../../app/mobile/mobile_flow_scaffold.dart';
 import '../../app/platform/mobile_presentation.dart';
 import 'responsibility_contracts.dart';
 import 'responsibility_controller.dart';
+import 'responsibility_work_item_setup.dart';
 import 'responsibility_date_time_field.dart';
 
 /// Shared native workspace. The host binds this controller through Riverpod and
@@ -34,12 +35,14 @@ class _ResponsibilityWorkspaceViewState
     extends State<ResponsibilityWorkspaceView> {
   ResponsibilityController get controller => widget.controller;
   bool _mobileShowDetail = false;
+  String? _observedSelectedId;
   String _mobileQuery = '', _mobileFilter = 'all';
   final _mobileSearch = TextEditingController();
   @override
   void initState() {
     super.initState();
     _mobileShowDetail = widget.focusId != null;
+    _observedSelectedId = controller.selectedId;
     _initialize();
   }
 
@@ -56,8 +59,15 @@ class _ResponsibilityWorkspaceViewState
     super.didUpdateWidget(oldWidget);
     if (!identical(oldWidget.controller, controller) ||
         oldWidget.focusId != widget.focusId) {
-      _mobileShowDetail = widget.focusId != null;
+      final openingDraft =
+          identical(oldWidget.controller, controller) &&
+          _mobileShowDetail &&
+          oldWidget.focusId != null &&
+          widget.focusId == null &&
+          controller.selectedId == null;
+      _mobileShowDetail = widget.focusId != null || openingDraft;
       if (!identical(oldWidget.controller, controller)) {
+        _observedSelectedId = controller.selectedId;
         _mobileSearch.clear();
         _mobileQuery = '';
         _mobileFilter = 'all';
@@ -115,6 +125,14 @@ class _ResponsibilityWorkspaceViewState
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: controller,
     builder: (context, _) {
+      if (_observedSelectedId != controller.selectedId) {
+        // The root page remains mounted beneath a detail route. Follow the
+        // explicit new-draft selection when that detail route closes.
+        if (_observedSelectedId != null && controller.selectedId == null) {
+          _mobileShowDetail = true;
+        }
+        _observedSelectedId = controller.selectedId;
+      }
       if (!controller.available) {
         return const Center(
           child: Padding(
@@ -123,7 +141,12 @@ class _ResponsibilityWorkspaceViewState
           ),
         );
       }
-      if (usesMobilePresentation()) return _mobileWorkspace();
+      if (usesMobilePresentation()) {
+        return Material(
+          type: MaterialType.transparency,
+          child: _mobileWorkspace(),
+        );
+      }
       return CallbackShortcuts(
         bindings: {
           const SingleActivator(LogicalKeyboardKey.keyR, meta: true): () =>
@@ -208,8 +231,9 @@ class _ResponsibilityWorkspaceViewState
               onPressed: controller.loading ? null : controller.refresh,
               icon: const Icon(Icons.refresh_rounded),
             ),
-            if (!_mobileShowDetail && controller.canManage)
+            if (controller.canManage)
               IconButton.filledTonal(
+                key: const Key('responsibility-new'),
                 tooltip: 'New follow-up',
                 onPressed: controller.busy ? null : _newDraft,
                 icon: const Icon(Icons.add_rounded),
@@ -508,13 +532,16 @@ class _ResponsibilityWorkspaceViewState
             Text(
               '${_label(controller.record!.state)} · revision ${controller.record!.revision}',
             ),
-            if (!usesMobilePresentation())
-              SelectableText(controller.record!.id),
+            _Evidence(
+              label: 'Responsibility details',
+              value: {
+                'id': controller.record!.id,
+                'revision': controller.record!.revision,
+              },
+            ),
           ],
-          Text(
-            usesMobilePresentation()
-                ? 'Choose the outcome and sources. Review the plan before turning on scheduled checks.'
-                : 'Describe a finite responsibility, choose exact references, then review its current pins. Saving and reviewing do not start checks or delivery.',
+          const Text(
+            'Choose work to follow, then review the schedule and limits. Saving a draft does not start checks or send notifications.',
           ),
           if (controller.canManage)
             _ResponsibilityDraftEditor(
@@ -725,7 +752,7 @@ class _ResponsibilityWorkspaceViewState
         head = controller.head(ResponsibilityRead.runtime),
         ready = controller.preview(ResponsibilityRead.runtime);
     return _Section(
-      title: 'Finite checks',
+      title: 'Scheduled checks',
       children: [
         Text(
           head == null
@@ -758,7 +785,7 @@ class _ResponsibilityWorkspaceViewState
           _Notice('Activation review blocked: ${_label(ready!['reason'])}'),
         if (ready?['state'] == 'ready') ...[
           const Text(
-            'This review grants no authority. Activation or resume admits only the disclosed finite pilot; it does not enable notifications.',
+            'Check the source, schedule and limits below before starting. Inbox updates are enabled separately.',
           ),
           _Evidence(
             label: 'Exact activation configuration',
@@ -792,8 +819,8 @@ class _ResponsibilityWorkspaceViewState
                       : null,
                   child: Text(
                     head == null
-                        ? 'Acknowledge pilot and activate'
-                        : 'Acknowledge pilot and resume',
+                        ? 'Start reviewed checks'
+                        : 'Resume reviewed checks',
                   ),
                 ),
               if (head?['state'] == 'active')
@@ -926,7 +953,7 @@ class _ResponsibilityWorkspaceViewState
         head = controller.head(ResponsibilityRead.notifications),
         ready = controller.preview(ResponsibilityRead.notifications);
     return _Section(
-      title: 'Separate in-app notification authority',
+      title: 'Inbox updates',
       children: [
         Text(
           view?['disclosure'] as String? ?? 'In-app notifications require their own current review and explicit admission. Runtime activation alone grants no notification authority.',
@@ -1091,6 +1118,7 @@ class _ResponsibilityDraftEditorState
   ResponsibilityController get controller => widget.controller;
   final Map<String, TextEditingController> _fields = {};
   final Map<String, String> _renderedValues = {};
+  String? _quickWorkKey;
   bool get enabled =>
       controller.canManage &&
       controller.recoveryReady &&
@@ -1271,6 +1299,7 @@ class _ResponsibilityDraftEditorState
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        _quickSetup(groups),
         _field(
           'purpose',
           usesMobilePresentation()
@@ -1315,8 +1344,12 @@ class _ResponsibilityDraftEditorState
             ),
             lines: 3,
           ),
-          const Text(
-            'The finite pilot enforces expiry and meeting start/cancellation. Free-text success and stop conditions remain descriptive.',
+          Text(
+            (draft['sources'] as List).any(
+                  (source) => responsibilityMap(source)['kind'] == 'work_item',
+                )
+                ? 'Work follow-through ends at the reviewed expiry. Marked done is a status change, not independent verification. Written success and stop conditions are guidance.'
+                : 'Meeting checks end at expiry, meeting start, or cancellation. Written success and stop conditions are guidance.',
           ),
         ]),
         _formGroup('Schedule', [
@@ -1516,6 +1549,90 @@ class _ResponsibilityDraftEditorState
               : null,
         ),
       ],
+    );
+  }
+
+  Widget _quickSetup(ResponsibilityJson? groups) {
+    if (groups == null) return const SizedBox.shrink();
+    final procedures = responsibilityMap(groups['procedures']);
+    final supportsWork = (procedures['items'] as List).any(
+      (row) => responsibilityMap(row)['id'] == responsibilityWorkItemProcedure,
+    );
+    if (!supportsWork) return const SizedBox.shrink();
+    final group = responsibilityMap(groups['work']);
+    final rows = (group['items'] as List).map(responsibilityMap).toList();
+    final choices = {
+      for (final row in rows)
+        responsibilityCanonical({
+          for (final key in ['workspaceId', 'projectId', 'workItemId'])
+            key: row[key],
+        }): row,
+    };
+    final selected = choices.containsKey(_quickWorkKey) ? _quickWorkKey : null;
+    final canChoose =
+        enabled &&
+        controller.isFresh(ResponsibilityRead.references) &&
+        group['state'] == 'available';
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            'Keep a commitment moving',
+            style: Theme.of(context).textTheme.titleMedium,
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Follow status, deadlines, owners, dependencies and linked outputs. Marked done does not mean independently verified.',
+          ),
+          const SizedBox(height: 12),
+          if (rows.isEmpty)
+            const Text(
+              'Create a work item in My work, then refresh to set up follow-through.',
+            )
+          else ...[
+            DropdownButtonFormField<String>(
+              key: ValueKey('responsibility-quick-work-$selected'),
+              initialValue: selected,
+              isExpanded: true,
+              itemHeight: null,
+              isDense: false,
+              decoration: const InputDecoration(labelText: 'Work to follow'),
+              items: [
+                for (final entry in choices.entries)
+                  DropdownMenuItem(
+                    value: entry.key,
+                    child: Text(entry.value['label'] as String),
+                  ),
+              ],
+              onChanged: canChoose
+                  ? (value) => setState(() => _quickWorkKey = value)
+                  : null,
+            ),
+            const SizedBox(height: 10),
+            OutlinedButton.icon(
+              key: const Key('responsibility-prepare-work'),
+              onPressed: canChoose && selected != null
+                  ? () {
+                      controller.edit(
+                        workItemFollowthroughDraft(
+                          draft: controller.draft,
+                          work: choices[selected]!,
+                          now: DateTime.now(),
+                        ),
+                      );
+                    }
+                  : null,
+              icon: const Icon(Icons.event_repeat),
+              label: const Text('Prepare follow-through'),
+            ),
+            const Text(
+              'Fills a draft with daily checks for seven days and an allowance of seven inbox updates. Your existing wording, schedule and limits are kept. Review and start it when ready.',
+            ),
+          ],
+        ],
+      ),
     );
   }
 
@@ -1858,30 +1975,40 @@ class _Evidence extends StatelessWidget {
   );
 }
 
-String _label(Object? value) => (value?.toString() ?? 'Unknown')
-    .replaceAll('responsibility_', '')
-    .replaceAll('_', ' ');
-
+String _label(Object? value) => switch (value) {
+  'work_item' => 'Work item',
+  'work_status' => 'Status changed',
+  'work_deadline' => 'Deadline changed',
+  'work_overdue' => 'Overdue status changed',
+  'work_priority' => 'Priority changed',
+  'work_owners' => 'Owner changed',
+  'work_dependencies' => 'Dependencies changed',
+  'work_outputs' => 'Linked outputs changed',
+  _ =>
+    (value?.toString() ?? 'Unknown')
+        .replaceAll('responsibility_', '')
+        .replaceAll('_', ' '),
+};
 Widget _followupReviewDialog({
   required Text title,
   required Widget content,
   List<Widget> actions = const [],
   bool scrollable = false,
 }) {
-  if (!usesMobilePresentation())
+  if (!usesMobilePresentation()) {
     return AlertDialog(
       title: title,
       content: content,
       actions: actions,
       scrollable: scrollable,
     );
+  }
   final body = content is SingleChildScrollView
       ? content.child ?? const SizedBox.shrink()
       : content;
   return Dialog.fullscreen(
     child: MobileFlowScaffold(
       title: title.data ?? 'Review',
-      child: body,
       footer: actions.isEmpty
           ? null
           : Column(
@@ -1899,6 +2026,7 @@ Widget _followupReviewDialog({
                 actions.last,
               ],
             ),
+      child: body,
     ),
   );
 }

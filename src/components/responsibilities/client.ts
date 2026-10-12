@@ -20,7 +20,7 @@ export async function sha256(value: unknown) {
   return Array.from(new Uint8Array(buffer), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 export function source(value: unknown): value is ResponsibilitySource {
-  return object(value) && exactId(value.id) && (value.kind === "meeting" ? exactId(value.workspaceId) : value.kind === "capture_asset" ||
+  return object(value) && exactId(value.id) && (value.kind === "work_item" ? exactId(value.workspaceId) && exactId(value.projectId) : value.kind === "meeting" ? exactId(value.workspaceId) : value.kind === "capture_asset" ||
     value.kind === "thread" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.id));
 }
 const work = (value: unknown): boolean => object(value) && [value.workspaceId, value.projectId, value.workItemId].every(exactId);
@@ -101,12 +101,19 @@ export async function verifyDraftResult(value: unknown, owner: Owner, input: Res
   return { current, receipt: receipt as unknown as DraftResult["receipt"], replayed: value.replayed };
 }
 async function configuration(value: unknown) {
-  if (!object(value) || value.schemaVersion !== 1 || value.pilot !== "native_meeting_metadata_v1" || !integer(value.responsibilityRevision) || !digest(value.reviewSha256) || !digest(value.draftSha256) ||
-    !pins(value.pins) || !source(value.source) || value.source.kind !== "meeting" || !object(value.tool) || value.tool.id !== "app.meetings.show" || !object(value.tool.input) ||
-    value.tool.input.meetingId !== value.source.id || value.tool.input.workspaceId !== value.source.workspaceId || !digest(value.tool.contractSha256) || !cadence(value.cadence) ||
+  if (!object(value) || value.schemaVersion !== 1 || !member(value.pilot, ["native_meeting_metadata_v1", "canonical_work_item_followthrough_v1"]) || !integer(value.responsibilityRevision) || !digest(value.reviewSha256) || !digest(value.draftSha256) ||
+    !pins(value.pins) || !source(value.source) || !object(value.tool) || !object(value.tool.input) ||
+    !digest(value.tool.contractSha256) || !cadence(value.cadence) ||
     !object(value.cadence) || value.cadence.frequency === "hourly" || !integer(value.maximumChecks) || value.maximumChecks < 1 || value.maximumChecks > 10000 ||
-    !counters(value.cumulativeLimits) || !counters(value.checkReservation) || !digest(value.comparisonPolicySha256) || value.notificationAuthority !== "none" || value.approvalAuthority !== "none" || value.mutationAuthority !== "none" ||
-    !sameJson(value.stops, ["expiry", "meeting_started", "meeting_canceled"])) return fail();
+    !counters(value.cumulativeLimits) || !counters(value.checkReservation) || !digest(value.comparisonPolicySha256) || value.notificationAuthority !== "none" || value.approvalAuthority !== "none" || value.mutationAuthority !== "none") return fail();
+  if (value.pilot === "native_meeting_metadata_v1") {
+    if (value.source.kind !== "meeting" || value.tool.id !== "app.meetings.show" ||
+      !sameJson(value.tool.input, { workspaceId: value.source.workspaceId, meetingId: value.source.id }) ||
+      !sameJson(value.stops, ["expiry", "meeting_started", "meeting_canceled"])) return fail();
+  } else if (value.source.kind !== "work_item" || value.tool.id !== "app.work_items.show" ||
+    !sameJson(value.tool.input, { workspaceId: value.source.workspaceId, projectId: value.source.projectId, workItemId: value.source.id }) ||
+    value.pins.work.workspaceId !== value.source.workspaceId || value.pins.work.projectId !== value.source.projectId || value.pins.work.workItemId !== value.source.id ||
+    !sameJson(value.stops, ["expiry"])) return fail();
   const { configurationSha256, ...body } = value;
   if (configurationSha256 !== await sha256(body)) return fail();
   return value as unknown as NonNullable<RuntimeView["current"]>["configuration"];

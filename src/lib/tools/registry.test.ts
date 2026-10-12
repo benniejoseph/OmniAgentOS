@@ -24,9 +24,20 @@ describe("governed native tool schemas", () => {
     const tool = getGovernedTool("web.read");
     expect(tool).toMatchObject({
       status: "active", riskLevel: 0, approvalRequired: false, operationClass: "read_only",
-      inputSchema: { additionalProperties: false, required: ["url"], properties: { url: { maxLength: 4_000 } } },
+      inputSchema: {
+        additionalProperties: false,
+        required: ["url"],
+        properties: {
+          url: { type: "string", minLength: 1, maxLength: 4_000 },
+          query: { type: "string", minLength: 1, maxLength: 4_000 },
+          allowedDomains: {
+            type: "array", maxItems: 10,
+            items: { type: "string", minLength: 1, maxLength: 253 },
+          },
+        },
+      },
     });
-    expect(Object.keys(tool!.inputSchema.properties as object)).toEqual(["url"]);
+    expect(Object.keys(tool!.inputSchema.properties as object)).toEqual(["url", "query", "allowedDomains"]);
     expect(evaluateToolPolicy({ tool: tool! }).allowed).toBe(true);
   });
 

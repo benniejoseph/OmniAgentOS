@@ -39,7 +39,7 @@ def disclosure(root, name):
 
 
 def view_button(page, name):
-    return page.get_by_role("navigation", name="Memory workspace", exact=True).get_by_role(
+    return page.get_by_role("navigation", name="Library views", exact=True).get_by_role(
         "button", name=re.compile(r"^" + name + r"(?:\s*\d+)?$"))
 
 

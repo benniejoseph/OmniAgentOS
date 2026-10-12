@@ -941,11 +941,13 @@ class _MobileInboxState extends State<_MobileInbox> {
                                                   (item) =>
                                                       identical(item, review),
                                                 ) !=
-                                                true)
+                                                true) {
                                               return;
+                                            }
                                             await c.decide(review, true);
-                                            if (mounted)
+                                            if (mounted) {
                                               setState(() => _review = null);
+                                            }
                                           },
                                     icon: const Icon(Icons.check_rounded),
                                     label: const Text('Approve this action'),
@@ -965,11 +967,13 @@ class _MobileInboxState extends State<_MobileInbox> {
                                                   (item) =>
                                                       identical(item, review),
                                                 ) !=
-                                                true)
+                                                true) {
                                               return;
+                                            }
                                             await c.decide(review, false);
-                                            if (mounted)
+                                            if (mounted) {
                                               setState(() => _review = null);
+                                            }
                                           },
                                     child: const Text('Reject this action'),
                                   ),

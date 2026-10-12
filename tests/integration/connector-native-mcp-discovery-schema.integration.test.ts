@@ -7,7 +7,7 @@ import type { SqlClient } from "@/lib/db/sql-types";
 import { sealConnectorNativePin, type ConnectorNativeScope } from "@/lib/connectors/native-control-contracts";
 import * as C from "@/lib/connectors/native-mcp-discovery-contracts";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
-import { removeNativeMcpDiscoveriesForReplay, removeNativeGithubUpgradesForReplay } from "./helpers/native-catalog-replay";
+import { removeEmptyPersonalPartnerMigrationsForReplay, removeEmptyPost245MigrationsForReplay, replayPost245Migrations, removeNativeMcpDiscoveriesForReplay, removeNativeGithubUpgradesForReplay } from "./helpers/native-catalog-replay";
 
 const databaseUrl = process.env.DATABASE_URL;
 const integration = databaseUrl && process.env.OMNIAGENT_INTEGRATION_DATABASE_RESET === "true" ? describe : describe.skip;
@@ -126,6 +126,8 @@ integration("native MCP discovery243 schema under serving-role RLS", () => {
       WHERE conrelid IN ('omni_native_connector_actions'::regclass,'omni_native_openapi_import_preparations'::regclass) ORDER BY conrelid,conname`;
     await admin.begin(async (sql) => {
       const before = await snapshot(sql), legacy = await sql`SELECT * FROM omni_schema_version WHERE version IS NULL`;
+      await removeEmptyPersonalPartnerMigrationsForReplay(sql);
+      await removeEmptyPost245MigrationsForReplay(sql);
       await removeNativeGithubUpgradesForReplay(sql);
       await sql`DELETE FROM omni_schema_version WHERE version IN (244,245)`;
       await removeNativeMcpDiscoveriesForReplay(sql);
@@ -137,6 +139,7 @@ integration("native MCP discovery243 schema under serving-role RLS", () => {
       await applySqlMigrationFile(adapter, migration, [row], []);
       await applySqlMigrationFile(adapter, githubUpgradeMigration, [githubUpgrade], []);
       await applySqlMigrationFile(adapter, aclRepairMigration, [aclRepair], []);
+      await replayPost245Migrations(sql);
       expect(await snapshot(sql)).toEqual(before);
       expect(await sql`SELECT * FROM omni_schema_version WHERE version IS NULL`).toEqual(legacy);
     });

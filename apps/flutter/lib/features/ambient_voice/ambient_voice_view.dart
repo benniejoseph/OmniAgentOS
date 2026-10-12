@@ -167,7 +167,7 @@ class AmbientVoiceSurface extends StatelessWidget {
       dark ? scheme.surfaceContainerHigh : scheme.surface,
     );
 
-    if (usesMobilePresentation())
+    if (usesMobilePresentation()) {
       return Scaffold(
         body: SafeArea(
           child: Column(
@@ -262,6 +262,7 @@ class AmbientVoiceSurface extends StatelessWidget {
           ),
         ),
       );
+    }
     return Scaffold(
       backgroundColor: Colors.transparent,
       body: Focus(

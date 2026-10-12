@@ -1145,11 +1145,12 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     Map<String, dynamic> pinnedContext, {
     CompanionPersonality? companionPersonality,
   }) async {
-    if (_disposed)
+    if (_disposed) {
       return {
         'status': 'unavailable',
         'message': 'The conversation is no longer open.',
       };
+    }
     if ((hasPendingConversationWork &&
             _runLifecycleStatus != 'waiting_clarification') ||
         researchConversationBusy) {
@@ -1192,31 +1193,34 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       contextReferences: references,
       voiceInput: declaration,
     );
-    if (waitingForApproval)
+    if (waitingForApproval) {
       return {
         'status': 'waiting_approval',
         'message': 'This action needs approval. Ask the user to review it in Inbox; spoken agreement cannot approve it.',
         'runId': ?runId,
         'approvalId': ?_voiceApprovalId,
       };
-    if (_runLifecycleStatus == 'waiting_clarification')
+    }
+    if (_runLifecycleStatus == 'waiting_clarification') {
       return {
         'status': 'waiting_clarification',
         'message':
             messages.lastOrNull?.text ?? 'Please clarify which item you mean.',
         'runId': ?runId,
       };
+    }
     final workflowId = _workflowIds
         .where((id) => !previousWorkflows.contains(id))
         .lastOrNull;
-    if (workflowId != null)
+    if (workflowId != null) {
       return {
         'status': 'accepted',
         'message': 'Your background task has been saved. I’ll follow its progress and let you know when it finishes.',
         'runId': ?runId,
         'workflowId': workflowId,
       };
-    if (hasPendingConversationWork)
+    }
+    if (hasPendingConversationWork) {
       return {
         'status': _runLifecycleStatus == 'waiting_clarification'
             ? 'waiting_clarification'
@@ -1224,6 +1228,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
         'message': 'The task is continuing in History. Do not resend it.',
         'runId': ?runId,
       };
+    }
     final reply = messages.length > before ? messages.last : null;
     final text = reply?.role == TalkRole.assistant ? reply!.text : '';
     return {
@@ -1253,8 +1258,9 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     Map<String, dynamic> work,
     String conversationId,
   ) async {
-    if (_disposed || threadId != conversationId)
+    if (_disposed || threadId != conversationId) {
       throw StateError('The voice conversation changed.');
+    }
     final workflowId = safeTalkHistoryId(work['workflowId']);
     final acceptedRunId = safeTalkHistoryId(work['runId']);
     if (workflowId.isNotEmpty) {
@@ -1287,13 +1293,14 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
         (snapshot.threadId != null && snapshot.threadId != conversationId)) {
       throw StateError('The task conversation changed.');
     }
-    if (snapshot.delegatedWorkflowId != null)
+    if (snapshot.delegatedWorkflowId != null) {
       return {
         'runId': acceptedRunId,
         'workflowId': snapshot.delegatedWorkflowId,
         'status': 'accepted',
         'message': 'The approved action started your background task. I’m following it until it finishes.',
       };
+    }
     return {
       'runId': acceptedRunId,
       'status': snapshot.status,
@@ -1539,14 +1546,16 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     for (final id in ids) {
       if (_disposed ||
           threadId != detail.thread.id ||
-          !identical(token, _researchProjectionToken))
+          !identical(token, _researchProjectionToken)) {
         return;
+      }
       try {
         final inspection = await repository.inspectRun(id);
         if (_disposed ||
             threadId != detail.thread.id ||
-            !identical(token, _researchProjectionToken))
+            !identical(token, _researchProjectionToken)) {
           return;
+        }
         if (inspection.runId != id || inspection.threadId != detail.thread.id) {
           throw const FormatException(
             'Saved research did not match this conversation.',
@@ -1614,8 +1623,9 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
         'Research is still running. Keep this draft, or start a new conversation.',
       );
     }
-    if (mode == 'research' && research?.validationError != null)
+    if (mode == 'research' && research?.validationError != null) {
       throw StateError(research!.validationError!);
+    }
     final targetAgent = assignedAgent;
     if (sending) {
       enqueuePrompt(
@@ -2697,8 +2707,9 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
         sending ||
         researchConversationBusy ||
         queuePaused ||
-        promptQueue.isEmpty)
+        promptQueue.isEmpty) {
       return;
+    }
     _drainingQueue = true;
     try {
       final queueRepository = _promptQueueRepository;
@@ -2992,8 +3003,9 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
         snapshot.research?.threadId != threadId ||
         researchRepository is! TalkResearchRepository ||
         researchControlBusy ||
-        !const {'pause', 'resume', 'cancel'}.contains(signal))
+        !const {'pause', 'resume', 'cancel'}.contains(signal)) {
       return;
+    }
     final expectedThread = threadId;
     researchControlBusy = true;
     researchError = null;
@@ -3005,8 +3017,9 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       if (_disposed ||
           threadId != expectedThread ||
           updated.id != snapshot.id ||
-          updated.research?.threadId != expectedThread)
+          updated.research?.threadId != expectedThread) {
         return;
+      }
       _researchWorkflows[updated.id] = updated;
       researchProgress = updated.research?.progress;
       _projectWorkflowActivity(updated);
@@ -3080,9 +3093,10 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     }
     if (!_monitorIsCurrent(workflowId, token)) return;
     _workflowMonitorTokens.remove(workflowId);
-    if (_researchWorkflows.containsKey(workflowId))
+    if (_researchWorkflows.containsKey(workflowId)) {
       researchError =
           'Live updates paused. Refresh to follow the latest saved progress.';
+    }
     _recordActivity(
       key: 'workflow:$workflowId',
       title: 'Background work still running',
@@ -4040,7 +4054,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                   if (canReturnHome)
                     TextButton.icon(
                       onPressed: blocked == null && !openingCompanionHome
-                          ? () => unawaited(_openCompanionConversation(homeId!))
+                          ? () => unawaited(_openCompanionConversation(homeId))
                           : null,
                       icon: const Icon(Icons.home_outlined, size: 17),
                       label: Text(
@@ -4169,8 +4183,9 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
         _handledDraftHandoff == handoff.id ||
         _reviewingDraftHandoff ||
         _draftHandoffBusy ||
-        !_draftHandoffCurrent(handoff, controller))
+        !_draftHandoffCurrent(handoff, controller)) {
       return;
+    }
     final previous = input.text;
     if (previous.trim().isNotEmpty) {
       setState(() => _reviewingDraftHandoff = true);
@@ -4272,8 +4287,9 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
             ?..addListener(_handleVoiceConversationChanged);
       realtimeVoice = widget.ambientRealtimeFactory?.call()
         ?..addListener(_handleRealtimeVoiceChanged);
-      if (realtimeVoice != null || voiceConversation != null)
+      if (realtimeVoice != null || voiceConversation != null) {
         unawaited(_loadAmbientConsent());
+      }
       widget.controller.addListener(_handleVoiceSelectionChanged);
     }
     input.addListener(_handleComposerChanged);
@@ -4311,8 +4327,9 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     }
     if (oldWidget.controller != widget.controller) {
       oldWidget.controller.removeListener(_handleVoiceSelectionChanged);
-      if (widget.ambientVoice)
+      if (widget.ambientVoice) {
         widget.controller.addListener(_handleVoiceSelectionChanged);
+      }
       unawaited(voiceConversation?.end() ?? Future<void>.value());
       composerOptionsExpanded = false;
     }
@@ -4336,8 +4353,9 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     if (widget.ambientConsent != oldWidget.ambientConsent) {
       unawaited(voiceConversation?.end() ?? Future<void>.value());
       ambientConsentAccepted = false;
-      if (realtimeVoice != null || voiceConversation != null)
+      if (realtimeVoice != null || voiceConversation != null) {
         unawaited(_loadAmbientConsent());
+      }
     }
     if (widget.quickEntry && !oldWidget.quickEntry) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -4360,8 +4378,9 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (appAndroidDeviceBridge.supported &&
         ((voiceConversation?.backgroundCallActive == true) ||
-            (state == AppLifecycleState.inactive && _startingConversation)))
+            (state == AppLifecycleState.inactive && _startingConversation))) {
       return;
+    }
     // The macOS Ambient Command panel floats over other apps, so it keeps
     // listening while another app has focus.
     if (state == AppLifecycleState.inactive &&
@@ -4773,7 +4792,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     if (value.isEmpty) return;
     if (executionTarget == TalkExecutionTarget.thisPhone &&
         !(await widget.androidPhone?.prepare() ?? false)) {
-      if (mounted)
+      if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text(
@@ -4781,6 +4800,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
             ),
           ),
         );
+      }
       return;
     }
     if (!mounted) return;
@@ -5705,12 +5725,13 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   });
 
   void _rememberVoiceContext() {
-    if (!widget.ambientVoice)
+    if (!widget.ambientVoice) {
       widget.controller.rememberVoiceContext(
         commandMode,
         commandReferences,
         executionTarget: executionTarget,
       );
+    }
   }
 
   void _handleVoiceSelectionChanged() {
@@ -5722,10 +5743,11 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
         (_voiceBoundThread != null &&
             _voiceBoundThread != widget.controller.threadId)) {
       unawaited(voice.end());
-      if (mounted)
+      if (mounted) {
         setState(
           () => recordingError = 'Your agent or context changed. Start a new call to use the new selection.',
         );
+      }
     }
   }
 
@@ -5739,8 +5761,9 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     if (voice == null ||
         voice.active ||
         _startingConversation ||
-        widget.workspaceLocked?.value == true)
+        widget.workspaceLocked?.value == true) {
       return;
+    }
     // When an error replaces the initial notice, show that notice again before
     // another Start press can record new continuous-conversation consent.
     if (!ambientConsentAccepted && recordingError != null) {
@@ -5759,17 +5782,19 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
       final availability = appAndroidDeviceBridge.supported
           ? null
           : await appDesktopHostBridge.getAmbientVoiceAvailability();
-      if (availability != null && !availability.available)
+      if (availability != null && !availability.available) {
         throw const AmbientVoiceException(
           'voice_disabled',
           'Voice is off. Turn it on in Settings → General.',
         );
+      }
       if (!ambientConsentAccepted) {
-        if (consent == null)
+        if (consent == null) {
           throw const AmbientVoiceException(
             'voice_owner_missing',
             'Sign in before starting a voice call.',
           );
+        }
         await consent.accept();
         if (!mounted || widget.ambientConsent != consent) return;
         setState(() => ambientConsentAccepted = true);
@@ -5777,8 +5802,9 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
       if (!mounted ||
           widget.controller != controller ||
           selection != _voiceSelection(controller) ||
-          widget.workspaceLocked?.value == true)
+          widget.workspaceLocked?.value == true) {
         return;
+      }
       _voiceBoundController = controller;
       _voiceBoundSelection = selection;
       _voiceBoundThread = controller.threadId;
@@ -5799,8 +5825,9 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
         if (!mounted ||
             widget.controller != controller ||
             selection != _voiceSelection(controller) ||
-            widget.workspaceLocked?.value == true)
+            widget.workspaceLocked?.value == true) {
           return;
+        }
       }
       if (context['computerUseTarget'] == 'local_android' &&
           !(await widget.androidPhone?.prepare() ?? false)) {
@@ -5847,11 +5874,12 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
             },
       );
     } catch (error) {
-      if (mounted)
+      if (mounted) {
         setState(
           () =>
               recordingError = error is AmbientVoiceException ? error.message : 'Asael could not save your agreement or start voice. The microphone stayed off. Try again.',
         );
+      }
     } finally {
       if (mounted) setState(() => _startingConversation = false);
     }
@@ -5956,8 +5984,9 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     if (lastPublishedAmbientState != state) {
       lastPublishedAmbientState = state;
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted)
+        if (mounted) {
           unawaited(appDesktopHostBridge.updateAmbientVoiceState(state));
+        }
       });
     }
     return CallbackShortcuts(
@@ -9242,8 +9271,9 @@ class _TalkActivityPaneState extends State<_TalkActivityPane> {
         ]),
       ),
     );
-    if (updated != null && current())
+    if (updated != null && current()) {
       owner.updateQueuedPrompt(prompt.id, updated);
+    }
   }
 
   Widget _mobileQueuedPrompt(
@@ -9857,26 +9887,28 @@ class _TalkActivityCard extends StatelessWidget {
                   const SizedBox(height: 7),
                   Row(
                     children: [
-                      TextButton.icon(
-                        onPressed: () => _activate(context),
-                        icon: Icon(
-                          activity.externalUri == null
-                              ? Icons.arrow_forward_rounded
-                              : Icons.open_in_new_rounded,
-                          size: 15,
-                        ),
-                        label: Text(activity.actionLabel!),
-                        style: TextButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 8,
-                            vertical: 5,
+                      Flexible(
+                        child: TextButton.icon(
+                          onPressed: () => _activate(context),
+                          icon: Icon(
+                            activity.externalUri == null
+                                ? Icons.arrow_forward_rounded
+                                : Icons.open_in_new_rounded,
+                            size: 15,
                           ),
-                          minimumSize: usesMobilePresentation()
-                              ? const Size(48, 48)
-                              : Size.zero,
-                          tapTargetSize: usesMobilePresentation()
-                              ? MaterialTapTargetSize.padded
-                              : MaterialTapTargetSize.shrinkWrap,
+                          label: Text(activity.actionLabel!),
+                          style: TextButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 5,
+                            ),
+                            minimumSize: usesMobilePresentation()
+                                ? const Size(48, 48)
+                                : Size.zero,
+                            tapTargetSize: usesMobilePresentation()
+                                ? MaterialTapTargetSize.padded
+                                : MaterialTapTargetSize.shrinkWrap,
+                          ),
                         ),
                       ),
                       if (activity.actionRoute != null &&

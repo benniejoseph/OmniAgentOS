@@ -300,13 +300,23 @@ void main() {
         home: Scaffold(body: InboxView(controller: controller)),
       ),
     );
-    final card = find.byKey(
-      const ValueKey(
-        'notification-disposition-notification_disposition_111111111111111111111111111111111111111111111111',
-      ),
+    final updates = find.widgetWithText(TextButton, 'Updates · 0');
+    await tester.ensureVisible(updates);
+    await tester.pumpAndSettle();
+    await tester.tap(updates);
+    await tester.pumpAndSettle();
+    final history = find.text('Why updates were delivered');
+    await tester.scrollUntilVisible(
+      history,
+      240,
+      scrollable: find.byType(Scrollable).last,
     );
-    await tester.ensureVisible(card);
-    await tester.tap(card);
+    await tester.tap(history);
+    await tester.pumpAndSettle();
+    final decision = find.widgetWithText(ListTile, 'Digest');
+    await tester.ensureVisible(decision);
+    await tester.pumpAndSettle();
+    await tester.tap(decision);
     await tester.pumpAndSettle();
 
     expect(

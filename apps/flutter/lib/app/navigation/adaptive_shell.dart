@@ -60,7 +60,18 @@ class AdaptiveShell extends StatelessWidget {
       );
     }
     if (usesMobilePresentation()) {
-      return MobileWorkspaceShell(navigationShell: navigationShell);
+      return CallbackShortcuts(
+        bindings: {
+          const SingleActivator(LogicalKeyboardKey.keyK, control: true): () =>
+              _select(destinationIndex('/search')),
+          const SingleActivator(LogicalKeyboardKey.keyK, meta: true): () =>
+              _select(destinationIndex('/search')),
+        },
+        child: FocusScope(
+          autofocus: true,
+          child: MobileWorkspaceShell(navigationShell: navigationShell),
+        ),
+      );
     }
     final width = MediaQuery.sizeOf(context).width;
     return CallbackShortcuts(
@@ -138,7 +149,7 @@ class AdaptiveShell extends StatelessWidget {
             icon: const Icon(Icons.search_rounded, size: 21),
           ),
           IconButton(
-            tooltip: 'Attention inbox',
+            tooltip: 'Needs you',
             onPressed: () => _select(destinationIndex('/inbox')),
             icon: const Icon(Icons.notifications_none_rounded, size: 21),
           ),
@@ -427,7 +438,7 @@ class _WorkspaceDrawer extends StatelessWidget {
                         AsaelWordmark(),
                         SizedBox(height: 4),
                         Text(
-                          'Your second brain',
+                          'Your personal partner',
                           style: TextStyle(fontSize: 13),
                         ),
                       ],
@@ -557,7 +568,7 @@ class _DrawerGroup extends StatelessWidget {
           onTap: () => onSelect(index),
         ),
     ];
-    if (collapsible)
+    if (collapsible) {
       return ExpansionTile(
         key: PageStorageKey('navigation-$label'),
         initiallyExpanded: indices.contains(currentIndex),
@@ -574,6 +585,7 @@ class _DrawerGroup extends StatelessWidget {
         ),
         children: tiles,
       );
+    }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -725,7 +737,7 @@ class _BrandMark extends StatelessWidget {
             children: [
               AsaelWordmark(compact: true),
               SizedBox(height: 4),
-              Text('Your second brain', style: TextStyle(fontSize: 13)),
+              Text('Your personal partner', style: TextStyle(fontSize: 13)),
             ],
           ),
         ),

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:asael/core/network/api_client.dart';
 import 'package:asael/core/storage/secure_session_store.dart';
 import 'package:asael/features/agents/agent_governance.dart';
@@ -9,6 +11,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'agent_comparison_test_support.dart';
+
 const _shaA =
     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const _shaB =
@@ -17,6 +21,98 @@ const _shaC =
     'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc';
 
 void main() {
+  test('comparison dispatch preserves owner suite and refuses an unrelated receipt', () async {
+    final api = _GovernanceApiClient();
+    final receipt = comparisonReceipt();
+    api.adaptationResult = {
+      'definitionVersion': 2,
+      'adaptations': [comparisonAdaptation(comparison: receipt)],
+    };
+    final repository = ApiAgentsRepository(api);
+    final action = {
+      'action': 'compare',
+      'adaptationId': comparisonAdaptationId,
+      'suite': comparisonSuite(),
+    };
+    final result = await repository.manageAdaptation(
+      'agent/one',
+      action,
+      idempotencyKey: 'same-comparison-key',
+    );
+    expect(result.adaptations.single.comparison?.verdict, 'improved');
+    expect(api.posts.single.data, action);
+    expect(api.posts.single.headers, {
+      'idempotency-key': 'same-comparison-key',
+    });
+    receipt['suite']['cases'][0]['task'] =
+        'Another owner-authored task for a different request.';
+    await expectLater(
+      repository.manageAdaptation(
+        'agent/one',
+        action,
+        idempotencyKey: 'another-key',
+      ),
+      throwsFormatException,
+    );
+    final count = api.posts.length;
+    await expectLater(
+      repository.manageAdaptation('agent/one', {
+        'action': 'compare',
+        'adaptationId': comparisonAdaptationId,
+        'suite': {'cases': []},
+      }, idempotencyKey: 'invalid-suite'),
+      throwsFormatException,
+    );
+    expect(api.posts, hasLength(count));
+  });
+
+  for (final verdict in [
+    'improved',
+    'no_change',
+    'regressed',
+    'incomplete',
+    'missing',
+  ]) {
+    testWidgets('guidance activation button reflects $verdict evidence', (
+      tester,
+    ) async {
+      final snapshot = AgentGovernanceSnapshot(
+        release: AgentReleaseProjection.fromResponse(_releaseResponse()),
+        definitionVersion: 2,
+        adaptations: [
+          comparisonProjection(
+            verdict: verdict == 'missing' ? 'improved' : verdict,
+            missing: verdict == 'missing',
+          ),
+        ],
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SingleChildScrollView(
+              child: AgentGovernanceView(
+                agentId: 'agent/one',
+                builtIn: false,
+                canRead: true,
+                canManage: true,
+                load: () async => snapshot,
+                manageRelease: (_) async => snapshot,
+                manageAdaptation: (_) async => snapshot,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final button = tester.widget<FilledButton>(
+        find.widgetWithText(FilledButton, 'Activate guidance'),
+      );
+      expect(button.onPressed != null, verdict == 'improved');
+      expect(find.text('Compare on my tasks'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+  }
+
   test(
     'loads exact release and correction-backed adaptation evidence',
     () async {
@@ -35,6 +131,112 @@ void main() {
         NativePaths.agentsReleaseShow('agent/one'),
         NativePaths.agentsAdaptationsList('agent/one'),
       });
+    },
+  );
+
+  testWidgets(
+    'late evidence cannot repopulate a replaced Agent or removed access',
+    (tester) async {
+      final first = Completer<AgentGovernanceSnapshot>();
+      final snapshot = AgentGovernanceSnapshot(
+        release: AgentReleaseProjection.fromResponse(_releaseResponse()),
+        definitionVersion: 2,
+        adaptations: [comparisonProjection()],
+      );
+      var canRead = true;
+      late StateSetter update;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: StatefulBuilder(
+            builder: (context, setState) {
+              update = setState;
+              return Scaffold(
+                body: SingleChildScrollView(
+                  child: AgentGovernanceView(
+                    agentId: canRead ? 'agent/one' : 'agent/two',
+                    builtIn: false,
+                    canRead: canRead,
+                    canManage: canRead,
+                    load: () => first.future,
+                    manageRelease: (_) async => snapshot,
+                    manageAdaptation: (_) async => snapshot,
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+      );
+      await tester.pump();
+      update(() => canRead = false);
+      await tester.pump();
+      first.complete(snapshot);
+      await tester.pumpAndSettle();
+      expect(
+        find.text('Prefer exact evidence before summarizing.'),
+        findsNothing,
+      );
+      expect(find.text('Activate guidance'), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'older refresh cannot erase a confirmed comparison at the same lifecycle revision',
+    (tester) async {
+      final now = DateTime.now().toUtc();
+      AgentGovernanceSnapshot snapshot(DateTime at, {bool missing = false}) =>
+          AgentGovernanceSnapshot(
+            release: AgentReleaseProjection.fromResponse(_releaseResponse()),
+            definitionVersion: 2,
+            adaptations: [
+              comparisonProjection(completedAt: at, missing: missing),
+            ],
+          );
+      final latest = snapshot(now.subtract(const Duration(minutes: 1)));
+      final older = snapshot(now.subtract(const Duration(minutes: 5)));
+      expect(older.retainsComparisonEvidenceFrom(latest), isFalse);
+      expect(
+        snapshot(now, missing: true).retainsComparisonEvidenceFrom(latest),
+        isFalse,
+      );
+      expect(latest.retainsComparisonEvidenceFrom(older), isTrue);
+      var loads = 0;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SingleChildScrollView(
+              child: AgentGovernanceView(
+                agentId: 'agent/one',
+                builtIn: false,
+                canRead: true,
+                canManage: true,
+                load: () async => loads++ == 0 ? latest : older,
+                manageRelease: (_) async => latest,
+                manageAdaptation: (_) async => latest,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('Refresh evidence'));
+      await tester.tap(find.text('Refresh evidence'));
+      await tester.pumpAndSettle();
+      expect(
+        find.textContaining('Showing last verified state.'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('older comparison evidence'), findsOneWidget);
+      expect(
+        tester
+            .widget<FilledButton>(
+              find.widgetWithText(FilledButton, 'Activate guidance'),
+            )
+            .onPressed,
+        isNotNull,
+      );
+      expect(tester.takeException(), isNull);
     },
   );
 
@@ -347,6 +549,7 @@ class _GovernanceApiClient extends ApiClient {
 
   final freshReads = <String>{};
   final posts = <_Call>[];
+  Map<String, dynamic>? adaptationResult;
 
   @override
   Future<Map<String, dynamic>> getJsonFresh(
@@ -356,7 +559,7 @@ class _GovernanceApiClient extends ApiClient {
     freshReads.add(path);
     return path.endsWith('/release')
         ? _releaseResponse()
-        : _adaptationResponse();
+        : adaptationResult ?? _adaptationResponse();
   }
 
   @override
@@ -368,7 +571,7 @@ class _GovernanceApiClient extends ApiClient {
     posts.add(_Call(path, data, headers));
     return path.endsWith('/release')
         ? _releaseResponse()
-        : _adaptationResponse();
+        : adaptationResult ?? _adaptationResponse();
   }
 }
 

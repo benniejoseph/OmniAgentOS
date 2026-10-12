@@ -14,7 +14,7 @@ import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import { createTrashEntry, createTrashLifecyclePreview } from "@/lib/trash/store";
 import { buildTrashActionPreviewV1 } from "@/lib/trash/contracts";
 import { captureRestorableResource, compensationForSnapshot, restoreTrashResource } from "@/lib/trash/resources";
-import { removeNativeConnectorTrashForReplay, removeNativeConnectorCredentialRotationsForReplay, removeNativeMcpRegistrationsForReplay, removeNativeOpenapiImportsForReplay, removeNativeMcpDiscoveriesForReplay, removeNativeGithubUpgradesForReplay } from "./helpers/native-catalog-replay";
+import { removeEmptyPersonalPartnerMigrationsForReplay, removeEmptyPost245MigrationsForReplay, replayPost245Migrations, removeNativeConnectorTrashForReplay, removeNativeConnectorCredentialRotationsForReplay, removeNativeMcpRegistrationsForReplay, removeNativeOpenapiImportsForReplay, removeNativeMcpDiscoveriesForReplay, removeNativeGithubUpgradesForReplay } from "./helpers/native-catalog-replay";
 
 const databaseUrl = process.env.DATABASE_URL;
 const integration = databaseUrl && process.env.OMNIAGENT_INTEGRATION_DATABASE_RESET === "true" ? describe : describe.skip;
@@ -111,6 +111,8 @@ integration("native MCP Trash under forced serving RLS", () => {
     const aclRepair = databaseSchemaMigrations.find((migration) => migration.version === 245)!;
     const aclRepairMigration = await readSqlMigrationFile({ file: "20261006110000_native_provider_function_acl_repair.sql", sha256: aclRepair.checksum, migrations: [aclRepair] });
     await admin.begin(async (sql) => {
+      await removeEmptyPersonalPartnerMigrationsForReplay(sql);
+      await removeEmptyPost245MigrationsForReplay(sql);
       await removeNativeGithubUpgradesForReplay(sql); await sql`DELETE FROM omni_schema_version WHERE version IN (244,245)`;
       await removeNativeMcpDiscoveriesForReplay(sql); await sql`DELETE FROM omni_schema_version WHERE version=243`;
       await removeNativeOpenapiImportsForReplay(sql); await sql`DELETE FROM omni_schema_version WHERE version=242`;
@@ -133,6 +135,7 @@ integration("native MCP Trash under forced serving RLS", () => {
       await applySqlMigrationFile(migrationSql, discoveryMigration, [discovery], []);
       await applySqlMigrationFile(migrationSql, githubUpgradeMigration, [githubUpgrade], []);
       await applySqlMigrationFile(migrationSql, aclRepairMigration, [aclRepair], []);
+      await replayPost245Migrations(sql);
       expect(await sql`SELECT intent,acceptance,state,settlement FROM omni_native_connector_actions ORDER BY id`).toEqual(before);
     });
     expect(connectorNativeActionSchema.parse(await readNativeConnectorAction({ scope: state.scope }, old.action.acceptance.keySha256))).toEqual(old.action);

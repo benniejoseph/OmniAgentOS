@@ -39,11 +39,10 @@ void main() {
         'artifacts': <Object>[],
       });
       await tap(tester, find.text('Retry project read'));
-      expect(find.text('0 of 0 tasks completed'), findsOneWidget);
+      await tap(tester, find.text('Tasks'));
+      expect(find.text('0 of 0 tasks complete'), findsOneWidget);
       expect(
-        find.text(
-          'No tasks were returned in this successful project snapshot.',
-        ),
+        find.text('No tasks yet. Create a plan or add your first task.'),
         findsOneWidget,
       );
       expect(api.effects, 0);
@@ -120,6 +119,7 @@ void main() {
       expect(repository.writes, 0);
       expect(tester.takeException(), isNull);
     },
+    variant: TargetPlatformVariant.only(TargetPlatform.macOS),
   );
   testWidgets(
     'closing retains task draft; owner-role replacement irreversibly hides an open form',
@@ -180,6 +180,7 @@ void main() {
       expect(api.effects, 0);
       expect(tester.takeException(), isNull);
     },
+    variant: TargetPlatformVariant.only(TargetPlatform.macOS),
   );
   testWidgets(
     'route identity replacement closes only its own old draft dialog',
@@ -206,6 +207,7 @@ void main() {
       expect(repository.writes, 0);
       expect(tester.takeException(), isNull);
     },
+    variant: TargetPlatformVariant.only(TargetPlatform.macOS),
   );
   testWidgets(
     'an accepted update is shown separately while refresh fails and controls release',
@@ -249,6 +251,7 @@ void main() {
       expect(api.effects, 0);
       expect(tester.takeException(), isNull);
     },
+    variant: TargetPlatformVariant.only(TargetPlatform.macOS),
   );
   testWidgets(
     'Build mounts its scoped controller and preserves the Work draft',
@@ -293,6 +296,7 @@ void main() {
       expect(repository.writes, 0);
       expect(tester.takeException(), isNull);
     },
+    variant: TargetPlatformVariant.only(TargetPlatform.macOS),
   );
   for (final dark in [false, true]) {
     testWidgets(
@@ -310,7 +314,7 @@ void main() {
           scale: 2,
         );
         expect(
-          tester.getSize(find.byKey(const Key('macos-projects-create'))).height,
+          tester.getSize(find.byTooltip('New project')).height,
           greaterThanOrEqualTo(48),
         );
         expect(tester.takeException(), isNull);
@@ -320,18 +324,37 @@ void main() {
           dark: dark,
           scale: 2,
         );
+        await tap(tester, find.text('Tasks'));
         await tester.scrollUntilVisible(
-          find.text('Selected work item: $taskId'),
+          find.byKey(const ValueKey(taskId)),
           300,
           scrollable: find
               .descendant(
-                of: find.byType(ListView).first,
+                of: find.byType(CustomScrollView),
                 matching: find.byType(Scrollable),
               )
               .first,
         );
-        expect(find.text('Selected work item: $taskId'), findsOneWidget);
-        await tap(tester, find.text('Execution'));
+        expect(find.byKey(const ValueKey(taskId)), findsOneWidget);
+        expect(
+          find.text('Full task context <script> stays plain text.'),
+          findsOneWidget,
+        );
+        final runSettings = find.text('Run settings and progress');
+        await tester.scrollUntilVisible(
+          runSettings,
+          -300,
+          scrollable: find
+              .descendant(
+                of: find.byType(CustomScrollView),
+                matching: find.byType(Scrollable),
+              )
+              .first,
+        );
+        await tap(tester, runSettings);
+        // Reveal the nested execution viewport before swiping within it.
+        await tester.ensureVisible(find.byType(ListView).first);
+        await tester.pumpAndSettle();
         await tester.scrollUntilVisible(
           field('Task budget'),
           300,

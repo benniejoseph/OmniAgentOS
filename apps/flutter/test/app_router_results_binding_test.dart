@@ -1,3 +1,5 @@
+import 'package:asael/features/auth/application/session_controller.dart';
+import 'package:asael/features/auth/domain/app_session.dart';
 import 'package:asael/app/router/app_router.dart';
 import 'package:asael/app/theme/app_theme.dart';
 import 'package:asael/core/sync/reconnect_coordinator.dart';
@@ -25,6 +27,7 @@ void main() {
         var current = first;
         final container = ProviderContainer(
           overrides: [
+            sessionControllerProvider.overrideWith(_NoStoredSession.new),
             resultsRepositoryProvider.overrideWith((ref) => current),
             reconnectCoordinatorProvider.overrideWithValue(
               ReconnectCoordinator(() async => const [], const Stream.empty()),
@@ -95,4 +98,11 @@ class _Repository implements ResultsRepository {
     effects++;
     throw StateError('Unexpected effect');
   }
+}
+
+// This route binding test owns only the Results repository. Keep the Android
+// export affordance from bootstrapping unrelated secure credential storage.
+class _NoStoredSession extends SessionController {
+  @override
+  Future<AppSession?> build() async => null;
 }

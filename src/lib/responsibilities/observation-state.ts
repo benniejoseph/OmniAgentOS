@@ -1,6 +1,6 @@
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import { instantSchema, sourceKey, type ResponsibilityRecord, type ResponsibilitySource } from "./contracts";
-import { changedComparisonCategories, comparisonDigests, RESPONSIBILITY_MEETING_COMPARISON_POLICY, type ComparisonProjection } from "./comparison-policy";
+import { changedComparisonCategories, comparisonDigests, responsibilityComparisonPolicy, type ComparisonProjection } from "./comparison-policy";
 import {
   authoritativeSourceReadSchema, observationTargetSchema, RESPONSIBILITY_OBSERVATION_CONTRACT,
   responsibilityBaselineSchema, responsibilityChangeRecordSchema, responsibilityObservationSchema,
@@ -8,7 +8,6 @@ import {
 } from "./observation-contracts";
 import { idempotencySha256, ResponsibilityError, verifiedRecord } from "./state";
 
-const policy = RESPONSIBILITY_MEETING_COMPARISON_POLICY;
 const commitPlans = new WeakSet<object>();
 declare const admissionBrand: unique symbol;
 export type AdmittedResponsibilityObservation = { readonly observation: ResponsibilityObservation; readonly [admissionBrand]: true };
@@ -30,6 +29,7 @@ export function createResponsibilityObservationPipeline(input: {
   record: ResponsibilityRecord; policySha256: string; readAuthoritativeSource: AuthoritativeResponsibilityReader;
 }) {
   const record = verifiedRecord(input.record);
+  const policy = responsibilityComparisonPolicy(record.draft.sources);
   if (record.state !== "reviewed" || !record.review || !record.draft.cadence || input.policySha256 !== policy.policySha256) throw conflict("responsibility_observation_not_reviewed");
   const target = observationTargetSchema.parse({ tenantId: record.tenantId, actorId: record.actorId, responsibilityId: record.id,
     responsibilityRevision: record.revision, reviewSha256: record.review.reviewSha256 });
@@ -55,7 +55,7 @@ export function createResponsibilityObservationPipeline(input: {
       if (Date.parse(value.observedAt) > clock || Date.parse(value.sourceUpdatedAt) > Date.parse(value.observedAt) || Date.parse(value.freshUntil) <= clock ||
         clock - Date.parse(value.observedAt) > policy.maximumSourceAgeSeconds * 1_000) { receipts.push(unavailable(source, "stale")); continue; }
       const evidence = new Map(value.evidence.map((item) => [item.id, item]));
-      const cited = [...(value.projection.meeting?.evidenceIds ?? []), ...value.projection.facts.flatMap((item) => item.evidenceIds), ...value.projection.commitments.flatMap((item) => item.evidenceIds), ...value.projection.uninterpretedText.flatMap((item) => item.evidenceIds)];
+      const cited = [...(value.projection.meeting?.evidenceIds ?? []), ...(value.projection.workItem?.evidenceIds ?? []), ...value.projection.facts.flatMap((item) => item.evidenceIds), ...value.projection.commitments.flatMap((item) => item.evidenceIds), ...value.projection.uninterpretedText.flatMap((item) => item.evidenceIds)];
       if (evidence.size !== value.evidence.length || !cited.length || cited.some((id) => !evidence.has(id))) { receipts.push(unavailable(source, "evidence_invalid")); continue; }
       if (value.projection.comparisonState !== "deterministic") { receipts.push(unavailable(source, "semantic_comparison_required")); continue; }
       projections.push(value.projection);

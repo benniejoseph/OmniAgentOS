@@ -14,6 +14,18 @@ const responsibilityNotificationContract =
     'asael-responsibility-notifications:1';
 const responsibilityObservationContract = 'asael-responsibility-observation:1';
 const responsibilityPilot = 'native_meeting_metadata_v1';
+const responsibilityWorkItemPilot = 'canonical_work_item_followthrough_v1';
+const responsibilityWorkItemProcedure =
+    'responsibility.work_item.followthrough.v1';
+const responsibilityWorkCategories = [
+  'work_status',
+  'work_deadline',
+  'work_overdue',
+  'work_priority',
+  'work_owners',
+  'work_dependencies',
+  'work_outputs',
+];
 const responsibilityBudgetDimensions = [
   'modelTurns',
   'tokens',
@@ -225,6 +237,13 @@ void _source(Object? value) {
         'id': _exact,
         'workspaceId': _exact,
       })(value);
+    case 'work_item':
+      _object({
+        'kind': _literal('work_item'),
+        'id': _exact,
+        'workspaceId': _exact,
+        'projectId': _exact,
+      })(value);
     case 'capture_asset':
       _object({'kind': _literal('capture_asset'), 'id': _exact})(value);
     case 'thread':
@@ -406,24 +425,32 @@ void _readiness(Object? value) {
 
 final _configuration = _object({
   'schemaVersion': _version,
-  'pilot': _literal(responsibilityPilot),
+  'pilot': _choice('$responsibilityPilot $responsibilityWorkItemPilot'),
   'responsibilityRevision': _revision,
   'reviewSha256': _hash,
   'draftSha256': _hash,
   'pins': _pins,
   'source': _source,
-  'tool': _object({
-    'id': _literal('app.meetings.show'),
-    'input': _object({'workspaceId': _exact, 'meetingId': _exact}),
-    'contractSha256': _hash,
-  }),
+  'tool': (value) {
+    final work = responsibilityMap(value)['id'] == 'app.work_items.show';
+    _object({
+      'id': _literal(work ? 'app.work_items.show' : 'app.meetings.show'),
+      'input': _object(
+        work
+            ? {'workspaceId': _exact, 'projectId': _exact, 'workItemId': _exact}
+            : {'workspaceId': _exact, 'meetingId': _exact},
+      ),
+      'contractSha256': _hash,
+    })(value);
+  },
   'cadence': _cadence,
   'maximumChecks': _integer(1, 10000),
   'cumulativeLimits': _budget,
   'checkReservation': _budget,
   'comparisonPolicySha256': _hash,
   'stops': (v) => responsibilityRequire(
-    responsibilitySame(v, ['expiry', 'meeting_started', 'meeting_canceled']),
+    responsibilitySame(v, ['expiry', 'meeting_started', 'meeting_canceled']) ||
+        responsibilitySame(v, ['expiry']),
   ),
   'notificationAuthority': _none,
   'approvalAuthority': _none,
@@ -587,22 +614,34 @@ final _target = _object({
   'responsibilityRevision': _revision,
   'reviewSha256': _hash,
 });
-final _semantic = _object({
-  for (final field in [
-    'meeting_time',
-    'meeting_state',
-    'agenda',
-    'participants',
-    'facts',
-    'commitments',
-    'uninterpretedText',
-    'semanticSha256',
-  ])
-    field: _hash,
-});
+final _semanticShape = _object(
+  {
+    for (final field in [
+      'meeting_time',
+      'meeting_state',
+      'agenda',
+      'participants',
+      'facts',
+      'commitments',
+      'uninterpretedText',
+      'semanticSha256',
+    ])
+      field: _hash,
+  },
+  {for (final field in responsibilityWorkCategories) field: _hash},
+);
+void _semantic(Object? value) {
+  _semanticShape(value);
+  final map = responsibilityMap(value);
+  responsibilityRequire(
+    responsibilityWorkCategories.every(map.containsKey) ||
+        responsibilityWorkCategories.every((key) => !map.containsKey(key)),
+  );
+}
+
 final _evidence = _object({
   'kind': _choice(
-    'meeting_revision source_evidence thread_turn capture_extraction',
+    'meeting_revision work_item_revision source_evidence thread_turn capture_extraction',
   ),
   'id': _exact,
   'revisionId': _exact,
@@ -612,7 +651,7 @@ final _evidence = _object({
 const _failures =
     'missing access_denied stale partial unsupported retrieval_failed evidence_invalid semantic_comparison_required evidence_conflict';
 const _categories =
-    'meeting_time meeting_state agenda participants facts commitments';
+    'meeting_time meeting_state agenda participants facts commitments work_status work_deadline work_overdue work_priority work_owners work_dependencies work_outputs';
 final _sourceReceipt = _object({
   'source': _source,
   'state': _choice('accepted unavailable'),
@@ -658,7 +697,7 @@ final _change = _object({
   'policySha256': _hash,
   'previousBaselineSha256': _hash,
   'observationId': _typedId('responsibility-observation'),
-  'categories': _array(_choice(_categories), 6, 1),
+  'categories': _array(_choice(_categories), 13, 1),
   'evidence': _array(_evidence, 2000, 1),
   'previousSemanticSha256': _hash,
   'semanticSha256': _hash,
@@ -698,7 +737,9 @@ final _observationReceipt = _object({
 });
 final _policy = _object({
   'schemaVersion': _version,
-  'id': _literal('responsibility-meeting-comparison:1'),
+  'id': _choice(
+    'responsibility-meeting-comparison:1 responsibility-work-item-comparison:1',
+  ),
   'maximumSourceAgeSeconds': _literal(3600),
   'firstObservation': _literal('establish_baseline_without_notification'),
   'advancement': _literal('complete_current_authorized_evidence_only'),
@@ -748,7 +789,9 @@ void validateResponsibilityMutation(
       'expectedGeneration': action == 'activate' ? _literal(0) : _integer(),
       if (action == 'activate' || action == 'resume') ...{
         'configurationSha256': _hash,
-        'acknowledgePilot': _literal(responsibilityPilot),
+        'acknowledgePilot': _choice(
+          '$responsibilityPilot $responsibilityWorkItemPilot',
+        ),
       },
     })(body);
   } else if (action == 'enable') {
@@ -881,12 +924,12 @@ class ResponsibilityVerifier {
     } else {
       _configuration(value);
     }
-    responsibilityRequire(
-      responsibilityMap(value['source'])['kind'] == 'meeting',
-    );
+    final source = responsibilityMap(value['source']);
+    final workItem = source['kind'] == 'work_item';
+    responsibilityRequire(workItem || source['kind'] == 'meeting');
     if (!notification) {
-      final source = responsibilityMap(value['source']),
-          input = responsibilityMap(responsibilityMap(value['tool'])['input']);
+      final tool = responsibilityMap(value['tool']),
+          input = responsibilityMap(tool['input']);
       final pinnedSources = responsibilityMap(value['pins'])['sources'] as List;
       final reservation = {
         for (final field in responsibilityBudgetDimensions)
@@ -897,8 +940,37 @@ class ResponsibilityVerifier {
               : 0,
       };
       responsibilityRequire(
-        input['meetingId'] == source['id'] &&
+        value['pilot'] ==
+                (workItem
+                    ? responsibilityWorkItemPilot
+                    : responsibilityPilot) &&
+            tool['id'] ==
+                (workItem ? 'app.work_items.show' : 'app.meetings.show') &&
+            responsibilitySame(
+              value['stops'],
+              workItem
+                  ? ['expiry']
+                  : ['expiry', 'meeting_started', 'meeting_canceled'],
+            ) &&
+            input[workItem ? 'workItemId' : 'meetingId'] == source['id'] &&
             input['workspaceId'] == source['workspaceId'] &&
+            (!workItem ||
+                input['projectId'] == source['projectId'] &&
+                    responsibilitySame(
+                      responsibilityMap(value['pins'])['work'],
+                      {
+                        'workspaceId': source['workspaceId'],
+                        'projectId': source['projectId'],
+                        'workItemId': source['id'],
+                        'projectionSha256': responsibilityMap(
+                          responsibilityMap(value['pins'])['work'],
+                        )['projectionSha256'],
+                      },
+                    ) &&
+                    responsibilityMap(
+                          responsibilityMap(value['pins'])['procedure'],
+                        )['id'] ==
+                        responsibilityWorkItemProcedure) &&
             responsibilityMap(value['cadence'])['frequency'] != 'hourly' &&
             pinnedSources.length == 1 &&
             responsibilitySame(
@@ -1187,9 +1259,11 @@ class ResponsibilityVerifier {
         if (input.containsKey('configurationSha256')) {
           responsibilityRequire(
             responsibilityMap(
-                  snapshot['configuration'],
-                )['configurationSha256'] ==
-                input['configurationSha256'],
+                      snapshot['configuration'],
+                    )['configurationSha256'] ==
+                    input['configurationSha256'] &&
+                responsibilityMap(snapshot['configuration'])['pilot'] ==
+                    input['acknowledgePilot'],
           );
         }
         responsibilityRequire(switch (input['action']) {
@@ -1284,7 +1358,9 @@ class ResponsibilityVerifier {
             ..._envelope(responsibilityRuntimeContract),
             'current': _nullable(_lifecycle),
             'disclosure': _object({
-              'pilot': _literal(responsibilityPilot),
+              'pilot': _choice(
+                '$responsibilityPilot $responsibilityWorkItemPilot',
+              ),
               for (final field in [
                 'source',
                 'comparison',
@@ -1308,6 +1384,22 @@ class ResponsibilityVerifier {
           {'preview': _preview(false)},
         )(value);
         await _history(value, id!, ResponsibilityLane.runtime);
+        final disclosedPilot = responsibilityMap(value['disclosure'])['pilot'];
+        if (value['current'] != null) {
+          responsibilityRequire(
+            disclosedPilot ==
+                responsibilityMap(
+                  responsibilityMap(value['current'])['configuration'],
+                )['pilot'],
+          );
+        }
+        final runtimePreview = value['preview'];
+        if (runtimePreview is Map && runtimePreview['state'] == 'ready') {
+          responsibilityRequire(
+            disclosedPilot ==
+                responsibilityMap(runtimePreview['configuration'])['pilot'],
+          );
+        }
         if (value['preview'] != null &&
             responsibilityMap(value['preview'])['state'] == 'ready') {
           await configuration(
@@ -1555,8 +1647,17 @@ class ResponsibilityVerifier {
     _checkCoverage(value, 'receipts', limit);
     final policy = responsibilityMap(value['policy']);
     await digestBody(policy, 'policySha256');
+    final workPolicy = policy['id'] == 'responsibility-work-item-comparison:1';
+    void checkSemanticLane(Object? semantic) {
+      if (semantic == null) return;
+      responsibilityRequire(
+        responsibilityMap(semantic).containsKey('work_status') == workPolicy,
+      );
+    }
+
     if (value['baseline'] != null) {
       final baseline = responsibilityMap(value['baseline']);
+      checkSemanticLane(baseline['semantic']);
       owned(responsibilityMap(baseline['target']), id);
       await digestBody(baseline, 'baselineSha256');
       await digestBody(
@@ -1598,11 +1699,20 @@ class ResponsibilityVerifier {
             request['expectedBaselineRevision'] ==
                 plan['expectedBaselineRevision'],
       );
+      checkSemanticLane(observation['semantic']);
       for (final source in observation['sources'] as List) {
         final row = responsibilityMap(source),
             accepted = row['state'] == 'accepted';
         responsibilityRequire(
-          accepted == (row['reason'] == null) &&
+          (responsibilityMap(row['source'])['kind'] == 'work_item') ==
+                  workPolicy &&
+              (!workPolicy ||
+                  (row['evidence'] as List).every(
+                    (evidence) =>
+                        responsibilityMap(evidence)['kind'] ==
+                        'work_item_revision',
+                  )) &&
+              accepted == (row['reason'] == null) &&
               (accepted
                   ? (row['evidence'] as List).isNotEmpty
                   : (row['evidence'] as List).isEmpty),
@@ -1678,6 +1788,12 @@ class ResponsibilityVerifier {
       }
       if (plan['change'] != null) {
         final change = responsibilityMap(plan['change']);
+        responsibilityRequire(
+          (change['categories'] as List).every(
+            (category) =>
+                responsibilityWorkCategories.contains(category) == workPolicy,
+          ),
+        );
         owned(responsibilityMap(change['target']), id);
         await digestBody(change, 'changeSha256');
         responsibilityRequire(

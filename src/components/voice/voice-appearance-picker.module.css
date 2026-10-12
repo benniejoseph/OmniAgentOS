@@ -13,8 +13,8 @@
 .preview { display: grid; place-items: center; inline-size: 100%; block-size: 8.5rem; border-radius: .5rem; background: var(--background); overflow: hidden; }
 .previewDock { display: grid; grid-template-columns: 3.75rem minmax(0, 1fr) auto; gap: .25rem; align-items: center; inline-size: calc(100% - 1rem); max-inline-size: 17rem; padding: .375rem; border: 1px solid var(--line); border-radius: .75rem; background: var(--surface); }
 .character { inline-size: 3.75rem; block-size: 3.75rem; }
-.previewCaption { display: flex; flex-direction: column; gap: .25rem; min-inline-size: 0; font-size: .6875rem; }
-.previewCaption strong { font-size: .5625rem; color: var(--muted); font-weight: 500; }
+.previewCaption { display: flex; flex-direction: column; gap: .25rem; min-inline-size: 0; font-size: .75rem; }
+.previewCaption strong { font-size: .75rem; color: var(--muted); font-weight: 500; }
 .previewControls { display: flex; align-items: center; gap: .5rem; color: var(--muted); padding-inline-end: .25rem; }
 .preview[data-appearance="perch"] .previewDock { position: relative; display: flex; flex-direction: column; justify-content: end; block-size: 7.75rem; padding: 0; background: transparent; border: 0; }
 .preview[data-appearance="perch"] .character { inline-size: 5rem; block-size: 5rem; }

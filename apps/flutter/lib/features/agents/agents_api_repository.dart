@@ -1,4 +1,7 @@
+import 'dart:convert';
+
 import '../../core/network/api_client.dart';
+import 'agent_adaptation_comparison.dart';
 import '../../generated/native_contract.g.dart';
 import 'agents.dart';
 import 'agent_governance.dart';
@@ -253,10 +256,24 @@ class ApiAgentsRepository
   }) async {
     _requireAgentId(agentId);
     final name = action['action'];
-    if (!const {'refresh', 'evaluate', 'activate', 'rollback'}.contains(name)) {
+    if (!const {
+      'refresh',
+      'evaluate',
+      'compare',
+      'activate',
+      'rollback',
+    }.contains(name)) {
       throw const FormatException(
         'Native Agent adaptation controls do not accept this action.',
       );
+    }
+    if (name == 'compare') {
+      if (NativeContract.currentVersion < 56) {
+        throw const FormatException(
+          'Update the app before comparing guidance.',
+        );
+      }
+      parseAdaptationComparisonSuite(action['suite']);
     }
     final response = await api.postJson(
       NativePaths.agentsAdaptationsManage(agentId),
@@ -278,7 +295,37 @@ class ApiAgentsRepository
         'The exact adaptation is missing from the accepted projection.',
       );
     }
+    if (name == 'compare') {
+      final comparison = adaptations.items
+          .firstWhere((item) => item.adaptationId == action['adaptationId'])
+          .comparison;
+      if (comparison == null ||
+          jsonEncode(comparison.suite) !=
+              jsonEncode(parseAdaptationComparisonSuite(action['suite']))) {
+        throw const FormatException(
+          'The comparison receipt does not match the submitted tasks. Refresh evidence before another comparison.',
+        );
+      }
+    }
     await acceptSpecialistResponse(api, response);
+    if (name == 'compare') {
+      // Keep the exact accepted paid experiment. A second adaptations read
+      // could be stale and erase this receipt before the owner sees it.
+      final release = AgentReleaseProjection.fromResponse(
+        await api.getJsonFresh(NativePaths.agentsReleaseShow(agentId)),
+      );
+      if (release.agentId != agentId ||
+          release.latestDefinitionVersion != adaptations.definitionVersion) {
+        throw const FormatException(
+          'The Agent definition changed while the comparison completed. Refresh its evidence.',
+        );
+      }
+      return AgentGovernanceSnapshot(
+        release: release,
+        definitionVersion: adaptations.definitionVersion,
+        adaptations: adaptations.items,
+      );
+    }
     return loadGovernance(agentId);
   }
 

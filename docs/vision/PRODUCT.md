@@ -1,71 +1,67 @@
-# Asael — Product Vision
+# Asael: a personal AI partner
 
-> Tagline: **"Autonomy the agent earns. Audit you can trust."**
+Asael helps one owner carry real work across life and projects: understand an outcome, use relevant context, act through connected tools, follow progress, and show what actually happened. The relationship should become more useful with experience without making the owner operate an agent platform.
 
-## The one sentence
+The owner selected this direction on 2026-10-12. The earlier enterprise business hypothesis is retained in [BUSINESS_MODEL.md](BUSINESS_MODEL.md) as historical context.
 
-Most teams build *an agent that uses tools*. Asael is **a trust-accruing system that runs projects, remembers opinionatedly, recovers surgically, and proves it is getting better** — so human supervision asymptotically approaches zero for routine work and stays high for novel or dangerous work.
+## The product promise
 
-## The thesis
+“Tell me what matters. I will help you move it forward, remember useful context, and bring back the decisions that need you.”
 
-The bottleneck for enterprise agents is not model intelligence. A frontier model can already do most knowledge work in a single step. What blocks deployment is three things:
+This is a direction, not a claim of unrestricted autonomy. Every visible state must distinguish planned work, attempted work, confirmed effects and verified outcomes. A task marked done or a linked file is evidence to examine; neither proves that the intended outcome was achieved.
 
-1. **Trust** — I cannot let it act unsupervised, because failure is silent and sometimes irreversible.
-2. **Context** — it does not know my world (my data, my procedures, my history).
-3. **Recovery** — when it is wrong, it fails opaquely and I cannot replay, fork, or correct.
+## Four primary places
 
-Asael is built around closing those three gaps, not around adding more tools. The tool loop is a commodity; the trust system is the product.
+| Place | Owner's question | Main content |
+| --- | --- | --- |
+| Today | What needs my attention? | Focus, agenda, decisions and active work; other sections remain optional |
+| Assistant | Can you help me think or do this? | Conversation, context, tool activity, decisions and results |
+| My work | What are we moving forward? | Projects, tasks, progress and the existing work surfaces |
+| Library | What do we know, and where did it come from? | Source documents, saved material and memory with provenance |
 
-## What makes it different: earned autonomy
+Specialist and operational tools remain available through secondary navigation and direct routes. Payments are absent from general navigation while the existing disabled capability and historical records remain intact. There is no reason to show every subsystem as an equally important destination.
 
-Every other agent platform treats permission as **binary and static**: a human approves each action forever, or the agent is turned loose. Both are wrong. Humans don't supervise a new hire's every keystroke for life, and they don't hand a stranger the keys on day one. Trust **accrues**.
+## The first complete increment
 
-In Asael every action class carries a trust profile that moves with track record:
+The implementation on `codex/personal-partner` makes these concrete changes. Deployment remains subject to the existing release gates.
 
-```
-approve_each  →  (clean track record)  →  auto_with_alert  →  (rare review)
-     ▲                                                              │
-     └──────────────  (any failure / rejection resets)  ◀──────────┘
-```
+- Four primary destinations on web and native. Today defaults to its essential sections and preserves existing saved preferences.
+- Work-item tracking through Follow-ups. A preset creates a reviewable inactive draft using a built-in read-only routine. The owner saves, reviews and activates the exact bounded configuration, and separately enables inbox delivery.
+- Tracking observes one currently owned canonical work item, including status, deadline, overdue state, priority, owners, readable dependencies and linked outputs. The first observation establishes a baseline quietly. An unchanged observation stays quiet. Completion and reopening remain observable until expiry; completion is not labelled independently verified.
+- Real paired text comparisons for proposed custom-agent guidance. The owner provides 3–10 different examples and literal assertions. Current and candidate guidance run on the same examples, model and definition without tools, retrieval or memory. Candidate activation requires more passing cases with no individual regression, fresh results and unchanged identity/model/guidance pins.
+- Immutable comparison history and same-request recovery prevent retries from silently starting a new set of paid model calls. Incomplete, tied and regressed comparisons cannot activate new guidance. Existing active guidance remains reversible.
+- Unused dashboard code is removed. Deep capability code is retained where current usage and migration evidence do not justify deletion.
 
-- **Reversibility is first-class.** Undoable actions graduate; irreversible ones never auto-execute, no matter the track record.
-- **Risk tiers are respected.** Risk 3 always needs a two-admin quorum; trust never overrides it.
-- **Every graduation is audited.** When the agent acts on earned autonomy, it emits a signed event with the exact track-record evidence that justified it.
+## What remains experimental or deliberately narrow
 
-This is the actual product. Not "an agent that can do anything" — a system where the cost of supervision *falls over time* for work that proves safe, and stays high for work that doesn't.
+Work-item tracking currently observes state; it does not autonomously finish the task, negotiate deadlines, change owners or send messages. The schedule and notification budgets are finite. Revoked access or changed authority blocks further checks rather than using stale permissions.
 
-## The six pillars
+Text comparison tests output behavior on the supplied examples. Literal assertions do not measure general intelligence, factual correctness, tool reliability or statistical significance. A small winning suite is permission to consider this specific guidance change, not evidence of universal improvement. Model calls cost money, and the result records measured or unknown cost honestly.
 
-### 1. Event-log substrate (source of truth)
-Everything — intent, plan, tool call, observation, approval, correction — is an immutable event in an append-only log. Current state is a projection. This makes **time travel free**: replay a run with a better prompt, fork from step 4 with a human correction, show every decision that touched a customer's data. Audit, debugging, evals, and recovery become one mechanism instead of four bolted-on subsystems.
-*Status: stage 1 shipped — `omni_events` log with RLS, dual-writes from runs/workflows/trust, and a verifiable projection rebuild (`/api/trust?replay=...`). See `docs/vision/EVENT_LOG.md`.*
+The existing outcome evaluator still has limits. A model's own assertion must not be promoted to independently verified success. Adding domain-specific verifiers is a separate project that needs concrete deliverables and failure cases.
 
-### 2. Self-rewriting plan graph (parallel)
-Not a linear tool loop, not a static DAG. A live plan graph where independent branches run in parallel via sub-agents, fan back in, and any failure or new observation triggers a **bounded re-plan of just the affected subtree**. The model decides the *shape* of the work, not just the next action.
-*Status: single-agent loop + single-shot workflow replanning shipped; parallel sub-agents on roadmap.*
+Trust history, confidence scores and past approvals do not replace current permission. Authority remains explicit, scoped, bounded and revocable. The interface should explain the decision in everyday terms and keep exact technical evidence available when needed.
 
-### 3. Opinionated, self-maintaining memory
-Typed stores — facts (with provenance + confidence), episodes, procedures, semantic graph — plus a continuous reconciliation pass that dedupes, resolves contradictions, decays unused facts, and promotes repeated episodes into procedures. Memory that gets *better* with use, not just bigger. Every retrieval is explainable.
-*Status: hybrid RAG + graph memory + consolidation present; reconciliation/decay on roadmap.*
+## Next investments, earned by actual use
 
-### 4. Graduated autonomy (the trust ledger) — **shipped**
-The earned-autonomy engine above. Track record + reversibility + risk tier determine whether an action gates or flows. See `src/lib/trust/`.
+1. Make one recurring personal workflow excellent end to end: preparation, artifact, owner decision, confirmed action and follow-through. Select it from the owner's real work rather than inventing another subsystem.
+2. Attach independent verifiers where outcomes are testable: a passing test suite, an expected document section, a confirmed calendar change or an acknowledged external receipt.
+3. Improve memory by measuring whether retrieved context helped. Preserve source, scope, freshness, correction and deletion paths; do not collect context merely because it is accessible.
+4. Offer useful next actions at the point of work. A suggestion should name the evidence, the action and its consequence. Avoid proactive messages without meaningful change.
+5. Test guidance on examples withheld from its creation and track performance over repeated runs before making broader claims.
 
-### 5. Adversarial verification
-A separate critic model verifies every consequential output against acceptance criteria, **veto-only** (it can fail a passing run, never rescue a failing one), feeding failures into both the replan loop and the eval suite.
-*Status: model-backed workflow verification shipped; per-output critic on roadmap.*
+## What we will remove or refuse to expand
 
-### 6. Eval-driven development (culture, not harness)
-A golden set of real tasks with gradeable outcomes, run on every change, tracking a quality score over time. Agents regress invisibly; without continuous evals you ship vibes. Evals come first, features second.
-*Status: agent-task golden set + scorer + scoreboard shipped (`evals/`, `src/lib/evals2/`).*
+- Unused components with no callers and no retained-history role.
+- Navigation that reflects implementation modules rather than the owner's questions.
+- Confidence displays that imply successful execution or verified learning.
+- Parallel state models without a clear current authority, compatibility need or retirement plan.
+- New agent identities, dashboards or frameworks that cannot show a specific completed-work benefit.
 
-## What we deliberately do NOT build
+Do not delete durable receipts, recovery mechanisms, actor boundaries or approval history to make the code count smaller. Simplicity means fewer concepts the owner has to manage and fewer competing implementations to maintain.
 
-- Not 13 workspaces. Three surfaces: **give it work, watch it think, approve when asked.** Everything else is progressive disclosure.
-- Not our own auth/SSO/billing primitives — integrate best-in-class.
-- Not provider-agnostic LLM abstraction on day one. Pick the best model, wrap it in one module, move on.
-- Not governance theater. We do not build approval-quorum-break-glass machinery for a product with three users. Governance depth is *earned by real usage*, the same way the agent earns autonomy.
+## How to judge progress
 
-## Why this wins
+Use real weekly examples. Count completed outcomes with evidence, commitments caught before they are missed, useful corrections retained, unnecessary interruptions and recovery time after failures. Track model/tool cost alongside these outcomes. Do not use agent count, tool count, generated text volume or trust-score growth as product success metrics.
 
-The hard, un-fakeable half of an agent platform is governance: audit, isolation, approvals, recovery. Most "impressive demo" agents have none of it and cannot add it without a rewrite. Asael starts from that foundation and adds the loop on top — and then adds the one thing nobody else has: a trust model that makes the economics of supervision improve over time. That compounding supervision cost reduction is the moat (see `BUSINESS_MODEL.md`).
+The architecture and execution rules remain in [architecture.md](../architecture.md) and [harness-engineering.md](../harness-engineering.md). This document defines the product direction; it does not override runtime authorization or release evidence.

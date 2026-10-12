@@ -17,33 +17,37 @@ class HistoryWorkspace extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (usesMobilePresentation())
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          const MobilePageHeader(
-            title: 'History',
-            subtitle: 'What happened. What came out of it.',
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
-            child: MobileSegmentBar<bool>(
-              items: const [
-                (
-                  value: false,
-                  label: 'Results',
-                  icon: Icons.description_outlined,
-                ),
-                (value: true, label: 'Timeline', icon: Icons.history_rounded),
-              ],
-              value: timeline,
-              onChanged: (value) =>
-                  context.go(value ? '/activity' : '/results'),
+    if (usesMobilePresentation()) {
+      return Material(
+        type: MaterialType.transparency,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const MobilePageHeader(
+              title: 'History',
+              subtitle: 'What happened. What came out of it.',
             ),
-          ),
-          Expanded(child: child),
-        ],
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+              child: MobileSegmentBar<bool>(
+                items: const [
+                  (
+                    value: false,
+                    label: 'Results',
+                    icon: Icons.description_outlined,
+                  ),
+                  (value: true, label: 'Timeline', icon: Icons.history_rounded),
+                ],
+                value: timeline,
+                onChanged: (value) =>
+                    context.go(value ? '/activity' : '/results'),
+              ),
+            ),
+            Expanded(child: child),
+          ],
+        ),
       );
+    }
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final motion = MediaQuery.disableAnimationsOf(context)

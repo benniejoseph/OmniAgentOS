@@ -65,7 +65,7 @@ Use Geist Sans on web and the system sans on native. Headings and operational la
 
 ## Layout
 
-- Compact `<600dp`: five primary destinations, contextual bottom sheets, drill-down detail.
+- Compact `<600dp`: four primary destinations, contextual bottom sheets, drill-down detail.
 - Medium `600–1023dp`: navigation rail and flexible two-column content.
 - Expanded `>=1024dp`: extended rail, master-detail workspaces, persistent evidence inspector where useful.
 - Assistant and Work use the available screen width with responsive controls.

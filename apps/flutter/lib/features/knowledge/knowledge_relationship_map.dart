@@ -62,7 +62,6 @@ class _KnowledgeRelationshipMapState extends State<KnowledgeRelationshipMap> {
 /// The v48 private sample and exact-read authority remain unchanged.
 class _KnowledgeConnectionsMap extends StatefulWidget {
   const _KnowledgeConnectionsMap({
-    super.key,
     required this.controller,
     this.active = true,
   });
@@ -159,19 +158,21 @@ class _KnowledgeConnectionsMapState extends State<_KnowledgeConnectionsMap>
       final result = await controller.inspectGraph('universe', {'limit': 200});
       if (_current &&
           epoch == _epoch &&
-          identical(controller, widget.controller))
+          identical(controller, widget.controller)) {
         setState(() {
           _snapshot = result;
           if (!_nodes.any((node) => node['id'] == _selected)) _selected = null;
         });
+      }
     } catch (_) {
-      if (_current && epoch == _epoch)
+      if (_current && epoch == _epoch) {
         setState(() {
           _snapshot = null;
           _selected = null;
           _error =
               'The relationship map could not be opened. Refresh to try again.';
         });
+      }
     } finally {
       if (_current && epoch == _epoch) setState(() => _loading = false);
     }
@@ -184,7 +185,7 @@ class _KnowledgeConnectionsMapState extends State<_KnowledgeConnectionsMap>
   List<_MapLink> get _links {
     final graph = _snapshot?.raw['graph'] as Map?;
     if (graph == null) return [];
-    if (_mode == 'nodes')
+    if (_mode == 'nodes') {
       return (graph['edges'] as List)
           .map(
             (row) => _MapLink(
@@ -193,6 +194,7 @@ class _KnowledgeConnectionsMapState extends State<_KnowledgeConnectionsMap>
             ),
           )
           .toList();
+    }
     return (graph['relations'] as List)
         .map(
           (row) => _MapLink(
@@ -230,8 +232,9 @@ class _KnowledgeConnectionsMapState extends State<_KnowledgeConnectionsMap>
       if (!_current ||
           epoch != _epoch ||
           selection != _selectionEpoch ||
-          !identical(controller, widget.controller))
+          !identical(controller, widget.controller)) {
         return;
+      }
       final detail = Map<String, dynamic>.from(result.raw[view] as Map);
       if (detail['id'] != id) throw const FormatException('Selection changed.');
       setState(() {
@@ -239,14 +242,16 @@ class _KnowledgeConnectionsMapState extends State<_KnowledgeConnectionsMap>
         _names[id] = detail['label'] as String;
       });
     } catch (_) {
-      if (_current && epoch == _epoch && selection == _selectionEpoch)
+      if (_current && epoch == _epoch && selection == _selectionEpoch) {
         setState(
           () => _detailError =
               'This item is no longer available to your current account.',
         );
+      }
     } finally {
-      if (_current && epoch == _epoch && selection == _selectionEpoch)
+      if (_current && epoch == _epoch && selection == _selectionEpoch) {
         setState(() => _opening = false);
+      }
     }
   }
 
@@ -267,17 +272,20 @@ class _KnowledgeConnectionsMapState extends State<_KnowledgeConnectionsMap>
     for (final node in pending) {
       if (!_current ||
           epoch != _epoch ||
-          !identical(controller, widget.controller))
+          !identical(controller, widget.controller)) {
         return;
+      }
       try {
         final result = await controller.inspectGraph(view, {'id': node['id']});
         if (!_current ||
             epoch != _epoch ||
-            !identical(controller, widget.controller))
+            !identical(controller, widget.controller)) {
           return;
+        }
         final detail = result.raw[view] as Map;
-        if (detail['id'] != node['id'])
+        if (detail['id'] != node['id']) {
           throw const FormatException('Selection changed.');
+        }
         setState(
           () => _names[node['id'] as String] = detail['label'] as String,
         );
@@ -286,12 +294,13 @@ class _KnowledgeConnectionsMapState extends State<_KnowledgeConnectionsMap>
         failed++;
       }
     }
-    if (_current && epoch == _epoch)
+    if (_current && epoch == _epoch) {
       setState(() {
         _naming = false;
         _notice =
             '$loaded names opened.${failed > 0 ? ' $failed are unavailable with your current access.' : ''}';
       });
+    }
   }
 
   void _fit() {
@@ -319,7 +328,7 @@ class _KnowledgeConnectionsMapState extends State<_KnowledgeConnectionsMap>
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: widget.controller,
     builder: (context, _) {
-      if (!_current)
+      if (!_current) {
         return const Center(
           child: Padding(
             padding: EdgeInsets.all(20),
@@ -328,13 +337,15 @@ class _KnowledgeConnectionsMapState extends State<_KnowledgeConnectionsMap>
             ),
           ),
         );
+      }
       final scheme = Theme.of(context).colorScheme;
       final nodes = _nodes, links = _links;
       final byId = {for (final node in nodes) node['id'] as String: node};
       final neighbors = <String, Set<String>>{};
       for (final link in links) {
-        if (!byId.containsKey(link.from) || !byId.containsKey(link.to))
+        if (!byId.containsKey(link.from) || !byId.containsKey(link.to)) {
           continue;
+        }
         (neighbors[link.from] ??= {}).add(link.to);
         (neighbors[link.to] ??= {}).add(link.from);
       }

@@ -123,7 +123,7 @@ export function CsmRoleContext({ active }: { active: boolean }) {
     if (uploadRef.current) uploadRef.current.value = "";
   }
 
-  if (!active && !loaded.current) return null;
+  if (!active && !saved) return null;
   return <section aria-label="My CSM role" className={styles.roleWorkspace}>
     <header className={styles.roleHeading}>
       <div><h2>My CSM role</h2><p>Build your personal playbook: responsibilities, ways of working, and lessons you want your assistant to remember.</p></div>

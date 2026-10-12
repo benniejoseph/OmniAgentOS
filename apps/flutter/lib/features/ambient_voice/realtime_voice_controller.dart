@@ -189,8 +189,8 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
     required this._audioPlayer,
     required this._ownsAudioPlayer,
     this.onConversationBound,
-    CompanionPersonalityReader? readCompanionPersonality,
-  }) : _readCompanionPersonality = readCompanionPersonality;
+    this._readCompanionPersonality,
+  });
 
   final ApiClient _api;
   final SecureSessionStore _sessionStore;

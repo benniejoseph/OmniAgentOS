@@ -4,6 +4,9 @@ import 'package:asael/core/network/api_client.dart';
 import 'package:asael/core/storage/secure_session_store.dart';
 import 'package:asael/core/sync/reconnect_coordinator.dart';
 import 'package:asael/features/auth/application/session_controller.dart';
+import 'package:asael/features/auth/application/biometric_session_lock_controller.dart';
+import 'package:asael/features/auth/data/session_repository.dart';
+import 'package:asael/core/network/api_exception.dart';
 import 'package:asael/features/auth/domain/app_session.dart';
 import 'package:asael/features/builder/builder_providers.dart';
 import 'package:asael/features/builder/native_builder_view.dart';
@@ -36,6 +39,9 @@ void main() {
       final container = ProviderContainer(
         overrides: [
           sessionControllerProvider.overrideWith(_Sessions.new),
+          biometricSessionLockControllerProvider.overrideWith(
+            (_) => BiometricSessionLockController(_NoSessionEffects()),
+          ),
           appInitialLocationProvider.overrideWithValue(route),
           projectsRepositoryProvider.overrideWithValue(repository),
           apiClientProvider.overrideWithValue(api),
@@ -71,7 +77,7 @@ void main() {
       final retainedWorkState = tester.state(
         find.byType(ProjectDocumentWorkspace),
       );
-      final tabs = find.byKey(const Key('macos-project-detail-tabs'));
+      final tabs = find.byKey(const Key('mobile-project-detail-tabs'));
       await tester.tap(find.descendant(of: tabs, matching: find.text('Plan')));
       await tester.pumpAndSettle();
       expect(router.routeInformationProvider.value.uri.queryParameters, {
@@ -133,6 +139,10 @@ void main() {
         var api = _NoEffectsApi();
         final container = ProviderContainer(
           overrides: [
+            sessionControllerProvider.overrideWith(_Sessions.new),
+            biometricSessionLockControllerProvider.overrideWith(
+              (_) => BiometricSessionLockController(_NoSessionEffects()),
+            ),
             projectsRepositoryProvider.overrideWith((ref) => current),
             apiClientProvider.overrideWith((ref) => api),
             reconnectCoordinatorProvider.overrideWithValue(
@@ -141,18 +151,26 @@ void main() {
           ],
         );
         addTearDown(container.dispose);
+        await container.read(sessionControllerProvider.future);
         await tester.pumpWidget(
           UncontrolledProviderScope(
             container: container,
             child: MaterialApp(
               theme: AppTheme.light(),
-              home: detail
-                  ? const ProviderBoundProjectRoute(id: projectId)
-                  : const ProviderBoundProjectsRoute(),
+              home: Scaffold(
+                body: detail
+                    ? const ProviderBoundProjectRoute(id: projectId)
+                    : const ProviderBoundProjectsRoute(),
+              ),
             ),
           ),
         );
         await tester.pumpAndSettle();
+        if (!detail) {
+          expect(api.authorizedReads, ['/api/csm/clients']);
+          await tester.tap(find.text('Projects'));
+          await tester.pumpAndSettle();
+        }
         expect(find.text('First owner project'), findsWidgets);
         current = next;
         api = _NoEffectsApi();
@@ -160,6 +178,12 @@ void main() {
         container.invalidate(apiClientProvider);
         await tester.pumpAndSettle();
         expect(find.text('First owner project'), findsNothing);
+        if (!detail) {
+          // Replacing the API discards the old private CSM navigation owner.
+          expect(api.authorizedReads, ['/api/csm/clients']);
+          await tester.tap(find.text('Projects'));
+          await tester.pumpAndSettle();
+        }
         expect(find.text('Replacement owner project'), findsWidgets);
         if (detail) {
           expect(
@@ -171,6 +195,8 @@ void main() {
         }
         expect(first.writes + next.writes + api.effects, 0);
         expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pumpAndSettle();
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
@@ -185,6 +211,9 @@ void main() {
       final container = ProviderContainer(
         overrides: [
           sessionControllerProvider.overrideWith(_Sessions.new),
+          biometricSessionLockControllerProvider.overrideWith(
+            (_) => BiometricSessionLockController(_NoSessionEffects()),
+          ),
           appInitialLocationProvider.overrideWithValue(route),
           projectsRepositoryProvider.overrideWithValue(repository),
           apiClientProvider.overrideWithValue(api),
@@ -237,18 +266,44 @@ class _Sessions extends SessionController {
   @override
   Future<AppSession?> build() async => const AppSession(
     tenantId: 'tenant-one',
-    actorId: 'actor-one',
-    userId: 'user-one',
+    actorId: 'one@example.test',
+    userId: '11111111-1111-4111-8111-111111111111',
     email: 'one@example.test',
     displayName: 'One',
     workspaceName: 'Synthetic',
+    role: 'operator',
   );
 }
 
 class _NoEffectsApi extends ApiClient {
   _NoEffectsApi()
-    : super(Dio(), Dio(), SecureSessionStore(const FlutterSecureStorage()));
+    : super(
+        Dio(BaseOptions(baseUrl: 'https://workspace.example.test')),
+        Dio(),
+        SecureSessionStore(const FlutterSecureStorage()),
+      );
   int effects = 0;
+  final authorizedReads = <String>[];
+  @override
+  Future<Json> getJsonAuthorized(
+    String path, {
+    required NativeRequestAuthority authority,
+    Json? query,
+    Json? headers,
+    CancelToken? cancelToken,
+  }) async {
+    authority.requireCurrent(apiBaseUrl);
+    expect(authority.tenantId, 'tenant-one');
+    expect(authority.actorId, 'one@example.test');
+    expect(authority.canonicalUserId, '11111111-1111-4111-8111-111111111111');
+    expect(query, isNull);
+    authorizedReads.add(path);
+    if (path == '/api/csm/clients') {
+      throw const ApiException('Synthetic client collection unavailable');
+    }
+    throw StateError('Unexpected authorized read: $path');
+  }
+
   @override
   Future<Json> getJson(String path, {Map<String, dynamic>? query}) async {
     if (path == '/api/projects/${Uri.encodeComponent(projectId)}/builder' &&
@@ -278,3 +333,5 @@ class _NoEffectsApi extends ApiClient {
     Json? headers,
   }) => postJson(path, data: data, headers: headers);
 }
+
+class _NoSessionEffects extends Fake implements SessionRepository {}

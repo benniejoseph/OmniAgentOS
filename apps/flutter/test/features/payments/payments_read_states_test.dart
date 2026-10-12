@@ -101,6 +101,12 @@ Future<void> _refresh(WidgetTester tester, bool mac) async {
   await tester.pumpAndSettle();
 }
 
+Future<void> _selectPhoneSection(WidgetTester tester, String label) async {
+  await tester.ensureVisible(find.text(label));
+  await tester.tap(find.text(label));
+  await tester.pumpAndSettle();
+}
+
 void main() {
   setUp(() => FlutterSecureStorage.setMockInitialValues({}));
   for (final mac in [false, true]) {
@@ -118,7 +124,7 @@ void main() {
           find.text(
             mac
                 ? 'No mandates awaiting review'
-                : 'No purchase mandate is awaiting your review.',
+                : 'No purchase is waiting for review.',
           ),
           findsNothing,
         );
@@ -134,18 +140,21 @@ void main() {
           expect(find.text('No reconciled payment evidence'), findsNothing);
         } else {
           expect(
-            find.text('Hardware-backed signers could not be loaded.'),
+            find.text('This payment view could not be loaded.'),
             findsOneWidget,
           );
+          await _selectPhoneSection(tester, 'Signers');
           expect(
-            find.text('Payment evidence could not be loaded.'),
+            find.text('This payment view could not be loaded.'),
             findsOneWidget,
           );
           expect(find.text('No payment signer is registered.'), findsNothing);
+          await _selectPhoneSection(tester, 'History');
           expect(
-            find.text('No reconciled payment lifecycle is recorded.'),
-            findsNothing,
+            find.text('This payment view could not be loaded.'),
+            findsOneWidget,
           );
+          expect(find.text('No payment history is recorded.'), findsNothing);
         }
         api.failures.clear();
         await _refresh(tester, mac);
@@ -156,12 +165,17 @@ void main() {
           expect(find.text('No reconciled payment evidence'), findsOneWidget);
           await tester.tap(find.text('Mandates  0'));
           await tester.pump();
+        } else {
+          expect(find.text('No payment history is recorded.'), findsOneWidget);
+          await _selectPhoneSection(tester, 'Signers');
+          expect(find.text('No payment signer is registered.'), findsOneWidget);
+          await _selectPhoneSection(tester, 'To review');
         }
         expect(
           find.text(
             mac
                 ? 'No mandates awaiting review'
-                : 'No purchase mandate is awaiting your review.',
+                : 'No purchase is waiting for review.',
           ),
           findsOneWidget,
         );
@@ -188,12 +202,18 @@ void main() {
           );
         } else {
           expect(
-            find.text('Mandates awaiting review could not be loaded.'),
+            find.text('This payment view could not be loaded.'),
             findsOneWidget,
           );
+          await _selectPhoneSection(tester, 'Signers');
           expect(find.text('No payment signer is registered.'), findsOneWidget);
+          expect(find.textContaining('could not be loaded'), findsNothing);
+          await _selectPhoneSection(tester, 'History');
+          expect(find.text('No payment history is recorded.'), findsOneWidget);
+          expect(find.textContaining('could not be loaded'), findsNothing);
+          await _selectPhoneSection(tester, 'To review');
           expect(
-            find.text('No reconciled payment lifecycle is recorded.'),
+            find.text('This payment view could not be loaded.'),
             findsOneWidget,
           );
         }
@@ -260,13 +280,25 @@ void main() {
           );
           expect(find.text('No hardware signers registered'), findsNothing);
         } else {
+          await _selectPhoneSection(tester, 'Signers');
           expect(
-            find.text('The last available result contained no entries.'),
+            find.text(
+              'The last available result had no entries. Refresh for the current status.',
+            ),
             findsOneWidget,
           );
           expect(find.text('No payment signer is registered.'), findsNothing);
           expect(
-            find.text('No reconciled payment lifecycle is recorded.'),
+            find.textContaining('Showing the last available result'),
+            findsOneWidget,
+          );
+          await _selectPhoneSection(tester, 'History');
+          expect(find.text('No payment history is recorded.'), findsOneWidget);
+          expect(find.textContaining('could not refresh'), findsNothing);
+          await _selectPhoneSection(tester, 'To review');
+          expect(find.text('Retained merchant'), findsWidgets);
+          expect(
+            find.textContaining('Showing the last available result'),
             findsOneWidget,
           );
         }
@@ -287,7 +319,7 @@ void main() {
           find.text(
             mac
                 ? 'Mandates unavailable'
-                : 'Mandates awaiting review could not be loaded.',
+                : 'This payment view could not be loaded.',
           ),
           findsOneWidget,
         );
@@ -295,7 +327,7 @@ void main() {
           find.text(
             mac
                 ? 'No mandates awaiting review'
-                : 'No purchase mandate is awaiting your review.',
+                : 'No purchase is waiting for review.',
           ),
           findsNothing,
         );

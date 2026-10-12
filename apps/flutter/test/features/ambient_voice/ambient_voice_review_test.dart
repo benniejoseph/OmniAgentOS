@@ -118,6 +118,32 @@ AmbientRealtimeVoiceController _voice() => AmbientRealtimeVoiceController(
   audioPlayer: _Player(),
 );
 
+/// Records the consent boundary without opening a microphone or session.
+class _ConsentStartVoice extends _ListeningVoice {
+  _ConsentStartVoice() {
+    listening = false;
+  }
+
+  AmbientRealtimeVoicePhase _observedPhase = AmbientRealtimeVoicePhase.idle;
+
+  @override
+  AmbientRealtimeVoicePhase get phase => _observedPhase;
+
+  @override
+  Future<void> start({
+    String? conversationId,
+    String mode = 'orchestrate',
+    String? language,
+    required bool providerConsent,
+  }) async {
+    if (!providerConsent) {
+      throw StateError('A voice start requires explicit provider consent.');
+    }
+    _observedPhase = AmbientRealtimeVoicePhase.requestingPermission;
+    notifyListeners();
+  }
+}
+
 /// A realtime session that is listening, without a microphone.
 class _ListeningVoice extends ChangeNotifier
     implements AmbientRealtimeVoiceController {
@@ -518,7 +544,7 @@ void main() {
         expect(portrait.reactionKey, isNull);
         expect(tester.takeException(), isNull);
       }
-    });
+    }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
     testWidgets('verified work supplies completion and actual audio wins', (
       tester,
@@ -555,7 +581,7 @@ void main() {
         }
         expect(tester.takeException(), isNull);
       }
-    });
+    }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
     testWidgets('shows how confidently the transcript was recognized', (
       tester,
@@ -574,7 +600,7 @@ void main() {
         );
         expect(find.text(label), findsOneWidget);
       }
-    });
+    }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
     testWidgets('keeps Send off until the review checkbox is ticked', (
       tester,
@@ -611,7 +637,7 @@ void main() {
 
       expect(tester.widget<Checkbox>(find.byType(Checkbox)).value, isTrue);
       expect(tester.widget<IconButton>(_sendButton).onPressed, send);
-    });
+    }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
     testWidgets('sends a confident transcript without a checkbox', (
       tester,
@@ -625,7 +651,7 @@ void main() {
       expect(find.text('Ready to send'), findsOneWidget);
       expect(find.byType(Checkbox), findsNothing);
       expect(tester.widget<IconButton>(_sendButton).onPressed, send);
-    });
+    }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
   });
 
   group('Ambient Command send', () {
@@ -680,7 +706,7 @@ void main() {
 
       expect(voice.reviewDraft.confidenceBand, AmbientVoiceConfidenceBand.low);
       expect(repository.sent, [_request]);
-    });
+    }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
     testWidgets('sends a confident draft from Send alone', (tester) async {
       final (voice, repository) = await review(
@@ -695,7 +721,7 @@ void main() {
       expect(voice.reviewDraft.confidenceBand, AmbientVoiceConfidenceBand.high);
       expect(voice.reviewAttested, isTrue);
       expect(repository.sent, [_request]);
-    });
+    }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
     testWidgets('reviews a stopped draft again before sending it', (
       tester,
@@ -710,7 +736,7 @@ void main() {
       expect(voice.phase, AmbientRealtimeVoicePhase.review);
       expect(voice.confidenceBand, AmbientVoiceConfidenceBand.edited);
       expect(find.byType(Checkbox), findsOneWidget);
-    });
+    }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
     testWidgets(
       'keeps an unverified finished reply ready when it cannot be spoken',
@@ -748,6 +774,8 @@ void main() {
         expect(voice.errorMessage, isNull);
         semantics.dispose();
       },
+
+      variant: TargetPlatformVariant.only(TargetPlatform.macOS),
     );
   });
 
@@ -848,7 +876,7 @@ void main() {
 
       await enter(tester, AppLifecycleState.inactive);
       expect(voice.cancels, 1);
-    });
+    }, variant: TargetPlatformVariant.only(TargetPlatform.android));
 
     testWidgets('stops a voice draft when the main window loses focus', (
       tester,
@@ -873,6 +901,27 @@ void main() {
   });
 
   group('Ambient Command consent', () {
+    const desktopChannel = MethodChannel('app.omniagent.omniagent/desktop');
+    setUp(() {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(desktopChannel, (call) async {
+            if (call.method == 'getAmbientVoiceAvailability') {
+              return {'available': true, 'state': 'asleep'};
+            }
+            if (call.method == 'updateAmbientVoiceState') {
+              return {
+                'available': true,
+                'state': (call.arguments as Map)['state'],
+              };
+            }
+            return null;
+          });
+    });
+    tearDown(() {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(desktopChannel, null);
+    });
+
     /// Lets the stored agreement load and the text transitions finish.
     Future<void> settle(WidgetTester tester) async {
       await tester.pump();
@@ -884,7 +933,7 @@ void main() {
       AmbientVoiceConsent? consent,
       bool withConsent = true,
     }) async {
-      final voice = _voice();
+      final voice = _ConsentStartVoice();
       final phases = <AmbientRealtimeVoicePhase>[];
       voice.addListener(() => phases.add(voice.phase));
       final talk = TalkController(_Repository());
@@ -921,7 +970,7 @@ void main() {
       expect(phases, isEmpty);
       expect(find.text(_notice), findsOneWidget);
       expect(microphoneTooltip(tester), 'Agree and start listening');
-    });
+    }, variant: TargetPlatformVariant.only(TargetPlatform.android));
 
     testWidgets('records the agreement on the first press, then starts', (
       tester,
@@ -933,7 +982,7 @@ void main() {
 
       expect(consent.accepts, 1);
       expect(phases, contains(AmbientRealtimeVoicePhase.requestingPermission));
-    });
+    }, variant: TargetPlatformVariant.only(TargetPlatform.android));
 
     testWidgets('an agreement already recorded skips the notice', (
       tester,
@@ -950,7 +999,7 @@ void main() {
 
       expect(consent.accepts, 0);
       expect(phases, contains(AmbientRealtimeVoicePhase.requestingPermission));
-    });
+    }, variant: TargetPlatformVariant.only(TargetPlatform.android));
 
     testWidgets('an unsaved agreement keeps the microphone off', (
       tester,
@@ -979,7 +1028,7 @@ void main() {
 
       expect(consent.accepts, 2);
       expect(phases, isEmpty);
-    });
+    }, variant: TargetPlatformVariant.only(TargetPlatform.android));
 
     testWidgets('without a signed-in owner nothing listens', (tester) async {
       final phases = await open(tester, withConsent: false);
@@ -993,7 +1042,7 @@ void main() {
         find.textContaining('could not save your agreement'),
         findsOneWidget,
       );
-    });
+    }, variant: TargetPlatformVariant.only(TargetPlatform.android));
 
     /// One mounted Ambient Command view whose owner can change.
     Future<
@@ -1003,7 +1052,7 @@ void main() {
       )
     >
     owned(WidgetTester tester, AmbientVoiceConsent first) async {
-      final voice = _voice();
+      final voice = _ConsentStartVoice();
       final phases = <AmbientRealtimeVoicePhase>[];
       voice.addListener(() => phases.add(voice.phase));
       final talk = TalkController(_Repository());
@@ -1038,7 +1087,7 @@ void main() {
       await pressMicrophone(tester);
       expect(second.accepts, 1);
       expect(phases, contains(AmbientRealtimeVoicePhase.requestingPermission));
-    });
+    }, variant: TargetPlatformVariant.only(TargetPlatform.android));
 
     testWidgets('a late answer for the previous owner is not reused', (
       tester,
@@ -1055,7 +1104,7 @@ void main() {
 
       expect(find.text(_notice), findsOneWidget);
       expect(phases, isEmpty);
-    });
+    }, variant: TargetPlatformVariant.only(TargetPlatform.android));
 
     testWidgets('an agreement saved as the owner changed starts nothing', (
       tester,
@@ -1072,7 +1121,7 @@ void main() {
 
       expect(phases, isEmpty);
       expect(find.text(_notice), findsOneWidget);
-    });
+    }, variant: TargetPlatformVariant.only(TargetPlatform.android));
 
     test('one owner keeps one agreement on this device', () async {
       final values = _Values();

@@ -17,6 +17,7 @@ export function ConversationNotes({ enabled }: { enabled: boolean }) {
   const [busy, setBusy] = useState(false);
   const generation = useRef(0);
   const abort = useRef<AbortController | undefined>(undefined);
+  const invalidate = useCallback(() => { generation.current++; abort.current?.abort(); }, []);
   const load = useCallback(async () => {
     if (!enabled || document.hidden) return;
     const epoch = generation.current;
@@ -34,14 +35,14 @@ export function ConversationNotes({ enabled }: { enabled: boolean }) {
   }, [enabled]);
   useEffect(() => {
     const refresh = () => {
-      if (document.hidden) { generation.current++; abort.current?.abort(); setSelected(undefined); setItems([]); }
+      if (document.hidden) { invalidate(); setSelected(undefined); setItems([]); }
       else void load();
     };
     const timer = window.setTimeout(() => void load(), 0);
     const interval = window.setInterval(() => void load(), 30_000);
     document.addEventListener("visibilitychange", refresh);
-    return () => { generation.current++; abort.current?.abort(); window.clearTimeout(timer); window.clearInterval(interval); document.removeEventListener("visibilitychange", refresh); };
-  }, [load]);
+    return () => { invalidate(); window.clearTimeout(timer); window.clearInterval(interval); document.removeEventListener("visibilitychange", refresh); };
+  }, [invalidate, load]);
   async function open(item: Conversation) {
     abort.current?.abort(); const controller = new AbortController(); abort.current = controller;
     const epoch = generation.current;

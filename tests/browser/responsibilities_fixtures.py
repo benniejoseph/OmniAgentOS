@@ -209,7 +209,7 @@ class ResponsibilityFixtures(Fixtures):
             if body["expectedRevision"] != previous_revision or body["expectedGeneration"] != generation: return self.fulfill(route, {"error": "Exact lifecycle changed"}, 409)
             if action == "activate":
                 config = self.configuration()
-                if body["configurationSha256"] != config["configurationSha256"] or body["acknowledgePilot"] != "native_meeting_metadata_v1": return self.fulfill(route, {"error": "Exact pilot changed"}, 409)
+                if body["configurationSha256"] != config["configurationSha256"] or body["acknowledgePilot"] != config["pilot"]: return self.fulfill(route, {"error": "Exact pilot changed"}, 409)
                 self.current = {"schemaVersion": 1, "contract": "asael-responsibility-runtime:1", **self.owner, "responsibilityId": self.record["id"], "revision": 1, "generation": 1,
                     "state": "active", "reason": "owner_activated", "configuration": config, "nextDueAt": STAMP, "activatedAt": STAMP, "updatedAt": STAMP,
                     "budget": {"limits": config["cumulativeLimits"], "used": dict.fromkeys(DIMENSIONS, 0), "reserved": dict.fromkeys(DIMENSIONS, 0), "maximumChecks": 7, "usedChecks": 0, "reservedChecks": 0}}

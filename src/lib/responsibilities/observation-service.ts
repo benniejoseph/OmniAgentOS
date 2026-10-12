@@ -2,7 +2,7 @@ import { canonicalAuthUserActorFromSecurityContext } from "@/lib/security/canoni
 import { canPerform } from "@/lib/security/context";
 import type { SecurityContext } from "@/lib/security/types";
 import { responsibilityIdSchema } from "./contracts";
-import { RESPONSIBILITY_MEETING_COMPARISON_POLICY } from "./comparison-policy";
+import { RESPONSIBILITY_MEETING_COMPARISON_POLICY, RESPONSIBILITY_WORK_ITEM_COMPARISON_POLICY } from "./comparison-policy";
 import { RESPONSIBILITY_OBSERVATION_CONTRACT, responsibilityObservationRequestSchema } from "./observation-contracts";
 import type { ResponsibilityObservationStore, TransactionalObservationReader } from "./observation-store";
 import { ResponsibilityError, type ResponsibilityOwner } from "./state";
@@ -36,7 +36,8 @@ export async function observeResponsibility(context: SecurityContext, input: unk
   const checked = responsibilityObservationRequestSchema.safeParse(input);
   if (!checked.success) throw invalid();
   const frozenContext = { ...context, ...(context.auth ? { auth: { ...context.auth } } : {}) };
-  return { ...envelope(), ...await dependencies.observe(owner, checked.data, key, dependencies.reader(frozenContext, owner), dependencies.now()) };
+  return { ...envelope(), policy: checked.data.policySha256 === RESPONSIBILITY_WORK_ITEM_COMPARISON_POLICY.policySha256 ? RESPONSIBILITY_WORK_ITEM_COMPARISON_POLICY : RESPONSIBILITY_MEETING_COMPARISON_POLICY,
+    ...await dependencies.observe(owner, checked.data, key, dependencies.reader(frozenContext, owner), dependencies.now()) };
 }
 function authorize(context: SecurityContext, action: "read" | "manage.workflow"): ResponsibilityOwner {
   if (!canPerform(context.role, action)) throw new ResponsibilityError("This account cannot perform that responsibility action.", 403, "responsibility_forbidden");

@@ -31,13 +31,15 @@ def until(page, predicate, label, timeout=20):
     if not predicate(): raise AssertionError(label)
 def section(page, name): return root(page).get_by_role("region", name=name, exact=True)
 def view(page, name):
-    root(page).get_by_role("navigation", name="Settings categories").get_by_role("button", name=name, exact=True).click()
+    link = page.get_by_role("navigation", name="Settings categories").get_by_role("link", name=re.compile("^" + re.escape(name) + r"(?:$| )"))
+    link.click()
+    expect(link).to_have_attribute("aria-current", "page")
     if name == "General": expect(root(page)).not_to_be_visible()
     else: expect(root(page).get_by_role("heading", name=name, exact=True)).to_be_visible()
     settle(page)
 def enter(page, origin, suffix=""):
     navigate(page, origin, "/app/settings" + suffix)
-    page.get_by_role("navigation", name="Settings categories").get_by_role("button", name=re.compile(r"^Workspace(?:$| )")).click()
+    view(page, "Workspace")
     expect(root(page)).to_be_visible()
 def dialog(page, name): return page.get_by_role("dialog", name=name, exact=True)
 
@@ -131,7 +133,7 @@ def read_states(page, fixture, checks, coarse):
     root(page).get_by_role("textbox", name="Service key name", exact=True).fill("Retained local key draft")
     view(page, "General")
     expect(root(page)).not_to_be_visible()
-    page.get_by_role("navigation", name="Settings categories").get_by_role("button", name=re.compile(r"^API & MCP(?:$| )")).click()
+    view(page, "API & MCP")
     expect(root(page).get_by_role("textbox", name="Service key name", exact=True)).to_have_value("Retained local key draft")
     fixture.plan("settings", body={"error": "Synthetic refresh unavailable. " + EVIDENCE}, status=503)
     refresh(page); expect(root(page).get_by_text(STALE, exact=True)).to_be_visible()

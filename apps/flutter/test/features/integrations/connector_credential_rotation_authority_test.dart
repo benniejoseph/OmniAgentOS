@@ -25,6 +25,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'connector_credential_removal_fixtures.dart';
 import 'connector_credential_rotation_fixtures.dart';
 import 'connector_fixtures.dart';
+import 'connector_widget_helpers.dart';
 
 NativeWorkspaceAccess _access(_Api api, {bool Function()? current}) =>
     NativeWorkspaceAccess(
@@ -51,6 +52,7 @@ class _Api extends ApiClient {
   @override
   Future<ConnectorJson> getJsonAuthorized(
     String path, {
+    Map<String, dynamic>? headers,
     required NativeRequestAuthority authority,
     ConnectorJson? query,
     CancelToken? cancelToken,
@@ -144,13 +146,11 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      await tester.scrollUntilVisible(
-        find.text('Credential preparation recovery'),
-        200,
-        scrollable: find.byType(Scrollable).first,
+      await openConnectorRecoveryControls(tester);
+      await tapVisibleConnectorAction(
+        tester,
+        'Credential preparation recovery',
       );
-      await tester.tap(find.text('Credential preparation recovery'));
-      await tester.pumpAndSettle();
       await tester.scrollUntilVisible(
         find.text('Check exact preparation'),
         200,
@@ -409,13 +409,10 @@ void main() {
           ),
         );
         await tester.pumpAndSettle();
-        await tester.scrollUntilVisible(
-          find.text('Review and confirm credential save'),
-          200,
-          scrollable: find.byType(Scrollable).first,
+        await tapVisibleConnectorAction(
+          tester,
+          'Review and confirm credential save',
         );
-        await tester.tap(find.text('Review and confirm credential save'));
-        await tester.pumpAndSettle();
         if (hide == 'ticker') {
           visible.value = false;
           await tester.pump();

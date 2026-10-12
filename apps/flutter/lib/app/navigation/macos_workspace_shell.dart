@@ -375,7 +375,7 @@ class _MacosDestinationGroup extends StatelessWidget {
     if (indices.isEmpty) return const SizedBox.shrink();
 
     if (group == AppDestinationGroup.advanced) {
-      if (collapsed)
+      if (collapsed) {
         return PopupMenuButton<int>(
           tooltip: 'Advanced tools',
           icon: const Icon(Icons.build_outlined, size: 18),
@@ -388,6 +388,7 @@ class _MacosDestinationGroup extends StatelessWidget {
               ),
           ],
         );
+      }
       return ExpansionTile(
         key: PageStorageKey(
           'macos-navigation-advanced-${normalized.isNotEmpty}',
@@ -672,7 +673,7 @@ class _MacosGlobalToolbar extends StatelessWidget {
               icon: const Icon(Icons.open_in_new_rounded),
             ),
             IconButton(
-              tooltip: 'Attention inbox (⌘⇧I)',
+              tooltip: 'Needs you (⌘⇧I)',
               onPressed: onOpenInbox,
               icon: const Icon(Icons.notifications_none_rounded),
             ),

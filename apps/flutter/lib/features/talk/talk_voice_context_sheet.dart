@@ -98,11 +98,12 @@ class _MobileVoiceContextEditorState extends State<MobileVoiceContextEditor> {
                       future: _catalog,
                       builder: (context, snapshot) {
                         if (!widget.current()) return const SizedBox.shrink();
-                        if (snapshot.connectionState != ConnectionState.done)
+                        if (snapshot.connectionState != ConnectionState.done) {
                           return const Center(
                             child: CircularProgressIndicator(),
                           );
-                        if (snapshot.hasError)
+                        }
+                        if (snapshot.hasError) {
                           return Center(
                             child: Column(
                               mainAxisSize: MainAxisSize.min,
@@ -121,6 +122,7 @@ class _MobileVoiceContextEditorState extends State<MobileVoiceContextEditor> {
                               ],
                             ),
                           );
+                        }
                         final all =
                             snapshot.data?.items ??
                             const <TalkCommandContextReference>[];
@@ -159,10 +161,11 @@ class _MobileVoiceContextEditorState extends State<MobileVoiceContextEditor> {
                                               'Saved ${_kind(item.kind).toLowerCase()}',
                                         ),
                                         onDeleted: () {
-                                          if (widget.current())
+                                          if (widget.current()) {
                                             setState(
                                               () => _selected.remove(item.key),
                                             );
+                                          }
                                         },
                                       ),
                                   ],
@@ -199,11 +202,12 @@ class _MobileVoiceContextEditorState extends State<MobileVoiceContextEditor> {
                                             _selected.remove(item.key);
                                             return;
                                           }
-                                          if (item.kind == 'project')
+                                          if (item.kind == 'project') {
                                             _selected.removeWhere(
                                               (_, existing) =>
                                                   existing.kind == 'project',
                                             );
+                                          }
                                           _selected[item.key] = item;
                                         });
                                       },

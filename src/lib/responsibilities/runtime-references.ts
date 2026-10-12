@@ -5,18 +5,19 @@ import { canPerform } from "@/lib/security/context";
 import type { SecurityContext } from "@/lib/security/types";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import { getGovernedTool } from "@/lib/tools/registry";
-import { buildWorkflowProcedureSnapshot } from "@/lib/workflows/saved-procedures";
+import { buildResponsibilityWorkItemProcedure, buildWorkflowProcedureSnapshot } from "@/lib/workflows/saved-procedures";
 import { nextWorkflowScheduleOccurrence } from "@/lib/workflows/triggers";
 import type { WorkflowScheduleConfigV1 } from "@/lib/workflows/types";
 import { parseCanonicalWorkItemV1 } from "@/lib/workspaces/contracts";
 import type { ResponsibilityRecord } from "./contracts";
-import { RESPONSIBILITY_MEETING_COMPARISON_POLICY } from "./comparison-policy";
+import { responsibilityComparisonPolicy } from "./comparison-policy";
 import { PILOT_CHECK_RESERVATION } from "./cumulative-budget";
 import { verifyPilotConfiguration } from "./lifecycle-state";
 import { authoritativeSourceReadSchema } from "./observation-contracts";
 import { responsibilityObservationReader } from "./observation-references";
-import { RESPONSIBILITY_PILOT, type PilotConfiguration } from "./runtime-contracts";
+import { RESPONSIBILITY_PILOT, RESPONSIBILITY_WORK_ITEM_PILOT, type PilotConfiguration } from "./runtime-contracts";
 import { ResponsibilityError, type ResponsibilityOwner } from "./state";
+import { WORK_ITEM_FOLLOWTHROUGH_PROCEDURE } from "./work-item-source";
 import { readOwnedResponsibilityProcedures } from "./procedure-reference";
 
 /** Internal worker identity is resolved from current account records, never
@@ -47,8 +48,10 @@ export async function resolveResponsibilityPilot(sql: SqlClient, owner: Responsi
   const context = await resolveRuntimeOwnerContext(sql, owner);
   const { draft, review } = record;
   if (record.tenantId !== owner.tenantId || record.actorId !== owner.actorId || record.state !== "reviewed" || !review || !draft.cadence || !draft.limits || !draft.work || !draft.agentId || !draft.procedureId ||
-    draft.sources.length !== 1 || draft.sources[0].kind !== "meeting" || draft.cadence.frequency === "hourly") throw unsupported();
+    draft.sources.length !== 1 || !["meeting", "work_item"].includes(draft.sources[0].kind) || draft.cadence.frequency === "hourly") throw unsupported();
   const source = draft.sources[0];
+  if (source.kind !== "meeting" && source.kind !== "work_item") throw unsupported();
+  if (source.kind === "work_item" && (source.id !== draft.work.workItemId || source.workspaceId !== draft.work.workspaceId || source.projectId !== draft.work.projectId)) throw unsupported();
   const accessRows = await sql`SELECT workspace.workspace_id FROM omni_tenant_workspaces workspace
     JOIN omni_tenant_workspace_memberships membership ON membership.tenant_id = workspace.tenant_id AND membership.workspace_id = workspace.workspace_id
       AND membership.subject_kind = 'user' AND membership.subject_actor_id = ${owner.actorId} AND membership.state = 'active'
@@ -58,9 +61,9 @@ export async function resolveResponsibilityPilot(sql: SqlClient, owner: Responsi
   const target = { ...owner, responsibilityId: record.id, responsibilityRevision: record.revision, reviewSha256: review.reviewSha256 };
   const sourceReader = responsibilityObservationReader(context, owner);
   const evidence = authoritativeSourceReadSchema.parse(await sourceReader({ target, source, observedAt: now }, sql));
-  if (evidence.state !== "available" || evidence.freshUntil <= now || evidence.observedAt > now || !evidence.projection.meeting) throw unavailable();
-  if (evidence.projection.meeting.status === "cancelled") throw stop("meeting_canceled");
-  if (evidence.projection.meeting.status !== "scheduled" || !evidence.projection.meeting.startsAt || evidence.projection.meeting.startsAt <= now) throw stop("meeting_started");
+  if (evidence.state !== "available" || evidence.freshUntil <= now || evidence.observedAt > now || (source.kind === "meeting" ? !evidence.projection.meeting : !evidence.projection.workItem)) throw unavailable();
+  if (source.kind === "meeting" && evidence.projection.meeting?.status === "cancelled") throw stop("meeting_canceled");
+  if (source.kind === "meeting" && (evidence.projection.meeting?.status !== "scheduled" || !evidence.projection.meeting.startsAt || evidence.projection.meeting.startsAt <= now)) throw stop("meeting_started");
   if (activating && evidence.revisionSha256 !== review.pins.sources[0]?.revisionSha256) throw changed();
 
   const workRows = await sql`SELECT projection, projection_sha256 FROM omni_work_items WHERE tenant_id = ${owner.tenantId}
@@ -68,18 +71,23 @@ export async function resolveResponsibilityPilot(sql: SqlClient, owner: Responsi
     AND owner_actor_ids @> ${[owner.actorId]}::jsonb FOR SHARE`;
   if (workRows.length !== 1) throw changed();
   const work = parseCanonicalWorkItemV1(workRows[0].projection);
-  if (canonicalJsonSha256(work) !== review.pins.work.projectionSha256 || workRows[0].projection_sha256 !== review.pins.work.projectionSha256 ||
-    work.tenantId !== owner.tenantId || !work.ownerActorIds.includes(owner.actorId)) throw changed();
+  const workSha256 = canonicalJsonSha256(work);
+  if (workRows[0].projection_sha256 !== workSha256 || ((activating || source.kind === "meeting") && workSha256 !== review.pins.work.projectionSha256) ||
+    work.tenantId !== owner.tenantId || work.workspaceId !== draft.work.workspaceId || work.projectId !== draft.work.projectId || work.workItemId !== draft.work.workItemId ||
+    !work.ownerActorIds.includes(owner.actorId)) throw changed();
   // Only bound, exact-owner saved procedures are eligible for standing runtime.
   // Legacy tenant-wide procedures can still be drafted/reviewed, but cannot
   // manufacture standing authority in this pilot. The bounded ambiguity check
   // fails closed, rather than choosing a duplicate contract ID.
-  const procedures = (await readOwnedResponsibilityProcedures(sql, owner, { lock: true, now })).filter((item) => item.id === draft.procedureId);
-  if (procedures.length !== 1) throw changed();
-  const procedure = buildWorkflowProcedureSnapshot(procedures[0], procedures[0].aliases[0]);
-  const tool = getGovernedTool("app.meetings.show");
-  const exactInput = { workspaceId: source.workspaceId, meetingId: source.id };
-  if (procedure.snapshotSha256 !== review.pins.procedure.snapshotSha256 || procedure.toolBindings.length !== 1 || procedure.toolBindings[0].toolId !== "app.meetings.show" ||
+  const builtin = source.kind === "work_item" && draft.procedureId === WORK_ITEM_FOLLOWTHROUGH_PROCEDURE;
+  const procedures = builtin ? [] : (await readOwnedResponsibilityProcedures(sql, owner, { lock: true, now })).filter((item) => item.id === draft.procedureId);
+  if (!builtin && procedures.length !== 1) throw changed();
+  const procedure = builtin ? buildResponsibilityWorkItemProcedure({ ...draft.work, tenantId: owner.tenantId, ownerActorId: owner.actorId })
+    : buildWorkflowProcedureSnapshot(procedures[0], procedures[0].aliases[0]);
+  const toolId = source.kind === "work_item" ? "app.work_items.show" : "app.meetings.show";
+  const tool = getGovernedTool(toolId);
+  const exactInput = source.kind === "work_item" ? { workspaceId: source.workspaceId, projectId: source.projectId, workItemId: source.id } : { workspaceId: source.workspaceId, meetingId: source.id };
+  if (procedure.snapshotSha256 !== review.pins.procedure.snapshotSha256 || procedure.toolBindings.length !== 1 || procedure.toolBindings[0].toolId !== toolId ||
     canonicalJsonSha256(procedure.toolBindings[0].input) !== canonicalJsonSha256(exactInput) || !tool || tool.status !== "active" || tool.riskLevel !== 0 || tool.approvalRequired) throw unsupported();
   const toolsSha = canonicalJsonSha256([{ id: tool.id, inputSha256: canonicalJsonSha256(exactInput), contractSha256: canonicalJsonSha256(tool) }]);
   if (toolsSha !== review.pins.procedure.toolBindingsSha256) throw changed();
@@ -100,10 +108,10 @@ export async function resolveResponsibilityPilot(sql: SqlClient, owner: Responsi
   const agentPin = buildAgentRunIdentityPinV1({ runId: record.id, identity });
   if (agentPin.pinSha256 !== review.pins.agent.identityPinSha256 || canonicalJsonSha256(agentPin.policyPins) !== review.pins.agent.policySha256 ||
     (identity.principal.authorityMode === "explicit_grants" && !identity.principal.toolGrantIds.includes(tool.id))) throw changed();
-  const body = { schemaVersion: 1 as const, pilot: RESPONSIBILITY_PILOT, responsibilityRevision: record.revision, reviewSha256: review.reviewSha256, draftSha256: record.draftSha256,
-    pins: review.pins, source, tool: { id: "app.meetings.show" as const, input: exactInput, contractSha256: canonicalJsonSha256(tool) }, cadence: draft.cadence,
+  const body = { schemaVersion: 1 as const, pilot: source.kind === "work_item" ? RESPONSIBILITY_WORK_ITEM_PILOT : RESPONSIBILITY_PILOT, responsibilityRevision: record.revision, reviewSha256: review.reviewSha256, draftSha256: record.draftSha256,
+    pins: review.pins, source, tool: { id: toolId, input: exactInput, contractSha256: canonicalJsonSha256(tool) }, cadence: draft.cadence,
     maximumChecks: draft.limits.maxChecks, cumulativeLimits: draft.limits.cumulative, checkReservation: PILOT_CHECK_RESERVATION,
-    comparisonPolicySha256: RESPONSIBILITY_MEETING_COMPARISON_POLICY.policySha256, stops: ["expiry", "meeting_started", "meeting_canceled"],
+    comparisonPolicySha256: responsibilityComparisonPolicy([source]).policySha256, stops: source.kind === "work_item" ? ["expiry"] : ["expiry", "meeting_started", "meeting_canceled"],
     notificationAuthority: "none" as const, approvalAuthority: "none" as const, mutationAuthority: "none" as const };
   const configuration = verifyPilotConfiguration({ ...body, configurationSha256: canonicalJsonSha256(body) });
   const clock = new Intl.DateTimeFormat("en-GB", { timeZone: draft.cadence.timezone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(new Date(draft.cadence.startsAt));
@@ -127,7 +135,7 @@ export function assertSamePilot(actual: PilotConfiguration, expected: PilotConfi
 }
 function requireTransaction(sql: SqlClient) { if (!sql.transactionScoped) throw new ResponsibilityError("Responsibility authority requires a managed transaction.", 503, "responsibility_transaction_required"); }
 function denied() { return new ResponsibilityError("The responsibility owner no longer holds current workflow authority.", 403, "responsibility_owner_revoked"); }
-function unsupported() { return new ResponsibilityError("This pilot requires one native owner-private Meeting and one exact app.meetings.show procedure with daily or weekly cadence.", 409, "responsibility_pilot_unsupported"); }
-function unavailable() { return new ResponsibilityError("Current complete authorized Meeting evidence is unavailable.", 409, "responsibility_source_unavailable"); }
+function unsupported() { return new ResponsibilityError("Follow-through requires one owned work item or native private Meeting, its exact read procedure, and daily or weekly cadence.", 409, "responsibility_pilot_unsupported"); }
+function unavailable() { return new ResponsibilityError("The current authorized source could not be checked.", 409, "responsibility_source_unavailable"); }
 function changed() { return new ResponsibilityError("Reviewed procedure, Agent or canonical work authority changed.", 409, "responsibility_authority_changed"); }
 function stop(reason: string) { return new ResponsibilityError("The pilot's closed meeting stop condition has been reached.", 409, `responsibility_${reason}`); }

@@ -1,3 +1,4 @@
+import { adaptationComparisonSchema, scoreAdaptationOutput } from "@/lib/agents/adaptation-comparison-schema";
 import { customAgentInputSchema, skillInputSchema } from "@/lib/skills/schema";
 import { memoryAccessGrantRecordV1Schema } from "@/lib/memory/grant-contracts";
 import type { AgentMemoryGrantDraftV1, AgentMemoryGrantViewV1 } from "@/lib/memory/agent-grant-editor";
@@ -108,6 +109,16 @@ export type AdaptationRead = { adaptations: AgentAdaptationV1[]; definitionVersi
 export function adaptationsRead(v: Record<string, unknown>, agentId: string): AdaptationRead {
   requireValue(positive(v.definitionVersion) && list(v.adaptations, (a) => {
     if (!object(a) || a.schemaVersion !== 1 || a.version !== "p7.6-agent-adaptation:1" || a.agentId !== agentId || !text(a.adaptationId) || !hash(a.ownerBindingSha256) || !positive(a.observedDefinitionVersion) || !member(a.state, ["observed", "evaluated", "active", "rolled_back"]) || !object(a.effect) || a.effect.kind !== "instruction_guidance" || !text(a.effect.guidance) || a.effect.authorityImpact !== "none" || !hash(a.effect.effectSha256) || !hash(a.effect.guidanceSha256) || typeof a.confidence !== "number" || !Number.isFinite(a.confidence) || a.confidence < 0 || a.confidence > 1 || !date(a.createdAt) || !date(a.updatedAt) || !hash(a.evidenceSha256)) return false;
+    if (a.comparison !== undefined) {
+      const parsed = adaptationComparisonSchema.safeParse(a.comparison);
+      if (!parsed.success) return false;
+      const c = parsed.data;
+      if (c.adaptationId !== a.adaptationId || c.pins.candidateEffectSha256 !== a.effect.effectSha256 || c.pins.definitionVersion !== a.observedDefinitionVersion || c.results.length !== c.suite.cases.length) return false;
+      if (c.results.some((row, i) => row.caseId !== c.suite.cases[i].id || row.baselinePassed !== scoreAdaptationOutput(c.suite.cases[i], row.baseline) || row.candidatePassed !== scoreAdaptationOutput(c.suite.cases[i], row.candidate))) return false;
+      const incomplete = c.results.some((row) => row.baseline.status !== "completed" || row.candidate.status !== "completed");
+      const verdict = incomplete ? "incomplete" : c.results.some((row) => row.baselinePassed && !row.candidatePassed) ? "regressed" : c.results.some((row) => !row.baselinePassed && row.candidatePassed) ? "improved" : "no_change";
+      if (c.verdict !== verdict || c.baselinePassed !== c.results.filter((row) => row.baselinePassed).length || c.candidatePassed !== c.results.filter((row) => row.candidatePassed).length) return false;
+    }
     if (!list(a.evidence, (e) => object(e) && text(e.evidenceId) && text(e.sourceId) && hash(e.sourceSha256) && member(e.kind, ["run_feedback", "project_artifact", "delegated_task", "scheduled_trigger"]) && member(e.verdict, ["useful", "needs_work"]) && member(e.groundingStatus, ["verified", "not_required"]) && date(e.observedAt), 10)) return false;
     if (a.state === "observed") return a.lifecycleRevision === 0 && a.evaluation === null && a.activationVersion === null;
     if (!object(a.evaluation) || !positive(a.evaluation.definitionVersion) || !hash(a.evaluation.evaluationSha256) || !member(a.evaluation.verdict, ["passed", "held"]) || a.evaluation.policyVersionId !== "agent-adaptation-policy:1" || a.evaluation.version !== "p7.6-agent-adaptation-evaluation:1" || !date(a.evaluation.evaluatedAt) || !object(a.evaluation.checks) || !["evidenceIntegrity", "ownerBinding", "exactDefinitionVersion", "nonAuthorityEffect"].every((key) => (a.evaluation as {checks:Record<string,unknown>}).checks[key] === true) || typeof a.evaluation.checks.confidenceThreshold !== "boolean" || a.evaluation.verdict !== (a.evaluation.checks.confidenceThreshold ? "passed" : "held")) return false;
@@ -120,6 +131,10 @@ export function adaptationReceipt(v: Record<string, unknown>, agentId: string, b
   const next = adaptationsRead(v, agentId);
   if (input.action !== "refresh") {
     const old = before.adaptations.find((item) => item.adaptationId === input.adaptationId), changed = next.adaptations.find((item) => item.adaptationId === input.adaptationId);
+    if (input.action === "compare") {
+      requireValue(old && changed && changed.state === old.state && changed.lifecycleRevision === old.lifecycleRevision && changed.comparison && changed.comparison.comparisonId !== old.comparison?.comparisonId && JSON.stringify(changed.comparison.suite) === JSON.stringify(input.suite) && changed.effect.effectSha256 === old.effect.effectSha256);
+      return next;
+    }
     const state = input.action === "evaluate" ? "evaluated" : input.action === "activate" ? "active" : "rolled_back";
     requireValue(old && changed && changed.state === state && changed.lifecycleRevision === old.lifecycleRevision + 1 && changed.evidenceSha256 === old.evidenceSha256 && changed.effect.effectSha256 === old.effect.effectSha256 && (input.action === "rollback" || next.definitionVersion === before.definitionVersion));
   }

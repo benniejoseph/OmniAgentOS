@@ -7,7 +7,7 @@ import {
 } from "@/lib/auth/native-client-contract";
 import {
   NATIVE_API_CURRENT_VERSION,
-  NATIVE_API_PREVIOUS_VERSION,
+  NATIVE_API_SUPPORTED_VERSIONS,
 } from "@/lib/mobile/contracts";
 
 afterEach(() => {
@@ -41,23 +41,19 @@ describe("native client compatibility contract", () => {
       buildNumber: 1,
       clientContractVersion: 7,
     })).toBe("upgrade_required");
+    for (const clientContractVersion of NATIVE_API_SUPPORTED_VERSIONS) {
+      expect(evaluateNativeClientCompatibility({
+        platform: "macos",
+        appVersion: "1.0.0",
+        buildNumber: 1,
+        clientContractVersion,
+      })).toBe("compatible");
+    }
     expect(evaluateNativeClientCompatibility({
       platform: "macos",
       appVersion: "1.0.0",
       buildNumber: 1,
-      clientContractVersion: NATIVE_API_CURRENT_VERSION,
-    })).toBe("compatible");
-    expect(evaluateNativeClientCompatibility({
-      platform: "macos",
-      appVersion: "1.0.0",
-      buildNumber: 1,
-      clientContractVersion: NATIVE_API_PREVIOUS_VERSION,
-    })).toBe("compatible");
-    expect(evaluateNativeClientCompatibility({
-      platform: "macos",
-      appVersion: "1.0.0",
-      buildNumber: 1,
-      clientContractVersion: NATIVE_API_PREVIOUS_VERSION - 1,
+      clientContractVersion: Math.min(...NATIVE_API_SUPPORTED_VERSIONS) - 1,
     })).toBe("upgrade_required");
   });
 

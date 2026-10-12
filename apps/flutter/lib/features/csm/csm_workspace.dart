@@ -12,7 +12,6 @@ import '../capture/library_view.dart';
 import '../projects/project_workspaces.dart';
 import '../projects/projects.dart';
 import '../talk/talk.dart';
-import '../talk/talk_command_context.dart';
 import 'csm_repository.dart';
 
 class CsmDraftNotifier extends Notifier<TalkDraftHandoff?> {
@@ -104,17 +103,19 @@ class _CsmWorkState extends State<_CsmWork> {
     });
     try {
       final data = await repository.clients();
-      if (mounted && repository.current)
+      if (mounted && repository.current) {
         setState(() {
           clients = data.clients;
           truncated = data.truncated;
         });
+      }
     } catch (_) {
-      if (mounted && repository.current)
+      if (mounted && repository.current) {
         setState(
           () => error =
               'Your clients could not be loaded. Pull down to try again.',
         );
+      }
     } finally {
       if (mounted && repository.current) setState(() => loading = false);
     }
@@ -325,16 +326,18 @@ class _CsmDetailState extends ConsumerState<_CsmDetail> {
     });
     try {
       final data = await repository.read(widget.project?.id);
-      if (mounted && repository.current)
+      if (mounted && repository.current) {
         setState(() {
           saved = data;
           reloadRequired = false;
         });
+      }
     } catch (_) {
-      if (mounted && repository.current)
+      if (mounted && repository.current) {
         setState(
           () => error = 'This context could not be loaded. Try again when you are connected.',
         );
+      }
     } finally {
       if (mounted && repository.current) setState(() => loading = false);
     }
@@ -348,13 +351,14 @@ class _CsmDetailState extends ConsumerState<_CsmDetail> {
     });
     try {
       final data = await action();
-      if (mounted && repository.current)
+      if (mounted && repository.current) {
         setState(() {
           saved = data;
           reloadRequired = false;
         });
+      }
     } catch (failure) {
-      if (mounted && repository.current)
+      if (mounted && repository.current) {
         setState(() {
           reloadRequired = failure is ApiException && failure.statusCode == 409;
           error = reloadRequired
@@ -365,6 +369,7 @@ class _CsmDetailState extends ConsumerState<_CsmDetail> {
               ? failure.message
               : 'The response could not be verified. Try again.';
         });
+      }
     } finally {
       if (mounted && repository.current) setState(() => busy = false);
     }
@@ -381,11 +386,12 @@ class _CsmDetailState extends ConsumerState<_CsmDetail> {
         ),
       ),
     );
-    if (mounted && repository.current && data != null)
+    if (mounted && repository.current && data != null) {
       setState(() {
         saved = data;
         error = null;
       });
+    }
   }
 
   Future<void> attach() async {
@@ -394,8 +400,9 @@ class _CsmDetailState extends ConsumerState<_CsmDetail> {
     if (!mounted ||
         !repository.current ||
         picked == null ||
-        !picked.matchesCurrent(widget.access))
+        !picked.matchesCurrent(widget.access)) {
       return;
+    }
     if (role && !repository.privateRoleSource(picked.item)) {
       setState(
         () => error = 'Choose a private file without client or workspace sharing. Client material belongs in its client brief.',
@@ -457,8 +464,9 @@ class _CsmDetailState extends ConsumerState<_CsmDetail> {
         busy ||
         saved == null ||
         repository.hasPending ||
-        reloadRequired)
+        reloadRequired) {
       return;
+    }
     setState(() {
       busy = true;
       error = null;
@@ -509,12 +517,13 @@ class _CsmDetailState extends ConsumerState<_CsmDetail> {
       ref.read(csmDraftProvider.notifier).stage(draft);
       context.go('/talk');
     } catch (failure) {
-      if (mounted && repository.current)
+      if (mounted && repository.current) {
         setState(
           () => error = failure is ApiException
               ? failure.message
               : 'Your client assistant could not be opened. Try again.',
         );
+      }
     } finally {
       if (mounted && repository.current) setState(() => busy = false);
     }
@@ -891,7 +900,7 @@ class _CsmEditorState extends State<_CsmEditor> {
         Navigator.pop(context, result);
       }
     } catch (failure) {
-      if (mounted && repository.current)
+      if (mounted && repository.current) {
         setState(() {
           conflict = failure is ApiException && failure.statusCode == 409;
           error = conflict
@@ -902,6 +911,7 @@ class _CsmEditorState extends State<_CsmEditor> {
               ? failure.message
               : 'The saved response could not be verified.';
         });
+      }
     } finally {
       if (mounted && repository.current) setState(() => busy = false);
     }
@@ -963,10 +973,11 @@ class _CsmEditorState extends State<_CsmEditor> {
         error = 'Your draft is unchanged. Review it, then save to replace the version you just read.';
       });
     } catch (_) {
-      if (mounted && repository.current)
+      if (mounted && repository.current) {
         setState(
           () => error = 'The latest context could not be loaded. Your draft is still here.',
         );
+      }
     } finally {
       if (mounted && repository.current) setState(() => busy = false);
     }
@@ -1099,11 +1110,12 @@ class _CsmEditorState extends State<_CsmEditor> {
                         firstDate: DateTime(2000),
                         lastDate: DateTime(2100),
                       );
-                      if (mounted && repository.current && date != null)
+                      if (mounted && repository.current && date != null) {
                         setState(
                           () => reviewDate =
                               '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}',
                         );
+                      }
                     },
             ),
           ],
@@ -1154,8 +1166,16 @@ class _NewClientState extends State<_NewClient> {
         if (created == null) {
           final failure = widget.projects.error;
           if (failure is ApiException &&
-              const [400, 401, 403, 404, 409, 422].contains(failure.statusCode))
+              const [
+                400,
+                401,
+                403,
+                404,
+                409,
+                422,
+              ].contains(failure.statusCode)) {
             uncertainProject = false;
+          }
           throw const ApiException(
             'Client creation was not confirmed. Retry with the same details to avoid a duplicate.',
           );
@@ -1175,7 +1195,7 @@ class _NewClientState extends State<_NewClient> {
         Navigator.pop(context, created);
       }
     } catch (failure) {
-      if (mounted && repository.current)
+      if (mounted && repository.current) {
         setState(
           () => error = created == null
               ? (failure is ApiException
@@ -1183,6 +1203,7 @@ class _NewClientState extends State<_NewClient> {
                     : 'Client creation could not be confirmed. Retry the same details.')
               : 'The project is saved. Retry to finish the client brief; this will reuse the same project.',
         );
+      }
     } finally {
       if (mounted && repository.current) setState(() => busy = false);
     }
@@ -1322,7 +1343,7 @@ class MobileClientBriefEntry extends ConsumerWidget {
                     ),
                   );
                 } catch (_) {
-                  if (context.mounted && access.current)
+                  if (context.mounted && access.current) {
                     ScaffoldMessenger.of(context).showSnackBar(
                       const SnackBar(
                         content: Text(
@@ -1330,6 +1351,7 @@ class MobileClientBriefEntry extends ConsumerWidget {
                         ),
                       ),
                     );
+                  }
                 }
               },
       ),

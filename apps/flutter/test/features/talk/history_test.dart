@@ -245,6 +245,8 @@ void main() {
       );
       expect(tester.takeException(), isNull);
     },
+
+    variant: TargetPlatformVariant.only(TargetPlatform.macOS),
   );
 
   test('parses only bounded public conversation turns', () {
@@ -399,7 +401,7 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('conversation-$_threadB')));
     await tester.pumpAndSettle();
     expect(find.text('Public answer for $_threadB'), findsOneWidget);
-  });
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
   testWidgets('keeps an empty conversation readable above a phone keyboard', (
     tester,
@@ -420,9 +422,9 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(tester.takeException(), isNull);
-    expect(find.text('How can I help?'), findsOneWidget);
+    expect(find.text('What’s on\nyour mind?'), findsOneWidget);
     final description = find.text(
-      'Ask a question, make a plan, or bring something you want to work on.',
+      'Think out loud. Make a plan.\nWe’ll take it from here.',
     );
     await tester.scrollUntilVisible(
       description,

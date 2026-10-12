@@ -38,7 +38,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(repository.detailReads, 2);
-      expect(find.text('Signed grants · Changed'), findsOneWidget);
+      expect(find.text('Task permissions · Changed'), findsOneWidget);
       expect(find.text('grant-skill-one'), findsOneWidget);
       expect(find.text('skill:research:v3'), findsOneWidget);
       expect(find.text(_digest('c')), findsOneWidget);
@@ -52,7 +52,9 @@ void main() {
       expect(find.textContaining('twelve-data'), findsOneWidget);
       expect(find.textContaining('fred'), findsOneWidget);
       expect(
-        find.textContaining('signed grants cannot be edited or revoked'),
+        find.textContaining(
+          'You cannot edit or revoke an existing signed grant here.',
+        ),
         findsOneWidget,
       );
       expect(tester.takeException(), isNull);

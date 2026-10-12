@@ -85,14 +85,14 @@ describe("cohesive Today workspace", () => {
     expect(source).not.toContain("/api/workspace-summary?limit");
     expect(source).not.toContain("/api/usage/summary");
     expect(source).toContain("Meetings, confirmed commitments, and personal reminders");
-    expect(source).toContain("Trusted status");
-    expect(source).toContain("Data confidence");
+    expect(source).toContain("What has been checked");
+    expect(source).toContain("About this view");
     expect(source).toContain("instead of pretending it is empty");
     expect(source).not.toContain("WorkspaceReadinessCard");
     expect(source).not.toContain("useWorkspaceReadiness");
     expect(source).toContain("Active agents");
     expect(source).toContain("visibleSections");
-    expect(source).toContain("today-overview-summary");
+    expect(source).toContain("today-next-move");
 
     const consumptionIndex = source.indexOf("<UsageCockpit");
     const dataConfidenceIndex = source.indexOf(
@@ -143,14 +143,13 @@ describe("Today source and consumption truth", () => {
     const html = render(projection("error"));
     expect(html).toContain("Agenda unavailable");
     expect(html).toContain("Meetings: not available · Commitments: not available");
-    expect(html).toMatch(/<summary><span>Data confidence<\/span><span>2 sources need attention<\/span><\/summary>/);
+    expect(html).toMatch(/<summary><span>About this view<\/span><span>2 sources need attention<\/span><\/summary>/);
     expect(html).not.toContain("No meetings, commitments, or reminders in this view.");
     expect(html).not.toContain("Schedule is clear");
   });
 
   it("describes an empty agenda only after every agenda source is current", () => {
     const html = render(projection());
-    expect(html).toContain("No agenda items in view");
     expect(html).toContain("No meetings, commitments, or reminders in this view.");
     expect(html).not.toContain("Agenda unavailable");
   });
@@ -162,7 +161,7 @@ describe("Today source and consumption truth", () => {
       title: "Review the draft", detail: "Personal reminder.", scheduledAt: timestamp,
       href: "/app#today-focus", sourceId: "one", sourceRevisionId: null,
     }] });
-    expect(html).toContain("Agenda is incomplete");
+    expect(html).toContain("Meetings: not available · Commitments: not available");
     expect(html).toContain("Review the draft");
     expect(html).not.toContain("No meetings, commitments, or reminders in this view.");
   });

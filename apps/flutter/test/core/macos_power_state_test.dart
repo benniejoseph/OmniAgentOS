@@ -194,6 +194,12 @@ void main() {
     final oldHandler = host.handler!;
     host.cancelBarrier = Completer<void>();
     monitor.didChangeAppLifecycleState(AppLifecycleState.inactive);
+    expect(monitor.value, MacosPowerState.disabled);
+    await tester.pump();
+    expect(host.calls, ['listen']);
+    // An unfocused visible window keeps power updates; a hidden one must
+    // cancel and require a fresh snapshot when it resumes.
+    monitor.didChangeAppLifecycleState(AppLifecycleState.hidden);
     expect(monitor.value, MacosPowerState.unknown);
     await tester.pump();
     expect(host.calls, ['listen', 'cancel']);

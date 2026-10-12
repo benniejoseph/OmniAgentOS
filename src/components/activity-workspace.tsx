@@ -280,8 +280,6 @@ function ActivityRunPreview({ runId }: { runId: string }) {
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     const controller = new AbortController();
-    setPreview(undefined);
-    setError(undefined);
     void (async () => {
       try {
         const response = await fetch(`/api/runs/${encodeURIComponent(runId)}`, {
@@ -308,7 +306,7 @@ function ActivityRunPreview({ runId }: { runId: string }) {
   }, [runId, attempt]);
   return <section className={styles.preview} aria-label="Task details" aria-busy={!preview && !error}>
     {!preview && !error ? <p className={styles.previewLoading}><Loader2 size={14} aria-hidden="true" />Loading task details…</p> : null}
-    {error ? <div role="status"><p>{error}</p><button type="button" className={styles.detailButton} onClick={() => setAttempt((value) => value + 1)}>Try again</button></div> : null}
+    {error ? <div role="status"><p>{error}</p><button type="button" className={styles.detailButton} onClick={() => { setPreview(undefined); setError(undefined); setAttempt((value) => value + 1); }}>Try again</button></div> : null}
     {preview?.prompt ? <div><h5>Your task</h5><p>{preview.prompt}</p></div> : null}
     {preview?.error ? <div className={styles.failure}><h5>What went wrong</h5><p>{preview.error}</p></div> : null}
     {preview?.response ? <div><h5>{preview.error ? "Partial response" : "Response"}</h5><p>{preview.response}</p></div> : null}

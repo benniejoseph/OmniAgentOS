@@ -644,6 +644,34 @@ class ApiClient {
     );
   }
 
+  /// A bounded paid comparison submits once, including after a 401. The caller
+  /// retains its idempotency key and protected decision journal on uncertainty.
+  Future<Map<String, dynamic>> postJsonAuthorizedComparisonOnce(
+    String path, {
+    required NativeRequestAuthority authority,
+    required Map<String, dynamic> data,
+    required Map<String, dynamic> headers,
+  }) {
+    if (data['action'] != 'compare' ||
+        !RegExp(r'^/api/agents/[^/]+/adaptations$').hasMatch(path)) {
+      throw ArgumentError(
+        'The bounded comparison transport requires an Agent comparison.',
+      );
+    }
+    _requireAuthorityTransport(authority);
+    return _json(
+      () => _dio.post<Object?>(
+        path,
+        data: data,
+        options: Options(
+          headers: headers,
+          extra: {_requestAuthorityKey: authority, 'asaelNativeOneShot': true},
+          receiveTimeout: const Duration(seconds: 130),
+        ),
+      ),
+    );
+  }
+
   Future<Map<String, dynamic>> patchJsonAuthorized(
     String path, {
     required NativeRequestAuthority authority,

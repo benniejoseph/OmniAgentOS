@@ -7,9 +7,12 @@ import {
 import {
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
+  NATIVE_API_SUPPORTED_VERSIONS,
 } from "@/lib/mobile/contracts";
 
 const asOf = new Date("2026-09-15T08:00:00.000Z");
+// The expired edge is v51; v54 remains supported during this rollout.
+const expiredContractVersion = Math.min(...NATIVE_API_SUPPORTED_VERSIONS) - 1;
 
 function context(
   contract: number,
@@ -30,14 +33,14 @@ function context(
 }
 
 describe("native mutation capability enrollment", () => {
-  it("withdraws retired workspace capabilities from both supported clients", () => {
-    for (const version of [NATIVE_API_PREVIOUS_VERSION, NATIVE_API_CURRENT_VERSION]) {
+  it("withdraws retired workspace capabilities from supported clients", () => {
+    for (const version of NATIVE_API_SUPPORTED_VERSIONS) {
       expect(Object.keys(nativeMutationCapabilityPolicy(context(version))).filter((capability) => capability.startsWith("customers."))).toEqual([]);
     }
   });
-  it("enrolls exact MCP rediscovery and owner closure from the supported v47/v48 window", () => {
+  it("enrolls exact MCP rediscovery and owner closure from the supported rollout window", () => {
     for (const platform of ["android", "ios", "macos"] as const) {
-      for (const version of [NATIVE_API_PREVIOUS_VERSION, NATIVE_API_CURRENT_VERSION]) {
+      for (const version of NATIVE_API_SUPPORTED_VERSIONS) {
         expect(nativeMutationEnrollment(context(version, undefined, platform), "connectors.mcp.discover", asOf))
           .toEqual({ state: "active", minimumContractVersion: 46 });
       }
@@ -51,7 +54,7 @@ describe("native mutation capability enrollment", () => {
   });
   it("enrolls official GitHub upgrade only from fresh supported native authority with v47 floor", () => {
     for (const platform of ["android", "ios", "macos"] as const) {
-      expect(nativeMutationEnrollment(context(47, undefined, platform), "connectors.github.upgrade", asOf))
+      expect(nativeMutationEnrollment(context(NATIVE_API_CURRENT_VERSION, undefined, platform), "connectors.github.upgrade", asOf))
         .toEqual({ state: "active", minimumContractVersion: 47 });
       for (const client of [context(46, undefined, platform), context(NATIVE_API_CURRENT_VERSION + 1, undefined, platform),
         context(47, "2026-01-01T00:00:00.000Z", platform), { source: "session" as const }, { source: "mobile" as const }]) {
@@ -60,7 +63,7 @@ describe("native mutation capability enrollment", () => {
       }
     }
   });
-  it("keeps OpenAPI import floor 45 in the supported v47/v48 native window", () => {
+  it("keeps OpenAPI import floor 45 in the supported rollout native window", () => {
     for (const platform of ["android", "ios", "macos"] as const) {
       expect(nativeMutationEnrollment(context(NATIVE_API_PREVIOUS_VERSION, undefined, platform), "connectors.openapi.import", asOf))
         .toEqual({ state: "active", minimumContractVersion: 45 });
@@ -80,7 +83,7 @@ describe("native mutation capability enrollment", () => {
         expect(nativeMutationEnrollment(client, "connectors.mcp.register", asOf))
           .toMatchObject({ state: "held", minimumContractVersion: "native" in client ? 44 : NATIVE_API_CURRENT_VERSION });
       }
-      for (const version of [NATIVE_API_PREVIOUS_VERSION, NATIVE_API_CURRENT_VERSION]) {
+      for (const version of NATIVE_API_SUPPORTED_VERSIONS) {
         expect(nativeMutationEnrollment(context(version, undefined, platform), "connectors.credentials.rotate", asOf))
           .toEqual({ state: "active", minimumContractVersion: 43 });
       }
@@ -89,7 +92,7 @@ describe("native mutation capability enrollment", () => {
   it("requires v40 and fresh native authority for Google and connector management", () => {
     for (const capability of ["google.personal.manage", "connectors.manage"] as const) {
       for (const platform of ["android", "ios", "macos"] as const) {
-        for (const version of [NATIVE_API_PREVIOUS_VERSION, NATIVE_API_CURRENT_VERSION]) {
+        for (const version of NATIVE_API_SUPPORTED_VERSIONS) {
           expect(nativeMutationEnrollment(context(version, undefined, platform), capability, asOf))
             .toEqual({ state: "active", minimumContractVersion: 40 });
         }
@@ -103,7 +106,7 @@ describe("native mutation capability enrollment", () => {
   });
   it("enrolls saved MCP credential removal only from v41 with fresh native authority", () => {
     for (const platform of ["android", "ios", "macos"] as const) {
-      for (const version of [NATIVE_API_PREVIOUS_VERSION, NATIVE_API_CURRENT_VERSION]) {
+      for (const version of NATIVE_API_SUPPORTED_VERSIONS) {
         expect(nativeMutationEnrollment(context(version, undefined, platform), "connectors.credentials.remove", asOf))
           .toEqual({ state: "active", minimumContractVersion: 41 });
       }
@@ -116,7 +119,7 @@ describe("native mutation capability enrollment", () => {
   });
   it("enrolls exact MCP Trash only from v42 with fresh native authority", () => {
     for (const platform of ["android", "ios", "macos"] as const) {
-      for (const version of [NATIVE_API_PREVIOUS_VERSION, NATIVE_API_CURRENT_VERSION]) {
+      for (const version of NATIVE_API_SUPPORTED_VERSIONS) {
         expect(nativeMutationEnrollment(context(version, undefined, platform), "connectors.trash", asOf))
           .toEqual({ state: "active", minimumContractVersion: 42 });
       }
@@ -138,7 +141,7 @@ describe("native mutation capability enrollment", () => {
       }
     }
   });
-  it("retains existing Companion, Responsibility and Meeting floors for both supported clients", () => {
+  it("retains existing Companion, Responsibility and Meeting floors for supported clients", () => {
     const capabilities = {
       "companion.preferences.update": 31,
       "responsibilities.drafts.manage": 32, "responsibilities.lifecycle.manage": 32,
@@ -147,11 +150,11 @@ describe("native mutation capability enrollment", () => {
     } as const;
     for (const platform of ["android", "ios", "macos"] as const) {
       for (const capability of Object.keys(capabilities) as Array<keyof typeof capabilities>) {
-        for (const version of [NATIVE_API_PREVIOUS_VERSION, NATIVE_API_CURRENT_VERSION]) {
+        for (const version of NATIVE_API_SUPPORTED_VERSIONS) {
           expect(nativeMutationEnrollment(context(version, undefined, platform), capability, asOf))
             .toEqual({ state: "active", minimumContractVersion: capabilities[capability] });
         }
-        for (const client of [context(NATIVE_API_PREVIOUS_VERSION - 1, undefined, platform),
+        for (const client of [context(expiredContractVersion, undefined, platform),
           context(NATIVE_API_CURRENT_VERSION + 1, undefined, platform),
           context(NATIVE_API_CURRENT_VERSION, "2026-01-01T00:00:00.000Z", platform)]) {
           expect(nativeMutationEnrollment(client, capability, asOf)).toMatchObject({ state: "held" });
@@ -159,10 +162,10 @@ describe("native mutation capability enrollment", () => {
       }
     }
   });
-  it("retains v34 floors for Memory mutations on both supported clients", () => {
+  it("retains v34 floors for Memory mutations on supported clients", () => {
     for (const capability of ["memory.records.write", "memory.lifecycle.write"] as const) {
       for (const platform of ["android", "ios", "macos"] as const) {
-        for (const version of [NATIVE_API_PREVIOUS_VERSION, NATIVE_API_CURRENT_VERSION]) {
+        for (const version of NATIVE_API_SUPPORTED_VERSIONS) {
           expect(nativeMutationEnrollment(context(version, undefined, platform), capability, asOf))
             .toEqual({ state: "active", minimumContractVersion: 34 });
         }
@@ -175,12 +178,12 @@ describe("native mutation capability enrollment", () => {
   });
   it("retains v35 and v36 mutation floors on supported clients", () => {
     for (const platform of ["android", "ios", "macos"] as const) {
-      for (const version of [NATIVE_API_PREVIOUS_VERSION, NATIVE_API_CURRENT_VERSION]) {
+      for (const version of NATIVE_API_SUPPORTED_VERSIONS) {
         expect(nativeMutationEnrollment(context(version, undefined, platform), "memory.reconciliation.resolve", asOf))
           .toEqual({ state: "active", minimumContractVersion: 35 });
       }
       for (const capability of ["memory.personal-context-consent.manage", "meetings.calendar.sync"] as const) {
-        for (const version of [NATIVE_API_PREVIOUS_VERSION, NATIVE_API_CURRENT_VERSION]) {
+        for (const version of NATIVE_API_SUPPORTED_VERSIONS) {
           expect(nativeMutationEnrollment(context(version, undefined, platform), capability, asOf))
             .toEqual({ state: "active", minimumContractVersion: 36 });
         }
@@ -197,7 +200,7 @@ describe("native mutation capability enrollment", () => {
     for (const capability of ["memory.promotions.decide",
       "agents.delete", "skills.create", "skills.update", "skills.delete", "meetings.recordings.process", "knowledge.cognification.decide", "knowledge.cognification.build", "knowledge.sources.delete", "memory.maintenance.run", "memory.graph.rebuild"] as const) {
       for (const platform of ["android", "ios", "macos"] as const) {
-        for (const version of [NATIVE_API_PREVIOUS_VERSION, NATIVE_API_CURRENT_VERSION]) {
+        for (const version of NATIVE_API_SUPPORTED_VERSIONS) {
           expect(nativeMutationEnrollment(context(version, undefined, platform), capability, asOf))
             .toEqual({ state: "active", minimumContractVersion: 38 });
         }
@@ -209,7 +212,7 @@ describe("native mutation capability enrollment", () => {
       }
     }
   });
-  it("retains existing capability floors on both supported clients", () => {
+  it("retains existing capability floors on supported clients", () => {
     expect(nativeMutationEnrollment(context(NATIVE_API_PREVIOUS_VERSION), "markets.update", asOf)).toMatchObject({
       state: "active",
       minimumContractVersion: 6,
@@ -218,7 +221,7 @@ describe("native mutation capability enrollment", () => {
       state: "active",
       minimumContractVersion: 6,
     });
-    expect(nativeMutationEnrollment(context(NATIVE_API_PREVIOUS_VERSION - 1), "markets.update", asOf)).toMatchObject({
+    expect(nativeMutationEnrollment(context(expiredContractVersion), "markets.update", asOf)).toMatchObject({
       state: "held",
       minimumContractVersion: 6,
     });
@@ -230,7 +233,7 @@ describe("native mutation capability enrollment", () => {
       state: "active",
       minimumContractVersion: 7,
     });
-    expect(nativeMutationEnrollment(context(NATIVE_API_PREVIOUS_VERSION - 1), "markets.backtest.run", asOf)).toMatchObject({
+    expect(nativeMutationEnrollment(context(expiredContractVersion), "markets.backtest.run", asOf)).toMatchObject({
       state: "held",
       minimumContractVersion: 7,
     });
@@ -263,7 +266,7 @@ describe("native mutation capability enrollment", () => {
         nativeMutationEnrollment(context(NATIVE_API_PREVIOUS_VERSION, undefined, "macos"), capability, asOf),
       ).toMatchObject({ state: "active", minimumContractVersion: 11 });
       expect(
-        nativeMutationEnrollment(context(NATIVE_API_PREVIOUS_VERSION - 1, undefined, "macos"), capability, asOf),
+        nativeMutationEnrollment(context(expiredContractVersion, undefined, "macos"), capability, asOf),
       ).toMatchObject({ state: "held", minimumContractVersion: 11 });
       expect(
         nativeMutationEnrollment(context(NATIVE_API_PREVIOUS_VERSION), capability, asOf),
@@ -284,7 +287,7 @@ describe("native mutation capability enrollment", () => {
         state: "active",
         minimumContractVersion: 15,
       });
-      expect(nativeMutationEnrollment(context(NATIVE_API_PREVIOUS_VERSION - 1), capability, asOf)).toMatchObject({
+      expect(nativeMutationEnrollment(context(expiredContractVersion), capability, asOf)).toMatchObject({
         state: "held",
         minimumContractVersion: 15,
       });
@@ -299,11 +302,11 @@ describe("native mutation capability enrollment", () => {
       nativeMutationEnrollment(context(NATIVE_API_PREVIOUS_VERSION), "plugins.manage", asOf),
     ).toMatchObject({ state: "active", minimumContractVersion: 17 });
     expect(
-      nativeMutationEnrollment(context(NATIVE_API_PREVIOUS_VERSION - 1), "plugins.manage", asOf),
+      nativeMutationEnrollment(context(expiredContractVersion), "plugins.manage", asOf),
     ).toMatchObject({ state: "held", minimumContractVersion: 17 });
   });
 
-  it("retains the scoped Agent mutations on both supported clients", () => {
+  it("retains the scoped Agent mutations on supported clients", () => {
     const capabilities = [
       "agents.create",
       "agents.update",
@@ -318,7 +321,7 @@ describe("native mutation capability enrollment", () => {
         nativeMutationEnrollment(context(NATIVE_API_PREVIOUS_VERSION, undefined, "macos"), capability, asOf),
       ).toMatchObject({ state: "active", minimumContractVersion: 19 });
       expect(
-        nativeMutationEnrollment(context(NATIVE_API_PREVIOUS_VERSION - 1, undefined, "macos"), capability, asOf),
+        nativeMutationEnrollment(context(expiredContractVersion, undefined, "macos"), capability, asOf),
       ).toMatchObject({ state: "held", minimumContractVersion: 19 });
     }
 
@@ -331,7 +334,7 @@ describe("native mutation capability enrollment", () => {
     expect(policy["agents.delete"]).toEqual({ state: "active", minimumContractVersion: 38 });
   });
 
-  it("retains exact child cancellation on both supported clients", () => {
+  it("retains exact child cancellation on supported clients", () => {
     for (const platform of ["android", "macos"] as const) {
       expect(
         nativeMutationEnrollment(
@@ -423,10 +426,7 @@ describe("native mutation capability enrollment", () => {
         "voice.session.manage",
         "voice.speech.stream",
       ] as const) {
-        for (const version of [
-          NATIVE_API_CURRENT_VERSION,
-          NATIVE_API_PREVIOUS_VERSION,
-        ]) {
+        for (const version of NATIVE_API_SUPPORTED_VERSIONS) {
           expect(
             nativeMutationEnrollment(
               context(version, undefined, platform),

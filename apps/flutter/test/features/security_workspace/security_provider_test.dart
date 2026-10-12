@@ -14,6 +14,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'security_test_support.dart';
+import '../operational_widget_helpers.dart';
 
 AppSession _session({
   String tenant = 'tenant-a',
@@ -202,7 +203,7 @@ void main() {
       await tester.scrollUntilVisible(
         row,
         200,
-        scrollable: find.byType(Scrollable).first,
+        scrollable: operationalVerticalScroll(),
       );
       await tester.pumpAndSettle();
       await tester.tap(row);

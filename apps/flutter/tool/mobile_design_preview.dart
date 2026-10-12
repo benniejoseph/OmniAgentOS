@@ -2,9 +2,9 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
-import '../lib/app/mobile/mobile_page_scaffold.dart';
-import '../lib/app/navigation/mobile_library_page.dart';
-import '../lib/app/theme/mobile_app_theme.dart';
+import 'package:asael/app/mobile/mobile_page_scaffold.dart';
+import 'package:asael/app/navigation/mobile_library_page.dart';
+import 'package:asael/app/theme/mobile_app_theme.dart';
 
 /// Local visual preview only. No app bootstrap, session, provider, repository,
 /// native bridge, microphone or network client is included in this entrypoint.

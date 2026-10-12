@@ -24,22 +24,22 @@
 .appearanceOptions > button:hover { background: var(--surface-raised); }
 .appearanceOptions > button[aria-pressed="true"] { background: var(--accent-surface); }
 .appearanceOptions > button svg { color: var(--accent); }
-.appearanceOptions > span { display: block; margin: .625rem .375rem .25rem; font-size: .6875rem; color: var(--muted); }
+.appearanceOptions > span { display: block; margin: .625rem .375rem .25rem; font-size: .75rem; color: var(--muted); }
 .presenceBody { display: grid; grid-template-columns: 5.25rem minmax(0, 1fr) auto; align-items: center; gap: .5rem; min-block-size: 6.75rem; padding: .625rem .75rem .625rem .5rem; border-radius: var(--radius-sheet); background: var(--surface); box-shadow: var(--shadow-floating); }
 .presenceBody:has(.presenceMascot[hidden]) { grid-template-columns: minmax(0, 1fr) auto; padding-inline-start: 1rem; }
 .presenceMascot { inline-size: 5.25rem; block-size: 5.25rem; }
 .presenceMascot[hidden] { display: none; }
 .presencePortrait { display: block; inline-size: 100%; block-size: 100%; }
 .presenceCopy { min-inline-size: 0; }
-.presenceIdentity { display: flex; align-items: center; justify-content: space-between; gap: .375rem; color: var(--muted); font-size: .625rem; line-height: 1.4; }
+.presenceIdentity { display: flex; align-items: center; justify-content: space-between; gap: .375rem; color: var(--muted); font-size: .75rem; line-height: 1.4; }
 .presenceIdentity > span:first-child { min-inline-size: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.microphoneBadge { display: inline-flex; align-items: center; gap: .125rem; flex-shrink: 0; font-size: .5625rem; }
+.microphoneBadge { display: inline-flex; align-items: center; gap: .125rem; flex-shrink: 0; font-size: .75rem; }
 .microphoneBadge[data-microphone-open="true"] { color: var(--accent); }
 .presenceStatus { margin-block-start: .25rem; color: var(--foreground); font-size: .875rem; line-height: 1.3; font-weight: 600; overflow-wrap: anywhere; }
 .presenceCaption { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; margin-block-start: .25rem; color: var(--muted); font-size: .75rem; line-height: 1.45; overflow-wrap: anywhere; }
 .presenceControls { display: flex; align-items: center; gap: .25rem; }
 .voiceControl { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: .375rem; inline-size: 2.75rem; min-block-size: 3.5rem; padding: .375rem .125rem; border: 0; border-radius: var(--radius-control); background: var(--surface-raised); color: var(--foreground); cursor: pointer; transition: background-color var(--duration-control) var(--ease-standard), color var(--duration-control) var(--ease-standard); }
-.voiceControl > span { font-size: .625rem; line-height: 1.2; }
+.voiceControl > span { font-size: .75rem; line-height: 1.2; }
 .voiceControl:hover { background: var(--surface-overlay); }
 .voiceControl[aria-pressed="true"] { background: var(--accent-surface); color: var(--accent); }
 .voiceControl:disabled { color: var(--muted); cursor: default; }
@@ -63,7 +63,7 @@
 .presence[data-voice-appearance="perch"] { inline-size: 18rem; }
 .presence[data-voice-appearance="perch"] .presenceBody { display: flex; flex-direction: column; align-items: center; gap: 0; min-block-size: 0; padding: 0; background: transparent; box-shadow: none; }
 .presence[data-voice-appearance="perch"] .presenceCopy { order: -1; align-self: stretch; margin-inline: .75rem; padding: .875rem 1rem; border-radius: var(--radius-sheet) var(--radius-sheet) .25rem var(--radius-sheet); background: var(--surface); box-shadow: var(--shadow-floating); }
-.presence[data-voice-appearance="perch"] .presenceIdentity { font-size: .6875rem; }
+.presence[data-voice-appearance="perch"] .presenceIdentity { font-size: .75rem; }
 .presence[data-voice-appearance="perch"] .presenceStatus { margin-block-start: .375rem; font-size: 1rem; }
 .presence[data-voice-appearance="perch"] .presenceCaption { -webkit-line-clamp: 3; font-size: .8125rem; }
 .presence[data-voice-appearance="perch"] .presenceMascot { inline-size: 8rem; block-size: 8rem; margin-block: -.25rem -.125rem; }

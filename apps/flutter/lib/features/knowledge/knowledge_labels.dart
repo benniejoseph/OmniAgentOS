@@ -106,8 +106,9 @@ String memoryDisplayTitle(String title, DateTime? updatedAt) {
         (value['text'] as String).length > 20000 ||
         value['requestSha256'] is! String ||
         !RegExp(r'^[a-f0-9]{64}$').hasMatch(value['requestSha256'] as String) ||
-        value['sourceLinks'] is! List)
+        value['sourceLinks'] is! List) {
       return null;
+    }
     final links = value['sourceLinks'] as List;
     if (links.length > 50) return null;
     final identities = <String>{};
@@ -117,14 +118,17 @@ String memoryDisplayTitle(String title, DateTime? updatedAt) {
           link['libraryItemId'] is! String ||
           link['versionId'] is! String ||
           link['contentSha256'] is! String ||
-          !RegExp(r'^[a-f0-9]{64}$').hasMatch(link['contentSha256'] as String))
+          !RegExp(r'^[a-f0-9]{64}$')
+              .hasMatch(link['contentSha256'] as String)) {
         return null;
+      }
       for (final key in ['libraryItemId', 'versionId']) {
         final id = (link[key] as String).trim();
         if (id.isEmpty || id.length > 320) return null;
       }
-      if (!identities.add((link['libraryItemId'] as String).trim()))
+      if (!identities.add((link['libraryItemId'] as String).trim())) {
         return null;
+      }
     }
     return (text: value['text'] as String, sourceCount: links.length);
   } catch (_) {

@@ -21,10 +21,8 @@ class MacOsAmbientVoiceConsent implements AmbientVoiceConsent {
   const MacOsAmbientVoiceConsent({
     required this.tenantId,
     required this.actorId,
-    MethodChannel channel = const MethodChannel(
-      'app.omniagent.omniagent/desktop',
-    ),
-  }) : _channel = channel;
+    this._channel = const MethodChannel('app.omniagent.omniagent/desktop'),
+  });
 
   final String tenantId;
   final String actorId;

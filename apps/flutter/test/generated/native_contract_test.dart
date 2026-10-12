@@ -31,16 +31,28 @@ void main() {
     },
   );
   test('retains current and previous contract compatibility', () {
-    expect(NativeContract.currentVersion, 48);
-    expect(NativeContract.previousVersion, 47);
-    expect(NativeContract.supportedVersions, [48, 47]);
+    expect(NativeContract.currentVersion, 56);
+    expect(NativeContract.previousVersion, 55);
+    expect(NativeContract.supportedVersions, [56, 55, 54, 53, 52]);
     expect(NativeContract.supports(44), isFalse);
     expect(NativeContract.supports(43), isFalse);
     expect(NativeContract.supports(42), isFalse);
     expect(NativeContract.supports(45), isFalse);
     expect(NativeContract.supports(46), isFalse);
-    expect(NativeContract.supports(48), isTrue);
-    expect(NativeContract.supports(47), isTrue);
+    expect(NativeContract.supports(48), isFalse);
+    expect(NativeContract.supports(47), isFalse);
+    for (final version in [56, 55, 54, 53, 52]) {
+      expect(NativeContract.supports(version), isTrue);
+    }
+    for (final id in [
+      'research.control',
+      'localAndroid.device',
+      'listen.grant',
+      'csm.client.get',
+      'agents.adaptations.manage',
+    ]) {
+      expect(NativeContract.supportsOperation(id), isTrue);
+    }
     expect(
       NativePaths.meetingsList(
         workspaceId: 'workspace:one',

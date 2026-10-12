@@ -40,6 +40,10 @@ void main() {
     );
     await tester.pumpAndSettle();
     final first = container.read(responsibilityControllerProvider);
+    first.edit({...first.draft, 'purpose': 'Initial draft'});
+    await tester.pump();
+    await tester.tap(find.text('Continue your draft'));
+    await tester.pumpAndSettle();
     final purpose = find.byKey(const ValueKey('responsibility-field-purpose'));
     await tester.ensureVisible(purpose);
     await tester.enterText(purpose, 'Private draft from an earlier session');
@@ -142,7 +146,7 @@ void main() {
         '/responsibilities',
       );
       expect(controller.selectedId, isNull);
-      expect(find.text('New Responsibility draft'), findsOneWidget);
+      expect(find.text('New follow-up draft'), findsOneWidget);
       expect(repository.writes, isEmpty);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox.shrink());

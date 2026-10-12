@@ -48,7 +48,7 @@ void main() {
     );
     expect(find.text('evidence:macos-shell'), findsOneWidget);
     expect(tester.takeException(), isNull);
-  });
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
   testWidgets(
     'meeting workspace keeps decisions, consent, and evidence visible',
@@ -71,6 +71,7 @@ void main() {
       expect(find.text('Participants & consent'), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
+    variant: TargetPlatformVariant.only(TargetPlatform.macOS),
   );
 
   testWidgets('result workspace copies output and cancels through repository', (
@@ -93,7 +94,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(repository.canceledRun, 'run-1');
     expect(tester.takeException(), isNull);
-  });
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 }
 
 Future<void> _pumpMac(WidgetTester tester, Widget home) async {

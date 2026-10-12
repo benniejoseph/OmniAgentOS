@@ -17,7 +17,7 @@ from public_pages_fixtures import PublicFixtures, STAMP
 from run import Checks, REPO, navigate, preview
 
 ROUTES = [
-    ("/", "Give agents goals. Keep the controls.", "Asael — Private AI Agent Arsenal"),
+    ("/", "Make room for the work that matters.", "Asael — Your personal AI partner"),
     ("/platform", "Give agents work and review what happens.", "Platform"),
     ("/solutions", "Run multi-step work with explicit review points.", "Solutions"),
     ("/pricing", "No public plans or registration.", "Pricing"),

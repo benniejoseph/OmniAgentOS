@@ -51,17 +51,21 @@ class TalkResearchOptions {
     allowedDomains: allowedDomains,
   );
   String? get validationError {
-    if (!const {'quick', 'deep'}.contains(depth))
+    if (!const {'quick', 'deep'}.contains(depth)) {
       return 'Choose Quick or Deep research.';
+    }
     final limit = depth == 'deep' ? 6 : 3;
-    if (questions.length > limit)
+    if (questions.length > limit) {
       return 'Use up to $limit questions for ${depth == 'deep' ? 'Deep' : 'Quick'} research.';
+    }
     if (questions.any(
       (question) => question.trim().isEmpty || question.length > 500,
-    ))
+    )) {
       return 'Each question needs between 1 and 500 characters.';
-    if (sourceGuidance.length > 1500)
+    }
+    if (sourceGuidance.length > 1500) {
       return 'Keep source preferences within 1,500 characters.';
+    }
     final domain = RegExp(
       r'^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,63}$',
     );
@@ -110,8 +114,9 @@ class TalkResearchProgress {
           'reviewing',
           'writing',
           'complete',
-        }.contains(data['stage']))
+        }.contains(data['stage'])) {
       return null;
+    }
     return TalkResearchProgress(
       depth: data['depth'] as String,
       stage: data['stage'] as String,
@@ -154,8 +159,9 @@ class TalkResearchSource {
         !const {'http', 'https'}.contains(uri.scheme) ||
         uri.host.isEmpty ||
         uri.userInfo.isNotEmpty ||
-        citationId.isEmpty)
+        citationId.isEmpty) {
       return null;
+    }
     return TalkResearchSource(
       citationId: citationId,
       title: _text(data['title'], 400),
@@ -188,8 +194,9 @@ class TalkResearchReport {
     final content = _text(data['content'], 120000);
     if (data['schemaVersion'] != 1 ||
         content.isEmpty ||
-        !const {'ready', 'partial'}.contains(data['status']))
+        !const {'ready', 'partial'}.contains(data['status'])) {
       return null;
+    }
     final review = _record(data['claimReview']);
     return TalkResearchReport(
       title: _text(data['title'], 300),
@@ -254,8 +261,9 @@ class TalkResearchWorkflow {
         run['status'] != 'completed' ||
         progress?.depth != 'quick' ||
         content.isEmpty ||
-        threadId.isEmpty)
+        threadId.isEmpty) {
       return null;
+    }
     final grounding = _record(run['grounding']);
     final seen = <String>{};
     final sources = <TalkResearchSource>[];
@@ -266,8 +274,9 @@ class TalkResearchWorkflow {
         final id = _text(data['citationId'], 128);
         if (data['kind'] != 'web' ||
             !RegExp(r'^web:[a-f0-9]{16}$').hasMatch(id) ||
-            !seen.add(id))
+            !seen.add(id)) {
           continue;
+        }
         final source = TalkResearchSource.fromJson({
           'citationId': id,
           'url': data['url'],
@@ -654,7 +663,7 @@ class _ResearchOptionsDialogState extends State<_ResearchOptionsDialog> {
         child: const Text('Save preferences'),
       ),
     ];
-    if (usesMobilePresentation())
+    if (usesMobilePresentation()) {
       return Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -664,6 +673,7 @@ class _ResearchOptionsDialogState extends State<_ResearchOptionsDialog> {
           Wrap(alignment: WrapAlignment.end, spacing: 8, children: actions),
         ],
       );
+    }
     return AlertDialog(
       title: const Text('Shape your research'),
       content: SizedBox(
@@ -880,10 +890,11 @@ class TalkResearchPanel extends StatelessWidget {
 
   Future<void> _copyReport(BuildContext context, String text) async {
     await Clipboard.setData(ClipboardData(text: text));
-    if (context.mounted)
+    if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Report and source links copied')),
       );
+    }
   }
 
   Future<void> _openReport(

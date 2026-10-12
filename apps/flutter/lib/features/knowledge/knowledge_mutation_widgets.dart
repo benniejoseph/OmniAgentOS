@@ -414,12 +414,13 @@ class _MemoryEditorState extends State<MemoryEditor> {
             ),
         ],
       );
-      if (usesMobilePresentation())
+      if (usesMobilePresentation()) {
         return MobileFlowScaffold(
           title: widget.memory == null ? 'New memory' : 'Correct a memory',
-          child: content,
           footer: controller.available ? submit : null,
+          child: content,
         );
+      }
       return SingleChildScrollView(
         padding: const EdgeInsets.all(20),
         child: content,

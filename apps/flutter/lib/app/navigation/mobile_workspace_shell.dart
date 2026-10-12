@@ -25,14 +25,8 @@ class MobileWorkspaceShell extends StatelessWidget {
       selected: Icons.graphic_eq_rounded,
     ),
     (
-      path: '/capture',
-      label: 'Capture',
-      icon: Icons.add_circle_outline_rounded,
-      selected: Icons.add_circle_rounded,
-    ),
-    (
       path: '/projects',
-      label: 'Work',
+      label: 'My work',
       icon: Icons.work_outline_rounded,
       selected: Icons.work_rounded,
     ),

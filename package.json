@@ -13,7 +13,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "typecheck": "next typegen && tsc --noEmit",
+    "typecheck": "next typegen && node --max-old-space-size=6144 node_modules/typescript/bin/tsc --noEmit",
     "lint": "eslint . --max-warnings=0 && node scripts/check-type-scale.mjs",
     "smoke:security": "node scripts/smoke-security.mjs",
     "smoke:tenant": "node scripts/smoke-tenant-isolation.mjs",

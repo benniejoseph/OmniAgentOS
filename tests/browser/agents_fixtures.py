@@ -1,9 +1,10 @@
-"""Synthetic Agents presentation contracts and eight exact local effect receipts.
+"""Synthetic Agents presentation contracts and twelve exact local effect receipts.
 
 No Agent execution, provider, Moltbook or production grant operation is forwarded.
 The isolated authentication session is real; all family data below is synthetic.
 """
 from collections import defaultdict, deque
+from datetime import datetime, timezone
 import copy
 import json
 import re
@@ -41,6 +42,39 @@ def evaluated(release):
     next_value["evaluations"] = [receipt]
     next_value["candidateEvaluation"] = receipt
     return next_value
+
+
+COMPARISON_SUITE = {"cases": [{"id": f"case-{i}", "task": f"Explain independent synthetic example {i}.",
+    "assertions": {"allOf": ["Next step:"], "noneOf": ["blocked"], "minLength": 1, "maxLength": 2000}} for i in (1, 2, 3)]}
+COMPARISON_OUTPUT = 'Next step: <img src=x onerror="window.__comparisonInjected=true"> & <script>untrusted</script>'
+
+def comparison_result(adaptation, verdict, ordinal):
+    """Paired synthetic outputs, never a provider call or a claim of model quality."""
+    value = copy.deepcopy(adaptation)
+    now = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    def observation(output): return {"status": "completed", "output": output, "costUsd": None, "failure": None}
+    rows = []
+    for case in COMPARISON_SUITE["cases"]:
+        baseline_passed = verdict in ("no_change", "regressed")
+        candidate_passed = verdict in ("no_change", "improved")
+        baseline = observation("Next step: current behavior" if baseline_passed else "Current answer")
+        candidate = observation(COMPARISON_OUTPUT if candidate_passed else "Candidate answer")
+        if verdict == "incomplete":
+            baseline = {"status": "not_run", "output": None, "costUsd": None, "failure": None}
+            candidate = {"status": "failed", "output": None, "costUsd": None, "failure": "model_failed"}
+        rows.append({"caseId": case["id"], "baseline": baseline, "candidate": candidate,
+            "baselinePassed": baseline_passed, "candidatePassed": candidate_passed})
+    value["comparison"] = {"version": "agent-text-comparison:1", "scorerVersion": "literal-output-assertions:1",
+        "comparisonId": f"11111111-1111-4111-8111-{ordinal:012d}", "adaptationId": ADAPTATION, "suite": copy.deepcopy(COMPARISON_SUITE),
+        "suiteSha256": "a" * 64, "pins": {"definitionVersion": 1, "definitionSha256": "b" * 64, "principalSha256": "c" * 64,
+            "baselineGuidanceSha256": "d" * 64, "candidateEffectSha256": value["effect"]["effectSha256"], "promptContractVersion": "agent-instructions:1",
+            "baselineInstructionsSha256": "e" * 64, "candidateInstructionsSha256": "f" * 64,
+            "runtime": {"provider": "openai", "model": "synthetic-paired-model", "tier": "fast", "source": "deployment_environment", "assignmentId": None,
+                "assignmentRevision": None, "assignmentConfigurationSha256": None}, "clock": now, "mode": "orchestrate",
+            "environment": "text_only_no_tools_memory_or_retrieval", "maxOutputTokens": 1000, "maxCalls": 6, "timeoutMs": 120000},
+        "results": rows, "verdict": verdict, "baselinePassed": sum(row["baselinePassed"] for row in rows),
+        "candidatePassed": sum(row["candidatePassed"] for row in rows), "costUsd": None, "completedAt": now, "comparisonSha256": str(ordinal) * 64}
+    return value
 
 
 class AgentFixtures(Fixtures):
@@ -135,7 +169,7 @@ class AgentFixtures(Fixtures):
         except Exception: body = None
         expected = self.effects[0] if self.effects else None
         key = request.headers.get("idempotency-key", "")
-        if expected and len(self.writes) < 8 and not urlsplit(request.url).query and request.headers.get("content-type", "").startswith("application/json") and request.method == expected["method"] and path == expected["path"] and body == expected["body"] and re.fullmatch(r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}", key):
+        if expected and len(self.writes) < 12 and not urlsplit(request.url).query and request.headers.get("content-type", "").startswith("application/json") and request.method == expected["method"] and path == expected["path"] and body == expected["body"] and re.fullmatch(r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}", key):
             self.effects.popleft()
             self.writes.append({"path": path, "method": request.method, "body": body, "idempotencyKey": key, "disposition": "wholly_intercepted_synthetic_receipt"})
             if expected["hold"]: self.held[expected["hold"]] = (route, expected["reply"], 200); return

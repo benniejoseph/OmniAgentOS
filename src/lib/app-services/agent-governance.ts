@@ -1,3 +1,5 @@
+import { compareAgentAdaptation } from "@/lib/agents/adaptation-comparison-store";
+import { adaptationComparisonSuiteSchema } from "@/lib/agents/adaptation-comparison-contracts";
 import { z } from "zod";
 
 import {
@@ -51,10 +53,10 @@ const grantRevokeSchema = grantIdSchema.extend({
   expectedTargetSha256: z.string().regex(/^[a-f0-9]{64}$/),
 }).strict();
 const adaptationIdSchema = z.string().regex(/^agent-adaptation:[a-f0-9]{64}$/);
-const adaptationManageSchema = agentIdSchema.extend({
-  action: z.enum(["evaluate", "activate", "rollback"]),
-  adaptationId: adaptationIdSchema,
-}).strict();
+const adaptationManageSchema = z.discriminatedUnion("action", [
+  agentIdSchema.extend({ action: z.literal("compare"), adaptationId: adaptationIdSchema, suite: adaptationComparisonSuiteSchema }).strict(),
+  agentIdSchema.extend({ action: z.enum(["evaluate", "activate", "rollback"]), adaptationId: adaptationIdSchema }).strict(),
+]);
 
 export async function showAgentReleaseService(caller: AppServiceCaller, input: z.input<typeof agentIdSchema>) {
   const value = agentIdSchema.parse(input);
@@ -162,7 +164,10 @@ export async function manageAgentAdaptationService(caller: AppServiceCaller, inp
   const owner = canonicalOwner(caller);
   const identity = await currentIdentity(value.agentId, caller);
   const version = identity.definition.definitionVersion;
-  const adaptations = value.action === "evaluate"
+  if (value.action === "compare" && !caller.idempotencyKey) throw new Error("A comparison requires an idempotency key.");
+  const adaptations = value.action === "compare"
+    ? await compareAgentAdaptation({ owner, agentId: value.agentId, adaptationId: value.adaptationId, suite: value.suite, idempotencyKey: caller.idempotencyKey! })
+    : value.action === "evaluate"
     ? await evaluateAgentAdaptation(value.agentId, value.adaptationId, version, owner)
     : value.action === "activate"
       ? await activateAgentAdaptation(value.agentId, value.adaptationId, version, owner)

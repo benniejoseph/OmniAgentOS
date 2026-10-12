@@ -30,6 +30,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'connector_trash_fixtures.dart';
 import 'connector_credential_removal_fixtures.dart';
 import 'connector_fixtures.dart';
+import 'connector_widget_helpers.dart';
 
 NativeWorkspaceAccess _access(_Api api, {bool Function()? current}) =>
     NativeWorkspaceAccess(
@@ -56,6 +57,7 @@ class _Api extends ApiClient {
   @override
   Future<ConnectorJson> getJsonAuthorized(
     String path, {
+    Map<String, dynamic>? headers,
     required NativeRequestAuthority authority,
     ConnectorJson? query,
     CancelToken? cancelToken,
@@ -685,8 +687,8 @@ void main() {
         find.text('No MCP or OpenAPI connections are visible.'),
         findsOneWidget,
       );
-      await tester.tap(find.text('Connector Trash recovery'));
-      await tester.pumpAndSettle();
+      await openConnectorRecoveryControls(tester);
+      await tapVisibleConnectorAction(tester, 'Connector Trash recovery');
       expect(find.text('Move to Trash unconfirmed'), findsOneWidget);
       expect(find.text('Move to Trash'), findsNothing);
       await tester.scrollUntilVisible(
@@ -719,13 +721,7 @@ void main() {
         find.byType(NativeWorkspaceBrowserButton),
       );
       expect(handoff.path, '/app/settings');
-      await tester.scrollUntilVisible(
-        find.text('Receipt details'),
-        150,
-        scrollable: find.byType(Scrollable).first,
-      );
-      await tester.tap(find.text('Receipt details'));
-      await tester.pumpAndSettle();
+      await tapVisibleConnectorAction(tester, 'Receipt details');
       expect(tester.takeException(), isNull);
       expect(repository.posts, 0);
       await tester.pumpWidget(const SizedBox());

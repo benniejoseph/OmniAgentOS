@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useId, useLayoutEffect, useRef, useState } from "react";
 import { AudioLines, Check, Captions, Loader2, Mic, MicOff, PhoneOff, ShieldCheck, SlidersHorizontal, Volume2, X } from "lucide-react";
 import { clsx } from "clsx";
 import { requestCurrentMicrophone } from "./microphone-attempt";
@@ -75,7 +75,8 @@ type Call = {
   providerErrorCode?: string;
 };
 
-type Props = {
+export type ConversationVoiceProps = {
+  initiallyOpen?: boolean;
   disabled?: boolean;
   disabledReason?: string;
   agentName: string;
@@ -91,7 +92,7 @@ type Props = {
   onHistorySaved?: (conversationId: string) => void;
 };
 
-export function ConversationVoice(props: Props) {
+export function ConversationVoice(props: ConversationVoiceProps) {
   const latest = useRef(props);
   useLayoutEffect(() => { latest.current = props; });
   const mounted = useRef(true);
@@ -101,7 +102,7 @@ export function ConversationVoice(props: Props) {
   const dialogRef = useRef<HTMLElement>(null);
   const primaryRef = useRef<HTMLButtonElement>(null);
   const captionsEndRef = useRef<HTMLDivElement>(null);
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(props.initiallyOpen ?? false);
   const [captionsOpen, setCaptionsOpen] = useState(false);
   const [reaction, setReaction] = useState(0);
   const { session: workspace, status: workspaceStatus } = useWorkspaceSession();
@@ -232,11 +233,12 @@ export function ConversationVoice(props: Props) {
       window.requestAnimationFrame(() => triggerRef.current?.focus());
     }
   }
+  const endCallFromEffect = useEffectEvent(() => endCall());
   useLayoutEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
-      endCall();
+      endCallFromEffect();
     };
   }, []);
   useEffect(() => {
@@ -244,7 +246,7 @@ export function ConversationVoice(props: Props) {
     if (!call) return;
     if (!hasAuthority(call) || configurationKey !== call.configurationKey ||
         (props.conversationId && call.session && props.conversationId !== call.session.conversationId)) {
-      endCall();
+      endCallFromEffect();
     }
   }, [configurationKey, props.conversationId, props.authorityScope, props.isAuthorityCurrent]);
   useEffect(() => {
@@ -254,7 +256,7 @@ export function ConversationVoice(props: Props) {
     primaryRef.current?.focus({ preventScroll: true });
     const keydown = (event: KeyboardEvent) => {
       if (active && !dialogRef.current?.contains(document.activeElement)) return;
-      if (event.key === "Escape") { event.preventDefault(); endCall(); }
+      if (event.key === "Escape") { event.preventDefault(); endCallFromEffect(); }
       if (active || event.key !== "Tab" || !dialogRef.current) return;
       const items = Array.from(dialogRef.current.querySelectorAll<HTMLElement>('button:not([disabled]), a[href], summary, [tabindex="0"]'));
       const first = items[0];

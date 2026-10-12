@@ -211,6 +211,25 @@ class _NativeBuilderWorkspaceState extends State<NativeBuilderWorkspace>
                   return MobileFlowScaffold(
                     title: current ? label : 'Review needs refreshing',
                     onClose: () => Navigator.pop(context, false),
+                    footer: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        if (current)
+                          FilledButton(
+                            onPressed: () {
+                              if (reviewedTargetCurrent()) {
+                                Navigator.pop(context, true);
+                              }
+                            },
+                            child: Text(label),
+                          ),
+                        TextButton(
+                          onPressed: () => Navigator.pop(context, false),
+                          child: Text(current ? 'Cancel' : 'Close review'),
+                        ),
+                      ],
+                    ),
                     child: current
                         ? Column(
                             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -233,24 +252,6 @@ class _NativeBuilderWorkspaceState extends State<NativeBuilderWorkspace>
                         : const Text(
                             'The workspace, sign-in or reviewed target changed. Close this review and refresh before continuing.',
                           ),
-                    footer: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        if (current)
-                          FilledButton(
-                            onPressed: () {
-                              if (reviewedTargetCurrent())
-                                Navigator.pop(context, true);
-                            },
-                            child: Text(label),
-                          ),
-                        TextButton(
-                          onPressed: () => Navigator.pop(context, false),
-                          child: Text(current ? 'Cancel' : 'Close review'),
-                        ),
-                      ],
-                    ),
                   );
                 },
               ),
@@ -363,7 +364,12 @@ class _NativeBuilderWorkspaceState extends State<NativeBuilderWorkspace>
       );
     }
     final snapshot = c.snapshot, session = snapshot?.session;
-    if (usesMobilePresentation()) return _mobileWorkspace();
+    if (usesMobilePresentation()) {
+      return Material(
+        type: MaterialType.transparency,
+        child: _mobileWorkspace(),
+      );
+    }
     return CallbackShortcuts(
       bindings: {
         const SingleActivator(LogicalKeyboardKey.keyS, meta: true): () {
@@ -798,11 +804,15 @@ class _NativeBuilderWorkspaceState extends State<NativeBuilderWorkspace>
                           BuilderIdentity('Project', c.projectId),
                           if (session != null)
                             BuilderIdentity('Workspace', session.id),
-                          if (widget.exactArtifactId != null)
+                          if (widget.exactArtifactId != null) ...[
                             BuilderIdentity(
                               'Requested artifact',
                               widget.exactArtifactId!,
                             ),
+                            const BuilderNotice(
+                              'Artifact content is not independently verified here.',
+                            ),
+                          ],
                           const BuilderNotice(
                             'Actions use the current verified workspace. Uncertain actions are not automatically retried.',
                           ),
@@ -1651,11 +1661,12 @@ class _NativeBuilderWorkspaceState extends State<NativeBuilderWorkspace>
     required List<Widget> children,
     bool expanded = false,
   }) {
-    if (!usesMobilePresentation())
+    if (!usesMobilePresentation()) {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: children,
       );
+    }
     return Padding(
       padding: const EdgeInsets.only(bottom: 16),
       child: MobileSurface(

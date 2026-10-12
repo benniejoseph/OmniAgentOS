@@ -804,8 +804,9 @@ class LocalComputerCoordinator extends ChangeNotifier
       final heartbeat = Timer.periodic(heartbeatInterval, (_) async {
         if (!_loopCurrent(generation) ||
             activeCommandId != claim.id ||
-            heartbeatRunning)
+            heartbeatRunning) {
           return;
+        }
         heartbeatRunning = true;
         try {
           final current = await host.getStatus();

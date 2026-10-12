@@ -14,8 +14,9 @@ class ConnectionFlowHeading extends StatelessWidget {
   final IconData icon;
   @override
   Widget build(BuildContext context) {
-    if (!usesMobilePresentation())
+    if (!usesMobilePresentation()) {
       return Text(title, style: Theme.of(context).textTheme.headlineSmall);
+    }
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
       child: MobileSurface(

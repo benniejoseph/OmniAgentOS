@@ -5,10 +5,13 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
 import { CompanionPreferences } from "@/components/companion-preferences";
-import { PersonalContextProfile } from "@/components/personal-context-profile";
 import { useWorkspaceSession } from "@/components/app-shell/session-context";
 import { isAdvancedSettingsSection, settingsHref, settingsSection, settingsSections, type AdvancedSettingsSection, type SettingsSection } from "./settings-navigation";
 import styles from "./settings-workspace.module.css";
+
+const PersonalContextProfile = dynamic(() => import("@/components/personal-context-profile").then((module) => module.PersonalContextProfile), {
+  loading: () => <p role="status">Loading your profile…</p>,
+});
 
 // Provider, grant and recovery controllers load only after an advanced category
 // is requested. Once opened they remain mounted across local category changes.

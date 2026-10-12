@@ -11,23 +11,27 @@ void main() {
       final manifest = File('android/app/src/main/AndroidManifest.xml')
           .readAsStringSync();
 
+      final onCreate = RegExp(
+        r'override fun onCreate\(savedInstanceState: Bundle\?\) \{([\s\S]*?)\n    \}',
+      ).firstMatch(activity)?.group(1);
+      expect(onCreate, isNotNull);
+      expect(onCreate, contains('super.onCreate(savedInstanceState)'));
       expect(
-        activity,
+        onCreate,
         contains(
-          '    override fun onCreate(savedInstanceState: Bundle?) {\n'
-          '        super.onCreate(savedInstanceState)\n',
+          'window.setFlags(\n'
+          '            WindowManager.LayoutParams.FLAG_SECURE,\n'
+          '            WindowManager.LayoutParams.FLAG_SECURE,\n'
+          '        )',
         ),
       );
       expect(
-        activity,
-        contains(
-          '        window.setFlags(\n'
-          '            WindowManager.LayoutParams.FLAG_SECURE,\n'
-          '            WindowManager.LayoutParams.FLAG_SECURE,\n'
-          '        )\n'
-          '    }\n'
-          '}\n',
-        ),
+        onCreate!.indexOf('window.setFlags('),
+        greaterThan(onCreate.indexOf('super.onCreate(savedInstanceState)')),
+      );
+      expect(
+        onCreate.indexOf('window.setFlags('),
+        lessThan(onCreate.indexOf('AndroidDeviceBridge.attachActivity(this)')),
       );
       // Each activity has its own window, so a second one would need the
       // same flag.

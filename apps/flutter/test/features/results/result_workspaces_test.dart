@@ -1,3 +1,5 @@
+import '../../native_workspace_fixture.dart';
+
 import 'dart:async';
 
 import 'package:asael/app/theme/app_theme.dart';
@@ -78,18 +80,20 @@ Future<void> _pump(
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
   await tester.pumpWidget(
-    MaterialApp(
-      theme: dark
-          ? AppTheme.dark(platform: TargetPlatform.android)
-          : AppTheme.light(platform: TargetPlatform.android),
-      builder: (context, child) => MediaQuery(
-        data: MediaQuery.of(context).copyWith(
-          textScaler: TextScaler.linear(scale),
-          disableAnimations: true,
+    nativeWorkspaceFixture(
+      child: MaterialApp(
+        theme: dark
+            ? AppTheme.dark(platform: TargetPlatform.android)
+            : AppTheme.light(platform: TargetPlatform.android),
+        builder: (context, child) => MediaQuery(
+          data: MediaQuery.of(context).copyWith(
+            textScaler: TextScaler.linear(scale),
+            disableAnimations: true,
+          ),
+          child: child!,
         ),
-        child: child!,
+        home: child,
       ),
-      home: child,
     ),
   );
   await tester.pumpAndSettle();
@@ -98,31 +102,29 @@ Future<void> _pump(
 void main() {
   for (final dark in [false, true]) {
     testWidgets(
-      '320px 200% Results reflows full identities and controls in ${dark ? 'dark' : 'light'}',
+      '320px 200% Results reflows exact result links and controls in ${dark ? 'dark' : 'light'}',
       (tester) async {
         final repository = _Repository();
         final current = ResultsController(repository);
+        ResultItem? opened;
         await current.refresh();
         await _pump(
           tester,
-          ResultsView(controller: current, onOpen: (_) {}),
+          ResultsView(controller: current, onOpen: (item) => opened = item),
           width: 320,
           dark: dark,
           scale: 2,
         );
         expect(tester.takeException(), isNull);
-        final scroll = find
-            .descendant(
-              of: find.byKey(const Key('results-scroll')),
-              matching: find.byType(Scrollable),
-            )
-            .first;
+        final result = find.text('Exact prompt one');
         await tester.scrollUntilVisible(
-          find.byKey(const Key('macos-result-agent:one')),
+          result,
           260,
-          scrollable: scroll,
+          scrollable: find.byType(Scrollable).first,
         );
-        expect(find.text('agent:one'), findsOneWidget);
+        await tester.tap(result);
+        expect(opened?.key, 'agent:one');
+        expect(current.selectedKey, 'agent:one');
         expect(tester.takeException(), isNull);
         await tester.pumpWidget(const SizedBox());
         current.dispose();
@@ -148,11 +150,22 @@ void main() {
         find.text('No work records were returned in this bounded window.'),
         findsNothing,
       );
-      expect(find.textContaining('Count unavailable'), findsOneWidget);
+      final coverage = find.text('Sources and coverage');
+      await tester.scrollUntilVisible(
+        coverage,
+        240,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.tap(coverage);
+      await tester.pumpAndSettle();
+      expect(find.text('Synthetic read failed'), findsWidgets);
+      expect(controller.workKnown, isFalse);
       await tester.pumpWidget(const SizedBox());
       controller.dispose();
       repository.access.dispose();
     },
+
+    variant: TargetPlatformVariant.only(TargetPlatform.macOS),
   );
   testWidgets(
     'a successful empty window is explicit without implying all historical work is absent',
@@ -180,6 +193,8 @@ void main() {
       controller.dispose();
       repository.access.dispose();
     },
+
+    variant: TargetPlatformVariant.only(TargetPlatform.macOS),
   );
   testWidgets(
     'search draft survives failed refresh, but actor replacement removes private content',
@@ -219,6 +234,8 @@ void main() {
       current.dispose();
       repository.access.dispose();
     },
+
+    variant: TargetPlatformVariant.only(TargetPlatform.macOS),
   );
   testWidgets('exact detail route replacement fences a late old response', (
     tester,

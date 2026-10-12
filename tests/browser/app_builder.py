@@ -29,7 +29,7 @@ def exercise(browser, origin, credentials, checks, coarse):
         page.on("dialog", lambda dialog: dialog.accept())
         page.on("popup", lambda popup: (fixture.unexpected.append({"kind": "popup"}), popup.close()))
         page.on("download", lambda download: (fixture.unexpected.append({"kind": "download"}), download.cancel()))
-        navigate(page, origin, "/app/projects?project=" + quote(PROJECT, safe="") + "&artifact=" + quote(ARTIFACT, safe=""))
+        navigate(page, origin, "/app/projects?view=projects&project=" + quote(PROJECT, safe="") + "&artifact=" + quote(ARTIFACT, safe=""))
         expect(page.get_by_role("button", name="Build", exact=True)).to_be_visible()
         expect(page.get_by_role("heading", name="Synthetic app delivery", exact=True)).to_be_visible()
         checks.check(label + ": inactive Builder starts no API reads", not fixture.requests)

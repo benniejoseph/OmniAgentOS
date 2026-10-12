@@ -1549,5 +1549,19 @@
     "checksum": "ad82f1c2f762cc8a591293c6bcc33b498f8dadb70724e5bb2c0601c5a2ec9d83",
     "file": "20261012123000_listen_media_owner_scope.sql",
     "sha256": "ad82f1c2f762cc8a591293c6bcc33b498f8dadb70724e5bb2c0601c5a2ec9d83"
+  },
+  {
+    "version": 252,
+    "name": "responsibility_work_item_followthrough_v1",
+    "checksum": "bdbd505c30ba2dfc9ff3e2810a59a11aa047625efedb39c9cc7e3270ee23fc11",
+    "file": "20261013090000_responsibility_work_item_followthrough.sql",
+    "sha256": "bdbd505c30ba2dfc9ff3e2810a59a11aa047625efedb39c9cc7e3270ee23fc11"
+  },
+  {
+    "version": 253,
+    "name": "agent_text_comparisons_v1",
+    "checksum": "81d516ebca9be6fcf0e2e9131a30d0eeb1dc0301ce52e8d5ab40902fd7beca50",
+    "file": "20261013093000_agent_text_comparisons.sql",
+    "sha256": "81d516ebca9be6fcf0e2e9131a30d0eeb1dc0301ce52e8d5ab40902fd7beca50"
   }
 ]

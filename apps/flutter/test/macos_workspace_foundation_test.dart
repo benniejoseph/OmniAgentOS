@@ -84,10 +84,13 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Workspaces'), findsOneWidget);
-    expect(find.text('Work'), findsOneWidget);
-    expect(find.text('Capabilities'), findsOneWidget);
+    expect(find.text('My work'), findsOneWidget);
+    expect(find.text('Capabilities'), findsNothing);
     expect(find.text('Automations'), findsNothing);
     expect(find.text('Connections'), findsNothing);
+    expect(find.text('Payments'), findsNothing);
+    expect(find.text('Library'), findsOneWidget);
+    expect(find.byTooltip('Needs you (⌘⇧I)'), findsOneWidget);
     expect(find.text('Search workspace content'), findsOneWidget);
     expect(find.text('Body Today'), findsOneWidget);
     expect(find.byType(NavigationBar), findsNothing);
@@ -95,13 +98,24 @@ void main() {
       tester,
       path: '/today',
       label: 'Today',
-      hint: 'Open workspace',
+      hint: 'Open workspace with ⌘1',
       selected: true,
     );
 
-    await tester.tap(find.text('Work'));
+    await tester.tap(find.text('My work'));
     await tester.pumpAndSettle();
-    expect(find.text('Body Work'), findsOneWidget);
+    expect(find.text('Body My work'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('Capabilities').hitTestable(),
+      180,
+      scrollable: find.descendant(
+        of: find.byType(ListView),
+        matching: find.byType(Scrollable),
+      ),
+    );
+    await tester.tap(find.text('Capabilities'));
+    await tester.pumpAndSettle();
+    expect(find.text('Body Capabilities'), findsOneWidget);
     expect(tester.takeException(), isNull);
     debugDefaultTargetPlatformOverride = null;
   });
@@ -137,25 +151,25 @@ void main() {
       tester,
       path: '/today',
       label: 'Today',
-      hint: 'Open workspace',
+      hint: 'Open workspace with ⌘1',
       selected: true,
     );
     _expectDestinationSemantics(
       tester,
       path: '/projects',
-      label: 'Work',
-      hint: 'Open workspace with ⌘2',
+      label: 'My work',
+      hint: 'Open workspace with ⌘3',
       selected: false,
     );
 
     await tester.tap(projectsTile);
     await tester.pumpAndSettle();
-    expect(find.text('Body Work'), findsOneWidget);
+    expect(find.text('Body My work'), findsOneWidget);
     _expectDestinationSemantics(
       tester,
       path: '/projects',
-      label: 'Work',
-      hint: 'Open workspace with ⌘2',
+      label: 'My work',
+      hint: 'Open workspace with ⌘3',
       selected: true,
     );
     expect(tester.takeException(), isNull);

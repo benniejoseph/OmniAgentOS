@@ -424,17 +424,14 @@ describe("agent memory scope", () => {
       };
     }
 
-    it("gathers complementary searches through the governed boundary and retains Research followups", async () => {
+    it("gathers complementary searches and one bounded gap search before removing web tools from the writer", async () => {
       const value = researchRequest();
       mocks.executeGovernedTool
         .mockResolvedValueOnce(searchExecution())
         .mockResolvedValueOnce(searchExecution("primary"))
         .mockResolvedValueOnce(searchExecution("limitations"))
-        .mockResolvedValueOnce(searchExecution("followup"));
+        .mockResolvedValueOnce(searchExecution("gap"));
       mocks.streamResponseTurn
-        .mockResolvedValueOnce(openAITurn({
-          calls: [{ callId: "call-web-followup", name: "web.search" }],
-        }))
         .mockImplementationOnce(async (modelRequest) => {
           await modelRequest.onDelta("Sources compared.");
           return openAITurn({ text: "Sources compared." });
@@ -445,7 +442,12 @@ describe("agent memory scope", () => {
       expect(mocks.executeGovernedTool).toHaveBeenCalledTimes(4);
       expect(mocks.executeGovernedTool).toHaveBeenNthCalledWith(1, expect.objectContaining({
         toolId: "web.search",
-        input: { query: value.messages[0].content, limit: 8, searchContextSize: "low" },
+        input: {
+          query: `Scope: ${value.messages[0].content}\nInvestigate: ${value.messages[0].content}`,
+          limit: 8,
+          searchContextSize: "low",
+          allowedDomains: [],
+        },
         dryRun: false,
         approved: false,
         requireReadOnly: true,
@@ -457,11 +459,19 @@ describe("agent memory scope", () => {
         checkpointBeforeEffect: expect.any(Function),
       }));
       expect(mocks.executeGovernedTool).toHaveBeenNthCalledWith(4, expect.objectContaining({
-        idempotencyKey: "run-memory-scope:call-web-followup",
+        toolId: "web.search",
+        idempotencyKey: "run-memory-scope:research-gap-search-4",
+        requireReadOnly: true,
+        approved: false,
+        context: expect.objectContaining({ tenantId: "paid-test-tenant", actorId: "paid-test-actor" }),
       }));
       const modelRequest = mocks.streamResponseTurn.mock.calls[0][0];
-      expect(modelRequest.tools.map((tool: { name: string }) => tool.name)).toContain("web.search");
+      const writerToolIds = modelRequest.tools.map((tool: { name: string }) => tool.name);
+      expect(writerToolIds).not.toContain("web.search");
+      expect(writerToolIds).not.toContain("web.read");
+      expect(mocks.streamResponseTurn).toHaveBeenCalledOnce();
       expect(JSON.stringify(modelRequest.input)).toContain("VERIFIED_WEB_initial");
+      expect(JSON.stringify(modelRequest.input)).toContain("VERIFIED_WEB_gap");
       expect(events).toContainEqual(expect.objectContaining({
         type: "tool", toolId: "web.search", status: "executed", executionId: "execution-web-initial",
       }));
@@ -500,8 +510,10 @@ describe("agent memory scope", () => {
         query: expect.stringMatching(/^web\.search web\.read /),
         preferredToolIds: ["web.search", "web.read"],
       }));
-      expect(executions.filter((input) => input.toolId === "web.search")).toHaveLength(3);
-      expect(executions.filter((input) => input.toolId === "web.read")).toHaveLength(4);
+      expect(executions.filter((input) => input.toolId === "web.search")).toHaveLength(4);
+      const sourceReads = executions.filter((input) => input.toolId === "web.read");
+      expect(sourceReads).toHaveLength(5);
+      expect(new Set(sourceReads.map((input) => input.input.url)).size).toBe(5);
       for (const execution of executions) {
         expect(execution).toEqual(expect.objectContaining({ requireReadOnly: true, approved: false,
           agentRunId: "run-memory-scope", abortSignal: expect.any(AbortSignal),
@@ -513,8 +525,8 @@ describe("agent memory scope", () => {
       expect(model.instructions).toContain("Research mode should produce a substantial evidence-led report");
       expect(model.instructions).toContain("honor an explicit request for a brief answer");
       expect(JSON.stringify(model.input)).toContain("FETCHED_PAGE_CONTEXT");
-      expect(JSON.stringify(model.input)).toContain("EVIDENCE_3");
-      expect(events.filter((event) => event.type === "tool" && event.toolId === "web.read" && event.status === "executed")).toHaveLength(4);
+      expect(JSON.stringify(model.input)).toContain("EVIDENCE_4");
+      expect(events.filter((event) => event.type === "tool" && event.toolId === "web.read" && event.status === "executed")).toHaveLength(5);
       expect(events).toContainEqual(expect.objectContaining({ type: "status", label: "writing research report" }));
       expect(mocks.completeAgentRun.mock.calls[0][2].sources).toEqual(expect.arrayContaining([
         expect.objectContaining({ kind: "web", url: "https://other.example/overlap" }),
@@ -529,7 +541,8 @@ describe("agent memory scope", () => {
         ? searchExecution()
         : { record: { ...localExecutionRecord("web.read", "failed-read"), status: "failed", reason: "Blocked page." }, result: { error: "Blocked page." } });
       await collectRequest(value);
-      expect(JSON.stringify(mocks.streamResponseTurn.mock.calls[0][0].input)).toContain("Page unavailable:");
+      expect(JSON.stringify(mocks.streamResponseTurn.mock.calls[0][0].input))
+        .toContain("Could not read https://example.com/initial. Its detailed claims remain unconfirmed.");
       expect(JSON.stringify(mocks.streamResponseTurn.mock.calls[0][0].input)).toContain("No source-page text was successfully read");
       expect(mocks.completeAgentRun).toHaveBeenCalledOnce();
     });
@@ -545,7 +558,7 @@ describe("agent memory scope", () => {
 
     it.each([
       { timeoutMs: 60_000, wallTimeMs: 140_000, searches: 0 },
-      { timeoutMs: 45_000, wallTimeMs: 140_000, searches: 3 },
+      { timeoutMs: 45_000, wallTimeMs: 140_000, searches: 4 },
       { timeoutMs: 90_000, wallTimeMs: 170_000, searches: 0 },
     ])("reserves synthesis after a configured $timeoutMs ms search within $wallTimeMs ms", async ({ timeoutMs, wallTimeMs, searches }) => {
       mocks.webSearchTimeoutMs = timeoutMs;
@@ -2236,12 +2249,16 @@ describe("agent memory scope", () => {
     expect(streamed?.claimEvidence).not.toHaveProperty("claimEvidenceMap");
   });
 
-  describe("a run's wall budget", () => {
+  describe("a run's configured wall budget", () => {
     /** How long the run's work may take, as its wall deadline was set. */
     async function wallDeadlineMs(invocation?: AgentRunRequest["invocation"]) {
       const timeout = vi.spyOn(AbortSignal, "timeout");
       try {
-        await collectRequest({ ...request("session"), invocation });
+        await collectRequest({
+          ...request("session"),
+          budgetLimits: { ...DEFAULT_AGENT_RUN_BUDGET_LIMITS, wallTimeMs: 240_000 },
+          invocation,
+        });
         return timeout.mock.calls.map(([milliseconds]) => milliseconds);
       } finally {
         timeout.mockRestore();

@@ -175,7 +175,7 @@ void main() {
     await tester.pump();
     expect(find.byKey(const Key('macos-project-row-borealis')), findsOneWidget);
     expect(find.byKey(const Key('macos-project-row-apollo')), findsNothing);
-  });
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
   testWidgets('exposes state filtering without replacing server truth', (
     tester,
@@ -196,7 +196,7 @@ void main() {
     expect(find.byKey(const Key('macos-project-row-borealis')), findsOneWidget);
     expect(find.byKey(const Key('macos-project-row-apollo')), findsNothing);
     expect(controller.projects, hasLength(2));
-  });
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 }
 
 Widget _app(Widget child) =>

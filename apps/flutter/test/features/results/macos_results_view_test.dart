@@ -1,3 +1,5 @@
+import '../../native_workspace_fixture.dart';
+
 import 'package:asael/app/theme/macos_app_theme.dart';
 import 'package:asael/features/results/macos_results_view.dart';
 import 'package:asael/features/results/results.dart';
@@ -41,15 +43,17 @@ void main() {
       ..snapshot = snapshot;
 
     await tester.pumpWidget(
-      MaterialApp(
-        theme: MacosAppTheme.light(),
-        home: MacosResultsView(controller: controller, onOpen: (_) {}),
+      nativeWorkspaceFixture(
+        child: MaterialApp(
+          theme: MacosAppTheme.light(),
+          home: MacosResultsView(controller: controller, onOpen: (_) {}),
+        ),
       ),
     );
 
     expect(tester.takeException(), isNull);
     expect(find.text('Every kind'), findsOneWidget);
-  });
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
   testWidgets('selects a dense ledger row and keeps output evidence visible', (
     tester,
@@ -95,11 +99,13 @@ void main() {
     ResultItem? opened;
 
     await tester.pumpWidget(
-      MaterialApp(
-        theme: MacosAppTheme.light(),
-        home: MacosResultsView(
-          controller: controller,
-          onOpen: (item) => opened = item,
+      nativeWorkspaceFixture(
+        child: MaterialApp(
+          theme: MacosAppTheme.light(),
+          home: MacosResultsView(
+            controller: controller,
+            onOpen: (item) => opened = item,
+          ),
         ),
       ),
     );
@@ -113,7 +119,7 @@ void main() {
     expect(find.text('release:desktop-15'), findsOneWidget);
     await tester.tap(find.byKey(const Key('macos-result-open')));
     expect(opened?.key, 'workflow:workflow-two');
-  });
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
   testWidgets('searches the existing controller-backed ledger', (tester) async {
     tester.view.physicalSize = const Size(1500, 920);
@@ -144,9 +150,11 @@ void main() {
       ..snapshot = snapshot;
 
     await tester.pumpWidget(
-      MaterialApp(
-        theme: MacosAppTheme.light(),
-        home: MacosResultsView(controller: controller, onOpen: (_) {}),
+      nativeWorkspaceFixture(
+        child: MaterialApp(
+          theme: MacosAppTheme.light(),
+          home: MacosResultsView(controller: controller, onOpen: (_) {}),
+        ),
       ),
     );
 
@@ -159,7 +167,7 @@ void main() {
       find.byKey(const Key('macos-result-workflow:workflow-two')),
       findsNothing,
     );
-  });
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
   testWidgets('browses ready and pending created files outside the ledger', (
     tester,
@@ -186,9 +194,11 @@ void main() {
       ..snapshot = snapshot;
 
     await tester.pumpWidget(
-      MaterialApp(
-        theme: MacosAppTheme.light(),
-        home: MacosResultsView(controller: controller, onOpen: (_) {}),
+      nativeWorkspaceFixture(
+        child: MaterialApp(
+          theme: MacosAppTheme.light(),
+          home: MacosResultsView(controller: controller, onOpen: (_) {}),
+        ),
       ),
     );
 
@@ -198,7 +208,7 @@ void main() {
     expect(find.text('Private · Rendering'), findsOneWidget);
     expect(find.byKey(Key('created-file-save-${ready.id}')), findsOneWidget);
     expect(find.byKey(Key('created-file-save-${pending.id}')), findsNothing);
-  });
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 }
 
 GeneratedArtifactSummary _file(String id, GeneratedArtifactStatus status) =>

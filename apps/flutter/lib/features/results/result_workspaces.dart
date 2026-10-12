@@ -332,7 +332,12 @@ class _ResultsWorkspaceState extends State<ResultsWorkspace> {
     listenable: widget.controller,
     builder: (context, _) {
       final controller = widget.controller;
-      if (usesMobilePresentation()) return _mobileResults(context);
+      if (usesMobilePresentation()) {
+        return Material(
+          type: MaterialType.transparency,
+          child: _mobileResults(context),
+        );
+      }
       return CallbackShortcuts(
         bindings: {
           const SingleActivator(LogicalKeyboardKey.keyR, meta: true):
@@ -1226,20 +1231,20 @@ Widget _resultReviewDialog({
   List<Widget> actions = const [],
   bool scrollable = false,
 }) {
-  if (!usesMobilePresentation())
+  if (!usesMobilePresentation()) {
     return AlertDialog(
       title: title,
       content: content,
       actions: actions,
       scrollable: scrollable,
     );
+  }
   final body = content is SingleChildScrollView
       ? content.child ?? const SizedBox.shrink()
       : content;
   return Dialog.fullscreen(
     child: MobileFlowScaffold(
       title: title.data ?? 'Review',
-      child: body,
       footer: actions.isEmpty
           ? null
           : Column(
@@ -1257,6 +1262,7 @@ Widget _resultReviewDialog({
                 actions.last,
               ],
             ),
+      child: body,
     ),
   );
 }

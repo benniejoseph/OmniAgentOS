@@ -408,8 +408,9 @@ class _VoiceConversationSurfaceState
   }
 
   Future<void> _reviewApproval() async {
-    if (!voice.active || !voice.waitingForApproval || _reviewingApproval)
+    if (!voice.active || !voice.waitingForApproval || _reviewingApproval) {
       return;
+    }
     final call = voice;
     final session = call.sessionId;
     final repository = ref.read(inboxRepositoryProvider);
@@ -439,11 +440,12 @@ class _VoiceConversationSurfaceState
         ),
       );
     } finally {
-      if (mounted)
+      if (mounted) {
         setState(() {
           _reviewingApproval = false;
           _windowConfiguration = null;
         });
+      }
     }
   }
 
@@ -828,8 +830,9 @@ class _VoiceConversationSurfaceState
         scale <= 1.15;
     final details = _expanded || !canCollapse;
     _presentWindow(appearance.appearance, details, scale);
-    if (usesMobilePresentation())
+    if (usesMobilePresentation()) {
       return Scaffold(body: _mobileConversation(appearance));
+    }
     final presentation = appearance.appearance == VoiceAppearance.perch
         ? _perch(appearance, details, canCollapse)
         : _companion(appearance, details, canCollapse);
@@ -933,17 +936,19 @@ class _VoiceApprovalDialogState extends State<_VoiceApprovalDialog> {
   Future<void> _load() async {
     try {
       final queue = await widget.repository.loadApprovals();
-      if (_current)
+      if (_current) {
         setState(() {
           _queue = queue;
           _loading = false;
         });
+      }
     } catch (_) {
-      if (_current)
+      if (_current) {
         setState(() {
           _loading = false;
           _notice = 'The action could not be loaded. Close and try again.';
         });
+      }
     }
   }
 
@@ -963,10 +968,11 @@ class _VoiceApprovalDialogState extends State<_VoiceApprovalDialog> {
         await _load();
       }
     } catch (_) {
-      if (_current)
+      if (_current) {
         setState(
           () => _notice = 'The decision could not be confirmed. Refresh the action before trying again.',
         );
+      }
     } finally {
       if (_current) setState(() => _deciding = null);
     }

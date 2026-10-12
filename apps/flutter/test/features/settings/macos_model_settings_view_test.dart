@@ -87,7 +87,7 @@ void main() {
 
     await tester.tap(find.text('This Mac'));
     await tester.pumpAndSettle();
-    expect(find.text('Computer use on this Mac'), findsOneWidget);
+    expect(find.text('ATLAS on this Mac'), findsOneWidget);
     expect(tester.takeException(), isNull);
     debugDefaultTargetPlatformOverride = null;
   });
@@ -161,6 +161,14 @@ void main() {
         matching: find.byType(PortableArchivePanel),
       );
       expect(general, findsOneWidget);
+      await tester.scrollUntilVisible(
+        panel,
+        300,
+        scrollable: find
+            .descendant(of: general, matching: find.byType(Scrollable))
+            .first,
+      );
+      await tester.pumpAndSettle();
       expect(panel, findsOneWidget);
       final generalElement = tester.element(general),
           panelElement = tester.element(panel);

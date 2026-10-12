@@ -1,17 +1,11 @@
 "use client";
 
-import { useId } from "react";
+import { useEffect, useId } from "react";
 import { researchOptionsSchema, type ResearchOptions } from "@/lib/research/contracts";
 import styles from "./research.module.css";
 
-export type ResearchDraft = {
-  depth: "quick" | "deep";
-  questions: string;
-  sourceGuidance: string;
-  domains: string;
-};
-
-export const emptyResearchDraft: ResearchDraft = { depth: "quick", questions: "", sourceGuidance: "", domains: "" };
+import type { ResearchDraft, ResearchDraftValidation } from "./research-draft";
+export { emptyResearchDraft, type ResearchDraft } from "./research-draft";
 
 export function researchOptionsFromDraft(draft: ResearchDraft): ResearchOptions {
   const questions = draft.questions.split("\n").map((value) => value.trim()).filter(Boolean);
@@ -26,14 +20,18 @@ export function researchOptionsFromDraft(draft: ResearchDraft): ResearchOptions 
   return result.data;
 }
 
-export function ResearchOptionsEditor({ value, disabled, onChange }: {
+export function ResearchOptionsEditor({ value, disabled, onChange, onValidation }: {
   value: ResearchDraft;
   disabled?: boolean;
   onChange: (value: ResearchDraft) => void;
+  onValidation?: (validation: ResearchDraftValidation) => void;
 }) {
   const id = useId();
   let error: string | undefined;
   try { researchOptionsFromDraft(value); } catch (failure) { error = (failure as Error).message; }
+  useEffect(() => {
+    onValidation?.({ draft: value, valid: !error });
+  }, [value, error, onValidation]);
   return <fieldset className={styles.options} disabled={disabled}>
     <legend>Research depth</legend>
     <div className={styles.depthChoices}>

@@ -592,6 +592,31 @@ class _MeetingEditorState extends State<MeetingEditor> {
             key: form,
             child: MeetingEditorLayout(
               title: widget.base == null ? 'New meeting' : 'Edit meeting',
+              footer: Wrap(
+                spacing: 12,
+                children: [
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: const Text('Close draft'),
+                  ),
+                  FilledButton(
+                    onPressed:
+                        widget.actions.disabledReason(action) == null &&
+                            reviewed &&
+                            !staleDraft &&
+                            widget.stillCurrent()
+                        ? _submit
+                        : null,
+                    child: Text(
+                      widget.actions.busy
+                          ? 'Submitting meeting…'
+                          : widget.base == null
+                          ? 'Create reviewed meeting'
+                          : 'Save reviewed revision',
+                    ),
+                  ),
+                ],
+              ),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -762,31 +787,6 @@ class _MeetingEditorState extends State<MeetingEditor> {
                     MeetingNotice(widget.actions.error!, error: true),
                   if (widget.actions.disabledReason(action) != null)
                     MeetingNotice(widget.actions.disabledReason(action)!),
-                ],
-              ),
-              footer: Wrap(
-                spacing: 12,
-                children: [
-                  TextButton(
-                    onPressed: () => Navigator.of(context).pop(),
-                    child: const Text('Close draft'),
-                  ),
-                  FilledButton(
-                    onPressed:
-                        widget.actions.disabledReason(action) == null &&
-                            reviewed &&
-                            !staleDraft &&
-                            widget.stillCurrent()
-                        ? _submit
-                        : null,
-                    child: Text(
-                      widget.actions.busy
-                          ? 'Submitting meeting…'
-                          : widget.base == null
-                          ? 'Create reviewed meeting'
-                          : 'Save reviewed revision',
-                    ),
-                  ),
                 ],
               ),
             ),
@@ -1068,6 +1068,45 @@ class _MeetingFollowUpEditorState extends State<MeetingFollowUpEditor> {
           )
         : MeetingEditorLayout(
             title: 'Review follow-up',
+            footer: Wrap(
+              spacing: 12,
+              runSpacing: 8,
+              children: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('Close review'),
+                ),
+                OutlinedButton(
+                  onPressed:
+                      confirmed &&
+                          widget.stillCurrent() &&
+                          widget.actions.disabledReason('resolve') == null
+                      ? () => _submit('dismissed')
+                      : null,
+                  child: Text(
+                    usesMobilePresentation()
+                        ? 'Dismiss proposal'
+                        : 'Dismiss exact proposal',
+                  ),
+                ),
+                FilledButton(
+                  onPressed:
+                      confirmed &&
+                          widget.stillCurrent() &&
+                          participantId != null &&
+                          widget.actions.disabledReason('resolve') == null
+                      ? () => _submit('confirmed')
+                      : null,
+                  child: Text(
+                    usesMobilePresentation()
+                        ? communication
+                              ? 'Create task & email draft'
+                              : 'Create task'
+                        : 'Confirm Work item and selected draft',
+                  ),
+                ),
+              ],
+            ),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1282,45 +1321,6 @@ class _MeetingFollowUpEditorState extends State<MeetingFollowUpEditor> {
                   MeetingNotice(widget.actions.error!, error: true),
                 if (widget.actions.disabledReason('resolve') != null)
                   MeetingNotice(widget.actions.disabledReason('resolve')!),
-              ],
-            ),
-            footer: Wrap(
-              spacing: 12,
-              runSpacing: 8,
-              children: [
-                TextButton(
-                  onPressed: () => Navigator.of(context).pop(),
-                  child: const Text('Close review'),
-                ),
-                OutlinedButton(
-                  onPressed:
-                      confirmed &&
-                          widget.stillCurrent() &&
-                          widget.actions.disabledReason('resolve') == null
-                      ? () => _submit('dismissed')
-                      : null,
-                  child: Text(
-                    usesMobilePresentation()
-                        ? 'Dismiss proposal'
-                        : 'Dismiss exact proposal',
-                  ),
-                ),
-                FilledButton(
-                  onPressed:
-                      confirmed &&
-                          widget.stillCurrent() &&
-                          participantId != null &&
-                          widget.actions.disabledReason('resolve') == null
-                      ? () => _submit('confirmed')
-                      : null,
-                  child: Text(
-                    usesMobilePresentation()
-                        ? communication
-                              ? 'Create task & email draft'
-                              : 'Create task'
-                        : 'Confirm Work item and selected draft',
-                  ),
-                ),
               ],
             ),
           ),

@@ -50,7 +50,7 @@ function ScopedWorkspace({ scope, owner, id, active, sessionStatus, canManage }:
   return <>{!active && <div className={styles.workspace}><h1>Follow-ups</h1><p role="status">{sessionStatus === "loading" ? "Checking workspace permissions…" : "Workspace permissions are unavailable. Refresh your session to continue."} Same-account drafts remain in this page.</p></div>}
     <div className={styles.workspace} hidden={!active} inert={!active} aria-hidden={!active || undefined} data-testid="responsibilities-workspace">
     <header className={styles.header}><div><h1>{id ? "Follow-up" : "Follow-ups"}</h1>
-      <p>Give Asael an outcome to keep checking, using sources you choose and limits you set. Review the plan before turning it on; reminders are optional.</p></div>
+      <p>Keep important commitments in view. Follow a work item or meeting, and hear from Asael when something changes.</p></div>
       {id ? <Link href="/app/responsibilities">All follow-ups</Link> : canManage && !creating && <button type="button" onClick={() => setCreating(true)}>New follow-up</button>}
     </header>
     <details className={styles.support}><summary>Access details</summary><p className={styles.identity}>Workspace: {owner.tenantId}{detail?.record.actorId || state.references.value?.owner.actorId || owner.actorId ? ` · owner: ${detail?.record.actorId ?? state.references.value?.owner.actorId ?? owner.actorId}` : ""}</p></details>
@@ -58,13 +58,17 @@ function ScopedWorkspace({ scope, owner, id, active, sessionStatus, canManage }:
     {(state.mutationError || state.pending && state.pending.key === recoveringKey) && <div role="alert" className={styles.notice}><p>{state.mutationError ?? "Recovering the exact submitted receipt…"}</p>{state.pending && <button ref={recoveryRef} type="button" aria-disabled={state.submitting} onClick={() => {
       if (!state.submitting && state.pending) { setRecoveringKey(state.pending.key); void controller.retry(); }
     }}>Retry exact submitted request</button>}</div>}
-    {state.accepted && <section className={styles.receipt} role="status" aria-label="Accepted responsibility receipt"><h2 ref={acceptedHeading} tabIndex={-1}>Accepted receipt</h2>
-      <p>{state.accepted.result.replayed ? "Recovered immutable receipt" : "Request accepted"} · {state.accepted.result.receipt.action} · accepted revision {state.accepted.result.receipt.snapshot.revision}.</p>
-      <p>Current response revision {state.accepted.result.current.revision}. Later refresh failures do not undo this accepted receipt.</p>
-      {state.accepted.kind === "notifications" && <p>{state.accepted.result.receipt.action === "stop" ? "The separate in-app notification admission was stopped. Earlier delivered items remain." : "The separate in-app destination was enabled. This admission receipt does not confirm any notification delivery."}</p>}
+    {state.accepted && <section className={styles.receipt} role="status" aria-label="Accepted responsibility receipt"><h2 ref={acceptedHeading} tabIndex={-1}>Saved confirmation</h2>
+      <p>{state.accepted.result.replayed ? "Recovered your saved confirmation." : savedConfirmation(state.accepted.kind, state.accepted.result.receipt.action)}</p>
+      {state.accepted.result.current.revision !== state.accepted.result.receipt.snapshot.revision && <p>Newer changes were returned with this confirmation. Refresh the details to check the current state.</p>}
+      {state.accepted.kind === "notifications" && <p>{state.accepted.result.receipt.action === "stop" ? "This records the choice to stop future inbox updates. Earlier delivered updates are kept." : "This records permission for future inbox updates. It does not confirm that an update was delivered."}</p>}
       {state.accepted.kind === "draft" && <Link href={responsibilityHref(state.accepted.result.receipt.snapshot.id)}>Open this responsibility</Link>}
       {created && <button type="button" onClick={() => { controller.clearAccepted(); setCreating(false); }}>Start another draft</button>}
-      <details><summary>Exact accepted receipt</summary><pre>{JSON.stringify(state.accepted.result.receipt, null, 2)}</pre></details>
+      <details><summary>Exact accepted receipt</summary>
+        <p>Action: {state.accepted.result.receipt.action} · accepted revision {state.accepted.result.receipt.snapshot.revision} · response revision {state.accepted.result.current.revision}.</p>
+        <p>Later refresh failures do not undo this saved confirmation.</p>
+        <pre>{JSON.stringify(state.accepted.result.receipt, null, 2)}</pre>
+      </details>
     </section>}
     {!id && <>
       {creating && !created && <DraftEditor key="new" canManage={canManage} frozen={frozen} references={state.references} refreshReferences={() => void controller.load("references")}
@@ -97,4 +101,20 @@ function ScopedWorkspace({ scope, owner, id, active, sessionStatus, canManage }:
       </>}
     </>}
   </div></>;
+}
+
+function savedConfirmation(kind: "draft" | "runtime" | "notifications", action: string) {
+  if (kind === "draft") {
+    if (action === "created") return "Your inactive draft was created.";
+    if (action === "updated") return "Your draft changes were saved.";
+    if (action === "reviewed") return "Your review was saved without starting checks.";
+  }
+  if (kind === "runtime") {
+    if (action === "activate") return "Your request to start scheduled checks was saved.";
+    if (action === "resume") return "Your request to resume scheduled checks was saved.";
+    if (action === "pause") return "Your request to pause scheduled checks was saved.";
+    if (action === "end") return "Your request to end tracking was saved.";
+  }
+  if (kind === "notifications") return action === "stop" ? "Your choice to stop future inbox updates was saved." : "Your choice to enable future inbox updates was saved.";
+  return "Your request was saved.";
 }

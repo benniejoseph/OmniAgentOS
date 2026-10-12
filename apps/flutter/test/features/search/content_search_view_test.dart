@@ -1,3 +1,5 @@
+import 'package:asael/app/navigation/mobile_library_page.dart';
+
 import 'dart:async';
 
 import 'package:asael/app/navigation/adaptive_shell.dart';
@@ -202,8 +204,9 @@ void main() {
                     routes: [
                       GoRoute(
                         path: destination.path,
-                        builder: (_, _) =>
-                            Center(child: Text('Body ${destination.label}')),
+                        builder: (_, _) => destination.path == '/library'
+                            ? const MobileLibraryPage()
+                            : Center(child: Text('Body ${destination.label}')),
                       ),
                     ],
                   ),
@@ -224,7 +227,15 @@ void main() {
         );
         await tester.pumpAndSettle();
         if (platform == TargetPlatform.android) {
-          await tester.tap(find.byTooltip('Search workspace content'));
+          await tester.tap(find.text('Library').last);
+          await tester.pumpAndSettle();
+          final search = find.text('Search your saved content');
+          await tester.scrollUntilVisible(
+            search,
+            300,
+            scrollable: find.byType(Scrollable).first,
+          );
+          await tester.tap(search);
           await tester.pumpAndSettle();
           expect(find.text('Body Search'), findsOneWidget);
           router.go('/today');

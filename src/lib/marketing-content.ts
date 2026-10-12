@@ -20,10 +20,10 @@ export const marketingActions = {
 } as const;
 
 export const productFacts = [
-  { value: "7", label: "Recorded workflow stages" },
-  { value: "3", label: "Independent worker lanes" },
-  { value: "Scoped", label: "Tenant-aware operations" },
-  { value: "Live", label: "Evidence-backed health" },
+  { value: "Today", label: "What needs your attention" },
+  { value: "Assistant", label: "A place to think and act" },
+  { value: "My work", label: "Projects and follow-through" },
+  { value: "Library", label: "Sources and useful memory" },
 ] as const;
 
 export const operatingLoop = [
@@ -52,8 +52,8 @@ export const operatingLoop = [
 export const homepageCapabilities = [
   {
     icon: "command",
-    title: "Agent command center",
-    body: "Start work, inspect progress, and understand the current step.",
+    title: "One ongoing conversation",
+    body: "Think through an idea, ask for help, and return to work already in progress.",
   },
   {
     icon: "workflow",
@@ -72,13 +72,13 @@ export const homepageCapabilities = [
   },
   {
     icon: "monitor",
-    title: "Observability",
-    body: "Trace runtime events, performance, incidents, and worker health.",
+    title: "Follow-through",
+    body: "Follow a work item and receive inbox updates when meaningful details change.",
   },
   {
     icon: "evidence",
-    title: "Release evidence",
-    body: "Verify isolation, security, worker readiness, and evaluation quality.",
+    title: "Measured guidance",
+    body: "Compare proposed agent guidance against current guidance on examples you choose.",
   },
 ] as const satisfies readonly {
   icon: MarketingIconName;

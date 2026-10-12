@@ -73,8 +73,9 @@ class _PersonalProfileEditorState extends State<_PersonalProfileEditor> {
       if (!mounted ||
           !identical(c, widget.controller) ||
           !c.available ||
-          confirmed != true)
+          confirmed != true) {
         return;
+      }
     }
     await c.refresh();
   }
@@ -103,8 +104,9 @@ class _PersonalProfileEditorState extends State<_PersonalProfileEditor> {
     if (!mounted ||
         !identical(c, widget.controller) ||
         !c.editable ||
-        confirmed != true)
+        confirmed != true) {
       return;
+    }
     c.clearAll();
     await c.save();
   }

@@ -242,6 +242,44 @@ void main() {
     },
   );
 
+  test('paid comparison timeout is scoped and a 401 never repeats its submission', () async {
+    final store = await _store(), service = _Service()..refuseFirstPost = true;
+    final dio = _dio(service)
+      ..options.receiveTimeout = const Duration(seconds: 30);
+    final api = createApiClient(store, dio: dio, refreshDio: _dio(service));
+    await expectLater(
+      api.postJsonAuthorizedComparisonOnce(
+        '/api/agents/agent-one/adaptations',
+        authority: _authority(),
+        data: {'action': 'compare', 'adaptationId': 'exact-adaptation'},
+        headers: {'Idempotency-Key': 'retained-comparison-key'},
+      ),
+      throwsA(isA<ApiException>()),
+    );
+    expect(service.posts, hasLength(1));
+    expect(service.posts.single.key, 'retained-comparison-key');
+    expect(service.refreshes, 0);
+    expect(service.receiveTimeouts, [const Duration(seconds: 130)]);
+    expect(dio.options.receiveTimeout, const Duration(seconds: 30));
+    // An explicit recovery can submit the retained key; the server owns replay.
+    await api.postJsonAuthorizedComparisonOnce(
+      '/api/agents/agent-one/adaptations',
+      authority: _authority(),
+      data: {'action': 'compare', 'adaptationId': 'exact-adaptation'},
+      headers: {'Idempotency-Key': 'retained-comparison-key'},
+    );
+    expect(service.posts.last.key, 'retained-comparison-key');
+    expect(
+      () => api.postJsonAuthorizedComparisonOnce(
+        '/api/ordinary',
+        authority: _authority(),
+        data: {'action': 'compare'},
+        headers: {},
+      ),
+      throwsArgumentError,
+    );
+  });
+
   test('401 replay validates the replacement token before resending original bytes with the same key', () async {
     final store = await _store(), service = _Service()..refuseFirstPost = true;
     await _upload(_client(store, service), _authority());

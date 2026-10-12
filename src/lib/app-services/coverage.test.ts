@@ -2,9 +2,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
-  APP_SERVICE_OPERATION_CONTRACTS,
   MAIN_AGENT_APP_SERVICE_BINDINGS,
-  MAIN_AGENT_EXCLUDED_APP_OPERATIONS,
   validateAppServiceRegistry,
 } from "@/lib/app-services/registry";
 
@@ -75,16 +73,14 @@ describe("P9.1 Main Agent application-service coverage", () => {
     }
   });
 
-  it("gives the architecture guide the registry's own counts", async () => {
+  it("directs architecture readers to the authoritative operation registries", async () => {
     const guide = (await readFile(resolve(process.cwd(), "docs/architecture.md"), "utf8"))
       .replace(/\s+/g, " ");
-    const appOperations = APP_SERVICE_OPERATION_CONTRACTS
-      .filter((contract) => contract.operation.startsWith("app."));
-
-    expect(guide).toContain(`extend it to ${appOperations.length} active \`app.*\` operations`);
-    expect(guide).toContain(
-      `The ${MAIN_AGENT_EXCLUDED_APP_OPERATIONS.length} deliberately excluded operations`,
-    );
+    for (const reference of [
+      "`src/lib/app-services/registry.ts`",
+      "`APP_SERVICE_OPERATION_CONTRACTS`",
+      "`MAIN_AGENT_EXCLUDED_APP_OPERATIONS`",
+    ]) expect(guide).toContain(reference);
   });
 
   it("leaves every permanent effect to its preview-bound service", async () => {

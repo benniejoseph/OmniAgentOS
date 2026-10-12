@@ -20,6 +20,18 @@ class _MobileLibraryPageState extends State<MobileLibraryPage> {
       title: 'Remember & discover',
       items: [
         (
+          title: 'Capture',
+          subtitle: 'Save a note, scan or file',
+          path: '/capture',
+          icon: Icons.add_circle_outline_rounded,
+        ),
+        (
+          title: 'Listen & conversations',
+          subtitle: 'Record and revisit conversation notes',
+          path: '/capture?section=listen',
+          icon: Icons.hearing_rounded,
+        ),
+        (
           title: 'Memory',
           subtitle: 'Your context, knowledge and connections',
           path: '/knowledge',
@@ -49,7 +61,7 @@ class _MobileLibraryPageState extends State<MobileLibraryPage> {
       title: 'Plan & follow through',
       items: [
         (
-          title: 'Needs your attention',
+          title: 'Needs you',
           subtitle: 'Decisions and approvals to review',
           path: '/inbox',
           icon: Icons.inbox_outlined,
@@ -82,12 +94,6 @@ class _MobileLibraryPageState extends State<MobileLibraryPage> {
           subtitle: 'Connections, skills and automations',
           path: '/automation',
           icon: Icons.auto_awesome_motion_outlined,
-        ),
-        (
-          title: 'Payments',
-          subtitle: 'Review payment requests and receipts',
-          path: '/payments',
-          icon: Icons.credit_card_outlined,
         ),
       ],
     ),
@@ -143,6 +149,11 @@ class _MobileLibraryPageState extends State<MobileLibraryPage> {
           child: MobilePageHeader(
             title: 'Library',
             actions: [
+              IconButton(
+                tooltip: 'Needs you',
+                onPressed: () => context.push('/inbox'),
+                icon: const Icon(Icons.inbox_outlined),
+              ),
               IconButton(
                 tooltip: 'Settings',
                 onPressed: () => context.push('/settings'),

@@ -50,6 +50,7 @@ class _Api extends ApiClient {
   @override
   Future<ConnectorJson> getJsonAuthorized(
     String path, {
+    Map<String, dynamic>? headers,
     required NativeRequestAuthority authority,
     ConnectorJson? query,
     CancelToken? cancelToken,

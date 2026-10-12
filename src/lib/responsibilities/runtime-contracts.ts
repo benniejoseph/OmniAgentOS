@@ -4,6 +4,8 @@ import { digestSchema, exactIdSchema, instantSchema, responsibilityCadenceSchema
 
 export const RESPONSIBILITY_RUNTIME_CONTRACT = "asael-responsibility-runtime:1" as const;
 export const RESPONSIBILITY_PILOT = "native_meeting_metadata_v1" as const;
+export const RESPONSIBILITY_WORK_ITEM_PILOT = "canonical_work_item_followthrough_v1" as const;
+export const responsibilityPilotSchema = z.enum([RESPONSIBILITY_PILOT, RESPONSIBILITY_WORK_ITEM_PILOT]);
 export const RESPONSIBILITY_DUE_GRACE_MS = 15 * 60_000;
 export const RESPONSIBILITY_PILOT_DISCLOSURE = Object.freeze({
   pilot: RESPONSIBILITY_PILOT,
@@ -13,24 +15,41 @@ export const RESPONSIBILITY_PILOT_DISCLOSURE = Object.freeze({
   stops: "Expires at the reviewed end, or stops when the meeting starts or is canceled. Free-text success and stop conditions are descriptive, not executable predicates.",
   execution: "Only the exact saved app.meetings.show binding. No model, provider mutation, approval, PolicyLease, notification or delivery authority.",
 });
+export const RESPONSIBILITY_WORK_ITEM_PILOT_DISCLOSURE = Object.freeze({
+  pilot: RESPONSIBILITY_WORK_ITEM_PILOT,
+  source: "One work item you own in an active workspace, with current authorized dependency states and linked output references.",
+  comparison: "Status, deadline, becoming overdue, priority, owners, dependency states and output references. Marked done and linked outputs remain unverified outcomes.",
+  cadence: "Daily or weekly in your reviewed timezone. Checks missed by more than 15 minutes are skipped.",
+  stops: "Continues through completion and reopening until the reviewed expiry, check limit, or your stop. Ownership and access changes block further checks.",
+  execution: "One exact read through app.work_items.show. No model calls or mutations. In-app notifications require separate enablement.",
+});
 export const runtimeRevisionSchema = z.number().int().min(1).max(Number.MAX_SAFE_INTEGER - 1);
 const expectedRevisionSchema = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER - 2);
 export const wakeIdSchema = z.string().regex(/^responsibility-wake:[a-f0-9]{64}$/);
 export const runtimeStateSchema = z.enum(["active", "pausing", "paused", "ending", "ended", "blocked"]);
 export const runtimeReasonSchema = z.enum(["owner_activated", "owner_paused", "owner_resumed", "owner_ended", "expired", "meeting_started", "meeting_canceled", "budget_exhausted", "source_unavailable", "authority_changed", "uncertain_started_work", "check_settled", "missed_skipped"]);
-export const pilotConfigurationSchema = z.object({
-  schemaVersion: z.literal(1), pilot: z.literal(RESPONSIBILITY_PILOT),
+const pilotConfigurationBase = z.object({
+  schemaVersion: z.literal(1),
   responsibilityRevision: runtimeRevisionSchema, reviewSha256: digestSchema, draftSha256: digestSchema,
   pins: responsibilityPinsSchema,
-  source: z.object({ kind: z.literal("meeting"), id: exactIdSchema, workspaceId: exactIdSchema }).strict(),
-  tool: z.object({ id: z.literal("app.meetings.show"), input: z.object({ workspaceId: exactIdSchema, meetingId: exactIdSchema }).strict(), contractSha256: digestSchema }).strict(),
   cadence: responsibilityCadenceSchema.refine((value) => value.frequency !== "hourly", "This pilot supports daily or weekly cadence."),
   maximumChecks: z.number().int().min(1).max(10_000), cumulativeLimits: runBudgetCountersV1Schema,
   checkReservation: runBudgetCountersV1Schema, comparisonPolicySha256: digestSchema,
-  stops: z.tuple([z.literal("expiry"), z.literal("meeting_started"), z.literal("meeting_canceled")]),
   notificationAuthority: z.literal("none"), approvalAuthority: z.literal("none"), mutationAuthority: z.literal("none"),
   configurationSha256: digestSchema,
 }).strict();
+export const pilotConfigurationSchema = z.discriminatedUnion("pilot", [
+  pilotConfigurationBase.extend({ pilot: z.literal(RESPONSIBILITY_PILOT),
+    source: z.object({ kind: z.literal("meeting"), id: exactIdSchema, workspaceId: exactIdSchema }).strict(),
+    tool: z.object({ id: z.literal("app.meetings.show"), input: z.object({ workspaceId: exactIdSchema, meetingId: exactIdSchema }).strict(), contractSha256: digestSchema }).strict(),
+    stops: z.tuple([z.literal("expiry"), z.literal("meeting_started"), z.literal("meeting_canceled")]),
+  }).strict(),
+  pilotConfigurationBase.extend({ pilot: z.literal(RESPONSIBILITY_WORK_ITEM_PILOT),
+    source: z.object({ kind: z.literal("work_item"), id: exactIdSchema, workspaceId: exactIdSchema, projectId: exactIdSchema }).strict(),
+    tool: z.object({ id: z.literal("app.work_items.show"), input: z.object({ workspaceId: exactIdSchema, projectId: exactIdSchema, workItemId: exactIdSchema }).strict(), contractSha256: digestSchema }).strict(),
+    stops: z.tuple([z.literal("expiry")]),
+  }).strict(),
+]);
 export const cumulativeBudgetSchema = z.object({
   limits: runBudgetCountersV1Schema, used: runBudgetCountersV1Schema, reserved: runBudgetCountersV1Schema,
   maximumChecks: z.number().int().min(1).max(10_000), usedChecks: z.number().int().min(0).max(10_000), reservedChecks: z.number().int().min(0).max(10_000),
@@ -45,9 +64,9 @@ export const responsibilityLifecycleSchema = z.object({
 }).strict();
 export const responsibilityLifecycleRequestSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("activate"), expectedRevision: z.literal(0), expectedGeneration: z.literal(0),
-    configurationSha256: digestSchema, acknowledgePilot: z.literal(RESPONSIBILITY_PILOT) }).strict(),
+    configurationSha256: digestSchema, acknowledgePilot: responsibilityPilotSchema }).strict(),
   z.object({ action: z.literal("resume"), expectedRevision: expectedRevisionSchema, expectedGeneration: expectedRevisionSchema,
-    configurationSha256: digestSchema, acknowledgePilot: z.literal(RESPONSIBILITY_PILOT) }).strict(),
+    configurationSha256: digestSchema, acknowledgePilot: responsibilityPilotSchema }).strict(),
   z.object({ action: z.enum(["pause", "end"]), expectedRevision: expectedRevisionSchema, expectedGeneration: expectedRevisionSchema }).strict(),
 ]);
 export const responsibilityWakeSchema = z.object({

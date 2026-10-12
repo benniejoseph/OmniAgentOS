@@ -10,7 +10,7 @@ vi.mock("@/lib/threads/store", () => ({ getOwnedThread: mocks.thread }));
 vi.mock("@/lib/capture/assets", () => ({ getCaptureAssetForRequest: mocks.asset }));
 vi.mock("@/lib/meetings/store", () => ({ getMeeting: mocks.meeting }));
 vi.mock("@/lib/memory/shared-context", () => ({ requestSharedMemoryAccessFromSecurityContext: mocks.access }));
-vi.mock("@/lib/workspaces/contracts", () => ({ parseCanonicalWorkItemV1: (value: unknown) => value }));
+vi.mock("@/lib/workspaces/contracts", async (original) => ({ ...await original<typeof import("@/lib/workspaces/contracts")>(), parseCanonicalWorkItemV1: (value: unknown) => value }));
 vi.mock("@/lib/workflows/saved-procedures", () => ({ listSavedProcedures: mocks.procedures, buildWorkflowProcedureSnapshot: mocks.snapshot }));
 vi.mock("@/lib/agents/identity-store", () => ({ resolveCustomAgentIdentityWithSql: mocks.identity }));
 vi.mock("@/lib/agents/identity-contracts", () => ({ buildAgentRunIdentityPinV1: mocks.pin, buildBuiltInAgentIdentityV1: mocks.builtIn, isBuiltInAgentIdentityId: mocks.isBuiltIn }));

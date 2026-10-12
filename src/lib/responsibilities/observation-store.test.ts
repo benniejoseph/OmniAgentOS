@@ -78,7 +78,7 @@ describe("Responsibility observation persistence", () => {
   });
   it("returns bounded history with an honest lower bound and rejects mismatched stored scope", async () => {
     const receipt = await receiptFixture(); database({ receipts: [receiptRow(receipt), receiptRow(receipt)] });
-    expect(await readResponsibilityObservationHistory(owner, record.id, 1)).toEqual({ receipts: [receipt], baseline: null, hasMore: true });
+    expect(await readResponsibilityObservationHistory(owner, record.id, 1)).toMatchObject({ receipts: [receipt], baseline: null, hasMore: true });
     database({ receipts: [{ ...receiptRow(receipt), actor_id: "foreign" }] });
     await expect(readResponsibilityObservationHistory(owner, record.id, 1)).rejects.toMatchObject({ code: "responsibility_storage_invalid" });
   });

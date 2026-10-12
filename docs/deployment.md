@@ -2969,3 +2969,25 @@ Markets reads select stored snapshots without provider effects; calendar and
 provider refresh remain explicit actions. Market analysis metadata excludes
 opaque chart plug-in state. Protected native recovery is bounded per namespace
 and shared across macOS engines through the existing host broker.
+
+
+## Personal partner candidate (2026-10-13)
+
+Native v56 and migrations 252–253 form one release candidate. Migration 252
+extends the exact Responsibility runtime/notification trigger lanes for canonical
+work-item tracking. Migration 253 adds the owner-private text comparison ledger,
+comparison pointer and new-activation requirement. Apply them in manifest order
+after 251, using the existing backup, isolated replay, verification and paired
+web/worker release procedure. Previous v55 contract files remain byte-frozen;
+Previously supported v54, v53 and v52 clients retain their existing capabilities;
+work-item tracking and text comparison require a fresh v56 handshake.
+
+The native candidate is 1.33.0+98. Verify the paired server release before
+installing the signed native package, and retain the prior signed app. Before
+promotion, verify the new actor policy/table inventory, current v56 client
+handshake, v55 meeting behavior and explicit work-item upgrade response. Do not
+roll back to an older server by dropping comparison history or altering saved
+runtime receipts. New guidance activation now needs measured improvement;
+legacy active guidance retains rollback. No live model credentials are required
+for isolated regression tests, and fixture results do not establish provider
+quality or production readiness.

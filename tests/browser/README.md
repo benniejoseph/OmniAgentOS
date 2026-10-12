@@ -88,8 +88,8 @@ stable names independently of option or textarea contents. The shared snapshot
 check records overflow geometry to make future failures actionable. Live calendar,
 media, WorkItem creation and message sending are outside this browser boundary.
 
-`companion_presence.py` exercises the static ATLAS portrait and eight-state
-presentation adapter on Command. Exact synthetic run receipts distinguish
+`companion_presence.py` exercises the static ATLAS SVG portrait and eight-state
+presentation adapter on Assistant. Exact synthetic run receipts distinguish
 verified completion, partial/unverified outcomes, queued work and failures.
 Preference, home-thread and disposed reads cannot replace another owner/view;
 failed or pending Home navigation preserves the composer draft and changes the
@@ -98,7 +98,12 @@ assets, hidden documents, reduced motion, 320px/200% keyboard access to every
 dock destination, both themes and eight scoped axe scans. It forwards no
 application write, OAuth, provider, microphone or playback request; the shared
 runner's isolated bootstrap login is the only real setup mutation. This is a
-static portrait, not evidence of the later ATLAS rig or animation pipeline.
+static portrait check. The core voice suite opens the current continuous-conversation
+consent, holds an exact schema-version-2 setup request after synthetic microphone
+admission, and checks the still working portrait through reduced-motion changes.
+Revoking owner access stops that microphone before the held setup returns; it
+must not create a peer connection or animate a consumed initial observation.
+Neither suite certifies live audio transport, artwork quality, or media playback.
 
 The specialist, operations and public families run in three additional hosted
 jobs. Each job runs its suites serially within the existing 15-minute limit;
@@ -148,3 +153,18 @@ themes, 320px and 200% text. Long panels use scrolled viewport captures with poi
 checks before and after; element captures must not resize touch contexts.
 Historical content availability and durable unknown-result recovery across page
 reload remain separate server/native acceptance gates.
+
+
+`responsibility_work_item.py` covers work-item quick setup, exact saved review,
+work pilot acknowledgement, lost-response same-key recovery and separately
+enabled owner inbox delivery. Desktop and phone each allow exactly five
+intercepted writes. Both themes plus 320px/200% text produce axe and screenshot
+evidence. Every tracking effect is synthetic; PostgreSQL integration separately
+proves actual source checks, completion/reopening, overdue changes and delivery.
+The work-family CI job runs this suite serially beside the retained meeting lane.
+
+The Agents adaptation browser flow also exercises three independently authored
+text examples and four paired comparison receipts: tie, regression, incomplete
+and improved. Only the improved result exposes activation. Model output remains
+escaped text; unknown cost remains unknown. These fixtures do not call a model
+or activate guidance.

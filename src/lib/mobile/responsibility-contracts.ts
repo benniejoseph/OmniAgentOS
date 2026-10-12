@@ -10,7 +10,7 @@ import {
   responsibilitySourceSchema,
   responsibilityWorkSchema,
 } from "@/lib/responsibilities/contracts";
-import { RESPONSIBILITY_MEETING_COMPARISON_POLICY } from "@/lib/responsibilities/comparison-policy";
+import { RESPONSIBILITY_MEETING_COMPARISON_POLICY, RESPONSIBILITY_WORK_ITEM_COMPARISON_POLICY } from "@/lib/responsibilities/comparison-policy";
 import {
   RESPONSIBILITY_OBSERVATION_CONTRACT,
   responsibilityBaselineSchema,
@@ -26,7 +26,7 @@ import {
 } from "@/lib/responsibilities/notification-contracts";
 import {
   pilotConfigurationSchema,
-  RESPONSIBILITY_PILOT_DISCLOSURE,
+  responsibilityPilotSchema,
   RESPONSIBILITY_RUNTIME_CONTRACT,
   responsibilityLifecycleRequestSchema,
   responsibilityLifecycleSchema,
@@ -128,7 +128,7 @@ export const nativeResponsibilityLifecycleReadResponseSchema = z.object({
   ...runtimeEnvelope,
   current: responsibilityLifecycleSchema.nullable(),
   disclosure: z.object({
-    pilot: z.literal(RESPONSIBILITY_PILOT_DISCLOSURE.pilot), source: boundedText, comparison: boundedText,
+    pilot: responsibilityPilotSchema, source: boundedText, comparison: boundedText,
     cadence: boundedText, stops: boundedText, execution: boundedText,
   }).strict(),
   wakes: z.array(responsibilityWakeSchema).max(40),
@@ -150,7 +150,7 @@ export const nativeResponsibilityLifecycleMutationResponseSchema = z.object({
 
 const comparisonPolicy = RESPONSIBILITY_MEETING_COMPARISON_POLICY;
 const comparisonPolicySchema = z.object({
-  schemaVersion: z.literal(1), id: z.literal(comparisonPolicy.id),
+  schemaVersion: z.literal(1), id: z.enum([comparisonPolicy.id, RESPONSIBILITY_WORK_ITEM_COMPARISON_POLICY.id]),
   maximumSourceAgeSeconds: z.literal(comparisonPolicy.maximumSourceAgeSeconds),
   firstObservation: z.literal(comparisonPolicy.firstObservation),
   advancement: z.literal(comparisonPolicy.advancement),

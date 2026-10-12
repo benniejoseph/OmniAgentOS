@@ -8,7 +8,7 @@ export const observationTargetSchema = z.object({
   responsibilityRevision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER), reviewSha256: digestSchema,
 }).strict();
 export const observationEvidenceRefSchema = z.object({
-  kind: z.enum(["meeting_revision", "source_evidence", "thread_turn", "capture_extraction"]),
+  kind: z.enum(["meeting_revision", "source_evidence", "thread_turn", "capture_extraction", "work_item_revision"]),
   id: exactIdSchema, revisionId: exactIdSchema, revisionSha256: digestSchema, contentSha256: digestSchema,
 }).strict();
 const authority = z.object({
@@ -60,7 +60,7 @@ export const responsibilityBaselineSchema = z.object({
 export const responsibilityChangeRecordSchema = z.object({
   schemaVersion: z.literal(1), id: z.string().regex(/^responsibility-change:[a-f0-9]{64}$/), target: observationTargetSchema,
   policySha256: digestSchema, previousBaselineSha256: digestSchema, observationId: z.string().regex(/^responsibility-observation:[a-f0-9]{64}$/),
-  categories: z.array(comparisonCategorySchema).min(1).max(6), evidence: z.array(observationEvidenceRefSchema).min(1).max(2_000),
+  categories: z.array(comparisonCategorySchema).min(1).max(13), evidence: z.array(observationEvidenceRefSchema).min(1).max(2_000),
   previousSemanticSha256: digestSchema, semanticSha256: digestSchema, deliveryState: z.literal("not_requested"), changeSha256: digestSchema,
 }).strict();
 export type ResponsibilityObservation = z.infer<typeof responsibilityObservationSchema>;

@@ -186,6 +186,16 @@ class ApiResponsibilityRepository implements ResponsibilityRepository {
   }) async {
     _require(lane: lane);
     validateResponsibilityMutation(lane, input);
+    final includesWorkItem =
+        input['acknowledgePilot'] == responsibilityWorkItemPilot ||
+        input['draft'] is Map &&
+            (responsibilityMap(input['draft'])['sources'] as List).any(
+              (source) => responsibilityMap(source)['kind'] == 'work_item',
+            );
+    responsibilityRequire(
+      !includesWorkItem || NativeContract.currentVersion >= 56,
+      'Update the app before setting up work-item follow-through.',
+    );
     responsibilityRequire(
       isCurrent?.call() ?? true,
       'The originating Responsibility view changed.',

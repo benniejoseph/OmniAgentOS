@@ -58,7 +58,7 @@ describe("P7.6 Agent adaptation store", () => {
     );
   });
 
-  it("evaluates, activates with a numbered version, and rolls back", async () => {
+  it("checks eligibility, refuses unmeasured activation, and preserves legacy rollback", async () => {
     const database = fakeAdaptationSql();
     mocks.getSql.mockReturnValue(database.sql);
     const [observed] = await observeAgentAdaptationEvidence("scout", 1, owner);
@@ -73,13 +73,8 @@ describe("P7.6 Agent adaptation store", () => {
       state: "evaluated",
       evaluation: { verdict: "passed", definitionVersion: 1 },
     });
-    const active = await activateAgentAdaptation(
-      "scout",
-      observed.adaptationId,
-      1,
-      owner,
-    );
-    expect(active[0]).toMatchObject({ state: "active", activationVersion: 1 });
+    await expect(activateAgentAdaptation("scout", observed.adaptationId, 1, owner)).rejects.toThrow(/comparison/);
+    database.activateLegacy();
     const guidance = await getActiveAgentAdaptationGuidance({
       tenantId: owner.tenantId,
       ownerActorId: owner.canonicalActorId,
@@ -172,9 +167,9 @@ function fakeAdaptationSql() {
           evaluated_definition_version: params[4],
           activation_version: params[5],
           updated_at: params[6],
-          evaluated_at: params[7],
-          activated_at: params[8],
-          rolled_back_at: params[9],
+          evaluated_at: params[0] === "evaluated" ? "2026-09-07T06:00:00.000Z" : adaptation.evaluated_at,
+          activated_at: params[0] === "active" ? "2026-09-07T06:00:00.000Z" : adaptation.activated_at,
+          rolled_back_at: params[0] === "rolled_back" ? "2026-09-07T06:00:00.000Z" : adaptation.rolled_back_at,
         };
         return [adaptation];
       }
@@ -194,5 +189,5 @@ function fakeAdaptationSql() {
       transaction: async (callback: (sql: unknown) => unknown) => callback(callable),
     },
   );
-  return { sql: callable };
+  return { sql: callable, activateLegacy: () => { adaptation = { ...adaptation, state: "active", lifecycle_revision: 2, activation_version: 1, activated_at: "2026-09-07T06:00:00.000Z" }; } };
 }

@@ -5,14 +5,14 @@ from collections import defaultdict, deque
 import copy
 from datetime import datetime, timedelta, timezone
 import json
-from urllib.parse import parse_qs, urlencode, urlsplit
+from urllib.parse import parse_qs, quote, urlencode, urlsplit
 
 from playwright.sync_api import Error as PlaywrightError
 
 from fixtures import Fixtures
 
 GROUPS = ("working", "needs_you", "updates", "history")
-LABELS = {"all": "All activity", "working": "Working", "needs_you": "Needs you", "updates": "Updates", "history": "History"}
+LABELS = {"all": "All updates", "working": "Working", "needs_you": "Needs you", "updates": "Reminders", "history": "Finished"}
 ACTIVITY_PATH = "/api/activity"
 LONG_ID = "run:opaque/+" + "x" * 175
 
@@ -101,6 +101,7 @@ class ActivityFixtures(Fixtures):
         self.plans = defaultdict(deque)
         self.held = {}
         self.requests = []
+        self.detail_reads = []
         self.releases = []
 
     def cursor(self, group, offset):
@@ -156,6 +157,16 @@ class ActivityFixtures(Fixtures):
 
     def route(self, route):
         parsed = urlsplit(route.request.url)
+        if f"{parsed.scheme}://{parsed.netloc}" == self.origin and parsed.path.startswith("/api/runs/"):
+            if route.request.method != "GET":
+                return self.mutation(route, parsed.path)
+            # Next development StrictMode may remount this read effect once.
+            # Both attempts must address the one explicitly opened task.
+            if parsed.path != "/api/runs/" + quote(LONG_ID, safe="") or parsed.query or len(self.detail_reads) >= 2:
+                self.unexpected.append({"kind": "unplanned_task_detail", "path": parsed.path, "query": parsed.query})
+                return self.fulfill(route, {"error": "Only one explicitly selected task may be inspected."}, 400)
+            self.detail_reads.append(LONG_ID)
+            return self.fulfill(route, {"run": {"id": LONG_ID, "prompt": "Synthetic exact task preview", "response": "", "status": "running"}})
         if f"{parsed.scheme}://{parsed.netloc}" != self.origin or parsed.path != ACTIVITY_PATH:
             return super().route(route)
         if route.request.method != "GET":

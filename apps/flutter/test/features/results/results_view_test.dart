@@ -1,3 +1,5 @@
+import '../../native_workspace_fixture.dart';
+
 import 'package:asael/features/results/results.dart';
 import 'package:asael/features/results/results_view.dart';
 import 'package:flutter/material.dart';
@@ -36,15 +38,18 @@ void main() {
       ..snapshot = snapshot;
 
     await tester.pumpWidget(
-      MaterialApp(
-        home: ResultsView(controller: controller, onOpen: (_) {}),
+      nativeWorkspaceFixture(
+        child: MaterialApp(
+          home: ResultsView(controller: controller, onOpen: (_) {}),
+        ),
       ),
     );
 
     expect(find.byKey(const Key('created-files-section')), findsOneWidget);
     expect(find.text('Client transformation pitch'), findsOneWidget);
     expect(find.text('Private · Ready'), findsOneWidget);
-    expect(find.byKey(Key('created-file-save-${artifact.id}')), findsOneWidget);
+    expect(find.text('Unlock and refresh to save this file.'), findsOneWidget);
+    expect(find.byKey(Key('created-file-save-${artifact.id}')), findsNothing);
     expect(tester.takeException(), isNull);
   });
 }

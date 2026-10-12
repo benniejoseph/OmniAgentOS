@@ -15,6 +15,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'knowledge_consent_fixtures.dart';
+import 'knowledge_widget_helpers.dart';
 import 'knowledge_review_fixtures.dart' show reviewOwner;
 
 class _ConsentApi extends Fake implements ApiClient {
@@ -25,6 +26,7 @@ class _ConsentApi extends Fake implements ApiClient {
   @override
   Future<Map<String, dynamic>> getJsonAuthorized(
     String path, {
+    Map<String, dynamic>? headers,
     required NativeRequestAuthority authority,
     Map<String, dynamic>? query,
     CancelToken? cancelToken,
@@ -130,12 +132,7 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      final tab = find.widgetWithText(Tab, 'Personal recall');
-      await tester.ensureVisible(tab);
-      await tester.pumpAndSettle();
-      expect(tab.hitTestable(), findsOneWidget);
-      await tester.tap(tab);
-      await tester.pumpAndSettle();
+      await openMemoryTool(tester, 'Personal recall');
       final scroll = find
           .descendant(
             of: find.byType(KnowledgePersonalRecall),
@@ -180,16 +177,11 @@ void main() {
       expect(repo.submissions, hasLength(1));
       expect(controller.acceptedChange, isNull);
       expect(controller.pendingChange, isNotNull);
-      final off = find.text(
-        'Last verified read: personal automatic recall is off.',
-      );
+      final off = find.text('Personal recall is off');
       await tester.scrollUntilVisible(off, -300, scrollable: scroll);
       await tester.pumpAndSettle();
       expect(off, findsOneWidget);
-      expect(
-        find.text('Last verified read: personal automatic recall is on.'),
-        findsNothing,
-      );
+      expect(find.text('Personal recall is on'), findsNothing);
       repo.heldSubmit!.completeError(StateError('Response lost'));
       await tester.pumpAndSettle();
       expect(controller.pendingChange, isNotNull);

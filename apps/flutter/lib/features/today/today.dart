@@ -778,8 +778,9 @@ class TodayView extends StatelessWidget {
                     maxLength: 280,
                     textInputAction: TextInputAction.done,
                     onSubmitted: (value) {
-                      if (value.trim().isNotEmpty)
+                      if (value.trim().isNotEmpty) {
                         Navigator.pop(sheetContext, true);
+                      }
                     },
                     decoration: const InputDecoration(
                       hintText: 'What needs attention?',

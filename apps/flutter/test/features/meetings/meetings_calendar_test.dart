@@ -595,6 +595,8 @@ void main() {
       await tester.tap(find.text('Sync Calendar'));
       await tester.pumpAndSettle();
       expect(find.text('Sync Google Calendar?'), findsOneWidget);
+      await tester.tap(find.text('Connection details'));
+      await tester.pumpAndSettle();
       expect(
         find.textContaining('Authorization generation: 3'),
         findsOneWidget,
@@ -619,5 +621,6 @@ void main() {
       controller.dispose();
       repository.access.dispose();
     },
+    variant: TargetPlatformVariant.only(TargetPlatform.android),
   );
 }

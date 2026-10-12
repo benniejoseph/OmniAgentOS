@@ -15,7 +15,10 @@ export const notificationConfigurationSchema = z.object({
   schemaVersion: z.literal(1), ...owner, policy: z.literal(RESPONSIBILITY_NOTIFICATION_POLICY),
   runtimeConfigurationSha256: digestSchema, responsibilityRevision: revision,
   reviewSha256: digestSchema, draftSha256: digestSchema,
-  source: z.object({ kind: z.literal("meeting"), id: exactIdSchema, workspaceId: exactIdSchema }).strict(),
+  source: z.discriminatedUnion("kind", [
+    z.object({ kind: z.literal("meeting"), id: exactIdSchema, workspaceId: exactIdSchema }).strict(),
+    z.object({ kind: z.literal("work_item"), id: exactIdSchema, workspaceId: exactIdSchema, projectId: exactIdSchema }).strict(),
+  ]),
   destination: z.literal("owner_in_app"), quietOnNoChange: z.literal(true),
   maximumNotifications: z.number().int().min(1).max(1_000), expiresAt: instantSchema,
   configurationSha256: digestSchema,

@@ -1,3 +1,5 @@
+import 'package:asael/features/companion/atlas_player.dart';
+
 import 'dart:typed_data';
 
 import 'package:asael/app/theme/app_theme.dart';
@@ -127,19 +129,25 @@ void main() {
 
     await pumpPhone(tester, TodayView(controller: controller));
 
-    expect(find.text('Today'), findsOneWidget);
-    expect(find.text('Add focus').hitTestable(), findsOneWidget);
-    expect(find.text('Refresh brief').hitTestable(), findsOneWidget);
-    expect(find.text('1 open · 0 complete'), findsOneWidget);
-    expect(find.text('Daily brief'), findsOneWidget);
-    expect(find.text('Notification receipt is still pending'), findsOneWidget);
-    final suggestions = find.text('Suggested focus');
-    expect(suggestions.hitTestable(), findsOneWidget);
-    await tester.tap(suggestions);
+    expect(find.text('Your day, in focus.'), findsOneWidget);
+    final brief = find.text('View your brief');
+    await tester.tap(brief);
     await tester.pumpAndSettle();
     expect(find.text('Verify Android build'), findsOneWidget);
-    await tester.drag(find.byType(CustomScrollView), const Offset(0, -400));
-    await tester.pump();
+    expect(find.text('Notification receipt is still pending'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('Refresh brief'),
+      240,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(find.text('Refresh brief').hitTestable(), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('Review launch evidence'),
+      240,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(find.text('Your agenda'), findsOneWidget);
+    expect(find.byTooltip('Add a task').hitTestable(), findsOneWidget);
     expect(find.text('Review launch evidence'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
@@ -162,15 +170,15 @@ void main() {
         themeMode: ThemeMode.dark,
       );
 
-      expect(find.text('Assistant'), findsOneWidget);
-      expect(find.text('How can I help?'), findsOneWidget);
-      final greeting = find.image(
-        const AssetImage('assets/companion/atlas-greeting.png'),
+      expect(find.text('ATLAS'), findsOneWidget);
+      expect(find.text('What’s on\nyour mind?'), findsOneWidget);
+      final greeting = find.byWidgetPredicate(
+        (widget) => widget is AtlasPortrait && widget.greeting,
       );
       expect(greeting, findsOneWidget);
       expect(tester.getSize(greeting).height, lessThanOrEqualTo(144));
       expect(find.byTooltip('Send message').hitTestable(), findsOneWidget);
-      final options = find.byKey(const ValueKey('talk-composer-options'));
+      final options = find.widgetWithText(TextButton, 'Automatic');
       expect(options.hitTestable(), findsOneWidget);
       expect(tester.getTopLeft(greeting).dy, greaterThanOrEqualTo(0));
       expect(
@@ -181,6 +189,8 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('Use a team').hitTestable(), findsOneWidget);
       expect(find.text('Work alone').hitTestable(), findsOneWidget);
+      await tester.tap(find.byTooltip('Close').last);
+      await tester.pumpAndSettle();
       expect(find.byTooltip('Send message').hitTestable(), findsOneWidget);
       expect(tester.takeException(), isNull);
     },

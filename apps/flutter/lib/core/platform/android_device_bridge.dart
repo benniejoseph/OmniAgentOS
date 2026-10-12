@@ -108,8 +108,9 @@ class AndroidDeviceBridge {
     String method, [
     Map<String, dynamic>? input,
   ]) async {
-    if (!supported)
+    if (!supported) {
       throw UnsupportedError('This phone is available on Android.');
+    }
     return AndroidDeviceStatus.parse(
       await _channel.invokeMethod<Object?>(method, input),
     );

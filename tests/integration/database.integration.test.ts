@@ -8,7 +8,7 @@ import { removeEmptyResponsibilityRuntimeForReplay } from "./helpers/responsibil
 import { removeEmptyMemoryLifecycleForReplay } from "./helpers/memory-lifecycle-replay";
 import { removeEmptyMemoryPromotionForReplay } from "./helpers/memory-promotion-replay";
 import { removeEmptyCustomerWorkflowIntentsForReplay, removeEmptyAgentSkillMutationsForReplay, removeEmptyMeetingRecordingProcessingForReplay, removeEmptyCustomerFactIntentsForReplay, removeEmptySalesforceNativeActionsForReplay, removeEmptyNativePrivateMemoryActionsForReplay, removeEmptyNativeKnowledgeCognitionBuildsForReplay, removeEmptyGooglePersonalNativeActionsForReplay, removeEmptyNativeConnectorControlsForReplay, removeNativeConnectorCredentialRemovalsForReplay, removeNativeConnectorTrashForReplay } from "./helpers/native-catalog-replay";
-import { removeNativeConnectorCredentialRotationsForReplay, removeNativeMcpRegistrationsForReplay, removeNativeOpenapiImportsForReplay, removeNativeMcpDiscoveriesForReplay, removeNativeGithubUpgradesForReplay } from "./helpers/native-catalog-replay";
+import { removeEmptyAgentTextComparisonsForReplay, removeEmptyPost245MigrationsForReplay, removeNativeConnectorCredentialRotationsForReplay, removeNativeMcpRegistrationsForReplay, removeNativeOpenapiImportsForReplay, removeNativeMcpDiscoveriesForReplay, removeNativeGithubUpgradesForReplay } from "./helpers/native-catalog-replay";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import {
   buildAgentRunIdentityPinV1,
@@ -6824,7 +6824,7 @@ databaseDescribe("Postgres schema integration", () => {
     `;
     // Each one covers every command and role, as its restore below does.
     expect(restrictivePolicies.map(({ command, roles }) => ({ command, roles })))
-      .toEqual(Array(89).fill({ command: "*", roles: "{0}" }));
+      .toEqual(Array(94).fill({ command: "*", roles: "{0}" }));
     expect(restrictivePolicies.filter((policy) =>
       additiveDraftReplayTables.includes(policy.table_name),
     ).map(({ table_name, policy_name }) => ({ table_name, policy_name })))
@@ -9648,6 +9648,14 @@ const nativeOpenapiImportsVersion = 242;
 const nativeMcpDiscoveriesVersion = 243;
 const nativeGithubUpgradesVersion = 244;
 const nativeProviderFunctionAclRepairVersion = 245;
+const researchWorkflowNotificationsVersion = 246;
+const threadTurnWorkflowRunBindingVersion = 247;
+const personalProfilesVersion = 248;
+const androidLocalControlVersion = 249;
+const listenCaptureVersion = 250;
+const listenMediaOwnerScopeVersion = 251;
+const responsibilityWorkItemFollowthroughVersion = 252;
+const agentTextComparisonsVersion = 253;
 const additiveReplayVersions = [
   companionPreferencesVersion,
   responsibilityDraftsVersion,
@@ -9680,12 +9688,25 @@ const additiveReplayVersions = [
   nativeMcpDiscoveriesVersion,
   nativeGithubUpgradesVersion,
   nativeProviderFunctionAclRepairVersion,
+  researchWorkflowNotificationsVersion,
+  threadTurnWorkflowRunBindingVersion,
+  personalProfilesVersion,
+  androidLocalControlVersion,
+  listenCaptureVersion,
+  listenMediaOwnerScopeVersion,
+  responsibilityWorkItemFollowthroughVersion,
+  agentTextComparisonsVersion,
 ].filter((version) => databaseSchemaMigrations.some((migration) => migration.version === version));
 const meetingResolutionReplayTables: readonly string[] = [
   "omni_meeting_commitment_resolution_intents",
   "omni_meeting_commitment_resolution_progress",
 ];
 const additiveDraftReplayTables: readonly string[] = [
+  "omni_agent_adaptation_comparisons",
+  "omni_personal_profiles",
+  "omni_personal_profile_mutations",
+  "omni_listen_grants",
+  "omni_listen_sources",
   "omni_google_personal_native_actions",
   "omni_native_connector_actions",
   "omni_native_connector_credential_preparations",
@@ -10065,6 +10086,12 @@ async function withMigrationsPendingFrom<T>(
   }
   await client.begin(async (transaction) => {
     if (replay) {
+      if (additiveReplayVersions.includes(agentTextComparisonsVersion)) {
+        await removeEmptyAgentTextComparisonsForReplay(transaction);
+      }
+      if (additiveReplayVersions.includes(listenMediaOwnerScopeVersion)) {
+        await removeEmptyPost245MigrationsForReplay(transaction);
+      }
       if (additiveReplayVersions.includes(nativeGithubUpgradesVersion)) {
         await removeNativeGithubUpgradesForReplay(transaction);
       }

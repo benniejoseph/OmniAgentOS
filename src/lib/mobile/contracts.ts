@@ -75,12 +75,14 @@ import { conversationVoiceTurnsRequestSchema, conversationVoiceTurnsResponseSche
 import { nativeListenSchemas } from "@/lib/capture/listen-contracts";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 55 as const;
-// v55 adds owner-scoped mobile CSM briefs, role notes and exact source links.
-export const NATIVE_API_PREVIOUS_VERSION = 54 as const;
+export const NATIVE_API_CURRENT_VERSION = 56 as const;
+// v56 adds bounded work-item follow-through and measured text comparisons.
+// Preserve upstream rollout clients54/53/52; only56 may use these additions.
+export const NATIVE_API_PREVIOUS_VERSION = 55 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
+  54,
   53,
   52,
 ] as const;
@@ -315,6 +317,8 @@ export const nativeCompatibilitySchema = z.object({
   supportedContractVersions: z.tuple([
     z.literal(NATIVE_API_CURRENT_VERSION),
     z.literal(NATIVE_API_PREVIOUS_VERSION),
+    z.literal(54),
+    z.literal(53),
     z.literal(52),
   ]),
   status: z.enum(["compatible", "upgrade_required", "unknown"]),
@@ -404,6 +408,7 @@ export const nativeBootstrapResponseSchema = nativePublicIdentitySchema.extend({
       supportedVersions: z.tuple([
         z.literal(NATIVE_API_CURRENT_VERSION),
         z.literal(NATIVE_API_PREVIOUS_VERSION),
+        z.literal(54),
         z.literal(53),
         z.literal(52),
       ]),
@@ -2521,6 +2526,7 @@ export const nativeContractSchemas = Object.freeze({
     supportedVersions: z.tuple([
       z.literal(NATIVE_API_CURRENT_VERSION),
       z.literal(NATIVE_API_PREVIOUS_VERSION),
+      z.literal(54),
       z.literal(53),
       z.literal(52),
     ]),
@@ -2531,11 +2537,21 @@ export const nativeContractSchemas = Object.freeze({
       openapi: z.string(),
       events: z.string(),
       fixtures: z.string(),
-    }).strict()).length(4),
+    }).strict()).length(5),
   }).strict(),
 });
 
 export function nativeOperationsForVersion(version: number): readonly NativeOperation[] | undefined {
+  if (version === 56) return nativeOperationsForVersion(55)!.map((entry) => {
+    if (entry.id.startsWith("responsibilities.")) return {
+      ...entry, summary: `${entry.summary} v56 also supports canonical work-item tracking; older clients receive an explicit upgrade error for work-item records.`,
+    };
+    if (entry.id === "agents.adaptations.manage") return {
+      ...entry, summary: "Check eligibility, compare current and proposed guidance on owner-supplied text examples, activate measured improvement, or roll back one adaptation.",
+      requestBodyMaxBytes: 49_152,
+    };
+    return entry;
+  });
   if (version === 55) return [...nativeOperationsForVersion(54)!,
     operation("csm.clients.list", "GET", "/api/csm/clients", "Read your current client briefs.", "bearer", undefined, "NativeCsmClientListResponse"),
     operation("csm.client.get", "GET", "/api/projects/{id}/csm", "Read one authorized client brief and its exact source links.", "bearer", undefined, "NativeCsmClientResponse"),
@@ -2633,7 +2649,7 @@ export function nativeContractDiscovery() {
     previousVersion: NATIVE_API_PREVIOUS_VERSION,
     supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [
       typeof NATIVE_API_CURRENT_VERSION, typeof NATIVE_API_PREVIOUS_VERSION,
-      53, 52,
+      54, 53, 52,
     ],
     versions: NATIVE_API_SUPPORTED_VERSIONS.map((version) => ({
       version,

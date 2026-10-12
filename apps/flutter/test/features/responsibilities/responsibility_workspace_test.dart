@@ -34,6 +34,8 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('New follow-up'));
+      await tester.pumpAndSettle();
       final purpose = find.byKey(
         const ValueKey('responsibility-field-purpose'),
       );
@@ -97,6 +99,8 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(repository.writes, hasLength(1));
+      await tester.tap(find.text('Continue your draft'));
+      await tester.pumpAndSettle();
       expect(find.byKey(const Key('responsibility-recover')), findsOneWidget);
       final originalKey = controller.pending!.key;
       repository.onMutation = null;

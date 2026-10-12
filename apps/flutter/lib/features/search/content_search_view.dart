@@ -348,6 +348,11 @@ class _ContentSearchViewState extends State<ContentSearchView>
                   ),
                 ),
               ],
+              if (c.query.isNotEmpty && !c.loading)
+                Semantics(
+                  liveRegion: true,
+                  child: Text('Results for “${c.query}”'),
+                ),
               if (c.query.isEmpty && c.error == null)
                 Padding(
                   padding: const EdgeInsets.symmetric(vertical: 40),

@@ -11,7 +11,7 @@ vi.mock("./procedure-reference", () => ({ readOwnedResponsibilityProcedures: moc
 vi.mock("@/lib/workflows/saved-procedures", () => ({ buildWorkflowProcedureSnapshot: mocks.snapshot }));
 vi.mock("@/lib/workflows/triggers", () => ({ nextWorkflowScheduleOccurrence: () => undefined }));
 vi.mock("./observation-references", () => ({ responsibilityObservationReader: () => mocks.read }));
-vi.mock("@/lib/workspaces/contracts", () => ({ parseCanonicalWorkItemV1: (value: unknown) => value }));
+vi.mock("@/lib/workspaces/contracts", async (original) => ({ ...await original<typeof import("@/lib/workspaces/contracts")>(), parseCanonicalWorkItemV1: (value: unknown) => value }));
 vi.mock("@/lib/tools/registry", () => ({ getGovernedTool: mocks.tool, getGovernedTools: () => [] }));
 import { assertCurrentRuntimePrincipal, resolveResponsibilityPilot, resolveRuntimeOwnerContext } from "./runtime-references";
 const work = { ...runtimeConfiguration.pins.work, tenantId: runtimeOwner.tenantId, ownerActorIds: [runtimeOwner.actorId] };

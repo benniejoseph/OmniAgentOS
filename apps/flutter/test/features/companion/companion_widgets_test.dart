@@ -1,3 +1,8 @@
+import 'package:asael/features/companion/companion_providers.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../../native_workspace_fixture.dart';
+
 import 'package:asael/features/companion/companion_controller.dart';
 import 'package:asael/features/companion/companion_models.dart';
 import 'package:asael/features/companion/companion_presence.dart';
@@ -8,6 +13,13 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'companion_fixtures.dart';
+
+Widget _workspace({required Widget child}) => nativeWorkspaceFixture(
+  child: ProviderScope(
+    overrides: [companionScopeProvider.overrideWithValue(null)],
+    child: child,
+  ),
+);
 
 class _MissingPortrait extends CachingAssetBundle {
   @override
@@ -20,12 +32,14 @@ void main() {
     'unknown or hidden portrait preserves status and 48px Home action',
     (tester) async {
       var homes = 0;
-      Widget view(CompanionPreferences? preferences) => MaterialApp(
-        home: Scaffold(
-          body: CompanionPresence(
-            preferences: preferences,
-            work: companionWork(status: 'queued', runId: 'exact-run-id'),
-            onHome: () => homes++,
+      Widget view(CompanionPreferences? preferences) => _workspace(
+        child: MaterialApp(
+          home: Scaffold(
+            body: CompanionPresence(
+              preferences: preferences,
+              work: companionWork(status: 'queued', runId: 'exact-run-id'),
+              onHome: () => homes++,
+            ),
           ),
         ),
       );
@@ -65,15 +79,17 @@ void main() {
     'asset failure and OS reduced motion retain status and controls without playback',
     (tester) async {
       await tester.pumpWidget(
-        MaterialApp(
-          home: MediaQuery(
-            data: const MediaQueryData(disableAnimations: true),
-            child: DefaultAssetBundle(
-              bundle: _MissingPortrait(),
-              child: const Scaffold(
-                body: CompanionPresence(
-                  preferences: CompanionPreferences(),
-                  work: availableCompanion,
+        _workspace(
+          child: MaterialApp(
+            home: MediaQuery(
+              data: const MediaQueryData(disableAnimations: true),
+              child: DefaultAssetBundle(
+                bundle: _MissingPortrait(),
+                child: const Scaffold(
+                  body: CompanionPresence(
+                    preferences: CompanionPreferences(),
+                    work: availableCompanion,
+                  ),
                 ),
               ),
             ),
@@ -106,13 +122,18 @@ void main() {
       ('off', 'Off', 'ATLAS stays still.'),
     ]) {
       await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: CompanionPresence(
-              key: ValueKey(motion),
-              preferences: CompanionPreferences(visible: false, motion: motion),
-              work: availableCompanion,
-              reactionScope: motion,
+        _workspace(
+          child: MaterialApp(
+            home: Scaffold(
+              body: CompanionPresence(
+                key: ValueKey(motion),
+                preferences: CompanionPreferences(
+                  visible: false,
+                  motion: motion,
+                ),
+                work: availableCompanion,
+                reactionScope: motion,
+              ),
             ),
           ),
         ),
@@ -133,18 +154,20 @@ void main() {
       addTearDown(c.dispose);
       await c.refresh();
       await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: SingleChildScrollView(
-              child: CompanionSettingsEditor(controller: c),
+        _workspace(
+          child: MaterialApp(
+            home: Scaffold(
+              body: SingleChildScrollView(
+                child: CompanionSettingsEditor(controller: c),
+              ),
             ),
           ),
         ),
       );
-      expect(find.textContaining('read-only preview'), findsOneWidget);
+      expect(find.text('Saved preferences have not loaded.'), findsOneWidget);
       expect(
         find.textContaining(
-          'Low Power Mode or unavailable power status keeps ATLAS still.',
+          'System Reduce Motion and Low Power Mode take priority.',
         ),
         findsOneWidget,
       );
@@ -170,6 +193,8 @@ void main() {
       expect(repository.submissions, isEmpty);
       expect(find.text('Unsaved draft'), findsOneWidget);
     },
+
+    variant: TargetPlatformVariant.only(TargetPlatform.macOS),
   );
   testWidgets(
     'discard restores saved draft with focus; reset requires confirmation and exact revision',
@@ -189,10 +214,12 @@ void main() {
       await c.refresh();
       c.edit(const CompanionPreferences(motion: 'off'));
       await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: SingleChildScrollView(
-              child: CompanionSettingsEditor(controller: c),
+        _workspace(
+          child: MaterialApp(
+            home: Scaffold(
+              body: SingleChildScrollView(
+                child: CompanionSettingsEditor(controller: c),
+              ),
             ),
           ),
         ),
@@ -233,5 +260,7 @@ void main() {
       expect(c.receipt!.revision, 4);
       expect(c.draft, const CompanionPreferences());
     },
+
+    variant: TargetPlatformVariant.only(TargetPlatform.macOS),
   );
 }

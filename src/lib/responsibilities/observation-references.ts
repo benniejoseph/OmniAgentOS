@@ -3,7 +3,9 @@ import { parseMeetingRevision } from "@/lib/meetings/contracts";
 import { canonicalAuthUserActorFromSecurityContext } from "@/lib/security/canonical-actor";
 import type { SecurityContext } from "@/lib/security/types";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
-import { RESPONSIBILITY_MEETING_COMPARISON_POLICY, type ComparisonProjection } from "./comparison-policy";
+import { RESPONSIBILITY_MEETING_COMPARISON_POLICY, RESPONSIBILITY_WORK_ITEM_COMPARISON_POLICY, type ComparisonProjection } from "./comparison-policy";
+import { readOwnedWorkItemWithSql } from "./work-item-source";
+import { ResponsibilityError } from "./state";
 import type { AuthoritativeSourceRead } from "./observation-contracts";
 import type { TransactionalObservationReader } from "./observation-store";
 import type { ResponsibilityOwner } from "./state";
@@ -16,10 +18,35 @@ import type { ResponsibilityOwner } from "./state";
 export function responsibilityObservationReader(context: SecurityContext, owner: ResponsibilityOwner): TransactionalObservationReader {
   const canonical = canonicalAuthUserActorFromSecurityContext(context);
   const boundOwner = canonical?.actorId ?? context.actorId;
-  return async ({ target, source }, sql: SqlClient): Promise<AuthoritativeSourceRead> => {
+  return async ({ target, source, observedAt }, sql: SqlClient): Promise<AuthoritativeSourceRead> => {
     const unavailable = (reason: Extract<AuthoritativeSourceRead, { state: "unavailable" }>["reason"]): AuthoritativeSourceRead => ({ state: "unavailable", source, reason });
     if (!sql.transactionScoped || owner.tenantId !== context.tenantId || owner.actorId !== boundOwner || target.tenantId !== owner.tenantId || target.actorId !== owner.actorId ||
       ((context.source === "session" || context.source === "mobile") && !canonical)) return unavailable("access_denied");
+    if (source.kind === "work_item") {
+      try {
+        const read = await readOwnedWorkItemWithSql(sql, owner, { workspaceId: source.workspaceId, projectId: source.projectId, workItemId: source.id }, observedAt);
+        const work = read.workItem;
+        const revisionId = `work-item-revision:${read.revisionSha256}`;
+        const evidenceIds = [revisionId];
+        const terminal = ["unverified", "succeeded", "failed", "canceled"].includes(work.canonicalStatus);
+        return { state: "available", source, current: true, complete: true,
+          authority: { tenantId: owner.tenantId, requestActorId: owner.actorId, authoredOwnerActorId: owner.actorId, purpose: "responsibility_observation",
+            authoritySha256: canonicalJsonSha256({ ...owner, workspaceId: source.workspaceId, projectId: source.projectId, workItemId: source.id, ownerActorIds: work.ownerActorIds }) },
+          revisionId, revisionSha256: read.revisionSha256, observedAt: read.checkedAt,
+          sourceUpdatedAt: [work.updatedAt, ...read.dependencies.flatMap((item) => item.state === "available" ? [item.updatedAt] : [])].sort().at(-1)!,
+          freshUntil: new Date(Date.parse(read.checkedAt) + RESPONSIBILITY_WORK_ITEM_COMPARISON_POLICY.maximumSourceAgeSeconds * 1_000).toISOString(),
+          evidence: [{ kind: "work_item_revision", id: revisionId, revisionId, revisionSha256: read.revisionSha256, contentSha256: read.revisionSha256 }],
+          projection: { comparisonState: "deterministic", meeting: null, facts: [], commitments: [], uninterpretedText: [],
+            workItem: { key: canonicalJsonSha256([source.workspaceId, source.projectId, source.id]), canonicalStatus: work.canonicalStatus,
+              sourceStatus: work.sourceStatus, dueAt: work.schedule.dueAt, overdue: !terminal && work.schedule.dueAt !== null && work.schedule.dueAt <= observedAt,
+              priority: work.priority, ownerActorIds: work.ownerActorIds,
+              dependencies: read.dependencies.map((item) => JSON.stringify(item.state === "available" ? [item.id, item.canonicalStatus, item.sourceStatus] : [item.id, "unavailable"])),
+              outputReferences: work.artifacts.map((item) => JSON.stringify(item)), evidenceIds } } };
+      } catch (error) {
+        if (error instanceof ResponsibilityError) return unavailable("access_denied");
+        throw error;
+      }
+    }
     if (source.kind !== "meeting") return unavailable("unsupported");
     // The transaction's exact canonical actor RLS is supplemented by explicit
     // owner predicates. FOR SHARE keeps revision/consent/visibility immutable

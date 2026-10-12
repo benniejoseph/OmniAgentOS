@@ -117,11 +117,19 @@ NativeWorkspaceAccess _access() => NativeWorkspaceAccess(
   true,
 );
 
-Future<void> _tap(WidgetTester tester, Finder target) async {
+Future<void> _tap(
+  WidgetTester tester,
+  Finder target, {
+  bool settle = true,
+}) async {
   await tester.ensureVisible(target);
   await tester.pumpAndSettle();
   await tester.tap(target);
-  await tester.pumpAndSettle();
+  if (settle) {
+    await tester.pumpAndSettle();
+  } else {
+    await tester.pump();
+  }
 }
 
 void main() {
@@ -289,7 +297,11 @@ void main() {
       expect(find.text('Full mission_artifact label'), findsNothing);
       final pending = Completer<LibraryItem>();
       repository.read = () => pending.future;
-      await _tap(tester, find.byKey(const Key('library-select-current')));
+      await _tap(
+        tester,
+        find.widgetWithText(FilledButton, 'Use for this meeting'),
+        settle: false,
+      );
       expect(repository.reads, 2);
       expect(selected, isEmpty);
       repository.value = _source(revision: 2);
@@ -298,11 +310,15 @@ void main() {
       expect(selected, isEmpty);
       expect(find.textContaining('This source changed.'), findsOneWidget);
       repository.read = null;
-      await _tap(tester, find.byKey(const Key('library-select-current')));
+      await _tap(
+        tester,
+        find.widgetWithText(FilledButton, 'Use for this meeting'),
+      );
       expect(repository.reads, 3);
       expect(selected.single.versionId, repository.value.versionId);
       expect(tester.takeException(), isNull);
     },
+    variant: TargetPlatformVariant.only(TargetPlatform.android),
   );
 
   testWidgets(
@@ -327,13 +343,18 @@ void main() {
       await tester.pumpAndSettle();
       final pending = Completer<LibraryItem>();
       repository.read = () => pending.future;
-      await _tap(tester, find.byKey(const Key('library-select-current')));
+      await _tap(
+        tester,
+        find.widgetWithText(FilledButton, 'Use for this meeting'),
+        settle: false,
+      );
       repository.current = false;
       pending.complete(repository.value);
       await tester.pumpAndSettle();
       expect(selected, isEmpty);
       expect(tester.takeException(), isNull);
     },
+    variant: TargetPlatformVariant.only(TargetPlatform.android),
   );
 
   for (final replacement in ['none', 'workspace', 'meeting']) {

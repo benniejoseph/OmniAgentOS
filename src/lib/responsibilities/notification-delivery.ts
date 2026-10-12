@@ -87,7 +87,7 @@ export async function attemptResponsibilityNotification(owner: ResponsibilityOwn
           const dispatchedAt = await runtimeDatabaseNow(deliverySql);
           if (candidate.expiresAt <= dispatchedAt || head.configuration.expiresAt <= dispatchedAt ||
             (resolved.authorityExpiresAt !== null && resolved.authorityExpiresAt <= dispatchedAt) ||
-            !resolved.evidence.projection.meeting?.startsAt || resolved.evidence.projection.meeting.startsAt <= dispatchedAt) {
+            (runtime.configuration.source.kind === "meeting" && (!resolved.evidence.projection.meeting?.startsAt || resolved.evidence.projection.meeting.startsAt <= dispatchedAt))) {
             throw new ResponsibilityError("The current in-app delivery authority expired.", 409, "responsibility_notification_delivery_expired");
           }
           const notification = await recordResponsibilityInboxNotificationWithSql(deliverySql, { ...owner, responsibilityId: id, candidateId: candidate.id, now: dispatchedAt });

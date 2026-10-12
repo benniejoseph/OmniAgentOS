@@ -163,7 +163,7 @@ Key properties:
 - Text deltas stream to the client immediately but persist to the run ledger in batches.
 
 P9.1 inserts a transport-neutral application-service boundary between product
-callers and domain stores. Later phases extend it to 251 active `app.*`
+callers and domain stores. Later phases extend it to the active `app.*`
 operations, listed in `APP_SERVICE_OPERATION_CONTRACTS` in
 `src/lib/app-services/registry.ts`, across the workspace, project, work-item,
 asset, memory, Agent, Skill, run, workflow, connector, settings, Today, and
@@ -2844,6 +2844,20 @@ have no activation authority. The initial read-only Meeting pilot pins the
 existing `app.meetings.show` tool and goes through the governed executor; it
 cannot dispatch an arbitrary procedure, model, approval or external effect.
 
+
+The work-item lane added in migration 252 pins `app.work_items.show` and the
+built-in `responsibility.work_item.followthrough.v1` procedure. Its provenance
+is an explicit v3 built-in procedure snapshot, not a fabricated memory record.
+Activation pins the reviewed projection; later checks retain that configuration
+while re-proving current ownership, membership and authoritative source hashes.
+Status, deadline, clock-derived overdue state, priority, owners, readable
+dependencies and output references are deterministic comparison fields. Expiry
+is the executable stop, so done/reopened transitions remain observable. Marked
+done is not independently verified. Web and native v56 support this lane;
+supported v55–v52 clients keep meeting support and receive an explicit upgrade
+conflict for work-item records. A list containing such records is rejected rather
+than silently filtered.
+
 A checked managed transaction in `src/lib/db/client.ts` allows the existing
 scoped stores to join the runtime transaction without acquiring another pool
 connection. Context identity, lifetime and pending operations remain checked;
@@ -2868,3 +2882,23 @@ native Agent/Skill catalog graph (definition, identity lifecycle, Trash,
 immutable acceptance and events). Callers use the adopted client inside the
 callback. No provider call or new execution authority enters those transactions;
 current owner, membership and review pins are rechecked under their domain locks.
+
+## Measured text guidance comparisons
+
+Migration 253 adds the actor-private `omni_agent_adaptation_comparisons` ledger
+and the current comparison pointer on adaptations. The compare action reserves
+an exact owner/key/request before model calls. A repeated key returns its pending
+or completed attempt. An expired reservation settles incomplete and cannot
+silently start another paid run.
+
+The current and candidate instruction sets are compiled from the same current
+Agent definition, active guidance, principal, model assignment and fixed clock.
+Both variants receive 3–10 distinct owner examples. Literal required/forbidden
+phrases and character bounds grade the paired outputs. Calls alternate order,
+use no tools/retrieval/skills/memory and are capped at 20 calls, 1,000 output
+tokens per call and 120 seconds. A candidate must add a passing case with no
+individual regression. Activation also revalidates its current configuration
+pins and 24-hour freshness under the Agent definition lock. Structural
+eligibility is labelled separately from empirical comparison. Legacy active
+items can still be rolled back. This measures the supplied text examples; it
+does not establish tool performance or broad statistical improvement.

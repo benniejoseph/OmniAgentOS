@@ -1,3 +1,4 @@
+import { withMeasuredComparison } from "@/lib/agents/adaptation-comparison.test-fixtures";
 import { describe, expect, it } from "vitest";
 
 import { agentAdaptationAction } from "@/components/agents/agent-adaptation-editor";
@@ -12,7 +13,7 @@ describe("P7.6 Agent adaptation editor", () => {
   it("offers evaluation only on the observed release", () => {
     expect(agentAdaptationAction(observed(), 4)).toEqual({
       kind: "evaluate",
-      label: "Evaluate",
+      label: "Check eligibility",
     });
     expect(agentAdaptationAction(observed(), 5)).toMatchObject({
       kind: "blocked",
@@ -22,8 +23,8 @@ describe("P7.6 Agent adaptation editor", () => {
   it("offers activation only after a passed exact-release evaluation", () => {
     const evaluated = evaluateAgentAdaptationV1(observed(), 4);
     expect(agentAdaptationAction(evaluated, 4)).toEqual({
-      kind: "activate",
-      label: "Activate",
+      kind: "compare",
+      label: "Compare on example tasks",
     });
     expect(agentAdaptationAction(evaluated, 5)).toMatchObject({
       kind: "blocked",
@@ -34,13 +35,13 @@ describe("P7.6 Agent adaptation editor", () => {
     const held = evaluateAgentAdaptationV1(observed(0.5), 4);
     expect(agentAdaptationAction(held, 4)).toEqual({
       kind: "blocked",
-      reason: "Held because the measurable confidence threshold was not met.",
+      reason: "Held because the evidence confidence threshold was not met. This is a policy check, not a behavior test.",
     });
   });
 
   it("keeps rollback available and makes it terminal", () => {
     const active = activateAgentAdaptationV1(
-      evaluateAgentAdaptationV1(observed(), 4),
+      withMeasuredComparison(evaluateAgentAdaptationV1(observed(), 4)),
       2,
     );
     expect(agentAdaptationAction(active, 5)).toEqual({

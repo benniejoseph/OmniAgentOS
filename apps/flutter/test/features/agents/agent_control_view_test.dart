@@ -43,8 +43,19 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Live work'), findsOneWidget);
-    expect(find.text('Agent Control'), findsWidgets);
+    await tester.tap(find.text('Live work'));
+    await tester.pumpAndSettle();
+    expect(find.text('Your agents'), findsOneWidget);
     expect(find.byKey(const Key('android-agent-control-list')), findsOneWidget);
+    await tester.tap(
+      find
+          .descendant(
+            of: find.byType(ExpansionTile).first,
+            matching: find.byType(ListTile),
+          )
+          .first,
+    );
+    await tester.pumpAndSettle();
     expect(find.textContaining('openai · gpt-6-astra'), findsWidgets);
     expect(
       find.byKey(const Key('android-agent-control-cancel-task-scout-one')),

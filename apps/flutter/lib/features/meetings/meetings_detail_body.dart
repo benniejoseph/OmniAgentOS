@@ -258,8 +258,9 @@ class _MobileMeetingBodyState extends State<_MobileMeetingBody> {
     final view = widget.view, controller = view.controller;
     final snapshot = controller.detail;
     final meeting = snapshot?.meeting;
-    if (!controller.readable || meeting == null || snapshot == null)
+    if (!controller.readable || meeting == null || snapshot == null) {
       return const SizedBox.shrink();
+    }
     final locale = MaterialLocalizations.of(context),
         start = meeting.startAt.toLocal();
     return Column(

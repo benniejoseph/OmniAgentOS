@@ -9,7 +9,10 @@ export function verifyPilotConfiguration(value: unknown): PilotConfiguration {
   const config = pilotConfigurationSchema.parse(value); const { configurationSha256, ...body } = config;
   if (configurationSha256 !== canonicalJsonSha256(body) || canonicalJsonSha256(config.checkReservation) !== canonicalJsonSha256(PILOT_CHECK_RESERVATION) ||
     config.pins.sources.length !== 1 || canonicalJsonSha256(config.pins.sources[0].source) !== canonicalJsonSha256(config.source) ||
-    config.tool.input.meetingId !== config.source.id || config.tool.input.workspaceId !== config.source.workspaceId) throw storageInvalid();
+    config.tool.input.workspaceId !== config.source.workspaceId ||
+    (config.pilot === "native_meeting_metadata_v1" ? config.tool.input.meetingId !== config.source.id :
+      config.tool.input.workItemId !== config.source.id || config.tool.input.projectId !== config.source.projectId ||
+      config.pins.work.workItemId !== config.source.id || config.pins.work.workspaceId !== config.source.workspaceId || config.pins.work.projectId !== config.source.projectId)) throw storageInvalid();
   reserveResponsibilityBudget({ limits: config.cumulativeLimits, maximumChecks: config.maximumChecks, used: zeroResponsibilityBudget(), reserved: zeroResponsibilityBudget(), usedChecks: 0, reservedChecks: 0 }, config.checkReservation);
   return config;
 }
@@ -45,7 +48,7 @@ export function changeResponsibilityLifecycle(input: {
   if (request.action === "activate") {
     if (current || !input.configuration) throw conflict("responsibility_already_activated");
     const configuration = verifyPilotConfiguration(input.configuration);
-    if (configuration.configurationSha256 !== request.configurationSha256 || configuration.cadence.expiresAt <= now || !input.nextDueAt) throw conflict("responsibility_activation_changed");
+    if (configuration.pilot !== request.acknowledgePilot || configuration.configurationSha256 !== request.configurationSha256 || configuration.cadence.expiresAt <= now || !input.nextDueAt) throw conflict("responsibility_activation_changed");
     return verifyLifecycle({ schemaVersion: 1, contract: RESPONSIBILITY_RUNTIME_CONTRACT, ...owner, responsibilityId,
       revision: 1, generation: 1, state: "active", reason: "owner_activated", configuration, nextDueAt: input.nextDueAt,
       budget: { limits: configuration.cumulativeLimits, maximumChecks: configuration.maximumChecks, used: zeroResponsibilityBudget(), reserved: zeroResponsibilityBudget(), usedChecks: 0, reservedChecks: 0 }, activatedAt: now, updatedAt: now });
@@ -53,7 +56,7 @@ export function changeResponsibilityLifecycle(input: {
   if (!current) throw conflict("responsibility_not_activated");
   if (request.action === "resume") {
     if (current.state !== "paused" || current.budget.reservedChecks !== 0 || !input.configuration ||
-      verifyPilotConfiguration(input.configuration).configurationSha256 !== current.configuration.configurationSha256 || request.configurationSha256 !== current.configuration.configurationSha256 ||
+      verifyPilotConfiguration(input.configuration).configurationSha256 !== current.configuration.configurationSha256 || request.configurationSha256 !== current.configuration.configurationSha256 || request.acknowledgePilot !== current.configuration.pilot ||
       current.configuration.cadence.expiresAt <= now || !input.nextDueAt) throw conflict("responsibility_resume_changed");
     reserveResponsibilityBudget(current.budget, current.configuration.checkReservation);
     return verifyLifecycle({ ...current, revision: current.revision + 1, generation: current.generation + 1, state: "active", reason: "owner_resumed", nextDueAt: input.nextDueAt, updatedAt: now });

@@ -8,6 +8,10 @@ import {
   rollbackAgentAdaptationV1,
   type AgentAdaptationV1,
 } from "@/lib/agents/adaptation-contracts";
+import { resolveCustomAgentIdentityWithSql } from "@/lib/agents/identity-store";
+import { buildBuiltInAgentIdentityV1, isBuiltInAgentIdentityId } from "@/lib/agents/identity-contracts";
+import { adaptationBaselineSha256, resolveAdaptationComparisonRuntime } from "@/lib/agents/adaptation-comparison";
+import { assertAdaptationComparisonActivation } from "@/lib/agents/adaptation-comparison-contracts";
 import { ensureDatabaseSchema, getSql, hasDatabaseUrl } from "@/lib/db/client";
 import { appendScopedDomainEvent } from "@/lib/events/store";
 import { createExecutionScope, type ExecutionScope } from "@/lib/security/execution-scope";
@@ -61,6 +65,7 @@ export async function listAgentAdaptations(
 ) {
   requireDatabase();
   await ensureDatabaseSchema();
+  await import("@/lib/agents/adaptation-comparison-store").then((module) => module.expireAgentAdaptationComparisons(agentId, owner));
   return readAdaptations(getSql(), agentId, owner);
 }
 
@@ -198,13 +203,30 @@ export async function getActiveAgentAdaptationGuidance(input: {
     ORDER BY activation_version ASC
     LIMIT 10
   `;
-  return rows.map(adaptationFromRow).map((adaptation) => ({
+  return rows.map(adaptationFromRow).map(adaptationToGuidance);
+}
+
+function adaptationToGuidance(adaptation: AgentAdaptationV1): ActiveAgentAdaptationGuidance {
+  return ({
     adaptationId: adaptation.adaptationId,
     activationVersion: requiredVersion(adaptation.activationVersion),
     guidance: adaptation.effect.guidance,
     confidence: adaptation.confidence,
     evaluationSha256: adaptation.evaluation?.evaluationSha256 || "",
-  }));
+  });
+}
+
+export async function readActiveAdaptationGuidanceWithSql(sql: AdaptationSql, agentId: string, definitionVersion: number, owner: AgentAdaptationOwner) {
+  const rows = await sql`SELECT * FROM omni_agent_adaptations WHERE tenant_id = ${owner.tenantId} AND owner_actor_id = ${owner.canonicalActorId} AND agent_definition_id = ${agentId} AND state = 'active' AND evaluated_definition_version = ${definitionVersion} ORDER BY activation_version ASC LIMIT 10`;
+  return rows.map(adaptationFromRow).map(adaptationToGuidance);
+}
+
+export async function lockAdaptationIdentity(sql: AdaptationSql, agentId: string, owner: AgentAdaptationOwner) {
+  await sql`SELECT pg_advisory_xact_lock(hashtext(${owner.tenantId}), hashtext(${`${owner.canonicalActorId}:${agentId}`}))`;
+  if (isBuiltInAgentIdentityId(agentId)) return buildBuiltInAgentIdentityV1({ agentId, tenantId: owner.tenantId, controllerActorId: owner.canonicalActorId });
+  await sql`SELECT agent_definition_id FROM omni_agent_release_channels WHERE tenant_id = ${owner.tenantId} AND owner_actor_id = ${owner.canonicalActorId} AND agent_definition_id = ${agentId} FOR UPDATE`;
+  await sql`SELECT principal_id FROM omni_tenant_execution_principals WHERE tenant_id = ${owner.tenantId} AND controller_actor_id = ${owner.canonicalActorId} AND agent_definition_id = ${agentId} AND state = 'active' FOR UPDATE`;
+  return resolveCustomAgentIdentityWithSql({ tenantId: owner.tenantId, ownerActorId: owner.canonicalActorId, agentId, sql });
 }
 
 async function transitionAgentAdaptation(
@@ -216,7 +238,11 @@ async function transitionAgentAdaptation(
 ) {
   requireDatabase();
   await ensureDatabaseSchema();
+  const before = action === "activate" ? (await listAgentAdaptations(agentId, owner)).find((row) => row.adaptationId === adaptationId) : undefined;
+  // Resolve model configuration outside row locks; no model generation occurs here.
+  const runtime = before?.comparison ? await resolveAdaptationComparisonRuntime({ owner, identity: await import("@/lib/agents/identity-store").then((module) => module.resolveAgentIdentityForExecution({ tenantId: owner.tenantId, actorId: owner.actorId, agentId })), suite: before.comparison.suite }) : undefined;
   return getSql().transaction(async (sql: AdaptationSql) => {
+    const identity = await lockAdaptationIdentity(sql, agentId, owner);
     const current = await readAdaptationForUpdate(
       sql,
       agentId,
@@ -237,6 +263,11 @@ async function transitionAgentAdaptation(
       next = evaluateAgentAdaptationV1(current, definitionVersion);
       eventType = AGENT_ADAPTATION_EVENT_TYPES.evaluated;
     } else if (action === "activate") {
+      const active = await readActiveAdaptationGuidanceWithSql(sql, agentId, definitionVersion, owner);
+      if (!runtime || active.length >= 10) throw new AgentAdaptationConflictError("Run a fresh text comparison before activation; at most ten guidance items can be active.");
+      try {
+        assertAdaptationComparisonActivation(current.comparison, { definitionVersion: identity.definition.definitionVersion, definitionSha256: identity.definition.definitionSha256, principalSha256: identity.principal.principalSha256, baselineGuidanceSha256: adaptationBaselineSha256(active), candidateEffectSha256: current.effect.effectSha256, runtime: runtime.pin });
+      } catch (error) { throw new AgentAdaptationConflictError(error instanceof Error ? error.message : undefined); }
       await sql`
         SELECT pg_advisory_xact_lock(
           hashtext(${owner.tenantId}),
@@ -268,10 +299,7 @@ async function transitionAgentAdaptation(
           evaluated_definition_version =
             ${next.evaluation?.definitionVersion || null},
           activation_version = ${next.activationVersion},
-          updated_at = ${next.updatedAt},
-          evaluated_at = ${next.evaluation?.evaluatedAt || null},
-          activated_at = ${next.activatedAt},
-          rolled_back_at = ${next.rolledBackAt}
+          updated_at = ${next.updatedAt}
       WHERE tenant_id = ${owner.tenantId}
         AND adaptation_id = ${adaptationId}
         AND agent_definition_id = ${agentId}
@@ -309,7 +337,7 @@ async function readAdaptations(
   return rows.map(adaptationFromRow);
 }
 
-async function readAdaptationForUpdate(
+export async function readAdaptationForUpdate(
   sql: AdaptationSql,
   agentId: string,
   adaptationId: string,
@@ -373,7 +401,7 @@ function adaptationFromFeedbackRow(
   });
 }
 
-function adaptationFromRow(row: SqlRow) {
+export function adaptationFromRow(row: SqlRow) {
   const evaluation = row.evaluation === null || row.evaluation === undefined
     ? null
     : objectValue(row.evaluation);
@@ -395,6 +423,7 @@ function adaptationFromRow(row: SqlRow) {
     confidence: Number(row.confidence),
     effect: row.effect_payload,
     evaluation,
+    ...(row.comparison ? { comparison: row.comparison } : {}),
     activationVersion: nullableVersion(row.activation_version),
     activatedAt: nullableTimestamp(row.activated_at),
     rolledBackAt: nullableTimestamp(row.rolled_back_at),
