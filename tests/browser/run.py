@@ -200,9 +200,9 @@ def exercise(browser, origin, credentials, checks, coarse):
         checks.check("Draft survives Chat/Map", True)
         label = "phone" if coarse else "desktop"
         select_theme(page, "light", coarse)
-        trigger = page.get_by_role("button", name="Start voice mode with Asael")
+        trigger = page.get_by_role("button", name="Start voice conversation with Asael")
         trigger.click()
-        dialog = page.get_by_role("dialog", name="Realtime voice to Asael")
+        dialog = page.get_by_role("dialog", name="Conversation with Asael")
         expect(dialog).to_be_visible()
         checks.check("Voice consent does not open microphone", page.evaluate("window.__micAttempts") == 0)
         expect_voice_poster(page, atlas_asset("available", "light"), 256)
@@ -275,14 +275,14 @@ def exercise(browser, origin, credentials, checks, coarse):
         page.route(poster_url, lambda route: route.fulfill(status=404, content_type="text/plain",
                    body="Synthetic vector artwork unavailable", headers={"cache-control": "no-store"}))
         navigate(page, origin, f"/app/command?thread={THREAD_ID}")
-        trigger = page.get_by_role("button", name="Start voice mode with Asael")
+        trigger = page.get_by_role("button", name="Start voice conversation with Asael")
         with page.expect_response(poster_url) as missing_poster:
             trigger.click()
-        dialog = page.get_by_role("dialog", name="Realtime voice to Asael")
+        dialog = page.get_by_role("dialog", name="Conversation with Asael")
         expect(dialog).to_be_visible()
         expect(dialog.locator("[data-voice-portrait]")).to_have_attribute("data-voice-portrait", "unavailable")
         expect(dialog.get_by_text("Portrait unavailable", exact=True)).to_be_visible()
-        expect(dialog.get_by_role("button", name="Agree & start", exact=True)).to_be_enabled()
+        expect(dialog.get_by_role("button", name="Start conversation", exact=True)).to_be_enabled()
         checks.check("Voice ATLAS: unavailable vector retains consent without microphone or motion",
                      missing_poster.value.status == 404 and page.evaluate("window.__micAttempts") == 0
                      and dialog.locator("[data-atlas-lottie] svg").count() == 0 and not atlas.clip_requests())
@@ -393,30 +393,35 @@ def exercise_scope(browser, origin, credentials, checks):
                 fixture.allow_voice = True
                 fixture.defaults["/api/companion/preferences"] = companion_preferences(intensity="expressive", home_state="not_set")
                 page.emulate_media(reduced_motion="no-preference")
-                page.get_by_role("button", name="Start voice mode with Asael", exact=True).click()
+                page.get_by_role("button", name="Start voice conversation with Asael", exact=True).click()
                 stage = page.locator("[data-voice-portrait]")
                 expect(stage).to_be_visible()
                 page.wait_for_function("""() => {const image=document.querySelector('[data-voice-portrait] img');
                   return image?.naturalWidth===256 && new URL(image.currentSrc||image.src,location.href).pathname.includes('/available-');} """)
                 checks.check("Voice ATLAS: admitted poster preserves still consent", not atlas.clip_requests())
-                page.get_by_role("button", name="Agree & start", exact=True).click()
+                page.get_by_role("button", name="Start conversation", exact=True).click()
                 scope_until(page, lambda: "old-voice" in fixture.held, "Synthetic voice session was not held")
                 checks.check("Assistant scope: synthetic microphone is active before replacement",
                              page.evaluate("window.__scopeMicAttempts===1 && window.__scopeMicStops===0"))
+                # Continuous voice replaces the consent stage with its live
+                # portrait. A held setup is working, not a connected listening
+                # session, and this initial observation must not invent a reaction.
+                expect(stage).to_have_attribute("data-companion-state", "working")
+                expect(page.get_by_role("region", name="Conversation with Asael", exact=True)).to_be_visible()
+                expect(page.get_by_role("img", name="Microphone on", exact=True)).to_be_visible()
                 clip = stage.locator("[data-atlas-lottie] > span")
-                expect(clip.locator("svg")).to_be_visible(timeout=5_000)
-                expect(clip).to_have_css("opacity", "1")
-                checks.check("Voice ATLAS: actual synthetic microphone observation admits one bounded listening clip",
-                             len(atlas.clip_requests()) == 1 and "/listening-" in atlas.clip_requests()[0])
+                expect(clip).to_have_count(0)
+                checks.check("Voice ATLAS: held conversation setup remains a static working observation",
+                             not atlas.clip_requests())
                 page.emulate_media(reduced_motion="reduce")
                 expect(clip).to_have_count(0)
-                checks.check("Voice ATLAS: reduced motion interrupts only decorative playback",
+                checks.check("Voice ATLAS: reduced motion does not stop the explicitly opened microphone",
                              page.evaluate("window.__scopeMicStops===0 && window.__scopePeers===0"))
                 page.emulate_media(reduced_motion="no-preference")
                 page.wait_for_timeout(150)
                 expect(clip).to_have_count(0)
-                checks.check("Voice ATLAS: removing reduction does not replay the consumed listening transition",
-                             len(atlas.clip_requests()) == 1)
+                checks.check("Voice ATLAS: removing reduction does not animate the consumed setup observation",
+                             not atlas.clip_requests())
                 replacement = scope_session(session, user_id="77777777-7777-4777-8777-777777777777")
             else:
                 replacement = scope_session(session, role="viewer")
@@ -432,12 +437,13 @@ def exercise_scope(browser, origin, credentials, checks):
                 page.get_by_role("button", name="Refresh account access", exact=True).click()
             scope_until(page, lambda: "replacement-access" in fixture.held, "Replacement access check was not held")
             expect(field).to_have_count(0)
-            expect(page.get_by_role("dialog", name="Realtime voice to Asael")).to_have_count(0)
+            expect(page.get_by_role("dialog", name="Conversation with Asael")).to_have_count(0)
+            expect(page.get_by_role("region", name="Conversation with Asael", exact=True)).to_have_count(0)
             if label == "Canonical replacement":
                 checks.check("Assistant scope: access loss stops the active microphone before replacement settles",
                              page.evaluate("window.__scopeMicStops===1 && window.__scopePeers===0"))
                 expect(page.locator("[data-voice-portrait] [data-atlas-lottie]")).to_have_count(0)
-                checks.check("Voice ATLAS: access loss discards the prior owner stage", len(atlas.clip_requests()) == 1)
+                checks.check("Voice ATLAS: access loss discards the prior owner stage", not atlas.clip_requests())
             fixture.set_owner_label(label)
             fixture.defaults["/api/auth/session"] = replacement
             fixture.release("replacement-access")

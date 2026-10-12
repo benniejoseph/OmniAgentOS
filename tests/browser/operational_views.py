@@ -15,13 +15,17 @@ from operational_views_fixtures import CLUSTER, DIGEST, JOB, LONG, MESSAGE, POLI
 from fixtures import STAMP
 from run import Checks, REPO, navigate, preview, select_theme
 
-VIEWS = (("Quality", "/app/evaluations", "Evaluation runs"), ("Monitoring", "/app/observability", "SLO measurements"), ("Security", "/app/security", "Security audit"))
+VIEWS = (("Quality", "/app/evaluations", "Evaluation runs"), ("Monitoring", "/app/observability", "SLO measurements"), ("Security", "/app/security", "Recent access decisions"))
 
 
 def heading(title): return "Quality Checks" if title == "Quality" else title
 
 def root(page, title): return page.locator('[data-testid="operational-' + title.lower() + '"]')
 def region(page, title, name): return root(page, title).get_by_role("region", name=name, exact=True)
+def security_view(page, name):
+    button = root(page, "Security").get_by_role("navigation", name="Security sections").get_by_role("button", name=name, exact=True)
+    button.click()
+    expect(button).to_have_attribute("aria-pressed", "true")
 def refresh(page, title):
     button = root(page, title).get_by_role("button", name="Refresh " + heading(title).lower(), exact=True)
     expect(button).to_be_enabled()
@@ -76,11 +80,14 @@ def read_states(page, fixture, origin, checks, title, route, main, label):
     fixture.mode = "error"
     navigate(page, origin, route)
     expect(root(page, title).get_by_role("heading", name=heading(title), exact=True)).to_be_visible()
+    if title == "Security": security_view(page, "Recent decisions")
     expect(region(page, title, main).get_by_text("Unavailable", exact=True)).to_be_visible()
     checks.check(label + " " + title + ": initial read failure does not claim empty", "No records in this loaded view." not in region(page, title, main).inner_text())
     fixture.mode = "ready"
     refresh(page, title)
-    expect(region(page, title, main).get_by_text("Loaded snapshot", exact=False)).to_be_visible()
+    loaded = region(page, title, main).locator('[data-source-state="Loaded snapshot"]')
+    expect(loaded).to_be_visible()
+    expect(loaded).to_have_text(re.compile(r"^Loaded · Updated .+"))
     fixture.mode = "error"
     refresh(page, title)
     expect(region(page, title, main).get_by_text("Refresh unavailable · last loaded data", exact=False)).to_be_visible()
@@ -178,7 +185,7 @@ def monitor_effects(page, fixture, checks):
 def retention_effect(page, fixture, checks):
     panel = region(page, "Security", "Sweep tenant retention")
     prepare(page, "Security", "Sweep tenant retention")
-    expect(panel.get_by_text("This is a local review", exact=False)).to_be_visible()
+    expect(panel.get_by_text("This review does not provide a deletion count or lock the policy.", exact=False)).to_be_visible()
     panel.get_by_role("button", name="Keep editing", exact=True).focus()
     page.keyboard.press("Enter")
     expect(panel.get_by_role("button", name="Review sweep tenant retention", exact=True)).to_be_focused()
@@ -251,16 +258,27 @@ def exercise(browser, origin, credentials, checks, coarse):
                 expect(region(page, title, "SLO measurements").get_by_text("Insufficient samples", exact=True).first).to_be_visible()
                 if not coarse: monitor_effects(page, fixture, checks)
             else:
-                access = region(page, title, "Access and role rules")
-                rule = access.get_by_role("listitem").filter(has=page.get_by_role("heading", level=3, name="read.security", exact=True))
-                expect(rule.get_by_role("heading", level=3, name="read.security", exact=True)).to_be_visible()
+                decisions = region(page, title, "Recent access decisions")
+                decisions.locator("li > details > summary").first.click()
+                expect(decisions.get_by_text(MESSAGE, exact=True)).to_be_visible()
+                disclosure(decisions, "Technical reference")
+                expect(decisions.get_by_text("audit:" + LONG, exact=True)).to_be_visible()
+                security_view(page, "Your access")
+                access = region(page, title, "What you can do")
+                details = disclosure(access, "Account and permission details")
+                rule = details.get_by_role("listitem").filter(has=page.get_by_role("heading", level=3, name="Review security decisions", exact=True))
+                expect(rule.get_by_role("heading", level=3, name="Review security decisions", exact=True)).to_be_visible()
                 expect(rule.get_by_text("Read security context, RBAC policy, and audit records.", exact=True)).to_be_visible()
-                expect(rule.locator("dt").filter(has_text=re.compile("^Roles$")).locator("xpath=../dd")).to_have_text("admin, system")
+                expect(rule.locator("dt").filter(has_text=re.compile("^Permission$")).locator("xpath=../dd")).to_have_text("read.security")
+                expect(rule.locator("dt").filter(has_text=re.compile("^Allowed roles$")).locator("xpath=../dd")).to_have_text("admin, system")
                 checks.check(label + " Security: canonical action, description and roles are rendered", True)
-                link = region(page, title, "Signed audit chain").get_by_role("link", name="Download signed audit", exact=True)
+                security_view(page, "Your data")
+                protection = disclosure(region(page, title, "Workspace data protection"), "Technical protection details")
+                expect(protection.get_by_role("heading", name="synthetic_table_" + LONG, exact=True)).to_be_visible()
+                advanced = disclosure(root(page, title), "Advanced security tools")
+                link = advanced.get_by_role("link", name="Download signed history", exact=True)
                 expect(link).to_have_attribute("href", "/api/security/audits/export")
                 checks.check(label + ": signed export exact endpoint retained without invoking download", link.get_attribute("download") is not None)
-                disclosure(region(page, title, "Tenant isolation"), "Table policy evidence")
                 if not coarse: retention_effect(page, fixture, checks)
             panel_name = {"Quality": "Run evaluations", "Monitoring": "Run SLO monitor", "Security": "Sweep tenant retention"}[title]
             panel = region(page, title, panel_name)
@@ -288,14 +306,18 @@ def exercise(browser, origin, credentials, checks, coarse):
             page.emulate_media(forced_colors="active")
             capture(page, checks, title, f"operations-{label}-{title.lower()}-forced-colors", coarse, panel, axe=False)
             page.emulate_media(forced_colors="none")
+            if title == "Security": security_view(page, "Recent decisions")
             fixture.mode = "empty"; refresh(page, title)
-            empty = {"Quality": "No evaluation runs in this loaded view.", "Monitoring": "No enabled policy measurements", "Security": "No audit records in this loaded view."}[title]
+            empty = {"Quality": "No evaluation runs in this loaded view.", "Monitoring": "No enabled policy measurements", "Security": "No recent decisions to show."}[title]
             expect(region(page, title, main).get_by_text(empty, exact=True)).to_be_visible()
             if title == "Security":
-                access = region(page, title, "Access and role rules")
-                expect(access.get_by_text("No role rules were reported in this loaded policy.", exact=True)).to_be_visible()
-                expect(access.get_by_role("heading", level=3, name="read.security", exact=True)).to_have_count(0)
+                security_view(page, "Your access")
+                access = region(page, title, "What you can do")
+                expect(access.get_by_text("No permissions were reported for this role.", exact=True)).to_be_visible()
+                details = disclosure(access, "Account and permission details")
+                expect(details.get_by_role("listitem")).to_have_count(0)
                 checks.check(label + " Security: empty policy array is explicit and clears the previous action", True)
+                security_view(page, "Recent decisions")
             fixture.mode = "restricted"; refresh(page, title)
             expect(region(page, title, main).get_by_text("Restricted", exact=True)).to_be_visible()
             checks.check(label + " " + title + ": source 403 clears previously loaded records", region(page, title, main).locator("li").count() == 0)

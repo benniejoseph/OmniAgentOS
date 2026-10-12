@@ -96,7 +96,7 @@ def exercise(browser, origin, credentials, checks, coarse):
         page.on("popup", lambda popup: (fixture.unexpected.append({"kind": "popup"}), popup.close()))
         page.on("download", lambda download: (fixture.unexpected.append({"kind": "download"}), download.cancel()))
         navigate(page, origin, "/app/responsibilities")
-        expect(root(page).get_by_role("heading", name="Recent responsibilities", exact=True)).to_be_visible()
+        expect(root(page).get_by_role("heading", name="Your follow-ups", exact=True)).to_be_visible()
         root(page).get_by_role("link").filter(has_text="Prepare a bounded meeting brief").click()
         expect(root(page).get_by_role("heading", name="Saved draft and review", exact=True)).to_be_visible()
         checks.check(label + ": exact full-identity detail route", quote(ID, safe="") in page.url or ID in page.url)
@@ -155,7 +155,7 @@ def exercise(browser, origin, credentials, checks, coarse):
             page.evaluate("document.documentElement.style.fontSize='200%'")
             settle(page)
             checks.snapshot(page, "responsibility-phone-text-200", coarse)
-            checks.check(label + ": responsibility text responds to 200 percent root sizing", root(page).get_by_role("heading", name="Responsibility", exact=True).evaluate("el=>parseFloat(getComputedStyle(el).fontSize)") >= 50)
+            checks.check(label + ": responsibility text responds to 200 percent root sizing", root(page).get_by_role("heading", name="Follow-up", exact=True).evaluate("el=>parseFloat(getComputedStyle(el).fontSize)") >= 50)
             page.evaluate("document.documentElement.style.fontSize=''")
             settle(page)
         else:

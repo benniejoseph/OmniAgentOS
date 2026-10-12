@@ -229,10 +229,13 @@ class AssistantScopeFixtures(Fixtures):
 
     def mutation(self, route, path):
         request = route.request
-        if path == "/api/voice/realtime/session" and request.method == "POST" and self.allow_voice:
+        if path == "/api/voice/conversation/session" and request.method == "POST" and self.allow_voice:
             body = request.post_data_json
-            if body == {"conversationId": SCOPE_THREAD_B, "mode": "orchestrate", "providerConsent": True,
-                        "audioRetention": "not_stored_by_asael", "reconnectAttempt": 0}:
+            if body == {"schemaVersion": 2, "conversationId": SCOPE_THREAD_B, "mode": "orchestrate",
+                        "agentId": "atlas", "contextScope": "session", "contextReferences": [],
+                        "companionPersonality": "butler", "providerConsent": True, "continuousConsent": True,
+                        "audioRetention": "not_stored_by_asael", "transcriptRetention": "conversation_history",
+                        "reconnectAttempt": 0}:
                 self.allow_voice = False
                 self.writes.append({"path": path, "disposition": "synthetic_held_voice_session"})
                 # The old request must be canceled before this deliberately

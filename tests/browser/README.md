@@ -98,10 +98,12 @@ assets, hidden documents, reduced motion, 320px/200% keyboard access to every
 dock destination, both themes and eight scoped axe scans. It forwards no
 application write, OAuth, provider, microphone or playback request; the shared
 runner's isolated bootstrap login is the only real setup mutation. This is a
-static portrait check. The core voice suite separately admits one bounded synthetic
-Lottie listening reaction after actual synthetic microphone observation, interrupts
-it on reduced motion, and verifies that returning to full motion does not replay it.
-Neither suite certifies artwork quality, a model/rig, or media playback.
+static portrait check. The core voice suite opens the current continuous-conversation
+consent, holds an exact schema-version-2 setup request after synthetic microphone
+admission, and checks the still working portrait through reduced-motion changes.
+Revoking owner access stops that microphone before the held setup returns; it
+must not create a peer connection or animate a consumed initial observation.
+Neither suite certifies live audio transport, artwork quality, or media playback.
 
 The specialist, operations and public families run in three additional hosted
 jobs. Each job runs its suites serially within the existing 15-minute limit;
