@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Static ATLAS presence from read-only, synthetic Command projections.
+"""Static vector ATLAS presence from read-only, synthetic Command projections.
 
 No model, microphone, audio, OAuth, application write, rig or clip is exercised.
 The isolated bootstrap login is the shared runner's only real setup mutation.
@@ -13,13 +13,14 @@ import time
 
 from playwright.sync_api import expect, sync_playwright
 
+from atlas_fixtures import ROOT as ATLAS_ROOT
 from companion_presence_fixtures import HOME_ID, RUN_ID, THREAD_ID, PresenceFixtures, preferences
 from run import Checks, REPO, navigate, preview, select_theme
 
 ROOT = '[data-testid="companion-presence"]'
 COMMAND = f"/app/command?thread={THREAD_ID}&run={RUN_ID}"
 EMPTY_COMMAND = f"/app/command?thread={HOME_ID}"
-GREETING = "/companion/atlas-greeting.png"
+GREETING = ATLAS_ROOT + "available-"
 
 
 def presence(page):
@@ -72,16 +73,16 @@ def snapshot(page, checks, name, coarse, greeting=False):
       targets:[...el.querySelectorAll(greeting?'summary':'button,a,summary')].map(el=>el.getBoundingClientRect().height)}; }""", greeting)
     if greeting:
         expect(root).to_have_attribute("data-companion-layout", "greeting")
-        expect(root).to_have_attribute("data-companion-artwork", "greeting")
-        checks.check(name + ": approved bounded full-body image", geometry["imageSource"] == GREETING and geometry["sameOrigin"] and
-                     geometry["naturalWidth"] == 211 and geometry["naturalHeight"] == 432 and
-                     0 < geometry["imageWidth"] < geometry["imageHeight"] <= 144 and
-                     abs(geometry["imageWidth"] / geometry["imageHeight"] - 211 / 432) < .01, geometry)
+        expect(root).to_have_attribute("data-companion-artwork", "lottie")
+        checks.check(name + ": bounded72px same-origin greeting vector", geometry["imageSource"].startswith(GREETING) and geometry["sameOrigin"] and
+                     geometry["naturalWidth"] == 256 and geometry["naturalHeight"] == 256 and
+                     geometry["portraitWidth"] == 72 and geometry["portraitHeight"] == 72 and
+                     geometry["imageWidth"] == 72 and geometry["imageHeight"] == 72, geometry)
     else:
         checks.check(name + ": stable36px portrait", geometry["portraitWidth"] == 36 and geometry["portraitHeight"] == 36, geometry)
     checks.check(name + ": no horizontal overflow", geometry["document"] <= geometry["viewport"] + 1 and geometry["scroll"] <= geometry["client"] + 1, geometry)
     checks.check(name + ": control target floor", all(size >= (48 if coarse else 44) - 1 for size in geometry["targets"]))
-    checks.check(name + ": no animation claimed", root.evaluate("el=>[el,...el.querySelectorAll('*')].every(node=>getComputedStyle(node).animationName==='none')"))
+    checks.check(name + ": no animation or Lottie runtime admitted", root.locator("[data-atlas-lottie] svg").count() == 0 and root.evaluate("el=>[el,...el.querySelectorAll('*')].every(node=>getComputedStyle(node).animationName==='none')"))
     page.screenshot(path=str(checks.output / (name + ".png")), full_page=False)
     page.add_script_tag(path=str(checks.axe))
     audit = page.evaluate("""async selector => { const result=await axe.run(document.querySelector(selector),
@@ -101,7 +102,7 @@ def greeting_views(page, origin, fixture, checks, label, coarse):
     expect(root.locator("code")).to_have_count(0)
     draft = page.locator('textarea[role="combobox"]')
     draft.fill("")
-    page.wait_for_function("selector=>document.querySelector(selector+' img')?.naturalHeight===432", arg=ROOT)
+    page.wait_for_function("selector=>document.querySelector(selector+' img')?.naturalHeight===256", arg=ROOT)
     for theme in ("light", "dark"):
         select_theme(page, theme, coarse)
         snapshot(page, checks, f"presence-{label}-greeting-{theme}", coarse, greeting=True)
@@ -147,24 +148,26 @@ def greeting_views(page, origin, fixture, checks, label, coarse):
     def missing_greeting(route):
         missing.append(route.request.url)
         route.fulfill(status=404, content_type="text/plain", body="Synthetic greeting unavailable")
-    page.route(origin + GREETING, missing_greeting)
+    greeting_pattern = re.compile(re.escape(origin + GREETING) + r"(light|dark)\.svg\?v=[A-Za-z0-9-]+$")
+    page.route(greeting_pattern, missing_greeting)
     try:
         navigate(page, origin, EMPTY_COMMAND)
         root = ready(page, "available", "Available")
-        page.wait_for_function("""selector=>{const image=document.querySelector(selector+' img');return image?.naturalWidth===108 &&
-          new URL(image.currentSrc||image.src,location.href).href===new URL('/companion/atlas-neutral.png',location.href).href;}""", arg=ROOT)
-        expect(root).to_have_attribute("data-companion-artwork", "portrait")
-        expect(root).to_have_attribute("data-companion-portrait", "visible")
-        checks.check(label + ": missing full-body image falls back to neutral without changing idle state", bool(missing))
-        page.screenshot(path=str(checks.output / f"presence-{label}-greeting-neutral-fallback.png"), full_page=False)
+        expect(root).to_have_attribute("data-companion-artwork", "lottie")
+        expect(root).to_have_attribute("data-companion-portrait", "unavailable")
+        open_details(page)
+        expect(root.get_by_text("Portrait unavailable.", exact=True)).to_be_visible()
+        expect(draft).to_be_visible()
+        checks.check(label + ": missing greeting vector retains idle status and editable composer", bool(missing) and root.locator("img").count() == 0)
+        page.screenshot(path=str(checks.output / f"presence-{label}-greeting-unavailable.png"), full_page=False)
     finally:
-        page.unroute(origin + GREETING, missing_greeting)
+        page.unroute(greeting_pattern, missing_greeting)
     navigate(page, origin, COMMAND)
     root = ready(page)
     expect(root).to_have_attribute("data-companion-layout", "compact")
-    expect(root).to_have_attribute("data-companion-artwork", "portrait")
-    page.wait_for_function("""selector=>{const image=document.querySelector(selector+' img');return image?.naturalWidth===108 &&
-      new URL(image.currentSrc||image.src,location.href).href===new URL('/companion/atlas-neutral.png',location.href).href;}""", arg=ROOT)
+    expect(root).to_have_attribute("data-companion-artwork", "lottie")
+    page.wait_for_function("""selector=>{const image=document.querySelector(selector+' img');return image?.naturalWidth===256 &&
+      new URL(image.currentSrc||image.src,location.href).pathname.startsWith('/companion/atlas-lottie/completed-');}""", arg=ROOT)
     checks.check(label + ": populated verified conversation returns to the compact portrait", True)
 
 
@@ -235,7 +238,7 @@ def exercise(browser, origin, credentials, checks, coarse):
         expect(root).to_have_attribute("data-companion-portrait", "visible")
         open_details(page)
         expect(root.locator("code")).to_have_text(RUN_ID)
-        page.wait_for_function("selector=>document.querySelector(selector+' img')?.naturalWidth===108", arg=ROOT)
+        page.wait_for_function("selector=>document.querySelector(selector+' img')?.naturalWidth===256", arg=ROOT)
         home(page).focus()
         checks.check(label + ": home keyboard focus has a3px outline", home(page).evaluate("el=>getComputedStyle(el).outlineWidth==='3px'"))
         home_adoption(page, origin, fixture, checks, label)
@@ -281,7 +284,9 @@ def exercise(browser, origin, credentials, checks, coarse):
             select_theme(page, theme, coarse)
             snapshot(page, checks, f"presence-{label}-{theme}", coarse)
         page.evaluate("""()=>{window.__presenceVisibility='hidden';Object.defineProperty(document,'visibilityState',{configurable:true,get:()=>window.__presenceVisibility});document.dispatchEvent(new Event('visibilitychange'));}""")
-        expect(root).to_have_attribute("data-companion-portrait", "hidden")
+        expect(root).to_have_attribute("data-companion-portrait", "visible")
+        expect(root.locator("[data-atlas-lottie] svg")).to_have_count(0)
+        checks.check(label + ": hidden document admits no animation reads", not fixture.assets.clip_requests())
         expect(root.get_by_text("Completed", exact=True)).to_be_visible()
         expect(home(page)).to_be_enabled()
         page.evaluate("window.__presenceVisibility='visible';document.dispatchEvent(new Event('visibilitychange'))")
@@ -347,9 +352,9 @@ def exercise(browser, origin, credentials, checks, coarse):
         expect(page).to_have_url(origin + "/app/activity")
         expect(page.locator(ROOT)).to_have_count(0)
         checks.check(label + ": disposed preference/home reads cannot revive the view or change URL", True)
-        checks.check(label + ": zero application writes, provider/audio/device/OAuth effects", not fixture.writes and not fixture.unexpected and not effects, {"unexpected": fixture.unexpected, "effects": effects})
+        checks.check(label + ": zero application writes, provider/audio/device/OAuth effects", not fixture.writes and not fixture.unexpected and not fixture.assets.unexpected and not fixture.assets.clip_requests() and not effects, {"unexpected": fixture.unexpected + fixture.assets.unexpected, "effects": effects, "clipReads": fixture.assets.clip_requests()})
         checks.check(label + ": no uncaught page errors", not errors, errors)
-        return {"viewport": label, "requests": fixture.requests, "releases": fixture.releases, "unexpected": fixture.unexpected, "effects": effects, "errors": errors}
+        return {"viewport": label, "requests": fixture.requests, "releases": fixture.releases, "unexpected": fixture.unexpected, "effects": effects, "errors": errors, "assetReads": fixture.assets.requests}
     except Exception:
         if page is not None and not page.is_closed():
             page.screenshot(path=str(checks.output / (label + "-failure.png")), full_page=False)
@@ -388,7 +393,7 @@ def main():
         print(f"Companion presence check failed: {failure}", flush=True)
     finally:
         (args.output / "report.json").write_text(json.dumps({"checks": checks.results, "contexts": contexts, "failure": failure,
-            "boundary": "Real isolated bootstrap login, then synthetic GET-only Command/Companion projections. Every application write and OAuth/provider/audio/device action blocked. Hidden visibility is a synthetic document event. Static portrait evidence only; no clips, model/rig, playback or performance proof."}, indent=2))
+            "boundary": "Real isolated bootstrap login, then synthetic GET-only Command/Companion projections. Every application write and OAuth/provider/audio/device action blocked. Hidden visibility is a synthetic document event. Static SVG portrait evidence only; reduced-motion fixtures admit no Lottie clips, model/rig, playback or performance proof."}, indent=2))
     return 1 if failure else 0
 
 

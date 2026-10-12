@@ -1,6 +1,6 @@
 import type postgres from "postgres";
 import { expect } from "vitest";
-import { databaseSchemaMigrations } from "@/lib/db/client";
+import { databaseSchemaMigrations, getSchemaMigrationSteps } from "@/lib/db/client";
 import { ensureAgentAdaptationLifecycleV1 } from "@/lib/db/schema/agents";
 import { applySqlMigrationFile, readSqlMigrationFile } from "@/lib/db/sql-migration-files";
 import type { SqlClient } from "@/lib/db/sql-types";
@@ -34,7 +34,12 @@ export async function removeEmptyAgentTextComparisonsForReplay(sql: postgres.Tra
 async function readReplayMigration(version: number, file: string) {
   const row = databaseSchemaMigrations.find((migration) => migration.version === version);
   if (!row) throw new Error(`Replay migration ${version} is missing.`);
-  return { row, migration: await readSqlMigrationFile({ file, sha256: row.checksum, migrations: [row] }) };
+  const step = getSchemaMigrationSteps().find((candidate) =>
+    candidate.kind === "sql" && candidate.file === file && candidate.migrations.some((migration) => migration.version === version));
+  if (!step || step.kind !== "sql") throw new Error(`Replay migration ${version} has no exact SQL file.`);
+  // Older ledger checksums predate file digests. Validate the actual manifest
+  // sha256 and every version recorded by the file, exactly as the runner does.
+  return { row, migration: await readSqlMigrationFile(step) };
 }
 
 /** Restore the exact 251 boundary on an empty, disposable personal-partner lane. */

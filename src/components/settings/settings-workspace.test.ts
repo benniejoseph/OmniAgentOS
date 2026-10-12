@@ -1,6 +1,6 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   McpConfigurationSurface,
   mcpConfigurationActionBlocked,
@@ -13,6 +13,12 @@ import {
 import { SettingsWorkspace } from "@/components/settings/settings-workspace";
 import { WorkspaceSessionProvider } from "@/components/app-shell/session-context";
 import type { RequestMcpExportConfiguration } from "@/lib/settings/types";
+
+vi.mock("next/navigation", async (importOriginal) => ({
+  ...await importOriginal<typeof import("next/navigation")>(),
+  useRouter: () => ({ push: vi.fn() }),
+  useSearchParams: () => new URLSearchParams(),
+}));
 
 const editableGate = {
   loading: false,

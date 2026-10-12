@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
 import { promptQueueMutationsForOwner, readPromptQueueItems, readQueueWriteResult, type PromptQueueItem, type QueueIntent } from "@/components/command/prompt-queue-client";
 import { memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -61,7 +62,8 @@ import {
   type PrivateMediaReadiness,
   privateCaptureAssetContentUrl,
 } from "@/components/media/private-media-preview";
-import { ConversationVoice, type ConversationVoiceRequest } from "@/components/voice/conversation-voice";
+import type { ConversationVoiceRequest } from "@/components/voice/conversation-voice";
+import { ConversationVoiceLauncher as ConversationVoice } from "@/components/voice/conversation-voice-launcher";
 import type { VoiceConversationInput } from "@/lib/voice/command-input";
 import type { VoiceConversationCommandContext } from "@/lib/voice/conversation-contracts";
 import { CompanionPresence } from "@/components/companion-presence";
@@ -74,7 +76,7 @@ import {
 } from "@/components/command/command-composer-field";
 import { CommandModelPicker, commandModelDisplayName } from "@/components/command/command-model-picker";
 import workspaceStyles from "@/components/agent-runs-workspace.module.css";
-import { emptyResearchDraft, ResearchOptionsEditor, researchOptionsFromDraft, type ResearchDraft } from "@/components/command/research-options";
+import { emptyResearchDraft, type ResearchDraft, type ResearchDraftValidation } from "@/components/command/research-draft";
 import { ResearchPanel, readResearchProgress, researchViewFromWorkflow, researchGroundingForWorkflow } from "@/components/command/research-panel";
 import type { ResearchOptions, ResearchProgress } from "@/lib/research/contracts";
 import {
@@ -133,6 +135,11 @@ import {
   type CommandWorkspaceArtifact,
   type CommandWorkspaceArtifactState,
 } from "@/lib/command/workspace-artifact-projection";
+
+const ResearchOptionsEditor = dynamic(
+  () => import("@/components/command/research-options").then((module) => module.ResearchOptionsEditor),
+  { loading: () => <p role="status">Loading research options…</p> },
+);
 
 const ConversationCanvas = dynamic(
   () => import("@/components/conversation-canvas").then((module) =>
@@ -510,6 +517,7 @@ function OwnedAgentRunsWorkspace({
   ownerScope,
   scopeAvailable,
 }: AgentRunsWorkspaceProps & { ownerScope: string; scopeAvailable: boolean }) {
+  const router = useRouter();
   const {
     session,
     status: sessionStatus,
@@ -528,6 +536,7 @@ function OwnedAgentRunsWorkspace({
   const [restoredDraft] = useState(() => initialGoal || initialAgentId ? undefined : assistantComposerDrafts.get(ownerScope));
   const [goal, setGoal] = useState(initialGoal || restoredDraft?.goal || "");
   const goalRevisionRef = useRef(0);
+  const researchPreparationRef = useRef(false);
   const commandReferencesRevisionRef = useRef(0);
   const [mode, setMode] = useState<AgentMode>(restoredDraft?.mode || "orchestrate");
   const [researchDraft, setResearchDraft] = useState<ResearchDraft>(restoredDraft?.research || emptyResearchDraft);
@@ -590,10 +599,10 @@ function OwnedAgentRunsWorkspace({
   const [personalContextConsentUpdating, setPersonalContextConsentUpdating] =
     useState(false);
   const [workflowPlan, setWorkflowPlan] = useState<JsonRecord>();
-  const [workflowRun, setWorkflowRun] = useState<JsonRecord>();
+  const [workflowRun, setWorkflowRunSnapshot] = useState<JsonRecord>();
   const [streamEvents, setStreamEvents] = useState<StreamEvent[]>([]);
   const [agentResponse, setAgentResponse] = useState("");
-  const [runMediaProjection, setRunMediaProjection] = useState<RunMediaProjection>({
+  const [runMediaProjection, setRunMediaProjectionSnapshot] = useState<RunMediaProjection>({
     runId: "",
     artifacts: [],
     files: [],
@@ -611,6 +620,27 @@ function OwnedAgentRunsWorkspace({
       return Object.fromEntries([...Object.entries(retained).slice(-99), [key, value]]);
     });
   }, []);
+  // Cache the sources when their owning result arrives, rather than copying
+  // the rendered projection in an effect after every update.
+  const setRunMediaProjection = useCallback((projection: RunMediaProjection) => {
+    setRunMediaProjectionSnapshot(projection);
+    if (projection.runId && projection.threadId && projection.grounding) {
+      rememberTurnSources(turnSourceKey(projection.threadId, projection.runId), {
+        state: "ready", grounding: projection.grounding,
+      });
+    }
+  }, [rememberTurnSources]);
+  const setWorkflowRun = useCallback((snapshot: JsonRecord | undefined) => {
+    setWorkflowRunSnapshot(snapshot);
+    const runId = stringPath(snapshot, "run.id", "");
+    const ownedThread = stringPath(snapshot, "run.input.metadata.threadId", "");
+    const sources = researchGroundingForWorkflow(snapshot);
+    if (runId && ownedThread && sources) {
+      rememberTurnSources(turnSourceKey(ownedThread, `workflow:${runId}`), {
+        state: "ready", grounding: sources,
+      });
+    }
+  }, [rememberTurnSources]);
   const [activeAgentRunId, setActiveAgentRunId] = useState("");
   const [runFeedback, setRunFeedback] = useState<RunFeedback>();
   const [feedbackSaving, setFeedbackSaving] = useState(false);
@@ -931,21 +961,6 @@ function OwnedAgentRunsWorkspace({
   const conversationLocked = workflowInProgress || directRunInProgress;
   const workflowReport = stringPath(workflowRun, "run.result.report", "");
   const workflowResearchGrounding = useMemo(() => researchGroundingForWorkflow(workflowRun), [workflowRun]);
-  useEffect(() => {
-    if (runMediaProjection.runId && runMediaProjection.threadId && runMediaProjection.grounding) {
-      rememberTurnSources(turnSourceKey(runMediaProjection.threadId, runMediaProjection.runId), {
-        state: "ready", grounding: runMediaProjection.grounding,
-      });
-    }
-  }, [runMediaProjection, rememberTurnSources]);
-  useEffect(() => {
-    const ownedThread = stringPath(workflowRun, "run.input.metadata.threadId", "");
-    if (activeWorkflowId && ownedThread && workflowResearchGrounding) {
-      rememberTurnSources(turnSourceKey(ownedThread, `workflow:${activeWorkflowId}`), {
-        state: "ready", grounding: workflowResearchGrounding,
-      });
-    }
-  }, [activeWorkflowId, workflowRun, workflowResearchGrounding, rememberTurnSources]);
   const currentAssistantResponse = workflowReport || agentResponse;
   const currentResponseIsLastTurn = Boolean(
     currentAssistantResponse &&
@@ -2486,6 +2501,7 @@ function OwnedAgentRunsWorkspace({
     queueItem?: PromptQueueItem;
     queueForce?: boolean;
   }): Promise<VoiceCommandReply | undefined> {
+    if (researchPreparationRef.current) return;
     const scopeLease = requestScope.capture();
     if (!scopeLease.current()) return;
     if (runPermission) {
@@ -2498,11 +2514,6 @@ function OwnedAgentRunsWorkspace({
     const submittedContextScope = voiceContext?.contextScope ?? contextScope;
     const submittedProjectId = voiceContext ? voiceContext.projectId : selectedProjectId;
     if (!queueItem && conversationLocked) { setError("Start research or send your next message after the current work finishes. Your draft is kept here."); return; }
-    let submittedResearch: ResearchOptions | undefined;
-    if (!queueItem && submittedMode === "research") {
-      try { submittedResearch = researchOptionsFromDraft(researchDraft); }
-      catch (failure) { setError((failure as Error).message); return; }
-    }
     if (queueItem && (queueMutation.pending || queueMutation.busy)) return;
     const submittedGoal = (queueItem?.prompt ?? options?.submittedGoal ?? goal).trim();
     const submittedFromComposer = !queueItem && options?.submittedGoal === undefined;
@@ -2558,6 +2569,22 @@ function OwnedAgentRunsWorkspace({
       openTaskDetails("context");
       setRunAnnouncement("Review and lock the context selection before running this task.");
       return;
+    }
+    let submittedResearch: ResearchOptions | undefined;
+    if (!queueItem && submittedMode === "research") {
+      if (researchPreparationRef.current) return;
+      researchPreparationRef.current = true;
+      const selectedVersion = threadLoadVersionRef.current;
+      try {
+        const { researchOptionsFromDraft } = await import("@/components/command/research-options");
+        if (!scopeLease.current() || selectedVersion !== threadLoadVersionRef.current) return;
+        submittedResearch = researchOptionsFromDraft(researchDraft);
+      } catch (failure) {
+        if (scopeLease.current()) setError((failure as Error).message);
+        return;
+      } finally {
+        researchPreparationRef.current = false;
+      }
     }
     const resumeRunId = queueItem || voiceContext ? undefined : clarificationRunId || undefined;
     if (!scopeLease.current()) return;
@@ -2635,8 +2662,8 @@ function OwnedAgentRunsWorkspace({
     // Clear only the submitted draft. Streaming and terminal events must never
     // erase a follow-up the owner starts while this request is running.
     if (submittedFromComposer) {
-      setGoal("");
-      clearEphemeralCommandReferences();
+      if (goalRevisionRef.current === submittedDraftRevision) setGoal("");
+      if (commandReferencesRevisionRef.current === submittedReferencesRevision) clearEphemeralCommandReferences();
     }
 
     let requestAccepted = false;
@@ -3408,7 +3435,7 @@ function OwnedAgentRunsWorkspace({
     if (!requestScope.current()) return;
     if (id.startsWith("workflow:")) {
       if (options.threadId) await loadThread(options.threadId);
-      else window.location.assign(`/app/results?run=${encodeURIComponent(id)}`);
+      else router.push(`/app/results?run=${encodeURIComponent(id)}`);
       return;
     }
     const selected = activityRead.begin(id);
@@ -6453,8 +6480,9 @@ function GoalStage({
   const goalMissing = !goal.trim();
   const activeRun = loading === "agent" || workflowInProgress;
   const draftLocked = Boolean(loading && loading !== "agent");
-  let researchInvalid = false;
-  if (mode === "research") { try { researchOptionsFromDraft(researchDraft); } catch { researchInvalid = true; } }
+  const [researchValidation, setResearchValidation] = useState<ResearchDraftValidation>();
+  const researchInvalid = mode === "research" &&
+    (researchValidation?.draft !== researchDraft || !researchValidation.valid);
   const contextLabel = contextScope !== "explicit_selection"
     ? contextScopeOption(contextScope).label
     : contextLoading
@@ -6550,7 +6578,7 @@ function GoalStage({
                           ? "Work with knowledge, explain a topic, or learn from the context you choose."
                           : "Let Asael choose the right approach for your question or task."}
                   </p>
-                  {mode === "research" ? <ResearchOptionsEditor value={researchDraft} disabled={draftLocked} onChange={onResearchChange} /> : null}
+                  {mode === "research" ? <ResearchOptionsEditor value={researchDraft} disabled={draftLocked} onChange={onResearchChange} onValidation={setResearchValidation} /> : null}
                   {contextScope === "project" ? (
                     <label className={workspaceStyles.pickerControl} title="Choose the project whose context this conversation uses">
                       <FileText size={15} aria-hidden="true" />

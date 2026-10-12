@@ -210,6 +210,11 @@ function MemoryConnections(props: { active: boolean; onAddConnectedFact?: () => 
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [naming, setNaming] = useState(false);
+  const [wasActive, setWasActive] = useState(props.active);
+  if (wasActive !== props.active) {
+    setWasActive(props.active);
+    if (!props.active) { setNaming(false); setDetailLoading(false); }
+  }
   const [notice, setNotice] = useState("");
   const [error, setError] = useState<string>();
   const [detailError, setDetailError] = useState<string>();
@@ -238,7 +243,7 @@ function MemoryConnections(props: { active: boolean; onAddConnectedFact?: () => 
 
   useEffect(() => () => { selectionGuard.clear(); namesRequest.current?.abort(); }, [selectionGuard]);
   useEffect(() => {
-    if (!props.active) { selectionGuard.clear(); namesRequest.current?.abort(); setNaming(false); setDetailLoading(false); }
+    if (!props.active) { selectionGuard.clear(); namesRequest.current?.abort(); }
   }, [props.active, selectionGuard]);
 
   useEffect(() => {
@@ -296,7 +301,7 @@ function MemoryConnections(props: { active: boolean; onAddConnectedFact?: () => 
     const normalized = query.trim().toLocaleLowerCase();
     return candidates.filter((node) => (kind === "all" || node.kind === kind) && (!normalized || `${names[node.id] || ""} ${labelForKind(node.kind, mode)}`.toLocaleLowerCase().includes(normalized)));
   }, [ordered, local, selectedId, depth, neighbors, nodeById, kind, query, names, mode]);
-  const mapNodes = useMemo(() => visible.slice(0, selectedId ? 13 : 12), [visible, local, selectedId]);
+  const mapNodes = useMemo(() => visible.slice(0, selectedId ? 13 : 12), [visible, selectedId]);
   const mapIds = useMemo(() => new Set(mapNodes.map((node) => node.id)), [mapNodes]);
   const mapEdges = useMemo(() => graph.edges.filter((edge) => (edge.sourceNodeId === selectedId || edge.targetNodeId === selectedId) && mapIds.has(edge.sourceNodeId) && mapIds.has(edge.targetNodeId)).sort((a, b) => b.weight - a.weight).slice(0, 160), [graph.edges, mapIds, selectedId]);
   // Names and pointer movement never participate in layout. Coordinates remain stable while inspecting.

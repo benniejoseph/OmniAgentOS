@@ -22,3 +22,11 @@ paths = [
   '''^tests/fixtures/native-github-upgrade\.json$''',
 ]
 regexes = ['''^\s*"keySha256": "[a-f0-9]{64}",?\s*$''']
+
+[[allowlists]]
+description = "Frozen v46/v47 OpenAPI file SHA-256 assertions are published artifact digests."
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+paths = ['''^src/lib/mobile/contracts\.test\.ts$''']
+regexes = ['''^\s*"openapi\.json": "(?:338f0ffe6f4e2051a87b85d77f8aec605bb639b7c06de232b4989a69e15a1233|cc783eff3bf60b6a198607c4fce70c8d87b12bbbccec5b1909106e67084f6b24)",?\s*$''']

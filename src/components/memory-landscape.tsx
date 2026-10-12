@@ -30,16 +30,19 @@ const collections: Record<string, { label: string; description: string; icon: ty
 export function MemoryLandscape({ active, onOpenMemory, onOpenSource, onShowConnections }: { active: boolean; onOpenMemory?: (id: string) => void; onOpenSource?: (title: string) => void; onShowConnections?: () => void }) {
   const [collection, setCollection] = useState<Collection>("memory");
   const [catalogs, setCatalogs] = useState<Partial<Record<Collection, Catalog>>>({});
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string>();
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<string>();
   const [selected, setSelected] = useState<string>();
   const [revision, setRevision] = useState(0);
+  const [loadState, setLoadState] = useState<{ active: boolean; collection: Collection; revision: number; pending: boolean; error?: string }>({ active, collection, revision, pending: true });
+  if (loadState.active !== active || loadState.collection !== collection || loadState.revision !== revision) {
+    setLoadState({ active, collection, revision, pending: true });
+  }
+  const loading = active && loadState.pending;
+  const error = loadState.error;
   useEffect(() => {
     if (!active) return;
     const controller = new AbortController();
-    setLoading(true); setError(undefined);
     const parameters = new URLSearchParams({ view: collection, limit: "100", state: collection === "memory" ? "active" : "all" });
     void fetch(`/api/memory/intelligence?${parameters}`, { cache: "no-store", signal: controller.signal }).then(async (response) => {
       const body = await response.json();
@@ -48,8 +51,8 @@ export function MemoryLandscape({ active, onOpenMemory, onOpenSource, onShowConn
       const catalog = body[collection] as Catalog | undefined;
       if (!catalog || !Array.isArray(catalog.items)) throw new Error("The library returned an unreadable result.");
       setCatalogs((current) => ({ ...current, [collection]: catalog }));
-    }).catch((reason) => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : "Your library could not be loaded."); })
-      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
+      setLoadState({ active, collection, revision, pending: false });
+    }).catch((reason) => { if (!controller.signal.aborted) setLoadState({ active, collection, revision, pending: false, error: reason instanceof Error ? reason.message : "Your library could not be loaded." }); });
     return () => controller.abort();
   }, [active, collection, revision]);
 

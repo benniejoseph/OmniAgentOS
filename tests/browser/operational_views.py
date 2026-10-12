@@ -18,10 +18,12 @@ from run import Checks, REPO, navigate, preview, select_theme
 VIEWS = (("Quality", "/app/evaluations", "Evaluation runs"), ("Monitoring", "/app/observability", "SLO measurements"), ("Security", "/app/security", "Security audit"))
 
 
+def heading(title): return "Quality Checks" if title == "Quality" else title
+
 def root(page, title): return page.locator('[data-testid="operational-' + title.lower() + '"]')
 def region(page, title, name): return root(page, title).get_by_role("region", name=name, exact=True)
 def refresh(page, title):
-    button = root(page, title).get_by_role("button", name="Refresh " + title.lower(), exact=True)
+    button = root(page, title).get_by_role("button", name="Refresh " + heading(title).lower(), exact=True)
     expect(button).to_be_enabled()
     button.click()
     expect(button).to_be_enabled()
@@ -73,7 +75,7 @@ def capture(page, checks, title, name, coarse, target=None, axe=True):
 def read_states(page, fixture, origin, checks, title, route, main, label):
     fixture.mode = "error"
     navigate(page, origin, route)
-    expect(root(page, title).get_by_role("heading", name=title, exact=True)).to_be_visible()
+    expect(root(page, title).get_by_role("heading", name=heading(title), exact=True)).to_be_visible()
     expect(region(page, title, main).get_by_text("Unavailable", exact=True)).to_be_visible()
     checks.check(label + " " + title + ": initial read failure does not claim empty", "No records in this loaded view." not in region(page, title, main).inner_text())
     fixture.mode = "ready"

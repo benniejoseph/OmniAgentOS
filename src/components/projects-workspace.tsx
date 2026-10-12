@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { useEffect, useRef, useState } from "react";
 import { useContentSearchLocation } from "@/components/app-shell/content-search-location";
 import {
@@ -40,7 +41,6 @@ import { canPerform, useWorkspaceSession } from "@/components/app-shell/session-
 import { workspaceOwnerScope } from "@/components/app-shell/workspace-owner-scope";
 import { WorkspaceLibrary } from "@/components/workspace-library";
 import { ProjectSharedMemory } from "@/components/project-shared-memory";
-import { AppBuilderStudio } from "@/components/app-builder-studio";
 import {
   projectExecutionIsLive,
   runProjectWrite,
@@ -53,6 +53,11 @@ import {
   type CanonicalWorkItemSurface,
 } from "@/lib/workspaces/surface";
 import styles from "./projects-workspace.module.css";
+
+const AppBuilderStudio = dynamic(
+  () => import("@/components/app-builder-studio").then((module) => module.AppBuilderStudio),
+  { loading: () => <p role="status">Loading app builder…</p> },
+);
 
 const PROJECT_LIBRARY_KINDS = [
   "generated_artifact",

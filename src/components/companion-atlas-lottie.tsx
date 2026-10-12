@@ -2,7 +2,7 @@
 
 import dynamic from "next/dynamic";
 import Image from "next/image";
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { LottieComponentProps, LottieRefCurrentProps } from "lottie-react";
 import type { AtlasTheme } from "@/lib/companion/atlas-assets";
 import type { CompanionState } from "@/lib/companion/presentation";
@@ -30,25 +30,30 @@ export function AtlasLottie({ state, theme, playbackKey, motionAllowed, repeatWh
   const [playing, setPlaying] = useState<object>();
   const permitted = useSyncExternalStore(subscribeAtlasEnvironment, atlasEnvironmentAllowsMotion, () => false);
   const allowed = motionAllowed && permitted && onScreen === true;
-  const currentRequest = useRef({ playbackKey, allowed });
-  currentRequest.current = { playbackKey, allowed };
+  const currentRequest = useRef({ playbackKey, allowed, state, theme });
+  useLayoutEffect(() => { currentRequest.current = { playbackKey, allowed, state, theme }; }, [playbackKey, allowed, state, theme]);
+  const stopPlayer = useEffectEvent(() => player.current?.stop());
+  const [request, setRequest] = useState({ playbackKey, allowed, state, theme });
+  if (request.playbackKey !== playbackKey || request.allowed !== allowed || request.state !== state || request.theme !== theme) {
+    setRequest({ playbackKey, allowed, state, theme });
+    setClip(undefined);
+    setPlaying(undefined);
+  }
 
   useEffect(() => {
     const element = host.current;
     if (!element || typeof IntersectionObserver === "undefined") return;
     const observer = new IntersectionObserver(([entry]) => {
       const visible = Boolean(entry?.isIntersecting);
-      if (!visible) player.current?.stop();
+      if (!visible) stopPlayer();
       setOnScreen(visible);
     });
     observer.observe(element);
-    return () => { observer.disconnect(); player.current?.stop(); };
+    return () => { observer.disconnect(); stopPlayer(); };
   }, []);
 
   useEffect(() => {
-    player.current?.stop();
-    setClip(undefined);
-    setPlaying(undefined);
+    stopPlayer();
     if (!playbackKey || consumed.current === playbackKey) return;
     // The parent can observe its container before this inner element receives
     // its first observer entry. Unknown visibility is not an offscreen event.
@@ -58,9 +63,9 @@ export function AtlasLottie({ state, theme, playbackKey, motionAllowed, repeatWh
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 5_000);
     void fetchAtlasLottie(state, theme, controller.signal).then((data) => {
-      if (data && !controller.signal.aborted && currentRequest.current.allowed && currentRequest.current.playbackKey === playbackKey) setClip({ key: playbackKey, data });
+      if (data && !controller.signal.aborted && currentRequest.current.allowed && currentRequest.current.playbackKey === playbackKey && currentRequest.current.state === state && currentRequest.current.theme === theme) setClip({ key: playbackKey, data });
     }).catch(() => undefined).finally(() => window.clearTimeout(timeout));
-    return () => { controller.abort(); window.clearTimeout(timeout); player.current?.stop(); };
+    return () => { controller.abort(); window.clearTimeout(timeout); stopPlayer(); };
   }, [allowed, motionAllowed, onScreen, permitted, playbackKey, state, theme]);
 
   const active = Boolean(allowed && playbackKey && clip?.key === playbackKey);

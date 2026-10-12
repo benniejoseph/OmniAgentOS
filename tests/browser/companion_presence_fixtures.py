@@ -6,6 +6,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from playwright.sync_api import Error as PlaywrightError
 
+from atlas_fixtures import AtlasFixtures, ROOT as ATLAS_ROOT
 from fixtures import Fixtures, STAMP
 
 PREFERENCES_PATH = "/api/companion/preferences"
@@ -51,6 +52,7 @@ class PresenceFixtures(Fixtures):
         self.preference_hold = None
         self.requests, self.releases, self.held = [], [], {}
         self.asset_failure = False
+        self.assets = AtlasFixtures(origin)
 
     def thread(self, identity=THREAD_ID):
         return {"id": identity, "tenantId": self.tenant_id, "actorId": self.actor_id,
@@ -125,12 +127,10 @@ class PresenceFixtures(Fixtures):
             return self.fulfill(route, {"error": "OAuth and voice effects are blocked."}, 503)
         if request.method not in ("GET", "HEAD", "OPTIONS"):
             return super().route(route)
-        if path == "/companion/atlas-v1/manifest.json":
-            # This suite proves the approved neutral fallback independently of
-            # any later reviewed production-art publication.
-            return route.fulfill(status=404, content_type="text/plain", body="Synthetic production artwork unavailable")
-        if path == "/companion/atlas-neutral.png" and self.asset_failure:
-            return route.fulfill(status=404, content_type="text/plain", body="Synthetic portrait unavailable")
+        if path.startswith(ATLAS_ROOT):
+            if path.endswith(".svg") and self.asset_failure:
+                return route.fulfill(status=404, content_type="text/plain", body="Synthetic portrait unavailable", headers={"cache-control": "no-store"})
+            return self.assets.route(route)
         allowed = (PREFERENCES_PATH, "/api/threads", f"/api/threads/{THREAD_ID}", f"/api/threads/{HOME_ID}", f"/api/runs/{RUN_ID}")
         if path not in allowed:
             return super().route(route)

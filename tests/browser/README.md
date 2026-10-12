@@ -88,8 +88,8 @@ stable names independently of option or textarea contents. The shared snapshot
 check records overflow geometry to make future failures actionable. Live calendar,
 media, WorkItem creation and message sending are outside this browser boundary.
 
-`companion_presence.py` exercises the static ATLAS portrait and eight-state
-presentation adapter on Command. Exact synthetic run receipts distinguish
+`companion_presence.py` exercises the static ATLAS SVG portrait and eight-state
+presentation adapter on Assistant. Exact synthetic run receipts distinguish
 verified completion, partial/unverified outcomes, queued work and failures.
 Preference, home-thread and disposed reads cannot replace another owner/view;
 failed or pending Home navigation preserves the composer draft and changes the
@@ -98,7 +98,10 @@ assets, hidden documents, reduced motion, 320px/200% keyboard access to every
 dock destination, both themes and eight scoped axe scans. It forwards no
 application write, OAuth, provider, microphone or playback request; the shared
 runner's isolated bootstrap login is the only real setup mutation. This is a
-static portrait, not evidence of the later ATLAS rig or animation pipeline.
+static portrait check. The core voice suite separately admits one bounded synthetic
+Lottie listening reaction after actual synthetic microphone observation, interrupts
+it on reduced motion, and verifies that returning to full motion does not replay it.
+Neither suite certifies artwork quality, a model/rig, or media playback.
 
 The specialist, operations and public families run in three additional hosted
 jobs. Each job runs its suites serially within the existing 15-minute limit;

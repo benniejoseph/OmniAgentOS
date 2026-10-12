@@ -3,6 +3,11 @@ import { createElement, isValidElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
+vi.mock("next/navigation", async (importOriginal) => ({
+  ...await importOriginal<typeof import("next/navigation")>(),
+  useRouter: () => ({ push: vi.fn() }),
+}));
+
 vi.mock("@/components/app-shell/session-context", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/components/app-shell/session-context")>();
   return {
