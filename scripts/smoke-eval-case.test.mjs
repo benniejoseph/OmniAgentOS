@@ -62,9 +62,21 @@ test("a successful tick reporting another completed job cannot pass a queued eva
     const startedAt = Date.now();
     const result = await runSmoke(baseUrl);
     assert.equal(result.code, 1, result.output);
-    assert.match(result.output, /FAIL evaluation job completed before timeout/);
-    assert.ok(Date.now() - startedAt < 15_000, "ticks and polling must share the overall ten-second deadline");
+    // The loop, request admission and in-flight fetch share one deadline. Any
+    // can observe expiry first without accepting the unrelated completed job.
+    const deadlineFailures = [
+      /^FAIL evaluation job completed before timeout - timed out after 10000ms$/m,
+      /^FAIL evaluation smoke timed out after 10000ms\.$/m,
+      /^FAIL (?:GET \/api\/operations\/jobs\/evaluation-job-\d+|POST \/api\/workflows\/tick) failed after [01] attempt\(s\) in \d+ms \(timeout \d+ms; code=TIMEOUT\)\.$/m,
+    ];
+    assert.ok(deadlineFailures.some((pattern) => pattern.test(result.output)), result.output);
+    assert.doesNotMatch(result.output, /^PASS evaluation job completed\b/m);
+    const elapsedMs = Date.now() - startedAt;
+    assert.ok(elapsedMs >= 10_000 && elapsedMs < 15_000, "ticks and polling must share the overall ten-second deadline");
     assert.ok(observed.ticks > 1 && observed.ticks <= 10);
+    assert.ok(observed.polls > 1, "the exact admitted job must be reread after unrelated completions");
+    assert.equal(observed.jobs.size, 1);
+    assert.equal([...observed.jobs.values()][0].status, "queued");
     assert.equal(observed.details, 0);
     assert.equal(observed.ordinaryEffects, 0);
   });

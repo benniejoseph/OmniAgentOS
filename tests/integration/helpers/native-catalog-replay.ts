@@ -11,7 +11,7 @@ export async function removeEmptyAgentTextComparisonsForReplay(sql: postgres.Tra
   // Remove the later read-only fence before restoring its exact predecessor.
   // The function owns no data; historical fixtures must still replay its ACLs.
   await sql`DROP FUNCTION public.omni_lock_responsibility_workspace_v1(TEXT,TEXT,TEXT)`;
-  await sql`DELETE FROM omni_schema_version WHERE version=254`;
+  await sql`DELETE FROM omni_schema_version WHERE version IN (254,255)`;
   expect(await sql`SELECT
     (SELECT count(*)::int FROM public.omni_agent_adaptation_comparisons) AS comparisons,
     (SELECT count(*)::int FROM public.omni_agent_adaptations WHERE comparison IS NOT NULL) AS measured
@@ -172,6 +172,7 @@ export async function replayPost245Migrations(sql: postgres.TransactionSql) {
     [252, "20261013090000_responsibility_work_item_followthrough.sql"],
     [253, "20261013093000_agent_text_comparisons.sql"],
     [254, "20261013150000_responsibility_workspace_read_fence.sql"],
+    [255, "20261013160000_responsibility_workspace_fence_acl_repair.sql"],
   ] as const) {
     const { row, migration } = await readReplayMigration(version, file);
     await applySqlMigrationFile(adapter, migration, [row], []);
