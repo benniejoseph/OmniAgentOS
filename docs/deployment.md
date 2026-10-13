@@ -3023,3 +3023,21 @@ and follow-up quick setup rounds start/expiry to whole minutes. Validate an
 actual DOCX selection after the signed upgrade without resetting the app's
 session or storage. A successful isolated check is not evidence of a scheduled
 production observation; retain separate live baseline/change receipts.
+
+## Continuity replay follow-on candidate (2026-10-13)
+
+The reviewer now receives a bounded semantic projection of Library content
+pages, including exact source/extraction pins, cursor continuity, citation
+spans and separate review-text truncation. Complete delivery means the working
+model received a consistent extracted-text page chain; it does not establish
+complete extraction of the original document. The projection does not reread
+sources, increase model/tool budgets, or change tool authority. Retain the
+normal paired release checks; no migration is required beyond verified schema
+255.
+
+Native **1.33.2+100**, still contract **v56**, separates selectable project/task
+metadata scroll storage from expansion-tile state. Validate expanding and
+reopening Exact project identity and Exact task details in the signed Mac app,
+including the canonical task identity and deadline. Keep the prior signed
+package for rollback. A successful widget regression does not substitute for
+the installed-app check or the separate live Continuity trial.

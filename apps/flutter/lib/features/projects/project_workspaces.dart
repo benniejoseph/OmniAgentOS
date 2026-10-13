@@ -281,11 +281,14 @@ class _ProjectCollectionWorkspaceState
                         const Text(
                           'Execution completion alone does not verify an outcome.',
                         ),
-                      _Metadata({
-                        'Project ID': p.id,
-                        'Updated':
-                            p.updatedAt?.toIso8601String() ?? 'Not reported',
-                      }),
+                      _Metadata(
+                        (c, _scope, p.id, 'collection'),
+                        {
+                          'Project ID': p.id,
+                          'Updated':
+                              p.updatedAt?.toIso8601String() ?? 'Not reported',
+                        },
+                      ),
                       if (!widget.desktop)
                         TextButton(
                           onPressed: () => widget.onOpen(p),
@@ -753,19 +756,22 @@ class _ProjectCollectionWorkspaceState
                 ),
                 const SizedBox(height: 12),
                 SelectableText(project.objective),
-                _Metadata({
-                  'Project ID': project.id,
-                  'Tenant ID': project.tenantId.isEmpty
-                      ? 'Not reported'
-                      : project.tenantId,
-                  'Owner actor ID': project.actorId.isEmpty
-                      ? 'Not reported'
-                      : project.actorId,
-                  'Lifecycle': project.status,
-                  'Execution': project.executionStatus,
-                  'Task progress':
-                      '${project.completedTasks} of ${project.tasks.length} tasks completed',
-                }),
+                _Metadata(
+                  (widget.controller, _scope, project.id, 'inspector'),
+                  {
+                    'Project ID': project.id,
+                    'Tenant ID': project.tenantId.isEmpty
+                        ? 'Not reported'
+                        : project.tenantId,
+                    'Owner actor ID': project.actorId.isEmpty
+                        ? 'Not reported'
+                        : project.actorId,
+                    'Lifecycle': project.status,
+                    'Execution': project.executionStatus,
+                    'Task progress':
+                        '${project.completedTasks} of ${project.tasks.length} tasks completed',
+                  },
+                ),
                 FilledButton(
                   key: Key('macos-project-open-${project.id}'),
                   onPressed: () => widget.onOpen(project),
@@ -1059,14 +1065,17 @@ class _ProjectDocumentWorkspaceState extends State<ProjectDocumentWorkspace> {
         identity: 'project-identity-$pane-${p.id}',
         title: 'Exact project identity',
         children: [
-          _Metadata({
-            'Project ID': p.id,
-            'Tenant ID': p.tenantId.isEmpty ? 'Not reported' : p.tenantId,
-            'Owner actor ID': p.actorId.isEmpty ? 'Not reported' : p.actorId,
-            'Target date': p.targetDate?.toIso8601String() ?? 'Not set',
-            'Created': p.createdAt?.toIso8601String() ?? 'Not reported',
-            'Last changed': p.updatedAt?.toIso8601String() ?? 'Not reported',
-          }),
+          _Metadata(
+            (c, _scope, p.id, pane, 'identity'),
+            {
+              'Project ID': p.id,
+              'Tenant ID': p.tenantId.isEmpty ? 'Not reported' : p.tenantId,
+              'Owner actor ID': p.actorId.isEmpty ? 'Not reported' : p.actorId,
+              'Target date': p.targetDate?.toIso8601String() ?? 'Not set',
+              'Created': p.createdAt?.toIso8601String() ?? 'Not reported',
+              'Last changed': p.updatedAt?.toIso8601String() ?? 'Not reported',
+            },
+          ),
         ],
       ),
       if (c.receipt case final receipt?)
@@ -1085,13 +1094,16 @@ class _ProjectDocumentWorkspaceState extends State<ProjectDocumentWorkspace> {
                 identity: 'project-receipt-$pane-${p.id}',
                 title: 'Accepted response details',
                 children: [
-                  _Metadata({
-                    'Project ID': receipt.projectId,
-                    'Returned resource ID': receipt.resourceId,
-                    'Confirmed locally at': receipt.confirmedAt
-                        .toIso8601String(),
-                    'Returned details': receipt.detail,
-                  }),
+                  _Metadata(
+                    (c, _scope, p.id, pane, 'receipt'),
+                    {
+                      'Project ID': receipt.projectId,
+                      'Returned resource ID': receipt.resourceId,
+                      'Confirmed locally at': receipt.confirmedAt
+                          .toIso8601String(),
+                      'Returned details': receipt.detail,
+                    },
+                  ),
                 ],
               ),
             ],
@@ -1647,57 +1659,63 @@ class _ProjectDocumentWorkspaceState extends State<ProjectDocumentWorkspace> {
           identity: 'task-details-${task.id}',
           title: 'Exact task details',
           children: [
-            _Metadata({
-              'Work item ID': task.id,
-              'Executing Agent': task.agentId,
-              'Priority': task.priority,
-              'Task state': task.status,
-              'Outcome': task.outcomeLabel,
-              'Workflow': task.executionLabel,
-              'Workflow run ID': task.workflowRunId ?? 'Not started',
-              'Dependency IDs': task.dependsOn.isEmpty
-                  ? 'None returned'
-                  : task.dependsOn.join('\n'),
-              'Origin': task.origin,
-              'Due': task.dueAt?.toIso8601String() ?? 'Not set',
-              'Last changed':
-                  task.updatedAt?.toIso8601String() ?? 'Not reported',
-              'Dispatch attempt': '${task.dispatchAttempt}',
-              'AI cost': task.surface?.costLabel ?? 'Cost unavailable',
-            }),
+            _Metadata(
+              (c, _scope, p.id, task.id, 'task'),
+              {
+                'Work item ID': task.id,
+                'Executing Agent': task.agentId,
+                'Priority': task.priority,
+                'Task state': task.status,
+                'Outcome': task.outcomeLabel,
+                'Workflow': task.executionLabel,
+                'Workflow run ID': task.workflowRunId ?? 'Not started',
+                'Dependency IDs': task.dependsOn.isEmpty
+                    ? 'None returned'
+                    : task.dependsOn.join('\n'),
+                'Origin': task.origin,
+                'Due': task.dueAt?.toIso8601String() ?? 'Not set',
+                'Last changed':
+                    task.updatedAt?.toIso8601String() ?? 'Not reported',
+                'Dispatch attempt': '${task.dispatchAttempt}',
+                'AI cost': task.surface?.costLabel ?? 'Cost unavailable',
+              },
+            ),
             if (task.surface case final surface?) ...[
               Text(
                 'Canonical identity, usage and evidence',
                 style: Theme.of(context).textTheme.titleSmall,
               ),
-              _Metadata({
-                'Workspace ID': surface.workspaceId ?? 'Local projection',
-                'Persistence': surface.persistence,
-                'Status revision': '${surface.revision}',
-                'Projection digest':
-                    surface.projectionSha256 ?? 'Not persisted',
-                'Source revision digest':
-                    surface.sourceRevisionSha256 ?? 'Not persisted',
-                'Current step': surface.currentStep ?? 'Not reported',
-                'Progress': surface.progressPercent == null
-                    ? 'Unavailable'
-                    : '${surface.progressPercent}%',
-                'Usage receipts': '${surface.usageReceiptCount}',
-                'Unknown-cost receipts': '${surface.unknownCostReceiptCount}',
-                'Recorded tokens': '${surface.totalTokens}',
-                'Assigned principals': surface.agents
-                    .map(
-                      (a) =>
-                          '${a['agentId']} · ${a['principalId'] ?? 'principal not reported'} · generation ${a['principalGeneration'] ?? 'not reported'}',
-                    )
-                    .join('\n'),
-                'Artifact identities': surface.artifactMetadata
-                    .map(
-                      (a) =>
-                          '${a['artifactId']} · ${a['evidenceCount']} evidence references',
-                    )
-                    .join('\n'),
-              }),
+              _Metadata(
+                (c, _scope, p.id, task.id, 'surface'),
+                {
+                  'Workspace ID': surface.workspaceId ?? 'Local projection',
+                  'Persistence': surface.persistence,
+                  'Status revision': '${surface.revision}',
+                  'Projection digest':
+                      surface.projectionSha256 ?? 'Not persisted',
+                  'Source revision digest':
+                      surface.sourceRevisionSha256 ?? 'Not persisted',
+                  'Current step': surface.currentStep ?? 'Not reported',
+                  'Progress': surface.progressPercent == null
+                      ? 'Unavailable'
+                      : '${surface.progressPercent}%',
+                  'Usage receipts': '${surface.usageReceiptCount}',
+                  'Unknown-cost receipts': '${surface.unknownCostReceiptCount}',
+                  'Recorded tokens': '${surface.totalTokens}',
+                  'Assigned principals': surface.agents
+                      .map(
+                        (a) =>
+                            '${a['agentId']} · ${a['principalId'] ?? 'principal not reported'} · generation ${a['principalGeneration'] ?? 'not reported'}',
+                      )
+                      .join('\n'),
+                  'Artifact identities': surface.artifactMetadata
+                      .map(
+                        (a) =>
+                            '${a['artifactId']} · ${a['evidenceCount']} evidence references',
+                      )
+                      .join('\n'),
+                },
+              ),
             ],
           ],
         ),
@@ -1923,20 +1941,24 @@ class _ProjectDocumentWorkspaceState extends State<ProjectDocumentWorkspace> {
                   selected.title,
                   style: Theme.of(context).textTheme.titleLarge,
                 ),
-                _Metadata({
-                  'Artifact ID': selected.id,
-                  'Work item ID': selected.taskId,
-                  'Workflow run ID': selected.workflowRunId,
-                  'Executing Agent': selected.agentId,
-                  'Artifact state': selected.statusLabel,
-                  'Memory ID': selected.memoryId ?? 'Not reported',
-                  'Source memory ID': selected.sourceMemoryId ?? 'Not reported',
-                  'Reflection memory ID':
-                      selected.reflectionMemoryId ?? 'Not reported',
-                  'Created':
-                      selected.createdAt?.toIso8601String() ?? 'Not reported',
-                  'Feedback': selected.verdict ?? 'Not reviewed',
-                }),
+                _Metadata(
+                  (c, _scope, p.id, selected.id, 'artifact'),
+                  {
+                    'Artifact ID': selected.id,
+                    'Work item ID': selected.taskId,
+                    'Workflow run ID': selected.workflowRunId,
+                    'Executing Agent': selected.agentId,
+                    'Artifact state': selected.statusLabel,
+                    'Memory ID': selected.memoryId ?? 'Not reported',
+                    'Source memory ID':
+                        selected.sourceMemoryId ?? 'Not reported',
+                    'Reflection memory ID':
+                        selected.reflectionMemoryId ?? 'Not reported',
+                    'Created':
+                        selected.createdAt?.toIso8601String() ?? 'Not reported',
+                    'Feedback': selected.verdict ?? 'Not reviewed',
+                  },
+                ),
                 SelectableText(selected.content),
                 const SizedBox(height: 16),
                 Text(
@@ -2078,13 +2100,16 @@ class _ProjectDocumentWorkspaceState extends State<ProjectDocumentWorkspace> {
                 padding: const EdgeInsets.symmetric(vertical: 8),
                 child: SelectableText(source),
               ),
-            _Metadata({
-              'File reference': selected.id,
-              'Task reference': selected.taskId,
-              'Workflow reference': selected.workflowRunId,
-              'Created':
-                  selected.createdAt?.toIso8601String() ?? 'Not reported',
-            }),
+            _Metadata(
+              (c, _scope, project.id, selected.id, 'mobile-artifact'),
+              {
+                'File reference': selected.id,
+                'Task reference': selected.taskId,
+                'Workflow reference': selected.workflowRunId,
+                'Created':
+                    selected.createdAt?.toIso8601String() ?? 'Not reported',
+              },
+            ),
           ],
         ),
         OutlinedButton(
@@ -2575,7 +2600,8 @@ class _Notice extends StatelessWidget {
 }
 
 class _Metadata extends StatelessWidget {
-  const _Metadata(this.items);
+  const _Metadata(this.storageScope, this.items);
+  final Object storageScope;
   final Map<String, String> items;
   @override
   Widget build(BuildContext context) => Padding(
@@ -2592,6 +2618,13 @@ class _Metadata extends StatelessWidget {
                 Text(entry.key, style: Theme.of(context).textTheme.bodySmall),
                 SelectableText(
                   entry.value.isEmpty ? 'None returned' : entry.value,
+                  // SelectableText owns a scroll position. It must not read
+                  // its enclosing ExpansionTile's boolean PageStorage value.
+                  key: PageStorageKey<Object>((
+                    'project-metadata-value',
+                    storageScope,
+                    entry.key,
+                  )),
                 ),
               ],
             ),
