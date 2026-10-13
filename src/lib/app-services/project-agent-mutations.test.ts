@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAppServiceCaller, createRequestMutationAppServiceCaller } from "@/lib/app-services/contracts";
-import { createProjectService } from "@/lib/app-services/projects";
+import { createProjectService, showProjectService } from "@/lib/app-services/projects";
 import { listStreamEvents } from "@/lib/events/store";
 import { createProject, getProject, listProjects, listProjectTasks } from "@/lib/projects/store";
 import type { PersonalProject, ProjectTask } from "@/lib/projects/types";
@@ -108,7 +108,9 @@ describe("actor-bound Agent project mutations through the governed service path"
     expect(changedProject.record.status, changedProject.record.reason).toBe("executed");
     const read = await execute("app.projects.show", { projectId: project.id }, "client:read", projectScope);
     expect(read.record.status, read.record.reason).toBe("executed");
-    expect(read.result).toMatchObject({ project: { title: "Synthetic pilot", tasks: [{ id: task.id, status: "done", detail: change.detail, dueAt: change.dueAt }] } });
+    expect(read.result).toMatchObject({ project: { title: "Synthetic pilot", tasks: [{ id: task.id, status: "done", dueAt: change.dueAt, canonicalStatus: "unverified" }] }, omissions: { taskDetails: true, artifacts: true } });
+    const fullRead = await showProjectService(createAppServiceCaller({ context }), { projectId: project.id });
+    expect(fullRead.data.project?.tasks[0]).toMatchObject({ id: task.id, detail: change.detail });
     const finalEvents = await listStreamEvents(`project:${project.id}`, context);
     expect(finalEvents.map((event) => event.type)).toEqual([
       "project.created", "project.task.created", "project.task.updated", "project.updated",

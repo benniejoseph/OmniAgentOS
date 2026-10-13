@@ -68,6 +68,15 @@ describe("complete run budgets", () => {
     });
   });
 
+  it("still refuses call 31 and model turn 15 before reservation", () => {
+    const state = createRunBudgetState(DEFAULT_AGENT_RUN_BUDGET_LIMITS, {
+      used: { toolCalls: 30, modelTurns: 14 },
+    });
+    expect(() => reserveRunBudget(state, { toolCalls: 1 })).toThrow("tool-call budget is exhausted (31 requested, limit 30)");
+    expect(() => reserveRunBudget(state, { modelTurns: 1 })).toThrow("model-turn budget is exhausted (15 requested, limit 14)");
+    expect(state.used).toMatchObject({ toolCalls: 30, modelTurns: 14 });
+  });
+
   it("inherits a configured server turn ceiling for compatibility callers", async () => {
     vi.resetModules();
     vi.stubEnv("OMNIAGENT_AGENT_MAX_MODEL_TURNS", "9");
@@ -285,6 +294,9 @@ describe("model turn estimates and settlement", () => {
     expect(plan({ costMicrousd: 360_000 })).toBe(false);
     expect(plan({ costMicrousd: 360_001 })).toBe(true);
     expect(plan({ modelTurns: 3, tokens: 11_001 }, false)).toBe(false);
+    expect(plan({ toolCalls: 7 })).toBe(false);
+    expect(plan({ toolCalls: 8 })).toBe(true);
+    expect(plan({ toolCalls: 8 }, false)).toBe(false);
   });
 
   it("checks the workspace's window after the run's own limits", () => {

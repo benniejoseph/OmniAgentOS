@@ -37,6 +37,7 @@ import {
   getProject,
   listProjects,
   listProjectSummaries,
+  listOwnedProjectTasksPage,
 } from "@/lib/projects/store";
 
 const authUserId = "11111111-1111-4111-8111-111111111111";
@@ -150,6 +151,37 @@ describe("Postgres project owner reads", () => {
       actorId,
       actorId,
     ]);
+  });
+
+  it("keeps keyset pages owner scoped, fetches one extra row and preserves timestamp microseconds", async () => {
+    const timestamp = "2026-10-13 15:30:00.123456+00";
+    const taskRow = (id: string) => ({ id, tenant_id: "tenant-a", project_id: "canonical-project", title: id,
+      detail: "Exact criteria", status: "open", priority: "medium", agent_id: "atlas", position: 0,
+      created_at: new Date(timestamp), page_created_at: timestamp, updated_at: new Date(timestamp), dependency_ids: [] });
+    const responses: Record<string, unknown>[][] = [
+      [projectRow("canonical-project", canonicalActorId)], [taskRow("task-a"), taskRow("task-b")],
+      [projectRow("canonical-project", canonicalActorId)], [{ id: "task-a" }], [taskRow("task-b")],
+    ];
+    const query = (strings: TemplateStringsArray, ...params: unknown[]) => {
+      dbMocks.statements.push({ text: renderStatement(strings, params), params });
+      return Promise.resolve(responses.shift()!);
+    };
+    for (let index = 0; index < 5; index += 1) dbMocks.sql.mockImplementationOnce(query);
+    const options = { tenantId: "tenant-a", actorId, requestActorBinding: binding, limit: 1 };
+    const first = await listOwnedProjectTasksPage("canonical-project", options);
+    expect(first).toMatchObject({ hasMore: true, entries: [{ task: { id: "task-a" } }] });
+    const second = await listOwnedProjectTasksPage("canonical-project", { ...options, cursor: first!.entries[0].cursor });
+    expect(second).toMatchObject({ hasMore: false, entries: [{ task: { id: "task-b" } }] });
+    for (const index of [1, 3, 4]) {
+      expect(dbMocks.statements[index].text).toContain("projects.tenant_id = tasks.tenant_id");
+      expect(dbMocks.statements[index].text).toContain("projects.actor_id =");
+      expect(dbMocks.statements[index].params).toEqual(expect.arrayContaining(["tenant-a", "canonical-project", canonicalActorId, actorId]));
+    }
+    expect(dbMocks.statements[1].text).toMatch(/ORDER BY tasks\.position ASC, tasks\.created_at ASC, tasks\.id ASC/);
+    expect(dbMocks.statements[1].params.at(-1)).toBe(2);
+    expect(dbMocks.statements[3].params).toContain(timestamp);
+    expect(dbMocks.statements[4].params).toEqual(expect.arrayContaining([timestamp, "task-a"]));
+    expect(dbMocks.statements[4].text).toContain("(tasks.position, tasks.created_at, tasks.id) >");
   });
 });
 

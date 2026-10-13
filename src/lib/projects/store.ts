@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { z } from "zod";
 import {
   ensureDatabaseSchema,
   getDatabaseTenantContext,
@@ -535,6 +536,86 @@ export async function listProjectTasks(
     .filter((item) => item.tenantId === tenantId && item.projectId === projectId)
     .sort((left, right) => left.position - right.position || left.createdAt.localeCompare(right.createdAt))
     .slice(0, limit);
+}
+
+const taskPageCursorSchema = z.object({
+  version: z.literal(1), scope: z.string().regex(/^[a-f0-9]{64}$/),
+  id: z.string().min(1).max(200), position: z.number().int().nonnegative(),
+  createdAt: z.string().min(1).max(40).refine((value) => Number.isFinite(Date.parse(value))),
+}).strict();
+
+/** Keyset inventory reads retain owner checks on every page. A cursor only
+ * locates a row; it never establishes project access or a frozen snapshot. */
+export async function listOwnedProjectTasksPage(
+  projectId: string,
+  options: Parameters<typeof getOwnedProject>[1] & { limit?: number; cursor?: string },
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const actorId = safeText(options.actorId, 200);
+  const limit = z.number().int().min(1).max(200).parse(options.limit ?? 100);
+  const scope = projectMutationSha256({ contract: "owned-project-task-page:1", tenantId, actorId, projectId,
+    canonicalActorId: options.requestActorBinding?.canonicalActorId ?? null });
+  let cursor: z.infer<typeof taskPageCursorSchema> | undefined;
+  if (options.cursor !== undefined) {
+    try {
+      if (!/^[A-Za-z0-9_-]{1,2048}$/.test(options.cursor)) throw new Error();
+      cursor = taskPageCursorSchema.parse(JSON.parse(Buffer.from(options.cursor, "base64url").toString("utf8")));
+      if (cursor.scope !== scope) throw new Error();
+    } catch { throw new Error("Project task cursor is invalid for this owner and project. Restart the inventory."); }
+  }
+  const project = await getOwnedProject(projectId, options);
+  if (!project) return undefined;
+  let tasks: Array<{ task: ProjectTask; createdAt: string }>;
+  if (hasDatabaseUrl()) {
+    const [canonicalActorId, exactActorId] = projectActorReadOrder(options.actorId, options.requestActorBinding, actorId);
+    const sql = getSql();
+    if (cursor) {
+      const anchor = await sql`
+        SELECT tasks.id FROM omni_project_tasks tasks
+        JOIN omni_projects projects ON projects.id = tasks.project_id AND projects.tenant_id = tasks.tenant_id
+        WHERE tasks.tenant_id = ${tenantId} AND tasks.project_id = ${projectId}
+          AND (projects.actor_id = ${canonicalActorId} OR projects.actor_id = ${exactActorId})
+          AND tasks.id = ${cursor.id} AND tasks.position = ${cursor.position}
+          AND tasks.created_at = ${cursor.createdAt}::timestamptz
+        LIMIT 1
+      `;
+      if (anchor.length !== 1) throw new Error("Project task cursor changed or is unavailable. Restart the inventory.");
+    }
+    const rows = await sql`
+      SELECT tasks.*, tasks.created_at::text AS page_created_at FROM omni_project_tasks tasks
+      JOIN omni_projects projects ON projects.id = tasks.project_id AND projects.tenant_id = tasks.tenant_id
+      WHERE tasks.tenant_id = ${tenantId} AND tasks.project_id = ${projectId}
+        AND (projects.actor_id = ${canonicalActorId} OR projects.actor_id = ${exactActorId})
+        AND (${!cursor} OR (tasks.position, tasks.created_at, tasks.id) >
+          (${cursor?.position ?? 0}, ${cursor?.createdAt ?? "1970-01-01T00:00:00Z"}::timestamptz, ${cursor?.id ?? ""}))
+      ORDER BY tasks.position ASC, tasks.created_at ASC, tasks.id ASC
+      LIMIT ${limit + 1}
+    `;
+    // Preserve PostgreSQL microseconds in the cursor instead of rounding through Date.
+    tasks = rows.map((row) => ({ task: taskFromRow(row), createdAt: String(row.page_created_at) }));
+  } else {
+    const ledger = await readLedger();
+    if (!ledger.projects.some((item) => item.id === projectId && item.tenantId === tenantId && item.actorId === actorId)) return undefined;
+    const owned = ledger.tasks.filter((task) => task.tenantId === tenantId && task.projectId === projectId);
+    if (cursor && !owned.some((task) => task.id === cursor.id && task.position === cursor.position && task.createdAt === cursor.createdAt)) {
+      throw new Error("Project task cursor changed or is unavailable. Restart the inventory.");
+    }
+    tasks = owned.sort(compareTaskPosition)
+      .filter((task) => !cursor || compareTaskPosition(task, cursor) > 0)
+      .slice(0, limit + 1).map((task) => ({ task, createdAt: task.createdAt }));
+  }
+  return {
+    project,
+    hasMore: tasks.length > limit,
+    entries: tasks.slice(0, limit).map(({ task, createdAt }) => ({
+      task,
+      cursor: Buffer.from(JSON.stringify(taskPageCursorSchema.parse({ version: 1, scope, id: task.id, position: task.position, createdAt }))).toString("base64url"),
+    })),
+  };
+}
+
+function compareTaskPosition(left: Pick<ProjectTask, "position" | "createdAt" | "id">, right: Pick<ProjectTask, "position" | "createdAt" | "id">) {
+  return left.position - right.position || left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id);
 }
 
 export async function listProjectArtifacts(

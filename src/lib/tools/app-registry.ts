@@ -240,10 +240,12 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
     limit: integer(1, 100, 50),
     status: { type: "string", enum: ["draft", "active", "completed", "archived"] },
   })),
-  readTool("app.projects.show", "Show project", "Read one exact actor-owned project with its work items and artifacts.", requiredObjectSchema({
+  readTool("app.projects.show", "Show project", "Read a compact, paginated task inventory for one exact actor-owned project. Follow taskPage.nextCursor while hasMore is true. Set includeFullObjective before rewriting the objective. Task details and artifacts are omitted. Inspect criteria with app.work_items.show using each exact readLocator before editing, and read back afterward. Mutations use project.id and task.id, not the canonical readLocator IDs. Project execution status does not describe other follow-up systems.", requiredObjectSchema({
     projectId: opaqueId("Exact project ID."),
     taskLimit: integer(1, 200, 100),
-    artifactLimit: integer(1, 200, 100),
+    taskCursor: { ...text(1, 2_048), description: "Exact taskPage.nextCursor from the preceding inventory page for this actor and project. Omit to start." },
+    includeFullObjective: { type: "boolean", default: false, description: "Read the complete stored objective before rewriting it. Task rows may continue on additional pages." },
+    artifactLimit: { ...integer(1, 200, 100), description: "Compatibility field; this compact inventory omits artifacts." },
   }, ["projectId"])),
   mutationTool("app.projects.create", "Create project", "Create one actor-owned project with an explicit objective.", requiredObjectSchema({
     title: text(1, 180),

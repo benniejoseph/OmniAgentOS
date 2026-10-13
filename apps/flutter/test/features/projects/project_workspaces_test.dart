@@ -18,6 +18,139 @@ import 'projects_fixture.dart';
 import '../builder/builder_test_support.dart';
 
 void main() {
+  for (final title in ['Exact project identity', 'Exact task details']) {
+    testWidgets(
+      '$title keeps selectable metadata separate from expansion state',
+      (tester) async {
+        viewport(tester, const Size(1440, 1050));
+        final repository = WorkFixtureRepository(), api = _NoEffectsApi();
+        final surface = surfaceJson();
+        repository.current = Project.fromJson({
+          ...projectJson(),
+          'tasks': [
+            {...taskJson(), 'detail': '', 'workItem': surface},
+          ],
+        });
+        await mount(tester, document(repository, api));
+        final disclosure = find.widgetWithText(ExpansionTile, title);
+        final value = title == 'Exact task details' ? taskId : projectId;
+        final metadata = find.descendant(
+          of: disclosure,
+          matching: find.widgetWithText(SelectableText, value),
+        );
+
+        for (var attempt = 0; attempt < 2; attempt++) {
+          await tap(tester, find.text(title));
+          expect(tester.takeException(), isNull);
+          expect(find.byType(ErrorWidget), findsNothing);
+          expect(metadata, findsOneWidget);
+          await tester.ensureVisible(metadata);
+          await tester.pumpAndSettle();
+          expect(tester.takeException(), isNull);
+          expect(tester.getSemantics(metadata).value, value);
+
+          final tileContext = tester.element(disclosure);
+          final valueScroll = find.descendant(
+            of: metadata,
+            matching: find.byType(Scrollable),
+          );
+          final valueContext = tester.element(valueScroll);
+          final bucket = PageStorage.of(tileContext);
+          bucket.writeState(valueContext, 12.0);
+          expect(bucket.readState(tileContext), isTrue);
+          expect(bucket.readState(valueContext), 12.0);
+
+          if (title == 'Exact task details') {
+            final principal = find.widgetWithText(
+              SelectableText,
+              'sentinel · principal:exact · generation 2',
+            );
+            await tester.ensureVisible(principal);
+            await tester.pumpAndSettle();
+            expect(principal, findsOneWidget);
+            expect(tester.takeException(), isNull);
+          }
+          await tester.ensureVisible(find.text(title));
+          await tester.pumpAndSettle();
+          await tap(tester, find.text(title));
+          expect(metadata, findsNothing);
+          expect(tester.takeException(), isNull);
+        }
+        expect(repository.writes, 0);
+        expect(api.effects, 0);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.macOS),
+    );
+  }
+
+  testWidgets(
+    'exact metadata storage resets on repository and owner scope replacement',
+    (tester) async {
+      viewport(tester, const Size(1440, 1050));
+      var repository = WorkFixtureRepository();
+      final api = _NoEffectsApi();
+      await mount(tester, document(repository, api));
+      final disclosure = find.widgetWithText(
+        ExpansionTile,
+        'Exact project identity',
+      );
+      final metadata = find.descendant(
+        of: disclosure,
+        matching: find.widgetWithText(SelectableText, projectId),
+      );
+      final oldKeys = <Key?>[];
+      for (var generation = 0; generation < 3; generation++) {
+        expect(metadata, findsNothing);
+        await tap(tester, find.text('Exact project identity'));
+        expect(tester.takeException(), isNull);
+        final valueKey = tester.widget<SelectableText>(metadata).key;
+        expect(valueKey, isNotNull);
+        expect(oldKeys, isNot(contains(valueKey)));
+        oldKeys.add(valueKey);
+        if (generation == 2) {
+          expect(
+            find.widgetWithText(SelectableText, 'actor-two'),
+            findsOneWidget,
+          );
+          expect(
+            find.widgetWithText(SelectableText, 'actor-one'),
+            findsNothing,
+          );
+        }
+        final scroll = tester.state<ScrollableState>(
+          find.descendant(of: metadata, matching: find.byType(Scrollable)),
+        );
+        expect(scroll.position.pixels, 0);
+        PageStorage.of(scroll.context).writeState(scroll.context, 24.0);
+        expect(
+          PageStorage.of(tester.element(disclosure))
+              .readState(tester.element(disclosure)),
+          isTrue,
+        );
+        if (generation == 0) {
+          repository = WorkFixtureRepository();
+          await mount(tester, document(repository, api));
+        } else if (generation == 1) {
+          repository.current = Project.fromJson({
+            ...projectJson(),
+            'actorId': 'actor-two',
+          });
+          repository.access.update(
+            tenant: 'tenant-one',
+            actor: 'actor-two',
+            nextRole: 'operator',
+            available: true,
+          );
+          await tester.pumpAndSettle();
+        }
+      }
+      expect(tester.takeException(), isNull);
+      expect(repository.writes, 0);
+      expect(api.effects, 0);
+    },
+    variant: TargetPlatformVariant.only(TargetPlatform.macOS),
+  );
+
   testWidgets(
     'failed initial detail reports unknown counts, then a successful empty snapshot',
     (tester) async {
