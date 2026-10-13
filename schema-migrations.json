@@ -1570,5 +1570,12 @@
     "checksum": "ffb985978aa05cc4a703a8cd24b3c18ce35d042cf8ebe4e1fffe8a4d36402548",
     "file": "20261013150000_responsibility_workspace_read_fence.sql",
     "sha256": "ffb985978aa05cc4a703a8cd24b3c18ce35d042cf8ebe4e1fffe8a4d36402548"
+  },
+  {
+    "version": 255,
+    "name": "responsibility_workspace_fence_acl_repair_v1",
+    "checksum": "279d151896f8c954d79becfb79966a1af04d43d23fec55eddc765bb0f4cf49d5",
+    "file": "20261013160000_responsibility_workspace_fence_acl_repair.sql",
+    "sha256": "279d151896f8c954d79becfb79966a1af04d43d23fec55eddc765bb0f4cf49d5"
   }
 ]
