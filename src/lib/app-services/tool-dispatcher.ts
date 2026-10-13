@@ -6,7 +6,7 @@ import {
   listProjectsService,
   planProjectService,
   recordProjectArtifactFeedbackService,
-  showProjectService,
+  showProjectInventoryService,
   updateProjectService,
   updateWorkItemService,
 } from "@/lib/app-services/projects";
@@ -307,7 +307,7 @@ export async function executeFirstPartyAppTool(input: {
     "app.meetings.commitments.propose": () => proposeMeetingCommitmentService(caller, input.toolInput as never),
     "app.meetings.commitments.resolve": () => resolveMeetingCommitmentService(caller, input.toolInput as never),
     "app.projects.list": () => listProjectsService(caller, input.toolInput as never),
-    "app.projects.show": () => showProjectService(caller, input.toolInput as never),
+    "app.projects.show": () => showProjectInventoryService(caller, input.toolInput as never),
     "app.projects.create": () => createProjectService(caller, input.toolInput as never),
     "app.projects.update": () => updateProjectService(caller, input.toolInput as never),
     "app.projects.plan": () => planProjectService(caller, input.toolInput as never),

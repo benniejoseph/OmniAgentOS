@@ -44,6 +44,7 @@ import {
 } from "@/lib/settings/runtime-models";
 
 const mocks = vi.hoisted(() => ({
+  agentMaxToolSteps: 1,
   appendContextCompilerV2CanaryEvent: vi.fn(),
   appendContextCompilerV2AutomaticEvent: vi.fn(),
   appendContextCompilerV2ShadowEventSafely: vi.fn(),
@@ -94,7 +95,7 @@ vi.mock("@/lib/config", async (importOriginal) => {
   return {
     ...actual,
     AGENT_MAX_OUTPUT_TOKENS: 128,
-    AGENT_MAX_TOOL_STEPS: 1,
+    get AGENT_MAX_TOOL_STEPS() { return mocks.agentMaxToolSteps; },
     AGENT_REASONING_EFFORT: "minimal",
     get WEB_SEARCH_TIMEOUT_MS() { return mocks.webSearchTimeoutMs; },
     hasAnthropicKey: () => false,
@@ -269,6 +270,7 @@ vi.mock("@/lib/today/briefs", () => ({
 describe("agent memory scope", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.agentMaxToolSteps = 1;
     mocks.webSearchTimeoutMs = 60_000;
     mocks.resolveDirectConversationLanguageStyle.mockReset().mockResolvedValue(undefined);
     mocks.createAgentRun.mockResolvedValue({
@@ -2734,6 +2736,90 @@ describe("agent memory scope", () => {
         expect(parked.maxOutputTokens).toBe(6_000);
       },
     );
+
+    it("executes eight ordinary OpenAI tool rounds before a final ninth turn", async () => {
+      mocks.agentMaxToolSteps = 8;
+      const scopedRequest = request("session");
+      scopedRequest.agentProfile!.toolIds = ["knowledge.search"];
+      mocks.loadProgressiveAgentTools.mockResolvedValue({ definitions: [localToolDefinition("knowledge.search")] });
+      mocks.executeGovernedTool.mockResolvedValue({ record: localExecutionRecord("knowledge.search", "read-budget"), result: { matches: [] } });
+      let calls = 0;
+      mocks.streamResponseTurn.mockImplementation(async (modelRequest) => {
+        calls += 1;
+        if (modelRequest.toolChoice !== "none") return openAITurn({ callId: `read-${calls}`, name: "knowledge.search" });
+        await modelRequest.onDelta("Finished after verification.");
+        return openAITurn({ text: "Finished after verification." });
+      });
+      const events = await collectRequest(scopedRequest);
+      expect(mocks.executeGovernedTool).toHaveBeenCalledTimes(8);
+      expect(mocks.streamResponseTurn).toHaveBeenCalledTimes(9);
+      expect(mocks.streamResponseTurn.mock.calls.map(([turn]) => turn.toolChoice)).toEqual([...Array(8).fill(undefined), "none"]);
+      expect(events).toContainEqual(expect.objectContaining({ type: "done", response: "Finished after verification." }));
+    });
+
+    it.each(["openai", "google"] as const)("preserves a saved %s call cap and approval-queued refusals", async (provider) => {
+      mocks.agentMaxToolSteps = 8;
+      const scopedRequest = request("session");
+      scopedRequest.budgetLimits = { ...DEFAULT_AGENT_RUN_BUDGET_LIMITS, toolCalls: 2 };
+      const calls = Array.from({ length: 5 }, (_, index) => ({ callId: `limited-${index}`, name: APPROVAL_TOOL_ID }));
+      const continuation = await pauseForApproval(scopedRequest, provider, calls);
+      expect(continuation.budgetState).toMatchObject({ limits: { toolCalls: 2, modelTurns: 14 }, used: { toolCalls: 1 } });
+      expect(continuation.runContractEnvelope?.harnessManifest.budgets).toMatchObject({
+        toolCallBudget: { limitCount: 2 }, externalEffectBudget: { limitCount: 2 }, toolResultByteBudget: { limitCount: 16_000 },
+      });
+      mocks.executeGovernedTool.mockResolvedValue({ record: localExecutionRecord(APPROVAL_TOOL_ID, "queued-read"), result: { ok: true } });
+      await expect(resumeAfterApproval(continuation)).resolves.toMatchObject({ resumed: true, status: "completed" });
+      expect(mocks.executeGovernedTool).toHaveBeenCalledTimes(2);
+      const model = provider === "openai" ? mocks.streamResponseTurn : mocks.generateModelToolTurn;
+      expect(model.mock.calls.at(-1)![0].toolChoice).toBe("none");
+      expect(JSON.stringify(model.mock.calls.at(-1)![0])).toContain("Run tool-call budget reached");
+      expect(mocks.planModelTurnBudget.mock.calls.at(-1)![0]).toMatchObject({ limits: { toolCalls: 2, modelTurns: 14 }, used: { toolCalls: 2 } });
+    });
+
+    it.each([
+      { target: undefined, rounds: 8, effects: 30, resultBytes: 240_000 },
+      { target: "local_macos" as const, rounds: 12, effects: 12, resultBytes: 96_000 },
+    ])("bounds shadow effects and result bytes for $rounds tool rounds", async ({ target, rounds, effects, resultBytes }) => {
+      mocks.agentMaxToolSteps = 8;
+      const scopedRequest = request("session");
+      scopedRequest.computerUseTarget = target;
+      const continuation = await pauseForApproval(scopedRequest, "openai");
+
+      expect(continuation.maxToolSteps).toBe(rounds);
+      expect(continuation.runContractEnvelope?.harnessManifest.budgets).toMatchObject({
+        toolCallBudget: { limitCount: 30 },
+        externalEffectBudget: { limitCount: effects },
+        toolResultByteBudget: { limitCount: resultBytes },
+      });
+    });
+
+    it.each([
+      { provider: "openai" as const, savedCap: undefined },
+      { provider: "google" as const, savedCap: undefined },
+      { provider: "openai" as const, savedCap: 6 },
+      { provider: "google" as const, savedCap: 6 },
+    ])("keeps six rounds for a $provider continuation with saved cap $savedCap", async ({ provider, savedCap }) => {
+      mocks.agentMaxToolSteps = 8;
+      const continuation = await pauseForApproval(request("session"), provider);
+      const saved = { ...continuation, toolSteps: 6, maxToolSteps: savedCap };
+      if (savedCap === undefined) delete saved.maxToolSteps;
+      await expect(resumeAfterApproval(saved)).resolves.toMatchObject({ resumed: true, status: "completed" });
+      expect(mocks.executeGovernedTool).toHaveBeenCalledOnce();
+      const model = provider === "openai" ? mocks.streamResponseTurn : mocks.generateModelToolTurn;
+      expect(model.mock.calls.at(-1)![0].toolChoice).toBe("none");
+    });
+
+    it("asks a direct OpenAI run for its answer when no tool calls remain", async () => {
+      const scopedRequest = request("session");
+      scopedRequest.agentProfile!.toolIds = ["knowledge.search"];
+      scopedRequest.budgetLimits = { ...DEFAULT_AGENT_RUN_BUDGET_LIMITS, toolCalls: 0 };
+      mocks.loadProgressiveAgentTools.mockResolvedValue({ definitions: [localToolDefinition("knowledge.search")] });
+      const events = await collectRequest(scopedRequest);
+      expect(mocks.streamResponseTurn).toHaveBeenCalledOnce();
+      expect(mocks.streamResponseTurn.mock.calls[0][0].toolChoice).toBe("none");
+      expect(mocks.executeGovernedTool).not.toHaveBeenCalled();
+      expect(events).toContainEqual(expect.objectContaining({ type: "status", label: "finishing within budget" }));
+    });
 
     it("asks a direct OpenAI run for its answer when no turn would follow its tools", async () => {
       const scopedRequest = request("session");

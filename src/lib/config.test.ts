@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AGENT_MAX_MODEL_TURNS,
+  AGENT_MAX_TOOL_CALLS,
   AGENT_MAX_TOOL_STEPS,
   AGENT_RUN_BUDGET_LIMITS,
   getAppBaseUrl,
@@ -21,7 +22,8 @@ describe("agent execution limits", () => {
   });
 
   it("keeps installed-Mac capacity separate from ordinary agent runs", () => {
-    expect(AGENT_MAX_TOOL_STEPS).toBe(6);
+    expect(AGENT_MAX_TOOL_STEPS).toBe(8);
+    expect(AGENT_MAX_TOOL_CALLS).toBe(30);
     expect(AGENT_MAX_MODEL_TURNS).toBe(14);
     expect(AGENT_RUN_BUDGET_LIMITS).toMatchObject({
       modelTurns: 14,
@@ -54,6 +56,21 @@ describe("agent execution limits", () => {
       modelTurns: 11,
       toolCalls: 30,
     });
+  });
+
+  it("configures tool rounds independently of the total call allowance", async () => {
+    vi.resetModules();
+    vi.stubEnv("OMNIAGENT_AGENT_MAX_TOOL_STEPS", "10");
+    vi.stubEnv("OMNIAGENT_AGENT_MAX_TOOL_CALLS", "");
+    const configured = await import("@/lib/config");
+    expect(configured.AGENT_MAX_TOOL_STEPS).toBe(10);
+    expect(configured.AGENT_RUN_BUDGET_LIMITS).toEqual(AGENT_RUN_BUDGET_LIMITS);
+    expect(configured.LOCAL_COMPUTER_RUN_BUDGET_LIMITS).toEqual(LOCAL_COMPUTER_RUN_BUDGET_LIMITS);
+
+    vi.resetModules();
+    vi.stubEnv("OMNIAGENT_AGENT_MAX_TOOL_CALLS", "12");
+    const narrowed = await import("@/lib/config");
+    expect(narrowed.AGENT_RUN_BUDGET_LIMITS).toEqual({ ...AGENT_RUN_BUDGET_LIMITS, toolCalls: 12 });
   });
 
   it("allows a bounded minute for web search unless explicitly configured otherwise", async () => {

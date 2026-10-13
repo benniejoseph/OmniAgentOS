@@ -428,6 +428,7 @@ export function planModelTurnBudget(
       : Number.POSITIVE_INFINITY,
   );
   const finalTurn = input.toolsEnabled && (
+    remaining.toolCalls < 1 ||
     (input.minimumToolRoundWallTimeMs !== undefined &&
       remaining.wallTimeMs <= input.minimumToolRoundWallTimeMs) ||
     remaining.modelTurns < 1 ||

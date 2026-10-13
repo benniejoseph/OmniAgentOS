@@ -272,6 +272,9 @@ type ModelUsageReceipt = RuntimeModelResolution["usageReceipt"];
 
 const MAX_TOOL_RESULT_CHARS = 8_000;
 const MAX_TOOL_CALLS_PER_TURN = 5;
+const LEGACY_MAX_TOOL_STEPS = 6;
+const TOOL_CALL_BUDGET_REACHED = "Run tool-call budget reached; call not run. Answer in text from the results you already have.";
+const PER_TURN_TOOL_CALL_LIMIT = "Per-turn tool call limit reached; call skipped.";
 const LOCAL_COMPUTER_TOOL_CALLS_PER_TURN = 1;
 const MAX_TOOL_ARGUMENT_BYTES = 64_000;
 const WORKSPACE_ACCESS_CONTEXT_TIMEOUT_MS = 3_000;
@@ -739,10 +742,9 @@ async function* runAgentUntilStopped(
         maxToolCalls: budgetLimits.toolCalls,
         maxOutputTokens: budgetLimits.tokens,
         maxToolResultBytes:
-          AGENT_MAX_TOOL_STEPS *
-          maxToolCallsPerTurn *
+          Math.min(maxToolSteps * maxToolCallsPerTurn, budgetLimits.toolCalls) *
           MAX_TOOL_RESULT_CHARS,
-        maxExternalEffects: AGENT_MAX_TOOL_STEPS * maxToolCallsPerTurn,
+        maxExternalEffects: Math.min(maxToolSteps * maxToolCallsPerTurn, budgetLimits.toolCalls),
         maxCostMicrousd: budgetLimits.costMicrousd,
         maxWallClockMs: budgetLimits.wallTimeMs,
         maxBrowserActions: budgetLimits.browserActions,
@@ -2354,6 +2356,7 @@ async function* runAgentUntilStopped(
           checkpointAfterTool: checkpointAfterGovernedTool,
           onToolObservation: (observation) => reviewToolObservations.push(observation),
           reserveTools: reserveToolBudget,
+          remainingToolCalls: () => remainingRunBudget(runBudgetState).toolCalls,
           serializeToolCalls: isLocalComputerTarget(computerUseTarget) ||
             Boolean(request.moltbookAutonomy) ||
             isExpandedCheckpointShadowEnrollment(checkpointShadowEnrollment),
@@ -2722,7 +2725,9 @@ async function* runAgentUntilStopped(
         toolSteps += 1;
         const outputs: Array<{ type: "function_call_output"; call_id: string; output: string }> = [];
 
-        const callsThisTurn = turn.functionCalls.slice(0, maxToolCallsPerTurn);
+        const callLimit = Math.min(maxToolCallsPerTurn, remainingRunBudget(runBudgetState).toolCalls);
+        const skippedCallReason = callLimit < maxToolCallsPerTurn ? TOOL_CALL_BUDGET_REACHED : PER_TURN_TOOL_CALL_LIMIT;
+        const callsThisTurn = turn.functionCalls.slice(0, callLimit);
         if (
           latestLocalObservation &&
           !isSoleLocalAppListCall(turn.functionCalls, toolbox.byFunctionName)
@@ -2842,6 +2847,10 @@ async function* runAgentUntilStopped(
           }
         } else for (let callIndex = 0; callIndex < callsThisTurn.length; callIndex += 1) {
           const call = callsThisTurn[callIndex];
+          if (remainingRunBudget(runBudgetState).toolCalls === 0) {
+            outputs.push(functionCallOutput(call, { error: TOOL_CALL_BUDGET_REACHED }));
+            continue;
+          }
           if (modelBudget.shouldFinishBeforeTools?.()) {
             outputs.push(functionCallOutput(call, {
               error: TOOL_TIME_RESERVED_FOR_ANSWER,
@@ -2953,7 +2962,8 @@ async function* runAgentUntilStopped(
                 queuedCallsAfterPause(
                   turn.functionCalls,
                   callIndex,
-                  maxToolCallsPerTurn,
+                  callLimit,
+                  skippedCallReason,
                 ),
               ),
               canonicalConversation: canonicalConversationFromOpenAIItems([
@@ -3034,8 +3044,8 @@ async function* runAgentUntilStopped(
         }
 
         if (workflowHandoff) break;
-        for (const call of turn.functionCalls.slice(maxToolCallsPerTurn)) {
-          outputs.push(functionCallOutput(call, { error: "Per-turn tool call limit reached; call skipped." }));
+        for (const call of turn.functionCalls.slice(callLimit)) {
+          outputs.push(functionCallOutput(call, { error: skippedCallReason }));
         }
 
         if (toolSteps >= maxToolSteps) {
@@ -3405,6 +3415,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   reserveTools?: (
     tools: readonly ToolDefinition[],
   ) => DynamicDelegationReservation | undefined;
+  remainingToolCalls?: () => number;
   executeTool?: typeof executeGovernedTool;
 }): AsyncGenerator<NonOpenAIProviderLoopEvent, NonOpenAIProviderLoopResult> {
   const maxOutputTokens = input.maxOutputTokens ?? AGENT_MAX_OUTPUT_TOKENS;
@@ -3413,7 +3424,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   const maxToolSteps = resolveMaxToolSteps(
     input.maxToolSteps,
     Math.max(AGENT_MAX_TOOL_STEPS, LOCAL_COMPUTER_MAX_TOOL_STEPS),
-    AGENT_MAX_TOOL_STEPS,
+    Math.min(LEGACY_MAX_TOOL_STEPS, AGENT_MAX_TOOL_STEPS),
   );
   if (
     input.continuation &&
@@ -3497,7 +3508,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
       ]),
       toolsEnabled: stepsAllowTools && !budgetFinal,
     });
-    if (modelBudget?.finalTurn && !budgetFinal) {
+    if ((modelBudget?.finalTurn || input.remainingToolCalls?.() === 0) && !budgetFinal) {
       budgetFinal = true;
       yield finishingWithinBudgetEvent();
     }
@@ -3654,7 +3665,9 @@ export async function* runNonOpenAIProviderToolLoop(input: {
     }
 
     toolSteps += 1;
-    const callsThisTurn = turn.toolCalls.slice(0, maxToolCallsPerTurn);
+    const callLimit = Math.min(maxToolCallsPerTurn, input.remainingToolCalls?.() ?? maxToolCallsPerTurn);
+    const skippedCallReason = callLimit < maxToolCallsPerTurn ? TOOL_CALL_BUDGET_REACHED : PER_TURN_TOOL_CALL_LIMIT;
+    const callsThisTurn = turn.toolCalls.slice(0, callLimit);
     if (
       latestLocalObservation &&
       !isSoleLocalAppListCall(turn.toolCalls, input.toolbox.byFunctionName)
@@ -3777,6 +3790,10 @@ export async function* runNonOpenAIProviderToolLoop(input: {
     } else {
       for (let callIndex = 0; callIndex < callsThisTurn.length; callIndex += 1) {
         const call = callsThisTurn[callIndex];
+        if (input.remainingToolCalls?.() === 0) {
+          outputs.push(providerToolResult(call, { error: TOOL_CALL_BUDGET_REACHED }, true));
+          continue;
+        }
         if (modelBudget?.shouldFinishBeforeTools?.()) {
           budgetFinal = true;
           outputs.push(providerToolResult(call, {
@@ -3900,10 +3917,10 @@ export async function* runNonOpenAIProviderToolLoop(input: {
               pendingCall: call,
               queuedCalls: [
                 ...callsThisTurn.slice(callIndex + 1),
-                ...turn.toolCalls.slice(maxToolCallsPerTurn).map(
+                ...turn.toolCalls.slice(callLimit).map(
                   (queuedCall) => ({
                     ...queuedCall,
-                    skipReason: "Per-turn tool call limit reached; call skipped.",
+                    skipReason: skippedCallReason,
                   }),
                 ),
               ],
@@ -3937,17 +3954,17 @@ export async function* runNonOpenAIProviderToolLoop(input: {
       }
     }
 
-    for (const call of turn.toolCalls.slice(maxToolCallsPerTurn)) {
+    for (const call of turn.toolCalls.slice(callLimit)) {
       outputs.push(providerToolResult(call, {
-        error: "Per-turn tool call limit reached; call skipped.",
+        error: skippedCallReason,
       }, true));
     }
-    if (turn.toolCalls.length > maxToolCallsPerTurn) {
+    if (turn.toolCalls.length > callLimit) {
       yield {
         type: "status",
         label: "tool call budget enforced",
         detail:
-          `${turn.toolCalls.length - maxToolCallsPerTurn} excess tool call(s) were rejected.`,
+          `${turn.toolCalls.length - callLimit} excess tool call(s) were rejected.`,
       };
     }
     if (toolSteps >= maxToolSteps) {
@@ -4483,7 +4500,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
   const maxToolSteps = resolveMaxToolSteps(
     continuation.maxToolSteps,
     Math.max(AGENT_MAX_TOOL_STEPS, LOCAL_COMPUTER_MAX_TOOL_STEPS),
-    AGENT_MAX_TOOL_STEPS,
+    Math.min(LEGACY_MAX_TOOL_STEPS, AGENT_MAX_TOOL_STEPS),
   );
   const maxToolCallsPerTurn = toolCallsPerTurnForComputerUse(
     localComputerTargetFrom(continuation.computerUseTarget),
@@ -4896,6 +4913,10 @@ async function resumeAgentRunAfterToolApprovalInScope({
         carriedOutputs.push(functionCallOutput(call, { error: call.skipReason }));
         continue;
       }
+      if (remainingRunBudget(runBudgetState).toolCalls === 0) {
+        carriedOutputs.push(functionCallOutput(call, { error: TOOL_CALL_BUDGET_REACHED }));
+        continue;
+      }
       const entry = toolbox.byFunctionName.get(call.name);
       if (!entry) {
         carriedOutputs.push(functionCallOutput(call, { error: `Unknown tool ${call.name}.` }));
@@ -5247,7 +5268,9 @@ async function resumeAgentRunAfterToolApprovalInScope({
       toolSteps += 1;
       const outputs: AgentRunContinuation["outputsBeforeApproval"] = [];
 
-      const callsThisTurn = turn.functionCalls.slice(0, maxToolCallsPerTurn);
+      const callLimit = Math.min(maxToolCallsPerTurn, remainingRunBudget(runBudgetState).toolCalls);
+      const skippedCallReason = callLimit < maxToolCallsPerTurn ? TOOL_CALL_BUDGET_REACHED : PER_TURN_TOOL_CALL_LIMIT;
+      const callsThisTurn = turn.functionCalls.slice(0, callLimit);
       if (
         latestLocalObservation &&
         !isSoleLocalAppListCall(turn.functionCalls, toolbox.byFunctionName)
@@ -5256,6 +5279,10 @@ async function resumeAgentRunAfterToolApprovalInScope({
       }
       for (let callIndex = 0; callIndex < callsThisTurn.length; callIndex += 1) {
         const call = callsThisTurn[callIndex];
+        if (remainingRunBudget(runBudgetState).toolCalls === 0) {
+          outputs.push(functionCallOutput(call, { error: TOOL_CALL_BUDGET_REACHED }));
+          continue;
+        }
         const entry = toolbox.byFunctionName.get(call.name);
         if (!entry) {
           outputs.push(functionCallOutput(call, { error: `Unknown tool ${call.name}.` }));
@@ -5365,7 +5392,8 @@ async function resumeAgentRunAfterToolApprovalInScope({
               queuedCallsAfterPause(
                 turn.functionCalls,
                 callIndex,
-                maxToolCallsPerTurn,
+                callLimit,
+                skippedCallReason,
               ),
             ),
             canonicalConversation: canonicalConversationFromOpenAIItems([
@@ -5441,8 +5469,8 @@ async function resumeAgentRunAfterToolApprovalInScope({
       }
 
       if (workflowHandoff) break;
-      for (const call of turn.functionCalls.slice(maxToolCallsPerTurn)) {
-        outputs.push(functionCallOutput(call, { error: "Per-turn tool call limit reached; call skipped." }));
+      for (const call of turn.functionCalls.slice(callLimit)) {
+        outputs.push(functionCallOutput(call, { error: skippedCallReason }));
       }
 
       if (toolSteps >= maxToolSteps) {
@@ -5580,7 +5608,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
   const maxToolSteps = resolveMaxToolSteps(
     continuation.maxToolSteps,
     Math.max(AGENT_MAX_TOOL_STEPS, LOCAL_COMPUTER_MAX_TOOL_STEPS),
-    AGENT_MAX_TOOL_STEPS,
+    Math.min(LEGACY_MAX_TOOL_STEPS, AGENT_MAX_TOOL_STEPS),
   );
   const runMutationOptions = {
     tenantId: normalizeTenantId(tenantId),
@@ -6015,6 +6043,10 @@ async function resumeProviderBoundAgentRunAfterApproval({
         }, true));
         continue;
       }
+      if (remainingRunBudget(runBudgetState).toolCalls === 0) {
+        carriedResults.push(providerToolResult(call, { error: TOOL_CALL_BUDGET_REACHED }, true));
+        continue;
+      }
       const entry = toolbox.byFunctionName.get(call.name);
       if (!entry) {
         carriedResults.push(providerToolResult(call, {
@@ -6235,6 +6267,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
       checkpointBeforeTool: checkpointBeforeResumeTool,
       checkpointAfterTool: checkpointAfterResumeTool,
       reserveTools: reserveResumeTools,
+      remainingToolCalls: () => remainingRunBudget(runBudgetState).toolCalls,
       serializeToolCalls:
         isLocalComputerTarget(continuation.computerUseTarget) ||
         isExpandedCheckpointShadowEnrollment(
@@ -7007,11 +7040,12 @@ function queuedCallsAfterPause(
   calls: ResponseFunctionCall[],
   pausedCallIndex: number,
   maxToolCallsPerTurn = MAX_TOOL_CALLS_PER_TURN,
+  skipReason = PER_TURN_TOOL_CALL_LIMIT,
 ): QueuedFunctionCall[] {
   return calls.slice(pausedCallIndex + 1).map((call, offset) => {
     const originalIndex = pausedCallIndex + 1 + offset;
     return originalIndex >= maxToolCallsPerTurn
-      ? { ...call, skipReason: "Per-turn tool call limit reached; call skipped." }
+      ? { ...call, skipReason }
       : call;
   });
 }

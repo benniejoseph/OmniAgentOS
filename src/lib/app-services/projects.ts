@@ -17,6 +17,7 @@ import {
   listProjectCollections,
   listProjects,
   listProjectTasks,
+  listOwnedProjectTasksPage,
   updateProject,
   updateProjectExecution,
   updateProjectTask,
@@ -42,6 +43,11 @@ export const projectShowServiceInputSchema = z.object({
   taskLimit: z.number().int().min(1).max(200).default(100),
   artifactLimit: z.number().int().min(1).max(200).default(100),
 }).strict();
+
+export const projectInventoryServiceInputSchema = projectShowServiceInputSchema.extend({
+  taskCursor: z.string().min(1).max(2_048).optional(),
+  includeFullObjective: z.boolean().default(false),
+});
 
 export const projectCreateServiceInputSchema = z.object({
   title: z.string().trim().min(1).max(180),
@@ -155,6 +161,59 @@ export async function showProjectService(
       artifacts,
     },
   });
+}
+
+/** Agent-facing inventory. HTTP/native callers retain the full project service. */
+export async function showProjectInventoryService(
+  caller: AppServiceCaller,
+  input: z.input<typeof projectInventoryServiceInputSchema>,
+) {
+  const value = projectInventoryServiceInputSchema.parse(input);
+  const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.show"));
+  const page = await listOwnedProjectTasksPage(value.projectId, {
+    ...readOwner(caller), limit: value.taskLimit, cursor: value.taskCursor,
+  });
+  if (!page) return completeAppServiceCall(authorized, { project: null }, { resourceCount: 0 });
+  const { project, entries } = page;
+  const canonicalTasks = await withCanonicalProjectTasks(caller.context.tenantId, entries.map((entry) => entry.task));
+  const tasks = canonicalTasks.map((task) => ({
+    id: task.id, title: task.title, status: task.status, priority: task.priority, dueAt: task.dueAt ?? null,
+    canonicalStatus: task.workItemStatus.status, sourceStatus: task.workItemStatus.sourceStatus,
+    readLocator: task.workItemStatus.persistence === "postgres" && task.workItemStatus.workspaceId
+      ? { workspaceId: task.workItemStatus.workspaceId, projectId: task.workItemStatus.projectId, workItemId: task.workItemStatus.workItemId }
+      : null,
+  }));
+  const occurredAt = new Date().toISOString();
+  const result = (count: number) => {
+    const hasMore = page.hasMore || count < entries.length;
+    return completeAppServiceCall(authorized, {
+      project: {
+        id: project.id, title: project.title, objective: value.includeFullObjective ? project.objective : project.objective.slice(0, 400), status: project.status,
+        executionStatus: project.executionStatus, targetDate: project.targetDate ?? null, tasks: tasks.slice(0, count),
+      },
+      taskPage: {
+        returnedCount: count, hasMore, nextCursor: hasMore && count ? entries[count - 1].cursor : null,
+        startsAtBeginning: !value.taskCursor, consistency: "current_read_not_snapshot",
+      },
+      omissions: { taskDetails: true, artifacts: true, objective: !value.includeFullObjective && project.objective.length > 400 },
+      taskInspection: "Use app.work_items.show with each readLocator before editing and for readback. A null locator means canonical inspection is unavailable.",
+      taskMutation: "Use app.work_items.update with project.id and the task's id; readLocator IDs identify canonical inspection, not the legacy mutation target.",
+    }, { resourceCount: 1 + count, occurredAt });
+  };
+  // Measure valid JSON including the actual receipt, reserving 2k for the
+  // governed execution envelope. Never slice serialized rows or their IDs.
+  const fits = (candidate: ReturnType<typeof result>) => JSON.stringify(redactSensitive({ ...candidate.data, serviceReceipt: candidate.receipt })).length <= 6_000;
+  let count = 0;
+  let packed = result(count);
+  for (; count < tasks.length; count += 1) {
+    const candidate = result(count + 1);
+    if (!fits(candidate)) break;
+    packed = candidate;
+  }
+  if (!fits(packed) || (tasks.length > 0 && count === 0)) {
+    throw new Error("The project inventory metadata exceeds the bounded response; no task IDs were silently omitted.");
+  }
+  return packed;
 }
 
 export async function showProjectTaskService(caller: AppServiceCaller, input: { projectId: string; taskId: string }) {

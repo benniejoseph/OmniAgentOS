@@ -7,8 +7,8 @@ import {
   dynamicDelegationMaxToolSteps,
 } from "@/lib/delegation/runtime-policy";
 import type { AgentEvent } from "@/lib/orchestration/types";
-import { AGENT_MAX_OUTPUT_TOKENS, AGENT_REASONING_EFFORT } from "@/lib/config";
-import { estimateModelInputTokens } from "@/lib/runs/budgets";
+import { AGENT_MAX_OUTPUT_TOKENS, AGENT_MAX_TOOL_STEPS, AGENT_REASONING_EFFORT, AGENT_RUN_BUDGET_LIMITS } from "@/lib/config";
+import { createRunBudgetState, estimateModelInputTokens, planModelTurnBudget, remainingRunBudget, reserveRunBudget } from "@/lib/runs/budgets";
 import { AgentRunTerminatedError } from "@/lib/runs/cancellation";
 import type {
   ModelToolCall,
@@ -18,6 +18,46 @@ import type {
 import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
 
 describe("non-OpenAI governed provider tool loop", () => {
+  it("executes ordinary rounds seven and eight and makes round nine final within 14 model turns", async () => {
+    const fixture = budgetedToolLoop({ callsPerTurn: 1, usedModelTurns: 5 });
+    const collected = await collect(fixture.loop);
+    expect(fixture.executeTool).toHaveBeenCalledTimes(8);
+    expect(fixture.generateTurn).toHaveBeenCalledTimes(9);
+    expect(fixture.generateTurn.mock.calls.map(([request]) => request.toolChoice))
+      .toEqual([...Array(8).fill(undefined), "none"]);
+    expect(collected.result).toMatchObject({ text: "Finished from observed results.", toolSteps: 8 });
+    expect(fixture.state().used).toMatchObject({ modelTurns: 14, toolCalls: 8 });
+  });
+
+  it("finishes after 30 calls even with two tool rounds remaining", async () => {
+    const fixture = budgetedToolLoop({ callsPerTurn: 5 });
+    const collected = await collect(fixture.loop);
+    expect(fixture.executeTool).toHaveBeenCalledTimes(30);
+    expect(fixture.generateTurn).toHaveBeenCalledTimes(7);
+    expect(fixture.generateTurn.mock.calls.at(-1)?.[0].toolChoice).toBe("none");
+    expect(collected.result.toolSteps).toBe(6);
+    expect(fixture.state().used.toolCalls).toBe(30);
+  });
+
+  it.each([0, 1] as const)("bounds a risk-%s batch to the two remaining calls and answers every skipped call", async (riskLevel) => {
+    const fixture = budgetedToolLoop({ callsPerTurn: 5, usedToolCalls: 28, riskLevel });
+    await collect(fixture.loop);
+    expect(fixture.executeTool).toHaveBeenCalledTimes(2);
+    expect(fixture.state().used.toolCalls).toBe(30);
+    const final = fixture.generateTurn.mock.calls.at(-1)![0];
+    expect(final.toolChoice).toBe("none");
+    expect(final.toolResults).toHaveLength(5);
+    expect(final.toolResults!.slice(2).every((result) => result.isError && result.output.includes("Run tool-call budget reached"))).toBe(true);
+  });
+
+  it("retains call-budget refusals in an approval continuation", async () => {
+    const fixture = budgetedToolLoop({ callsPerTurn: 5, usedToolCalls: 29, riskLevel: 1, approval: true });
+    const collected = await collect(fixture.loop);
+    expect(fixture.executeTool).toHaveBeenCalledOnce();
+    expect(collected.result.waitingApproval?.providerState.queuedCalls).toHaveLength(4);
+    expect(collected.result.waitingApproval?.providerState.queuedCalls.every((call) => call.skipReason?.includes("Run tool-call budget reached"))).toBe(true);
+  });
+
   it("keeps exact Library content pages and canonical citations intact in the writer's tool envelope", async () => {
     const contentPage = {
       schemaVersion: 1, contentTrust: "untrusted", sourceRevisionId: "revision-client",
@@ -1669,6 +1709,51 @@ describe("non-OpenAI governed provider tool loop", () => {
       .toEqual(["high", "high"]);
   });
 });
+
+function budgetedToolLoop(options: {
+  callsPerTurn: number;
+  usedModelTurns?: number;
+  usedToolCalls?: number;
+  riskLevel?: 0 | 1;
+  approval?: boolean;
+}) {
+  let state = createRunBudgetState(AGENT_RUN_BUDGET_LIMITS, {
+    used: { modelTurns: options.usedModelTurns ?? 0, toolCalls: options.usedToolCalls ?? 0 },
+  });
+  let modelCalls = 0;
+  const definition = toolDefinition("app.work_items.show", { riskLevel: options.riskLevel ?? 0, approvalRequired: options.approval ?? false });
+  const generateTurn = vi.fn(async (request: ModelToolTurnRequest) => {
+    modelCalls += 1;
+    return request.toolChoice === "none"
+      ? turn({ text: "Finished from observed results." })
+      : turn({ toolCalls: Array.from({ length: options.callsPerTurn }, (_, index) => ({
+        callId: `budget-call-${modelCalls}-${index}`, name: "work_show", argumentsJson: "{}",
+      })) });
+  });
+  const executeTool = vi.fn(async () => ({
+    record: executionRecord(definition.id, options.approval ? "approval_required" : "executed", { approvalRequired: options.approval }),
+    result: { observed: true },
+  }));
+  const loop = runNonOpenAIProviderToolLoop({
+    provider: "google", tier: "fast", instructions: "Read the exact work item.", prompt: "Verify saved work.",
+    tools: [modelTool("work_show")],
+    toolbox: { byFunctionName: new Map([["work_show", { definition, functionName: "work_show" }]]) },
+    securityContext: { tenantId: "tenant-budget", actorId: "owner", role: "operator", source: "default" },
+    runId: "run-budget-boundary", maxToolSteps: AGENT_MAX_TOOL_STEPS,
+    beforeModelTurn: async ({ toolsEnabled }) => {
+      const plan = planModelTurnBudget(state, {
+        estimate: { tokens: 1, costMicrousd: 1, followUpTokens: 1, followUpCostMicrousd: 1 },
+        toolsEnabled, allowRetry: false,
+      });
+      state = plan.state;
+      return { maxAttempts: 1, finalTurn: plan.finalTurn };
+    },
+    reserveTools: (tools) => { state = reserveRunBudget(state, { toolCalls: tools.length }); return undefined; },
+    remainingToolCalls: () => remainingRunBudget(state).toolCalls,
+    generateTurn, executeTool: executeTool as never,
+  });
+  return { loop, generateTurn, executeTool, state: () => state };
+}
 
 function turn(input: {
   text?: string;
