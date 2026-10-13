@@ -3,6 +3,7 @@ import { buildBuiltInAgentIdentityV1 } from "@/lib/agents/identity-contracts";
 import { DEFAULT_AGENT_RUN_BUDGET_LIMITS } from "@/lib/runs/budgets";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
+import { formatRunReviewEvidence, type RunReviewEvidence } from "./review-evidence";
 
 const mocks = vi.hoisted(() => ({
   generateModelStructured: vi.fn(),
@@ -34,6 +35,37 @@ describe("agent council", () => {
     mocks.sendDelegationMessage.mockResolvedValue({
       messageId: `delegation-message:${"b".repeat(64)}`,
     });
+  });
+
+  it("reviews and revises the identical bounded evidence beyond the old prefix limits", async () => {
+    const verdict = { passed: false, score: 0.7, assessment: "Clarify failed save.", requiredChanges: ["Retain actual failure."] };
+    mocks.generateModelStructured.mockResolvedValueOnce({ text: JSON.stringify(verdict) })
+      .mockResolvedValueOnce({ text: JSON.stringify({ response: "Saved source read; create failed [knowledge:brief]." }) });
+    const observedEvidence: RunReviewEvidence = {
+      commandContext: "[knowledge:brief] Pilot 12. " + "a".repeat(10_000),
+      commandContextReceiptSha256: "e".repeat(64), retrievedContext: "", liveWebContext: "",
+      citationSources: [{ citationId: "knowledge:brief", evidenceId: "brief", title: "Client brief", kind: "knowledge" }],
+      toolObservations: [{ executionId: "execution-create", toolId: "app.projects.create", status: "failed", dryRun: false, approvalRequired: false,
+        note: "Mutation scope mismatch.", modelOutput: '{"error":"Mutation scope mismatch."}' }],
+    };
+    const reviewInput = { goal: "Create work from the brief", response: "Draft", contributions: [], contextBlock: "OLD_INCOMPLETE_CONTEXT", observedEvidence };
+    const beforeVerifier = vi.fn();
+    await reviewCouncilResponse({ ...reviewInput, checkpointHooks: { beforeVerifier } });
+    await reviseCouncilResponse({ ...reviewInput, verdict });
+    const prompts = mocks.generateModelStructured.mock.calls.map(([request]) => request.input as string);
+    const contexts = prompts.map((prompt) => prompt.match(/<retrieved_context>\n([\s\S]*?)\n<\/retrieved_context>/)![1]);
+    expect(contexts[0]).toBe(contexts[1]);
+    expect(contexts[0]).toContain("execution-create");
+    expect(contexts[0]).toContain("Mutation scope mismatch.");
+    expect(contexts[0]).toContain("knowledge:brief");
+    expect(contexts[0]).toContain('"omittedCharacters":28');
+    expect(prompts.every((prompt) => !prompt.includes("OLD_INCOMPLETE_CONTEXT"))).toBe(true);
+    expect(beforeVerifier).toHaveBeenCalledWith({ attempt: 1, requestSha256: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    const originalDigest = beforeVerifier.mock.calls[0][0].requestSha256;
+    mocks.generateModelStructured.mockResolvedValueOnce({ text: JSON.stringify(verdict) });
+    await reviewCouncilResponse({ ...reviewInput, observedEvidence: { ...observedEvidence, commandContextReceiptSha256: "f".repeat(64) }, checkpointHooks: { beforeVerifier } });
+    expect(beforeVerifier.mock.calls[1][0].requestSha256).not.toBe(originalDigest);
+    expect(formatRunReviewEvidence(observedEvidence)).toContain("current_run_observations");
   });
 
   it("runs non-primary specialists independently and reserves Sentinel for review", async () => {

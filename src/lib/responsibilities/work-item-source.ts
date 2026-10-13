@@ -4,6 +4,7 @@ import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import { canonicalWorkItemV1Schema, parseCanonicalWorkItemV1, type CanonicalWorkItemV1 } from "@/lib/workspaces/contracts";
 import { exactIdSchema, instantSchema, responsibilityWorkSchema } from "./contracts";
 import { ResponsibilityError, type ResponsibilityOwner } from "./state";
+import { lockResponsibilityWorkspace } from "./workspace-read-fence";
 
 export const WORK_ITEM_FOLLOWTHROUGH_PROCEDURE = "responsibility.work_item.followthrough.v1" as const;
 export const workItemDependencyReadSchema = z.discriminatedUnion("state", [
@@ -22,12 +23,7 @@ export async function readOwnedWorkItemWithSql(sql: SqlClient, owner: Responsibi
   rawWork: z.infer<typeof responsibilityWorkSchema>, checkedAt: string): Promise<WorkItemSourceRead> {
   const work = responsibilityWorkSchema.parse(rawWork); instantSchema.parse(checkedAt);
   if (!sql.transactionScoped) throw unavailable();
-  const membership = await sql`SELECT workspace.workspace_id FROM omni_tenant_workspaces workspace
-    JOIN omni_tenant_workspace_memberships membership ON membership.tenant_id = workspace.tenant_id AND membership.workspace_id = workspace.workspace_id
-      AND membership.subject_kind = 'user' AND membership.subject_actor_id = ${owner.actorId} AND membership.state = 'active'
-    WHERE workspace.tenant_id = ${owner.tenantId} AND workspace.workspace_id = ${work.workspaceId} AND workspace.state = 'active'
-    FOR SHARE OF workspace, membership`;
-  if (membership.length !== 1) throw unavailable();
+  if (!await lockResponsibilityWorkspace(sql, owner, work.workspaceId)) throw unavailable();
   const rows = await sql`SELECT projection, projection_sha256 FROM omni_work_items WHERE tenant_id = ${owner.tenantId}
     AND workspace_id = ${work.workspaceId} AND project_id = ${work.projectId} AND work_item_id = ${work.workItemId}
     AND owner_actor_ids @> ${[owner.actorId]}::jsonb FOR SHARE`;

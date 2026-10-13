@@ -38,6 +38,11 @@ import {
   trustedRuntimeClockInstruction,
 } from "@/lib/orchestration/prompts";
 import type { AgentMode } from "@/lib/orchestration/types";
+import {
+  formatRunReviewEvidence,
+  REVIEW_EVIDENCE_INSTRUCTIONS,
+  type RunReviewEvidence,
+} from "@/lib/orchestration/review-evidence";
 import { deriveExecutionScope } from "@/lib/security/execution-scope";
 import { resolveRuntimeModelAssignment } from "@/lib/settings/runtime-models";
 import type { ModelAssignmentScope } from "@/lib/settings/types";
@@ -534,6 +539,7 @@ export async function reviewCouncilResponse(input: {
   response: string;
   contributions: CouncilContribution[];
   contextBlock: string;
+  observedEvidence?: RunReviewEvidence;
   maxOutputTokens?: number;
   abortSignal?: AbortSignal;
   usageAttribution?: CouncilUsageAttribution;
@@ -542,6 +548,9 @@ export async function reviewCouncilResponse(input: {
   const attempt = 1;
   const sourceId = "verifier:sentinel";
   const maxOutputTokens = boundedVerifierOutputTokens(input.maxOutputTokens);
+  const evidenceContext = input.observedEvidence
+    ? formatRunReviewEvidence(input.observedEvidence)
+    : input.contextBlock.slice(0, 8_000);
   await invokeCheckpointHook(input.checkpointHooks?.beforeVerifier, {
     attempt,
     requestSha256: contentSha256({
@@ -549,7 +558,7 @@ export async function reviewCouncilResponse(input: {
       goal: input.goal,
       response: input.response,
       contributions: input.contributions,
-      contextBlock: input.contextBlock,
+      contextBlock: evidenceContext,
     }),
   });
   await invokeCheckpointHook(input.checkpointHooks?.beforeModel, {
@@ -566,12 +575,13 @@ export async function reviewCouncilResponse(input: {
       councilPersonaInstructions(sentinel),
       trustedRuntimeClockInstruction(),
       "Fail work with unsupported claims, missed requirements, unsafe advice, invented execution, or material disagreement with the specialist evidence. Be strict but specific.",
+      REVIEW_EVIDENCE_INSTRUCTIONS,
     ].join("\n\n"),
     input: [
       `Goal: ${input.goal}`,
       `<candidate_response>\n${escapeUntrustedPromptText(input.response.slice(0, 16_000))}\n</candidate_response>`,
       `<council_evidence>\n${escapeUntrustedPromptText(JSON.stringify(input.contributions).slice(0, 14_000))}\n</council_evidence>`,
-      `<retrieved_context>\n${escapeUntrustedPromptText(input.contextBlock.slice(0, 8_000))}\n</retrieved_context>`,
+      `<retrieved_context>\n${escapeUntrustedPromptText(evidenceContext)}\n</retrieved_context>`,
     ].join("\n\n"),
     name: "council_sentinel_verdict",
     schema: verdictSchema,
@@ -648,12 +658,16 @@ export async function reviseCouncilResponse(input: {
   verdict: CouncilVerdict;
   contributions: CouncilContribution[];
   contextBlock: string;
+  observedEvidence?: RunReviewEvidence;
   abortSignal?: AbortSignal;
   usageAttribution?: CouncilUsageAttribution;
   checkpointHooks?: CouncilCheckpointHooks;
 }) {
   const attempt = 1;
   const sourceId = "revision:atlas";
+  const evidenceContext = input.observedEvidence
+    ? formatRunReviewEvidence(input.observedEvidence)
+    : input.contextBlock.slice(0, 12_000);
   await invokeCheckpointHook(input.checkpointHooks?.beforeModel, {
     sourceId,
     attempt,
@@ -668,13 +682,14 @@ export async function reviseCouncilResponse(input: {
       councilPersonaInstructions(atlas),
       trustedRuntimeClockInstruction(),
       "Revise the candidate response to satisfy Sentinel's required changes. Preserve valid bracketed citation IDs exactly, remove unsupported claims, state unresolved uncertainty, and return only the improved final response.",
+      REVIEW_EVIDENCE_INSTRUCTIONS,
     ].join("\n\n"),
     input: [
       `Goal: ${input.goal}`,
       `<candidate_response>\n${escapeUntrustedPromptText(input.response.slice(0, 18_000))}\n</candidate_response>`,
       `<sentinel_verdict>\n${escapeUntrustedPromptText(JSON.stringify(input.verdict))}\n</sentinel_verdict>`,
       `<council_contributions>\n${escapeUntrustedPromptText(JSON.stringify(input.contributions).slice(0, 12_000))}\n</council_contributions>`,
-      `<retrieved_context>\n${escapeUntrustedPromptText(input.contextBlock.slice(0, 12_000))}\n</retrieved_context>`,
+      `<retrieved_context>\n${escapeUntrustedPromptText(evidenceContext)}\n</retrieved_context>`,
     ].join("\n\n"),
     name: "council_revised_response",
     schema: {

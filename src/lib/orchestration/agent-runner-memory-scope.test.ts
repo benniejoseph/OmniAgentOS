@@ -29,6 +29,7 @@ import type { SecurityContext } from "@/lib/security/types";
 import { sourceContractSha256 } from "@/lib/sources/contracts";
 import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
 import { MAX_ASSIGNED_SKILLS } from "@/lib/skills/limits";
+import { formatRunReviewEvidence } from "@/lib/orchestration/review-evidence";
 import { builtInSkills } from "@/lib/skills/catalog";
 import { getGovernedTool } from "@/lib/tools/registry";
 import {
@@ -65,6 +66,8 @@ const mocks = vi.hoisted(() => ({
   resolvePersonalContextMemoryAccess: vi.fn(),
   resolveDirectConversationLanguageStyle: vi.fn(),
   runCouncilRound: vi.fn(),
+  reviewCouncilResponse: vi.fn(),
+  reviseCouncilResponse: vi.fn(),
   streamResponseTurn: vi.fn(),
   executeGovernedTool: vi.fn(),
   failAgentRun: vi.fn(),
@@ -173,8 +176,8 @@ vi.mock("@/lib/memory/personal-context-access", async (importOriginal) => ({
 
 vi.mock("@/lib/orchestration/council", () => ({
   formatCouncilContributions: () => "",
-  reviewCouncilResponse: vi.fn(),
-  reviseCouncilResponse: vi.fn(),
+  reviewCouncilResponse: mocks.reviewCouncilResponse,
+  reviseCouncilResponse: mocks.reviseCouncilResponse,
   runCouncilRound: mocks.runCouncilRound,
 }));
 
@@ -305,6 +308,8 @@ describe("agent memory scope", () => {
     mocks.generateModelToolTurn.mockReset();
     mocks.recordRuntimeEventSafely.mockResolvedValue(undefined);
     mocks.executeGovernedTool.mockReset();
+    mocks.reviewCouncilResponse.mockReset();
+    mocks.reviseCouncilResponse.mockReset();
     mocks.shouldUseLiveWebSearch.mockReset().mockReturnValue(false);
     mocks.failAgentRun.mockResolvedValue({ id: "run-memory-scope" });
     mocks.findAgentRunWaitingForToolApproval.mockReset();
@@ -978,6 +983,68 @@ describe("agent memory scope", () => {
       type: "status",
       label: "governed delegation plan active",
     }));
+  });
+
+  it.each(["openai", "google"] as const)("keeps attached sources and actual app outcomes through %s final review, revision, and persistence", async (provider) => {
+    const definitions = ["app.projects.list", "app.projects.create"].map(localToolDefinition);
+    mocks.loadProgressiveAgentTools.mockResolvedValue({ definitions });
+    mocks.runCouncilRound.mockResolvedValue([]);
+    mocks.selectAgentModel.mockReturnValue({ provider, model: "gpt-test", tier: "fast", reason: "Test" });
+    const finalAnswer = "Read the pilot brief [knowledge:brief]. Project creation failed; no project was saved.";
+    mocks.reviewCouncilResponse.mockResolvedValue({ passed: false, score: 0.8, assessment: "Clarify save failure.", requiredChanges: ["Retain evidence and distinguish the failed save."] });
+    mocks.reviseCouncilResponse.mockResolvedValue(finalAnswer);
+    mocks.executeGovernedTool.mockImplementation(async ({ toolId }) => ({
+      record: {
+        ...localExecutionRecord(toolId, `observed-${toolId}`),
+        ...(toolId === "app.projects.create" ? { status: "failed", reason: "Actor-bound project mutation rejected." } : {}),
+      },
+      result: toolId === "app.projects.list" ? { projects: [], matchedCount: 0 } : undefined,
+    }));
+    const calls = definitions.map(({ id }, index) => ({ callId: `call-${index}`, name: id }));
+    if (provider === "openai") {
+      mocks.streamResponseTurn.mockResolvedValueOnce(openAITurn({ calls }))
+        .mockImplementationOnce(async (modelRequest) => {
+          const text = "The brief confirms 12 pilot agents [knowledge:brief]. Project creation was rejected.";
+          await modelRequest.onDelta(text);
+          return openAITurn({ text });
+        });
+    } else {
+      mocks.generateModelToolTurn.mockResolvedValueOnce(providerTurn({ toolCalls: calls.map((call) => ({ ...call, argumentsJson: "{}" })) }))
+        .mockResolvedValueOnce(providerTurn({ text: "The brief confirms 12 pilot agents [knowledge:brief]. Project creation was rejected." }));
+    }
+    const scopedRequest = request("session");
+    scopedRequest.agentId = "atlas";
+    scopedRequest.specialistIds = ["sentinel"];
+    scopedRequest.agentProfile!.toolIds = definitions.map(({ id }) => id);
+    scopedRequest.agentProfile!.approvalPolicy = "risk_based";
+    scopedRequest.agentProfile!.autonomy = "governed";
+    scopedRequest.commandContext = {
+      schemaVersion: 1, content: "[knowledge:brief] Aster Vale: pilot 12. Excerpts 2 of 3; truncated: true. [knowledge:kickoff] Pilot on 23 October.",
+      receiptSha256: "a".repeat(64), selectionSha256: "b".repeat(64), pinCount: 2,
+      citationSources: [
+        { citationId: "knowledge:brief", evidenceId: "brief", kind: "knowledge", title: "Client brief" },
+        { citationId: "knowledge:kickoff", evidenceId: "kickoff", kind: "knowledge", title: "Kickoff notes" },
+      ],
+    };
+
+    const events = await collectRequest(scopedRequest);
+
+    expect(mocks.reviewCouncilResponse).toHaveBeenCalledOnce();
+    expect(mocks.reviseCouncilResponse).toHaveBeenCalledOnce();
+    const review = mocks.reviewCouncilResponse.mock.calls[0][0].observedEvidence;
+    expect(mocks.reviseCouncilResponse.mock.calls[0][0].observedEvidence).toBe(review);
+    expect(review.commandContextReceiptSha256).toBe("a".repeat(64));
+    expect(review.commandContext).toBe(scopedRequest.commandContext.content);
+    expect(review.toolObservations).toHaveLength(2);
+    expect(review.toolObservations).toEqual([
+      expect.objectContaining({ executionId: "observed-app.projects.list", status: "executed", modelOutput: expect.stringContaining('"projects":[]') }),
+      expect.objectContaining({ executionId: "observed-app.projects.create", status: "failed", note: "Actor-bound project mutation rejected." }),
+    ]);
+    expect(formatRunReviewEvidence(review)).toContain("knowledge:kickoff");
+    expect(events).toContainEqual(expect.objectContaining({ type: "done", response: finalAnswer }));
+    expect(mocks.completeAgentRun.mock.calls[0][1]).toBe(finalAnswer);
+    expect(mocks.completeAgentRun.mock.calls[0][2].citedIds).toContain("knowledge:brief");
+    expect(mocks.completeAgentRun.mock.calls[0][2].sources).toEqual(expect.arrayContaining([expect.objectContaining({ citationId: "knowledge:brief" })]));
   });
 
   it("uses semantic capability terms as discovery hints without an allowlist", async () => {

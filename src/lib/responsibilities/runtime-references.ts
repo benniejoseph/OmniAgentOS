@@ -19,6 +19,7 @@ import { RESPONSIBILITY_PILOT, RESPONSIBILITY_WORK_ITEM_PILOT, type PilotConfigu
 import { ResponsibilityError, type ResponsibilityOwner } from "./state";
 import { WORK_ITEM_FOLLOWTHROUGH_PROCEDURE } from "./work-item-source";
 import { readOwnedResponsibilityProcedures } from "./procedure-reference";
+import { lockResponsibilityWorkspace } from "./workspace-read-fence";
 
 /** Internal worker identity is resolved from current account records, never
  * replayed requester JSON. Locks keep membership/revocation stable through the
@@ -52,12 +53,7 @@ export async function resolveResponsibilityPilot(sql: SqlClient, owner: Responsi
   const source = draft.sources[0];
   if (source.kind !== "meeting" && source.kind !== "work_item") throw unsupported();
   if (source.kind === "work_item" && (source.id !== draft.work.workItemId || source.workspaceId !== draft.work.workspaceId || source.projectId !== draft.work.projectId)) throw unsupported();
-  const accessRows = await sql`SELECT workspace.workspace_id FROM omni_tenant_workspaces workspace
-    JOIN omni_tenant_workspace_memberships membership ON membership.tenant_id = workspace.tenant_id AND membership.workspace_id = workspace.workspace_id
-      AND membership.subject_kind = 'user' AND membership.subject_actor_id = ${owner.actorId} AND membership.state = 'active'
-    WHERE workspace.tenant_id = ${owner.tenantId} AND workspace.workspace_id = ${source.workspaceId} AND workspace.state = 'active'
-    FOR SHARE OF workspace, membership`;
-  if (accessRows.length !== 1) throw denied();
+  if (!await lockResponsibilityWorkspace(sql, owner, source.workspaceId)) throw denied();
   const target = { ...owner, responsibilityId: record.id, responsibilityRevision: record.revision, reviewSha256: review.reviewSha256 };
   const sourceReader = responsibilityObservationReader(context, owner);
   const evidence = authoritativeSourceReadSchema.parse(await sourceReader({ target, source, observedAt: now }, sql));

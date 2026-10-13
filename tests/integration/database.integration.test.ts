@@ -9656,6 +9656,7 @@ const listenCaptureVersion = 250;
 const listenMediaOwnerScopeVersion = 251;
 const responsibilityWorkItemFollowthroughVersion = 252;
 const agentTextComparisonsVersion = 253;
+const responsibilityWorkspaceReadFenceVersion = 254;
 const additiveReplayVersions = [
   companionPreferencesVersion,
   responsibilityDraftsVersion,
@@ -9696,6 +9697,7 @@ const additiveReplayVersions = [
   listenMediaOwnerScopeVersion,
   responsibilityWorkItemFollowthroughVersion,
   agentTextComparisonsVersion,
+  responsibilityWorkspaceReadFenceVersion,
 ].filter((version) => databaseSchemaMigrations.some((migration) => migration.version === version));
 const meetingResolutionReplayTables: readonly string[] = [
   "omni_meeting_commitment_resolution_intents",

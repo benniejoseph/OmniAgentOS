@@ -7,10 +7,19 @@ ResponsibilityJson workItemFollowthroughDraft({
   required ResponsibilityJson work,
   required DateTime now,
 }) {
-  final start = DateTime.fromMillisecondsSinceEpoch(
-    now.millisecondsSinceEpoch,
-    isUtc: true,
-  ).add(const Duration(minutes: 5));
+  final earliest = now.toUtc().add(const Duration(minutes: 5));
+  final minute = DateTime.utc(
+    earliest.year,
+    earliest.month,
+    earliest.day,
+    earliest.hour,
+    earliest.minute,
+  );
+  // The scheduler requires whole minutes. Round up so preparation still leaves
+  // at least five minutes for review, including across midnight.
+  final start = earliest == minute
+      ? minute
+      : minute.add(const Duration(minutes: 1));
   final reference = {
     for (final field in ['workspaceId', 'projectId', 'workItemId'])
       field: work[field],

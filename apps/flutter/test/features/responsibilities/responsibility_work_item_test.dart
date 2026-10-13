@@ -48,6 +48,40 @@ void main() {
   const verifier = ResponsibilityVerifier(testOwner);
 
   test(
+    'quick setup rounds start and expiry up to scheduler minute precision',
+    () {
+      for (final input in [
+        '2026-10-13T23:58:42.123456Z',
+        '2026-10-13T12:00:00.000001Z',
+        '2026-10-13T17:30:00+05:30',
+      ]) {
+        final current = DateTime.parse(input);
+        final draft = workItemFollowthroughDraft(
+          draft: emptyResponsibilityDraft(),
+          work: workItemChoice,
+          now: current,
+        );
+        final cadence = responsibilityMap(draft['cadence']);
+        final start = DateTime.parse(cadence['startsAt'] as String);
+        final expiry = DateTime.parse(cadence['expiresAt'] as String);
+        for (final date in [start, expiry]) {
+          expect(date.isUtc, isTrue);
+          expect(
+            date.microsecondsSinceEpoch % Duration.microsecondsPerMinute,
+            0,
+          );
+        }
+        expect(
+          start.difference(current),
+          greaterThanOrEqualTo(const Duration(minutes: 5)),
+        );
+        expect(start.difference(current), lessThan(const Duration(minutes: 6)));
+        expect(expiry.difference(start), const Duration(days: 7));
+      }
+    },
+  );
+
+  test(
     'work references and draft preserve exact workspace, project and item',
     () async {
       await verifier.read(workReferences(), ResponsibilityRead.references);

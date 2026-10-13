@@ -1446,6 +1446,11 @@ would refuse to load them. `LocalRelease.entitlements` therefore gives the host 
 the microphone. The helpers and the Share Extension keep library validation.
 `LocalRelease.entitlements` deliberately omits `com.apple.security.app-sandbox`; the
 owner-only main application is not sandboxed.
+It also declares `com.apple.security.files.user-selected.read-write`, matching
+the Apple-signed build's picker capability. The pinned Darwin file picker checks
+for this entitlement even in an unsandboxed process; omitting it prevents the
+file dialog from opening. Keep this declaration in the normal signed package
+rather than bypassing the plugin's entitlement checks.
 The Apple-issued Release path still uses the sandboxed `Release.entitlements` file.
 After a private signing update, the first launch may briefly show the securing state
 while macOS reauthorizes existing ordinary-Keychain items; every credential operation
@@ -2991,3 +2996,21 @@ runtime receipts. New guidance activation now needs measured improvement;
 legacy active guidance retains rollback. No live model credentials are required
 for isolated regression tests, and fixture results do not establish provider
 quality or production readiness.
+
+## Continuity repair candidate (2026-10-13)
+
+Migration **254**, `20261013150000_responsibility_workspace_read_fence.sql`,
+adds a closed workspace membership lock function. The runtime can use it to
+review and read an exact owned work item while retaining revocation ordering;
+it receives no UPDATE privilege on workspace authority tables. Database
+verification checks the function owner, fixed search path and execution grants.
+Apply it after 253 with the encrypted backup, isolated migration replay and
+paired web/worker release procedure. It is additive and retains older-server
+compatibility; rollback must not drop the lock function or change stored work.
+
+The native repair is **1.33.1+99**, with contract **v56** unchanged. Its private
+Mac package includes the user-selected-file entitlement required by the picker,
+and follow-up quick setup rounds start/expiry to whole minutes. Validate an
+actual DOCX selection after the signed upgrade without resetting the app's
+session or storage. A successful isolated check is not evidence of a scheduled
+production observation; retain separate live baseline/change receipts.

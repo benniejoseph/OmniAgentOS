@@ -44,6 +44,8 @@ import { projectCanonicalShadowWrite } from "@/lib/workspaces/canonical-store";
 export type ProjectMutationContext = Readonly<{
   executionScope: ExecutionScope;
   idempotencyKey: string;
+  /** Selected by a trusted service, never from model or request arguments. */
+  principalMode?: "user_or_agent";
 }>;
 
 export async function createProject(input: {
@@ -1379,7 +1381,7 @@ function exactProjectMutationContext(
   value: ProjectMutationContext,
   tenantId: string,
   actorId: string,
-  principalMode: "interactive_user" | "delegated" = "interactive_user",
+  fallbackPrincipalMode: "interactive_user" | "delegated" = "interactive_user",
 ) {
   const executionScope = parsePersistedExecutionScope(value.executionScope);
   if (!executionScope) {
@@ -1389,15 +1391,26 @@ function exactProjectMutationContext(
   const exactActorId = safeText(actorId, 200);
   const actorMatches = Boolean(executionScope.initiatingActorId) &&
     executionScope.initiatingActorId === exactActorId;
+  // App services admit the initiating user or their attributed Agent. Internal
+  // workflow callers retain their explicit delegated mode; interactive callers
+  // remain user-only unless a trusted service selected the narrower admission.
+  const principalMode = value.principalMode ?? fallbackPrincipalMode;
+  const userPrincipalMatches = executionScope.executingPrincipalType === "user" &&
+    executionScope.executingPrincipalId === exactActorId;
   const principalMatches = principalMode === "delegated"
     ? Boolean(executionScope.executingPrincipalId)
-    : executionScope.executingPrincipalType === "user" &&
-      executionScope.executingPrincipalId === exactActorId;
+    : userPrincipalMatches || (
+        principalMode === "user_or_agent" &&
+        executionScope.executingPrincipalType === "agent" &&
+        Boolean(executionScope.executingPrincipalId)
+      );
   if (!actorMatches || !principalMatches) {
     throw new Error(
       principalMode === "delegated"
         ? "Project mutation scope must bind its initiating actor and executing principal."
-        : "Interactive project mutation scope must bind the initiating user principal.",
+        : principalMode === "user_or_agent"
+          ? "Project mutation scope must bind its initiating actor and a user or agent principal."
+          : "Interactive project mutation scope must bind the initiating user principal.",
     );
   }
   const idempotencyKey = value.idempotencyKey.trim();

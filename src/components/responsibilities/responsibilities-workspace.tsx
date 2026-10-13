@@ -91,7 +91,7 @@ function ScopedWorkspace({ scope, owner, id, active, sessionStatus, canManage }:
       {state.detail.state === "loading" && <p role="status">Loading the exact responsibility…</p>}
       {state.detail.state === "error" && <p role="status">Responsibility unavailable. {state.detail.error}{detail ? " Last-loaded draft is read only until refreshed." : " It may be missing or no longer accessible."}</p>}
       {detail && <>
-        <DraftEditor detail={detail} canManage={canManage && state.detail.state === "ready"} frozen={frozen} references={state.references}
+        <DraftEditor detail={detail} canManage={canManage} frozen={frozen || state.detail.state !== "ready"} references={state.references}
           refreshReferences={() => void controller.load("references")} save={(body) => void controller.submit({ kind: "draft", id, body })} preview={() => void controller.load("detail", id, true)} />
         <RuntimePanel record={detail.record} resource={state.runtime} enabled={canManage && state.detail.state === "ready"} frozen={frozen}
           refresh={() => void controller.load("runtime", id)} preview={() => void controller.load("runtime", id, true)} control={(body) => void controller.submit({ kind: "runtime", id, body })} />

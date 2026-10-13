@@ -21,7 +21,7 @@ function fixture(options: { principalRows?: number; releaseRows?: number; email?
   const sql = Object.assign(vi.fn(async (parts: TemplateStringsArray) => {
     const query = parts.join("?");
     if (query.includes("omni_auth_users")) return [{ id: runtimeOwner.actorId.slice(6), email: options.email ?? "current@example.test", role: "operator", name: "Fixture" }];
-    if (query.includes("omni_tenant_workspace_memberships")) return [{ workspace_id: runtimeSource.workspaceId }];
+    if (query.includes("omni_lock_responsibility_workspace_v1")) return [{ allowed: true }];
     if (query.includes("omni_work_items")) return [{ projection: work, projection_sha256: canonicalJsonSha256(work) }];
     if (query.includes("omni_tenant_execution_principals")) return Array.from({ length: options.principalRows ?? 1 }, () => ({ principal_id: "principal-custom" }));
     if (query.includes("omni_agent_release_channels")) return Array.from({ length: options.releaseRows ?? 1 }, () => ({ agent_definition_id: "custom-agent" }));

@@ -8,6 +8,10 @@ import type { SqlClient } from "@/lib/db/sql-types";
 /** Only disposable migration fixtures may remove empty comparison evidence.
  * Capture the original trigger declaration without rerunning its old RLS or ACLs. */
 export async function removeEmptyAgentTextComparisonsForReplay(sql: postgres.TransactionSql) {
+  // Remove the later read-only fence before restoring its exact predecessor.
+  // The function owns no data; historical fixtures must still replay its ACLs.
+  await sql`DROP FUNCTION public.omni_lock_responsibility_workspace_v1(TEXT,TEXT,TEXT)`;
+  await sql`DELETE FROM omni_schema_version WHERE version=254`;
   expect(await sql`SELECT
     (SELECT count(*)::int FROM public.omni_agent_adaptation_comparisons) AS comparisons,
     (SELECT count(*)::int FROM public.omni_agent_adaptations WHERE comparison IS NOT NULL) AS measured
@@ -167,6 +171,7 @@ export async function replayPost245Migrations(sql: postgres.TransactionSql) {
     [251, "20261012123000_listen_media_owner_scope.sql"],
     [252, "20261013090000_responsibility_work_item_followthrough.sql"],
     [253, "20261013093000_agent_text_comparisons.sql"],
+    [254, "20261013150000_responsibility_workspace_read_fence.sql"],
   ] as const) {
     const { row, migration } = await readReplayMigration(version, file);
     await applySqlMigrationFile(adapter, migration, [row], []);

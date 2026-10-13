@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { canonicalAuthUserActorFromSecurityContext } from "@/lib/security/canonical-actor";
 import { canPerform } from "@/lib/security/context";
 import type { SecurityContext } from "@/lib/security/types";
@@ -38,7 +39,7 @@ export async function getResponsibilityDraft(context: SecurityContext, id: strin
   authorize(context, "manage.workflow");
   if (issues.length) return { ...envelope(), record, readiness: { state: "incomplete", issues } };
   try {
-    const pins = await dependencies.pins(context, owner, record);
+    const pins = await resolveReviewPins(context, owner, record, dependencies);
     return { ...envelope(), record, readiness: reviewPreview(record, pins) };
   } catch (error) {
     if (error instanceof ResponsibilityError && error.status === 409) return { ...envelope(), record, readiness: { state: "blocked", issues: [error.code] } };
@@ -67,8 +68,21 @@ export async function changeResponsibilityDraft(context: SecurityContext, id: st
   if (record.revision !== value.data.expectedRevision || record.draftSha256 !== value.data.draftSha256 || incompleteDraft(record.draft, dependencies.now()).length) {
     throw new ResponsibilityError("The exact draft is incomplete, expired, or changed. Request a new review.", 409, "responsibility_review_changed");
   }
-  const preview = reviewPreview(record, await dependencies.pins(context, owner, record));
+  const preview = reviewPreview(record, await resolveReviewPins(context, owner, record, dependencies));
   return { ...envelope(), ...await dependencies.change(owner, id, value.data, key, preview) };
+}
+async function resolveReviewPins(context: SecurityContext, owner: ResponsibilityOwner, record: ResponsibilityRecord, dependencies: ResponsibilityDependencies) {
+  try { return await dependencies.pins(context, owner, record); }
+  catch (error) {
+    if (error instanceof ResponsibilityError && error.status === 409) throw error;
+    const code = error instanceof Error ? (error as Error & { code?: unknown }).code : undefined;
+    const sqlState = typeof code === "string" && /^[0-9A-Z]{5}$/.test(code) ? code : undefined;
+    // Database messages may contain source data. Retain only a bounded failure
+    // class and fresh diagnostic correlation, never messages or selected IDs.
+    console.error(JSON.stringify({ event: "responsibility.reference_review_failed", correlationId: `responsibility-review:${randomUUID()}`,
+      category: sqlState === "42501" ? "database_privilege" : sqlState ? "database" : "reference_resolution", ...(sqlState ? { sqlState } : {}) }));
+    throw new ResponsibilityError("The selected references could not be checked. Retry the review read.", 503, "responsibility_review_unavailable");
+  }
 }
 function authorize(context: SecurityContext, action: "read" | "manage.workflow"): ResponsibilityOwner {
   if (!canPerform(context.role, action)) throw new ResponsibilityError("This account cannot perform that responsibility action.", 403, "responsibility_forbidden");

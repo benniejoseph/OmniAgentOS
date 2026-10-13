@@ -10,5 +10,9 @@
 	<true/>
 	<key>com.apple.security.device.audio-input</key>
 	<true/>
+	<!-- The Darwin picker checks this even for the private, unsandboxed build.
+	     Match the user-selected file capability of the Apple-signed build. -->
+	<key>com.apple.security.files.user-selected.read-write</key>
+	<true/>
 </dict>
 </plist>

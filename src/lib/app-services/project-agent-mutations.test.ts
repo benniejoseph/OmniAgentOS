@@ -1,0 +1,198 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createAppServiceCaller, createRequestMutationAppServiceCaller } from "@/lib/app-services/contracts";
+import { createProjectService } from "@/lib/app-services/projects";
+import { listStreamEvents } from "@/lib/events/store";
+import { createProject, getProject, listProjects, listProjectTasks } from "@/lib/projects/store";
+import type { PersonalProject, ProjectTask } from "@/lib/projects/types";
+import { createExecutionScope, type ExecutionScope } from "@/lib/security/execution-scope";
+import type { SecurityContext } from "@/lib/security/types";
+import { approveAndClaimToolExecution } from "@/lib/tools/audit-store";
+import { executeGovernedTool } from "@/lib/tools/executor";
+
+// The project service, dispatcher, executor, policy, store and event ledger are
+// real. Only the unrelated shared rate limiter is replaced in this file lane.
+vi.mock("@/lib/http/rate-limit", () => ({
+  checkSharedRateLimit: vi.fn().mockResolvedValue({ allowed: true, retryAfterSeconds: 0 }),
+}));
+
+const context: SecurityContext = {
+  tenantId: "continuity-agent-mutations",
+  actorId: "owner@example.test",
+  role: "operator",
+  source: "session",
+};
+const input = { title: "Synthetic client", objective: "Deliver the documented pilot commitments." };
+const principalId = "agent:atlas:continuity-fixture";
+let dataDirectory: string;
+
+beforeEach(async () => {
+  dataDirectory = await mkdtemp(path.join(tmpdir(), "asael-project-agent-"));
+  vi.stubEnv("OMNIAGENT_DATA_DIR", dataDirectory);
+  vi.stubEnv("DATABASE_URL", "");
+  vi.stubEnv("OMNIAGENT_GRADUATED_AUTONOMY", "false");
+});
+
+afterEach(async () => {
+  vi.unstubAllEnvs();
+  await rm(dataDirectory, { recursive: true, force: true });
+});
+
+function scope(overrides: Partial<Parameters<typeof createExecutionScope>[0]> = {}) {
+  return createExecutionScope({
+    tenantId: context.tenantId,
+    initiatingActorId: context.actorId,
+    executingPrincipalType: "agent",
+    executingPrincipalId: principalId,
+    correlationId: "continuity-client-run",
+    purpose: "continuity.client_work",
+    ...overrides,
+  });
+}
+
+function execute(
+  toolId: string,
+  toolInput: Record<string, unknown>,
+  idempotencyKey: string,
+  executionScope: ExecutionScope = scope(),
+  options: Partial<Parameters<typeof executeGovernedTool>[0]> = {},
+) {
+  return executeGovernedTool({
+    toolId, input: toolInput, idempotencyKey, executionScope, context, dryRun: false, ...options,
+  });
+}
+
+describe("actor-bound Agent project mutations through the governed service path", () => {
+  it("creates, replays and updates real owned records with distinct user/Agent event attribution", async () => {
+    const first = await execute("app.projects.create", input, "client:create");
+    expect(first.record.status, first.record.reason).toBe("executed");
+    const project = (first.result as { project: PersonalProject }).project;
+    expect(project).toMatchObject({ ...input, tenantId: context.tenantId, actorId: context.actorId });
+    const replay = await execute("app.projects.create", input, "client:create");
+    expect(replay).toEqual(first);
+    expect(await listProjects(10, context)).toHaveLength(1);
+    const events = await listStreamEvents(`project:${project.id}`, context);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: "project.created", actorId: context.actorId,
+      executionScope: {
+        initiatingActorId: context.actorId,
+        executingPrincipalType: "agent",
+        executingPrincipalId: principalId,
+      },
+    });
+
+    await expect(execute("app.projects.create", { ...input, title: "Conflicting request" }, "client:create"))
+      .rejects.toThrow();
+    expect(await listProjects(10, context)).toHaveLength(1);
+
+    const projectScope = scope({ projectId: project.id });
+    const taskInput = { projectId: project.id, title: "Validate ticket mapping", detail: "Owner: Jonah. Accept 25 valid tickets.", dueAt: "2026-10-15T06:30:00.000Z" };
+    const created = await execute("app.work_items.create", taskInput, "mapping:create", projectScope);
+    expect(created.record.status, created.record.reason).toBe("executed");
+    const task = (created.result as { workItem: ProjectTask }).workItem;
+    expect((await execute("app.work_items.create", taskInput, "mapping:create", projectScope)).result).toEqual(created.result);
+    expect(await listProjectTasks(project.id, context)).toHaveLength(1);
+
+    const change = { projectId: project.id, workItemId: task.id, status: "done", detail: "25 valid tickets and named acceptance recorded.", dueAt: "2026-10-17T06:30:00.000Z" };
+    const updated = await execute("app.work_items.update", change, "mapping:change", projectScope);
+    expect(updated.record.status, updated.record.reason).toBe("executed");
+    expect(updated.result).toMatchObject({
+      workItem: { id: task.id, status: "done", dueAt: change.dueAt, detail: change.detail, workItemStatus: { status: "unverified", sourceStatus: "done/unknown" } },
+    });
+    expect((await execute("app.work_items.update", change, "mapping:change", projectScope)).result).toEqual(updated.result);
+
+    const changedProject = await execute("app.projects.update", { projectId: project.id, title: "Synthetic pilot" }, "client:change", projectScope);
+    expect(changedProject.record.status, changedProject.record.reason).toBe("executed");
+    const read = await execute("app.projects.show", { projectId: project.id }, "client:read", projectScope);
+    expect(read.record.status, read.record.reason).toBe("executed");
+    expect(read.result).toMatchObject({ project: { title: "Synthetic pilot", tasks: [{ id: task.id, status: "done", detail: change.detail, dueAt: change.dueAt }] } });
+    const finalEvents = await listStreamEvents(`project:${project.id}`, context);
+    expect(finalEvents.map((event) => event.type)).toEqual([
+      "project.created", "project.task.created", "project.task.updated", "project.updated",
+    ]);
+    expect(finalEvents.every((event) => event.executionScope?.executingPrincipalId === principalId)).toBe(true);
+  });
+
+  it.each([
+    ["tenant", { tenantId: "other-tenant" }],
+    ["actor", { initiatingActorId: "someone-else" }],
+    ["user principal", { executingPrincipalType: "user", executingPrincipalId: "someone-else" }],
+  ] as const)("rejects a mismatched %s before any project effect", async (_label, overrides) => {
+    await expect(execute("app.projects.create", input, "client:invalid", scope(overrides))).rejects.toThrow();
+    expect(await listProjects(10, context)).toEqual([]);
+  });
+
+  it.each([
+    ["missing principal", { executingPrincipalId: null }],
+    ["system principal", { executingPrincipalType: "system", executingPrincipalId: "workflow:fixture" }],
+  ] as const)("does not admit a %s through the Agent-facing service", async (_label, overrides) => {
+    const refused = await execute("app.projects.create", input, "client:invalid", scope(overrides));
+    expect(refused.record.status).toBe("failed");
+    expect(refused.result).toBeNull();
+    expect(await listProjects(10, context)).toEqual([]);
+  });
+
+  it("preserves read-only policy, role permissions and the strict model argument schema", async () => {
+    const readOnly = await execute("app.projects.create", input, "client:read-only", scope(), { requireReadOnly: true });
+    expect(readOnly.record).toMatchObject({ status: "blocked", reason: "This run permits only read-only tools." });
+    await expect(execute("app.projects.create", input, "client:viewer", scope(), { context: { ...context, role: "viewer" } }))
+      .resolves.toMatchObject({ record: { status: "failed", reason: "Role viewer cannot perform run.agent." }, result: null });
+    for (const [index, injected] of [{ actorId: "someone-else" }, { tenantId: "other" }, { principalMode: "user_or_agent" }, { executionScope: scope() }].entries()) {
+      await expect(execute("app.projects.create", { ...input, ...injected }, `client:injected:${index}`))
+        .resolves.toMatchObject({ record: { status: "failed", reason: expect.stringContaining("unrecognized_keys") }, result: null });
+    }
+    expect(await listProjects(10, context)).toEqual([]);
+  });
+
+  it("refuses a wrong target project and a task belonging to another project", async () => {
+    const first = await execute("app.projects.create", input, "client:first");
+    const second = await execute("app.projects.create", { ...input, title: "Other client" }, "client:second");
+    const project = (first.result as { project: PersonalProject }).project;
+    const other = (second.result as { project: PersonalProject }).project;
+    const created = await execute("app.work_items.create", { projectId: project.id, title: "Exact task" }, "task:create", scope({ projectId: project.id }));
+    const task = (created.result as { workItem: ProjectTask }).workItem;
+    await expect(execute("app.work_items.update", { projectId: project.id, workItemId: task.id, status: "done" }, "task:wrong-scope", scope({ projectId: other.id })))
+      .rejects.toThrow("projectId does not match its execution scope");
+    const wrongParent = await execute("app.work_items.update", { projectId: other.id, workItemId: task.id, status: "done" }, "task:wrong-parent", scope({ projectId: other.id }));
+    expect(wrongParent.result).toMatchObject({ workItem: null });
+    expect(await listProjectTasks(project.id, context)).toMatchObject([{ id: task.id, status: "open" }]);
+    expect(await listStreamEvents(`project:${project.id}`, context)).toHaveLength(2);
+  });
+
+  it("keeps forced approval pending until the bound claim is supplied, then replays one effect", async () => {
+    const request = { toolId: "app.projects.create", input, idempotencyKey: "client:approved", executionScope: scope(), context, dryRun: false, forceApproval: true };
+    const pending = await executeGovernedTool(request);
+    expect(pending.record.status).toBe("approval_required");
+    expect((await executeGovernedTool(request)).record.id).toBe(pending.record.id);
+    expect(await listProjects(10, context)).toEqual([]);
+    const claimToken = "continuity-project-approval-claim";
+    const claim = await approveAndClaimToolExecution({
+      id: pending.record.id, tenantId: context.tenantId, approvedBy: context.actorId,
+      approvedRole: context.role, claimToken,
+      mutation: { executionScope: scope({ executingPrincipalType: "user", executingPrincipalId: context.actorId, causationId: pending.record.id, purpose: "tool.approval.approve" }), idempotencyKey: "client:approval" },
+    });
+    expect(claim.outcome).toBe("claimed");
+    const executed = await executeGovernedTool({ ...request, approved: true, existingRecord: claim.record!, executionClaimToken: claimToken });
+    expect(executed.record.status, executed.record.reason).toBe("executed");
+    const replay = await executeGovernedTool(request);
+    expect(replay.result).toEqual(executed.result);
+    const [project] = await listProjects(10, context);
+    expect(await listProjects(10, context)).toHaveLength(1);
+    expect(await listStreamEvents(`project:${project.id}`, context)).toHaveLength(1);
+  });
+
+  it("keeps direct interactive store calls user-only and existing request services working", async () => {
+    await expect(createProject({ ...input, ...context, mutation: { executionScope: scope(), idempotencyKey: "direct:agent" } })).rejects.toThrow("Interactive project mutation scope");
+    const caller = createRequestMutationAppServiceCaller(new Request("https://asael.example.test/api/projects", {
+      method: "POST", headers: { "Idempotency-Key": "interactive:create" },
+    }), context, { purpose: "project.create" });
+    const saved = await createProjectService(caller, input);
+    expect(await getProject(saved.data.project.id, context)).toMatchObject(input);
+    expect((await listStreamEvents(`project:${saved.data.project.id}`, context))[0].executionScope).toMatchObject({ executingPrincipalType: "user", executingPrincipalId: context.actorId });
+
+    await expect(createProjectService(createAppServiceCaller({ context, executionScope: scope({ executingPrincipalId: null }), idempotencyKey: "service:missing-principal" }), input)).rejects.toThrow("user or agent principal");
+  });
+});

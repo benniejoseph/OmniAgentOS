@@ -219,6 +219,15 @@ answer: _What environment did this run actually receive?_ The conversation's
 activity view presents the plain-language summary; trajectory export retains a
 bounded receipt for replay and comparison.
 
+Final council review and revision receive the same bounded current-run evidence:
+role-labelled conversation, attached-file disclosures, saved and web context,
+canonical citation IDs, and real governed tool outcomes. Each source class and
+tool result has explicit coverage limits, so a large retrieved block cannot
+silently crowd out a failed write or a newly read document. Truncation limits
+verification; it does not erase a recorded execution. Regression checks must
+exercise both direct and provider-neutral loops and the committed final answer,
+not only the provisional streamed text.
+
 ## Memory is controlled, not merely accumulated
 
 The context engine decides whether durable retrieval is useful, and an
@@ -297,6 +306,15 @@ missing preferences fail closed; duplicate physical preference rows remain an
 error. Keep the original candidate owner on decisions, receipts, and deliveries.
 Regression coverage must include a canonical candidate with only legacy email
 preferences and prove that evaluating it never creates another preference row.
+
+## Continuity serving-role regressions
+
+Agent mutation regressions must cross the governed executor, service and store
+with the initiating user and executing Agent kept distinct. User-only store
+tests cannot establish that an Agent can save work. Serving-role database tests
+must use the migration's actual grants; fixture-only privileges can hide a
+production failure. Workspace and membership revocation locks remain mandatory
+even where a narrow database function is needed to acquire them.
 
 ## Native controller replacement gate
 
