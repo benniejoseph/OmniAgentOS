@@ -39,7 +39,7 @@ export function conversationControlToolPreferences(query: string | undefined): s
     if (/\b(?:link|attach|document|source|evidence)\b/.test(text)) add("app.library.list", "app.library.show", "app.csm.clients.sources.link", "app.csm.clients.sources.unlink");
   }
   if (/\b(?:projects?|tasks?|today|reminders?|checklist|work items?|to.?do|commitments?)\b/.test(text)) {
-    add("app.projects.list", "app.projects.show", "app.today.show");
+    add("app.projects.list", "app.projects.show", "app.work_items.show", "app.today.show");
     if (changing) add("app.work_items.update", "app.work_items.create", "app.today.item.update", "app.today.item.create", "app.projects.update");
     if (/\b(?:create|add|new)\b.{0,24}\bproject\b/.test(text)) add("app.projects.create");
   }

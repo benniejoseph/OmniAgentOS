@@ -3,6 +3,8 @@ import {
   AGENT_EXTERNAL_TOOL_ALLOWLIST_LIMIT,
   AGENT_EXTERNAL_TOOL_DEFAULT_LIMIT,
   AGENT_MODEL_TOOL_LIMIT,
+  AGENT_TOOL_SCHEMA_MAX_BYTES,
+  AGENT_TOOL_SCHEMA_RUN_MAX_BYTES,
   applyToolSchemaBudget,
   capabilityFunctionName,
   composeCapabilitySearchQuery,
@@ -121,6 +123,111 @@ describe("progressive agent toolbox", () => {
     expect(result.definitions.map((item) => item.id))
       .toContain("app.memory.shared.list");
   });
+
+  it.each([
+    ["a long reconciliation request", [
+      "Continue the fictional client project SIMULATION AV-1013-R1 — Aster Vale Field Services using the attached simulation change note.",
+      "Your previous attempt updated only two of the five commitments.",
+      "Finish reconciling the existing commitments and project summary with the note, preserving their identities and acceptance criteria.",
+      "Check what was actually saved before reporting completion.",
+      "Do not create duplicate work, invent completion evidence or invent a clock time for a date-only commitment.",
+      "Leave client communication as an unsent draft. Tell me what you completed and what still needs my attention.",
+    ].join(" ")],
+    ["a task deadline change", "Change the deadline on my existing task and check the saved acceptance criteria."],
+    ["a project task completion", "Mark the project task complete after reviewing its evidence."],
+  ])("keeps canonical reads beside continuity mutations for %s", async (_name, query) => {
+    const descriptors = Array.from(
+      { length: AGENT_EXTERNAL_TOOL_DEFAULT_LIMIT },
+      (_, index) => descriptor(`mcp:workspace:search-${index}`),
+    );
+    const result = await loadProgressiveAgentTools(
+      { tenantId: "tenant-private", query },
+      governedDependencies(descriptors),
+    );
+
+    expect(result.definitions).toHaveLength(AGENT_MODEL_TOOL_LIMIT);
+    expect(result.definitions.map(item => item.id)).toEqual(expect.arrayContaining([
+      "app.projects.list", "app.projects.show", "app.projects.update",
+      "app.work_items.show", "app.work_items.update",
+      ...descriptors.map(item => item.id),
+    ]));
+    expect(result.schemaBytes).toBeLessThanOrEqual(AGENT_TOOL_SCHEMA_RUN_MAX_BYTES);
+    for (const id of ["app.projects.show", "app.work_items.show", "app.work_items.update"]) {
+      expect(result.definitions.find(item => item.id === id)).toEqual(governedTool(id));
+    }
+  });
+
+  it("carries the inventory's authorized reader without conversation keyword preferences", async () => {
+    const result = await loadProgressiveAgentTools(
+      { tenantId: "tenant-private", query: "compact paginated inventory" },
+      governedDependencies(),
+    );
+
+    expect(result.definitions).toHaveLength(AGENT_MODEL_TOOL_LIMIT);
+    expect(result.definitions.map(item => item.id)).toEqual(expect.arrayContaining([
+      "app.projects.show", "app.work_items.show",
+    ]));
+  });
+
+  it("does not split an authorized inventory-reader pair at the tool-count boundary", async () => {
+    const unrelated = getGovernedTools().filter(item =>
+      item.status === "active" && item.riskLevel === 0 &&
+      !["app.projects.show", "app.work_items.show", "app.agents.delegate"].includes(item.id)
+    ).slice(0, AGENT_MODEL_TOOL_LIMIT - 1);
+    const result = await loadProgressiveAgentTools(
+      { query: "", preferredToolIds: [...unrelated.map(item => item.id), "app.projects.show", "app.work_items.show"] },
+      {
+        ...governedDependencies(),
+        // All contracts are real; equal read-only scores preserve this boundary.
+        listNative: () => [
+          ...unrelated,
+          governedTool("app.projects.show"), governedTool("app.work_items.show"),
+        ],
+      },
+    );
+
+    const ids = result.definitions.map(item => item.id);
+    expect(ids).toHaveLength(AGENT_MODEL_TOOL_LIMIT);
+    expect(ids).not.toContain("app.projects.show");
+    expect(ids).toContain("app.work_items.show");
+  });
+
+  it("preserves explicit inventory-only access without widening its allowlist", async () => {
+    const dependencies = governedDependencies();
+    const result = await loadProgressiveAgentTools(
+      { query: "Update my project task", preferredToolIds: ["app.projects.show", "app.work_items.update"] },
+      dependencies,
+    );
+
+    expect(result.definitions.map(item => item.id)).toEqual([
+      "app.projects.show", "app.work_items.update",
+    ]);
+    expect(dependencies.search).not.toHaveBeenCalled();
+  });
+
+  it.each(["excluded", "inactive", "high-risk", "unavailable"])(
+    "does not restore a detailed reader that is %s",
+    async restriction => {
+      const dependencies = governedDependencies();
+      const result = await loadProgressiveAgentTools(
+        {
+          query: "Show my project commitments",
+          excludeToolIds: restriction === "excluded" ? ["app.work_items.show"] : undefined,
+        },
+        {
+          ...dependencies,
+          listNative: () => getGovernedTools().flatMap(item => {
+            if (item.id !== "app.work_items.show" || restriction === "excluded") return [item];
+            if (restriction === "unavailable") return [];
+            return [{ ...item, ...(restriction === "inactive" ? { status: "planned" as const } : { riskLevel: 3 as const }) }];
+          }),
+        },
+      );
+
+      expect(result.definitions.map(item => item.id)).toContain("app.projects.show");
+      expect(result.definitions.map(item => item.id)).not.toContain("app.work_items.show");
+    },
+  );
 
   it("reserves the exact canary grants from real governed schemas under candidate pressure", async () => {
     const descriptors = Array.from(
@@ -442,6 +549,41 @@ describe("progressive agent toolbox", () => {
     );
   });
 
+  it("reserves both real reader schemas before admitting a compact inventory", () => {
+    const first = governedTool("app.projects.list");
+    const inventory = governedTool("app.projects.show");
+    const reader = governedTool("app.work_items.show");
+    const pairBytes = schemaBytes(inventory) + schemaBytes(reader);
+    const budget = schemaBytes(first) + pairBytes;
+    const fits = applyToolSchemaBudget([first, inventory, reader], { perRunBytes: budget });
+    expect(fits.definitions.map(item => item.id)).toEqual([first.id, inventory.id, reader.id]);
+    expect(fits.schemaBytes).toBe(budget);
+
+    const constrained = applyToolSchemaBudget([first, inventory, reader], { perRunBytes: budget - 1 });
+    expect(constrained.definitions.map(item => item.id)).toEqual([first.id, reader.id]);
+    expect(constrained.omittedToolIds).toEqual([inventory.id]);
+    expect(constrained.schemaBytes).toBe(schemaBytes(first) + schemaBytes(reader));
+  });
+
+  it("omits compact inventory when its selected reader exceeds the schema cap", async () => {
+    const result = await loadProgressiveAgentTools(
+      { query: "Show my project commitments" },
+      {
+        ...governedDependencies(),
+        listNative: () => getGovernedTools().map(item => item.id === "app.work_items.show"
+          ? { ...item, inputSchema: { ...item.inputSchema, description: "x".repeat(AGENT_TOOL_SCHEMA_MAX_BYTES) } }
+          : item),
+      },
+    );
+
+    expect(result.definitions.map(item => item.id)).not.toContain("app.projects.show");
+    expect(result.definitions.map(item => item.id)).not.toContain("app.work_items.show");
+    expect(result.omittedToolIds).toEqual(expect.arrayContaining([
+      "app.projects.show", "app.work_items.show",
+    ]));
+    expect(result.schemaBytes).toBeLessThanOrEqual(AGENT_TOOL_SCHEMA_RUN_MAX_BYTES);
+  });
+
   it("creates deterministic collision-resistant model function names", () => {
     expect(capabilityFunctionName("knowledge.search")).toBe(
       "knowledge_search_f2405c6159c995e8",
@@ -456,6 +598,25 @@ describe("progressive agent toolbox", () => {
     expect(first.length).toBeLessThanOrEqual(60);
   });
 });
+
+function governedDependencies(descriptors: CapabilityDescriptor[] = []) {
+  return {
+    listNative: getGovernedTools,
+    search: vi.fn(async () => ({ capabilities: descriptors, query: "", total: descriptors.length, limit: 50, hasMore: false })),
+    resolveMcp: vi.fn(async (id: string) => tool({ id, category: "mcp" })),
+    resolveOpenApi: vi.fn(async () => null),
+  };
+}
+
+function governedTool(id: string): ToolDefinition {
+  const definition = getGovernedTools().find(item => item.id === id);
+  if (!definition) throw new Error(`Missing governed tool ${id}`);
+  return definition;
+}
+
+function schemaBytes(definition: ToolDefinition) {
+  return Buffer.byteLength(JSON.stringify(definition.inputSchema), "utf8");
+}
 
 function descriptor(
   id: string,

@@ -31,6 +31,13 @@ const resolverOperationPattern =
 const actionOperationPattern =
   /(?:^|[^a-z0-9])(?:run|trigger|dispatch|execute|start|rerun|create|add|update|edit|delete|remove|send|post|publish|deploy|release|cancel|merge|close|upload|write|set|navigate|open|visit|browse)(?:[^a-z0-9]|$)/i;
 
+// Compact project inventories point to this reader for canonical task details.
+// Bundle only definitions already admitted by the caller's eligibility filter;
+// an explicit policy may still allow inventory without detailed task access.
+const nativeReadDependencies: Readonly<Record<string, readonly string[]>> = {
+  "app.projects.show": ["app.work_items.show"],
+};
+
 type ProgressiveToolboxDependencies = {
   listNative: () => readonly ToolDefinition[];
   search: (input: CapabilitySearchInput) => Promise<CapabilitySearchResult>;
@@ -251,11 +258,12 @@ function selectNativeDefinitions(
     const definition = byId.get(id);
     return definition ? [definition] : [];
   });
-  const selected = deduplicateDefinitions([
+  const prioritized = deduplicateDefinitions([
     ...ranked.filter(item => item.exactCanonicalMatch).map(item => item.definition),
     ...preferred,
     ...ranked.map(item => item.definition),
-  ]).slice(0, limit);
+  ]);
+  const selected = selectNativeToolGroups(prioritized, limit);
   if (
     !selected.some((definition) => definition.id === "app.agents.delegate") ||
     !delegationToolRequested(query, definitions)
@@ -263,10 +271,38 @@ function selectNativeDefinitions(
     return selected;
   }
   const dependencyIds = dynamicDelegationDependencyIds(query);
-  return deduplicateDefinitions([
+  return selectNativeToolGroups(deduplicateDefinitions([
     ...definitions.filter((definition) => dependencyIds.has(definition.id)),
-    ...selected,
-  ]).slice(0, limit);
+    ...prioritized,
+  ]), limit);
+}
+
+function selectNativeToolGroups(
+  definitions: readonly ToolDefinition[],
+  limit: number,
+) {
+  const byId = new Map(definitions.map(definition => [definition.id, definition]));
+  const selected = new Map<string, ToolDefinition>();
+  for (const definition of definitions) {
+    const additions = availableNativeReadGroup(definition, byId)
+      .filter(item => !selected.has(item.id));
+    if (selected.size + additions.length > limit) continue;
+    for (const item of additions) selected.set(item.id, item);
+  }
+  return [...selected.values()];
+}
+
+function availableNativeReadGroup(
+  definition: ToolDefinition,
+  byId: ReadonlyMap<string, ToolDefinition>,
+) {
+  return [
+    definition,
+    ...(nativeReadDependencies[definition.id] || []).flatMap(id => {
+      const dependency = byId.get(id);
+      return dependency ? [dependency] : [];
+    }),
+  ];
 }
 
 function nativeToolQueryScore(
@@ -375,17 +411,29 @@ export function applyToolSchemaBudget(
     AGENT_TOOL_SCHEMA_RUN_MAX_BYTES,
   );
   const accepted: ToolDefinition[] = [];
+  const acceptedIds = new Set<string>();
+  const byId = new Map(definitions.map(definition => [definition.id, definition]));
   const omittedToolIds: string[] = [];
   let schemaBytes = 0;
 
   for (const definition of definitions) {
-    const bytes = serializedSchemaBytes(definition.inputSchema);
-    if (bytes === null || bytes > perToolBytes || schemaBytes + bytes > perRunBytes) {
+    if (acceptedIds.has(definition.id)) continue;
+    const group = availableNativeReadGroup(definition, byId)
+      .filter(item => !acceptedIds.has(item.id));
+    const byteSizes = group.map(item => serializedSchemaBytes(item.inputSchema));
+    const groupBytes = byteSizes.reduce<number>((total, bytes) => total + (bytes ?? 0), 0);
+    if (
+      byteSizes.some(bytes => bytes === null || bytes > perToolBytes) ||
+      schemaBytes + groupBytes > perRunBytes
+    ) {
       omittedToolIds.push(definition.id);
       continue;
     }
-    accepted.push(definition);
-    schemaBytes += bytes;
+    for (const item of group) {
+      accepted.push(item);
+      acceptedIds.add(item.id);
+    }
+    schemaBytes += groupBytes;
   }
 
   return { definitions: accepted, omittedToolIds, schemaBytes };
