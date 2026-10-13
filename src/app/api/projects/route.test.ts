@@ -107,6 +107,7 @@ describe("request-bound project routes", () => {
       actorId,
       mutation: {
         idempotencyKey: "project-create-a",
+        principalMode: "user_or_agent",
         executionScope: expect.objectContaining({
           tenantId: context.tenantId,
           initiatingActorId: actorId,
