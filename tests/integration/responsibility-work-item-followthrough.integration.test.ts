@@ -127,7 +127,9 @@ databaseDescribe("Canonical work-item follow-through under serving-role isolatio
     await expect(owned(f, () => getSql()`SELECT workspace_id FROM omni_tenant_workspaces FOR SHARE`)).rejects.toMatchObject({ code: "42501" });
     await expect(owned(f, () => getSql()`UPDATE omni_tenant_workspace_memberships SET state = state WHERE tenant_id = ${f.owner.tenantId}`)).rejects.toMatchObject({ code: "42501" });
     expect((await getResponsibilityDraft(f.context, f.record.id, true)).readiness.state).toBe("ready");
-    expect((await runtimeStore.readResponsibilityRuntime(f.owner, f.record.id, true)).preview?.state).toBe("ready");
+    const runtimePreview = await runtimeStore.readResponsibilityRuntime(f.owner, f.record.id, true);
+    if (!("preview" in runtimePreview)) throw new Error("The requested runtime preview was not returned.");
+    expect(runtimePreview.preview.state).toBe("ready");
     expect((await showWorkItemService({ context: f.context }, f.record.draft.work!)).data.workItem.workItemId).toBe(f.task.id);
   });
 
