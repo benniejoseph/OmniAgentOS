@@ -36,7 +36,7 @@ function database(initial = item()) {
   const spy = vi.fn(async (parts: TemplateStringsArray, ...values: unknown[]) => {
     const query = parts.join("?");
     if (query.includes("omni_auth_users")) return state.account ? [{ id: owner.actorId.slice(6), email: context.actorId, role: "operator", name: "Fixture" }] : [];
-    if (query.includes("omni_tenant_workspace_memberships")) return state.membership ? [{ workspace_id: workRef.workspaceId }] : [];
+    if (query.includes("omni_lock_responsibility_workspace_v1")) return [{ allowed: state.membership }];
     if (query.includes("omni_work_items")) {
       if (query.includes("ANY(")) return state.dependencies.map((work) => ({ projection: work, projection_sha256: canonicalJsonSha256(work) }));
       expect(values.slice(0, 4)).toEqual([owner.tenantId, workRef.workspaceId, workRef.projectId, workRef.workItemId]);

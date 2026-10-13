@@ -18,6 +18,58 @@ import type {
 import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
 
 describe("non-OpenAI governed provider tool loop", () => {
+  it("keeps exact Library content pages and canonical citations intact in the writer's tool envelope", async () => {
+    const contentPage = {
+      schemaVersion: 1, contentTrust: "untrusted", sourceRevisionId: "revision-client",
+      units: [{ knowledgeChunkId: "client-unit", evidenceUnitId: "evidence-client", citationId: "knowledge:client-unit", content: "Acceptance criteria " + "a".repeat(4_300) }],
+      next: { versionId: "version-client", contentSha256: "a".repeat(64), unitIndex: 1, characterOffset: 0, extractionReceiptSha256: "b".repeat(64) },
+      coverage: { startsAtBeginning: true, endsAtEnd: false, wholeExtractedText: false },
+    };
+    const generateTurn = vi.fn(async (request: ModelToolTurnRequest) => {
+      if (!request.toolResults) return turn({ toolCalls: [{ callId: "library-call", name: "library_show", argumentsJson: "{}" }] });
+      const payload = JSON.parse(request.toolResults[0].output);
+      expect(payload.data.result.contentPage).toEqual(contentPage);
+      expect(payload.data.admissibleEvidenceIds).toEqual(["knowledge:client-unit"]);
+      return turn({ text: "First page read; additional acceptance evidence remains [knowledge:client-unit]." });
+    });
+    const result = await collect(runNonOpenAIProviderToolLoop({
+      provider: "google", tier: "fast", instructions: "Read each returned page.", prompt: "Read the entire client document.",
+      tools: [modelTool("library_show")],
+      toolbox: { byFunctionName: new Map([["library_show", { definition: toolDefinition("app.library.show"), functionName: "library_show" }]]) },
+      securityContext: { tenantId: "tenant-client", actorId: "owner", role: "admin", source: "default" }, runId: "run-library-page",
+      generateTurn,
+      executeTool: vi.fn(async () => ({ record: executionRecord("app.library.show", "executed"), result: { item: { title: "Client brief" }, contentPage } })) as never,
+    }));
+    expect(result.result.citationSources).toEqual([expect.objectContaining({ citationId: "knowledge:client-unit", title: "Client brief" })]);
+  });
+
+  it.each(["knowledge.search", "app.knowledge.search"])("admits only provenance-bound %s citations and exposes exactly the observed output", async (toolId) => {
+    const observations: unknown[] = [];
+    const generateTurn = vi.fn(async (request: ModelToolTurnRequest) => {
+      if (!request.toolResults) return turn({ toolCalls: [{ callId: "knowledge-call", name: "knowledge_search", argumentsJson: "{}" }] });
+      expect(JSON.parse(request.toolResults[0].output).data.admissibleEvidenceIds).toEqual(["knowledge:canonical-chunk"]);
+      expect(observations).toEqual([expect.objectContaining({
+        executionId: `execution-${toolId}`, toolId, status: "executed", modelOutput: request.toolResults[0].output,
+      })]);
+      return turn({ text: "Canonical source [knowledge:canonical-chunk]." });
+    });
+    const collected = await collect(runNonOpenAIProviderToolLoop({
+      provider: "google", tier: "fast", instructions: "Read the source.", prompt: "Read the client.",
+      tools: [modelTool("knowledge_search")],
+      toolbox: { byFunctionName: new Map([["knowledge_search", { definition: toolDefinition(toolId), functionName: "knowledge_search" }]]) },
+      securityContext: { tenantId: "tenant-client", actorId: "owner", role: "admin", source: "default" },
+      runId: "run-knowledge-parity", generateTurn,
+      onToolObservation: (observation) => observations.push(observation),
+      executeTool: vi.fn(async () => ({ record: executionRecord(toolId, "executed"), result: { results: [
+        { chunk: { id: "canonical-chunk", title: "Client brief", sourceRevisionId: "revision-1", evidenceUnitId: "unit-1" }, score: 0.9 },
+        { chunk: { id: "no-revision", evidenceUnitId: "unit-2" } },
+        { chunk: { id: "no-unit", sourceRevisionId: "revision-1" } },
+        { chunk: { id: "invalid id", sourceRevisionId: "revision-1", evidenceUnitId: "unit-3" } },
+      ] } })) as never,
+    }));
+    expect(collected.result.citationSources).toEqual([expect.objectContaining({ citationId: "knowledge:canonical-chunk", evidenceId: "canonical-chunk", title: "Client brief" })]);
+  });
+
   it.each([
     { name: "Research report", maxOutputTokens: 6_000, expected: 6_000, resumed: false },
     { name: "ordinary run", maxOutputTokens: undefined, expected: AGENT_MAX_OUTPUT_TOKENS, resumed: false },

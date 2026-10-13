@@ -20,8 +20,10 @@ import { RESPONSIBILITY_WORK_ITEM_COMPARISON_POLICY } from "@/lib/responsibiliti
 import { enableResponsibilityNotifications, getResponsibilityNotifications } from "@/lib/responsibilities/notification-service";
 import { admitObservedNotificationWithSql } from "@/lib/responsibilities/notification-store";
 import { attemptResponsibilityNotification } from "@/lib/responsibilities/notification-delivery";
-import { WORK_ITEM_FOLLOWTHROUGH_PROCEDURE } from "@/lib/responsibilities/work-item-source";
+import { readOwnedWorkItemWithSql, WORK_ITEM_FOLLOWTHROUGH_PROCEDURE } from "@/lib/responsibilities/work-item-source";
 import { showWorkItemService } from "@/lib/app-services/work-items";
+import { lockResponsibilityWorkspace } from "@/lib/responsibilities/workspace-read-fence";
+import { verifyResponsibilityWorkspaceFence } from "@/lib/db/responsibility-workspace-fence";
 
 const databaseUrl = process.env.DATABASE_URL;
 const databaseDescribe = databaseUrl && process.env.OMNIAGENT_INTEGRATION_DATABASE_RESET === "true" ? describe : describe.skip;
@@ -35,8 +37,9 @@ databaseDescribe("Canonical work-item follow-through under serving-role isolatio
     await admin`GRANT USAGE ON SCHEMA public TO omni_runtime`;
     // Fixture-only provisioned legacy table grants; all production FORCE RLS,
     // immutable receipt guards and deferred reconciliation remain enabled.
-    await admin`GRANT SELECT,UPDATE ON omni_auth_users,omni_auth_memberships,omni_auth_tenants,omni_tenant_workspaces,
-      omni_tenant_workspace_memberships,omni_work_items,omni_meetings,omni_memories,omni_memory_lifecycle_states,omni_today_preferences TO omni_runtime`;
+    // Workspace authority retains the exact migration-only SELECT grants.
+    await admin`GRANT SELECT,UPDATE ON omni_auth_users,omni_auth_memberships,omni_auth_tenants,
+      omni_work_items,omni_meetings,omni_memories,omni_memory_lifecycle_states,omni_today_preferences TO omni_runtime`;
     await admin`GRANT INSERT ON omni_today_preferences TO omni_runtime`;
     await admin`GRANT SELECT ON omni_schema_version,omni_meeting_revisions,omni_work_projects,omni_work_project_memberships,omni_agent_runs,omni_mission_attempts TO omni_runtime`;
     await admin`GRANT SELECT,INSERT,UPDATE ON omni_events,omni_workflow_runs,omni_workflow_steps,omni_workflow_events,omni_operation_jobs,omni_tool_executions,omni_personal_notifications TO omni_runtime`;
@@ -115,6 +118,88 @@ databaseDescribe("Canonical work-item follow-through under serving-role isolatio
     expect((await owned(f, () => tickResponsibilityWorkflow(workflow!))).run.status).toBe("completed");
     return { workflow: workflow!, wake };
   }
+
+  test("reviews and reads with exact workspace grants while direct locks and mutations remain forbidden", async () => {
+    const f = await fixture("serving-grants");
+    await verifyResponsibilityWorkspaceFence((query, parameters) => admin.unsafe(query, (parameters ?? []) as never[]));
+    expect(await admin`SELECT has_table_privilege('omni_runtime','omni_tenant_workspaces','UPDATE') AS workspace_update,
+      has_any_column_privilege('omni_runtime','omni_tenant_workspace_memberships','UPDATE') AS membership_update`).toMatchObject([{ workspace_update: false, membership_update: false }]);
+    await expect(owned(f, () => getSql()`SELECT workspace_id FROM omni_tenant_workspaces FOR SHARE`)).rejects.toMatchObject({ code: "42501" });
+    await expect(owned(f, () => getSql()`UPDATE omni_tenant_workspace_memberships SET state = state WHERE tenant_id = ${f.owner.tenantId}`)).rejects.toMatchObject({ code: "42501" });
+    expect((await getResponsibilityDraft(f.context, f.record.id, true)).readiness.state).toBe("ready");
+    const runtimePreview = await runtimeStore.readResponsibilityRuntime(f.owner, f.record.id, true);
+    if (!("preview" in runtimePreview)) throw new Error("The requested runtime preview was not returned.");
+    expect(runtimePreview.preview.state).toBe("ready");
+    expect((await showWorkItemService({ context: f.context }, f.record.draft.work!)).data.workItem.workItemId).toBe(f.task.id);
+  });
+
+  test("fails closed outside exact actor scope, workspace membership, and valid source identity", async () => {
+    const f = await fixture("read-fence-scope");
+    for (const owner of [{ ...f.owner, tenantId: "foreign-tenant" }, { ...f.owner, actorId: "actor:88888888-8888-4888-8888-888888888888" },
+      { ...f.owner, actorId: email }]) {
+      await runtimeStore.withResponsibilityRuntimeTransaction(f.owner, async (sql) => {
+        expect(await lockResponsibilityWorkspace(sql, owner, f.workspaceId)).toBe(false);
+      });
+    }
+    await runtimeStore.withResponsibilityRuntimeTransaction(f.owner, async (sql) => {
+      expect(await lockResponsibilityWorkspace(sql, f.owner, "workspace:unknown")).toBe(false);
+      await sql`SELECT set_config('omni.system_scope', 'true', true)`;
+      expect(await lockResponsibilityWorkspace(sql, f.owner, f.workspaceId)).toBe(false);
+    });
+    await expect(runtimeStore.withResponsibilityRuntimeTransaction(f.owner, (sql) => readOwnedWorkItemWithSql(sql, f.owner,
+      { ...f.record.draft.work!, workItemId: "" }, new Date().toISOString()))).rejects.toBeDefined();
+    await admin`UPDATE omni_tenant_workspace_memberships SET state = 'revoked', lifecycle_revision = lifecycle_revision + 1,
+      revoked_at = statement_timestamp(), revoked_by_actor_id = ${actorId}, updated_at = statement_timestamp()
+      WHERE tenant_id = ${f.owner.tenantId} AND workspace_id = ${f.workspaceId}`;
+    expect((await getResponsibilityDraft(f.context, f.record.id, true)).readiness).toMatchObject({ state: "blocked", issues: ["responsibility_source_unavailable"] });
+    await expect(showWorkItemService({ context: f.context }, f.record.draft.work!)).rejects.toMatchObject({ code: "responsibility_source_unavailable" });
+  });
+
+  test("keeps membership revocation behind the authoritative read transaction and denies every later read", async () => {
+    const f = await fixture("concurrent-revocation");
+    const applicationName = "responsibility-workspace-revoker";
+    const revoker = postgres(databaseUrl!, { max: 1, prepare: false, ssl: new URL(databaseUrl!).searchParams.get("sslmode") === "disable" ? false : "require",
+      connection: { application_name: applicationName }, onnotice: () => undefined });
+    let releaseRead!: () => void; let lockAcquired!: () => void;
+    const release = new Promise<void>((resolve) => { releaseRead = resolve; });
+    const acquired = new Promise<void>((resolve) => { lockAcquired = resolve; });
+    const read = runtimeStore.withResponsibilityRuntimeTransaction(f.owner, async (sql) => {
+      const value = await readOwnedWorkItemWithSql(sql, f.owner, f.record.draft.work!, await runtimeStore.runtimeDatabaseNow(sql));
+      lockAcquired(); await release; return value;
+    });
+    let revocation: Promise<unknown> | undefined;
+    try {
+      await acquired;
+      revocation = revoker`UPDATE omni_tenant_workspace_memberships SET state = 'revoked', lifecycle_revision = lifecycle_revision + 1,
+        revoked_at = statement_timestamp(), revoked_by_actor_id = ${actorId}, updated_at = statement_timestamp()
+        WHERE tenant_id = ${f.owner.tenantId} AND workspace_id = ${f.workspaceId}`.then((value) => value);
+      let blocked = false;
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        const state = await admin`SELECT wait_event_type FROM pg_stat_activity WHERE application_name = ${applicationName}`;
+        if (state[0]?.wait_event_type === "Lock") { blocked = true; break; }
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect(blocked).toBe(true);
+      releaseRead();
+      expect((await read).workItem.workItemId).toBe(f.task.id);
+      await revocation;
+      await expect(showWorkItemService({ context: f.context }, f.record.draft.work!)).rejects.toMatchObject({ code: "responsibility_source_unavailable" });
+    } finally { releaseRead(); await read; await revocation; await revoker.end(); }
+  });
+
+  test("the promotion gate rejects public execution and an unsafe helper search path", async () => {
+    for (const change of ["GRANT EXECUTE ON FUNCTION public.omni_lock_responsibility_workspace_v1(TEXT,TEXT,TEXT) TO PUBLIC",
+      "ALTER FUNCTION public.omni_lock_responsibility_workspace_v1(TEXT,TEXT,TEXT) SET search_path = public, pg_catalog"]) {
+      const rollback = new Error("rollback deliberate catalog drift");
+      await expect(admin.begin(async (transaction) => {
+        await transaction.unsafe(change);
+        await expect(verifyResponsibilityWorkspaceFence((query, parameters) => transaction.unsafe(query, (parameters ?? []) as never[])))
+          .rejects.toThrow("Responsibility workspace read fence does not match this release");
+        throw rollback;
+      })).rejects.toBe(rollback);
+    }
+    await verifyResponsibilityWorkspaceFence((query, parameters) => admin.unsafe(query, (parameters ?? []) as never[]));
+  });
 
   test("runs the exact governed read, keeps completed work unverified, delivers once and survives restart/reopening", async () => {
     const f = await fixture("complete"); await enable(f);

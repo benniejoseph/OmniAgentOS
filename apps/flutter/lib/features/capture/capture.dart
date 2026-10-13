@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:mime/mime.dart';
 import 'package:go_router/go_router.dart';
@@ -34,6 +35,17 @@ bool get _isDesktop =>
     }.contains(defaultTargetPlatform);
 
 enum CaptureMode { note, record, upload }
+
+/// Static diagnostic categories only: platform messages can contain paths.
+@visibleForTesting
+String captureFileSelectionFailureCategory(Object error) => switch (error) {
+  PlatformException(
+    code: 'ENTITLEMENT_NOT_FOUND' || 'ENTITLEMENT_CHECK_FAILED',
+  ) =>
+    'picker_configuration',
+  MissingPluginException() => 'picker_unavailable',
+  _ => 'selection_failed',
+};
 
 @visibleForTesting
 bool shouldRecoverInterruptedImagePick({
@@ -336,10 +348,16 @@ class _CaptureViewState extends State<CaptureView> {
           full: full,
         );
       });
-    } catch (_) {
+    } catch (error) {
+      final category = captureFileSelectionFailureCategory(error);
+      debugPrint('Capture file selection failed: $category');
       if (current()) {
         setState(
-          () => attachmentError = 'These files could not be selected. Choose supported files up to 5 MB each.',
+          () => attachmentError =
+              category == 'picker_configuration' ||
+                  category == 'picker_unavailable'
+              ? 'The file chooser is unavailable in this app build. Update Asael and try again.'
+              : 'The selected files could not be opened. Try choosing them again.',
         );
       }
     } finally {

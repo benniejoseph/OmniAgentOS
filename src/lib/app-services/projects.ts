@@ -395,5 +395,9 @@ function mutationContext(caller: AppServiceCaller) {
   if (!caller.executionScope || !caller.idempotencyKey) {
     throw new Error("Project mutation service requires execution attribution.");
   }
-  return { executionScope: caller.executionScope, idempotencyKey: caller.idempotencyKey };
+  return {
+    executionScope: caller.executionScope,
+    idempotencyKey: caller.idempotencyKey,
+    principalMode: "user_or_agent" as const,
+  };
 }

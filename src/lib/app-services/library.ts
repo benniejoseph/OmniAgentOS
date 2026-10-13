@@ -6,6 +6,7 @@ import {
 } from "@/lib/app-services/contracts";
 import { getAppServiceOperationContract } from "@/lib/app-services/registry";
 import { workspaceLibraryKindSchema } from "@/lib/library/contracts";
+import { libraryContentPageRequestSchema, LibraryContentPageError, readLibraryContentPage } from "@/lib/library/content-page";
 import {
   getWorkspaceLibraryItem,
   listWorkspaceLibrary,
@@ -22,6 +23,7 @@ export const workspaceLibraryListServiceInputSchema = z.object({
 
 export const workspaceLibraryShowServiceInputSchema = z.object({
   libraryItemId: z.string().trim().min(1).max(320),
+  contentPage: libraryContentPageRequestSchema.optional(),
 }).strict();
 
 export async function listWorkspaceLibraryService(
@@ -65,7 +67,13 @@ export async function showWorkspaceLibraryItemService(
       canonicalRequestActorBindingFromSecurityContext(caller.context),
     libraryItemId: value.libraryItemId,
   });
-  return completeAppServiceCall(authorized, { item }, {
+  if (value.contentPage && !item) {
+    throw new LibraryContentPageError("library_content_unavailable", "The requested file is not currently readable by this account.");
+  }
+  const contentPage = value.contentPage && item
+    ? await readLibraryContentPage({ context: caller.context, item, request: value.contentPage })
+    : undefined;
+  return completeAppServiceCall(authorized, { item, ...(contentPage ? { contentPage } : {}) }, {
     resourceCount: item ? 1 : 0,
   });
 }

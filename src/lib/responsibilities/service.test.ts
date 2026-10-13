@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SecurityContext } from "@/lib/security/types";
 import { changeResponsibilityDraft, createResponsibilityDraft, getResponsibilityDraft, listResponsibilityDrafts, type ResponsibilityDependencies } from "./service";
 import { prepareResponsibilityChange, ResponsibilityError, responsibilityId, reviewPreview } from "./state";
@@ -9,6 +9,7 @@ const id = responsibilityId(owner, "create");
 const first = prepareResponsibilityChange({ owner, id, key: "create", now, mutation: { action: "create", expectedRevision: 0, draft } });
 let deps: ResponsibilityDependencies;
 beforeEach(() => { deps = { list: vi.fn().mockResolvedValue({ records: [first.current], hasMore: true }), read: vi.fn().mockResolvedValue(first.current), replay: vi.fn().mockResolvedValue(undefined), change: vi.fn().mockResolvedValue(first), pins: vi.fn().mockResolvedValue(pins), now: () => now }; });
+afterEach(() => { vi.restoreAllMocks(); });
 
 describe("Responsibility service admission", () => {
   it("uses the canonical signed-in owner and reports bounded coverage without an invented total", async () => {
@@ -29,14 +30,30 @@ describe("Responsibility service admission", () => {
     expect(deps.pins).not.toHaveBeenCalled(); expect(deps.change).not.toHaveBeenCalled();
   });
   it("returns explicit incomplete/blocked review reads and keeps transient failures separate", async () => {
+    const diagnostic = vi.spyOn(console, "error").mockImplementation(() => undefined);
     vi.mocked(deps.read).mockResolvedValue({ ...first.current, draft: { ...draft, sources: [] } });
     expect((await getResponsibilityDraft(context, id, true, deps)).readiness).toEqual({ state: "incomplete", issues: ["sources_required"] });
     expect(deps.pins).not.toHaveBeenCalled();
     vi.mocked(deps.read).mockResolvedValue(first.current);
     vi.mocked(deps.pins).mockRejectedValueOnce(new ResponsibilityError("Unavailable", 409, "responsibility_reference_unavailable"));
     expect((await getResponsibilityDraft(context, id, true, deps)).readiness.state).toBe("blocked");
-    vi.mocked(deps.pins).mockRejectedValueOnce(new Error("private database text"));
+    expect(diagnostic).not.toHaveBeenCalled();
+    vi.mocked(deps.pins).mockRejectedValueOnce(Object.assign(new Error("private database text"), { code: "42501" }));
     await expect(getResponsibilityDraft(context, id, true, deps)).rejects.toMatchObject({ status: 503, code: "responsibility_review_unavailable" });
+    expect(diagnostic).toHaveBeenCalledOnce();
+    expect(JSON.parse(diagnostic.mock.calls[0][0])).toEqual({ event: "responsibility.reference_review_failed",
+      category: "database_privilege", sqlState: "42501", correlationId: expect.stringMatching(/^responsibility-review:[a-f0-9-]{36}$/) });
+    expect(diagnostic.mock.calls[0][0]).not.toContain("private database text");
+  });
+  it("retains safe diagnostics for accepted-review resolution failures without echoing arbitrary error codes", async () => {
+    const diagnostic = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const preview = reviewPreview(first.current, pins);
+    vi.mocked(deps.pins).mockRejectedValueOnce(Object.assign(new Error("private source"), { code: "private arbitrary error code" }));
+    await expect(changeResponsibilityDraft(context, id, { action: "review", expectedRevision: 1, draftSha256: preview.draftSha256,
+      reviewSha256: preview.reviewSha256 }, "review", deps)).rejects.toMatchObject({ status: 503, code: "responsibility_review_unavailable" });
+    expect(JSON.parse(diagnostic.mock.calls[0][0])).toEqual({ event: "responsibility.reference_review_failed",
+      category: "reference_resolution", correlationId: expect.any(String) });
+    expect(deps.change).not.toHaveBeenCalled();
   });
   it("resolves live pins and freezes the exact preview for the CAS writer", async () => {
     const preview = reviewPreview(first.current, pins);

@@ -1729,6 +1729,16 @@ ineligible sources are pinned without body injection. Durable events retain only
 content mode, hashes, evidence counts, and truncation state rather than disclosed
 text.
 
+The governed `app.library.show` read keeps metadata as its default and accepts an
+optional current-version/content-digest-bound `contentPage` for indexed Capture
+files. Pages recheck the current owner, asset digest, extraction integrity and
+canonical chunk IDs. Continuations also bind the extraction receipt, so a
+reindex cannot silently change the text mid-read. Pages prefer whole evidence
+units; an oversized unit retains its canonical citation and explicit character
+offsets across bounded fragments. The returned `next` request and coverage
+separate a page, the full extracted text, and a partial source extraction. No
+binary bytes, new read authority, or automatic tool calls are introduced.
+
 The sixteenth request-bound slice is an opt-in Capture recording-history
 catalog. Migration v53 adds the composite owner/update/ID index. PostgreSQL
 takes at most one bounded page from each validated canonical/current-email

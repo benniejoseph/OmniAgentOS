@@ -60,8 +60,13 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
     query: text(0, 240), kinds: { type: "array", maxItems: 20, items: { type: "string", enum: workspaceLibraryKindSchema.options } },
     projectId: { type: "string", minLength: 1, maxLength: 320 }, limit: integer(1, 100, 30), offset: integer(0, 10_000, 0),
   })),
-  readTool("app.library.show", "Inspect a file or source", "Read one exact accessible Library item's title, current version and digest, source freshness, citation metadata and app links. Binary bytes and credentials remain excluded.", requiredObjectSchema({
+  readTool("app.library.show", "Read a file or source", "Inspect one accessible Library item's exact version and digest. To read an indexed Capture document, provide contentPage with that versionId and contentSha256; follow the returned contentPage.next until null to cover its extracted text. Each page preserves canonical citations and explicit coverage. Do not infer full-document coverage from search snippets or a single partial page. Binary bytes and credentials remain excluded.", requiredObjectSchema({
     libraryItemId: libraryId(),
+    contentPage: requiredObjectSchema({
+      versionId: text(1, 320), contentSha256: sha256("Exact current content digest returned by the Library item."),
+      unitIndex: integer(0, 1023, 0), characterOffset: integer(0, 24_000, 0),
+      extractionReceiptSha256: sha256("Exact extraction receipt returned by the preceding page; required for continuation."),
+    }, ["versionId", "contentSha256"]),
   }, ["libraryItemId"])),
   readTool("app.plugins.list", "Show plugins", "List available declarative plugins and this actor's installed plugins, current lifecycle revisions, component counts and activation limits. Installed templates do not imply connected integrations or executable workflows.", objectSchema({})),
   mutationTool("app.plugins.preview", "Prepare plugin installation", "Prepare a reviewed installation from an exact catalog plugin ID, version and manifest digest returned by app.plugins.list. This creates only a preview and does not activate a plugin or execute code.", requiredObjectSchema({

@@ -1446,6 +1446,11 @@ would refuse to load them. `LocalRelease.entitlements` therefore gives the host 
 the microphone. The helpers and the Share Extension keep library validation.
 `LocalRelease.entitlements` deliberately omits `com.apple.security.app-sandbox`; the
 owner-only main application is not sandboxed.
+It also declares `com.apple.security.files.user-selected.read-write`, matching
+the Apple-signed build's picker capability. The pinned Darwin file picker checks
+for this entitlement even in an unsandboxed process; omitting it prevents the
+file dialog from opening. Keep this declaration in the normal signed package
+rather than bypassing the plugin's entitlement checks.
 The Apple-issued Release path still uses the sandboxed `Release.entitlements` file.
 After a private signing update, the first launch may briefly show the securing state
 while macOS reauthorizes existing ordinary-Keychain items; every credential operation
@@ -2585,6 +2590,15 @@ npm run db:restore-drill
 
 The restore drill is destructive only to `RESTORE_DATABASE_URL`. It requires the production URL for comparison, rejects a target with the production database name even when provider host aliases differ, requires target-specific confirmation, and verifies the manifest checksum and the key before it restores. It decrypts into an owner-only directory beside the backup and removes it however the drill ends. It restores the backup's grants, so the target server needs every role they name; the drill lists any that are missing before it touches the target, and a `NOLOGIN` role is enough. The restore user must be a superuser or `BYPASSRLS` role that can `SET ROLE omni_runtime`. The drill validates the exact Asael table, row-count, migration-marker, database-identity, forced-RLS, and grant inventories. It then reads the restored data as `omni_runtime`, which must see no memberships without a tenant and exactly each tenant's own when scoped to it. It fails when the whole drill takes longer than `OMNIAGENT_RESTORE_RTO_SECONDS` (3600 by default), and records the measured time and the backup's age in the restore-evidence artifact. Run it on a schedule in isolated infrastructure and retain the evidence.
 
+Prepare local restore and integration databases with UTF-8 explicitly, and
+record `SHOW server_encoding` before loading data. For a disposable local
+database, use `createdb --template=template0 --encoding=UTF8 --locale=C` and
+install the `vector` extension before restore. `initdb --no-locale` alone can
+produce SQL_ASCII: multibyte text then counts as bytes in length constraints,
+causing valid production rows to fail a local restore. Use TLS for application
+migration and production-role integration commands; do not relax the checks to
+accommodate the disposable server.
+
 Backups dump `omni_local_computer_commands` without its rows. That table holds each Mac action's result, a screenshot included until the run reads it, and a restored queued command must not reach a Mac again. A restore recreates the table empty; the manifest lists it under `excludedTableData` and records its row count as `0`, which the restore drill checks. Provider point-in-time recovery still holds those rows for its own retention window.
 
 Restore procedure:
@@ -2991,3 +3005,21 @@ runtime receipts. New guidance activation now needs measured improvement;
 legacy active guidance retains rollback. No live model credentials are required
 for isolated regression tests, and fixture results do not establish provider
 quality or production readiness.
+
+## Continuity repair candidate (2026-10-13)
+
+Migration **254**, `20261013150000_responsibility_workspace_read_fence.sql`,
+adds a closed workspace membership lock function. The runtime can use it to
+review and read an exact owned work item while retaining revocation ordering;
+it receives no UPDATE privilege on workspace authority tables. Database
+verification checks the function owner, fixed search path and execution grants.
+Apply it after 253 with the encrypted backup, isolated migration replay and
+paired web/worker release procedure. It is additive and retains older-server
+compatibility; rollback must not drop the lock function or change stored work.
+
+The native repair is **1.33.1+99**, with contract **v56** unchanged. Its private
+Mac package includes the user-selected-file entitlement required by the picker,
+and follow-up quick setup rounds start/expiry to whole minutes. Validate an
+actual DOCX selection after the signed upgrade without resetting the app's
+session or storage. A successful isolated check is not evidence of a scheduled
+production observation; retain separate live baseline/change receipts.

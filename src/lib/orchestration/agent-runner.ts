@@ -84,6 +84,7 @@ import {
   buildAgentInstructions,
 } from "@/lib/orchestration/prompts";
 import { resolveAgentToolPolicy } from "@/lib/orchestration/agent-tool-policy";
+import type { ReviewToolObservation, RunReviewEvidence } from "@/lib/orchestration/review-evidence";
 import { workflowHandoffFromExecution, type WorkflowHandoff } from "@/lib/orchestration/workflow-handoff";
 import { assignedSkillsWithinRuntimeLimit } from "@/lib/skills/limits";
 import {
@@ -1542,6 +1543,7 @@ async function* runAgentUntilStopped(
       : baseInstructions;
 
     let liveWebContext = "";
+    const reviewToolObservations: ReviewToolObservation[] = [];
     let researchProgress: import("@/lib/research/contracts").ResearchProgress | undefined;
     let citationSources = mergeCitationSources(
       [...(request.commandContext?.citationSources || [])],
@@ -1635,6 +1637,7 @@ async function* runAgentUntilStopped(
           executionScope: scope, agentRunId: run.id,
           checkpointBeforeEffect: checkpointBeforeGovernedTool,
         });
+        reviewToolObservations.push(reviewToolObservation(execution));
         runAbortSignal.throwIfAborted();
         await checkpointAfterGovernedTool({ record: execution.record, tool,
           operationClass: "read_only", executionScope: scope });
@@ -1772,6 +1775,7 @@ async function* runAgentUntilStopped(
         agentRunId: run.id,
         checkpointBeforeEffect: checkpointBeforeGovernedTool,
       });
+      reviewToolObservations.push(reviewToolObservation(execution));
       runAbortSignal.throwIfAborted();
       await checkpointAfterGovernedTool({
         record: execution.record,
@@ -2128,7 +2132,7 @@ async function* runAgentUntilStopped(
         mode,
         primaryAgentId,
         specialistIds: councilAgentIds,
-        contextBlock: [retrieval.contextBlock, liveWebContext].filter(Boolean).join("\n\n"),
+        contextBlock: [directCommandContext, retrieval.contextBlock, liveWebContext].filter(Boolean).join("\n\n"),
         tenantId: request.tenantId,
         delegationAuthority: {
           parentExecutionId: run.id,
@@ -2178,6 +2182,7 @@ async function* runAgentUntilStopped(
             agentRunId: run.id,
             checkpointBeforeEffect: checkpointBeforeGovernedTool,
           });
+          reviewToolObservations.push(reviewToolObservation(execution));
           await checkpointAfterGovernedTool({
             record: execution.record,
             tool,
@@ -2347,6 +2352,7 @@ async function* runAgentUntilStopped(
             }),
           checkpointBeforeTool: checkpointBeforeGovernedTool,
           checkpointAfterTool: checkpointAfterGovernedTool,
+          onToolObservation: (observation) => reviewToolObservations.push(observation),
           reserveTools: reserveToolBudget,
           serializeToolCalls: isLocalComputerTarget(computerUseTarget) ||
             Boolean(request.moltbookAutonomy) ||
@@ -2779,6 +2785,7 @@ async function* runAgentUntilStopped(
           for (let index = 0; index < prepared.length; index += 1) {
             const item = prepared[index];
             const execution = executions[index];
+            reviewToolObservations.push(reviewToolObservation(execution));
             captureDelegationExecution(
               delegationExecutionsForReceiptReconciliation,
               execution,
@@ -2910,6 +2917,7 @@ async function* runAgentUntilStopped(
             delegationExecutionsForReceiptReconciliation,
             execution,
           );
+          reviewToolObservations.push(reviewToolObservation(execution));
           await checkpointAfterGovernedTool({
             record: execution.record,
             tool: definition,
@@ -3047,11 +3055,21 @@ async function* runAgentUntilStopped(
 
     if (!workflowHandoff && councilActive && councilAgentIds.includes("sentinel") && response.trim()) {
       try {
+        const observedEvidence: RunReviewEvidence = {
+          conversation: safeMessages,
+          commandContext: directCommandContext,
+          commandContextReceiptSha256: request.commandContext?.receiptSha256,
+          retrievedContext: retrieval.contextBlock,
+          liveWebContext,
+          citationSources,
+          toolObservations: reviewToolObservations,
+        };
         const verdict = await reviewCouncilResponse({
           goal: query,
           response,
           contributions: councilContributions,
           contextBlock: [retrieval.contextBlock, liveWebContext].filter(Boolean).join("\n\n"),
+          observedEvidence,
           abortSignal: runAbortSignal,
           checkpointHooks: councilCheckpointHooks,
           ...(request.actorId
@@ -3075,6 +3093,7 @@ async function* runAgentUntilStopped(
             verdict,
             contributions: councilContributions,
             contextBlock: [retrieval.contextBlock, liveWebContext].filter(Boolean).join("\n\n"),
+            observedEvidence,
             abortSignal: runAbortSignal,
             checkpointHooks: councilCheckpointHooks,
             ...(request.actorId
@@ -3381,6 +3400,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   checkpointAfterTool?: (
     input: GovernedToolCheckpointInput,
   ) => Promise<void>;
+  onToolObservation?: (observation: ReviewToolObservation) => void;
   serializeToolCalls?: boolean;
   reserveTools?: (
     tools: readonly ToolDefinition[],
@@ -3715,6 +3735,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
       for (let index = 0; index < prepared.length; index += 1) {
         const item = prepared[index];
         const execution = executions[index];
+        input.onToolObservation?.(reviewToolObservation(execution));
         captureDelegationExecution(delegationExecutions, execution);
         const toolExecutionScope = input.executionScope
           ? agentToolExecutionScope(input.executionScope, item.call.callId)
@@ -3841,6 +3862,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
           }),
         });
         captureDelegationExecution(delegationExecutions, execution);
+        input.onToolObservation?.(reviewToolObservation(execution));
         if (toolExecutionScope && input.checkpointAfterTool) {
           await input.checkpointAfterTool({
             record: execution.record,
@@ -6772,6 +6794,21 @@ function executionPayload(
   };
 }
 
+function reviewToolObservation(
+  execution: Awaited<ReturnType<typeof executeGovernedTool>>,
+): ReviewToolObservation {
+  const payload = executionPayload(execution);
+  return {
+    executionId: payload.executionId,
+    toolId: execution.record.toolId,
+    status: payload.status,
+    dryRun: payload.dryRun,
+    approvalRequired: payload.approvalRequired,
+    note: payload.note,
+    modelOutput: serializeToolResult(payload),
+  };
+}
+
 function researchSourceReadResult(result: unknown): ResearchSourceRead | undefined {
   if (!result || typeof result !== "object" || Array.isArray(result)) return;
   const page = result as Record<string, unknown>;
@@ -6828,7 +6865,31 @@ function citationSourcesFromToolResult(toolId: string, result: unknown) {
     return [];
   }
   const record = result as Record<string, unknown>;
-  if (toolId === "knowledge.search") {
+  if (toolId === "app.library.show") {
+    const page = record.contentPage;
+    if (!page || typeof page !== "object" || Array.isArray(page)) return [];
+    const content = page as Record<string, unknown>;
+    if (content.schemaVersion !== 1 || content.contentTrust !== "untrusted" ||
+        typeof content.sourceRevisionId !== "string" || !content.sourceRevisionId ||
+        !Array.isArray(content.units)) return [];
+    return citationSourcesFromToolResult("app.knowledge.search", {
+      results: content.units.flatMap((unit) => {
+        if (!unit || typeof unit !== "object" || Array.isArray(unit)) return [];
+        const value = unit as Record<string, unknown>;
+        if (typeof value.knowledgeChunkId !== "string" ||
+            value.citationId !== `knowledge:${value.knowledgeChunkId}` ||
+            typeof value.content !== "string" || !value.content) return [];
+        return [{ chunk: {
+          id: value.knowledgeChunkId, evidenceUnitId: value.evidenceUnitId,
+          sourceRevisionId: content.sourceRevisionId,
+          title: record.item && typeof record.item === "object"
+            ? (record.item as Record<string, unknown>).title
+            : value.label,
+        } }];
+      }),
+    });
+  }
+  if (toolId === "knowledge.search" || toolId === "app.knowledge.search") {
     return Array.isArray(record.results)
       ? record.results.flatMap((item): CitationSource[] => {
           if (!item || typeof item !== "object" || Array.isArray(item)) return [];

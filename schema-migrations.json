@@ -1563,5 +1563,12 @@
     "checksum": "81d516ebca9be6fcf0e2e9131a30d0eeb1dc0301ce52e8d5ab40902fd7beca50",
     "file": "20261013093000_agent_text_comparisons.sql",
     "sha256": "81d516ebca9be6fcf0e2e9131a30d0eeb1dc0301ce52e8d5ab40902fd7beca50"
+  },
+  {
+    "version": 254,
+    "name": "responsibility_workspace_read_fence_v1",
+    "checksum": "ffb985978aa05cc4a703a8cd24b3c18ce35d042cf8ebe4e1fffe8a4d36402548",
+    "file": "20261013150000_responsibility_workspace_read_fence.sql",
+    "sha256": "ffb985978aa05cc4a703a8cd24b3c18ce35d042cf8ebe4e1fffe8a4d36402548"
   }
 ]
