@@ -5,6 +5,18 @@ import { getGovernedTool, getGovernedTools } from "@/lib/tools/registry";
 import { MAIN_AGENT_EXCLUDED_APP_OPERATIONS } from "@/lib/app-services/registry";
 
 describe("governed native tool schemas", () => {
+  it.each(["app.projects.create", "app.projects.update"])("gives %s brief-writing headroom without lowering its accepted limit", (toolId) => {
+    expect(getGovernedTool(toolId)?.inputSchema).toMatchObject({
+      additionalProperties: false,
+      properties: {
+        objective: {
+          type: "string", minLength: 1, maxLength: 2_000,
+          description: expect.stringContaining("Aim for 1,800 or fewer"),
+        },
+      },
+    });
+  });
+
   it("does not publish the retired CRM workspace or its mutation tools", () => {
     expect(getGovernedTools().some((tool) =>
       tool.id.startsWith("app.customer_accounts."),

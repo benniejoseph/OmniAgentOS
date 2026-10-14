@@ -249,14 +249,14 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   }, ["projectId"])),
   mutationTool("app.projects.create", "Create project", "Create one actor-owned project with an explicit objective.", requiredObjectSchema({
     title: text(1, 180),
-    objective: text(1, 2_000),
+    objective: projectObjective(),
     status: { type: "string", enum: ["draft", "active"], default: "active" },
     targetDate: { type: "string", format: "date-time" },
   }, ["title", "objective"]), { reversible: true }),
   mutationTool("app.projects.update", "Update project", "Update one exact actor-owned project, including its lifecycle status.", requiredObjectSchema({
     projectId: opaqueId("Exact project ID."),
     title: text(1, 180),
-    objective: text(1, 2_000),
+    objective: projectObjective(),
     status: { type: "string", enum: ["draft", "active", "completed", "archived"] },
     targetDate: { type: ["string", "null"], format: "date-time" },
   }, ["projectId"]), { reversible: true }),
@@ -857,6 +857,13 @@ function requiredObjectSchema(properties: Record<string, unknown>, required: str
 
 function text(minLength: number, maxLength: number) {
   return { type: "string", minLength, maxLength };
+}
+
+function projectObjective() {
+  return {
+    ...text(1, 2_000),
+    description: "Saved project brief. Hard limit: 2,000 characters after trimming. Aim for 1,800 or fewer to leave margin. Shorten wording while preserving material acceptance criteria, owners, dates, and unresolved conditions; do not silently drop commitments to fit.",
+  };
 }
 
 function integer(minimum: number, maximum: number, defaultValue?: number) {

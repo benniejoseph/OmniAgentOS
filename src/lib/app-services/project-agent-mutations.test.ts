@@ -65,6 +65,50 @@ function execute(
 }
 
 describe("actor-bound Agent project mutations through the governed service path", () => {
+  it("reports exact objective overage without saving rejected text, then reads valid briefs back unchanged", async () => {
+    const created = await execute("app.projects.create", input, "objective:project");
+    const project = (created.result as { project: PersonalProject }).project;
+    const projectScope = scope({ projectId: project.id });
+    const before = await getProject(project.id, context);
+    const brief = (length: number) => "Private synthetic pilot requirements. ".repeat(Math.ceil(length / 37)).slice(0, length - 1) + ".";
+
+    for (const length of [2_082, 2_014]) {
+      const objective = brief(length);
+      expect(objective).toHaveLength(length);
+      const change = { projectId: project.id, objective: `  ${objective}\n` };
+      const failed = await execute("app.projects.update", change, `objective:rejected:${length}`, projectScope);
+      expect(failed.record.status).toBe("failed");
+      expect(failed.result).toBeNull();
+      expect(failed.record.reason).toContain(`Project objective has ${length} characters after trimming; limit 2000 (${length - 2_000} over).`);
+      expect(failed.record.reason).toContain("Aim for 1800 or fewer");
+      expect(failed.record.reason).not.toContain("Private synthetic pilot requirements");
+      expect(failed.record.input).toEqual(change);
+      expect(await getProject(project.id, context)).toEqual(before);
+      expect((await listStreamEvents(`project:${project.id}`, context)).map((event) => event.type)).toEqual(["project.created"]);
+    }
+
+    for (const length of [2_000, 1_959]) {
+      const objective = brief(length);
+      const updated = await execute("app.projects.update", { projectId: project.id, objective: ` ${objective}\n` }, `objective:valid:${length}`, projectScope);
+      expect(updated.record.status, updated.record.reason).toBe("executed");
+      expect(updated.result).toMatchObject({ project: { id: project.id, objective } });
+      const read = await execute("app.projects.show", { projectId: project.id, includeFullObjective: true }, `objective:readback:${length}`, projectScope);
+      expect(read.record.status, read.record.reason).toBe("executed");
+      expect(read.result).toMatchObject({ project: { id: project.id, objective } });
+      expect((await getProject(project.id, context))?.objective).toBe(objective);
+    }
+    expect((await listStreamEvents(`project:${project.id}`, context)).map((event) => event.type)).toEqual(["project.created", "project.updated", "project.updated"]);
+  });
+
+  it("gives the same precise objective limit on create without creating a partial project", async () => {
+    const objective = "Pilot condition. ".repeat(130).slice(0, 2_013) + ".";
+    expect(objective).toHaveLength(2_014);
+    const failed = await execute("app.projects.create", { ...input, objective }, "objective:invalid-create");
+    expect(failed.record.status).toBe("failed");
+    expect(failed.record.reason).toContain("Project objective has 2014 characters after trimming; limit 2000 (14 over).");
+    expect(await listProjects(10, context)).toEqual([]);
+  });
+
   it("saves explicit human commitments, calendar dates and dependencies without changing authority or acceptance criteria", async () => {
     const createdProject = await execute("app.projects.create", input, "structured:project");
     const project = (createdProject.result as { project: PersonalProject }).project;
