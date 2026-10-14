@@ -56,6 +56,10 @@ class _ProjectsRepository implements ProjectsRepository {
     String detail = '',
     String priority = 'medium',
     String agentId = 'atlas',
+    String? humanOwner,
+    String? dueDate,
+    String? dueTimeZone,
+    List<String> dependsOn = const [],
   }) => throw UnimplementedError();
 
   @override

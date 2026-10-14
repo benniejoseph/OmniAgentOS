@@ -207,6 +207,10 @@ class WorkFixtureRepository
     String detail = '',
     String priority = 'medium',
     String agentId = 'atlas',
+    String? humanOwner,
+    String? dueDate,
+    String? dueTimeZone,
+    List<String> dependsOn = const [],
   }) async {
     writes++;
     return current.tasks.first;

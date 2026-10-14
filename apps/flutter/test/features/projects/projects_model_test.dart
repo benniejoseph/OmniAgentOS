@@ -4,6 +4,75 @@ import 'package:flutter_test/flutter_test.dart';
 import 'projects_fixture.dart';
 
 void main() {
+  test('commitment counts stay distinct from the unassessed saved brief', () {
+    final summary = {
+      'version': 'project-commitment-summary:1',
+      'consistency': 'current_read_not_snapshot',
+      'narrativeAssessment': 'not_compared',
+      'coverage': 'partial',
+      'openCount': 1,
+      'closedUnverifiedCount': 2,
+      'verifiedSuccessCount': 0,
+      'failedCount': 1,
+      'canceledCount': 1,
+      'blockedCount': 0,
+      'unassignedOpenCount': 1,
+      'undatedOpenCount': 1,
+    };
+    final project = Project.fromJson({
+      ...projectJson(),
+      'commitmentSummary': summary,
+    });
+    expect(project.commitmentSummary!.coverage, 'partial');
+    expect(project.commitmentSummary!.closedUnverifiedCount, 2);
+    expect(project.commitmentSummary!.failedCount, 1);
+    expect(Project.fromJson(projectJson()).commitmentSummary, isNull);
+    expect(
+      () => Project.fromJson({
+        ...projectJson(),
+        'commitmentSummary': {...summary, 'openCount': -1},
+      }),
+      throwsFormatException,
+    );
+  });
+  test('calendar deadlines preserve the supplied date without a time or guessed zone', () {
+    final task = ProjectTask.fromJson({
+      ...taskJson(),
+      'humanOwner': 'Elena Ruiz',
+      'dueDate': '2026-10-16',
+    });
+    expect(task.humanOwner, 'Elena Ruiz');
+    expect(task.dueDate, '2026-10-16');
+    expect(task.dueAt, isNull);
+    expect(task.dueTimeZone, isNull);
+    expect(
+      task.deadlineLabel,
+      '16 Oct 2026 · date only · time zone not specified',
+    );
+    expect(ProjectTask.fromJson(taskJson()).humanOwner, isNull);
+    for (final change in [
+      {'dueDate': '2026-02-30'},
+      {'dueDate': '2026-10-16T00:00:00Z'},
+      {'dueDate': '0000-01-01'},
+      {'dueDate': '2026-10-16', 'dueAt': workStamp},
+      {'dueTimeZone': 'Asia/Kolkata'},
+      {'humanOwner': '   '},
+    ]) {
+      expect(
+        () => ProjectTask.fromJson({...taskJson(), ...change}),
+        throwsFormatException,
+        reason: '$change',
+      );
+    }
+    expect(
+      ProjectTask.fromJson({
+        ...taskJson(),
+        'dueDate': '2028-02-29',
+        'dueTimeZone': 'Pacific/Honolulu',
+      }).dueDate,
+      '2028-02-29',
+    );
+  });
   test(
     'projects preserve execution, full tasks, artifact identity and evidence',
     () {

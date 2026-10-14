@@ -23,6 +23,9 @@ class ProjectTask {
     this.tenantId = '',
     this.projectId = '',
     this.dueAt,
+    this.humanOwner,
+    this.dueDate,
+    this.dueTimeZone,
     this.workflowRunId,
     this.workflowStatus,
     this.executionError,
@@ -41,6 +44,12 @@ class ProjectTask {
   final int position, dispatchAttempt;
   final List<String> dependsOn;
   final DateTime? dueAt, updatedAt;
+  final String? humanOwner, dueDate, dueTimeZone;
+  String get deadlineLabel => dueDate != null
+      ? '${projectCalendarDateLabel(dueDate!)} · date only · ${dueTimeZone ?? 'time zone not specified'}'
+      : dueAt != null
+      ? dueAt!.toLocal().toString()
+      : 'No agreed deadline';
   final String? workflowRunId, workflowStatus, executionError;
   final ProjectWorkSurface? surface;
   bool get done => status == 'done';
@@ -87,6 +96,16 @@ class ProjectTask {
       ? 'Workflow status unavailable'
       : currentWorkflowStatus ?? 'Not started';
   factory ProjectTask.fromJson(Json j) {
+    final dueDate = projectOptionalCalendarDate(j['dueDate']);
+    final dueTimeZone = projectOptionalText(j['dueTimeZone']);
+    final humanOwner = projectOptionalText(j['humanOwner']);
+    projectRequire(
+      (dueDate == null || j['dueAt'] == null) &&
+          (dueTimeZone == null || dueDate != null) &&
+          (humanOwner == null ||
+              humanOwner.trim().isNotEmpty && humanOwner.length <= 160) &&
+          (dueTimeZone == null || dueTimeZone.length <= 80),
+    );
     final id = projectText(j['id']), parent = projectText(j['projectId']);
     final surface = j['workItem'] == null
         ? null
@@ -118,6 +137,9 @@ class ProjectTask {
       dependsOn: projectStrings(j['dependsOn']),
       dispatchAttempt: projectCount(j['dispatchAttempt']),
       dueAt: projectOptionalDate(j['dueAt']),
+      humanOwner: humanOwner,
+      dueDate: dueDate,
+      dueTimeZone: dueTimeZone,
       workflowRunId: run,
       workflowStatus: j['workflowStatus'] == null
           ? null
@@ -197,6 +219,37 @@ class ProjectArtifact {
   );
 }
 
+class ProjectCommitmentSummary {
+  ProjectCommitmentSummary.fromJson(Json value) {
+    projectRequire(
+      value['version'] == 'project-commitment-summary:1' &&
+          value['consistency'] == 'current_read_not_snapshot' &&
+          value['narrativeAssessment'] == 'not_compared',
+    );
+    coverage = projectMember(value['coverage'], ['complete', 'partial']);
+    openCount = projectCount(value['openCount']);
+    closedUnverifiedCount = projectCount(value['closedUnverifiedCount']);
+    verifiedSuccessCount = projectCount(value['verifiedSuccessCount']);
+    failedCount = projectCount(value['failedCount']);
+    canceledCount = projectCount(value['canceledCount']);
+    blockedCount = projectCount(value['blockedCount']);
+    unassignedOpenCount = projectCount(value['unassignedOpenCount']);
+    undatedOpenCount = projectCount(value['undatedOpenCount']);
+    projectRequire(
+      unassignedOpenCount <= openCount && undatedOpenCount <= openCount,
+    );
+  }
+  late final String coverage;
+  late final int openCount,
+      closedUnverifiedCount,
+      verifiedSuccessCount,
+      failedCount,
+      canceledCount,
+      blockedCount,
+      unassignedOpenCount,
+      undatedOpenCount;
+}
+
 class Project {
   const Project({
     required this.id,
@@ -217,6 +270,7 @@ class Project {
     this.targetDate,
     this.createdAt,
     this.updatedAt,
+    this.commitmentSummary,
   });
   final String id,
       title,
@@ -231,6 +285,7 @@ class Project {
   final DateTime? targetDate, createdAt, updatedAt;
   final List<ProjectTask> tasks;
   final List<ProjectArtifact> artifacts;
+  final ProjectCommitmentSummary? commitmentSummary;
   int get completedTasks => tasks.where((t) => t.done).length;
   double get progress => tasks.isEmpty ? 0 : completedTasks / tasks.length;
   bool get activeExecution =>
@@ -254,6 +309,11 @@ class Project {
             t.updatedAt?.toIso8601String(),
             t.status,
             t.currentWorkflowStatus,
+            t.humanOwner,
+            t.dueDate,
+            t.dueTimeZone,
+            t.dueAt?.toIso8601String(),
+            t.dependsOn,
           ],
         )
         .toList(),
@@ -312,6 +372,11 @@ class Project {
       targetDate: projectOptionalDate(j['targetDate']),
       createdAt: projectDate(j['createdAt']),
       updatedAt: projectDate(j['updatedAt']),
+      commitmentSummary: j['commitmentSummary'] == null
+          ? null
+          : ProjectCommitmentSummary.fromJson(
+              projectRecord(j['commitmentSummary']),
+            ),
     );
   }
 }
@@ -350,6 +415,10 @@ abstract interface class ProjectsRepository {
     String detail,
     String priority,
     String agentId,
+    String? humanOwner,
+    String? dueDate,
+    String? dueTimeZone,
+    List<String> dependsOn,
   });
   Future<ProjectTask> updateTask(String id, String taskId, Json changes);
   Future<Project> execute(

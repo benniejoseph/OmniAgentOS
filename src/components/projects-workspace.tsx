@@ -40,6 +40,8 @@ import { arsenalAgents } from "@/lib/agents/arsenal";
 import { canPerform, useWorkspaceSession } from "@/components/app-shell/session-context";
 import { workspaceOwnerScope } from "@/components/app-shell/workspace-owner-scope";
 import { WorkspaceLibrary } from "@/components/workspace-library";
+import { ProjectTaskCommitmentFields, taskCommitmentChanges, taskCommitmentDraft, taskDeadlineLabel, validTaskCommitment, type TaskCommitmentDraft } from "@/components/project-task-commitment-fields";
+import type { ProjectCommitmentSummary } from "@/lib/projects/commitment-summary";
 import { ProjectSharedMemory } from "@/components/project-shared-memory";
 import {
   projectExecutionIsLive,
@@ -86,6 +88,9 @@ type ProjectTask = {
   origin: "manual" | "agent";
   position: number;
   dueAt?: string;
+  humanOwner?: string;
+  dueDate?: string;
+  dueTimeZone?: string;
   dependsOn: string[];
   workflowRunId?: string;
   workflowStatus?: "dispatching" | "queued" | "running" | "waiting_approval" | "paused" | "completed" | "failed" | "canceled";
@@ -131,6 +136,7 @@ type Project = {
   targetDate?: string;
   updatedAt: string;
   tasks: ProjectTask[];
+  commitmentSummary?: ProjectCommitmentSummary;
   artifacts: ProjectArtifact[];
 };
 type WorkspaceTemplate = {
@@ -205,6 +211,8 @@ function ProjectsWorkspaceContent({ initialView, ownerScopeKey }: { initialView:
   const [objective, setObjective] = useState("");
   const [targetDate, setTargetDate] = useState("");
   const [taskTitle, setTaskTitle] = useState("");
+  const [taskCommitment, setTaskCommitment] = useState(taskCommitmentDraft);
+  const [editingCommitment, setEditingCommitment] = useState<{ projectId: string; taskId: string; draft: TaskCommitmentDraft }>();
   const [planRationale, setPlanRationale] = useState("");
   const [executionDraft, setExecutionDraft] = useState<{
     projectId: string;
@@ -224,6 +232,7 @@ function ProjectsWorkspaceContent({ initialView, ownerScopeKey }: { initialView:
   const projectListScrollRef = useRef(0);
   const artifactListScrollRef = useRef(0);
   const templateMutationKeysRef = useRef(new Map<string, string>());
+  const projectReadGenerations = useRef(new Map<string, number>());
   const available = Boolean(session && (!session.authEnabled || session.authenticated));
   const searchOpening = Boolean(requestedSearchProject && (!searchOpened || searchOpened.owner !== searchOwner ||
     searchOpened.projectId !== requestedSearchProject || searchOpened.taskId !== requestedSearchTask));
@@ -440,6 +449,16 @@ function ProjectsWorkspaceContent({ initialView, ownerScopeKey }: { initialView:
     }
   }
 
+  async function refreshProjectSnapshot(projectId: string) {
+    const generation = (projectReadGenerations.current.get(projectId) || 0) + 1;
+    projectReadGenerations.current.set(projectId, generation);
+    try {
+      const payload = await readJson(`/api/projects/${encodeURIComponent(projectId)}`);
+      if (projectReadGenerations.current.get(projectId) !== generation) return;
+      setProjects((current) => withRefreshedProject(current, projectId, payload.project));
+    } catch { setAnnouncement("The change was saved. Refresh the project to load current commitment counts."); }
+  }
+
   async function generatePlan() {
     if (!selected) return;
     setPlanning(true); setPlanRationale("");
@@ -454,8 +473,9 @@ function ProjectsWorkspaceContent({ initialView, ownerScopeKey }: { initialView:
       }
       const plan = { ...rawPlan, rationale: rawPlan.rationale, tasks: planTasks };
       setProjects((current) => current.map((project) => project.id === selected.id
-        ? { ...project, tasks: [...project.tasks, ...plan.tasks] }
+        ? { ...project, commitmentSummary: undefined, tasks: [...project.tasks, ...plan.tasks] }
         : project));
+      void refreshProjectSnapshot(selected.id);
       setPlanRationale(plan.rationale);
       setAnnouncement(`${plan.tasks.length} project tasks added by Atlas.`);
     } catch (planError) { setError(message(planError)); }
@@ -469,14 +489,37 @@ function ProjectsWorkspaceContent({ initialView, ownerScopeKey }: { initialView:
     try {
       const payload = await readJson(`/api/projects/${encodeURIComponent(selected.id)}/tasks`, {
         method: "POST", headers: { "content-type": "application/json", "idempotency-key": crypto.randomUUID() },
-        body: JSON.stringify({ title: taskTitle.trim(), agentId: "atlas" }),
+        body: JSON.stringify({ title: taskTitle.trim(), agentId: "atlas", ...Object.fromEntries(Object.entries(taskCommitmentChanges(taskCommitment)).filter(([, value]) => value !== null)) }),
       });
       const task = normalizeProjectTask(payload.task, selected.id);
       if (!task) throw new Error("The project task returned an invalid canonical WorkItem.");
-      setProjects((current) => current.map((project) => project.id === selected.id ? { ...project, tasks: [...project.tasks, task] } : project));
-      setTaskTitle(""); setAnnouncement("Task added to the project.");
+      setProjects((current) => current.map((project) => project.id === selected.id ? { ...project, commitmentSummary: undefined, tasks: [...project.tasks, task] } : project));
+      void refreshProjectSnapshot(selected.id);
+      setTaskTitle(""); setTaskCommitment(taskCommitmentDraft()); setAnnouncement("Task added to the project.");
     } catch (taskError) { setError(message(taskError)); }
     finally { setAddingTask(false); }
+  }
+
+  async function saveTaskCommitment(event: React.FormEvent, task: ProjectTask) {
+    event.preventDefault();
+    if (!selected || editingCommitment?.projectId !== selected.id || editingCommitment.taskId !== task.id) return;
+    const projectId = selected.id;
+    setActingId(task.id);
+    try {
+      const payload = await readJson(`/api/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(task.id)}`, {
+        method: "PATCH", headers: { "content-type": "application/json", "idempotency-key": crypto.randomUUID() },
+        body: JSON.stringify(taskCommitmentChanges(editingCommitment.draft)),
+      });
+      const updated = normalizeProjectTask(payload.task, projectId);
+      if (!updated) throw new Error("The saved commitment returned an invalid work item.");
+      setProjects((current) => current.map((project) => project.id === projectId
+        ? { ...project, commitmentSummary: undefined, tasks: project.tasks.map((item) => item.id === task.id ? updated : item) }
+        : project));
+      setEditingCommitment(undefined);
+      setAnnouncement("Commitment saved. Its title, acceptance criteria and status were preserved.");
+      void refreshProjectSnapshot(projectId);
+    } catch (taskError) { setError(message(taskError)); }
+    finally { setActingId(""); }
   }
 
   async function moveTask(task: ProjectTask) {
@@ -490,8 +533,9 @@ function ProjectsWorkspaceContent({ initialView, ownerScopeKey }: { initialView:
       const updated = normalizeProjectTask(payload.task, selected.id);
       if (!updated) throw new Error("The project task returned an invalid canonical WorkItem.");
       setProjects((current) => current.map((project) => project.id === selected.id
-        ? { ...project, tasks: project.tasks.map((item) => item.id === task.id ? updated : item) }
+        ? { ...project, commitmentSummary: undefined, tasks: project.tasks.map((item) => item.id === task.id ? updated : item) }
         : project));
+      void refreshProjectSnapshot(selected.id);
       setAnnouncement(status === "done" ? "Task completed." : status === "doing" ? "Task is now in progress." : "Task reopened.");
     } catch (taskError) { setError(message(taskError)); }
     finally { setActingId(""); }
@@ -537,7 +581,8 @@ function ProjectsWorkspaceContent({ initialView, ownerScopeKey }: { initialView:
         throw new Error("Execution returned invalid canonical WorkItems.");
       }
       if (project) {
-        setProjects((current) => current.map((item) => item.id === selected.id ? { ...item, ...project, tasks: tasks || item.tasks, artifacts: artifacts || item.artifacts } : item));
+        setProjects((current) => current.map((item) => item.id === selected.id ? { ...item, ...project, commitmentSummary: undefined, tasks: tasks || item.tasks, artifacts: artifacts || item.artifacts } : item));
+        void refreshProjectSnapshot(selected.id);
       }
       setAnnouncement(executionAnnouncement(action, payload.dispatchedTaskIds as string[] | undefined));
       setError(undefined);
@@ -595,6 +640,9 @@ function ProjectsWorkspaceContent({ initialView, ownerScopeKey }: { initialView:
   function selectProject(projectId: string) {
     projectListScrollRef.current = window.scrollY;
     setSelectedId(projectId);
+    setTaskTitle("");
+    setTaskCommitment(taskCommitmentDraft());
+    setEditingCommitment(undefined);
     setPlanRationale("");
     setProjectDetailOpen(true);
     setArtifactDetailOpen(false);
@@ -704,7 +752,13 @@ function ProjectsWorkspaceContent({ initialView, ownerScopeKey }: { initialView:
               <div className={styles.titleBlock}>
                 <div className={styles.projectMeta}><span className={styles.status} data-status={selected.status}>{selected.status}</span>{selected.targetDate ? <span className={styles.target}><CalendarDays size={14} aria-hidden="true" /> Due {formatDate(selected.targetDate)}</span> : null}<span>Updated {formatTimestamp(selected.updatedAt)}</span></div>
                 <h2 ref={projectHeadingRef} tabIndex={-1}>{selected.title}</h2>
-                <p>{selected.objective}</p>
+                <p><strong>Saved project brief</strong></p><p>{selected.objective}</p>
+                {selected.commitmentSummary ? <div className={styles.commitmentSummary} aria-label="Current commitments">
+                  <strong>Current commitments{selected.commitmentSummary.coverage === "partial" ? " · loaded tasks only" : ""}</strong>
+                  <p>{selected.commitmentSummary.openCount} open · {selected.commitmentSummary.closedUnverifiedCount} closed, unverified · {selected.commitmentSummary.verifiedSuccessCount} verified{selected.commitmentSummary.failedCount ? ` · ${selected.commitmentSummary.failedCount} failed` : ""}{selected.commitmentSummary.canceledCount ? ` · ${selected.commitmentSummary.canceledCount} canceled` : ""}</p>
+                  <p>{selected.commitmentSummary.unassignedOpenCount} open without a named owner · {selected.commitmentSummary.undatedOpenCount} open without an agreed deadline · {selected.commitmentSummary.blockedCount} blocked</p>
+                  <small>Calculated from saved task fields at this read. The project brief has not been independently compared with them.</small>
+                </div> : null}
                 <p className={styles.projectProgress}>{selectedClosed} of {selected.tasks.length} tasks closed{selected.tasks.length ? ` · ${Math.round(selectedProgress * 100)}%` : ""} · {canonicalWorkItemCostLabel(selectedCost)}</p>
               </div>
             </div>
@@ -763,14 +817,21 @@ function ProjectsWorkspaceContent({ initialView, ownerScopeKey }: { initialView:
                     {taskIsClosed(task) ? <Check size={14} aria-hidden="true" /> : canonicalState === "running" ? <Pause size={13} aria-hidden="true" /> : <Circle size={14} aria-hidden="true" />}
                   </button>
                   <span className={styles.taskIndex}>{String(index + 1).padStart(2, "0")}</span>
-                  <div className={styles.taskCopy}><div><strong>{task.title}</strong><span className={styles.priority} data-priority={task.priority}>{task.priority}</span>{workflowStatus ? <span className={styles.workflowStatus} data-status={workflowStatus}>{workflowLabel(workflowStatus)}</span> : null}</div>{task.detail ? <p>{task.detail}</p> : null}<small>{workItemStatusLabel(task, dependencyNames)} · {task.workItem.artifacts.count} artifact{task.workItem.artifacts.count === 1 ? "" : "s"} · {canonicalWorkItemCostLabel(task.workItem.cost)}{task.dueAt ? ` · due ${formatDate(task.dueAt)}` : ""}</small>{task.executionError ? <em className={styles.taskError}><AlertTriangle size={11} aria-hidden="true" /> {task.executionError}</em> : null}</div>
+                  <div className={styles.taskCopy}><div><strong>{task.title}</strong><span className={styles.priority} data-priority={task.priority}>{task.priority}</span>{workflowStatus ? <span className={styles.workflowStatus} data-status={workflowStatus}>{workflowLabel(workflowStatus)}</span> : null}</div>{task.detail ? <p>{task.detail}</p> : null}<small>{workItemStatusLabel(task, dependencyNames)} · {task.workItem.artifacts.count} artifact{task.workItem.artifacts.count === 1 ? "" : "s"} · {canonicalWorkItemCostLabel(task.workItem.cost)}</small>
+                    <small>Owner: {task.humanOwner || "Not assigned"} · Due: {taskDeadlineLabel(task)}</small>
+                    <small>Depends on: {task.dependsOn?.length ? task.dependsOn.map((id) => selected.tasks.find((item) => item.id === id)?.title || "Task outside this loaded view").join("; ") : "None recorded"}</small>
+                    {editingCommitment?.projectId === selected.id && editingCommitment.taskId === task.id ? <form className={styles.commitmentForm} onSubmit={(event) => void saveTaskCommitment(event, task)}>
+                      <ProjectTaskCommitmentFields draft={editingCommitment.draft} onChange={(draft) => setEditingCommitment({ ...editingCommitment, draft })} tasks={selected.tasks} taskId={task.id} disabled={Boolean(actingId)} existingDueAt={task.dueAt} />
+                      <div><button className={styles.button} disabled={Boolean(actingId)} type="submit">{actingId === task.id ? "Saving…" : "Save commitment"}</button><button className={styles.button} disabled={Boolean(actingId)} type="button" onClick={() => setEditingCommitment(undefined)}>Cancel</button></div>
+                    </form> : <button className={styles.button} type="button" disabled={Boolean(actingId) || selected.status !== "active" || !canPerform(role, "run.agent")} onClick={() => setEditingCommitment({ projectId: selected.id, taskId: task.id, draft: taskCommitmentDraft(task) })} aria-label={`Edit commitment for ${task.title}`}>Edit commitment</button>}
+                    {task.executionError ? <em className={styles.taskError}><AlertTriangle size={11} aria-hidden="true" /> {task.executionError}</em> : null}</div>
                   <div className={styles.agent}><span>{agent.name.slice(0, 1)}</span><div><strong>{agent.name}</strong><small>{agent.role}</small></div></div>
                   {workflowStatus === "waiting_approval" ? <button type="button" className={styles.button} onClick={() => void executeProject("approve", task.id)} disabled={Boolean(executionBusy)} aria-label={`Approve ${task.title}`}>Approve</button> : workflowStatus === "failed" ? <button type="button" className={styles.button} onClick={() => void executeProject("retry", task.id)} disabled={Boolean(executionBusy)} aria-label={`Retry ${task.title}`}>Retry</button> : task.workItem.execution.workflowRunId ? <span className={styles.taskLive}>{workflowStatus ? workflowLabel(workflowStatus) : "Workflow status unavailable"}</span> : <Link className={styles.button} href={commandHref(selected, task)} aria-label={`Assign ${task.title} to ${agent.name}`}>Run <ArrowRight size={13} aria-hidden="true" /></Link>}
                 </article>;
               }) : <div className={styles.emptyState} role="listitem"><Target size={22} aria-hidden="true" /><h3>No plan yet</h3><p>Let Atlas decompose the outcome or add the first task yourself.</p></div>}
             </div>
 
-            {selected.status === "active" ? <form className={styles.addTask} onSubmit={addTask}><label htmlFor="project-task-title">Add project task</label><div><input id="project-task-title" value={taskTitle} onChange={(event) => setTaskTitle(event.currentTarget.value)} placeholder="Describe the next task" maxLength={240} /><button type="submit" className={styles.button} disabled={addingTask || !taskTitle.trim()}>{addingTask ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <Plus size={14} aria-hidden="true" />} {addingTask ? "Adding…" : "Add task"}</button></div></form> : null}</> : workspaceView === "execution" ? <ProjectExecutionBoard project={selected} actingId={actingId} executionBusy={executionBusy} onMoveTask={moveTask} onExecute={executeProject} />  : null}
+            {selected.status === "active" ? <form key={selected.id} className={styles.addTask} onSubmit={addTask}><label htmlFor="project-task-title">Add project task</label><div><input id="project-task-title" value={taskTitle} onChange={(event) => setTaskTitle(event.currentTarget.value)} placeholder="Describe the next task" maxLength={240} /><button type="submit" className={styles.button} disabled={addingTask || !taskTitle.trim()}>{addingTask ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <Plus size={14} aria-hidden="true" />} {addingTask ? "Adding…" : "Add task"}</button></div><details className={styles.commitmentForm}><summary>Owner, deadline and dependencies</summary><ProjectTaskCommitmentFields draft={taskCommitment} onChange={setTaskCommitment} tasks={selected.tasks} disabled={addingTask} /></details></form> : null}</> : workspaceView === "execution" ? <ProjectExecutionBoard project={selected} actingId={actingId} executionBusy={executionBusy} onMoveTask={moveTask} onExecute={executeProject} />  : null}
             <div hidden={workspaceView !== "build"} inert={workspaceView !== "build"}>
               <AppBuilderStudio key={selected.id} project={selected} ownerScopeKey={ownerScopeKey}
                 accessReady={sessionStatus === "ready" && Boolean(ownerScopeKey)}
@@ -899,6 +960,9 @@ function ProjectExecutionBoard({
               {task.detail ? <p className={styles.boardTaskDetail}>{task.detail}</p> : null}
               {task.executionError ? <p className={styles.taskError}><AlertTriangle size={16} aria-hidden="true" /><span>{task.executionError}</span></p> : null}
               <dl className={styles.boardFacts}>
+                <div><dt>Owner</dt><dd>{task.humanOwner || "Not assigned"}</dd></div>
+                <div><dt>Due</dt><dd>{taskDeadlineLabel(task)}</dd></div>
+                <div><dt>Depends on</dt><dd>{task.dependsOn?.length ? task.dependsOn.map((id) => project.tasks.find((item) => item.id === id)?.title || "Task outside this loaded view").join("; ") : "None recorded"}</dd></div>
                 <div><dt>Agent</dt><dd>{agent.name}</dd></div>
                 <div><dt>Evidence</dt><dd>{task.workItem.artifacts.count} artifact{task.workItem.artifacts.count === 1 ? "" : "s"}</dd></div>
                 <div><dt>Cost</dt><dd>{canonicalWorkItemCostLabel(task.workItem.cost)}</dd></div>
@@ -1044,9 +1108,17 @@ export function normalizeProjects(value: unknown): Project[] | undefined {
     }
     const tasks = normalizeProjectTasks(project.tasks, project.id);
     if (!tasks) return undefined;
+    if (project.commitmentSummary != null && !validCommitmentSummary(project.commitmentSummary, tasks.length)) return undefined;
     projects.push({ ...project, tasks } as Project);
   }
   return projects;
+}
+function validCommitmentSummary(value: unknown, count: number): value is ProjectCommitmentSummary {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const summary = value as Record<string, unknown>;
+  if (summary.version !== "project-commitment-summary:1" || summary.consistency !== "current_read_not_snapshot" || summary.narrativeAssessment !== "not_compared" || !["complete", "partial"].includes(String(summary.coverage)) || summary.commitmentCount !== count) return false;
+  for (const key of ["openCount", "closedUnverifiedCount", "verifiedSuccessCount", "failedCount", "canceledCount", "blockedCount", "unassignedOpenCount", "undatedOpenCount", "dependencyCount"]) if (typeof summary[key] !== "number" || !Number.isInteger(summary[key]) || Number(summary[key]) < 0 || Number(summary[key]) > count) return false;
+  return Number(summary.unassignedOpenCount) <= Number(summary.openCount) && Number(summary.undatedOpenCount) <= Number(summary.openCount) && Number(summary.blockedCount) <= Number(summary.openCount);
 }
 /**
  * The projects with one of them read again. The read replaces its fields, and
@@ -1060,6 +1132,7 @@ export function withRefreshedProject(projects: Project[], projectId: string, val
     ? {
         ...project,
         ...refreshed,
+        commitmentSummary: refreshed.commitmentSummary,
         tasks: withUnreadKept(refreshed.tasks, project.tasks),
         artifacts: withUnreadKept(refreshed.artifacts, project.artifacts),
       }
@@ -1084,6 +1157,7 @@ function normalizeProjectTask(value: unknown, projectId: string): ProjectTask | 
   const workItem = parseCanonicalWorkItemSurface(task.workItem);
   if (
     typeof task.id !== "string" ||
+    !validTaskCommitment(task) ||
     !workItem ||
     workItem.status.sourceAuthority !== "legacy_project_task" ||
     workItem.status.sourceId !== task.id ||

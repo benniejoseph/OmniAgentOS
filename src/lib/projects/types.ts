@@ -55,6 +55,9 @@ export type ProjectTask = {
   position: number;
   origin: "manual" | "agent";
   dueAt?: string;
+  humanOwner?: string;
+  dueDate?: string;
+  dueTimeZone?: string;
   dependsOn: string[];
   workflowRunId?: string;
   workflowStatus?: ProjectTaskWorkflowStatus;

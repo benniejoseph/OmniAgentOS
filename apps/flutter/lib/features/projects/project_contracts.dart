@@ -44,6 +44,41 @@ DateTime projectDate(Object? value) {
 
 DateTime? projectOptionalDate(Object? value) =>
     value == null ? null : projectDate(value);
+
+/// A civil calendar date, preserved as supplied; never converted to an instant.
+String? projectOptionalCalendarDate(Object? value) {
+  if (value == null) return null;
+  final text = projectText(value);
+  projectRequire(RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(text));
+  final year = int.parse(text.substring(0, 4)),
+      month = int.parse(text.substring(5, 7)),
+      day = int.parse(text.substring(8, 10));
+  final check = DateTime.utc(year, month, day);
+  projectRequire(
+    year >= 1 && check.year == year && check.month == month && check.day == day,
+  );
+  return text;
+}
+
+String projectCalendarDateLabel(String value) {
+  projectOptionalCalendarDate(value);
+  const months = [
+    'Jan',
+    'Feb',
+    'Mar',
+    'Apr',
+    'May',
+    'Jun',
+    'Jul',
+    'Aug',
+    'Sep',
+    'Oct',
+    'Nov',
+    'Dec',
+  ];
+  return '${int.parse(value.substring(8, 10))} ${months[int.parse(value.substring(5, 7)) - 1]} ${value.substring(0, 4)}';
+}
+
 List<T> projectRows<T>(
   Object? value,
   T Function(ProjectJson) parse, {

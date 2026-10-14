@@ -3058,3 +3058,39 @@ Local Computer, token, cost and wall-clock limits retain their existing policy.
 The R1 trial remains evidence against the preceding release; these regressions
 and the signed inspector check do not establish a successful five-task live
 reconciliation or scheduled material-change notification.
+
+
+## Structured commitment candidate (2026-10-14)
+
+Migration **256** adds nullable named-human-owner, calendar-deadline and explicit
+zone columns to existing project tasks. Existing rows and their canonical
+projection hashes remain unchanged until an ordinary governed update explicitly
+saves a new value. Task dependencies reuse their current storage and execution
+semantics; stricter same-project and cycle validation applies to all writers.
+There are no new grants, tables, principals or notification channels.
+
+Run a fresh encrypted backup and isolated restore drill, then apply 256 from the
+exact clean release revision while production requests, cron and workers are
+held under the existing cutover procedure. Verify the full schema catalog before
+restoring traffic and use the paired web/worker runner. Do not substitute unit
+fixtures for migration-owner or serving-role verification.
+
+Native **1.34.0+101** retains contract **v56**: these existing project routes have
+extensible JSON-object responses. Earlier clients retain their existing fields;
+the new build exposes named owners, calendar dates and readable dependencies in
+both the Mac and shared mobile task workspace. Verify signed upgrade without
+resetting the session, then create/edit/read back and clear fields in the normal
+UI. Keep the previous signed application for recovery.
+
+Rollback to the previous server is safe only before any new structured metadata
+has been written. Its strict canonical parser cannot read the new optional
+fields once present. After such a write, use a compatible rollback build or a
+forward repair; never delete owner/date metadata or rewrite historical receipts
+to make an old binary accept them. The release's staged and post-activation gates
+must settle before the live structured-commitment trial begins.
+
+The current summary is a deterministic read of saved commitments, separate from
+the written project brief. Existing Follow-up baselines and policy digests stay
+valid; new explicit owner/date values are compared at ordinary scheduled checks.
+A missing date-only time zone keeps overdue timing unknown. An offline comparison
+pass does not establish that a future production notification has occurred.

@@ -11,6 +11,7 @@ import '../../core/network/api_client.dart';
 import '../builder/native_builder_view.dart';
 import '../builder/builder_external_opener.dart';
 import 'project_lifecycle.dart';
+import 'project_commitment_fields.dart';
 import 'projects.dart';
 
 String _workLabel(String value) => switch (value) {
@@ -1030,10 +1031,17 @@ class _ProjectDocumentWorkspaceState extends State<ProjectDocumentWorkspace> {
         child: Text(p.title, style: Theme.of(context).textTheme.headlineSmall),
       ),
       const SizedBox(height: 8),
+      Text(
+        'Saved project brief',
+        style: Theme.of(context).textTheme.titleSmall,
+      ),
       SelectableText(
         p.objective,
         style: Theme.of(context).textTheme.bodyLarge?.copyWith(height: 1.5),
       ),
+      if (c.fresh && !c.acting)
+        if (p.commitmentSummary case final summary?)
+          _commitmentSummary(summary),
       const SizedBox(height: 8),
       Wrap(
         spacing: 16,
@@ -1110,6 +1118,28 @@ class _ProjectDocumentWorkspaceState extends State<ProjectDocumentWorkspace> {
           ),
         ),
     ],
+  );
+
+  Widget _commitmentSummary(ProjectCommitmentSummary summary) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 12),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Current commitments${summary.coverage == 'partial' ? ' · loaded tasks only' : ''}',
+          style: Theme.of(context).textTheme.titleSmall,
+        ),
+        Text(
+          '${summary.openCount} open · ${summary.closedUnverifiedCount} closed, unverified · ${summary.verifiedSuccessCount} verified${summary.failedCount > 0 ? ' · ${summary.failedCount} failed' : ''}${summary.canceledCount > 0 ? ' · ${summary.canceledCount} canceled' : ''}',
+        ),
+        Text(
+          '${summary.unassignedOpenCount} open without a named owner · ${summary.undatedOpenCount} open without an agreed deadline · ${summary.blockedCount} blocked',
+        ),
+        const Text(
+          'Calculated from saved task fields at this read. The project brief has not been independently compared with them.',
+        ),
+      ],
+    ),
   );
   @override
   Widget build(BuildContext context) {
@@ -1259,11 +1289,18 @@ class _ProjectDocumentWorkspaceState extends State<ProjectDocumentWorkspace> {
               ),
             ),
             const SizedBox(height: 16),
+            Text(
+              'Saved project brief',
+              style: Theme.of(context).textTheme.titleSmall,
+            ),
             SelectableText(
               p.objective,
               style: Theme.of(context).textTheme.bodyLarge
                   ?.copyWith(height: 1.5),
             ),
+            if (c.fresh && !c.acting)
+              if (p.commitmentSummary case final summary?)
+                _commitmentSummary(summary),
             if (p.tasks.isNotEmpty) ...[
               const SizedBox(height: 20),
               LinearProgressIndicator(
@@ -1599,11 +1636,12 @@ class _ProjectDocumentWorkspaceState extends State<ProjectDocumentWorkspace> {
             ),
             if (!usesMobilePresentation())
               Text('Executing Agent · ${task.agentId}'),
-            if (task.dueAt != null)
-              Text(
-                'Due · ${usesMobilePresentation() ? MaterialLocalizations.of(context).formatFullDate(task.dueAt!.toLocal()) : task.dueAt!.toIso8601String()}',
-              ),
+            Text('Owner · ${task.humanOwner ?? 'Not assigned'}'),
+            Text('Due · ${task.deadlineLabel}'),
           ],
+        ),
+        Text(
+          'Depends on · ${task.dependsOn.isEmpty ? 'None recorded' : task.dependsOn.map((id) => p.tasks.where((item) => item.id == id).firstOrNull?.title ?? 'Task outside this loaded view').join('; ')}',
         ),
         const SizedBox(height: 8),
         Text(
@@ -1626,6 +1664,12 @@ class _ProjectDocumentWorkspaceState extends State<ProjectDocumentWorkspace> {
           spacing: 8,
           runSpacing: 8,
           children: [
+            OutlinedButton(
+              onPressed: c.writable && p.status == 'active'
+                  ? () => _editCommitment(p, task)
+                  : null,
+              child: Text('Edit commitment for ${task.title}'),
+            ),
             OutlinedButton(
               onPressed:
                   c.writable && p.status == 'active' && !task.movementBlocked
@@ -1664,6 +1708,7 @@ class _ProjectDocumentWorkspaceState extends State<ProjectDocumentWorkspace> {
               {
                 'Work item ID': task.id,
                 'Executing Agent': task.agentId,
+                'Human owner': task.humanOwner ?? 'Not assigned',
                 'Priority': task.priority,
                 'Task state': task.status,
                 'Outcome': task.outcomeLabel,
@@ -1673,7 +1718,14 @@ class _ProjectDocumentWorkspaceState extends State<ProjectDocumentWorkspace> {
                     ? 'None returned'
                     : task.dependsOn.join('\n'),
                 'Origin': task.origin,
-                'Due': task.dueAt?.toIso8601String() ?? 'Not set',
+                'Due':
+                    task.dueDate ?? task.dueAt?.toIso8601String() ?? 'Not set',
+                'Deadline precision': task.dueDate != null
+                    ? 'Calendar date; no clock time'
+                    : task.dueAt != null
+                    ? 'Date and time'
+                    : 'Not set',
+                'Deadline time zone': task.dueTimeZone ?? 'Not specified',
                 'Last changed':
                     task.updatedAt?.toIso8601String() ?? 'Not reported',
                 'Dispatch attempt': '${task.dispatchAttempt}',
@@ -2180,6 +2232,7 @@ class _ProjectDocumentWorkspaceState extends State<ProjectDocumentWorkspace> {
   Future<void> _taskForm(Project p) async {
     final controller = c,
         scope = c.access?.scope,
+        formKey = GlobalKey<FormState>(),
         title = TextEditingController(text: c.taskTitle),
         detail = TextEditingController(text: c.taskDetail);
     final accepted = await _dialogs.show(
@@ -2192,77 +2245,90 @@ class _ProjectDocumentWorkspaceState extends State<ProjectDocumentWorkspace> {
           controller.access?.closed != true,
       builder: (ctx) => StatefulBuilder(
         builder: (_, update) {
-          final form = Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                key: const Key('macos-project-task-title'),
-                controller: title,
-                autofocus: true,
-                maxLength: 240,
-                decoration: const InputDecoration(labelText: 'Task'),
-                onChanged: (v) {
-                  controller.taskTitle = v;
-                  update(() {});
-                },
-              ),
-              TextField(
-                controller: detail,
-                maxLength: 1000,
-                minLines: 2,
-                maxLines: 6,
-                decoration: InputDecoration(
-                  labelText: usesMobilePresentation()
-                      ? 'Details and what done looks like'
-                      : 'Context or acceptance criteria',
+          final form = Form(
+            key: formKey,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  key: const Key('macos-project-task-title'),
+                  controller: title,
+                  autofocus: true,
+                  maxLength: 240,
+                  decoration: const InputDecoration(labelText: 'Task'),
+                  onChanged: (v) {
+                    controller.taskTitle = v;
+                    update(() {});
+                  },
                 ),
-                onChanged: (v) => controller.taskDetail = v,
-              ),
-              DropdownButtonFormField<String>(
-                initialValue: controller.taskPriority,
-                isExpanded: true,
-                decoration: const InputDecoration(labelText: 'Priority'),
-                items: [
-                  for (final v in ['low', 'medium', 'high'])
-                    DropdownMenuItem(
-                      value: v,
-                      child: Text(usesMobilePresentation() ? _workLabel(v) : v),
-                    ),
-                ],
-                onChanged: (v) {
-                  if (v != null) controller.taskPriority = v;
-                },
-              ),
-              DropdownButtonFormField<String>(
-                initialValue: controller.taskAgent,
-                isExpanded: true,
-                decoration: InputDecoration(
-                  labelText: usesMobilePresentation()
-                      ? 'Assistant'
-                      : 'Executing Agent',
+                TextField(
+                  controller: detail,
+                  maxLength: 1000,
+                  minLines: 2,
+                  maxLines: 6,
+                  decoration: InputDecoration(
+                    labelText: usesMobilePresentation()
+                        ? 'Details and what done looks like'
+                        : 'Context or acceptance criteria',
+                  ),
+                  onChanged: (v) => controller.taskDetail = v,
                 ),
-                items: [
-                  for (final v in [
-                    'atlas',
-                    'scout',
-                    'forge',
-                    'sentinel',
-                    'mnemosyne',
-                  ])
-                    DropdownMenuItem(
-                      value: v,
-                      child: Text(usesMobilePresentation() ? _workLabel(v) : v),
-                    ),
-                ],
-                onChanged: (v) {
-                  if (v != null) controller.taskAgent = v;
-                },
-              ),
-              const Text('Closing retains the local task draft.'),
-            ],
+                DropdownButtonFormField<String>(
+                  initialValue: controller.taskPriority,
+                  isExpanded: true,
+                  decoration: const InputDecoration(labelText: 'Priority'),
+                  items: [
+                    for (final v in ['low', 'medium', 'high'])
+                      DropdownMenuItem(
+                        value: v,
+                        child: Text(
+                          usesMobilePresentation() ? _workLabel(v) : v,
+                        ),
+                      ),
+                  ],
+                  onChanged: (v) {
+                    if (v != null) controller.taskPriority = v;
+                  },
+                ),
+                DropdownButtonFormField<String>(
+                  initialValue: controller.taskAgent,
+                  isExpanded: true,
+                  decoration: InputDecoration(
+                    labelText: usesMobilePresentation()
+                        ? 'Assistant'
+                        : 'Executing Agent',
+                  ),
+                  items: [
+                    for (final v in [
+                      'atlas',
+                      'scout',
+                      'forge',
+                      'sentinel',
+                      'mnemosyne',
+                    ])
+                      DropdownMenuItem(
+                        value: v,
+                        child: Text(
+                          usesMobilePresentation() ? _workLabel(v) : v,
+                        ),
+                      ),
+                  ],
+                  onChanged: (v) {
+                    if (v != null) controller.taskAgent = v;
+                  },
+                ),
+                ProjectCommitmentFields(
+                  draft: controller.taskCommitment,
+                  tasks: p.tasks,
+                  enabled: controller.writable,
+                ),
+                const Text('Closing retains the local task draft.'),
+              ],
+            ),
           );
           void discard() {
             controller.taskTitle = controller.taskDetail = '';
+            controller.taskCommitment = ProjectCommitmentDraft();
             Navigator.pop(ctx, false);
           }
 
@@ -2270,7 +2336,11 @@ class _ProjectDocumentWorkspaceState extends State<ProjectDocumentWorkspace> {
             key: const Key('macos-project-task-submit'),
             onPressed: title.text.trim().isEmpty || !controller.writable
                 ? null
-                : () => Navigator.pop(ctx, true),
+                : () {
+                    if (formKey.currentState!.validate()) {
+                      Navigator.pop(ctx, true);
+                    }
+                  },
             child: const Text('Add task'),
           );
           if (usesMobilePresentation()) {
@@ -2357,6 +2427,12 @@ class _ProjectDocumentWorkspaceState extends State<ProjectDocumentWorkspace> {
             detail: taskContext,
             priority: priority,
             agentId: agent,
+            humanOwner:
+                controller.taskCommitment.changes['humanOwner'] as String?,
+            dueDate: controller.taskCommitment.changes['dueDate'] as String?,
+            dueTimeZone:
+                controller.taskCommitment.changes['dueTimeZone'] as String?,
+            dependsOn: List.of(controller.taskCommitment.dependsOn),
           ),
           expectedVersion: p.version,
         ) &&
@@ -2364,7 +2440,75 @@ class _ProjectDocumentWorkspaceState extends State<ProjectDocumentWorkspace> {
         c == controller) {
       c.edit(() {
         c.taskTitle = c.taskDetail = '';
+        c.taskCommitment = ProjectCommitmentDraft();
       });
+    }
+  }
+
+  Future<void> _editCommitment(Project p, ProjectTask task) async {
+    final controller = c,
+        scope = c.access?.scope,
+        draft =
+            controller.commitmentDrafts.remove(task.id) ??
+            ProjectCommitmentDraft(task: task),
+        formKey = GlobalKey<FormState>();
+    final accepted = await _dialogs.show(
+      context,
+      listenable: controller,
+      current: () =>
+          mounted &&
+          c == controller &&
+          controller.access?.scope == scope &&
+          controller.access?.closed != true,
+      builder: (ctx) => _projectDialog(
+        title: Text('Commitment · ${task.title}'),
+        scrollable: true,
+        content: SizedBox(
+          width: 480,
+          child: Form(
+            key: formKey,
+            child: ProjectCommitmentFields(
+              draft: draft,
+              tasks: p.tasks,
+              taskId: task.id,
+              enabled: controller.writable,
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: controller.writable
+                ? () {
+                    if (formKey.currentState!.validate()) {
+                      Navigator.pop(ctx, true);
+                    }
+                  }
+                : null,
+            child: const Text('Save commitment'),
+          ),
+        ],
+      ),
+    );
+    if (accepted != true ||
+        !mounted ||
+        c != controller ||
+        controller.access?.scope != scope) {
+      return;
+    }
+    final saved = await c.perform(
+      'Save commitment',
+      () => widget.repository.updateTask(p.id, task.id, draft.changes),
+      expectedVersion: p.version,
+    );
+    if (!saved &&
+        mounted &&
+        c == controller &&
+        controller.access?.scope == scope) {
+      controller.commitmentDrafts[task.id] = draft;
     }
   }
 

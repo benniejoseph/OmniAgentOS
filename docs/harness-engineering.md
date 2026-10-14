@@ -316,6 +316,14 @@ must use the migration's actual grants; fixture-only privileges can hide a
 production failure. Workspace and membership revocation locks remain mandatory
 even where a narrow database function is needed to acquire them.
 
+Calendar-only commitments remain calendar dates throughout tool arguments,
+storage, projections and client controls. Do not manufacture noon, midnight or a
+device-derived zone to fit a timestamp field. Named human responsibility is not
+an authentication principal. Validate dependency changes against the complete
+same-project graph inside the write transaction, including concurrent opposing
+edges. Current commitment counts must use saved fields and canonical outcomes;
+they do not establish that a separately saved brief matches its sources.
+
 ## Native controller replacement gate
 
 An owner-scoped native controller must synchronously cancel reads, fence writes,

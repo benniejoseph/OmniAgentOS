@@ -75,6 +75,60 @@ describe("Canonical WorkItem follow-through", () => {
     expect(overdue).toMatchObject({ outcome: "material_change", reasons: ["work_overdue"], change: { categories: ["work_overdue"] } });
     expect(flow.plan(await flow.read({ observationKey: "again", observedAt: "2026-10-05T09:00:00.000Z" }), overdue.nextBaseline, 3)).toMatchObject({ outcome: "no_change", change: null });
   });
+  it.each([
+    ["Asia/Kolkata", "2026-10-04T18:29:59.999Z", "2026-10-04T18:30:00.000Z"],
+    ["America/Los_Angeles", "2026-10-05T06:59:59.999Z", "2026-10-05T07:00:00.000Z"],
+    ["Pacific/Kiritimati", "2026-10-04T09:59:59.999Z", "2026-10-04T10:00:00.000Z"],
+    // Sydney starts daylight saving during this calendar day (23 hours).
+    ["Australia/Sydney", "2026-10-04T12:59:59.999Z", "2026-10-04T13:00:00.000Z"],
+  ])("treats a date-only commitment as overdue after its calendar day in %s, once", async (timeZone, onDate, afterDate) => {
+    const db = database(item({ schedule: { startsAt: null, dueAt: null, dueDate: "2026-10-04", timeZone } }));
+    const record = await reviewed(db.sql);
+    const flow = createResponsibilityObservationPipeline({ record, policySha256: policy.policySha256,
+      readAuthoritativeSource: (input) => responsibilityObservationReader(context, owner)(input, db.sql) });
+    const baseline = flow.plan(await flow.read({ observationKey: "date-baseline", observedAt: now }), null, 0);
+    const quiet = flow.plan(await flow.read({ observationKey: "during-date", observedAt: onDate }), baseline.nextBaseline, 1);
+    expect(quiet).toMatchObject({ outcome: "no_change", change: null });
+    const overdue = flow.plan(await flow.read({ observationKey: "after-date", observedAt: afterDate }), quiet.nextBaseline, 2);
+    expect(overdue).toMatchObject({ outcome: "material_change", change: { categories: ["work_overdue"] } });
+    expect(flow.plan(await flow.read({ observationKey: "after-date-again", observedAt: "2026-10-06T00:00:00.000Z" }), overdue.nextBaseline, 3))
+      .toMatchObject({ outcome: "no_change", change: null });
+    const read = await responsibilityObservationReader(context, owner)({ target: baseline.observation.target, source, observedAt: onDate }, db.sql);
+    expect(read).toMatchObject({ state: "available", projection: { workItem: { dueAt: null, dueDate: "2026-10-04", dueTimeZone: timeZone, deadlineState: "date_only", overdue: false } } });
+  });
+  it("does not guess a date-only time zone or grant access from a named commitment owner", async () => {
+    const db = database(item({ humanOwner: "Elena Ruiz", schedule: { startsAt: null, dueAt: null, dueDate: "2026-10-04", timeZone: null } }));
+    const record = await reviewed(db.sql);
+    const flow = createResponsibilityObservationPipeline({ record, policySha256: policy.policySha256,
+      readAuthoritativeSource: (input) => responsibilityObservationReader(context, owner)(input, db.sql) });
+    const baseline = flow.plan(await flow.read({ observationKey: "unknown-zone", observedAt: now }), null, 0);
+    const reader = responsibilityObservationReader(context, owner);
+    const read = await reader({ target: baseline.observation.target, source, observedAt: "2026-10-06T00:00:00.000Z" }, db.sql);
+    expect(read).toMatchObject({ state: "available", projection: { workItem: { humanOwner: "Elena Ruiz", ownerActorIds: [owner.actorId], dueAt: null,
+      dueDate: "2026-10-04", dueTimeZone: null, deadlineState: "date_only_timezone_unknown", overdue: null } } });
+    expect(flow.plan(await flow.read({ observationKey: "still-unknown", observedAt: "2026-10-06T00:00:00.000Z" }), baseline.nextBaseline, 1))
+      .toMatchObject({ outcome: "no_change", change: null });
+    db.state.item = item({ ...db.state.item, ownerActorIds: ["actor:00000000-0000-4000-8000-000000000001"] });
+    expect(await reader({ target: baseline.observation.target, source, observedAt: now }, db.sql)).toMatchObject({ state: "unavailable", reason: "access_denied" });
+  });
+  it("detects newly saved human owners, date-only deadlines and dependency states without invalidating its reviewed configuration", async () => {
+    const db = database(); const record = await reviewed(db.sql);
+    const configuration = (await resolveResponsibilityPilot(db.sql, owner, record, now, true)).configuration;
+    const flow = createResponsibilityObservationPipeline({ record, policySha256: policy.policySha256,
+      readAuthoritativeSource: (input) => responsibilityObservationReader(context, owner)(input, db.sql) });
+    const baseline = flow.plan(await flow.read({ observationKey: "legacy", observedAt: now }), null, 0);
+    db.state.item = item({ humanOwner: "Jonah Patel", schedule: { startsAt: null, dueAt: null, dueDate: "2026-10-07", timeZone: "Asia/Kolkata" },
+      dependencyWorkItemIds: ["dependency-a"], updatedAt: now });
+    db.state.dependencies = [item({ workItemId: "dependency-a", canonicalStatus: "unverified", sourceStatus: "done", terminalAt: now, updatedAt: now })];
+    const changed = flow.plan(await flow.read({ observationKey: "structured", observedAt: now }), baseline.nextBaseline, 1);
+    expect(changed).toMatchObject({ outcome: "material_change", change: { categories: ["work_deadline", "work_owners", "work_dependencies"] } });
+    expect((await resolveResponsibilityPilot(db.sql, owner, record, now, false)).configuration).toEqual(configuration);
+    expect(flow.plan(await flow.read({ observationKey: "structured-again", observedAt: now }), changed.nextBaseline, 2))
+      .toMatchObject({ outcome: "no_change", change: null });
+    db.state.dependencies = [item({ workItemId: "dependency-a", canonicalStatus: "waiting", sourceStatus: "open" })];
+    const reopened = flow.plan(await flow.read({ observationKey: "dependency-reopened", observedAt: now }), changed.nextBaseline, 2);
+    expect(reopened).toMatchObject({ outcome: "material_change", change: { categories: ["work_dependencies"] } });
+  });
   it("observes done without verifying success, retains notification authority, and notices reopening", async () => {
     const db = database(); const record = await reviewed(db.sql);
     const resolved = await resolveResponsibilityPilot(db.sql, owner, record, now, true);

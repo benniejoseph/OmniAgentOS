@@ -45,6 +45,23 @@ const missionTask: MissionTask = {
 };
 
 describe("legacy canonical work projections", () => {
+  it("retains the deployed projection and source hashes when commitment fields are absent", () => {
+    const value = projectTaskCanonicalProjection(project, task, [], authority, 1);
+    expect(value.projectionSha256).toBe("3ac92a60b3823ec12c2b659b596fe87d8ba1dd852007970dcc02dcd8cb775227");
+    expect(value.sourceRevisionSha256).toBe("a98ba9d88a6293f6ecb674b36eb9c89fa4c4b481400b115018a99e7a08775a28");
+    expect(value.projection).not.toHaveProperty("humanOwner");
+    expect(value.projection.schedule).not.toHaveProperty("dueDate");
+  });
+
+  it("projects named people separately from access owners and preserves date precision", () => {
+    const value = projectTaskCanonicalProjection(project, { ...task, humanOwner: "Jonah Patel", dueDate: "2026-10-17", dueTimeZone: "Asia/Kolkata" }, [], authority, 1);
+    expect(value.projection).toMatchObject({ humanOwner: "Jonah Patel", ownerActorIds: [authority.canonicalOwnerActorId], assignedAgents: [{ agentId: "atlas" }],
+      schedule: { startsAt: null, dueAt: null, dueDate: "2026-10-17", timeZone: "Asia/Kolkata" } });
+    expect(value.sourceRevisionSha256).not.toBe("a98ba9d88a6293f6ecb674b36eb9c89fa4c4b481400b115018a99e7a08775a28");
+    const unknownZone = projectTaskCanonicalProjection(project, { ...task, dueDate: "2026-10-17" }, [], authority, 1);
+    expect(unknownZone.projection.schedule).toMatchObject({ dueDate: "2026-10-17", dueAt: null, timeZone: null });
+  });
+
   it("preserves Project and ProjectTask ids without claiming legacy success", () => {
     const canonicalProject = projectCanonicalProjection(project, authority, 1);
     const canonicalTask = projectTaskCanonicalProjection(project, task, [], authority, 1);

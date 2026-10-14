@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { CANONICAL_STATUSES } from "@/lib/status/canonical";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
+import { projectTaskDueDateSchema, projectTaskHumanOwnerSchema } from "@/lib/projects/task-commitments";
 
 export const CANONICAL_WORK_MODEL_SCHEMA_VERSION = 1 as const;
 export const CANONICAL_WORK_EVENT_SCHEMA_VERSION = 1 as const;
@@ -85,8 +86,12 @@ const assignedAgentSchema = z.object({
 const scheduleSchema = z.object({
   startsAt: canonicalTimestampSchema.nullable(),
   dueAt: canonicalTimestampSchema.nullable(),
+  dueDate: projectTaskDueDateSchema.optional(),
   timeZone: z.string().trim().min(1).max(80).nullable(),
 }).strict().superRefine((schedule, context) => {
+  if (schedule.dueAt !== null && schedule.dueDate !== undefined) {
+    context.addIssue({ code: "custom", message: "A deadline cannot be both a date and an exact time." });
+  }
   if (
     schedule.startsAt !== null &&
     schedule.dueAt !== null &&
@@ -150,6 +155,7 @@ export const canonicalWorkItemV1Schema = z.object({
   ]),
   dependencyWorkItemIds: uniqueIdsSchema,
   ownerActorIds: uniqueActorIdsSchema,
+  humanOwner: projectTaskHumanOwnerSchema.optional(),
   assignedAgents: z.array(assignedAgentSchema).max(32).refine(
     (assignments) => isSortedUnique(assignments.map((item) => item.agentId)),
     { message: "Agent assignments must be sorted and unique." },

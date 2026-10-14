@@ -13,6 +13,73 @@ import 'package:flutter_test/flutter_test.dart';
 import 'projects_fixture.dart';
 
 void main() {
+  test('structured task updates compare saved dependency values and preserve exact civil dates', () async {
+    final setup = fixture();
+    await seed(setup);
+    final changes = <String, dynamic>{
+      'humanOwner': 'Elena Ruiz',
+      'dueDate': '2026-10-16',
+      'dueAt': null,
+      'dueTimeZone': null,
+      'dependsOn': ['task:sandbox'],
+    };
+    setup.api.writes.add(
+      () async => {
+        'task': {
+          ...taskJson(),
+          ...changes,
+          'dependsOn': ['task:sandbox'],
+        },
+      },
+    );
+    final task = await setup.repository.updateTask(projectId, taskId, changes);
+    expect(task.dueDate, '2026-10-16');
+    expect(task.dueAt, isNull);
+    expect(task.dependsOn, ['task:sandbox']);
+    expect(setup.api.effects.single.body, changes);
+    setup.api.writes.add(
+      () async => {
+        'task': {
+          ...taskJson(),
+          ...changes,
+          'dependsOn': ['task:wrong'],
+        },
+      },
+    );
+    await expectLater(
+      setup.repository.updateTask(projectId, taskId, changes),
+      throwsFormatException,
+    );
+  });
+  test('creating a named commitment sends a calendar date and confirms its saved fields', () async {
+    final setup = fixture();
+    await seed(setup);
+    setup.api.writes.add(
+      () async => {
+        'task': {
+          ...taskJson(),
+          'title': 'Map fields',
+          'detail': '',
+          'priority': 'medium',
+          'agentId': 'atlas',
+          'humanOwner': 'Jonah Patel',
+          'dueDate': '2026-10-17',
+          'dependsOn': ['task:sandbox'],
+        },
+      },
+    );
+    final task = await setup.repository.createTask(
+      projectId,
+      title: 'Map fields',
+      humanOwner: 'Jonah Patel',
+      dueDate: '2026-10-17',
+      dependsOn: ['task:sandbox'],
+    );
+    expect(task.humanOwner, 'Jonah Patel');
+    expect(setup.api.effects.single.body['dueDate'], '2026-10-17');
+    expect(setup.api.effects.single.body.containsKey('dueAt'), isFalse);
+    expect(setup.api.effects.single.body.containsKey('dueTimeZone'), isFalse);
+  });
   test(
     'fresh reads preserve encoded identities and the caller cancellation token',
     () async {

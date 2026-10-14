@@ -240,7 +240,7 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
     limit: integer(1, 100, 50),
     status: { type: "string", enum: ["draft", "active", "completed", "archived"] },
   })),
-  readTool("app.projects.show", "Show project", "Read a compact, paginated task inventory for one exact actor-owned project. Follow taskPage.nextCursor while hasMore is true. Set includeFullObjective before rewriting the objective. Task details and artifacts are omitted. Inspect criteria with app.work_items.show using each exact readLocator before editing, and read back afterward. Mutations use project.id and task.id, not the canonical readLocator IDs. Project execution status does not describe other follow-up systems.", requiredObjectSchema({
+  readTool("app.projects.show", "Show project", "Read a compact, paginated task inventory for one exact actor-owned project. Follow taskPage.nextCursor while hasMore is true. commitmentSummary counts only the returned tasks; it does not compare the saved objective with tasks or source documents. Set includeFullObjective before rewriting the objective. Details and artifacts are omitted. Inspect criteria with app.work_items.show using each readLocator before editing, and read back afterward. Mutations use project.id and task.id, not readLocator IDs. Execution status does not describe other follow-up systems.", requiredObjectSchema({
     projectId: opaqueId("Exact project ID."),
     taskLimit: integer(1, 200, 100),
     taskCursor: { ...text(1, 2_048), description: "Exact taskPage.nextCursor from the preceding inventory page for this actor and project. Omit to start." },
@@ -341,18 +341,19 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   mutationTool("app.projects.builder.stop", "Stop app workspace", "Stop the exact project's build sandbox while retaining its immutable activity receipts.", requiredObjectSchema({
     projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" },
   }, ["projectId", "sessionId"]), { riskLevel: 2, approvalRequired: true, reversible: false }),
-  readTool("app.work_items.show", "Show work item", "Read one exact owned work item, its current status, deadline, linked outputs, and authorized dependency states. Completion is not independent outcome verification.", requiredObjectSchema({
+  readTool("app.work_items.show", "Show work item", "Read one exact owned work item, named human owner, status, deadline, linked outputs, and authorized dependency states. A calendar dueDate has no agreed clock time; a missing timeZone leaves overdue timing unknown. Completion is not independent outcome verification.", requiredObjectSchema({
     workspaceId: { type: "string" }, projectId: { type: "string" }, workItemId: { type: "string" },
   }, ["workspaceId", "projectId", "workItemId"])),
-  mutationTool("app.work_items.create", "Create project work item", "Create one work item in an exact active project.", requiredObjectSchema({
+  mutationTool("app.work_items.create", "Create project work item", "Create one work item in an exact active project. Record a supplied human owner and date-only deadline in their structured fields; preserve acceptance criteria in detail. Never invent an owner, clock time or time zone.", requiredObjectSchema({
     projectId: opaqueId("Exact owning project ID."),
     title: text(1, 240),
     detail: text(0, 1_000),
     priority: { type: "string", enum: ["low", "medium", "high"], default: "medium" },
     agentId: { type: "string", enum: ["atlas", "scout", "forge", "sentinel", "mnemosyne"], default: "atlas" },
     dueAt: { type: "string", format: "date-time" },
+    ...workItemCommitmentProperties(),
   }, ["projectId", "title"]), { reversible: true }),
-  mutationTool("app.work_items.update", "Update project work item", "Update one exact work item inside its exact active project.", requiredObjectSchema({
+  mutationTool("app.work_items.update", "Update project work item", "Update one exact work item inside its exact active project; omitted fields are preserved. Save explicit human accountability, calendar deadlines and known task dependencies in structured fields. Setting dueDate clears dueAt and setting dueAt clears dueDate; never invent a clock time or time zone. Preserve acceptance criteria in detail and read back changes.", requiredObjectSchema({
     projectId: opaqueId("Exact owning project ID."),
     workItemId: opaqueId("Exact work-item ID."),
     title: text(1, 240),
@@ -361,6 +362,7 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
     priority: { type: "string", enum: ["low", "medium", "high"] },
     agentId: { type: "string", enum: ["atlas", "scout", "forge", "sentinel", "mnemosyne"] },
     dueAt: { type: ["string", "null"], format: "date-time" },
+    ...workItemCommitmentProperties(),
   }, ["projectId", "workItemId"]), { reversible: true }),
   readTool("app.memory.list", "List memory", "List durable memories visible to the current actor, optionally for one owned thread.", objectSchema({
     limit: integer(1, 100, 20),
@@ -1228,6 +1230,19 @@ function presentationMultiline(minLength: number, maxLength: number) {
     minLength,
     maxLength,
     pattern: "^[^\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F]+$",
+  };
+}
+
+function workItemCommitmentProperties() {
+  return {
+    humanOwner: { type: ["string", "null"], minLength: 1, maxLength: 160,
+      description: "Named responsible person, not the AI agent or access owner. Null clears it; do not infer acceptance of ownership." },
+    dueDate: { type: ["string", "null"], format: "date",
+      description: "Agreed calendar date YYYY-MM-DD without a clock time; null clears it. Mutually exclusive with dueAt." },
+    dueTimeZone: { type: ["string", "null"], minLength: 1, maxLength: 80,
+      description: "Explicit IANA zone for a date-only deadline, if known. Null means unknown; do not infer it from the device." },
+    dependsOn: { type: "array", maxItems: 20, uniqueItems: true, items: opaqueId("Exact existing task ID in this project."),
+      description: "Replace known task dependencies; [] clears them. Self-links, cycles and other-project tasks are rejected. Unrepresented conditions remain in detail." },
   };
 }
 

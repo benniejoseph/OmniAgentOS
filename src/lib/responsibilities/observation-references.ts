@@ -3,6 +3,7 @@ import { parseMeetingRevision } from "@/lib/meetings/contracts";
 import { canonicalAuthUserActorFromSecurityContext } from "@/lib/security/canonical-actor";
 import type { SecurityContext } from "@/lib/security/types";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
+import type { CanonicalWorkItemV1 } from "@/lib/workspaces/contracts";
 import { RESPONSIBILITY_MEETING_COMPARISON_POLICY, RESPONSIBILITY_WORK_ITEM_COMPARISON_POLICY, type ComparisonProjection } from "./comparison-policy";
 import { readOwnedWorkItemWithSql } from "./work-item-source";
 import { ResponsibilityError } from "./state";
@@ -38,8 +39,9 @@ export function responsibilityObservationReader(context: SecurityContext, owner:
           evidence: [{ kind: "work_item_revision", id: revisionId, revisionId, revisionSha256: read.revisionSha256, contentSha256: read.revisionSha256 }],
           projection: { comparisonState: "deterministic", meeting: null, facts: [], commitments: [], uninterpretedText: [],
             workItem: { key: canonicalJsonSha256([source.workspaceId, source.projectId, source.id]), canonicalStatus: work.canonicalStatus,
-              sourceStatus: work.sourceStatus, dueAt: work.schedule.dueAt, overdue: !terminal && work.schedule.dueAt !== null && work.schedule.dueAt <= observedAt,
+              sourceStatus: work.sourceStatus, ...observedWorkDeadline(work, observedAt, terminal),
               priority: work.priority, ownerActorIds: work.ownerActorIds,
+              ...(work.humanOwner ? { humanOwner: work.humanOwner } : {}),
               dependencies: read.dependencies.map((item) => JSON.stringify(item.state === "available" ? [item.id, item.canonicalStatus, item.sourceStatus] : [item.id, "unavailable"])),
               outputReferences: work.artifacts.map((item) => JSON.stringify(item)), evidenceIds } } };
       } catch (error) {
@@ -98,3 +100,22 @@ export function responsibilityObservationReader(context: SecurityContext, owner:
   };
 }
 function instant(value: unknown) { return value instanceof Date ? value.toISOString() : value; }
+
+function observedWorkDeadline(work: CanonicalWorkItemV1, observedAt: string, terminal: boolean) {
+  const { dueAt, dueDate, timeZone } = work.schedule;
+  if (!dueDate) return { dueAt, overdue: !terminal && dueAt !== null && dueAt <= observedAt };
+  // Compare calendar days in the explicitly saved zone. A date-only promise
+  // carries no invented clock time; an absent zone cannot establish overdue.
+  let localDate: string | null = null;
+  if (timeZone) {
+    try {
+      const parts = new Intl.DateTimeFormat("en-US", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date(observedAt));
+      const value = (type: Intl.DateTimeFormatPartTypes) => parts.find((part) => part.type === type)?.value;
+      const year = value("year"); const month = value("month"); const day = value("day");
+      if (year && month && day) localDate = `${year.padStart(4, "0")}-${month}-${day}`;
+    } catch { /* Do not replace an unsupported zone with the server's zone. */ }
+  }
+  return { dueAt: null, dueDate, dueTimeZone: localDate ? timeZone : null,
+    deadlineState: localDate ? "date_only" as const : "date_only_timezone_unknown" as const,
+    overdue: terminal ? false : localDate === null ? null : localDate > dueDate };
+}

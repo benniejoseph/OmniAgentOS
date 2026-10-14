@@ -10,6 +10,7 @@ import { getMemory } from "@/lib/memory/store";
 import {
   createProject,
   createProjectTasks,
+  claimProjectTaskForDispatch,
   getOwnedProject,
   getProject,
   listProjectArtifacts,
@@ -17,6 +18,7 @@ import {
   listProjectTasks,
   listProjects,
   ProjectTransitionError,
+  replaceProjectTaskDependencies,
   updateProject,
   updateProjectExecution,
   updateProjectTask,
@@ -55,6 +57,49 @@ describe("personal projects", () => {
     const project = await createProject({ tenantId: "personal", actorId: "owner", title: "Private goal", objective: "Only the owner can see this." });
     await expect(getProject(project.id, { tenantId: "personal", actorId: "someone-else" })).resolves.toBeUndefined();
     await expect(listProjects(10, { tenantId: "personal", actorId: "someone-else" })).resolves.toEqual([]);
+  });
+
+  it("stores named commitments and calendar dates without changing the agent assignment", async () => {
+    const owner = { tenantId: "commitment", actorId: "owner" };
+    const project = await createProject({ ...owner, title: "Client work", objective: "Complete acceptance checks" });
+    const [dependency] = await createProjectTasks(project.id, [{ title: "Sandbox access" }], owner);
+    const [task] = await createProjectTasks(project.id, [{ title: "Mapping", humanOwner: "Jonah Patel", dueDate: "2026-10-17", dependsOn: [dependency.id], agentId: "scout" }], owner);
+    expect(task).toMatchObject({ humanOwner: "Jonah Patel", dueDate: "2026-10-17", agentId: "scout", dependsOn: [dependency.id] });
+    expect(task.dueAt).toBeUndefined(); expect(task.dueTimeZone).toBeUndefined();
+    expect(await updateProjectTask(project.id, task.id, { dueTimeZone: "Asia/Kolkata", humanOwner: "Elena Ruiz" }, owner)).toMatchObject({ humanOwner: "Elena Ruiz", dueDate: "2026-10-17", dueTimeZone: "Asia/Kolkata", agentId: "scout" });
+    const exact = await updateProjectTask(project.id, task.id, { dueAt: "2026-10-17T10:00:00+05:30", humanOwner: null }, owner);
+    expect(exact?.dueAt).toBe("2026-10-17T04:30:00.000Z"); expect(exact?.dueDate).toBeUndefined(); expect(exact?.dueTimeZone).toBeUndefined(); expect(exact?.humanOwner).toBeUndefined();
+    expect((await listProjectTasks(project.id, owner)).find((item) => item.id === task.id)).toMatchObject({ dueAt: "2026-10-17T04:30:00.000Z", dependsOn: [dependency.id] });
+  });
+
+  it("rejects foreign and cyclic dependencies atomically, including opposing concurrent edits", async () => {
+    const owner = { tenantId: "commitment-graph", actorId: "owner" };
+    const project = await createProject({ ...owner, title: "Client graph", objective: "Safe dependencies" });
+    const [a, b] = await createProjectTasks(project.id, [{ title: "A" }, { title: "B" }], owner);
+    await expect(updateProjectTask(project.id, a.id, { dependsOn: ["foreign"] }, owner)).rejects.toBeInstanceOf(ProjectTransitionError);
+    await expect(updateProjectTask(project.id, a.id, { dependsOn: [a.id] }, owner)).rejects.toBeInstanceOf(ProjectTransitionError);
+    const results = await Promise.allSettled([
+      updateProjectTask(project.id, a.id, { dependsOn: [b.id] }, owner),
+      updateProjectTask(project.id, b.id, { dependsOn: [a.id] }, owner),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    await expect(replaceProjectTaskDependencies(project.id, [{ taskId: a.id, dependsOn: [b.id] }, { taskId: b.id, dependsOn: [a.id] }], owner)).rejects.toBeInstanceOf(ProjectTransitionError);
+    await expect(replaceProjectTaskDependencies(project.id, [{ taskId: "foreign", dependsOn: [] }], owner)).rejects.toBeInstanceOf(ProjectTransitionError);
+    const saved = await listProjectTasks(project.id, owner);
+    expect(saved.reduce((count, task) => count + task.dependsOn.length, 0)).toBe(1);
+  });
+
+  it("checks dependencies again when claiming dispatch and freezes them while the workflow is active", async () => {
+    const owner = { tenantId: "commitment-dispatch", actorId: "owner" };
+    const project = await createProject({ ...owner, title: "Dispatch graph", objective: "Wait for dependencies" });
+    const [dependency] = await createProjectTasks(project.id, [{ title: "First" }], owner);
+    const [task] = await createProjectTasks(project.id, [{ title: "Second", dependsOn: [dependency.id] }], owner);
+    expect(await claimProjectTaskForDispatch(project.id, task.id, owner)).toBeUndefined();
+    await updateProjectTask(project.id, dependency.id, { status: "done" }, owner);
+    expect(await claimProjectTaskForDispatch(project.id, task.id, owner)).toMatchObject({ workflowStatus: "dispatching" });
+    await expect(updateProjectTask(project.id, task.id, { dependsOn: [] }, owner)).rejects.toThrow("active workflow");
+    await expect(replaceProjectTaskDependencies(project.id, [{ taskId: task.id, dependsOn: [] }], owner)).rejects.toThrow("active workflow");
   });
 
   it("persists an exact scoped creation event and replays one request idempotently", async () => {
