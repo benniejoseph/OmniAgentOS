@@ -1,7 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { calendarDateLabel, taskCommitmentChanges, taskCommitmentDraft, taskDeadlineLabel, validTaskCommitment } from "./project-task-commitment-fields";
+import { calendarDateLabel, savedTaskCommitmentMatches, taskCommitmentChanges, taskCommitmentDraft, taskDeadlineLabel, validTaskCommitment } from "./project-task-commitment-fields";
 
 describe("Project commitment forms", () => {
+  it("confirms the exact task and saved fields before reporting a successful edit", () => {
+    const original = { id: "mapping", dueAt: "2026-10-15T10:00:00+05:30" };
+    const submitted = taskCommitmentChanges({ humanOwner: "Jonah Patel", deadline: "date", dueDate: "2026-10-17", dueTimeZone: "", dependsOn: ["sandbox"] });
+    const saved = { id: "mapping", humanOwner: "Jonah Patel", dueDate: "2026-10-17", dependsOn: ["sandbox"] };
+    expect(savedTaskCommitmentMatches(saved, original, submitted)).toBe(true);
+    for (const mismatch of [{ id: "other-task" }, { humanOwner: "Someone else" }, { dueDate: "2026-10-18" }, { dueTimeZone: "Asia/Kolkata" }, { dependsOn: [] }, { dueAt: original.dueAt }]) {
+      expect(savedTaskCommitmentMatches({ ...saved, ...mismatch }, original, submitted), JSON.stringify(mismatch)).toBe(false);
+    }
+    const keep = taskCommitmentChanges(taskCommitmentDraft(original));
+    expect(savedTaskCommitmentMatches({ id: "mapping", dueAt: "2026-10-15T04:30:00Z", dependsOn: [] }, original, keep)).toBe(true);
+    expect(savedTaskCommitmentMatches({ id: "mapping", dependsOn: [] }, original, keep)).toBe(false);
+  });
   it("keeps date-only days and unknown zones without fabricating an instant", () => {
     const draft = taskCommitmentDraft({ humanOwner: "Elena Ruiz", dueDate: "2026-10-16", dependsOn: ["sandbox"] });
     expect(taskCommitmentChanges(draft)).toEqual({ humanOwner: "Elena Ruiz", dueAt: null, dueDate: "2026-10-16", dueTimeZone: null, dependsOn: ["sandbox"] });

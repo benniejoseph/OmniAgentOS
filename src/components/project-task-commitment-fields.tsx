@@ -47,6 +47,22 @@ export function taskCommitmentChanges(draft: TaskCommitmentDraft) {
   };
 }
 
+export function savedTaskCommitmentMatches(
+  saved: TaskCommitment & { id: string },
+  original: TaskCommitment & { id: string },
+  submitted: ReturnType<typeof taskCommitmentChanges>,
+) {
+  if (saved.id !== original.id) return false;
+  for (const key of ["humanOwner", "dueDate", "dueTimeZone"] as const) {
+    if ((saved[key] ?? null) !== submitted[key]) return false;
+  }
+  if (JSON.stringify(saved.dependsOn ?? []) !== JSON.stringify(submitted.dependsOn)) return false;
+  if ("dueAt" in submitted) return saved.dueAt == null;
+  // An omitted instant means preserve it, including across equivalent offsets.
+  return original.dueAt == null ? saved.dueAt == null
+    : saved.dueAt != null && Date.parse(saved.dueAt) === Date.parse(original.dueAt);
+}
+
 export function calendarDateLabel(value: string): string {
   // A calendar date is not an instant. UTC is only a formatting coordinate;
   // the supplied day is never interpreted in the viewer's time zone.

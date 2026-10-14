@@ -14,6 +14,7 @@ export function projectExecutionIsLive(status: string | undefined) {
 
 // The writes the projects page has started and finished so far.
 let projectWrites = 0;
+let activeProjectWrites = 0;
 
 /**
  * Runs one of the projects page's writes, counted as it starts and as it
@@ -21,11 +22,26 @@ let projectWrites = 0;
  */
 export async function runProjectWrite<T>(write: () => Promise<T>) {
   projectWrites += 1;
+  activeProjectWrites += 1;
   try {
     return await write();
   } finally {
     projectWrites += 1;
+    activeProjectWrites -= 1;
   }
+}
+
+/** A project read can publish only if no write was active or crossed it. */
+export function captureProjectReadGuard() {
+  const writes = projectWrites;
+  const startedDuringWrite = activeProjectWrites > 0;
+  return () => !startedDuringWrite && activeProjectWrites === 0 && writes === projectWrites;
+}
+
+export async function readProjectWhileUnchanged<T>(read: () => Promise<T>): Promise<T | undefined> {
+  const current = captureProjectReadGuard();
+  const result = await read();
+  return current() ? result : undefined;
 }
 
 /** One project as the server holds it now, or nothing if it cannot be read. */
@@ -34,18 +50,18 @@ export async function readProjectSnapshot(
   signal?: AbortSignal,
   fetchImpl: typeof fetch = fetch,
 ): Promise<unknown> {
-  const response = await fetchImpl(`/api/projects/${encodeURIComponent(projectId)}`, {
-    cache: "no-store",
-    signal,
+  return readProjectWhileUnchanged(async () => {
+    const response = await fetchImpl(`/api/projects/${encodeURIComponent(projectId)}`, {
+      cache: "no-store",
+      signal,
+    });
+    if (!response.ok) return undefined;
+    const payload = (await response.json().catch(() => undefined)) as
+      | { project?: unknown }
+      | null
+      | undefined;
+    return payload?.project ?? undefined;
   });
-  if (!response.ok) {
-    return undefined;
-  }
-  const payload = (await response.json().catch(() => undefined)) as
-    | { project?: unknown }
-    | null
-    | undefined;
-  return payload?.project ?? undefined;
 }
 
 /**
@@ -73,10 +89,10 @@ export function startProjectExecutionRefresh({
   const refresh = async () => {
     const request = new AbortController();
     inFlight = request;
-    const writes = projectWrites;
+    const current = captureProjectReadGuard();
     try {
-      const project = await readProject(projectId, request.signal);
-      if (!disposed && projectWrites === writes && project !== undefined) {
+      const project = await readProjectWhileUnchanged(() => readProject(projectId, request.signal));
+      if (!disposed && current() && project !== undefined) {
         onProject(project);
       }
     } catch {

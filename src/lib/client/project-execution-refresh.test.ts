@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   PROJECT_EXECUTION_REFRESH_MS,
+  captureProjectReadGuard,
   projectExecutionIsLive,
   readProjectSnapshot,
+  readProjectWhileUnchanged,
   runProjectWrite,
   startProjectExecutionRefresh,
 } from "@/lib/client/project-execution-refresh";
@@ -70,6 +72,40 @@ describe("which executions are refreshed", () => {
 });
 
 describe("reading a project", () => {
+  it("drops the one-off read when a later commitment write is still pending or fails ambiguously", async () => {
+    const response = deferred<Response>();
+    const pendingRead = readProjectSnapshot("project-a", undefined, (() => response.promise) as typeof fetch);
+    const write = deferred<void>();
+    const pendingWrite = runProjectWrite(() => write.promise);
+    response.resolve(jsonResponse({ project: { id: "project-a", commitmentSummary: { openCount: 4 } } }));
+    await expect(pendingRead).resolves.toBeUndefined();
+    write.reject(new Error("response lost after commit"));
+    await expect(pendingWrite).rejects.toThrow("response lost after commit");
+    await expect(readProjectSnapshot("project-a", undefined, (async () => jsonResponse({ project: { id: "project-a", commitmentSummary: { openCount: 3 } } })) as typeof fetch))
+      .resolves.toEqual({ id: "project-a", commitmentSummary: { openCount: 3 } });
+  });
+
+  it("does not publish reads begun during active writes even if they finish before either write", async () => {
+    const first = deferred<void>(), second = deferred<void>();
+    const writeA = runProjectWrite(() => first.promise), writeB = runProjectWrite(() => second.promise);
+    try {
+      await expect(readProjectSnapshot("project-a", undefined, (async () => jsonResponse({ project: { id: "project-a" } })) as typeof fetch)).resolves.toBeUndefined();
+      await expect(readProjectWhileUnchanged(async () => [{ id: "project-a" }])).resolves.toBeUndefined();
+    } finally {
+      first.resolve(); second.resolve();
+      await Promise.all([writeA, writeB]);
+    }
+  });
+
+  it("keeps deferred UI publication fenced after the network read returned", async () => {
+    const current = captureProjectReadGuard();
+    const value = await readProjectWhileUnchanged(async () => ({ id: "project-a" }));
+    expect(value).toEqual({ id: "project-a" });
+    expect(current()).toBe(true);
+    await expect(runProjectWrite(async () => { throw new Error("unknown outcome"); })).rejects.toThrow("unknown outcome");
+    expect(current()).toBe(false);
+    expect(captureProjectReadGuard()()).toBe(true);
+  });
   it("reads the project route without asking it to change anything", async () => {
     const stub = vi.fn(async () => jsonResponse({ project: { id: "project a" }, serviceReceipt: {} }));
     const signal = new AbortController().signal;

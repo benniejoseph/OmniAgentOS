@@ -40,11 +40,14 @@ import { arsenalAgents } from "@/lib/agents/arsenal";
 import { canPerform, useWorkspaceSession } from "@/components/app-shell/session-context";
 import { workspaceOwnerScope } from "@/components/app-shell/workspace-owner-scope";
 import { WorkspaceLibrary } from "@/components/workspace-library";
-import { ProjectTaskCommitmentFields, taskCommitmentChanges, taskCommitmentDraft, taskDeadlineLabel, validTaskCommitment, type TaskCommitmentDraft } from "@/components/project-task-commitment-fields";
+import { ProjectTaskCommitmentFields, savedTaskCommitmentMatches, taskCommitmentChanges, taskCommitmentDraft, taskDeadlineLabel, validTaskCommitment, type TaskCommitmentDraft } from "@/components/project-task-commitment-fields";
 import type { ProjectCommitmentSummary } from "@/lib/projects/commitment-summary";
 import { ProjectSharedMemory } from "@/components/project-shared-memory";
 import {
   projectExecutionIsLive,
+  captureProjectReadGuard,
+  readProjectSnapshot,
+  readProjectWhileUnchanged,
   runProjectWrite,
   startProjectExecutionRefresh,
 } from "@/lib/client/project-execution-refresh";
@@ -254,19 +257,22 @@ function ProjectsWorkspaceContent({ initialView, ownerScopeKey }: { initialView:
 
   async function load() {
     if (!available || sessionStatus !== "ready") return;
+    const currentRead = captureProjectReadGuard();
     controllerRef.current?.abort();
     const controller = new AbortController();
     controllerRef.current = controller;
     setLoading(true);
     try {
-      const [payload, templatePayload] = await Promise.all([
+      const result = await readProjectWhileUnchanged(() => Promise.all([
         readJson("/api/projects", { signal: controller.signal }),
         readJson("/api/workspace-templates", { signal: controller.signal }),
-      ]);
-      if (controller.signal.aborted) return;
+      ]));
+      if (controller.signal.aborted || result === undefined || !currentRead()) return;
+      const [payload, templatePayload] = result;
       const next = normalizeProjects(payload.projects);
       if (!next) throw new Error("Projects returned an invalid canonical WorkItem projection.");
       setProjects((current) => {
+        if (!currentRead()) return current;
         const exact = current.find((project) => project.id === requestedSearchProject);
         return exact ? [exact, ...next.filter((project) => project.id !== exact.id)] : next;
       });
@@ -309,6 +315,7 @@ function ProjectsWorkspaceContent({ initialView, ownerScopeKey }: { initialView:
       setSearchError(undefined);
       setSearchOpened(undefined);
       try {
+        const currentRead = captureProjectReadGuard();
         const href = `/api/content-search/work/${encodeURIComponent(requestedSearchProject)}${requestedSearchTask ? `?task=${encodeURIComponent(requestedSearchTask)}` : ""}`;
         const body = await readJson(href, { signal: controller.signal });
         const project = normalizeProjects([body.project])?.[0];
@@ -316,7 +323,8 @@ function ProjectsWorkspaceContent({ initialView, ownerScopeKey }: { initialView:
           throw new Error("Work returned a different project or task.");
         }
         if (controller.signal.aborted) return;
-        setProjects((current) => [project, ...current.filter((item) => item.id !== project.id)]);
+        if (!currentRead()) throw new Error("The project changed while this result was loading. Retry to read current work.");
+        setProjects((current) => currentRead() ? [project, ...current.filter((item) => item.id !== project.id)] : current);
         setSelectedId(project.id);
         setProjectDetailOpen(true);
         setWorkspaceView("overview");
@@ -348,7 +356,10 @@ function ProjectsWorkspaceContent({ initialView, ownerScopeKey }: { initialView:
     const projectId = selected.id;
     return startProjectExecutionRefresh({
       projectId,
-      onProject: (value) => setProjects((current) => withRefreshedProject(current, projectId, value)),
+      onProject: (value) => {
+        const currentRead = captureProjectReadGuard();
+        setProjects((current) => currentRead() ? withRefreshedProject(current, projectId, value) : current);
+      },
     });
     // The refresh follows only the durable selected project state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -450,17 +461,30 @@ function ProjectsWorkspaceContent({ initialView, ownerScopeKey }: { initialView:
   }
 
   async function refreshProjectSnapshot(projectId: string) {
+    const currentRead = captureProjectReadGuard();
     const generation = (projectReadGenerations.current.get(projectId) || 0) + 1;
     projectReadGenerations.current.set(projectId, generation);
     try {
-      const payload = await readJson(`/api/projects/${encodeURIComponent(projectId)}`);
-      if (projectReadGenerations.current.get(projectId) !== generation) return;
-      setProjects((current) => withRefreshedProject(current, projectId, payload.project));
-    } catch { setAnnouncement("The change was saved. Refresh the project to load current commitment counts."); }
+      const project = await readProjectSnapshot(projectId);
+      if (projectReadGenerations.current.get(projectId) !== generation || project === undefined || !currentRead()) return;
+      setProjects((current) => currentRead() && projectReadGenerations.current.get(projectId) === generation ? withRefreshedProject(current, projectId, project) : current);
+    } catch { setAnnouncement("Refresh the project to load current commitment counts."); }
+  }
+
+  async function refreshWorkspace() {
+    await Promise.all([load(), ...(requestedSearchProject ? [refreshProjectSnapshot(requestedSearchProject)] : [])]);
+  }
+
+  function beginTaskMutation(projectId: string) {
+    // An ambiguous response can still mean the server committed the change.
+    // Hide the previous rollup before sending, and restore it only by a read.
+    projectReadGenerations.current.set(projectId, (projectReadGenerations.current.get(projectId) || 0) + 1);
+    setProjects((current) => current.map((project) => project.id === projectId ? { ...project, commitmentSummary: undefined } : project));
   }
 
   async function generatePlan() {
     if (!selected) return;
+    beginTaskMutation(selected.id);
     setPlanning(true); setPlanRationale("");
     try {
       const payload = await readJson(`/api/projects/${encodeURIComponent(selected.id)}/plan`, {
@@ -485,6 +509,7 @@ function ProjectsWorkspaceContent({ initialView, ownerScopeKey }: { initialView:
   async function addTask(event: React.FormEvent) {
     event.preventDefault();
     if (!selected || !taskTitle.trim()) return;
+    beginTaskMutation(selected.id);
     setAddingTask(true);
     try {
       const payload = await readJson(`/api/projects/${encodeURIComponent(selected.id)}/tasks`, {
@@ -504,14 +529,17 @@ function ProjectsWorkspaceContent({ initialView, ownerScopeKey }: { initialView:
     event.preventDefault();
     if (!selected || editingCommitment?.projectId !== selected.id || editingCommitment.taskId !== task.id) return;
     const projectId = selected.id;
+    const submitted = taskCommitmentChanges(editingCommitment.draft);
+    beginTaskMutation(projectId);
     setActingId(task.id);
     try {
       const payload = await readJson(`/api/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(task.id)}`, {
         method: "PATCH", headers: { "content-type": "application/json", "idempotency-key": crypto.randomUUID() },
-        body: JSON.stringify(taskCommitmentChanges(editingCommitment.draft)),
+        body: JSON.stringify(submitted),
       });
       const updated = normalizeProjectTask(payload.task, projectId);
       if (!updated) throw new Error("The saved commitment returned an invalid work item.");
+      if (!savedTaskCommitmentMatches(updated, task, submitted)) throw new Error("The response did not confirm the requested commitment. Refresh to check what was saved.");
       setProjects((current) => current.map((project) => project.id === projectId
         ? { ...project, commitmentSummary: undefined, tasks: project.tasks.map((item) => item.id === task.id ? updated : item) }
         : project));
@@ -524,6 +552,7 @@ function ProjectsWorkspaceContent({ initialView, ownerScopeKey }: { initialView:
 
   async function moveTask(task: ProjectTask) {
     if (!selected) return;
+    beginTaskMutation(selected.id);
     const status = nextProjectTaskStatus(task);
     setActingId(task.id);
     try {
@@ -562,6 +591,7 @@ function ProjectsWorkspaceContent({ initialView, ownerScopeKey }: { initialView:
 
   async function executeProject(action: "configure" | "start" | "pause" | "resume" | "sync" | "approve" | "retry", taskId?: string) {
     if (!selected || executionBusy) return;
+    beginTaskMutation(selected.id);
     setExecutionBusy(taskId || action);
     try {
       const body = action === "configure" || action === "start"
@@ -681,7 +711,7 @@ function ProjectsWorkspaceContent({ initialView, ownerScopeKey }: { initialView:
           <p>Projects, plans, and the outputs they produce.</p>
         </div>
         <div className={styles.headerActions}>
-          <button type="button" className={styles.button} onClick={() => void load()} disabled={loading}><RotateCw size={16} aria-hidden="true" /> {loading && hasLoaded ? "Refreshing…" : "Refresh"}</button>
+          <button type="button" className={styles.button} onClick={() => void refreshWorkspace()} disabled={loading}><RotateCw size={16} aria-hidden="true" /> {loading && hasLoaded ? "Refreshing…" : "Refresh"}</button>
           <button type="button" className={styles.button} onClick={() => setShowTemplates((value) => !value)} aria-expanded={showTemplates} aria-controls="project-templates"><LayoutTemplate size={16} aria-hidden="true" /> Templates{templates.length ? ` · ${templates.length}` : ""}</button>
           <button type="button" className={styles.primaryButton} onClick={() => setShowCreate((value) => !value)} aria-expanded={showCreate} aria-controls="project-create"><Plus size={16} aria-hidden="true" /> New project</button>
         </div>
@@ -730,7 +760,7 @@ function ProjectsWorkspaceContent({ initialView, ownerScopeKey }: { initialView:
 
       {searchOpening && !searchError ? <p role="status">Checking the exact Work result…</p> : null}
       {searchError ? <div className={styles.error} role="alert"><span>{searchError}</span><button type="button" onClick={() => window.location.reload()}>Retry exact result</button></div> : null}
-      {error ? <div className={styles.error} role="alert"><span>{error}</span><button type="button" onClick={() => { setError(undefined); void load(); }}>Retry</button></div> : null}
+      {error ? <div className={styles.error} role="alert"><span>{error}</span><button type="button" onClick={() => { setError(undefined); void refreshWorkspace(); }}>Retry</button></div> : null}
 
       <div className={styles.workspace} data-project-panel={projectDetailOpen ? "detail" : "list"}>
         <aside ref={projectListRef} tabIndex={-1} className={styles.projectList} aria-label="Project list" aria-busy={loading}>
@@ -758,7 +788,7 @@ function ProjectsWorkspaceContent({ initialView, ownerScopeKey }: { initialView:
                   <p>{selected.commitmentSummary.openCount} open · {selected.commitmentSummary.closedUnverifiedCount} closed, unverified · {selected.commitmentSummary.verifiedSuccessCount} verified{selected.commitmentSummary.failedCount ? ` · ${selected.commitmentSummary.failedCount} failed` : ""}{selected.commitmentSummary.canceledCount ? ` · ${selected.commitmentSummary.canceledCount} canceled` : ""}</p>
                   <p>{selected.commitmentSummary.unassignedOpenCount} open without a named owner · {selected.commitmentSummary.undatedOpenCount} open without an agreed deadline · {selected.commitmentSummary.blockedCount} blocked</p>
                   <small>Calculated from saved task fields at this read. The project brief has not been independently compared with them.</small>
-                </div> : null}
+                </div> : <p className={styles.helper}>Refresh to read current commitment counts.</p>}
                 <p className={styles.projectProgress}>{selectedClosed} of {selected.tasks.length} tasks closed{selected.tasks.length ? ` · ${Math.round(selectedProgress * 100)}%` : ""} · {canonicalWorkItemCostLabel(selectedCost)}</p>
               </div>
             </div>
