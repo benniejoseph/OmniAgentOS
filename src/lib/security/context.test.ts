@@ -80,6 +80,29 @@ describe("redactSensitive", () => {
     });
   });
 
+  it("preserves only matching canonical knowledge citation tokens", () => {
+    const syntheticBearer = ["Bearer", "synthetic-test-value".repeat(3)].join(" ");
+    const citation = {
+      knowledgeChunkId: "chunk-fixture",
+      citationId: "knowledge:chunk-fixture",
+      citationToken: "[knowledge:chunk-fixture]",
+      accessToken: "still-secret",
+    };
+    expect(redactSensitive({ units: [citation] })).toEqual({
+      units: [{ ...citation, accessToken: "[redacted]" }],
+    });
+    for (const invalid of [
+      { citationToken: citation.citationToken },
+      { ...citation, citationId: "knowledge:other-chunk" },
+      { ...citation, citationToken: "not a citation" },
+      { ...citation, citationToken: syntheticBearer },
+      { ...citation, knowledgeChunkId: "chunk with spaces", citationId: "knowledge:chunk with spaces", citationToken: "[knowledge:chunk with spaces]" },
+      { ...citation, knowledgeChunkId: "sk-abcdefghijklmnopqrstuvwxyz", citationId: "knowledge:sk-abcdefghijklmnopqrstuvwxyz", citationToken: "[knowledge:sk-abcdefghijklmnopqrstuvwxyz]" },
+    ]) {
+      expect(redactSensitive(invalid)).toMatchObject({ citationToken: "[redacted]" });
+    }
+  });
+
   it("redacts secret-shaped string values", () => {
     expect(redactSensitive("sk-abcdefghijklmnopqrstuvwxyz")).toBe("[redacted-api-key]");
     expect(redactSensitive("postgresql://user:pass@host:5432/db")).toBe("[redacted-connection-url]");

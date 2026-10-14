@@ -34,6 +34,15 @@ const projectStatusSchema = z.enum(["draft", "active", "completed", "archived"])
 const projectTaskStatusSchema = z.enum(["open", "doing", "done"]);
 const projectTaskPrioritySchema = z.enum(["low", "medium", "high"]);
 const projectAgentSchema = z.enum(["atlas", "scout", "forge", "sentinel", "mnemosyne"]);
+const projectObjectiveSchema = z.string().trim().min(1).max(2_000, {
+  error: (issue) => {
+    const received = typeof issue.input === "string" ? issue.input.length : undefined;
+    const length = received === undefined
+      ? "Project objective exceeds the 2000-character limit."
+      : `Project objective has ${received} characters after trimming; limit 2000 (${received - 2_000} over).`;
+    return `${length} Aim for 1800 or fewer by shortening wording while preserving material acceptance criteria, owners, dates, and unresolved conditions.`;
+  },
+});
 
 export const projectListServiceInputSchema = z.object({
   limit: z.number().int().min(1).max(100).default(50),
@@ -53,7 +62,7 @@ export const projectInventoryServiceInputSchema = projectShowServiceInputSchema.
 
 export const projectCreateServiceInputSchema = z.object({
   title: z.string().trim().min(1).max(180),
-  objective: z.string().trim().min(1).max(2_000),
+  objective: projectObjectiveSchema,
   status: z.enum(["draft", "active"]).optional(),
   targetDate: z.string().datetime({ offset: true }).optional(),
 }).strict();
@@ -61,7 +70,7 @@ export const projectCreateServiceInputSchema = z.object({
 export const projectUpdateServiceInputSchema = z.object({
   projectId: z.string().trim().min(1).max(200),
   title: z.string().trim().min(1).max(180).optional(),
-  objective: z.string().trim().min(1).max(2_000).optional(),
+  objective: projectObjectiveSchema.optional(),
   status: projectStatusSchema.optional(),
   targetDate: z.string().datetime({ offset: true }).nullable().optional(),
 }).strict().refine(({ projectId: _projectId, ...change }) => Object.keys(change).length > 0, {

@@ -261,11 +261,12 @@ function redactSensitiveValue(
       return "[circular]";
     }
     seen.add(value);
-    const entries = Object.entries(value as Record<string, unknown>);
+    const record = value as Record<string, unknown>;
+    const entries = Object.entries(record);
     const redacted = Object.fromEntries(
       entries.slice(0, 1_000).map(([key, item]) => [
         key,
-        isSensitiveKey(key)
+        isSensitiveKey(key) && !isCanonicalKnowledgeCitationToken(key, item, record)
           ? "[redacted]"
           : redactSensitiveValue(item, seen, depth + 1),
       ]),
@@ -282,6 +283,16 @@ function redactSensitiveValue(
   }
 
   return value;
+}
+
+/** A citation marker is public metadata only when its exact sibling identities agree. */
+function isCanonicalKnowledgeCitationToken(key: string, value: unknown, record: Record<string, unknown>) {
+  if (key !== "citationToken" || typeof value !== "string" ||
+      typeof record.knowledgeChunkId !== "string" ||
+      !/^[A-Za-z0-9][A-Za-z0-9:._/-]{0,239}$/.test(record.knowledgeChunkId)) return false;
+  const citationId = `knowledge:${record.knowledgeChunkId}`;
+  return record.citationId === citationId && value === `[${citationId}]` &&
+    redactSensitiveText(value) === value;
 }
 
 function isSensitiveKey(key: string) {

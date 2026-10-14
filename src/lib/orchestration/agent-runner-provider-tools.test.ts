@@ -20,7 +20,7 @@ import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
 describe("non-OpenAI governed provider tool loop", () => {
   it.each([true, false])("keeps a seven-call proposal recoverable without automatic replay (model continues: %s)", async (continues) => {
     let state = createRunBudgetState(AGENT_RUN_BUDGET_LIMITS);
-    const calls = Array.from({ length: 7 }, (_, index) => ({ callId: `read-${index}`, name: "work_show", argumentsJson: JSON.stringify({ id: `task-${index}`, projectId: "client" }) }));
+    const calls = Array.from({ length: 7 }, (_, index) => ({ callId: `read-${index}`, name: "work_show", argumentsJson: JSON.stringify({ workItemId: `task-${index}`, projectId: "client", workspaceId: "client-workspace" }) }));
     const executeTool = vi.fn(async (request: { toolId: string; input: Record<string, unknown> }) => ({
       record: executionRecord(request.toolId, "executed"), result: { saved: request.input },
     }));
@@ -40,10 +40,10 @@ describe("non-OpenAI governed provider tool loop", () => {
           } });
         }
         if (!continues) return turn({ text: "Finished." });
-        return turn({ toolCalls: calls.slice(5).map((call, index) => ({ ...call, callId: `retry-${index}`, argumentsJson: JSON.stringify({ projectId: "client", id: `task-${index + 5}` }) })) });
+        return turn({ toolCalls: calls.slice(5).map((call, index) => ({ ...call, callId: `retry-${index}`, argumentsJson: JSON.stringify({ workspaceId: "client-workspace", projectId: "client", workItemId: `task-${index + 5}` }) })) });
       }
-      if (modelTurn === 3) return turn({ toolCalls: [{ callId: "save-brief", name: "project_update", argumentsJson: JSON.stringify({ id: "client", brief: "Reconciled source commitments." }) }] });
-      if (modelTurn === 4) return turn({ toolCalls: [{ callId: "verify-brief", name: "project_show", argumentsJson: JSON.stringify({ id: "client" }) }] });
+      if (modelTurn === 3) return turn({ toolCalls: [{ callId: "save-brief", name: "project_update", argumentsJson: JSON.stringify({ projectId: "client", objective: "Reconciled source commitments." }) }] });
+      if (modelTurn === 4) return turn({ toolCalls: [{ callId: "verify-brief", name: "project_show", argumentsJson: JSON.stringify({ projectId: "client", includeFullObjective: true }) }] });
       return turn({ text: "Brief saved and read back." });
     });
     const tools = [
@@ -75,9 +75,9 @@ describe("non-OpenAI governed provider tool loop", () => {
     expect(state.limits).toMatchObject({ toolCalls: 30, modelTurns: 14 });
     expect(state.used).toMatchObject({ toolCalls: continues ? 9 : 5, retries: 0 });
     if (continues) {
-      expect(executeTool).toHaveBeenNthCalledWith(8, expect.objectContaining({ toolId: "app.projects.update", input: { id: "client", brief: "Reconciled source commitments." }, dryRun: false, approved: false,
+      expect(executeTool).toHaveBeenNthCalledWith(8, expect.objectContaining({ toolId: "app.projects.update", input: { projectId: "client", objective: "Reconciled source commitments." }, dryRun: false, approved: false,
         idempotencyKey: "run-recoverable:google:save-brief", context: expect.objectContaining({ tenantId: "tenant-client", actorId: "owner" }) }));
-      expect(executeTool).toHaveBeenNthCalledWith(9, expect.objectContaining({ toolId: "app.projects.show", input: { id: "client" } }));
+      expect(executeTool).toHaveBeenNthCalledWith(9, expect.objectContaining({ toolId: "app.projects.show", input: { projectId: "client", includeFullObjective: true } }));
     }
   });
 
