@@ -98,6 +98,7 @@ const RESTRICTIVE_ACTOR_POLICIES = new Map<string, string>([
     "omni_responsibility_mutations",
     "omni_responsibility_observations",
     "omni_responsibility_baselines",
+    "omni_responsibility_baseline_rebinds",
     "omni_responsibility_changes",
     "omni_responsibility_lifecycles",
     "omni_responsibility_wakes",

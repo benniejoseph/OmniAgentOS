@@ -13,17 +13,20 @@ export function NotificationsPanel({ resource, record, enabled, frozen, refresh,
   const [acknowledged, setAcknowledged] = useState<string>();
   const value = resource.value; const current = value?.current;
   const ready = value?.preview?.state === "ready" ? value.preview : undefined;
+  const recoverable = current?.state === "ended" && current.reason === "runtime_blocked";
+  const matchesAdmission = current ? recoverable && ready?.expectedRevision === current.revision && ready.expectedGeneration === current.generation
+    : ready?.expectedRevision === undefined && ready?.expectedGeneration === undefined;
   const exact = ready && record.state === "reviewed" && ready.configuration.responsibilityRevision === record.revision && ready.configuration.draftSha256 === record.draftSha256 &&
-    ready.configuration.reviewSha256 === record.review?.reviewSha256 && record.draft.sources.some((source) => sameJson(source, ready.configuration.source)) &&
+    matchesAdmission && ready.configuration.reviewSha256 === record.review?.reviewSha256 && record.draft.sources.some((source) => sameJson(source, ready.configuration.source)) &&
     ready.configuration.maximumNotifications === record.draft.limits?.maxNotifications && record.draft.notificationRule?.destination === "owner_in_app";
-  const acknowledgement = ready ? JSON.stringify([record.revision, ready.configuration.configurationSha256, ready.expectedRuntimeRevision, ready.expectedRuntimeGeneration]) : "";
+  const acknowledgement = ready ? JSON.stringify([record.revision, ready.configuration.configurationSha256, ready.expectedRuntimeRevision, ready.expectedRuntimeGeneration, ready.expectedRevision, ready.expectedGeneration]) : "";
   const available = enabled && !frozen && resource.state === "ready";
-  const canEnable = available && !current && exact && acknowledged === acknowledgement;
+  const canEnable = available && (!current || recoverable) && exact && acknowledged === acknowledgement;
   return <section className={styles.panel} aria-labelledby="responsibility-notifications-heading">
     <h2 className={styles.heading} id="responsibility-notifications-heading">In-app notifications</h2>
     <p className={styles.reading}>Saving a draft and starting tracking do not enable delivery. Review and enable the separate owner inbox destination below.</p>
     <div className={styles.actions}><button type="button" className={styles.button} onClick={refresh} disabled={resource.state === "loading" || frozen}>Refresh in-app notifications</button>
-      <button type="button" className={styles.button} onClick={preview} disabled={!enabled || frozen || resource.state === "loading" || record.state !== "reviewed" || Boolean(current)}>Review in-app notification delivery</button></div>
+      <button type="button" className={styles.button} onClick={preview} disabled={!enabled || frozen || resource.state === "loading" || record.state !== "reviewed" || Boolean(current && !recoverable)}>Review in-app notification delivery</button></div>
     {!enabled && <p className={styles.support}>A current saved draft and workflow management permission are required to change notification admission.</p>}
     {resource.state === "idle" && <p role="status">Notification admission and history have not been read. Counts are unavailable.</p>}
     {resource.state === "loading" && <p role="status">Reading in-app notification admission and history…{value ? " Last-loaded values may be stale." : " Counts are unavailable."}</p>}
@@ -41,12 +44,17 @@ export function NotificationsPanel({ resource, record, enabled, frozen, refresh,
         {current.state === "draining" && <p>Checks have exhausted their limit. Only already admitted finite changes may still reach the inbox. Stop in-app notifications to cancel remaining holds.</p>}
         {current.state === "paused" && <p>The responsibility is paused. Its earlier pending changes were canceled; resuming checks does not recreate those candidates.</p>}
         {current.reason === "owner_stopped" && <p>This notification admission is permanently stopped. Runtime changes cannot enable it again. Delivered history and cumulative use remain.</p>}
+        {recoverable && <p>Inbox updates stopped when tracking was blocked. Restart tracking after a fresh review, then review and enable inbox updates separately here. The original expiry and remaining allowance are kept; canceled updates stay canceled.</p>}
+        {current.state === "ended" && current.reason !== "owner_stopped" && !recoverable && <p>This notification admission has ended and cannot be enabled again. Delivered history and cumulative use remain.</p>}
         <details><summary>Exact notification admission</summary><pre>{JSON.stringify(current, null, 2)}</pre></details>
       </>}
-      {value.preview?.state === "blocked" && <p role="status">Notification review is blocked: {readableCode(value.preview.reason)}.</p>}
+      {value.preview?.state === "blocked" && <p role="status">{recoverable && ["responsibility_notification_not_ready", "responsibility_notification_recovery_changed"].includes(value.preview.reason)
+        ? "Inbox updates are not ready to restart. Restart tracking with a fresh review of the original item, expiry and limits, then request a new notification review."
+        : `Notification review is blocked: ${readableCode(value.preview.reason)}.`}</p>}
       {ready && <div className={styles.review}>
         <h3 className={styles.subheading}>Exact inbox delivery review</h3>
         <p>At most {ready.configuration.maximumNotifications} confirmed in-app notifications before {ready.configuration.expiresAt}. Quiet hours hold a finite pending change; no change produces no notification.</p>
+        {recoverable && <p>{ready.configuration.maximumNotifications - current.used} notifications remain from the original allowance. This separate consent restores future updates only; it does not replay canceled changes.</p>}
         <dl className={styles.metadata}><div><dt>Owner</dt><dd>{ready.configuration.tenantId} · {ready.configuration.actorId}</dd></div>
           <div><dt>{ready.configuration.source.kind === "work_item" ? "Work item" : "Meeting source"}</dt><dd>{ready.configuration.source.workspaceId} · {ready.configuration.source.kind === "work_item" && `${ready.configuration.source.projectId} · `}{ready.configuration.source.id}</dd></div>
           <div><dt>Reviewed runtime</dt><dd>Revision {ready.expectedRuntimeRevision} · generation {ready.expectedRuntimeGeneration}</dd></div>
@@ -55,11 +63,12 @@ export function NotificationsPanel({ resource, record, enabled, frozen, refresh,
         {!exact && <p role="status">This preview does not match the displayed saved review. Refresh the draft and review notification delivery again.</p>}
       </div>}
     </>}
-    <label className={styles.acknowledgement}><input type="checkbox" checked={Boolean(acknowledgement) && acknowledged === acknowledgement} disabled={!available || !exact || Boolean(current)} onChange={(event) => setAcknowledged(event.target.checked ? acknowledgement : undefined)} />
+    <label className={styles.acknowledgement}><input type="checkbox" checked={Boolean(acknowledgement) && acknowledged === acknowledgement} disabled={!available || !exact || Boolean(current && !recoverable)} onChange={(event) => setAcknowledged(event.target.checked ? acknowledgement : undefined)} />
       <span>I reviewed the exact owner, source, configuration, runtime revision and generation, finite limit, expiry and owner inbox destination.</span></label>
     <div className={styles.actions}>
       <button type="button" className={styles.button} disabled={!canEnable} onClick={() => { if (canEnable && ready) control({ action: "enable", expectedRuntimeRevision: ready.expectedRuntimeRevision,
-        expectedRuntimeGeneration: ready.expectedRuntimeGeneration, configurationSha256: ready.configuration.configurationSha256, acknowledgeDestination: "owner_in_app" }); }}>Enable exact in-app notifications</button>
+        expectedRuntimeGeneration: ready.expectedRuntimeGeneration, configurationSha256: ready.configuration.configurationSha256, acknowledgeDestination: "owner_in_app",
+        ...(ready.expectedRevision !== undefined ? { expectedRevision: ready.expectedRevision, expectedGeneration: ready.expectedGeneration } : {}) }); }}>{recoverable ? "Re-enable in-app notifications" : "Enable exact in-app notifications"}</button>
       <button type="button" className={styles.button} disabled={!available || !current || current.state === "ended"} onClick={() => { if (available && current && current.state !== "ended") control({ action: "stop", expectedRevision: current.revision, expectedGeneration: current.generation }); }}>Stop in-app notifications</button>
     </div>
     <p className={styles.support}>{!current ? "First read a fresh delivery review and acknowledge it to enable. " : ""}Stopping cancels pending and held changes permanently, preserves confirmed deliveries, and does not stop the scheduled checks. No email, push or browser OS notification is enabled here.</p>

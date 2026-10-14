@@ -1,6 +1,6 @@
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
-import { closeDatabaseClient, ensureDatabaseSchema, getSql, runWithDatabaseActorScope } from "@/lib/db/client";
+import { closeDatabaseClient, ensureDatabaseSchema, getSchemaMigrationSteps, getSql, runWithDatabaseActorScope } from "@/lib/db/client";
 import { createProject, createProjectTasks, updateProjectTask } from "@/lib/projects/store";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import type { SecurityContext } from "@/lib/security/types";
@@ -24,6 +24,12 @@ import { readOwnedWorkItemWithSql, WORK_ITEM_FOLLOWTHROUGH_PROCEDURE } from "@/l
 import { showWorkItemService } from "@/lib/app-services/work-items";
 import { lockResponsibilityWorkspace } from "@/lib/responsibilities/workspace-read-fence";
 import { verifyResponsibilityWorkspaceFence } from "@/lib/db/responsibility-workspace-fence";
+import { stopRuntime, touchRuntime } from "@/lib/responsibilities/runtime-state";
+import { buildNotificationReceipt, enableNotificationAdmission } from "@/lib/responsibilities/notification-state";
+import { notificationEventPayload } from "@/lib/responsibilities/notification-store";
+import { appendScopedDomainEvent } from "@/lib/events/store";
+import { readSqlMigrationFile } from "@/lib/db/sql-migration-files";
+import { removeEmptyResponsibilityRecoveryForReplay } from "./helpers/native-catalog-replay";
 
 const databaseUrl = process.env.DATABASE_URL;
 const databaseDescribe = databaseUrl && process.env.OMNIAGENT_INTEGRATION_DATABASE_RESET === "true" ? describe : describe.skip;
@@ -118,6 +124,141 @@ databaseDescribe("Canonical work-item follow-through under serving-role isolatio
     expect((await owned(f, () => tickResponsibilityWorkflow(workflow!))).run.status).toBe("completed");
     return { workflow: workflow!, wake };
   }
+
+  async function blockAndReview(f: Fixture) {
+    const blocked = await runtimeStore.withResponsibilityRuntimeTransaction(f.owner, async (sql) => {
+      const current = (await runtimeStore.readRuntimeHead(sql, f.owner, f.record.id))!;
+      return runtimeStore.persistRuntimeTransition(sql, { previous: current, current: stopRuntime(current, "authority_changed", await runtimeStore.runtimeDatabaseNow(sql)),
+        action: "block", key: `${f.tag}:authority-block`, request: { cause: "reviewed-recovery-fixture" } });
+    });
+    const preview = await getResponsibilityDraft(f.context, f.record.id, true);
+    if (!("reviewSha256" in preview.readiness)) throw new Error("Recovery review is unavailable");
+    const reviewed = await changeResponsibilityDraft(f.context, f.record.id, { action: "review", expectedRevision: f.record.revision,
+      draftSha256: preview.readiness.draftSha256, reviewSha256: preview.readiness.reviewSha256 }, `${f.tag}:rereview`);
+    f.record = reviewed.current;
+    const runtimePreview = await runtimeStore.readResponsibilityRuntime(f.owner, f.record.id, true);
+    if (!("preview" in runtimePreview) || runtimePreview.preview.state !== "ready") throw new Error(`Recovery preview unavailable: ${JSON.stringify(runtimePreview)}`);
+    expect(runtimePreview.preview).toMatchObject({ recovery: "reviewed_authority_change" });
+    const request = { action: "resume" as const, expectedRevision: blocked.snapshot.revision, expectedGeneration: blocked.snapshot.generation,
+      configurationSha256: runtimePreview.preview.configuration.configurationSha256, acknowledgePilot: RESPONSIBILITY_WORK_ITEM_PILOT };
+    return { blocked, request, configuration: runtimePreview.preview.configuration };
+  }
+
+  test("migration 257 removes inherited named grants from its owner-private receipt table", async () => {
+    const step = getSchemaMigrationSteps().find((item) => item.kind === "sql" && item.file === "20261015090000_responsibility_reviewed_recovery.sql");
+    if (!step || step.kind !== "sql") throw new Error("Missing recovery migration");
+    const migration = await readSqlMigrationFile(step); const rollback = new Error("Rollback isolated recovery ACL fixture");
+    await expect(admin.begin(async (sql) => {
+      await removeEmptyResponsibilityRecoveryForReplay(sql);
+      await sql`CREATE ROLE responsibility_recovery_untrusted NOLOGIN`;
+      await sql`ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO responsibility_recovery_untrusted`;
+      for (const statement of migration.statements) await sql.unsafe(statement);
+      expect(await sql`SELECT has_table_privilege('responsibility_recovery_untrusted','omni_responsibility_baseline_rebinds','SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') AS granted`).toEqual([{ granted: false }]);
+      expect(await sql`SELECT relrowsecurity,relforcerowsecurity FROM pg_class WHERE oid = 'omni_responsibility_baseline_rebinds'::regclass`).toEqual([{ relrowsecurity: true, relforcerowsecurity: true }]);
+      throw rollback;
+    })).rejects.toBe(rollback);
+  });
+
+  test("recovers the same reviewed record and rebinds its original evidence without resetting budgets or silently enabling notices", async () => {
+    const f = await fixture("reviewed-recovery"); await enable(f); const originalWake = await runDue(f);
+    await change(f, "initial-priority", { priority: "high" }); await observe(f, `${f.tag}:before-recovery-change`);
+    const priorNotice = (await getResponsibilityNotifications(f.context, f.record.id, false)).candidates[0];
+    await attemptResponsibilityNotification(f.owner, f.record.id, priorNotice.id);
+    const original = await readResponsibilityObservationHistory(f.owner, f.record.id, 40); const before = await runtimeStore.readResponsibilityRuntime(f.owner, f.record.id, false);
+    expect(original.baseline).not.toBeNull(); expect(before.current!.budget.usedChecks).toBe(1);
+    await change(f, "new-deadline", { dueAt: "2026-11-01T00:00:00.000Z" });
+    const recovery = await blockAndReview(f);
+    const results = await Promise.allSettled([
+      runtimeStore.controlResponsibilityRuntime(f.owner, f.record.id, recovery.request, `${f.tag}:resume-a`),
+      runtimeStore.controlResponsibilityRuntime(f.owner, f.record.id, recovery.request, `${f.tag}:resume-b`),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    const winner = results.findIndex((result) => result.status === "fulfilled");
+    const current = await runtimeStore.readResponsibilityRuntime(f.owner, f.record.id, false);
+    expect(current.current).toMatchObject({ state: "active", generation: recovery.blocked.snapshot.generation + 1, activatedAt: before.current!.activatedAt, budget: before.current!.budget });
+    expect(current.current!.nextDueAt! > current.current!.updatedAt).toBe(true);
+    expect(current.wakes).toEqual(before.wakes); expect(current.wakes[0].id).toBe(originalWake.wake.id);
+    const replay = await runtimeStore.controlResponsibilityRuntime(f.owner, f.record.id, recovery.request, `${f.tag}:resume-${winner === 0 ? "a" : "b"}`);
+    expect(replay.replayed).toBe(true); expect(replay.current).toEqual(current.current);
+    await expect(runtimeStore.controlResponsibilityRuntime(f.owner, f.record.id, { ...recovery.request, configurationSha256: "f".repeat(64) }, `${f.tag}:resume-${winner === 0 ? "a" : "b"}`)).rejects.toMatchObject({ code: "responsibility_idempotency_conflict" });
+    const rebound = await readResponsibilityObservationHistory(f.owner, f.record.id, 40);
+    expect(rebound.receipts).toEqual(original.receipts);
+    expect(rebound.baseline).toMatchObject({ observationId: original.baseline!.observationId, observationSha256: original.baseline!.observationSha256,
+      semantic: original.baseline!.semantic, acceptedAt: original.baseline!.acceptedAt, revision: original.baseline!.revision + 1,
+      target: { responsibilityRevision: f.record.revision, reviewSha256: f.record.review!.reviewSha256 } });
+    expect(current.baselineRebinds).toHaveLength(1);
+    expect(current.baselineRebinds![0]).toMatchObject({ previous: original.baseline, next: rebound.baseline, runtimeReceiptId: replay.receipt.id });
+    expect((await getResponsibilityNotifications(f.context, f.record.id, false)).current).toMatchObject({ state: "ended", reason: "runtime_blocked", used: 1, reserved: 0 });
+    const noticePreview = await getResponsibilityNotifications(f.context, f.record.id, true);
+    if (!("preview" in noticePreview) || noticePreview.preview.state !== "ready") throw new Error("Separate notification renewal review unavailable");
+    const renewalRequest = { action: "enable", expectedRuntimeRevision: noticePreview.preview.expectedRuntimeRevision,
+      expectedRuntimeGeneration: noticePreview.preview.expectedRuntimeGeneration, expectedRevision: noticePreview.current!.revision, expectedGeneration: noticePreview.current!.generation,
+      configurationSha256: noticePreview.preview.configuration.configurationSha256, acknowledgeDestination: "owner_in_app" };
+    const renewalConfiguration = noticePreview.preview.configuration;
+    for (const action of ["lifecycle", "stop"] as const) await expect(runtimeStore.withResponsibilityRuntimeTransaction(f.owner, async (sql) => {
+      const at = await runtimeStore.runtimeDatabaseNow(sql);
+      const next = enableNotificationAdmission(renewalConfiguration, current.current!, renewalRequest, at, noticePreview.current!);
+      const forged = buildNotificationReceipt({ previous: noticePreview.current!, current: next, action, key: `${f.tag}:forged-${action}`, request: renewalRequest });
+      await sql`UPDATE omni_responsibility_notification_admissions SET revision = ${next.revision}, generation = ${next.generation}, state = ${next.state}, snapshot = ${next}::jsonb, updated_at = ${at}
+        WHERE tenant_id = ${f.owner.tenantId} AND actor_id = ${actorId} AND responsibility_id = ${f.record.id}`;
+      await sql`INSERT INTO omni_responsibility_notification_receipts (id,tenant_id,actor_id,responsibility_id,idempotency_sha256,request_sha256,revision,action,receipt,saved_at)
+        VALUES (${forged.id},${f.owner.tenantId},${actorId},${f.record.id},${forged.idempotencySha256},${forged.requestSha256},${next.revision},${action},${forged}::jsonb,${at})`;
+      await appendScopedDomainEvent({ id: forged.id, streamId: `responsibility:${f.owner.tenantId}:${f.record.id}`, type: "responsibility.notification.transitioned",
+        executionScope: createExecutionScope({ tenantId: f.owner.tenantId, initiatingActorId: actorId, executingPrincipalType: "system", executingPrincipalId: "responsibility-notifications",
+          correlationId: forged.id, purpose: "responsibility.notification.v1" }), payload: notificationEventPayload(forged) }, { sql });
+    })).rejects.toMatchObject({ code: "23514", message: "Responsibility notification renewal requires its explicit owner enable receipt" });
+    const enabled = await enableResponsibilityNotifications(f.context, f.record.id, renewalRequest, `${f.tag}:renew-notices`);
+    expect(enabled.current).toMatchObject({ state: "enabled", used: 1, reserved: 0, enabledAt: noticePreview.current!.enabledAt });
+    const changed = await observe(f, `${f.tag}:after-recovery`); expect(changed.receipt.plan.outcome).toBe("material_change");
+    expect(changed.receipt.plan.change!.previousBaselineSha256).toBe(rebound.baseline!.baselineSha256);
+    expect(changed.receipt.plan.change!.categories).toContain("work_deadline");
+    const unchanged = await observe(f, `${f.tag}:unchanged-after-recovery`); expect(unchanged.receipt.plan.outcome).toBe("no_change");
+    const notices = await getResponsibilityNotifications(f.context, f.record.id, false); expect(notices.candidates).toHaveLength(2);
+    expect(notices.candidates.find((candidate) => candidate.id === priorNotice.id)).toMatchObject({ state: "delivered", configurationSha256: priorNotice.configurationSha256 });
+    expect((await runtimeStore.readResponsibilityRuntime(f.owner, f.record.id, false)).current!.budget).toEqual(before.current!.budget);
+    expect(await admin`SELECT has_table_privilege('omni_runtime','omni_responsibility_baseline_rebinds','SELECT') AS readable,
+      has_table_privilege('omni_runtime','omni_responsibility_baseline_rebinds','INSERT') AS appendable,
+      has_table_privilege('omni_runtime','omni_responsibility_baseline_rebinds','UPDATE') AS mutable,
+      has_table_privilege('omni_runtime','omni_responsibility_baseline_rebinds','DELETE') AS removable,
+      has_table_privilege('omni_backup','omni_responsibility_baseline_rebinds','SELECT') AS backup`).toEqual([{ readable: true, appendable: true, mutable: false, removable: false, backup: true }]);
+    await expect(owned(f, () => getSql()`UPDATE omni_responsibility_baseline_rebinds SET receipt = receipt`)).rejects.toMatchObject({ code: "42501" });
+    await expect(admin`UPDATE omni_responsibility_baseline_rebinds SET receipt = receipt WHERE tenant_id = ${f.owner.tenantId}`).rejects.toMatchObject({ code: "23514" });
+    expect(await runWithDatabaseActorScope(f.owner.tenantId, ["actor:88888888-8888-4888-8888-888888888888"], () => getSql()`SELECT id FROM omni_responsibility_baseline_rebinds`)).toEqual([]);
+    // Put the old generation outside the recent receipt window. Its terminal
+    // wake remains readable only alongside its actual scoped authority proof.
+    for (let index = 0; index < 41; index += 1) await runtimeStore.withResponsibilityRuntimeTransaction(f.owner, async (sql) => {
+      const previous = (await runtimeStore.readRuntimeHead(sql, f.owner, f.record.id))!;
+      await runtimeStore.persistRuntimeTransition(sql, { previous, current: touchRuntime(previous, await runtimeStore.runtimeDatabaseNow(sql)), action: "reconcile", key: `${f.tag}:history-${index}`, request: { fixture: "retained-history-window", index } });
+    });
+    const history = await runtimeStore.readResponsibilityRuntime(f.owner, f.record.id, false);
+    expect(history.receipts).toHaveLength(40); expect(history.configurationReceipts).toHaveLength(1);
+    expect(history.configurationReceipts![0].snapshot.configuration.configurationSha256).toBe(before.current!.configuration.configurationSha256);
+    expect(history.wakes).toEqual(before.wakes);
+  }, 30_000);
+
+  test("database guards reject broadened recovery and a recovery without its baseline co-commit", async () => {
+    const f = await fixture("recovery-database-guard"); await runDue(f); const recovery = await blockAndReview(f);
+    await expect(runtimeStore.withResponsibilityRuntimeTransaction(f.owner, async (sql) => {
+      const prior = (await runtimeStore.readRuntimeHead(sql, f.owner, f.record.id))!;
+      const at = await runtimeStore.runtimeDatabaseNow(sql);
+      const next = { ...prior, revision: prior.revision + 1, generation: prior.generation + 1, state: "active", reason: "owner_resumed", configuration: recovery.configuration,
+        nextDueAt: new Date(Date.parse(at) + 86_400_000).toISOString(), updatedAt: at };
+      await sql`UPDATE omni_responsibility_lifecycles SET revision = ${next.revision}, generation = ${next.generation}, state = 'active', next_due_at = ${next.nextDueAt}, snapshot = ${next}::jsonb, updated_at = ${at}
+        WHERE tenant_id = ${f.owner.tenantId} AND actor_id = ${actorId} AND responsibility_id = ${f.record.id}`;
+    })).rejects.toMatchObject({ code: "23514" });
+    for (const field of ["draftSha256", "maximumChecks", "cadence"] as const) {
+      await expect(runtimeStore.withResponsibilityRuntimeTransaction(f.owner, async (sql) => {
+        const prior = (await runtimeStore.readRuntimeHead(sql, f.owner, f.record.id))!; const at = await runtimeStore.runtimeDatabaseNow(sql);
+        const configuration = { ...recovery.configuration, [field]: field === "draftSha256" ? "f".repeat(64) : field === "maximumChecks" ? 8 : { ...recovery.configuration.cadence, interval: 2 } };
+        const next = { ...prior, revision: prior.revision + 1, generation: prior.generation + 1, state: "active", reason: "owner_resumed", configuration, nextDueAt: new Date(Date.parse(at) + 86_400_000).toISOString(), updatedAt: at };
+        await sql`UPDATE omni_responsibility_lifecycles SET revision = ${next.revision}, generation = ${next.generation}, state = 'active', next_due_at = ${next.nextDueAt}, snapshot = ${next}::jsonb, updated_at = ${at}
+          WHERE tenant_id = ${f.owner.tenantId} AND actor_id = ${actorId} AND responsibility_id = ${f.record.id}`;
+      })).rejects.toMatchObject({ code: "23514" });
+    }
+    const valid = await runtimeStore.controlResponsibilityRuntime(f.owner, f.record.id, recovery.request, `${f.tag}:valid-recovery`);
+    expect(valid.current.state).toBe("active");
+  }, 30_000);
 
   test("reviews and reads with exact workspace grants while direct locks and mutations remain forbidden", async () => {
     const f = await fixture("serving-grants");

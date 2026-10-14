@@ -2,6 +2,7 @@ import type { ResponsibilityDraft, ResponsibilityMutation, ResponsibilityPins, R
 import type { ResponsibilityReceipt } from "@/lib/responsibilities/state";
 import type { PilotConfiguration, ResponsibilityLifecycle, ResponsibilityLifecycleRequest, ResponsibilityRuntimeReceipt, ResponsibilityWake } from "@/lib/responsibilities/runtime-contracts";
 import type { ResponsibilityBaseline, ResponsibilityObservationReceipt } from "@/lib/responsibilities/observation-contracts";
+import type { BaselineRebindReceipt } from "@/lib/responsibilities/baseline-rebind-contracts";
 
 // Type-only server imports keep Zod, Node crypto and storage out of this route.
 export type { ResponsibilityDraft, ResponsibilityMutation, ResponsibilityPins, ResponsibilityPreview, ResponsibilityRecord, ResponsibilitySource, ResponsibilityReceipt, PilotConfiguration, ResponsibilityLifecycle, ResponsibilityLifecycleRequest, ResponsibilityRuntimeReceipt, ResponsibilityWake };
@@ -28,15 +29,27 @@ export type RuntimeView = {
   current: ResponsibilityLifecycle | null;
   disclosure: { pilot: string; source: string; comparison: string; cadence: string; stops: string; execution: string };
   wakes: ResponsibilityWake[]; receipts: ResponsibilityRuntimeReceipt[];
+  configurationReceipts?: ResponsibilityRuntimeReceipt[]; baselineRebinds?: BaselineRebindReceipt[];
   coverage: { limit: number; total: null; hasMoreWakes: boolean; hasMoreReceipts: boolean };
   dispatchReadiness: "not_observed"; deliverySupported: false;
-  preview?: { state: "ready"; configuration: PilotConfiguration; authorityEffect: "none"; dispatchReadiness: "not_observed" } | { state: "blocked"; reason: string; authorityEffect: "none" };
+  preview?: { state: "ready"; configuration: PilotConfiguration; authorityEffect: "none"; dispatchReadiness: "not_observed"; recovery?: "reviewed_authority_change" } | { state: "blocked"; reason: string; authorityEffect: "none" };
 };
 export type ObservationView = {
   receipts: ResponsibilityObservationReceipt[]; baseline: ResponsibilityBaseline | null; hasMore: boolean;
+  baselineRebinds?: BaselineRebindReceipt[];
   policy: { id: string; policySha256: string; adapterCoverage: string; materialExamples: readonly string[]; cosmeticExamples: readonly string[]; unsupportedExamples: readonly string[] };
   coverage: { kind: "bounded_recent"; limit: number; returned: number; total: null };
 };
+
+export function sameRuntimeScope(previous: PilotConfiguration, next: PilotConfiguration): boolean {
+  const scope = (configuration: PilotConfiguration) => {
+    const { responsibilityRevision: revision, reviewSha256: review, configurationSha256: hash, pins, tool, ...rest } = configuration;
+    const { contractSha256: contract, ...toolScope } = tool; void revision; void review; void hash; void contract;
+    return { ...rest, tool: toolScope, pins: { sources: pins.sources.map(({ source }) => source),
+      work: { workspaceId: pins.work.workspaceId, projectId: pins.work.projectId, workItemId: pins.work.workItemId }, procedure: { id: pins.procedure.id }, agent: { id: pins.agent.id } } };
+  };
+  return sameJson(scope(previous), scope(next));
+}
 export type ReferenceGroup<T> = { state: "available" | "unavailable"; items: T[]; hasMore: boolean | null; errorCode?: string };
 export type References = { owner: Required<Owner>; groups: {
   sources: ReferenceGroup<{ source: ResponsibilitySource; label: string }>;

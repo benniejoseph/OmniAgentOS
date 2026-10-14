@@ -18,6 +18,17 @@ import {
 } from "@/lib/mobile/contracts";
 
 describe("native API contracts", () => {
+  it("adds reviewed Follow-up recovery in v57 without removing upstream operations", () => {
+    const previous = nativeOperationsForVersion(56)!, current = nativeOperationsForVersion(57)!;
+    expect(current.map(({ id }) => id)).toEqual(previous.map(({ id }) => id));
+    for (const operation of current) {
+      const old = previous.find(({ id }) => id === operation.id)!;
+      if (operation.id.startsWith("responsibilities.")) {
+        expect(operation.summary).toContain("v57");
+        expect({ ...operation, summary: old.summary }).toEqual(old);
+      } else expect(operation).toEqual(old);
+    }
+  });
   it("adds measured text comparisons and work-item tracking in v56 without losing upstream operations", () => {
     const previous = nativeOperationsForVersion(55)!, current = nativeOperationsForVersion(56)!;
     expect(current.map(({ id }) => id)).toEqual(previous.map(({ id }) => id));
@@ -328,12 +339,12 @@ describe("native API contracts", () => {
   it("retains the current contract and upstream supported rollout versions", () => {
     // Tripwire: a native contract bump must be a deliberate, reviewed change.
     // The other tests follow these constants.
-    expect(NATIVE_API_CURRENT_VERSION).toBe(56);
-    expect(NATIVE_API_PREVIOUS_VERSION).toBe(55);
+    expect(NATIVE_API_CURRENT_VERSION).toBe(57);
+    expect(NATIVE_API_PREVIOUS_VERSION).toBe(56);
     expect(NATIVE_API_SUPPORTED_VERSIONS).toEqual([
       NATIVE_API_CURRENT_VERSION,
       NATIVE_API_PREVIOUS_VERSION,
-      54, 53, 52,
+      55, 54, 53, 52,
     ]);
     expect(NATIVE_API_PREVIOUS_VERSION).toBeLessThan(NATIVE_API_CURRENT_VERSION);
     expect(nativeOperationsForVersion(NATIVE_API_CURRENT_VERSION)).toBeDefined();
@@ -591,6 +602,7 @@ describe("native API contracts", () => {
       54: added("listen.grant", "listen.ingest", "listen.conversations.list", "listen.conversations.get"),
       55: added("csm.clients.list", "csm.client.get", "csm.client.save", "csm.client.sources.link", "csm.client.sources.unlink", "csm.role.get", "csm.role.save", "csm.role.sources.link", "csm.role.sources.unlink"),
       56: added(),
+      57: added(),
     });
     // v20 and v23 changed only request and push schemas.
     expect(nativeOperationsForVersion(20)).toEqual(nativeOperationsForVersion(19));
@@ -623,11 +635,11 @@ describe("native API contracts", () => {
     )).filter((name) => !name.startsWith(".")).sort();
 
     // This product retirement preserves the prior archive identities.
-    expect(published).toEqual(Array.from({ length: 12 }, (_, index) => `v${index + 45}`).sort());
+    expect(published).toEqual(Array.from({ length: 13 }, (_, index) => `v${index + 45}`).sort());
     const discovery = nativeContractDiscovery();
     expect(discovery.versions).toEqual(NATIVE_API_SUPPORTED_VERSIONS.map((version) =>
       expect.objectContaining({ version, state: version === NATIVE_API_CURRENT_VERSION ? "current" : "previous" })));
-    expect(discovery.supportedVersions).toEqual([56, 55, 54, 53, 52]);
+    expect(discovery.supportedVersions).toEqual([57, 56, 55, 54, 53, 52]);
     expect(discovery.supportedVersions).not.toContain(51);
   });
 
@@ -824,8 +836,14 @@ describe("native API contracts", () => {
     });
   });
 
-  it("retains every upstream published v45–v55 document byte for byte", async () => {
+  it("retains every upstream published v45–v56 document byte for byte", async () => {
     const frozen = {
+      "56": {
+        "openapi.json": "7ff51284a2913a9bcb812edb25bfc1912e898f3c192f8286ade26e918e0dcac0", // gitleaks:allow -- public artifact integrity digest
+        "events.schema.json": "86aa365fcc455ed5d8ca2e1861a646d614af6080cbbd743035ed0503ad71c0e7", // gitleaks:allow -- public artifact integrity digest
+        "fixtures.json": "1ebda73ee54baba52e7befc691cef24747fea247334a0f00a494146ba3810329", // gitleaks:allow -- public artifact integrity digest
+        "manifest.json": "5d823b2c4e7a5420efb9f80aeffd7d4d40b194a78ab6149be4e462005cd9af71", // gitleaks:allow -- public artifact integrity digest
+      },
       "45": {
         "openapi.json": "0550a5cd1cc7df01168164ec8e68710e90743c2145d2a6db2162127f7ab22123", // gitleaks:allow -- public artifact integrity digest
         "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9", // gitleaks:allow -- public artifact integrity digest

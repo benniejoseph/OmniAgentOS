@@ -10,8 +10,45 @@ vi.mock("@/lib/responsibilities/notification-service", () => ({ getResponsibilit
 const old: SecurityContext = { tenantId: "t", actorId: "a", source: "mobile", role: "operator",
   native: { deviceId: "d", platform: "macos", clientContractVersion: 55 } };
 const current = { ...old, native: { ...old.native!, clientContractVersion: 56 } };
+const recoveryClient = { ...old, native: { ...old.native!, clientContractVersion: 57 } };
 const work = { record: { draft: { sources: [{ kind: "work_item", id: "work-a", workspaceId: "w", projectId: "p" }] } } };
 describe("native responsibility upgrade boundary", () => {
+  it("requires v57 for reviewed recovery previews, historical proofs and notification renewal requests", () => {
+    for (const value of [{ activation: { recovery: "reviewed_authority_change" } }, { configurationReceipts: [] }, { baselineRebinds: [] },
+      { preview: { state: "ready", expectedRuntimeRevision: 8, expectedRuntimeGeneration: 3, expectedRevision: 2, expectedGeneration: 2 } },
+      { action: "enable", expectedRuntimeRevision: 8, expectedRuntimeGeneration: 3, expectedRevision: 2, expectedGeneration: 2 }]) {
+      expect(() => compatibleResponsibilityValue(current, value)).toThrow(expect.objectContaining({ code: "responsibility_client_upgrade_required" }));
+      expect(compatibleResponsibilityValue(recoveryClient, value)).toBe(value);
+      expect(compatibleResponsibilityValue({ ...current, source: "session" }, value)).toBe(value);
+    }
+  });
+  it("stops an older blocked resume before mutation while retaining its ordinary paused resume and safe end", async () => {
+    runtime.mockResolvedValue({ current: { state: "blocked", reason: "authority_changed" } });
+    await expect(requireCompatibleResponsibilityRecord(current, "r", "lifecycle", { action: "resume" })).rejects.toThrow("Update Asael");
+    await expect(requireCompatibleResponsibilityRecord(current, "r", "lifecycle", { action: "end" })).resolves.toBeUndefined();
+    runtime.mockResolvedValue({ current: { state: "paused" } });
+    await expect(requireCompatibleResponsibilityRecord(current, "r", "lifecycle", { action: "resume" })).resolves.toBeUndefined();
+    runtime.mockClear();
+    await requireCompatibleResponsibilityRecord(recoveryClient, "r", "lifecycle", { action: "resume" });
+    expect(runtime).not.toHaveBeenCalled();
+  });
+  it("gates repinned history even when recent receipts supply all proofs and no baseline ever existed", () => {
+    for (const contract of ["asael-responsibility-runtime:1", "asael-responsibility-notifications:1"]) {
+      const base = { contract, current: { configuration: { configurationSha256: "new" } } };
+      for (const history of [
+        { receipts: [{ snapshot: { configuration: { configurationSha256: "old" } } }] },
+        { receipt: { snapshot: { configuration: { configurationSha256: "old" } } } },
+        { wakes: [{ configurationSha256: "old" }] },
+        { candidates: [{ configurationSha256: "old" }] },
+      ]) {
+        const value = { ...base, ...history };
+        expect(() => compatibleResponsibilityValue(current, value)).toThrow(expect.objectContaining({ code: "responsibility_client_upgrade_required" }));
+        expect(compatibleResponsibilityValue(recoveryClient, value)).toBe(value);
+      }
+      const unchanged = { ...base, receipts: [{ snapshot: { configuration: { configurationSha256: "new" } } }] };
+      expect(compatibleResponsibilityValue(current, unchanged)).toBe(unchanged);
+    }
+  });
   it("retains meeting reads and web/current work reads", () => {
     const meeting = { record: { draft: { sources: [{ kind: "meeting", id: "m" }], work: { workItemId: "w" } } } };
     expect(compatibleResponsibilityValue(old, meeting)).toBe(meeting);

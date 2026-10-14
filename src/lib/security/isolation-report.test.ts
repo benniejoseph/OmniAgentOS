@@ -74,7 +74,7 @@ describe("tenant isolation policy evidence", () => {
       policy(table, `${table}_memory_scope`, { permissive: true })])).toBe(false);
   });
   it("fails owner-scoped preference and responsibility evidence when a restrictive actor policy is absent or permissive", () => {
-    for (const tableName of ["omni_companion_preferences", "omni_companion_preference_mutations", "omni_responsibilities", "omni_responsibility_mutations", "omni_responsibility_observations", "omni_responsibility_baselines", "omni_responsibility_changes", "omni_responsibility_lifecycles", "omni_responsibility_wakes", "omni_responsibility_runtime_receipts", "omni_responsibility_budget_entries", "omni_responsibility_notification_admissions", "omni_responsibility_notification_candidates", "omni_responsibility_notification_receipts"]) {
+    for (const tableName of ["omni_companion_preferences", "omni_companion_preference_mutations", "omni_responsibilities", "omni_responsibility_mutations", "omni_responsibility_observations", "omni_responsibility_baselines", "omni_responsibility_baseline_rebinds", "omni_responsibility_changes", "omni_responsibility_lifecycles", "omni_responsibility_wakes", "omni_responsibility_runtime_receipts", "omni_responsibility_budget_entries", "omni_responsibility_notification_admissions", "omni_responsibility_notification_candidates", "omni_responsibility_notification_receipts"]) {
       const tenant = policy(tableName, "omni_tenant_isolation");
       const actor = `${tableName}_actor`;
       expect(hasExpectedTenantIsolationPolicy(tableName, [tenant, policy(tableName, actor, { permissive: false })])).toBe(true);
@@ -254,6 +254,7 @@ describe("tenant isolation table classes", () => {
       "omni_project_tasks",
       "omni_local_computer_sessions",
       "omni_moltbook_autonomy_events",
+      "omni_responsibility_baseline_rebinds",
       "omni_schema_version",
       "omni_rate_limits",
       "omni_unclassified_notes",

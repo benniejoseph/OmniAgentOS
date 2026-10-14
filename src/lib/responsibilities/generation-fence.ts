@@ -7,6 +7,7 @@ import type { ToolDefinition } from "@/lib/tools/types";
 import { verifyLifecycle, verifyWake } from "./lifecycle-state";
 import { RESPONSIBILITY_DUE_GRACE_MS, type ResponsibilityLifecycle, type ResponsibilityWake } from "./runtime-contracts";
 import { ResponsibilityError } from "./state";
+import { responsibilityToolAuthoritySha256 } from "./tool-authority";
 
 export const RESPONSIBILITY_EXECUTION_PURPOSE = "responsibility.runtime.v1";
 declare const admissionBrand: unique symbol;
@@ -40,7 +41,7 @@ export async function assertResponsibilityToolDispatch(input: {
     input.existingRecord || input.approvalGrantClaim || input.policyLeaseClaim) throw denied();
   const { current, wake } = authority; const config = current.configuration; const scope = input.executionScope;
   if (input.tool.id !== config.tool.id || input.tool.status !== "active" || input.tool.riskLevel !== 0 || input.tool.approvalRequired || input.tool.operationClass !== "read_only" ||
-    canonicalJsonSha256(input.tool) !== config.tool.contractSha256 || canonicalJsonSha256(input.input) !== canonicalJsonSha256(config.tool.input) ||
+    responsibilityToolAuthoritySha256(input.tool) !== config.tool.contractSha256 || canonicalJsonSha256(input.input) !== canonicalJsonSha256(config.tool.input) ||
     input.context.tenantId !== current.tenantId || canonicalAuthUserActorFromSecurityContext(input.context)?.actorId !== current.actorId ||
     scope.tenantId !== current.tenantId || scope.initiatingActorId !== input.context.actorId || scope.executingPrincipalType !== "agent" || scope.executingPrincipalId !== config.pins.agent.id ||
     scope.purpose !== RESPONSIBILITY_EXECUTION_PURPOSE || scope.correlationId !== wake.id || scope.causationId !== wake.id ||

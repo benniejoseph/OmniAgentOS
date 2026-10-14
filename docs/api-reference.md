@@ -299,3 +299,30 @@ adaptation contains the measured comparison when complete; an in-progress or
 uncertain attempt never authorizes activation. New activation requires an
 improved, fresh comparison whose current identity, guidance and model still
 match. Evaluation alone checks eligibility and does not permit activation.
+
+## Reviewed Follow-up recovery (native v57)
+
+The existing lifecycle `resume` action also accepts tracking blocked specifically
+by `authority_changed`, after a fresh owner review made after the block. The
+activation preview advertises `recovery:"reviewed_authority_change"` only when
+the original item, exact read input, cadence, expiry, limits and cumulative usage
+can be retained. Its expected revision/generation and configuration digest still
+bind the submitted request. Recovery advances the generation, fences old work,
+and schedules the next genuine cadence occurrence. It never performs a catch-up
+check or enables inbox delivery.
+
+An admission ended with `runtime_blocked` can separately be reviewed and enabled
+against the recovered runtime. Its preview and `enable` request additionally bind
+the paired `expectedRevision` and `expectedGeneration` of the ended admission,
+alongside the existing runtime counters. Re-enable preserves consumed allowance,
+expiry and history and requires no outstanding candidates or reservations.
+Owner-stopped and expired admissions remain terminal.
+
+Bounded read responses may include `configurationReceipts` (runtime or inbox)
+and `baselineRebinds` (runtime or observations), each limited to 40 and omitted
+when empty. These are actual immutable records proving historical authority and
+the baseline's transfer to a new review; they create no observation and change
+no accepted source evidence. New recovery shapes and blocked-resume mutations
+require native v57. Older supported clients receive an explicit upgrade error
+before an incompatible mutation; ordinary compatible reads and paused resume
+remain available. Published v56 and earlier documents stay byte-for-byte frozen.

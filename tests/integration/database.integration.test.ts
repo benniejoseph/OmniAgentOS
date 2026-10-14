@@ -9659,6 +9659,7 @@ const agentTextComparisonsVersion = 253;
 const responsibilityWorkspaceReadFenceVersion = 254;
 const responsibilityWorkspaceFenceAclRepairVersion = 255;
 const projectTaskCommitmentsVersion = 256;
+const responsibilityReviewedRecoveryVersion = 257;
 const additiveReplayVersions = [
   companionPreferencesVersion,
   responsibilityDraftsVersion,
@@ -9702,6 +9703,7 @@ const additiveReplayVersions = [
   responsibilityWorkspaceReadFenceVersion,
   responsibilityWorkspaceFenceAclRepairVersion,
   projectTaskCommitmentsVersion,
+  responsibilityReviewedRecoveryVersion,
 ].filter((version) => databaseSchemaMigrations.some((migration) => migration.version === version));
 const meetingResolutionReplayTables: readonly string[] = [
   "omni_meeting_commitment_resolution_intents",
@@ -9734,6 +9736,7 @@ const additiveDraftReplayTables: readonly string[] = [
   "omni_memory_lifecycle_mutations",
   "omni_responsibilities",
   "omni_responsibility_baselines",
+  "omni_responsibility_baseline_rebinds",
   "omni_responsibility_budget_entries",
   "omni_responsibility_changes",
   "omni_responsibility_lifecycles",

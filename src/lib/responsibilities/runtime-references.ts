@@ -20,6 +20,7 @@ import { ResponsibilityError, type ResponsibilityOwner } from "./state";
 import { WORK_ITEM_FOLLOWTHROUGH_PROCEDURE } from "./work-item-source";
 import { readOwnedResponsibilityProcedures } from "./procedure-reference";
 import { lockResponsibilityWorkspace } from "./workspace-read-fence";
+import { responsibilityToolAuthoritySha256 } from "./tool-authority";
 
 /** Internal worker identity is resolved from current account records, never
  * replayed requester JSON. Locks keep membership/revocation stable through the
@@ -85,7 +86,7 @@ export async function resolveResponsibilityPilot(sql: SqlClient, owner: Responsi
   const exactInput = source.kind === "work_item" ? { workspaceId: source.workspaceId, projectId: source.projectId, workItemId: source.id } : { workspaceId: source.workspaceId, meetingId: source.id };
   if (procedure.snapshotSha256 !== review.pins.procedure.snapshotSha256 || procedure.toolBindings.length !== 1 || procedure.toolBindings[0].toolId !== toolId ||
     canonicalJsonSha256(procedure.toolBindings[0].input) !== canonicalJsonSha256(exactInput) || !tool || tool.status !== "active" || tool.riskLevel !== 0 || tool.approvalRequired) throw unsupported();
-  const toolsSha = canonicalJsonSha256([{ id: tool.id, inputSha256: canonicalJsonSha256(exactInput), contractSha256: canonicalJsonSha256(tool) }]);
+  const toolsSha = canonicalJsonSha256([{ id: tool.id, inputSha256: canonicalJsonSha256(exactInput), contractSha256: responsibilityToolAuthoritySha256(tool) }]);
   if (toolsSha !== review.pins.procedure.toolBindingsSha256) throw changed();
   if (!isBuiltInAgentIdentityId(draft.agentId)) {
     const principals = await sql`SELECT principal_id FROM omni_tenant_execution_principals WHERE tenant_id = ${owner.tenantId}
@@ -105,7 +106,7 @@ export async function resolveResponsibilityPilot(sql: SqlClient, owner: Responsi
   if (agentPin.pinSha256 !== review.pins.agent.identityPinSha256 || canonicalJsonSha256(agentPin.policyPins) !== review.pins.agent.policySha256 ||
     (identity.principal.authorityMode === "explicit_grants" && !identity.principal.toolGrantIds.includes(tool.id))) throw changed();
   const body = { schemaVersion: 1 as const, pilot: source.kind === "work_item" ? RESPONSIBILITY_WORK_ITEM_PILOT : RESPONSIBILITY_PILOT, responsibilityRevision: record.revision, reviewSha256: review.reviewSha256, draftSha256: record.draftSha256,
-    pins: review.pins, source, tool: { id: toolId, input: exactInput, contractSha256: canonicalJsonSha256(tool) }, cadence: draft.cadence,
+    pins: review.pins, source, tool: { id: toolId, input: exactInput, contractSha256: responsibilityToolAuthoritySha256(tool) }, cadence: draft.cadence,
     maximumChecks: draft.limits.maxChecks, cumulativeLimits: draft.limits.cumulative, checkReservation: PILOT_CHECK_RESERVATION,
     comparisonPolicySha256: responsibilityComparisonPolicy([source]).policySha256, stops: source.kind === "work_item" ? ["expiry"] : ["expiry", "meeting_started", "meeting_canceled"],
     notificationAuthority: "none" as const, approvalAuthority: "none" as const, mutationAuthority: "none" as const };

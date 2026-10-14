@@ -136,6 +136,48 @@ class ResponsibilityController extends ChangeNotifier {
               : 'preview'],
         );
 
+  bool _previewMatchesSavedReview(ResponsibilityJson? ready) {
+    final saved = record;
+    if (!isFresh(ResponsibilityRead.detail) ||
+        saved?.state != 'reviewed' ||
+        ready?['state'] != 'ready') {
+      return false;
+    }
+    final configuration = responsibilityMap(ready!['configuration']);
+    return configuration['responsibilityRevision'] == saved!.revision &&
+        configuration['draftSha256'] == saved.raw['draftSha256'] &&
+        configuration['reviewSha256'] ==
+            responsibilityMap(saved.raw['review'])['reviewSha256'];
+  }
+
+  bool get canRestartTracking {
+    final current = head(ResponsibilityRead.runtime),
+        ready = preview(ResponsibilityRead.runtime);
+    return current?['state'] == 'blocked' &&
+        current?['reason'] == 'authority_changed' &&
+        ready?['recovery'] == 'reviewed_authority_change' &&
+        _previewMatchesSavedReview(ready);
+  }
+
+  bool get canRenewNotifications {
+    final current = head(ResponsibilityRead.notifications),
+        ready = preview(ResponsibilityRead.notifications),
+        runtime = head(ResponsibilityRead.runtime);
+    return current?['state'] == 'ended' &&
+        current?['reason'] == 'runtime_blocked' &&
+        ready?['expectedRevision'] == current?['revision'] &&
+        ready?['expectedGeneration'] == current?['generation'] &&
+        _previewMatchesSavedReview(ready) &&
+        isFresh(ResponsibilityRead.runtime) &&
+        runtime?['state'] == 'active' &&
+        ready?['expectedRuntimeRevision'] == runtime?['revision'] &&
+        ready?['expectedRuntimeGeneration'] == runtime?['generation'] &&
+        responsibilityMap(
+              ready!['configuration'],
+            )['runtimeConfigurationSha256'] ==
+            responsibilityMap(runtime!['configuration'])['configurationSha256'];
+  }
+
   void _notify() {
     if (!_disposed && !_authorityInvalidated) notifyListeners();
   }
@@ -587,7 +629,9 @@ class ResponsibilityController extends ChangeNotifier {
     final current = head(ResponsibilityRead.runtime),
         ready = preview(ResponsibilityRead.runtime);
     if (action == 'activate' && current != null ||
-        action == 'resume' && current?['state'] != 'paused' ||
+        action == 'resume' &&
+            current?['state'] != 'paused' &&
+            !canRestartTracking ||
         action == 'pause' && current?['state'] != 'active' ||
         action == 'end' &&
             (current == null ||
@@ -623,7 +667,7 @@ class ResponsibilityController extends ChangeNotifier {
     final current = head(ResponsibilityRead.notifications),
         ready = preview(ResponsibilityRead.notifications);
     if (action == 'enable') {
-      if (current != null ||
+      if (current != null && !canRenewNotifications ||
           ready?['state'] != 'ready' ||
           dirty ||
           invalidDraftInputs.isNotEmpty) {
@@ -633,6 +677,10 @@ class ResponsibilityController extends ChangeNotifier {
         'action': 'enable',
         'expectedRuntimeRevision': ready!['expectedRuntimeRevision'],
         'expectedRuntimeGeneration': ready['expectedRuntimeGeneration'],
+        if (current != null) ...{
+          'expectedRevision': ready['expectedRevision'],
+          'expectedGeneration': ready['expectedGeneration'],
+        },
         'configurationSha256': responsibilityMap(
           ready['configuration'],
         )['configurationSha256'],

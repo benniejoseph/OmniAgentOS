@@ -6,11 +6,12 @@ import { getGovernedTool } from "@/lib/tools/registry";
 import { assertResponsibilityToolDispatch, RESPONSIBILITY_EXECUTION_PURPOSE, withResponsibilityDispatchAdmission, type ResponsibilityDispatchAdmission } from "./generation-fence";
 import { reserveResponsibilityWake, verifyPilotConfiguration } from "./lifecycle-state";
 import { runtimeConfiguration, runtimeHead, runtimeNow, runtimeOwner } from "./runtime-test-fixtures";
+import { responsibilityToolAuthoritySha256 } from "./tool-authority";
 
 function fixture() {
   const tool = getGovernedTool("app.meetings.show")!;
   const { configurationSha256: _hash, ...body } = runtimeConfiguration; void _hash;
-  const updated = { ...body, tool: { ...body.tool, contractSha256: canonicalJsonSha256(tool) } };
+  const updated = { ...body, tool: { ...body.tool, contractSha256: responsibilityToolAuthoritySha256(tool) } };
   const configuration = verifyPilotConfiguration({ ...updated, configurationSha256: canonicalJsonSha256(updated) });
   const reserved = reserveResponsibilityWake({ ...runtimeHead, configuration }, runtimeNow, null);
   const token = "test-lease";
@@ -25,6 +26,17 @@ function fixture() {
   return { sql, wake, current: reserved.current, token, args, pause: () => { live = { ...live, revision: live.revision + 1, generation: live.generation + 1, state: "pausing", reason: "owner_paused", nextDueAt: null }; } };
 }
 describe("Responsibility governed dispatch fence", () => {
+  it("keeps real registry display edits authorized but fences operational changes", async () => {
+    const f = fixture();
+    await withResponsibilityDispatchAdmission({ ...f, leaseToken: f.token, now: () => runtimeNow }, async (admission) => {
+      await assertResponsibilityToolDispatch({ ...f.args, admission, tool: { ...f.args.tool, name: "Updated label", description: "Clearer read description" } });
+      for (const patch of [{ inputSchema: { ...f.args.tool.inputSchema, additionalProperties: true } }, { reversible: !f.args.tool.reversible },
+        { approvalFingerprint: "changed-operation-contract" }, { dryRunSupported: !f.args.tool.dryRunSupported }]) {
+        await expect(assertResponsibilityToolDispatch({ ...f.args, admission, tool: { ...f.args.tool, ...patch } }))
+          .rejects.toMatchObject({ code: "responsibility_generation_fenced" });
+      }
+    });
+  });
   it("rechecks the generation immediately before dispatch, after earlier admission", async () => {
     const f = fixture(); const dispatched = vi.fn();
     await withResponsibilityDispatchAdmission({ ...f, leaseToken: f.token, now: () => runtimeNow }, async (admission) => {

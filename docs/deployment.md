@@ -3090,7 +3090,55 @@ to make an old binary accept them. The release's staged and post-activation gate
 must settle before the live structured-commitment trial begins.
 
 The current summary is a deterministic read of saved commitments, separate from
-the written project brief. Existing Follow-up baselines and policy digests stay
-valid; new explicit owner/date values are compared at ordinary scheduled checks.
+the written project brief. Structured fields preserve Follow-up comparison-policy
+semantics; new explicit owner/date values are compared at ordinary scheduled checks.
+The accompanying Work-tool description edit nevertheless changed the older
+whole-definition authority hash and blocked an existing Follow-up. The recovery
+candidate below corrects this boundary; the original scheduled check remains a
+blocked result in the trial record.
 A missing date-only time zone keeps overdue timing unknown. An offline comparison
 pass does not establish that a future production notification has occurred.
+
+## Reviewed Follow-up recovery candidate (2026-10-15)
+
+Responsibilities now pin a versioned operational tool contract, excluding only
+top-level display names and descriptions. Schema, risk, approval, effect metadata
+and additional contract fields remain pinned. This changes neither the general
+governed executor nor its approval rules. Old whole-definition pins stay invalid
+until the owner accepts a fresh review.
+
+Migration **257** adds an immutable baseline-rebind receipt and narrowly permits
+reviewed recovery of tracking blocked by an authority change. Recovery retains
+the same responsibility, source, exact read input, cadence, expiry, limits and
+cumulative usage. The old generation stays fenced. Its next check is a genuine
+cadence occurrence, with no forced catch-up. The baseline keeps its original
+observation identity, semantic digests and acceptance time; the receipt records
+only its binding to the new review. A subsequent observation can therefore
+detect changes made while tracking was stopped.
+
+Notifications remain off until a separate reviewed re-enable. Only admission
+ended because runtime tracking was blocked can recover; owner-stopped and expired
+admissions stay ended. Recovery retains notification usage, bounds and history
+and never reopens canceled candidates.
+
+Native **1.35.0+102** publishes contract **v57** for the recovery controls and
+bounded historical proofs. Previously supported contracts v56 through v52 stay
+supported for compatible operations. Only the new Follow-up recovery shapes
+require the update; there is no global native minimum-version increase. Verify
+the signed Mac upgrade with its existing session, then read the original check
+history and the new recovery receipt before running the client update trial.
+
+Before applying 257, take a fresh encrypted backup and isolated restore drill
+under the existing full writer hold, then run migration and schema/grant
+verification from the exact clean candidate. The new protected receipt table
+requires the documented exact forward-schema recovery pin if the previous
+release reports it as unclassified during paired preflight. Record that specific
+inventory difference; do not waive other release gates.
+
+Before any recovered record is written, rollback must still account for the
+additive table in schema admission. Once a record is recovered, the prior binary
+is not a functional tracking rollback target: it uses the old authority digest
+and cannot perform the new transitions. Use a compatible forward repair and keep
+tracking stopped if necessary. Never discard receipts, reset budgets, or rewrite
+old observations to accommodate an older binary. A repaired local test does not
+establish that a scheduled production check or notification has happened.

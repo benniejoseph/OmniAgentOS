@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
+import { FIRST_PARTY_APP_TOOLS } from "@/lib/tools/app-registry";
 import type { SecurityContext } from "@/lib/security/types";
 import { draftFixture as draft, ownerFixture as owner, nowFixture as now } from "./test-fixtures";
 import { prepareResponsibilityChange, responsibilityId, reviewPreview } from "./state";
@@ -39,6 +40,17 @@ beforeEach(() => {
   mocks.pin.mockReturnValue({ tenantId: owner.tenantId, actorId: owner.actorId, logicalAgentId: "atlas", definitionVersionId: "atlas:v1", principalVersionId: "atlas-principal:v1", pinSha256: "b".repeat(64), policyPins: [{ id: "policy", sha256: "c".repeat(64) }] });
 });
 describe("Responsibility source and reference checks", () => {
+  it("keeps review authority stable for real tool display edits and repins input contract edits", async () => {
+    const tool = FIRST_PARTY_APP_TOOLS.find((item) => item.id === "app.work_items.show")!;
+    mocks.snapshot.mockReturnValue({ id: draft.procedureId, snapshotSha256: "a".repeat(64), toolBindings: [{ toolId: tool.id, input: { workItemId: "work-a" } }] });
+    mocks.identity.mockResolvedValue({ principal: { authorityMode: "explicit_grants", toolGrantIds: [tool.id] } });
+    mocks.tool.mockReturnValueOnce(tool);
+    const first = await resolveResponsibilityPins(context, owner, record);
+    mocks.tool.mockReturnValueOnce({ ...tool, name: "Current commitment", description: "Read saved owner and acceptance details." });
+    expect((await resolveResponsibilityPins(context, owner, record)).procedure).toEqual(first.procedure);
+    mocks.tool.mockReturnValueOnce({ ...tool, inputSchema: { ...tool.inputSchema, required: ["differentId"] } });
+    expect((await resolveResponsibilityPins(context, owner, record)).procedure.toolBindingsSha256).not.toBe(first.procedure.toolBindingsSha256);
+  });
   it("includes only the exact owner's scoped private procedure lane and refuses cross-lane duplicate IDs", async () => {
     mocks.procedures.mockResolvedValue([]);
     mocks.privateProcedures.mockResolvedValue([{ id: draft.procedureId, aliases: ["Meeting brief"] }]);

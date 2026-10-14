@@ -1,5 +1,6 @@
 import { object, responsibilityId, sha256, source } from "./client";
 import { sameJson, type Owner } from "./model";
+import { isLaterNotificationReview } from "@/lib/responsibilities/notification-recovery-policy";
 import { NOTIFICATIONS_CONTRACT, type NotificationAdmission, type NotificationConfiguration, type NotificationControlRequest, type NotificationsResult, type NotificationsView, type ResponsibilityNotificationCandidate, type ResponsibilityNotificationReceipt } from "./notifications-model";
 
 const fail = (): never => { throw new Error("The in-app notification response could not be verified for this responsibility and account. Refresh before continuing."); };
@@ -13,6 +14,10 @@ const keys = (value: Record<string, unknown>, required: string, optional = "") =
 const owned = (value: Record<string, unknown>, owner: Owner, id: string) => value.tenantId === owner.tenantId && typeof value.actorId === "string" && /^actor:[a-f0-9-]{36}$/.test(value.actorId) && (!owner.actorId || value.actorId === owner.actorId) && value.responsibilityId === id && responsibilityId(id);
 const envelope = (value: unknown): value is Record<string, unknown> => object(value) && value.schemaVersion === 1 && value.contract === NOTIFICATIONS_CONTRACT && value.externalDelivery === false && text(value.disclosure, 4000);
 const nullableId = (value: unknown, expression: RegExp) => value === null || typeof value === "string" && expression.test(value);
+const historicalAdmission = (previous: NotificationAdmission, current: NotificationAdmission) => previous.revision <= current.revision && previous.generation <= current.generation &&
+  previous.enabledAt === current.enabledAt && previous.used <= current.used && previous.updatedAt <= current.updatedAt &&
+  (previous.revision !== current.revision || sameJson(previous, current)) &&
+  (previous.configuration.configurationSha256 === current.configuration.configurationSha256 || previous.generation < current.generation && isLaterNotificationReview(previous.configuration, current.configuration));
 
 async function configuration(value: unknown, owner: Owner, id: string): Promise<NotificationConfiguration> {
   if (!object(value) || !keys(value, "schemaVersion tenantId actorId responsibilityId policy runtimeConfigurationSha256 responsibilityRevision reviewSha256 draftSha256 source destination quietOnNoChange maximumNotifications expiresAt configurationSha256") || value.schemaVersion !== 1 || !owned(value, owner, id) ||
@@ -56,14 +61,22 @@ async function receipt(value: unknown, owner: Owner, id: string): Promise<Respon
   return value as unknown as ResponsibilityNotificationReceipt;
 }
 export async function readNotifications(value: unknown, owner: Owner, id: string): Promise<NotificationsView> {
-  if (!envelope(value) || !keys(value, "schemaVersion contract disclosure externalDelivery current candidates receipts coverage", "preview") || !Array.isArray(value.candidates) || value.candidates.length > 40 || !Array.isArray(value.receipts) || value.receipts.length > 40 ||
+  if (!envelope(value) || !keys(value, "schemaVersion contract disclosure externalDelivery current candidates receipts coverage", "preview configurationReceipts") || !Array.isArray(value.candidates) || value.candidates.length > 40 || !Array.isArray(value.receipts) || value.receipts.length > 40 ||
+    value.configurationReceipts !== undefined && (!Array.isArray(value.configurationReceipts) || value.configurationReceipts.length > 40) ||
     !object(value.coverage) || !keys(value.coverage, "limit total hasMoreCandidates hasMoreReceipts") || value.coverage.limit !== 40 || value.coverage.total !== null || typeof value.coverage.hasMoreCandidates !== "boolean" || typeof value.coverage.hasMoreReceipts !== "boolean") return fail();
   const current = value.current === null ? null : await admission(value.current, owner, id); const exact = current ? { tenantId: current.tenantId, actorId: current.actorId } : owner;
-  if (!current && (value.candidates.length || value.receipts.length || value.coverage.hasMoreCandidates || value.coverage.hasMoreReceipts)) return fail();
+  if (!current && (value.candidates.length || value.receipts.length || (value.configurationReceipts as unknown[] | undefined)?.length || value.coverage.hasMoreCandidates || value.coverage.hasMoreReceipts)) return fail();
   const candidates: ResponsibilityNotificationCandidate[] = []; const receipts: ResponsibilityNotificationReceipt[] = [];
+  for (const row of [...value.receipts, ...(value.configurationReceipts as unknown[] | undefined ?? [])]) {
+    const item = await receipt(row, exact, id);
+    if (!current || !historicalAdmission(item.snapshot, current)) return fail();
+    receipts.push(item);
+  }
   for (const row of value.candidates) {
     const item = await candidate(row, exact, id);
-    if (!current || item.configurationSha256 !== current.configuration.configurationSha256 || item.generation > current.generation || item.updatedAt > current.updatedAt) return fail();
+    if (!current || item.generation > current.generation || item.updatedAt > current.updatedAt) return fail();
+    if (item.configurationSha256 !== current.configuration.configurationSha256 && (member(item.state, ["pending", "held"]) || item.generation >= current.generation ||
+      !receipts.some((proof) => proof.snapshot.configuration.configurationSha256 === item.configurationSha256 && proof.snapshot.generation >= item.generation && proof.savedAt >= item.updatedAt))) return fail();
     if (member(item.state, ["pending", "held"]) && (item.generation !== current.generation || !member(current.state, ["enabled", "draining"]))) return fail();
     candidates.push(item);
   }
@@ -71,17 +84,15 @@ export async function readNotifications(value: unknown, owner: Owner, id: string
   // They cannot exceed confirmed cumulative use or current reservations.
   if (current && (candidates.filter((item) => member(item.state, ["pending", "held"])).length > current.reserved ||
     candidates.filter((item) => item.state === "delivered").length > current.used)) return fail();
-  for (const row of value.receipts) {
-    const item = await receipt(row, exact, id);
-    if (!current || item.snapshot.revision > current.revision || !sameJson(item.snapshot.configuration, current.configuration) || item.snapshot.revision === current.revision && !sameJson(item.snapshot, current)) return fail();
-    receipts.push(item);
-  }
   if (new Set(candidates.map((item) => item.id)).size !== candidates.length || new Set(receipts.map((item) => item.snapshot.revision)).size !== receipts.length || new Set(receipts.map((item) => item.id)).size !== receipts.length) return fail();
   if (value.preview !== undefined) {
     if (!object(value.preview) || value.preview.authorityEffect !== "none") return fail();
     if (value.preview.state === "ready") {
-      if (current || !keys(value.preview, "state authorityEffect configuration expectedRuntimeRevision expectedRuntimeGeneration") || !revision(value.preview.expectedRuntimeRevision) || !revision(value.preview.expectedRuntimeGeneration)) return fail();
-      await configuration(value.preview.configuration, owner, id);
+      if (!keys(value.preview, "state authorityEffect configuration expectedRuntimeRevision expectedRuntimeGeneration", "expectedRevision expectedGeneration") || !revision(value.preview.expectedRuntimeRevision) || !revision(value.preview.expectedRuntimeGeneration)) return fail();
+      const next = await configuration(value.preview.configuration, owner, id);
+      if (current ? current.state !== "ended" || current.reason !== "runtime_blocked" || current.reserved !== 0 ||
+        value.preview.expectedRevision !== current.revision || value.preview.expectedGeneration !== current.generation || !isLaterNotificationReview(current.configuration, next)
+        : value.preview.expectedRevision !== undefined || value.preview.expectedGeneration !== undefined) return fail();
     } else if (value.preview.state !== "blocked" || !keys(value.preview, "state authorityEffect reason") || !text(value.preview.reason)) return fail();
   }
   return value as unknown as NotificationsView;
@@ -91,9 +102,10 @@ export async function verifyNotificationsResult(value: unknown, owner: Owner, id
   const accepted = await receipt(value.receipt, owner, id); const snapshot = accepted.snapshot;
   const current = await admission(value.current, { tenantId: snapshot.tenantId, actorId: snapshot.actorId }, id);
   if (accepted.action !== input.action || accepted.idempotencySha256 !== await sha256(["responsibility-idempotency:1", key]) || accepted.requestSha256 !== await sha256({ responsibilityId: id, ...input }) ||
-    current.revision < snapshot.revision || !sameJson(current.configuration, snapshot.configuration) || current.revision === snapshot.revision && !sameJson(current, snapshot) || !value.replayed && !sameJson(current, snapshot)) return fail();
+    !historicalAdmission(snapshot, current) || !value.replayed && !sameJson(current, snapshot)) return fail();
   if (input.action === "enable") {
-    if (accepted.previousRevision !== 0 || snapshot.revision !== 1 || snapshot.generation !== 1 || snapshot.state !== "enabled" || snapshot.reason !== "owner_enabled" || snapshot.used !== 0 || snapshot.reserved !== 0 || snapshot.configuration.configurationSha256 !== input.configurationSha256) return fail();
+    if ((input.expectedRevision === undefined) !== (input.expectedGeneration === undefined) || accepted.previousRevision !== (input.expectedRevision ?? 0) || snapshot.revision !== (input.expectedRevision ?? 0) + 1 || snapshot.generation !== (input.expectedGeneration ?? 0) + 1 ||
+      snapshot.state !== "enabled" || snapshot.reason !== "owner_enabled" || input.expectedRevision === undefined && snapshot.used !== 0 || snapshot.reserved !== 0 || snapshot.configuration.configurationSha256 !== input.configurationSha256) return fail();
   } else if (accepted.previousRevision < input.expectedRevision || snapshot.generation !== input.expectedGeneration + 1 || snapshot.state !== "ended" || snapshot.reason !== "owner_stopped" || snapshot.reserved !== 0) return fail();
   return { current, receipt: accepted, replayed: value.replayed };
 }

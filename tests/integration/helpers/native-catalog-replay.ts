@@ -7,6 +7,7 @@ import type { SqlClient } from "@/lib/db/sql-types";
 
 /** Only empty, disposable fixtures may return to the schema-255 task shape. */
 export async function removeEmptyProjectTaskCommitmentsForReplay(sql: postgres.TransactionSql) {
+  await removeEmptyResponsibilityRecoveryForReplay(sql);
   expect(await sql`SELECT count(*)::int AS populated FROM public.omni_project_tasks
     WHERE human_owner IS NOT NULL OR due_date IS NOT NULL OR due_time_zone IS NOT NULL`,
   "Historical replay must preserve populated project task commitments.").toEqual([{ populated: 0 }]);
@@ -16,6 +17,28 @@ export async function removeEmptyProjectTaskCommitmentsForReplay(sql: postgres.T
     DROP CONSTRAINT omni_project_tasks_due_time_zone_check,
     DROP COLUMN human_owner, DROP COLUMN due_date, DROP COLUMN due_time_zone`;
   await sql`DELETE FROM omni_schema_version WHERE version=256`;
+}
+
+/** Never discard accepted recovery history to replay an older disposable schema. */
+export async function removeEmptyResponsibilityRecoveryForReplay(sql: postgres.TransactionSql) {
+  if (!(await sql`SELECT to_regclass('public.omni_responsibility_baseline_rebinds') AS table_name`)[0].table_name) return;
+  expect(await sql`SELECT count(*)::int AS rebinds FROM public.omni_responsibility_baseline_rebinds`).toEqual([{ rebinds: 0 }]);
+  await sql`DROP TRIGGER omni_responsibility_recovery_commit ON public.omni_responsibility_lifecycles`;
+  await sql`DROP TRIGGER omni_responsibility_notification_renewal_commit ON public.omni_responsibility_notification_admissions`;
+  await sql`DROP TABLE public.omni_responsibility_baseline_rebinds`;
+  await sql`DROP FUNCTION public.omni_protect_responsibility_baseline_rebind_v1()`;
+  await sql`DROP FUNCTION public.omni_require_responsibility_recovery_commit_v1()`;
+  for (const [version, file, name] of [
+    [252, "20261013090000_responsibility_work_item_followthrough.sql", "omni_protect_responsibility_runtime_head_v1"],
+    [252, "20261013090000_responsibility_work_item_followthrough.sql", "omni_protect_responsibility_notification_head_v1"],
+    [217, "20261004103000_responsibility_observations.sql", "omni_protect_responsibility_baselines_v1"],
+  ] as const) {
+    const { migration } = await readReplayMigration(version, file);
+    const statement = migration.statements.filter((item) => new RegExp(`CREATE (OR REPLACE )?FUNCTION public\\.${name}\\(\\)`).test(item));
+    expect(statement).toHaveLength(1);
+    await sql.unsafe(statement[0].replace("CREATE FUNCTION", "CREATE OR REPLACE FUNCTION"));
+  }
+  await sql`DELETE FROM omni_schema_version WHERE version=257`;
 }
 
 /** Only disposable migration fixtures may remove empty comparison evidence.
@@ -188,6 +211,7 @@ export async function replayPost245Migrations(sql: postgres.TransactionSql) {
     [254, "20261013150000_responsibility_workspace_read_fence.sql"],
     [255, "20261013160000_responsibility_workspace_fence_acl_repair.sql"],
     [256, "20261014100000_project_task_commitments.sql"],
+    [257, "20261015090000_responsibility_reviewed_recovery.sql"],
   ] as const) {
     const { row, migration } = await readReplayMigration(version, file);
     await applySqlMigrationFile(adapter, migration, [row], []);

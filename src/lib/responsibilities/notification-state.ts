@@ -4,6 +4,7 @@ import { verifyLifecycle } from "./lifecycle-state";
 import { responsibilityChangeRecordSchema, type ResponsibilityChangeRecord } from "./observation-contracts";
 import { type ResponsibilityLifecycle } from "./runtime-contracts";
 import { idempotencySha256, ResponsibilityError, storageInvalid } from "./state";
+import { isLaterNotificationReview } from "./notification-recovery-policy";
 import {
   notificationAdmissionSchema, notificationCandidateSchema, notificationConfigurationSchema, notificationEnableRequestSchema, notificationReceiptSchema,
   RESPONSIBILITY_NOTIFICATION_CONTRACT, RESPONSIBILITY_NOTIFICATION_MAX_AGE_MS, RESPONSIBILITY_NOTIFICATION_POLICY, RESPONSIBILITY_NOTIFICATION_RETRY_MS,
@@ -48,10 +49,24 @@ export function buildNotificationConfiguration(record: ResponsibilityRecord, run
     destination: "owner_in_app" as const, quietOnNoChange: true as const, maximumNotifications: record.draft.limits.maxNotifications, expiresAt: runtime.configuration.cadence.expiresAt };
   return verifyNotificationConfiguration({ ...body, configurationSha256: canonicalJsonSha256(body) });
 }
-export function enableNotificationAdmission(configurationValue: NotificationConfiguration, runtime: ResponsibilityLifecycle, requestValue: unknown, now: string): NotificationAdmission {
+export function assertNotificationRecovery(previousValue: NotificationAdmission, configurationValue: NotificationConfiguration, now: string) {
+  const previous = verifyNotificationAdmission(previousValue); const configuration = verifyNotificationConfiguration(configurationValue); instantSchema.parse(now);
+  if (previous.state !== "ended" || previous.reason !== "runtime_blocked" || previous.reserved !== 0 || previous.used >= previous.configuration.maximumNotifications ||
+    now < previous.updatedAt || configuration.expiresAt <= now || !isLaterNotificationReview(previous.configuration, configuration)) {
+    throw notificationConflict("responsibility_notification_recovery_changed");
+  }
+}
+export function enableNotificationAdmission(configurationValue: NotificationConfiguration, runtime: ResponsibilityLifecycle, requestValue: unknown, now: string, previousValue?: NotificationAdmission): NotificationAdmission {
   const configuration = verifyNotificationConfiguration(configurationValue); const request = notificationEnableRequestSchema.parse(requestValue); instantSchema.parse(now);
   if (runtime.state !== "active" || runtime.revision !== request.expectedRuntimeRevision || runtime.generation !== request.expectedRuntimeGeneration ||
     configuration.configurationSha256 !== request.configurationSha256 || configuration.runtimeConfigurationSha256 !== runtime.configuration.configurationSha256 || configuration.expiresAt <= now) throw notificationConflict("responsibility_notification_preview_changed");
+  if (previousValue) {
+    const previous = verifyNotificationAdmission(previousValue); assertNotificationRecovery(previous, configuration, now);
+    if (request.expectedRevision !== previous.revision || request.expectedGeneration !== previous.generation) throw notificationConflict("responsibility_notification_preview_changed");
+    return verifyNotificationAdmission({ ...previous, revision: previous.revision + 1, generation: previous.generation + 1,
+      state: "enabled", reason: "owner_enabled", configuration, updatedAt: now });
+  }
+  if (request.expectedRevision !== undefined || request.expectedGeneration !== undefined) throw notificationConflict("responsibility_notification_preview_changed");
   return verifyNotificationAdmission({ schemaVersion: 1, contract: RESPONSIBILITY_NOTIFICATION_CONTRACT, tenantId: configuration.tenantId, actorId: configuration.actorId,
     responsibilityId: configuration.responsibilityId, revision: 1, generation: 1, state: "enabled", reason: "owner_enabled", configuration, used: 0, reserved: 0, enabledAt: now, updatedAt: now });
 }
